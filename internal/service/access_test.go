@@ -34,6 +34,12 @@ func TestTenantAccessLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// a group of another organization never gets access here, so its members (whoever adds them, a provisioning
+	// client included) never reach this tenant through it
+	bg, err := c.svc.CreateGroup(c.ctx, service.System, c.b.ID, service.GroupInput{DisplayName: ptr("Elsewhere")})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Only the org's admins (and super admins) manage access.
 	for name, a := range map[string]*service.Actor{"manager": actor(c.aManager), "user": actor(c.aUser), "other org": actor(c.bAdmin)} {
@@ -50,6 +56,7 @@ func TestTenantAccessLifecycle(t *testing.T) {
 		"bad type":          {SubjectType: "robot", SubjectID: c.aUser.ID},
 		"other org user":    {SubjectType: model.SubjectUser, SubjectID: c.bAdmin.ID},
 		"missing group":     {SubjectType: model.SubjectGroup, SubjectID: "nope"},
+		"other org group":   {SubjectType: model.SubjectGroup, SubjectID: bg.ID},
 		"foreign client":    {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, AllClients: ptr(false), Clients: &[]string{other.ID}},
 		"no clients":        {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, AllClients: ptr(false), Clients: &[]string{}},
 		"bad role":          {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Roles: &[]string{"has space"}},
