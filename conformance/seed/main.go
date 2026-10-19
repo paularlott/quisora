@@ -38,6 +38,7 @@ func main() {
 	templates := flag.String("templates", "conformance/config", "suite configuration templates")
 	out := flag.String("out", "conformance/.run/config", "where the filled-in suite configurations go")
 	tokenOut := flag.String("admin-token", "conformance/.run/admin-token", "where the super admin's API token (admin scope) goes, for rotate-keys.sh")
+	loginOut := flag.String("admin-login", "conformance/.run/admin-login.json", "where the super admin's sign-in (email, password, TOTP secret) goes, for rotate-keys.py: rotating keys takes a re-authenticated session")
 	flag.Parse()
 	ctx := context.Background()
 	must := func(err error) {
@@ -68,6 +69,15 @@ func main() {
 	_, tok, err := svc.CreateAPIToken(ctx, seed, service.APITokenInput{Name: "conformance", Scopes: []string{"admin"}, Expires: 30})
 	must(err)
 	must(os.WriteFile(*tokenOut, []byte(tok+"\n"), 0o600))
+	// A password and an authenticator for the super admin (a development node only): rotate-keys.py signs in with
+	// them, as rotating signing keys takes a recently re-authenticated admin console session, not a token.
+	pw, totp := secure.RandomToken(18), secure.NewTOTPSecret()
+	admin, err = svc.UpdateUser(ctx, sys, admin.ID, service.UserInput{Password: &pw})
+	must(err)
+	admin.TOTPSecret = sealer.SealFor(service.TOTPBinding(admin.ID), []byte(totp))
+	must(svc.Users.Update(ctx, admin))
+	login, _ := json.Marshal(map[string]string{"email": admin.Email, "password": pw, "totp_secret": totp})
+	must(os.WriteFile(*loginOut, login, 0o600))
 	org, err := svc.CreateOrg(ctx, sys, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme")})
 	must(err)
 	// The suite signs in through the fake provider and cannot enter a second factor: the default tenant (which

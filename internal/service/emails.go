@@ -202,6 +202,12 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 	if _, err := s.emailActor(ctx, a, u); err != nil {
 		return nil, err
 	}
+	if a != System && a.UserID != u.ID {
+		// as changing the primary address in UpdateUser: password resets go there
+		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+			return nil, err
+		}
+	}
 	address = strings.TrimSpace(address)
 	var old string
 	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {

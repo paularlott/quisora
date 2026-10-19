@@ -98,8 +98,14 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		if pc, err = pgx.ParseConfig(cfg.DSN); err == nil {
 			if cfg.RootCAs != nil {
 				for _, t := range append([]*tls.Config{pc.TLSConfig}, fallbackTLS(pc)...) {
-					if t != nil && !t.InsecureSkipVerify {
-						t.RootCAs = cfg.RootCAs
+					if t == nil {
+						continue
+					}
+					// verify-full uses RootCAs directly; verify-ca is InsecureSkipVerify with a peer check that reads
+					// RootCAs; require checks nothing, so with a CA file it gets that chain check too (verify-ca).
+					t.RootCAs = cfg.RootCAs
+					if t.InsecureSkipVerify && t.VerifyPeerCertificate == nil {
+						t.VerifyPeerCertificate = verifyChain(cfg.RootCAs)
 					}
 				}
 			}
@@ -383,4 +389,27 @@ func fallbackTLS(pc *pgx.ConnConfig) []*tls.Config {
 		out = append(out, f.TLSConfig)
 	}
 	return out
+}
+
+// verifyChain checks a server certificate chain against roots, without the host name (sslmode=verify-ca).
+func verifyChain(roots *x509.CertPool) func([][]byte, [][]*x509.Certificate) error {
+	return func(raw [][]byte, _ [][]*x509.Certificate) error {
+		if len(raw) == 0 {
+			return errors.New("postgres: the server sent no certificate")
+		}
+		certs := make([]*x509.Certificate, len(raw))
+		for i, b := range raw {
+			c, err := x509.ParseCertificate(b)
+			if err != nil {
+				return err
+			}
+			certs[i] = c
+		}
+		inter := x509.NewCertPool()
+		for _, c := range certs[1:] {
+			inter.AddCert(c)
+		}
+		_, err := certs[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter})
+		return err
+	}
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -161,6 +162,9 @@ type Node struct {
 	gc *gossip.Cluster // nil when standalone
 	le *leader.LeaderElection
 
+	keyMu     sync.Mutex
+	clusterKs []string // cluster.key, then cluster.previous_keys, as in use (SetClusterKeys)
+
 	replicate bool // data replication on: gossip always replicates (each node has its own database)
 	size      int  // cluster.size: the number of nodes the cluster is made of
 	quorum    int  // size/2+1: fixed for the life of the process
@@ -283,10 +287,11 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 
 func (n *Node) buildGossip() error {
 	cfg := n.cfg
-	key, err := base64.StdEncoding.DecodeString(cfg.Cluster.Key)
-	if err != nil || len(key) != 32 {
-		return errors.New("cluster: cluster.key must be 32 bytes, base64 encoded")
+	key, prev, err := decodeClusterKeys(cfg.Cluster.Key, cfg.Cluster.PreviousKeys)
+	if err != nil {
+		return err
 	}
+	n.clusterKs = append([]string{cfg.Cluster.Key}, cfg.Cluster.PreviousKeys...)
 	adv := cfg.Cluster.Advertise
 	if adv == "" {
 		adv = cfg.Cluster.Bind
@@ -299,6 +304,10 @@ func (n *Node) buildGossip() error {
 	gcfg.BindAddr = cfg.Cluster.Bind
 	gcfg.AdvertiseAddr = adv
 	gcfg.EncryptionKey = key
+	gcfg.PreviousEncryptionKeys = prev // a cluster key rotation in progress: they still decrypt, never encrypt
+	// A captured packet cannot be replayed later: older (or newer) than this by the receiver's clock it is refused,
+	// and until then it is in the duplicate history. Far above the clock skew the nodes may have (store.MaxSkew).
+	gcfg.MaxPacketAge = 2 * time.Minute
 	gcfg.Cipher = aes.New()
 	gcfg.MsgCodec = shamaton.New()
 	gcfg.Compressor = snappy.New()
@@ -1008,6 +1017,8 @@ type Status struct {
 	// SkewRefused counts versions this node's clock refused to follow (store.Witness).
 	ClockSkewed int64 `json:"clock_skewed"`
 	SkewRefused int64 `json:"skew_refused"`
+	// ClusterKeys are this node's gossip keys (ids), the one that encrypts first (a rotation shows more than one).
+	ClusterKeys []string `json:"cluster_keys,omitempty"`
 	// Nodes is every cluster member this node knows of, as it sees them (replicated clusters only).
 	Nodes []MemberStatus `json:"nodes,omitempty"`
 }
@@ -1062,6 +1073,9 @@ func (n *Node) Status() Status {
 		Refused: n.refused.Load() + n.superseded.Load(), Unconfirmed: n.unconfirmed.Load(), Ready: ready,
 		Writable: n.Writable(), ForcedStart: n.ForcedStart(), ClockSkewed: n.skewed.Load(),
 		SkewRefused: store.SkewRefused()}
+	if n.gc != nil {
+		s.ClusterKeys = n.ClusterKeyIDs()
+	}
 	if t := n.lastSync.Load(); t != 0 {
 		s.LastSync = time.Unix(0, t)
 	}
@@ -1144,3 +1158,61 @@ func (n *Node) purgeOnce(ctx context.Context, now time.Time) {
 // RestoredMarker is the file a restore leaves in the data directory: the node starts as one restored from a backup
 // (see Node.restored).
 const RestoredMarker = "restored-from-backup"
+
+func decodeClusterKeys(key string, previous []string) ([]byte, [][]byte, error) {
+	k, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(k) != 32 {
+		return nil, nil, errors.New("cluster: cluster.key must be 32 bytes, base64 encoded")
+	}
+	var prev [][]byte
+	for i, v := range previous {
+		p, err := base64.StdEncoding.DecodeString(v)
+		if err != nil || len(p) != 32 {
+			return nil, nil, fmt.Errorf("cluster: cluster.previous_keys[%d] must be 32 bytes, base64 encoded", i)
+		}
+		prev = append(prev, p)
+	}
+	return k, prev, nil
+}
+
+// ClusterKeyIDs are the ids (secure.KeyID) of the cluster keys in use, the one that encrypts first; nil standalone.
+func (n *Node) ClusterKeyIDs() []string {
+	n.keyMu.Lock()
+	defer n.keyMu.Unlock()
+	var ids []string
+	for _, v := range n.clusterKs {
+		k, _ := base64.StdEncoding.DecodeString(v)
+		ids = append(ids, secure.KeyID(k))
+	}
+	return ids
+}
+
+// SetClusterKeys switches gossip to the cluster keys key (encrypts) and previous (still decrypt) while it runs: a
+// cluster key rotation without restarts (docs/RUNNING.md). It refuses keys that do not include the key encrypting now:
+// each step of a rotation keeps it (as a previous key until every node encrypts with the new one), and a mistyped key
+// would cut this node off from the others. It reports whether anything changed.
+func (n *Node) SetClusterKeys(key string, previous []string) (bool, error) {
+	if n.gc == nil {
+		return false, errors.New("cluster: not clustering (cluster.bind is empty)")
+	}
+	k, prev, err := decodeClusterKeys(key, previous)
+	if err != nil {
+		return false, err
+	}
+	n.keyMu.Lock()
+	defer n.keyMu.Unlock()
+	next := append([]string{key}, previous...)
+	if slices.Equal(next, n.clusterKs) {
+		return false, nil
+	}
+	if !slices.Contains(next, n.clusterKs[0]) {
+		cur, _ := base64.StdEncoding.DecodeString(n.clusterKs[0])
+		return false, fmt.Errorf("cluster: the new keys do not include the key in use (%s); during a rotation it stays "+
+			"in cluster.previous_keys until every node encrypts with the new one", secure.KeyID(cur))
+	}
+	if err := n.gc.SetEncryptionKeys(k, prev...); err != nil {
+		return false, fmt.Errorf("cluster: %w", err)
+	}
+	n.clusterKs = next
+	return true, nil
+}

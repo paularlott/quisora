@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -119,6 +120,9 @@ type Cluster struct {
 	Advertise string   `toml:"advertise" flag:"advertise" usage:"Gossip address advertised to peers"`
 	Peers     []string `toml:"peers" flag:"peers" usage:"Gossip addresses of the other nodes"`
 	Key       string   `toml:"key" flag:"key" secret:"true" usage:"Base64 32-byte cluster encryption key (quisora genkey), identical on every node"`
+	// PreviousKeys still decrypt gossip, never encrypt: a cluster key rotation (docs/RUNNING.md). SIGHUP reloads
+	// both settings.
+	PreviousKeys []string `toml:"previous_keys" flag:"previous-keys" secret:"true" usage:"Earlier cluster keys (base64), during a cluster key rotation: they still decrypt gossip, never encrypt"`
 	// Size is the number of nodes the cluster is made of, required with cluster.bind. The quorum (size/2+1) is
 	// computed from it and never changes while the cluster runs: not when a node leaves, stops or restarts. Changing
 	// it is a planned change of the whole cluster (see docs/REPLICATION.md, "Scaling").
@@ -261,26 +265,71 @@ func masterKeyErrors(master string, previous []string) []error {
 // master keys (SIGHUP): from the config file path (if non-empty), then the QUISORA_* environment variables, as at
 // start-up; nothing else is read or checked. (Values given on the command line cannot change while it runs.)
 func LoadMasterKeys(path string) (master string, previous []string, err error) {
-	c := Default()
-	if path != "" {
-		if _, err := toml.DecodeFile(path, c); err != nil {
-			return "", nil, fmt.Errorf("config %s: %w", path, err)
-		}
-	}
-	for _, st := range settings(c) {
-		if st.Path != "server.master_key" && st.Path != "server.previous_master_keys" {
-			continue
-		}
-		if val, ok := os.LookupEnv(st.Env); ok {
-			if err := st.set(val); err != nil {
-				return "", nil, fmt.Errorf("%s: %w", st.Env, err)
-			}
-		}
+	c, err := reload(path, "server.master_key", "server.previous_master_keys")
+	if err != nil {
+		return "", nil, err
 	}
 	if errs := masterKeyErrors(c.Server.MasterKey, c.Server.PreviousMasterKeys); len(errs) > 0 {
 		return "", nil, errors.Join(errs...)
 	}
 	return c.Server.MasterKey, c.Server.PreviousMasterKeys, nil
+}
+
+// LoadClusterKeys reads cluster.key and cluster.previous_keys again (SIGHUP), as LoadMasterKeys does the master keys.
+func LoadClusterKeys(path string) (key string, previous []string, err error) {
+	c, err := reload(path, "cluster.key", "cluster.previous_keys")
+	if err != nil {
+		return "", nil, err
+	}
+	if c.Cluster.Key == "" {
+		return "", nil, errors.New("cluster.key is not set")
+	}
+	if errs := clusterKeyErrors(c.Cluster.Key, c.Cluster.PreviousKeys); len(errs) > 0 {
+		return "", nil, errors.Join(errs...)
+	}
+	return c.Cluster.Key, c.Cluster.PreviousKeys, nil
+}
+
+// reload reads the settings at paths from the config file path (if non-empty), then the QUISORA_* environment
+// variables, over the defaults; nothing else is read or checked.
+func reload(path string, paths ...string) (*Config, error) {
+	c := Default()
+	if path != "" {
+		if _, err := toml.DecodeFile(path, c); err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
+	}
+	for _, st := range settings(c) {
+		if !slices.Contains(paths, st.Path) {
+			continue
+		}
+		if val, ok := os.LookupEnv(st.Env); ok {
+			if err := st.set(val); err != nil {
+				return nil, fmt.Errorf("%s: %w", st.Env, err)
+			}
+		}
+	}
+	return c, nil
+}
+
+func clusterKeyErrors(key string, previous []string) []error {
+	var errs []error
+	if key != "" {
+		if k, err := base64.StdEncoding.DecodeString(key); err != nil || len(k) != 32 {
+			errs = append(errs, errors.New("cluster.key must be 32 bytes, base64 encoded (quisora genkey)"))
+		}
+	}
+	for i, v := range previous {
+		if k, err := base64.StdEncoding.DecodeString(v); err != nil || len(k) != 32 {
+			errs = append(errs, fmt.Errorf("cluster.previous_keys[%d] must be 32 bytes, base64 encoded", i))
+		} else if v == key {
+			errs = append(errs, fmt.Errorf("cluster.previous_keys[%d] is cluster.key itself", i))
+		}
+	}
+	if len(previous) > 0 && key == "" {
+		errs = append(errs, errors.New("cluster.previous_keys needs cluster.key"))
+	}
+	return errs
 }
 
 // Validate checks the configuration and fills derived defaults.
@@ -328,11 +377,7 @@ func (c *Config) Validate() error {
 			errs = append(errs, errors.New("storage.badgerdb.encryption_key must be 32 bytes, base64 encoded (quisora genkey)"))
 		}
 	}
-	if c.Cluster.Key != "" {
-		if k, err := base64.StdEncoding.DecodeString(c.Cluster.Key); err != nil || len(k) != 32 {
-			errs = append(errs, errors.New("cluster.key must be 32 bytes, base64 encoded (quisora genkey)"))
-		}
-	}
+	errs = append(errs, clusterKeyErrors(c.Cluster.Key, c.Cluster.PreviousKeys)...)
 	if c.Cluster.Bind != "" && c.Cluster.Advertise == "" {
 		if host, _, err := net.SplitHostPort(c.Cluster.Bind); err == nil && (host == "" || host == "0.0.0.0" || host == "::") {
 			errs = append(errs, errors.New("cluster.advertise is required when cluster.bind is a wildcard address"))
@@ -391,6 +436,10 @@ func (c *Config) Validate() error {
 			errs = append(errs, errors.New("storage.mariadb.dsn is required"))
 		}
 	case "valkey":
+		if v := c.Storage.Valkey; !v.TLS && (v.CAFile != "" || v.ServerName != "" || v.CertFile != "" || v.KeyFile != "") {
+			errs = append(errs, errors.New("storage.valkey: ca_file, server_name, cert_file and key_file apply to TLS "+
+				"connections only: set storage.valkey.tls = true (without it the connection is not encrypted)"))
+		}
 		if len(c.Storage.Valkey.Addrs) == 0 {
 			errs = append(errs, errors.New("storage.valkey.addrs is required"))
 		}

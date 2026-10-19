@@ -143,25 +143,7 @@ func BenchmarkAntiEntropyCatchUp(b *testing.B) {
 			c.opts = func(o *Options) { o.JoinWait = 100 * time.Millisecond }
 			src := c.build(0, "", nil)
 			c.nodes = append(c.nodes, src)
-			var wg sync.WaitGroup
-			var next atomic.Int64
-			for range 16 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for {
-						i := next.Add(1)
-						if i > total {
-							return
-						}
-						if err := src.st().Put(bg, benchRec(i)); err != nil {
-							b.Error(err)
-							return
-						}
-					}
-				}()
-			}
-			wg.Wait()
+			preload(b, src, total) // a lone node of two has no quorum to write through; its store is filled directly
 			c.start(src)
 			b.Cleanup(c.closeAll)
 			b.ResetTimer()
@@ -203,28 +185,11 @@ func BenchmarkCatchUp3Peers(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			c := newTCluster(b, 4, badgerBackend)
 			c.opts = func(o *Options) { o.JoinWait = 300 * time.Millisecond }
+			// A 4-node cluster (size 4, every node listing every other): three sources, the fourth joins.
 			for i := range 3 {
-				c.nodes = append(c.nodes, c.build(i, "", func(cfg *config.Config) { cfg.Cluster.Peers = c.addrs[:3] }))
+				c.nodes = append(c.nodes, c.build(i, "", nil))
 			}
-			var wg sync.WaitGroup
-			var next atomic.Int64
-			for range 16 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for {
-						i := next.Add(1)
-						if i > total {
-							return
-						}
-						if err := c.nodes[0].st().Put(bg, benchRec(i)); err != nil {
-							b.Error(err)
-							return
-						}
-					}
-				}()
-			}
-			wg.Wait()
+			preload(b, c.nodes[0], total)
 			c.start(c.nodes...)
 			b.Cleanup(c.closeAll)
 			waitFor(b, 300*time.Second, "sources converged", func() bool {
@@ -234,7 +199,7 @@ func BenchmarkCatchUp3Peers(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				b.StopTimer()
-				dst := c.build(3, "", func(cfg *config.Config) { cfg.Cluster.Peers = c.addrs[:3] })
+				dst := c.build(3, "", nil)
 				c.nodes = append(c.nodes, dst)
 				b.StartTimer()
 				start := time.Now()
@@ -279,5 +244,34 @@ func BenchmarkDurablePut(b *testing.B) {
 			})
 		})
 		c.closeAll()
+	}
+}
+
+// preload fills a node's own store (before it starts) with total records, as the cluster's data: written past the
+// cluster layer, which refuses writes without a quorum, and marked as synced so the node starts with it.
+func preload(b *testing.B, tn *tnode, total int64) {
+	b.Helper()
+	inner := tn.n.st.inner
+	var wg sync.WaitGroup
+	var next atomic.Int64
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := next.Add(1)
+				if i > total {
+					return
+				}
+				if _, _, err := inner.PutReplicated(bg, benchRec(i)); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := MarkSynced(tn.dir, inner.FeedID()); err != nil {
+		b.Fatal(err)
 	}
 }

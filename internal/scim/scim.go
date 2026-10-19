@@ -72,6 +72,13 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Detail }
 
+// errNeedsSession refuses what the management API keeps for a recently re-authenticated admin console session
+// (granting an administrator role, deleting an organization, changing the primary organization's sign-in settings):
+// SCIM is always called with a token, which cannot make those changes.
+func errNeedsSession(what string) *Error {
+	return &Error{Status: 403, Detail: what + " needs a recent re-authentication in the admin console; a token cannot make this change"}
+}
+
 // maxScan bounds the records a filter that cannot be answered from an index may evaluate in memory (RFC 7644
 // §3.4.2.2 "tooMany"): far above any organization's size at the target scale, low enough to cap one request.
 const maxScan = 50_000

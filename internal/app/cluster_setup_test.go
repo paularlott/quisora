@@ -73,13 +73,13 @@ func TestSharedDatabaseMasterKeyCheck(t *testing.T) {
 	a, _ := secure.NewSealer(secure.RandomBytes(32))
 	b, _ := secure.NewSealer(secure.RandomBytes(32))
 	log := logger.NewNullLogger()
-	if err := checkSharedKey(ctx, st, a, log); err != nil {
+	if err := checkSharedKey(ctx, st, a, log, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkSharedKey(ctx, st, a, log); err != nil {
+	if err := checkSharedKey(ctx, st, a, log, true); err != nil {
 		t.Fatalf("the same key again: %v", err)
 	}
-	if err := checkSharedKey(ctx, st, b, log); err == nil || !strings.Contains(err.Error(), "master key") {
+	if err := checkSharedKey(ctx, st, b, log, true); err == nil || !strings.Contains(err.Error(), "master key") {
 		t.Fatalf("another key: %v", err)
 	}
 }
@@ -95,16 +95,31 @@ func TestSharedDatabaseMasterKeyRotation(t *testing.T) {
 	ring, _ := secure.NewKeyring(k2, k1)
 	only2, _ := secure.NewSealer(k2)
 	log := logger.NewNullLogger()
-	if err := checkSharedKey(ctx, st, old, log); err != nil {
+	if err := checkSharedKey(ctx, st, old, log, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkSharedKey(ctx, st, ring, log); err != nil {
+	if err := checkSharedKey(ctx, st, ring, log, true); err != nil {
 		t.Fatalf("the rotating node: %v", err)
 	}
-	if err := checkSharedKey(ctx, st, old, log); err == nil {
+	if err := checkSharedKey(ctx, st, old, log, true); err == nil {
 		t.Fatal("a node with only the old key started after the rotation")
 	}
-	if err := checkSharedKey(ctx, st, only2, log); err != nil {
+	if err := checkSharedKey(ctx, st, only2, log, true); err != nil {
 		t.Fatalf("a node with only the new key: %v", err)
+	}
+}
+
+// A node's own store (standalone or gossip) refuses a master key it was not sealed with, as a shared database does.
+func TestOwnStoreMasterKeyCheck(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	a, _ := secure.NewSealer(secure.RandomBytes(32))
+	b, _ := secure.NewSealer(secure.RandomBytes(32))
+	log := logger.NewNullLogger()
+	if err := checkSharedKey(ctx, st, a, log, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSharedKey(ctx, st, b, log, false); err == nil || !strings.Contains(err.Error(), "sealed with") {
+		t.Fatalf("another key: %v", err)
 	}
 }

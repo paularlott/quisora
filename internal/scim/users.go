@@ -607,6 +607,10 @@ func (rq *request) createUser() {
 		writeError(rq.w, e)
 		return
 	}
+	if in.Role != nil && in.Role.Rank() >= model.RoleAdmin.Rank() {
+		writeError(rq.w, errNeedsSession("granting an administrator role"))
+		return
+	}
 	u, err := rq.m.srv.Svc.CreateUser(rq.ctx, rq.actor, rq.org.ID, in)
 	if err != nil {
 		rq.fail(err)
@@ -640,6 +644,9 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 		if emptyInput(in) {
 			result = u
 			return nil
+		}
+		if in.Role != nil && *in.Role != u.Role && in.Role.Rank() >= model.RoleAdmin.Rank() {
+			return errNeedsSession("granting an administrator role")
 		}
 		result, err = rq.m.srv.Svc.UpdateUser(rq.ctx, rq.actor, id, in)
 		return err

@@ -35,7 +35,9 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -68,6 +70,8 @@ var (
 	ErrNotEmpty = errors.New("backup: the target store is not empty")
 	// ErrKey means the backup was made with another master key.
 	ErrKey = errors.New("backup: made with a different master key; configure the master key of the server it came from")
+	// ErrKeyMissing means the backup holds secrets sealed with master keys the restoring server is not given.
+	ErrKeyMissing = errors.New("backup: holds secrets sealed with master keys that are not configured; add them to server.previous_master_keys")
 	// ErrFormat means the stream is not a complete, unaltered Quisora backup.
 	ErrFormat = errors.New("backup: not a complete, unaltered Quisora backup")
 )
@@ -91,6 +95,9 @@ type line struct {
 	End     bool   `json:"end,omitempty"`
 	Records int    `json:"records,omitempty"`
 	MAC     string `json:"mac,omitempty"` // HMAC-SHA256 of every line before the trailer (newlines included)
+	// Sealed lists the master keys (ids) the backup's sealed secrets need (sealedKeys): restoring with a ring that
+	// lacks one would leave those secrets unopenable, so it is refused (ErrKeyMissing).
+	Sealed []string `json:"sealed,omitempty"`
 }
 
 func keyCheck(s *secure.Sealer) string {
@@ -153,7 +160,16 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 	}
 	zw := gzip.NewWriter(w)
 	bw := bufio.NewWriterSize(zw, 64<<10)
+	// One key for the whole file: the ring can be replaced while a backup runs (a master key reload), and the MAC and
+	// the header's key check must be made with the same key.
+	keys := sealer.Keys() // one snapshot of the ring
+	ring := make([]string, len(keys))
+	for i, k := range keys {
+		ring[i] = k.ActiveKeyID()
+	}
+	sealer = keys[0]
 	mac := newMAC(sealer)
+	need := map[string]bool{}
 	emit := func(v any) error {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -187,6 +203,7 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 			}
 			after = res.Records[len(res.Records)-1].ID
 			for _, r := range res.Records {
+				sealedKeys(r, ring, need)
 				if err := emit(line{Kind: k, ID: r.ID, Version: r.Version, Epoch: r.Epoch, Created: r.Created, Origin: r.Origin,
 					Data: base64.StdEncoding.EncodeToString(r.Data)}); err != nil {
 					return stats, err
@@ -196,7 +213,7 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 		}
 	}
 	trailer, _ := json.Marshal(line{End: true, Records: stats.Total(),
-		MAC: base64.RawURLEncoding.EncodeToString(mac.Sum(nil))})
+		MAC: base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), Sealed: slices.Sorted(maps.Keys(need))})
 	if _, err := bw.Write(append(trailer, '\n')); err != nil {
 		return stats, err
 	}
@@ -204,6 +221,53 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 		return stats, err
 	}
 	return stats, zw.Close()
+}
+
+// sealedKeys adds to need the master keys rec's sealed secrets need: the key a value names, or, for a value or grant
+// from before values named their key, every key of ring (any of them may be the one).
+func sealedKeys(rec *store.Record, ring []string, need map[string]bool) {
+	var vals []string
+	legacyGrant := false
+	switch rec.Kind {
+	case model.KindUser:
+		var u model.User
+		if store.Decode(rec, &u) == nil {
+			vals = []string{u.TOTPSecret}
+		}
+	case model.KindProvider:
+		var p model.Provider
+		if store.Decode(rec, &p) == nil {
+			vals = []string{p.ClientSecret}
+		}
+	case model.KindKey:
+		var k model.SigningKey
+		if store.Decode(rec, &k) == nil {
+			vals = []string{k.PrivateKey}
+		}
+	case model.KindIdentity:
+		var id model.Identity
+		if store.Decode(rec, &id) == nil {
+			vals = []string{id.Refresh}
+		}
+	case model.KindGrant:
+		var g model.Grant
+		if store.Decode(rec, &g) == nil {
+			vals = []string{g.Key}
+			legacyGrant = g.Key == "" && len(g.Secret) > 0
+		}
+	}
+	for _, v := range vals {
+		kid, legacy := secure.SealedKeyID(v)
+		if kid != "" {
+			need[kid] = true
+		}
+		legacyGrant = legacyGrant || legacy
+	}
+	if legacyGrant {
+		for _, id := range ring {
+			need[id] = true
+		}
+	}
 }
 
 // liveReader reads the live store (no snapshot).
@@ -333,6 +397,12 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 				want, err := base64.RawURLEncoding.DecodeString(l.MAC)
 				if err != nil || !hmac.Equal(want, mac.Sum(nil)) {
 					return stats, fmt.Errorf("%w: its integrity check failed (altered, or not made with this master key)", ErrFormat)
+				}
+				// Checked with the master key only: a restore must be given every key its secrets need.
+				if missing := slices.DeleteFunc(slices.Clone(l.Sealed), func(id string) bool {
+					return slices.Contains(sealer.KeyIDs(), id)
+				}); len(missing) > 0 {
+					return stats, fmt.Errorf("%w: %s", ErrKeyMissing, strings.Join(missing, ", "))
 				}
 			}
 			return stats, nil

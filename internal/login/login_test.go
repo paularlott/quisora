@@ -449,7 +449,7 @@ func TestKnownDeviceLockout(t *testing.T) {
 		c.Limits.LoginPerIPMin = 0
 	})
 	org := e.org(t, "acme", nil)
-	e.user(t, org, "pat", model.RoleUser)
+	pat := e.user(t, org, "pat", model.RoleUser)
 	b := e.browser(t)
 	res, out := b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 200)
@@ -475,16 +475,20 @@ func TestKnownDeviceLockout(t *testing.T) {
 
 	res, out = b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 200)
+	// the owner's sign-in does not reset the stranger's lockout (that would give the stranger fresh guesses)
+	res, out = stranger.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
 
-	// the known browser's own failures lock it (and only it)
+	// the known browser's own failures lock it (and only it: the account-wide counter is the stranger's)
 	for range 3 {
 		res, out = b.login("acme", "pat", "bad")
 		wantStatus(t, res, out, 401)
 	}
 	res, out = b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 429)
-	res, out = e.browser(t).login("acme", "pat", userPassword)
-	wantStatus(t, res, out, 200)
+	if n, _ := e.Server.Eph.Incr(context.Background(), "lockout", pat.ID, 0, time.Hour); n != 3 {
+		t.Fatalf("the known browser's failures charged the account-wide counter: %d", n)
+	}
 }
 
 func TestLockoutDoesNotRevealAccounts(t *testing.T) {
@@ -871,5 +875,30 @@ func TestRateLimitIsAuditedOnce(t *testing.T) {
 	ev := e.audits(t, "login.limited")
 	if len(ev) != 1 || ev[0].Detail["limit"] != "organization" || ev[0].Outcome != "failure" {
 		t.Fatalf("login.limited: %+v", ev)
+	}
+}
+
+// A device cookie stops counting once the account's password changes (a reset, say): a browser that signed in with a
+// stolen password does not keep its own budget and lockout counter after the owner takes the account back.
+func TestDeviceCookieEndsWithPasswordChange(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LockoutAttempts = 3; c.Limits.LoginPerIPMin = 0 })
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	b := e.browser(t)
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	stranger := e.browser(t)
+	for range 3 {
+		stranger.login("acme", "pat", "bad")
+	}
+	if res, out := b.login("acme", "pat", userPassword); res.StatusCode != 200 {
+		t.Fatalf("known browser while the account is locked: %d %v", res.StatusCode, out["_raw"])
+	}
+	pw := "a brand new password 42"
+	if _, err := e.Svc.UpdateUser(context.Background(), service.System, pat.ID, service.UserInput{Password: &pw}); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := b.login("acme", "pat", pw); res.StatusCode != 429 {
+		t.Fatalf("the old device cookie still counts after the password changed: %d", res.StatusCode)
 	}
 }

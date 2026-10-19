@@ -60,6 +60,7 @@ const identityPage = 500
 func (s *Service) CheckSessions(ctx context.Context, every time.Duration) (LeaverResult, error) {
 	var res LeaverResult
 	now := s.Now()
+	down := map[string]bool{} // providers whose check failed this run: their other identities wait for the next run
 	for offset := 0; ; offset += identityPage {
 		ids, _, err := s.Svc.Identities.List(ctx, store.ListQuery{Offset: offset, Limit: identityPage})
 		if err != nil {
@@ -69,10 +70,12 @@ func (s *Service) CheckSessions(ctx context.Context, every time.Duration) (Leave
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
-			if id.Refresh == "" || now.Sub(id.RefreshChecked) < every || !s.hasProviderSession(ctx, id) {
+			if id.Refresh == "" || now.Sub(id.RefreshChecked) < every || down[id.ProviderID] || !s.hasProviderSession(ctx, id) {
 				continue
 			}
-			s.checkIdentity(ctx, id, &res)
+			if !s.checkIdentity(ctx, id, &res) {
+				down[id.ProviderID] = true
+			}
 		}
 		if len(ids) < identityPage {
 			return res, nil
@@ -97,14 +100,16 @@ func (s *Service) hasProviderSession(ctx context.Context, id *model.Identity) bo
 
 var errRefused = errors.New("upstream: the provider refused the refresh token")
 
-func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *LeaverResult) {
+// checkIdentity replays one identity's refresh token. It reports false when the provider could not answer (the
+// identity is left unmarked, so it is checked again next run, and so are the provider's others).
+func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *LeaverResult) bool {
 	p, err := s.Svc.Providers.Get(ctx, id.ProviderID)
 	if err != nil || !p.Enabled || !p.OIDC() || id.Authority != model.ProviderAuthority(p) {
-		return // a provider that is gone, off or pointed elsewhere: its sessions do not pass sign-in checks anyway
+		return true // a provider that is gone, off or pointed elsewhere: its sessions do not pass sign-in checks anyway
 	}
 	plain, err := s.Svc.Sealer.OpenFor(refreshBinding(id.ID), id.Refresh)
 	if err != nil {
-		return
+		return true
 	}
 	res.Checked++
 	next, err := s.replay(ctx, p, string(plain))
@@ -112,17 +117,20 @@ func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *Le
 	case errors.Is(err, errRefused):
 		s.leaver(ctx, id, p)
 		res.Ended++
-		return
+		return true
 	case err != nil:
+		// Not recorded as checked: the user was not checked. (Discovery failures are remembered for a while, so the
+		// provider's other identities would fail the same way: the caller leaves them for the next run.)
 		res.Failed++
 		s.Svc.Log.Warn("upstream: refresh token check failed; trying again later", "provider", p.Name, "user", id.UserID, "error", err)
+		return false
 	}
 	// Record the check (and a rotated token). A concurrent sign-in that stored a newer token wins: its token is the
 	// current one, and the one just replayed is dropped.
 	for range 4 {
 		cur, gerr := s.Svc.Identities.Get(ctx, id.ID)
 		if gerr != nil || cur.Refresh != id.Refresh {
-			return
+			return true
 		}
 		if next != "" && next != string(plain) {
 			cur.Refresh = s.Svc.Sealer.SealFor(refreshBinding(cur.ID), []byte(next))
@@ -138,8 +146,9 @@ func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *Le
 			s.Svc.Log.Error("upstream: could not keep the provider's rotated refresh token", "provider", p.Name,
 				"user", id.UserID, "error", uerr)
 		}
-		return
+		return true
 	}
+	return true
 }
 
 // leaver ends the sessions and refresh grants of a user whose provider no longer accepts their refresh token, and

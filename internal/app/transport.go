@@ -77,7 +77,10 @@ func transportWarnings(c *config.Config) []string {
 		switch {
 		case pc.TLSConfig == nil:
 			out = append(out, "storage.postgres: the connection to "+pc.Host+" is not encrypted (sslmode=verify-full)")
-		case pc.TLSConfig.InsecureSkipVerify || len(pc.Fallbacks) > 0 && pc.Fallbacks[0].TLSConfig == nil:
+		// verify-ca (a chain check, VerifyPeerCertificate) and require with a CA file (which gets one, see sqlstore)
+		// verify the server; require alone does not.
+		case pc.TLSConfig.InsecureSkipVerify && pc.TLSConfig.VerifyPeerCertificate == nil && st.Postgres.CAFile == "" ||
+			len(pc.Fallbacks) > 0 && pc.Fallbacks[0].TLSConfig == nil:
 			out = append(out, "storage.postgres: the server's certificate is not verified, or plain text is allowed "+
 				"(use sslmode=verify-full, with storage.postgres.ca_file or sslrootcert for a private CA)")
 		}

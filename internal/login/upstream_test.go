@@ -544,6 +544,13 @@ func TestConnectNeedsOwnSecondFactor(t *testing.T) {
 	if str(out, "field") != "reauth" {
 		t.Fatalf("refusal: %v", out["_raw"])
 	}
+	// nor does it let that sign-in add another way in that skips the code (a passkey), or replace the code
+	for _, path := range []string{"/api/account/passkeys/register/begin", "/api/account/totp/begin"} {
+		res, out = b.post(path, map[string]any{})
+		if res.StatusCode != 403 || str(out, "field") != "reauth" {
+			t.Fatalf("%s after a trusted provider sign-in: %d %v", path, res.StatusCode, out["_raw"])
+		}
+	}
 	b.markReauth()
 	res, out = b.post("/api/account/providers/"+other.ID+"/connect", nil)
 	wantStatus(t, res, out, 200)

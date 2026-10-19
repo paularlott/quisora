@@ -739,6 +739,9 @@ type LinkToken struct {
 	// UserCreated is the creation time of the user the link was issued for: the link works only for that very
 	// account, not for another one that has (or later gets) the same id.
 	UserCreated time.Time `msgpack:"uc" json:"-"`
+	// IssuedBy is the user who issued an invitation ("" for the system or a command): until it is used, nobody else
+	// below a super admin may replace it (service.mayResetSignIn).
+	IssuedBy string `msgpack:"ib,omitempty" json:"-"`
 }
 
 func (l *LinkToken) Kind() Kind { return KindLink }

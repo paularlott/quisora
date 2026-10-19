@@ -1391,8 +1391,13 @@ func TestInvitePermissions(t *testing.T) {
 		}
 	}
 	ad := w.as("admin")
-	if s := inv(ad, mid); s != 200 {
-		t.Errorf("admin invites manager: %d", s)
+	// the manager holds the super admin's unused invitation: an admin cannot replace it (and accept the new one as
+	// the manager); its issuer can
+	if s := inv(ad, mid); s != 422 {
+		t.Errorf("admin replaces the super admin's pending invitation: %d", s)
+	}
+	if s := inv(su, mid); s != 200 {
+		t.Errorf("super replaces its own invitation: %d", s)
 	}
 	if s := rm(ad, mid); s != 204 {
 		t.Errorf("admin removes manager password: %d", s)

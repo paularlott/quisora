@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/backup"
@@ -397,5 +398,39 @@ func TestBackupAcrossKeyRotation(t *testing.T) {
 	}
 	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2, "correct horse battery"); err != nil {
 		t.Fatalf("new backup with the new key: %v", err)
+	}
+}
+
+// A backup taken during a rotation (the new key active, a secret still sealed with the old one) is verified with the
+// new key but names the old one as needed: a restore without it is refused instead of leaving that secret unopenable.
+func TestBackupNamesTheKeysItsSecretsNeed(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	k1, k2 := secure.RandomBytes(32), secure.RandomBytes(32)
+	old, _ := secure.NewSealer(k1)
+	ring, _ := secure.NewKeyring(k2, k1)
+	only2, _ := secure.NewSealer(k2)
+	src := memstore.New()
+	svc := service.New(cfg, src, ring)
+	super, _, err := svc.Bootstrap(ctx, "root@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := svc.Users.Get(ctx, super.ID)
+	u.TOTPSecret = old.SealFor(service.TOTPBinding(u.ID), []byte("seed"))
+	if err := svc.Users.Update(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := backup.Write(ctx, src, ring, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), ring, ""); err != nil {
+		t.Fatalf("with both keys: %v", err)
+	}
+	if _, err := backup.Restore(ctx, memstore.New(), only2, bytes.NewReader(buf.Bytes()), false, ""); !errors.Is(err, backup.ErrKeyMissing) ||
+		!strings.Contains(err.Error(), secure.KeyID(k1)) {
+		t.Fatalf("without the old key: %v", err)
 	}
 }

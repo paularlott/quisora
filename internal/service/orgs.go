@@ -228,7 +228,7 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if err := s.validOrgSettings(*in.Settings); err != nil {
+		if err := s.validOrgSettings(*in.Settings, nil); err != nil {
 			return nil, err
 		}
 		o.Settings = *in.Settings
@@ -267,7 +267,7 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if err := s.validOrgSettings(*in.Settings); err != nil {
+		if err := s.validOrgSettings(*in.Settings, &o.Settings); err != nil {
 			return nil, err
 		}
 		// The primary organization's sign-in policy is the super admins' own (they are members of it): only they
@@ -334,14 +334,16 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 
 // validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the
 // server's (session.ttl and session.idle are the most an organization may set; 0 keeps the server's).
-func (s *Service) validOrgSettings(st model.OrgSettings) error {
+func (s *Service) validOrgSettings(st model.OrgSettings, old *model.OrgSettings) error {
 	if st.SessionTTL < 0 || st.SessionIdle < 0 {
 		return Invalid("settings", "lifetimes cannot be negative")
 	}
-	if st.SessionTTL > s.Cfg.Session.TTL {
+	// Only a lifetime being changed is held to the server's: one saved before the limit (or before the server's
+	// was lowered) does not block saving other settings; sessions are capped at the server's anyway.
+	if st.SessionTTL > s.Cfg.Session.TTL && (old == nil || st.SessionTTL != old.SessionTTL) {
 		return Invalid("session_ttl", "at most "+itoa(s.Cfg.Session.TTL)+" seconds (the server's session.ttl)")
 	}
-	if s.Cfg.Session.Idle > 0 && st.SessionIdle > s.Cfg.Session.Idle {
+	if s.Cfg.Session.Idle > 0 && st.SessionIdle > s.Cfg.Session.Idle && (old == nil || st.SessionIdle != old.SessionIdle) {
 		return Invalid("session_idle", "at most "+itoa(s.Cfg.Session.Idle)+" seconds (the server's session.idle)")
 	}
 	return nil

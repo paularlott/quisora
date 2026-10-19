@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -334,7 +335,8 @@ type changePasswordReq struct {
 // verifyPassword checks the user's password with lockout accounting; ok=false has already produced the response.
 func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model.User, password, field string) bool {
 	ctx := r.Context()
-	if m.locked(ctx, u.ID) {
+	key := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
+	if m.locked(ctx, key) {
 		m.lockedResponse(w)
 		return false
 	}
@@ -351,7 +353,7 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 		return false
 	}
 	if !ok {
-		if m.fail(ctx, u.ID) {
+		if m.fail(ctx, key) {
 			org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 			m.audit(r, "login.lockout", org, u, u.Username, nil)
 		}
@@ -436,12 +438,25 @@ func (m *Module) reauthed(ctx context.Context, a acct) bool {
 }
 
 // needReauth answers 403 {"field":"reauth"} (the shape the account page turns into its re-authentication dialog)
-// unless the session signed in or re-authenticated within reauthTTL. It reports whether the caller may go on. A
-// fresh sign-in counts, so an account with nothing to re-enter (signed in through a provider only) confirms by
-// signing in again.
+// unless the session re-authenticated within reauthTTL, or signed in within it. It reports whether the caller may go
+// on. Every change behind it adds, replaces or removes a way into the account (or reaches its credentials), so a
+// fresh sign-in counts only when it used the account's own second factor, if it has one (an authenticator code or a
+// passkey): a provider trusted to count as a second factor (TrustMFA) signs in without it, and must not be able to
+// add ways in that skip it as well, or remove it. A re-authentication always asks for that factor. An account with
+// nothing to re-enter (signed in through a provider only) confirms by signing in again.
 func (m *Module) needReauth(w http.ResponseWriter, r *http.Request, a acct) bool {
-	if m.reauthed(r.Context(), a) || time.Since(a.sess.AuthTime) < reauthTTL {
+	ctx := r.Context()
+	if m.reauthed(ctx, a) {
 		return true
+	}
+	if time.Since(a.sess.AuthTime) < reauthTTL {
+		if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
+			return true
+		}
+		pk, err := m.s.Svc.UsablePasskeys(ctx, a.u.ID, "")
+		if err == nil && !a.u.HasTOTP() && pk == 0 {
+			return true
+		}
 	}
 	writeErr(w, http.StatusForbidden, "Confirm it is you with your password or a passkey first.", "reauth")
 	return false
@@ -471,8 +486,9 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		web.WriteError(w, err)
 		return
 	}
+	lockKey := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
 	checkCode := func() bool {
-		if m.locked(ctx, u.ID) {
+		if m.locked(ctx, lockKey) {
 			m.lockedResponse(w)
 			return false
 		}
@@ -482,7 +498,7 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 			return false
 		}
 		if !m.consumeTOTP(ctx, u, string(secret), in.Code) {
-			m.fail(ctx, u.ID)
+			m.fail(ctx, lockKey)
 			writeErr(w, http.StatusUnprocessableEntity, "That code is incorrect or has already been used.", "code")
 			return false
 		}

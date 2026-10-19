@@ -13,7 +13,7 @@ which beats the file. The public URL, for example, is `--public-url`, `QUISORA_P
 - `quisora serve --help` lists every setting with its variable and key; [quisora.toml.example](../quisora.toml.example) is
   an annotated file.
 - `quisora genkey` prints a key for `server.master_key`, `cluster.key` and `storage.badgerdb.encryption_key`.
-- Secrets (the master key and previous master keys, `cluster.key`, database DSNs and passwords, the SMTP password,
+- Secrets (the master key and previous master keys, `cluster.key` and `cluster.previous_keys`, database DSNs and passwords, the SMTP password,
   `storage.badgerdb.encryption_key`, `server.restore_password`, a VictoriaLogs URL with credentials) belong in the config
   file or the environment. Given as flags they are accepted, but anyone on the machine can read them in the process
   list (`ps`), so every command prints a warning naming the variable and key to use instead. (The Taskfile's
@@ -72,21 +72,32 @@ latest token can turn it off ("Rotate refresh tokens"). Public clients always ro
 
 **Introspection** answers `active` for an access token only to a client the token was issued for (its audience).
 A resource server that serves several applications of the organization needs "May introspect every token of the
-organization" on its client.
+organization" on its client; so does one that applications name as a resource (RFC 8707), since a resource is in a
+token's audience as its URI, not as a client.
 
 **`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
 and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a
-condition of the sign-in. An `acr` claim requested as essential with no value Quisora knows fails with
-`unmet_authentication_requirements`.
+condition of the sign-in. An `acr` claim requested as essential with values none of which Quisora knows fails with
+`unmet_authentication_requirements`; requested as essential without values, it is simply returned.
 
 **Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks
-with its "Confirm it is you" dialog), and an API token can never make them:
+with its "Confirm it is you" dialog), and an API token can never make them, through the management API or SCIM:
 
 - deleting an organization;
 - rotating the signing keys;
 - changing the primary organization's sign-in settings;
 - making someone an administrator or super admin, or creating one;
-- removing another user's password.
+- removing another user's password;
+- issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
+
+Resetting the sign-in of an established manager or administrator (an invitation, removing their password, lowering
+their role, or changing their primary email address, where password resets go) is a super admin's change. A manager
+or administrator who has not signed in yet gets the next invitation only from whoever issued the current one, or from
+a super admin.
+
+**Account changes** (a passkey, the authenticator app, the primary address, connecting a sign-in provider, an API
+token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
+sign-in through a provider trusted as a second factor does not count when the account has one of its own.
 
 **Personal API tokens** last at most `tokens.api_token_max_days` (365 by default); with 0, a token may be made that
 never expires. A lifetime given explicitly is at most 10 years.
@@ -112,8 +123,9 @@ kill -HUP <pid>                          # systemd: systemctl reload quisora (Ex
 docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kill -HUP 1, once the mounted file has changed
 ```
 
-- SIGHUP reloads only these two settings, read from the config file and the `QUISORA_*` environment variables as at
-  start-up. Nothing else is reloaded.
+- SIGHUP reloads only these two settings (and, on a gossip cluster, `cluster.key` and `cluster.previous_keys`: see
+  [rotating the cluster key](#rotating-the-cluster-key)), read from the config file and the `QUISORA_*` environment
+  variables as at start-up. Nothing else is reloaded.
 - Keys given on the command line (`--master-key`) cannot change while the server runs, so a reload refuses with an
   error: put them in the config file. Keys from environment variables cannot change either, since a running
   process keeps its environment; use the config file, or restart.
@@ -310,7 +322,7 @@ key = "…"                 # quisora genkey, identical on every node
 - **Each node keeps its id** in its data directory (or set `cluster.node_id`). Keep the data directory with the
   database. A node that finds another node's database, or one shared with another node, refuses to serve. It never
   wipes it.
-- **Clocks** must be synchronised (NTP).
+- **Clocks** must be synchronised (NTP). Gossip refuses packets more than two minutes off the receiver's clock.
 
 New cluster:
 
@@ -330,6 +342,35 @@ days, or whose data is of unknown age, stops or refuses to start, and keeps its 
   it (one start only, audited), then start the others with empty databases.
 
 Every procedure and what each refusal means: [REPLICATION.md](REPLICATION.md#operator-procedures).
+
+### Rotating the cluster key
+
+`cluster.key` encrypts and authenticates gossip between the nodes. Each node derives a fresh traffic key from it every
+hour, so it does not wear out; rotate it on a schedule, and at once if it may have been exposed (anyone holding it on
+the network path can read and inject gossip). The cluster keeps running throughout.
+
+Three rounds, each on every node before the next round starts. Each round edits the node's config file and then
+reloads it with SIGHUP (as for the [master key](#changing-the-keys-reload-or-restart)) or restarts the node:
+
+1. `quisora genkey`, then on every node: `key = "<old>"`, `previous_keys = ["<new>"]`. Every node now also reads
+   gossip encrypted with the new key.
+2. Every node: `key = "<new>"`, `previous_keys = ["<old>"]`. Each node now encrypts with the new key; the others read
+   it, and it still reads those that have not switched yet.
+3. Every node: `key = "<new>"`, remove `previous_keys`.
+
+```toml
+[cluster]
+key = "<new>"
+previous_keys = ["<old>"]     # rounds 1 and 2 only
+```
+
+- The log says `cluster keys reloaded` (with the key ids: 8 characters derived from each key, revealing nothing) or
+  `cluster keys not reloaded` with the reason. The cluster page (and `GET /api/v1/cluster`) lists each node's key ids
+  under `cluster_keys`, the one that encrypts first.
+- A reload is refused when the new keys do not include the key in use: a typo cannot cut a node off. Keys given on the
+  command line cannot be reloaded.
+- A node started (or restarted) during a rotation must be given that round's keys; one that misses a round cannot
+  talk to the others until it is given them, and comes back by itself once it is.
 
 ## Audit log
 

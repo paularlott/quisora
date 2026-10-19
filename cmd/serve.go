@@ -44,8 +44,8 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if err != nil {
 				return err
 			}
-			// SIGHUP reloads the master keys (a master key rotation without restarts; docs/RUNNING.md). Nothing else is
-			// reloaded.
+			// SIGHUP reloads the master keys and, when clustering, the cluster keys (rotations without restarts;
+			// docs/RUNNING.md). Nothing else is reloaded.
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
 			defer signal.Stop(hup)
@@ -57,6 +57,9 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 					return nil
 				case <-hup:
 					reloadMasterKeys(ctx, c, a, log)
+					if cfg.Cluster.Bind != "" {
+						reloadClusterKeys(c, a, log)
+					}
 				}
 			}
 		},
@@ -81,6 +84,34 @@ func reloadMasterKeys(ctx context.Context, c *cli.Command, a *app.App, log logpk
 	}
 	if err != nil {
 		log.Error("master keys not reloaded", "error", err)
+	}
+}
+
+// reloadClusterKeys reads cluster.key and cluster.previous_keys again (config file and environment) and switches
+// gossip to them (cluster.Node.SetClusterKeys); any problem is logged, and the keys in use stay.
+func reloadClusterKeys(c *cli.Command, a *app.App, log logpkg.Logger) {
+	if onCommandLine(os.Args[1:], "cluster-key", "cluster-previous-keys") {
+		log.Error("cluster keys not reloaded: they were given on the command line, which cannot change while the " +
+			"server runs; put them in the config file to rotate without restarting")
+		return
+	}
+	file := ""
+	if c.ConfigFile != nil {
+		file = c.ConfigFile.FileUsed()
+	}
+	key, previous, err := config.LoadClusterKeys(file)
+	changed := false
+	if err == nil {
+		changed, err = a.Node.SetClusterKeys(key, previous)
+	}
+	switch {
+	case err != nil:
+		log.Error("cluster keys not reloaded", "error", err)
+	case changed:
+		ids := a.Node.ClusterKeyIDs()
+		log.Info("cluster keys reloaded", "key", ids[0], "previous", ids[1:])
+	default:
+		log.Info("cluster keys reloaded: no change")
 	}
 }
 

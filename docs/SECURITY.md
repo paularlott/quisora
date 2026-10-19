@@ -72,8 +72,9 @@ the master key.
 **A backup or the database leaked.** Passwords are argon2id hashes and secrets are sealed: without the master key they
 are of no use. Rotate the master key anyway, and reset passwords if you cannot rule out offline guessing of weak ones.
 
-**`cluster.key` leaked.** Anyone on the network path can read and inject gossip. Change it on every node with the
-cluster stopped, and check who could reach the gossip port.
+**`cluster.key` leaked.** Anyone on the network path can read and inject gossip. Rotate it on every node while the
+cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and
+check who could reach the gossip port.
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
 `oauth.client_auth.limited`; any `oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the

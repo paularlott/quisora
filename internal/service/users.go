@@ -476,6 +476,13 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 			return nil, Invalid("password", "change your own password from your account page")
 		}
 	}
+	if !self && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
+		// Password resets go to the primary address: whoever sets a manager's or administrator's could reset their
+		// password, so for an established privileged account that is a sign-in reset (super admins only).
+		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+			return nil, err
+		}
+	}
 	if self && a != System && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
 		// The primary address is what password sign-in, resets and every application's email claim use: someone
 		// else sets it (a manager or administrator, or SCIM), whatever the user's own role; the user can only make one
@@ -667,11 +674,16 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
 	// last-admin check applied) is refused, instead of deleting an administrator unchecked. What belonged to them
 	// follows.
-	if err := s.Users.DeleteIf(Durable(ctx), u.ID, u.Version); err != nil {
+	if err := s.Users.DeleteIf(Durable(ctx), u.ID, u.Version); !store.Applied(err) {
+		// Refused (a newer copy), or not confirmed by a majority: the user may still exist, so nothing of theirs is
+		// removed; a retry decides.
 		return mapStore(err)
 	}
+	// The user is gone: what belonged to them goes too. That is best effort (a session or token of a deleted user
+	// works nowhere, as every use looks the user up), so a failure here is logged and does not undo or hide the
+	// deletion, which is audited either way.
 	if err := s.deleteUserData(Durable(ctx), u); err != nil {
-		return err
+		s.Log.Error("user deleted; some of their records were not removed", "user", u.ID, "error", err)
 	}
 	s.Audit(ctx, a, u.OrgID, "user.delete", u.Username, nil)
 	return nil

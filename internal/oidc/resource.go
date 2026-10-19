@@ -263,8 +263,9 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	if err != nil {
 		return inactive
 	}
-	// Active for the client the token was issued to (or a resource it names: then that resource's own client is in
-	// aud too), or for a client allowed to introspect every token of its organization (introspect_org).
+	// Active for the client the token was issued to (its id is in aud), or for a client allowed to introspect every
+	// token of its organization (introspect_org). The RFC 8707 resources a token names are in aud as URIs, not client
+	// ids: a resource server that introspects tokens issued to other clients needs introspect_org.
 	if !slices.Contains(cl.Aud, caller.ID) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
 		return inactive
 	}

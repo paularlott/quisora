@@ -289,6 +289,16 @@ func (s *Sealer) OpenFor(binding, sealed string) ([]byte, error) {
 	return s.openAny(raw, []byte(binding))
 }
 
+// SealedKeyID is the id of the key a SealFor value names; legacy is true for a value from before values named their
+// key (any key of the ring that sealed it may be the one). Both are zero for the empty value.
+func SealedKeyID(sealed string) (kid string, legacy bool) {
+	if rest, ok := strings.CutPrefix(sealed, "v3:"); ok {
+		kid, _, _ = strings.Cut(rest, ":")
+		return kid, false
+	}
+	return "", sealed != ""
+}
+
 // Stale reports whether a value produced by SealFor is not sealed with the active key (an older key, or a format
 // that names none): Reseal brings it up to date.
 func (s *Sealer) Stale(sealed string) bool {

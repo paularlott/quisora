@@ -185,9 +185,12 @@ func TestPatchSemantics(t *testing.T) {
 	if r.Status != 200 || r.str(quisoraURN, "role") != "manager" {
 		t.Errorf("role patch: %d %s", r.Status, r.Raw)
 	}
-	r = e.patch(id, op("replace", "", map[string]any{quisoraURN: map[string]any{"role": "admin"}}))
-	if r.Status != 200 || r.str(quisoraURN, "role") != "admin" {
+	r = e.patch(id, op("replace", "", map[string]any{quisoraURN: map[string]any{"role": "manager", "tags": []string{"x"}}}))
+	if r.Status != 200 || r.str(quisoraURN, "role") != "manager" {
 		t.Errorf("role via ext object: %d %s", r.Status, r.Raw)
+	}
+	if r := e.patch(id, op("replace", "", map[string]any{quisoraURN: map[string]any{"role": "admin"}})); r.Status != 403 {
+		t.Errorf("an administrator role through SCIM: %d %s", r.Status, r.Raw)
 	}
 	// Rename into an existing userName.
 	e.mk("other-pat", nil)

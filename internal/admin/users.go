@@ -335,6 +335,11 @@ func (m *Module) inviteUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, service.Invalid("email", "this user has no email address"))
 		return
 	}
+	// An accepted invitation replaces every way its user signs in: for a manager or administrator it takes the same
+	// re-authentication as removing their password (an API token cannot issue one).
+	if u.Role.Rank() >= model.RoleManager.Rank() && u.ID != a.UserID && !m.stepUp(w, r) {
+		return
+	}
 	res, err := m.issueInvite(r, org, a, u, in.Email)
 	if err != nil {
 		web.WriteError(w, err)

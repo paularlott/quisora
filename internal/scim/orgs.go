@@ -165,6 +165,11 @@ func (rq *request) organizations(segs []string) {
 		})
 	case http.MethodDelete:
 		cascade := strings.EqualFold(rq.r.URL.Query().Get("cascade"), "true")
+		if rq.actor.IsSuper() {
+			// what the management API asks a super admin's re-authentication for (others cannot delete one anyway)
+			writeError(rq.w, errNeedsSession("deleting an organization"))
+			return
+		}
 		err := rq.retry(id, func() error {
 			o, err := rq.m.srv.Svc.GetOrg(rq.ctx, rq.actor, id)
 			if err != nil {
@@ -232,6 +237,9 @@ func (rq *request) updateOrg(id string, mutate func(cur map[string]any) (map[str
 		}
 		if in.Settings != nil && *in.Settings == o.Settings {
 			in.Settings = nil
+		}
+		if in.Settings != nil && o.Primary && rq.actor.IsSuper() {
+			return errNeedsSession("changing the primary organization's sign-in settings")
 		}
 		result = o
 		if in.Name == nil && in.DisplayName == nil && in.Settings == nil {

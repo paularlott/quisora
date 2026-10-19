@@ -81,12 +81,12 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		_ = inner.Close()
 		return nil, err
 	}
-	if !c.Replicate() && c.SharedStorage() {
-		// Nodes sharing a database must share the master key too, or each seals secrets the others cannot open.
-		if err := checkSharedKey(ctx, inner, sealer, log); err != nil {
-			_ = inner.Close()
-			return nil, err
-		}
+	// The store must have been sealed with this master key (or a previous one of its ring): nodes sharing a database
+	// must share the key, and a node's own store (standalone, or each node of a gossip cluster) refuses a key it was
+	// not sealed with, instead of serving with every sealed secret unopenable.
+	if err := checkSharedKey(ctx, inner, sealer, log, !c.Replicate() && c.SharedStorage()); err != nil {
+		_ = inner.Close()
+		return nil, err
 	}
 	node, err := cluster.New(c, inner, cluster.Options{Log: log})
 	if err != nil {
@@ -182,10 +182,11 @@ func (a *App) auditForcedStart(ctx context.Context) {
 // sharedKeyCheckID names the record in a shared database that holds a check value of the master key.
 const sharedKeyCheckID = "master-key-check"
 
-// checkSharedKey refuses to serve from a shared database whose nodes use different master keys: the first node to
-// start leaves a check value of its key in the database (never the key), and a node with another key stops with an
-// error instead of sealing secrets the others cannot open (and failing to open theirs).
-func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, log logger.Logger) error {
+// checkSharedKey refuses to serve from a store sealed with another master key: the first start leaves a check value
+// of its key in the store (never the key; node-local short-lived state, so with gossip every node keeps its own), and
+// a node with another key stops with an error instead of sealing secrets the others cannot open (and failing to open
+// theirs, or its own store's). shared says the store is a database other nodes share.
+func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, log logger.Logger, shared bool) error {
 	var checks [][]byte // one per key of the ring, the active one first
 	for _, m := range sealer.MACs("quisora shared master key check") {
 		checks = append(checks, []byte(base64.RawURLEncoding.EncodeToString(m[:12])))
@@ -198,16 +199,20 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 			!errors.Is(err, store.ErrStale) {
 			return fmt.Errorf("master key check: %w", err)
 		}
-		return checkSharedKey(ctx, st, sealer, logger.NewNullLogger()) // created here or concurrently elsewhere
+		return checkSharedKey(ctx, st, sealer, logger.NewNullLogger(), shared) // created here or concurrently elsewhere
 	case err != nil:
 		return fmt.Errorf("master key check: %w", err)
 	}
 	i := slices.IndexFunc(checks, func(c []byte) bool { return string(c) == string(e.Value) })
 	switch {
-	case i < 0:
+	case i < 0 && shared:
 		return errors.New("this node's master key differs from the one the other nodes of this shared database use: " +
 			"set server.master_key to the same value on every node (and, during a rotation, the same " +
 			"server.previous_master_keys)")
+	case i < 0:
+		return errors.New("server.master_key is not the key this node's data was sealed with: give it that key (a " +
+			"server that used a generated data_dir/master.key: that file's content). To change keys, rotate: the old " +
+			"one in server.previous_master_keys (docs/RUNNING.md)")
 	case i > 0:
 		// A rotation: the database names a previous key of this node's ring. From here on it names the new one, so a
 		// node that is still given only the old key refuses to start instead of sealing with it.
@@ -215,7 +220,7 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 		if err := t.Update(ctx, e); err != nil && !errors.Is(err, store.ErrStale) {
 			return fmt.Errorf("master key check: %w", err)
 		}
-		log.Info("master key rotation: this shared database now expects the new master key", "key", sealer.ActiveKeyID())
+		log.Info("master key rotation: this store now expects the new master key", "key", sealer.ActiveKeyID())
 	}
 	return nil
 }

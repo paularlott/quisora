@@ -69,6 +69,7 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 # size = 3                                # required with bind: the number of nodes, identical on every node; the
 #                                         # quorum is size/2+1 and never shrinks (scaling: docs/REPLICATION.md)
 # key = ""                                # `quisora genkey`; identical on every node
+# previous_keys = []                      # during a cluster key rotation only (docs/RUNNING.md#rotating-the-cluster-key)
 # minority_grace = 300                    # seconds a node cut off from the majority keeps answering the token,
 #                                         # userinfo and introspection endpoints (requests that need no write)
 # strict_durability = false               # true: a durable write of a kind that is not quorum-committed fails when a

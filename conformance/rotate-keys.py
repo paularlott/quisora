@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """rotate-keys.py <config.json> <plan[variants]>: runs oidcc-server-rotate-keys, which compares the JWKS before and
 after a key rotation that the tester triggers between the module's setup and its start (run-test-plan.py starts
-modules at once, so it cannot). This creates the module, rotates Quisora's signing key through the management API with
-the token seed wrote to .run/admin-token, then starts the module and prints its result."""
-import asyncio, json, os, ssl, sys, urllib.request
+modules at once, so it cannot). This creates the module, rotates Quisora's signing key through the management API,
+then starts the module and prints its result. Rotating keys takes a recently re-authenticated admin console session
+(a token cannot), so it signs in as the super admin seed set up (.run/admin-login.json: password, then TOTP code)."""
+import asyncio, base64, hashlib, hmac, http.cookiejar, json, os, re, ssl, struct, sys, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".run", "suite", "scripts"))
@@ -12,14 +13,36 @@ from conformance import Conformance  # noqa: E402
 NODE = "https://127.0.0.1:8090"
 
 
+def totp(secret):
+    key = base64.b32decode(secret.upper() + "=" * (-len(secret) % 8))
+    mac = hmac.new(key, struct.pack(">Q", int(time.time()) // 30), hashlib.sha1).digest()
+    o = mac[-1] & 0x0F
+    return "%06d" % ((struct.unpack(">I", mac[o:o + 4])[0] & 0x7FFFFFFF) % 1000000)
+
+
 def rotate():
-    token = open(os.path.join(HERE, ".run", "admin-token")).read().strip()
+    login = json.load(open(os.path.join(HERE, ".run", "admin-login.json")))
     ctx = ssl.create_default_context()
     ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE  # the node's self-signed certificate
-    req = urllib.request.Request(NODE + "/api/v1/keys/rotate", method="POST",
-                                 headers={"Authorization": "Bearer " + token, "Api-Version": "1"})
-    with urllib.request.urlopen(req, context=ctx) as r:
-        print("rotated:", r.status, r.read().decode())
+    web = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+                                      urllib.request.HTTPSHandler(context=ctx))
+
+    def csrf(path):
+        page = web.open(NODE + path).read().decode()
+        return re.search(r'<meta name="csrf-token" content="([^"]*)"', page).group(1)
+
+    def post(path, body, token, extra=None):
+        h = {"Content-Type": "application/json", "Accept": "application/json", "X-CSRF-Token": token}
+        h.update(extra or {})
+        with web.open(urllib.request.Request(NODE + path, data=json.dumps(body).encode(), method="POST", headers=h)) as r:
+            return r.status, r.read().decode()
+
+    tok = csrf("/login/primary")
+    _, out = post("/api/login/password", {"org": "primary", "email": login["email"], "password": login["password"]}, tok)
+    ticket = json.loads(out)["ticket"]
+    post("/api/login/totp", {"ticket": ticket, "code": totp(login["totp_secret"])}, tok)
+    status, out = post("/api/v1/keys/rotate", {}, csrf("/account"), {"Api-Version": "1"})
+    print("rotated:", status, out)
 
 
 async def main(config_file, plan):

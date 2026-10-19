@@ -123,6 +123,10 @@ func TestACRValues(t *testing.T) {
 	if u.Query().Get("error") != "unmet_authentication_requirements" || u.Query().Get("code") != "" {
 		t.Fatalf("essential unknown acr: %s", u)
 	}
+	// essential without values only asks that an acr be returned (OIDC Core 5.5.1.1): it always is
+	if u := h.authorize(weak, authzQuery(cl, ch, url.Values{"claims": {`{"id_token":{"acr":{"essential":true}}}`}})); u.Query().Get("code") == "" {
+		t.Fatalf("essential acr without values refused: %s", u)
+	}
 	// not essential: ignored
 	if u := h.authorize(weak, authzQuery(cl, ch, url.Values{"claims": {`{"id_token":{"acr":{"values":["urn:other:loa:3"]}}}`}})); u.Query().Get("code") == "" {
 		t.Fatalf("voluntary unknown acr refused: %s", u)

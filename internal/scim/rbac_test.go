@@ -63,14 +63,15 @@ func TestSCIMRBAC(t *testing.T) {
 		t.Errorf("manager deletes plain: %d", r.Status)
 	}
 
-	// Admin token: full control of its org, including managers and admins (not super admins).
-	for _, role := range []string{"manager", "admin"} {
-		if r := e.createUser("acme", e.admA, map[string]any{"userName": "by-adm-" + role, quisoraURN: map[string]any{"role": role}}); r.Status != 201 {
-			t.Errorf("admin creates %s: %d %s", role, r.Status, r.Raw)
-		}
+	// Admin token: full control of its org's users and managers; administrator roles are granted in the admin
+	// console after a re-authentication, never with a token.
+	if r := e.createUser("acme", e.admA, map[string]any{"userName": "by-adm-manager", quisoraURN: map[string]any{"role": "manager"}}); r.Status != 201 {
+		t.Errorf("admin creates manager: %d %s", r.Status, r.Raw)
 	}
-	if r := e.createUser("acme", e.admA, map[string]any{"userName": "by-adm-super", quisoraURN: map[string]any{"role": "super_admin"}}); r.Status != 403 {
-		t.Errorf("admin creates super: %d", r.Status)
+	for _, role := range []string{"admin", "super_admin"} {
+		if r := e.createUser("acme", e.admA, map[string]any{"userName": "by-adm-" + role, quisoraURN: map[string]any{"role": role}}); r.Status != 403 {
+			t.Errorf("admin creates %s: %d", role, r.Status)
+		}
 	}
 	super2 := e.mkUser(e.primary(), "super2", model.RoleSuperAdmin)
 	// Another org, even when naming a real id: not found. Same answer as for an org that does not exist.
@@ -238,35 +239,18 @@ func TestOrganizationsResource(t *testing.T) {
 	if r := e.do("GET", "/scim/v2/initech-2/Users", e.super, nil); r.Status != 200 {
 		t.Errorf("renamed org endpoint: %d", r.Status)
 	}
-	// Delete: non-empty needs cascade, primary never.
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgA.ID, e.super, nil); r.Status != 409 {
-		t.Errorf("delete non-empty: %d %s", r.Status, r.Raw)
+	// Deleting an organization takes a super admin's re-authentication in the admin console, as in the management
+	// API: a token cannot, empty or not, cascading or not (deletion itself is tested in the service).
+	for _, q := range []string{"", "?cascade=true"} {
+		if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgA.ID+q, e.super, nil); r.Status != 403 {
+			t.Errorf("delete%s: %d %s", q, r.Status, r.Raw)
+		}
 	}
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgA.ID+"?cascade=false", e.super, nil); r.Status != 409 {
-		t.Errorf("cascade=false: %d", r.Status)
-	}
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+e.primary().ID+"?cascade=true", e.super, nil); r.Status != 409 {
-		t.Errorf("delete primary: %d %s", r.Status, r.Raw)
-	}
-	gid := e.group("doomed-group", e.users["adm-a"].ID)
-	tn, err := e.Svc.DefaultTenant(e.ctx, e.orgA.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgA.ID+"?cascade=true", e.super, nil); r.Status != 204 {
-		t.Errorf("cascade delete: %d %s", r.Status, r.Raw)
-	}
-	if _, err := e.Svc.Groups.Get(e.ctx, gid); err == nil {
-		t.Error("group survived cascade")
-	}
-	if _, err := e.Svc.Tenants.Get(e.ctx, tn.ID); err == nil {
-		t.Error("tenant survived cascade")
-	}
-	if r := e.do("GET", "/scim/v2/acme/Users", e.admA, nil); r.Status != 401 { // the token's owner is gone
-		t.Errorf("deleted org's token: %d", r.Status)
-	}
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+id, e.super, nil); r.Status != 204 { // empty: no cascade needed
+	if r := e.do("DELETE", "/scim/v2/Organizations/"+id, e.super, nil); r.Status != 403 {
 		t.Errorf("delete empty: %d", r.Status)
+	}
+	if _, err := e.Svc.Orgs.Get(e.ctx, e.orgA.ID); err != nil {
+		t.Errorf("organization deleted through SCIM: %v", err)
 	}
 	if r := e.do("PUT", "/scim/v2/Organizations", e.super, nil); r.Status != 405 {
 		t.Errorf("PUT collection: %d", r.Status)

@@ -1263,6 +1263,9 @@ export default function (Alpine) {
           refused: st.refused || 0,
           skewText: `${st.clock_skewed || 0} received, ${st.skew_refused || 0} not followed`,
           forced: st.forced_start || '',
+          // gossip keys: the one that encrypts, then those still read during a cluster key rotation
+          keysText: (st.cluster_keys || []).length === 0 ? '—'
+            : st.cluster_keys[0] + (st.cluster_keys.length > 1 ? ` (still reads ${st.cluster_keys.slice(1).join(', ')})` : ''),
         }
         this.updated = new Date()
         this.loadError = ''

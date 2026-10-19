@@ -437,17 +437,32 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			}
 			return nil, invalid
 		}
-		g.Counter++
-		if err := p.svc.Grants.Update(ctx, g); err != nil {
-			if errors.Is(err, store.ErrStale) { // lost a race with another presentation of the same token
-				if fresh, ferr := p.svc.Grants.Get(ctx, g.ID); ferr == nil && fresh.Counter > pr.counter {
-					p.revokeGrant(ctx, g.ID)
-					p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID)
-					p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once")
-				}
+		for attempt := 1; ; attempt++ {
+			g.Counter++
+			err := p.svc.Grants.Update(ctx, g)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, store.ErrStale) {
+				return nil, serverError(err)
+			}
+			// The grant changed since it was read. A higher counter is another presentation of the same token (kept
+			// by someone else): the family ends. The same counter is another change (a re-seal during a master key
+			// rotation, say): the refresh goes ahead on the new copy.
+			fresh, ferr := p.svc.Grants.Get(ctx, g.ID)
+			if ferr != nil || fresh.Revoked {
 				return nil, invalid
 			}
-			return nil, serverError(err)
+			if fresh.Counter > pr.counter {
+				p.revokeGrant(ctx, g.ID)
+				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID)
+				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once")
+				return nil, invalid
+			}
+			if attempt == 3 {
+				return nil, invalid
+			}
+			g = fresh
 		}
 		if newRefresh, err = p.counterToken(g); err != nil {
 			return nil, serverError(err)

@@ -32,10 +32,20 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 		return fmt.Errorf("the new keys do not include the key in use (%s); during a rotation it stays in "+
 			"server.previous_master_keys until the rotation is complete", cur.ActiveKeyID())
 	}
-	if !c.Replicate() && c.SharedStorage() {
-		if err := checkSharedKey(ctx, a.Store, next, a.Log); err != nil {
-			return err
+	// Dropping a key while anything stored is still sealed with it (or bound to it) would leave that unopenable.
+	if dropped := slices.DeleteFunc(cur.KeyIDs(), func(id string) bool { return slices.Contains(next.KeyIDs(), id) }); len(dropped) > 0 {
+		st, err := a.Svc.RotationStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("checking what still needs %v: %w", dropped, err)
 		}
+		if st.Stale > 0 || st.LegacyGrants > 0 {
+			return fmt.Errorf("%d secrets and %d refresh grants still need %v (state %s): keep it in "+
+				"server.previous_master_keys until GET /api/v1/master-key says complete", st.Stale, st.LegacyGrants,
+				dropped, st.State)
+		}
+	}
+	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {
+		return err
 	}
 	cur.Replace(next)
 	a.Log.Info("master keys reloaded", "key", cur.ActiveKeyID(), "previous", cur.KeyIDs()[1:])

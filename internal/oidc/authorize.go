@@ -361,7 +361,9 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.ClaimsUI, f.ClaimsID = cp.UserInfo, cp.IDToken
-	if cp.ACREssential && !knowsACR(cp.ACR) {
+	// Essential with values: one of them must be met. Essential without values only asks that an acr be returned
+	// (OIDC Core 5.5.1.1), which it always is.
+	if cp.ACREssential && len(cp.ACR) > 0 && !knowsACR(cp.ACR) {
 		fail("unmet_authentication_requirements", "none of the essential acr values can be satisfied (supported: "+
 			acrBasic+", "+acrMFA+")")
 		return

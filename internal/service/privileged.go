@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -56,6 +57,27 @@ func (s *Service) mayResetSignIn(ctx context.Context, a *Actor, u *model.User, f
 	}
 	if est {
 		return Invalid(field, msgPrivilegedReset)
+	}
+	return nil
+}
+
+// mayReplaceInvite refuses a (not a super admin) issuing an invitation for a privileged account that is not set up yet
+// but holds a live invitation from someone else: the new one would revoke it, and its issuer could accept it as the
+// user. The issuer (or a super admin) issues the next one.
+func (s *Service) mayReplaceInvite(ctx context.Context, a *Actor, u *model.User) error {
+	if a == System || a.IsSuper() || !privileged(u) {
+		return nil
+	}
+	links, _, err := s.Links.List(ctx, store.ListQuery{Scope: u.ID, Filters: []store.Filter{{Field: "purpose", Value: LinkInvite}}})
+	if err != nil {
+		return mapStore(err)
+	}
+	now := time.Now()
+	for _, l := range links {
+		if !l.Used && now.Before(l.Expires) && l.IssuedBy != a.UserID {
+			return Invalid("user", "this account has an invitation from someone else that has not been used yet: "+
+				"only they or a super admin can issue a new one")
+		}
 	}
 	return nil
 }

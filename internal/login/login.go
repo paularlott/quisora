@@ -491,7 +491,9 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		noteSession(ctx, sess)
 	}
 	m.s.Svc.TouchLogin(ctx, u)
-	m.clearLocks(ctx, u.ID)
+	// Only the counter this browser charges (lockKeyFor): the owner signing in from a known browser must not reset
+	// the account-wide one, which only strangers' browsers charge (a reset or an accepted invitation clears both).
+	m.clearLock(ctx, m.lockKeyFor(r, u, u.ID))
 	m.rememberDevice(w, r, u)
 	if m.s.Cfg.Audit.Logins {
 		m.audit(r, "login.success", org, u, u.Username, map[string]string{"amr": strings.Join(amr, " ")})

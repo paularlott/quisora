@@ -34,6 +34,11 @@ func linkID(token string) string {
 // IssueLink creates a single-use link token for u. Issuing an invitation or reset revokes the user's earlier
 // unused links of the same purpose, so only the newest one works.
 func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration) (string, *model.LinkToken, error) {
+	return s.issueLink(ctx, u, purpose, email, ttl, "")
+}
+
+// issueLink is IssueLink recording who issued it (an invitation's issuer: see mayResetSignIn).
+func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string) (string, *model.LinkToken, error) {
 	if purpose == LinkInvite || purpose == LinkReset {
 		old, _, err := s.Links.List(ctx, store.ListQuery{Scope: u.ID, Filters: []store.Filter{{Field: "purpose", Value: purpose}}})
 		if err != nil {
@@ -45,7 +50,7 @@ func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email s
 	}
 	token := secure.RandomToken(32)
 	l := &model.LinkToken{Meta: model.Meta{ID: linkID(token)}, UserID: u.ID, OrgID: u.OrgID, Purpose: purpose,
-		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created}
+		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created, IssuedBy: by}
 	if err := s.Links.Create(Durable(ctx), l); err != nil {
 		return "", nil, mapStore(err)
 	}
@@ -122,10 +127,17 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	if err := s.mayResetSignIn(ctx, a, u, "user"); err != nil {
 		return "", time.Time{}, err
 	}
+	if err := s.mayReplaceInvite(ctx, a, u); err != nil {
+		return "", time.Time{}, err
+	}
 	if !u.Enabled(time.Now()) {
 		return "", time.Time{}, Invalid("active", "the account is disabled")
 	}
-	token, l, err := s.IssueLink(ctx, u, LinkInvite, "", InviteTTL)
+	by := ""
+	if a != System {
+		by = a.UserID
+	}
+	token, l, err := s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by)
 	if err != nil {
 		return "", time.Time{}, err
 	}

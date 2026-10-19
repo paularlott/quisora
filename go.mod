@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/paularlott/cli v0.10.1
-	github.com/paularlott/gossip v0.25.1
+	github.com/paularlott/gossip v0.26.0
 	github.com/paularlott/logger v0.3.0
 	github.com/shamaton/msgpack/v3 v3.2.4
 	github.com/valkey-io/valkey-go v1.0.79

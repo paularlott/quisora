@@ -30,6 +30,17 @@ const (
 type deviceEntry struct {
 	userID, orgID string
 	login         string // loginTag of the email the account signs in with ("" when it has none)
+	epoch         string // credentialEpoch of the account when the entry was issued
+}
+
+// credentialEpoch changes whenever the account's password is set, changed or removed (a reset, an accepted
+// invitation): a device cookie issued before no longer counts, so a browser that once signed in with a stolen
+// password does not keep its own budget and lockout counter after the owner takes the account back.
+func credentialEpoch(u *model.User) string {
+	if u.PasswordChangedAt == nil {
+		return "0"
+	}
+	return strconv.FormatInt(u.PasswordChangedAt.UnixMicro(), 36)
 }
 
 // known says which device cookie entry lets a sign-in request through on its own budget: the user when the step
@@ -63,8 +74,8 @@ func (m *Module) loginTag(orgID, login string) string {
 	return base64.RawURLEncoding.EncodeToString(m.s.Svc.Sealer.MAC("login device email", orgID, login)[:12])
 }
 
-func (m *Module) deviceMAC(userID, orgID, login, issued string) string {
-	return base64.RawURLEncoding.EncodeToString(m.s.Svc.Sealer.MAC("login device", userID, orgID, login, issued)[:16])
+func (m *Module) deviceMAC(userID, orgID, login, issued, epoch string) string {
+	return base64.RawURLEncoding.EncodeToString(m.s.Svc.Sealer.MAC("login device", userID, orgID, login, issued, epoch)[:16])
 }
 
 // devices returns the browser's valid device cookie entries, newest first, with their raw form.
@@ -76,27 +87,32 @@ func (m *Module) devices(r *http.Request) (entries []deviceEntry, raw []string) 
 	now := time.Now()
 	for _, s := range strings.Split(c.Value, "~") {
 		p := strings.Split(s, ".")
-		if len(p) != 5 || len(entries) == deviceMaxEntries {
+		if len(p) != 6 || len(entries) == deviceMaxEntries {
 			continue
 		}
 		issued, err := strconv.ParseInt(p[3], 36, 64)
 		if err != nil || now.Sub(time.Unix(issued, 0)) > deviceTTL || time.Unix(issued, 0).After(now.Add(time.Minute)) {
 			continue
 		}
-		if subtle.ConstantTimeCompare([]byte(p[4]), []byte(m.deviceMAC(p[0], p[1], p[2], p[3]))) != 1 {
+		if subtle.ConstantTimeCompare([]byte(p[5]), []byte(m.deviceMAC(p[0], p[1], p[2], p[3], p[4]))) != 1 {
 			continue
 		}
-		entries = append(entries, deviceEntry{userID: p[0], orgID: p[1], login: p[2]})
+		entries = append(entries, deviceEntry{userID: p[0], orgID: p[1], login: p[2], epoch: p[4]})
 		raw = append(raw, s)
 	}
 	return entries, raw
 }
 
-// knownDevice returns the user id of the browser's device cookie entry that k accepts.
+// knownDevice returns the user id of the browser's device cookie entry that k accepts, while the account is enabled
+// and its password has not changed since the entry was issued.
 func (m *Module) knownDevice(r *http.Request, k known) (string, bool) {
 	entries, _ := m.devices(r)
 	for _, e := range entries {
-		if k.match(e) {
+		if !k.match(e) {
+			continue
+		}
+		u, err := m.s.Svc.Users.Get(r.Context(), e.userID)
+		if err == nil && u.Enabled(time.Now()) && credentialEpoch(u) == e.epoch {
 			return e.userID, true
 		}
 	}
@@ -105,9 +121,9 @@ func (m *Module) knownDevice(r *http.Request, k known) (string, bool) {
 
 // rememberDevice records that this browser has signed in as u, keeping the other accounts it remembers.
 func (m *Module) rememberDevice(w http.ResponseWriter, r *http.Request, u *model.User) {
-	issued := strconv.FormatInt(time.Now().Unix(), 36)
+	issued, epoch := strconv.FormatInt(time.Now().Unix(), 36), credentialEpoch(u)
 	login := m.loginTag(u.OrgID, u.Email)
-	out := []string{strings.Join([]string{u.ID, u.OrgID, login, issued, m.deviceMAC(u.ID, u.OrgID, login, issued)}, ".")}
+	out := []string{strings.Join([]string{u.ID, u.OrgID, login, issued, epoch, m.deviceMAC(u.ID, u.OrgID, login, issued, epoch)}, ".")}
 	entries, raw := m.devices(r)
 	for i, e := range entries {
 		if e.userID != u.ID && len(out) < deviceMaxEntries {

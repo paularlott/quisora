@@ -52,7 +52,13 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 			return
 		}
-		if !m.rateLimit(w, r, u.OrgID, known{userID: u.ID}) {
+		org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+			return
+		}
+		// the organization's bucket (by name, as every other step of its sign-ins), and its audit log when limited
+		if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 			return
 		}
 		user = u

@@ -374,20 +374,19 @@ func TestUserCreateErrors(t *testing.T) {
 
 func TestSuperAdminRoleThroughSCIM(t *testing.T) {
 	e := newEnv(t)
-	// Super admins may create admins, and super admins in the primary org only.
-	r := e.createUser("acme", e.super, map[string]any{"userName": "new-admin", quisoraURN: map[string]any{"role": "admin"}})
-	if r.Status != 201 || r.str(quisoraURN, "role") != "admin" {
-		t.Fatalf("admin via super: %d %s", r.Status, r.Raw)
+	// An administrator role is granted in the admin console after a re-authentication, never with a token (as the
+	// management API): not by creating a user, nor by changing one's role.
+	for _, role := range []string{"admin", "super_admin"} {
+		if r := e.createUser("primary", e.super, map[string]any{"userName": "new-" + role, quisoraURN: map[string]any{"role": role}}); r.Status != 403 {
+			t.Errorf("%s through SCIM: %d %s", role, r.Status, r.Raw)
+		}
 	}
-	if r := e.createUser("acme", e.super, map[string]any{"userName": "sa", quisoraURN: map[string]any{"role": "super_admin"}}); r.Status != 403 {
-		t.Errorf("super_admin in non-primary org: %d", r.Status)
+	r := e.createUser("primary", e.super, map[string]any{"userName": "plain"})
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+r.str("id"), e.super, patchBody(op("replace", quisoraURN+":role", "admin"))); p.Status != 403 {
+		t.Errorf("promotion to admin through SCIM: %d %s", p.Status, p.Raw)
 	}
-	r = e.createUser("primary", e.super, map[string]any{"userName": "sa2", quisoraURN: map[string]any{"role": "super_admin"}})
-	if r.Status != 201 {
-		t.Fatalf("super_admin in primary org: %d %s", r.Status, r.Raw)
-	}
-	// Role change via PATCH goes through the service guards.
-	id := r.str("id")
+	// Role changes downwards go through the service guards.
+	id := e.mkUser(e.primary(), "sa2", model.RoleSuperAdmin).ID
 	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.admA, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 404 {
 		t.Errorf("other org's admin patching primary: %d", p.Status)
 	}

@@ -87,7 +87,8 @@ func (s *Server) Use(mods ...Module) {
 
 // Handler returns the full middleware chain around the mux.
 func (s *Server) Handler() http.Handler {
-	return recoverer(s.Log, requestInfo(observe(s.Log, s.Cfg.Log.Access,
+	// recoverer inside observe: a request that panics is answered 500 and is still logged and counted as one.
+	return requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
 		securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))))
 }
 
