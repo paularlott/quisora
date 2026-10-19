@@ -15,10 +15,20 @@ type execer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// migrations are applied in order; the index+1 is the schema version. Never edit a released migration: append one.
-func (s *Store) migrations() []func() []string {
-	return []func() []string{
-		func() []string { return s.initialSchema() },
+// migration is one schema version: statements (DDL), and Go code for what statements cannot do (rewriting stored
+// records). Either may be nil. Both run in the migration transaction (MySQL: under the schema lock, without one).
+type migration struct {
+	ddl  func() []string
+	data func(ctx context.Context, ex execer) error
+}
+
+// migrations are applied in order; the index+1 is the schema version. A database at an older version is brought
+// up to this build's at open, under a lock, so that the nodes sharing it do it once; one at a newer version (a newer
+// build) is refused. Never edit or remove a released migration: append one. Version 1 is the schema of the first
+// release; nothing has been released yet, so it changes in place until then.
+func (s *Store) migrations() []migration {
+	return []migration{
+		{ddl: s.initialSchema},
 	}
 }
 
@@ -106,7 +116,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) applyMigrations(ctx context.Context, ex execer, ms []func() []string) error {
+func (s *Store) applyMigrations(ctx context.Context, ex execer, ms []migration) error {
 	d := s.d
 	if _, err := ex.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS "+schemaTable+" (version INT NOT NULL)"+tableSuffix(d)); err != nil {
 		return err
@@ -118,12 +128,20 @@ func (s *Store) applyMigrations(ctx context.Context, ex execer, ms []func() []st
 		return err
 	}
 	if cur > len(ms) {
-		return fmt.Errorf("database schema version %d is newer than this build (%d)", cur, len(ms))
+		return fmt.Errorf("database schema version %d is newer than this build (%d): downgrading is not supported; "+
+			"run the newer build, or restore a backup made by this one", cur, len(ms))
 	}
 	for v := cur; v < len(ms); v++ {
-		for _, stmt := range ms[v]() {
-			if _, err := ex.ExecContext(ctx, stmt); err != nil && !d.ignorableDDL(err) {
-				return fmt.Errorf("version %d: %w\n%s", v+1, err, stmt)
+		if ms[v].ddl != nil {
+			for _, stmt := range ms[v].ddl() {
+				if _, err := ex.ExecContext(ctx, stmt); err != nil && !d.ignorableDDL(err) {
+					return fmt.Errorf("version %d: %w\n%s", v+1, err, stmt)
+				}
+			}
+		}
+		if ms[v].data != nil {
+			if err := ms[v].data(ctx, ex); err != nil {
+				return fmt.Errorf("version %d: %w", v+1, err)
 			}
 		}
 		var err error

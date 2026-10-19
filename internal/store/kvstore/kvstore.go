@@ -60,21 +60,35 @@ func (s *Store) FeedID() string {
 	return s.feedID
 }
 
-// formatVersion is the stored record format (wireRecord with Epoch and Created). A store written by an earlier
-// pre-release build is refused at open: there is no conversion — wipe it and start clean.
+// Store format: this backend's layout of records and indexes. It is formatBase plus the number of format
+// migrations; a store at an older format is brought up to this build's at open, one migration after the other, each
+// recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock so that the processes
+// sharing a Valkey store do it once. A store written by a newer build, or by a pre-release build older than
+// formatBase, is refused. Never edit or remove a released migration: append one. There are none yet: nothing has
+// been released.
 const (
-	metaFormat    = "meta/format"
-	formatVersion = "2"
+	metaFormat  = "meta/format"
+	metaMigrate = "meta/migrating" // the lock held while migrating: "<holder> <expiry unix ms>"
+	formatBase  = 2
 )
 
-// checkFormat refuses a store written in another format and marks a new one.
+// formatMigration brings a store from one format to the next. It may run again after an interruption: make it
+// idempotent.
+type formatMigration struct {
+	name string
+	run  func(ctx context.Context, s *Store) error
+}
+
+// formatMigrations[i] brings a store from format formatBase+i to formatBase+i+1.
+var formatMigrations []formatMigration
+
+func currentFormat() int { return formatBase + len(formatMigrations) }
+
+// checkFormat marks a new store, migrates an older one, and refuses one it cannot read.
 func (s *Store) checkFormat(ctx context.Context) error {
 	b, err := s.eng.Get(ctx, metaFormat)
 	if err != nil {
 		return err
-	}
-	if string(b) == formatVersion {
-		return nil
 	}
 	if b == nil {
 		seq, err := s.eng.Get(ctx, metaSeq)
@@ -82,12 +96,95 @@ func (s *Store) checkFormat(ctx context.Context) error {
 			return err
 		}
 		if seqOf(seq) == 0 { // nothing written yet: a new store
-			return s.markFormat(ctx)
+			return s.markFormat(ctx, currentFormat())
 		}
 	}
-	return fmt.Errorf("kvstore: the store holds data written by an earlier, incompatible pre-release build of Quisora "+
-		"(format %q, this build writes %q): there is no conversion; wipe the store and start clean (restore from a "+
-		"backup made by this build if needed)", string(b), formatVersion)
+	have, err := strconv.Atoi(string(b))
+	switch {
+	case err != nil || have < formatBase:
+		return fmt.Errorf("kvstore: the store holds data written by an earlier, incompatible pre-release build of "+
+			"Quisora (format %q, this build reads %d and later): there is no conversion; wipe the store and start "+
+			"clean (restore from a backup made by this build if needed)", string(b), formatBase)
+	case have > currentFormat():
+		return fmt.Errorf("kvstore: the store was written by a newer build of Quisora (format %d, this build writes %d): "+
+			"downgrading is not supported; run the newer build, or restore a backup made by this one", have, currentFormat())
+	case have == currentFormat():
+		return nil
+	}
+	return s.migrateFormat(ctx)
+}
+
+// migrateFormat runs the format migrations a store needs, holding the migration lock.
+func (s *Store) migrateFormat(ctx context.Context) error {
+	release, err := s.lockMigration(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	for {
+		b, err := s.eng.Get(ctx, metaFormat) // again: another process may have migrated meanwhile
+		if err != nil {
+			return err
+		}
+		have, err := strconv.Atoi(string(b))
+		if err != nil {
+			return fmt.Errorf("kvstore: unreadable store format %q", string(b))
+		}
+		if have >= currentFormat() {
+			return nil
+		}
+		m := formatMigrations[have-formatBase]
+		if err := m.run(ctx, s); err != nil {
+			return fmt.Errorf("kvstore: migrating the store from format %d (%s): %w", have, m.name, err)
+		}
+		if err := s.markFormat(ctx, have+1); err != nil {
+			return err
+		}
+	}
+}
+
+// migrationLockTTL bounds how long a lock of a process that died while migrating stops the others.
+const migrationLockTTL = 10 * time.Minute
+
+// lockMigration takes the migration lock, waiting while another process holds it; release gives it back.
+func (s *Store) lockMigration(ctx context.Context) (release func(), err error) {
+	holder := model.NewID()
+	for {
+		took := false
+		err := s.eng.Update(ctx, func(tx txn) error {
+			cur, err := tx.Get(metaMigrate)
+			if err != nil {
+				return err
+			}
+			if cur != nil {
+				_, exp, _ := strings.Cut(string(cur), " ")
+				if ms, err := strconv.ParseInt(exp, 10, 64); err == nil && time.Now().UnixMilli() < ms {
+					return nil // held by another process
+				}
+			}
+			tx.Set(metaMigrate, []byte(holder+" "+strconv.FormatInt(time.Now().Add(migrationLockTTL).UnixMilli(), 10)))
+			took = true
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if took {
+			return func() {
+				_ = s.eng.Update(context.WithoutCancel(ctx), func(tx txn) error {
+					if cur, err := tx.Get(metaMigrate); err == nil && strings.HasPrefix(string(cur), holder+" ") {
+						tx.Delete(metaMigrate)
+					}
+					return nil
+				})
+			}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // seqOf reads the stored feed counter: 8 bytes big endian (Badger) or a decimal integer (Valkey's INCR).
@@ -99,8 +196,8 @@ func seqOf(b []byte) uint64 {
 	return n
 }
 
-func (s *Store) markFormat(ctx context.Context) error {
-	return s.eng.Update(ctx, func(tx txn) error { tx.Set(metaFormat, []byte(formatVersion)); return nil })
+func (s *Store) markFormat(ctx context.Context, v int) error {
+	return s.eng.Update(ctx, func(tx txn) error { tx.Set(metaFormat, []byte(strconv.Itoa(v))); return nil })
 }
 
 // Wipe deletes every record and index of this store (only keys under its own prefix for Valkey), restarts the
@@ -110,7 +207,7 @@ func (s *Store) Wipe(ctx context.Context) error {
 	if err := s.eng.wipe(ctx, id); err != nil {
 		return err
 	}
-	if err := s.markFormat(ctx); err != nil {
+	if err := s.markFormat(ctx, currentFormat()); err != nil {
 		return err
 	}
 	s.mu.Lock()

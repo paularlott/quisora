@@ -57,9 +57,56 @@ var wallNow = time.Now
 
 // Gossip metadata this node publishes about itself.
 const (
-	metaSize  = "quisora.size"  // cluster.size: every node must agree
-	metaReady = "quisora.ready" // the node serves (Ready): owners of hash-routed short-lived state are chosen among these
+	metaSize      = "quisora.size"       // cluster.size: every node must agree
+	metaReady     = "quisora.ready"      // the node serves (Ready): owners of hash-routed short-lived state are chosen among these
+	metaCompat    = "quisora.compat"     // compat: what this build exchanges with other nodes
+	metaMinCompat = "quisora.compat_min" // minCompat: the oldest a peer may speak for this build to work with it
 )
+
+// Compatibility of what nodes exchange (records, change feeds, quorum messages). A build speaks compat and still
+// understands peers down to minCompat; two nodes work together only when each one's compat is at least the other's
+// minimum. A rolling upgrade from the previous release works when the new build keeps minCompat at the previous
+// compat (docs/RUNNING.md, "Upgrading"). Raise compat when what nodes send each other changes; raise minCompat when
+// this build no longer understands what the previous compat sent. Builds from before this check publish neither
+// (0) and are refused. A node that sees an incompatible peer drops its messages and refuses to serve (Ready) until
+// the peer is upgraded or gone, as for a cluster.size mismatch.
+const (
+	compat    = 1
+	minCompat = 1
+)
+
+// compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.
+func compatible(peerCompat, peerMin int) bool { return peerCompat >= minCompat && compat >= peerMin }
+
+// peerCompatible reports whether messages from sender may be handled: its published compatibility fits, or it has
+// published no metadata yet (a peer still joining).
+func peerCompatible(sender *gossip.Node) bool {
+	if sender == nil || sender.Metadata == nil {
+		return true
+	}
+	return compatible(sender.Metadata.GetInt(metaCompat), sender.Metadata.GetInt(metaMinCompat))
+}
+
+// errIncompatible answers a request from a peer of an incompatible build.
+var errIncompatible = errors.New("cluster: the peer runs an incompatible build")
+
+func compatOnly(f gossip.Handler) gossip.Handler {
+	return func(sender *gossip.Node, p *gossip.Packet) error {
+		if !peerCompatible(sender) {
+			return nil
+		}
+		return f(sender, p)
+	}
+}
+
+func compatOnlyReply(f gossip.ReplyHandler) gossip.ReplyHandler {
+	return func(sender *gossip.Node, p *gossip.Packet) (interface{}, error) {
+		if !peerCompatible(sender) {
+			return nil, errIncompatible
+		}
+		return f(sender, p)
+	}
+}
 
 // Options tunes a Node. The zero value is valid.
 type Options struct {
@@ -138,6 +185,7 @@ type Node struct {
 	collision atomic.Pointer[string]
 	misconfig atomic.Pointer[string] // gossip peers on one database: not while it lasts (sameDatabase)
 	sizeOff   atomic.Pointer[string] // a member advertises another cluster.size: not while it lasts (checkSizes)
+	compatOff atomic.Pointer[string] // a member runs an incompatible build: not while it lasts
 	sameAs    string                 // the peer that caused misconfig (guarded by peersMu)
 	mixed     atomic.Pointer[string] // gossip and non-gossip nodes on one database: not while it lasts (mixedDatabase)
 	foreign   atomic.Pointer[string] // the database belongs to another node id: not while it lasts (checkOwner)
@@ -256,7 +304,7 @@ func (n *Node) buildGossip() error {
 	gcfg.Compressor = snappy.New()
 	gcfg.Logger = n.opt.Log
 	gcfg.TCPDeadline = 2 * time.Second
-	gcfg.ApplicationVersion = build.Version // shown per node on the cluster page (no compatibility check)
+	gcfg.ApplicationVersion = build.Version // shown per node on the cluster page (compatibility: metaCompat)
 	if n.opt.Gossip != nil {
 		n.opt.Gossip(gcfg)
 	}
@@ -281,6 +329,8 @@ func (n *Node) buildGossip() error {
 	n.gc = gc
 	md := gc.LocalMetadata()
 	md.SetInt(metaSize, n.size)
+	md.SetInt(metaCompat, compat)
+	md.SetInt(metaMinCompat, minCompat)
 	md.SetBool(metaReady, false)
 
 	// The quorum is pinned to the configured size: it never shrinks when nodes leave, stop or restart, so a minority
@@ -299,7 +349,7 @@ func (n *Node) buildGossip() error {
 		t gossip.MessageType
 		f gossip.Handler
 	}{{msgRecord, n.handleRecord}, {msgAbort, n.handleAbort}} {
-		if err := gc.HandleFunc(h.t, h.f); err != nil {
+		if err := gc.HandleFunc(h.t, compatOnly(h.f)); err != nil {
 			return err
 		}
 	}
@@ -308,7 +358,7 @@ func (n *Node) buildGossip() error {
 		f gossip.ReplyHandler
 	}{{msgPush, n.handlePush}, {msgFeed, n.handleFeed}, {msgEph, n.handleEph}, {msgPrepare, n.handlePrepare},
 		{msgCommit, n.handleCommit}, {msgRead, n.handleRead}, {msgAudit, n.handleAudit}} {
-		if err := gc.HandleFuncWithReply(h.t, h.f); err != nil {
+		if err := gc.HandleFuncWithReply(h.t, compatOnlyReply(h.f)); err != nil {
 			return err
 		}
 	}
@@ -622,7 +672,7 @@ func (n *Node) rebuildMembers() {
 	n.memMu.Lock()
 	defer n.memMu.Unlock()
 	m := &membership{byPrefix: map[string]*member{}}
-	var clash, sizes string
+	var clash, sizes, compats string
 	for _, nd := range n.gc.Nodes() {
 		st := nd.GetObservedState()
 		if st == gossip.NodeRemoved || st == gossip.NodeUnknown {
@@ -635,6 +685,12 @@ func (n *Node) rebuildMembers() {
 			mb.ready = true // (routing to itself: its own readiness is checked where it matters)
 		} else if nd.Metadata != nil {
 			mb.ready = nd.Metadata.GetBool(metaReady)
+			if c, cm := nd.Metadata.GetInt(metaCompat), nd.Metadata.GetInt(metaMinCompat); !compatible(c, cm) && st == gossip.NodeAlive {
+				compats = fmt.Sprintf("node %s runs %s, which this build cannot work with (it speaks %d and needs at "+
+					"least %d; this build speaks %d and needs at least %d): upgrade one release at a time, every node "+
+					"before the next release (see docs/RUNNING.md, \"Upgrading\")", id, nd.ApplicationVersion, c, cm,
+					compat, minCompat)
+			}
 			if sz := nd.Metadata.GetInt(metaSize); sz != 0 && sz != n.size && st == gossip.NodeAlive {
 				sizes = fmt.Sprintf("node %s has cluster.size %d, this node %d: every node must be configured with "+
 					"the same cluster.size (a change of size is made on every node, with the whole cluster stopped; "+
@@ -677,6 +733,13 @@ func (n *Node) rebuildMembers() {
 	} else if n.sizeOff.Swap(nil) != nil {
 		n.log.Info("every node agrees on cluster.size again")
 	}
+	if compats != "" {
+		if n.compatOff.Swap(&compats) == nil {
+			n.log.Error("refusing to serve", "reason", compats)
+		}
+	} else if n.compatOff.Swap(nil) != nil {
+		n.log.Info("every node runs a compatible build again")
+	}
 	n.mem.Store(m)
 	n.trackWritable()
 }
@@ -710,7 +773,7 @@ func (n *Node) trackWritable() {
 // (a user or client disabled, access removed) cannot reach this node and it would keep honouring what was revoked.
 func (n *Node) ServesTokens() bool {
 	if n.misconfig.Load() != nil || n.mixed.Load() != nil || n.foreign.Load() != nil || n.restoredInto.Load() != nil ||
-		n.behind.Load() != nil || n.sizeOff.Load() != nil {
+		n.behind.Load() != nil || n.sizeOff.Load() != nil || n.compatOff.Load() != nil {
 		return false
 	}
 	if n.gc == nil {
@@ -787,7 +850,7 @@ func (n *Node) Quorum() int { return n.quorum }
 // node is neither catching up, out of date nor misconfigured.
 func (n *Node) Writable() bool {
 	if n.misconfig.Load() != nil || n.mixed.Load() != nil || n.foreign.Load() != nil || n.restoredInto.Load() != nil ||
-		n.sizeOff.Load() != nil {
+		n.sizeOff.Load() != nil || n.compatOff.Load() != nil {
 		return false
 	}
 	if n.gc == nil {
@@ -801,7 +864,7 @@ func (n *Node) Writable() bool {
 // or it is misconfigured.
 func (n *Node) refusal() string {
 	for _, p := range []*atomic.Pointer[string]{&n.behind, &n.misconfig, &n.mixed, &n.foreign, &n.restoredInto,
-		&n.collision, &n.sizeOff} {
+		&n.collision, &n.sizeOff, &n.compatOff} {
 		if m := p.Load(); m != nil {
 			return *m
 		}
@@ -888,6 +951,9 @@ func (n *Node) Ready() (bool, string) {
 		return false, *m
 	}
 	if m := n.sizeOff.Load(); m != nil {
+		return false, *m
+	}
+	if m := n.compatOff.Load(); m != nil {
 		return false, *m
 	}
 	if n.gc == nil {

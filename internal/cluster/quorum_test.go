@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -694,6 +695,32 @@ func TestClusterSizeMustAgree(t *testing.T) {
 		return !ok && !c.nodes[0].n.Writable() && len(why) > 0
 	})
 	c.nodes[2].n.gc.LocalMetadata().SetInt(metaSize, 3)
+	c.waitReady()
+}
+
+// A node of an incompatible build (here: one from before compatibility was published, or too new) makes the others
+// refuse to serve and drop its messages until it is gone or upgraded.
+func TestIncompatiblePeerRefused(t *testing.T) {
+	for _, tc := range []struct{ c, min int }{{0, 0}, {compat + 2, compat + 1}} {
+		if compatible(tc.c, tc.min) {
+			t.Fatalf("compat %d/%d accepted", tc.c, tc.min)
+		}
+	}
+	if !compatible(compat, minCompat) || !compatible(compat+1, compat) {
+		t.Fatal("this build, or the next one keeping this as its minimum, refused")
+	}
+	c := newTCluster(t, 3, memBackend)
+	c.startAll()
+	c.waitReady()
+	md := c.nodes[2].n.gc.LocalMetadata()
+	md.SetInt(metaCompat, 0) // an older build
+	md.SetInt(metaMinCompat, 0)
+	waitFor(t, 10*time.Second, "incompatible peer refused", func() bool {
+		ok, why := c.nodes[0].n.Ready()
+		return !ok && !c.nodes[0].n.Writable() && strings.Contains(why, "cannot work with")
+	})
+	md.SetInt(metaCompat, compat)
+	md.SetInt(metaMinCompat, minCompat)
 	c.waitReady()
 }
 

@@ -508,6 +508,37 @@ quisora restore quisora.bak                   # into the configured store, witho
   - Gossip: restore one node and start it, then start the others with empty databases.
   - A restored node that meets peers holding data refuses.
 
+## Upgrading
+
+**Before the first release** there is no upgrade path: a store written by an older pre-release build is refused at
+start-up. Wipe it and start clean (or restore a backup made by the new build).
+
+**From the first release:**
+
+- **Back up first.** Upgrades go forward only. A store or database written by a newer build is refused, so going
+  back means restoring the backup.
+- **One release at a time.** Each release works with the previous one: a cluster can be upgraded one node at a time
+  while it keeps serving. Nodes publish their compatibility, and a node more than one release apart is refused: the
+  others log `refusing to serve … upgrade one release at a time` and stop serving until it is upgraded or gone.
+- **Storage is migrated at the first start of the new build**, step by step, each step recorded as it completes (an
+  interrupted upgrade resumes). Nodes that share a database or Valkey do it once, under a lock; with gossip, every
+  node migrates its own store.
+- **Backups** made by the previous release restore into the new one.
+
+### Changing a stored format (for developers)
+
+Until the first release, formats change in place. From then on:
+
+- A record field that can be added with a sensible zero value needs nothing: older records read as the zero value.
+  Renaming, removing or re-interpreting one needs a migration, on every backend:
+  - BadgerDB and Valkey: append to `formatMigrations` (`internal/store/kvstore/kvstore.go`);
+  - SQL: append to `migrations()` (`internal/store/sqlstore/migrate.go`): statements, and Go code for data.
+- A backup format change: raise `version`, add `upgrades[old]`, and keep `minVersion` at the previous release's
+  version (`internal/backup/backup.go`).
+- What nodes send each other changes: raise `compat`; raise `minCompat` only when this build stops understanding the
+  previous release (`internal/cluster/node.go`).
+- Never edit or remove a released migration or upgrade: append.
+
 ## Health and monitoring
 
 - `/healthz`: liveness.

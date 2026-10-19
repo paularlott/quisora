@@ -44,9 +44,21 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
+// Backup format versions. version is what this build writes; a restore reads every version from minVersion up,
+// bringing each record line of an older backup up to this build's through upgrades[v] (from v to v+1, in order),
+// so a backup made before an upgrade restores after it. When the format changes: raise version, add the upgrade
+// from the previous one, and keep minVersion at the previous release's version (or lower). Nothing has been released
+// yet, so there are none: minVersion is version.
+const (
+	minVersion = version
+	version    = 3
+)
+
+// upgrades[v] brings a record line of a version v backup to version v+1.
+var upgrades = map[int]func(*line) error{}
+
 const (
 	format   = "quisora-backup"
-	version  = 3
 	pageSize = 1000
 	maxLine  = 16 << 20 // one record line, base64 of the entity: far above any real record
 )
@@ -285,8 +297,9 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 	if json.Unmarshal(first, &h) != nil || h.Format != format {
 		return nil, ErrFormat
 	}
-	if h.Version != version {
-		return nil, fmt.Errorf("%w: version %d is not supported by this build", ErrFormat, h.Version)
+	if h.Version < minVersion || h.Version > version {
+		return nil, fmt.Errorf("%w: version %d is not supported by this build (it reads %d to %d)", ErrFormat,
+			h.Version, minVersion, version)
 	}
 	if sealer != nil {
 		// The key of the master keyring the backup was made with (a backup from before a master key rotation needs
@@ -325,7 +338,12 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 			return stats, nil
 		}
 		if mac != nil {
-			mac.Write(b)
+			mac.Write(b) // the line as written: the MAC covers the backup, not its upgraded form
+		}
+		for v := h.Version; v < version; v++ {
+			if err := upgrades[v](&l); err != nil {
+				return stats, fmt.Errorf("%w: upgrading %s %s from version %d: %v", ErrFormat, l.Kind, l.ID, v, err)
+			}
 		}
 		rec, err := record(l)
 		if err != nil {
