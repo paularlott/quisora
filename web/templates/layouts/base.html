@@ -90,6 +90,7 @@
       {{end}}
       {{if and .IsSuper (not .Org)}}<a class="nav-link" href="/admin/orgs"{{if eq .Nav "orgs"}} aria-current="page"{{end}}>{{template "icon" "building"}} Organizations</a>
       <a class="nav-link" href="/admin/audit"{{if eq .Nav "audit-all"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>{{end}}
+      {{if or .KeyRotation (eq .Nav "master-key")}}<a class="nav-link" href="/admin/master-key"{{if eq .Nav "master-key"}} aria-current="page"{{end}}>{{template "icon" "key"}} Master key rotation</a>{{end}}
     </div>
     {{end}}
   </nav>

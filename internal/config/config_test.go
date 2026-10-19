@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -66,5 +69,27 @@ func TestInvalid(t *testing.T) {
 		if c.Validate() == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+// A reload (SIGHUP) reads the master keys from the config file and the environment, as at start-up, and nothing else.
+func TestLoadMasterKeys(t *testing.T) {
+	k0 := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	k1 := base64.StdEncoding.EncodeToString(append(make([]byte, 31), 1))
+	f := filepath.Join(t.TempDir(), "q.toml")
+	if err := os.WriteFile(f, []byte("[server]\nmaster_key = \""+k1+"\"\nprevious_master_keys = [\""+k0+"\"]\nlisten = \"bad\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, prev, err := LoadMasterKeys(f)
+	if err != nil || m != k1 || len(prev) != 1 || prev[0] != k0 {
+		t.Fatalf("from the file (other settings not checked): %q %v %v", m, prev, err)
+	}
+	t.Setenv(EnvPrefix+"PREVIOUS_MASTER_KEYS", "")
+	if m, prev, err = LoadMasterKeys(f); err != nil || m != k1 || len(prev) != 0 {
+		t.Fatalf("the environment over the file: %q %v %v", m, prev, err)
+	}
+	t.Setenv(EnvPrefix+"MASTER_KEY", "short")
+	if _, _, err = LoadMasterKeys(f); err == nil {
+		t.Fatal("an invalid key was accepted")
 	}
 }

@@ -240,6 +240,8 @@ func SelfService(ctx context.Context) context.Context {
 func isSelfService(ctx context.Context) bool { v, _ := ctx.Value(selfServiceKey{}).(bool); return v }
 
 // Bindings for sealed secrets (see secure.Sealer.SealFor).
-func TOTPBinding(userID string) string       { return "user/" + userID + "/totp" }
-func ProviderSecretBinding(id string) string { return "provider/" + id + "/client_secret" }
-func SigningKeyBinding(id string) string     { return "key/" + id + "/private" }
+func TOTPBinding(userID string) string        { return "user/" + userID + "/totp" }
+func ProviderSecretBinding(id string) string  { return "provider/" + id + "/client_secret" }
+func SigningKeyBinding(id string) string      { return "key/" + id + "/private" }
+func IdentityRefreshBinding(id string) string { return "identity/" + id + "/refresh" }
+func GrantKeyBinding(id string) string        { return "grant/" + id + "/refresh_key" }

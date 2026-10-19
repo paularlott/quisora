@@ -88,6 +88,18 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/audit", m.pageAllAudit)
 	page("GET /admin/orgs/{org}/keys", m.pageKeys)
 	page("GET /admin/orgs/{org}/cluster", m.pageCluster)
+	page("GET /admin/master-key", m.pageMasterKey)
+}
+
+// pageMasterKey shows where a master key rotation stands (GET /api/v1/master-key): super admins only. The menu links
+// to it while previous master keys are configured.
+func (m *Module) pageMasterKey(w http.ResponseWriter, r *http.Request) {
+	if !web.Actor(r).IsSuper() {
+		m.errorPage(w, r, http.StatusNotFound)
+		return
+	}
+	p := m.s.Page(w, r, "Master key rotation", "master-key", &View{API: "/api/v1"})
+	m.s.Render.Render(w, http.StatusOK, "admin-master-key", p)
 }
 
 // pageCluster shows the cluster's nodes and this node's view of it: super admins, on the primary organization's pages,

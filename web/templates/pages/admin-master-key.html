@@ -1,0 +1,63 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminMasterKey" data-api="{{.Data.API}}" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">Server</p>
+      <h1 class="page-title">Master key rotation</h1>
+      <p class="page-sub">Where the rotation stands, and when the previous master keys can be removed. <span x-text="updatedText"></span></p>
+    </div>
+    <button type="button" class="btn btn-secondary" :disabled="loading" :aria-busy="busyAttr" @click="load">{{template "icon" "refresh"}} Check now</button>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="state-h" x-show="loaded" x-cloak>
+    <h2 class="section-title mb-3" id="state-h">State</h2>
+    <div :class="stateClass" role="status">
+      <span x-show="removable">{{template "icon" "check"}}</span><span x-show="notRemovable">{{template "icon" "alert"}}</span>
+      <span><strong x-text="stateTitle"></strong> <span x-text="st.detail"></span></span>
+    </div>
+    <dl class="kv mt-4">
+      <div><dt>Active key</dt><dd><code class="mono" x-text="st.active_key"></code></dd></div>
+      <div><dt>Previous keys on this node</dt><dd><code class="mono" x-text="previousText"></code></dd></div>
+      <div><dt>Secrets still sealed with a previous key</dt><dd><span :class="staleClass" x-text="st.stale_secrets"></span></dd></div>
+      <div><dt>Secrets no configured key opens</dt><dd><span :class="unopenableClass" x-text="st.unopenable_secrets"></span></dd></div>
+      <div><dt>Refresh grants from an earlier version</dt><dd><span :class="legacyClass" x-text="st.legacy_grants"></span></dd></div>
+    </dl>
+  </section>
+
+  <section class="glass-card" aria-labelledby="nodes-h" x-show="loaded" x-cloak>
+    <h2 class="section-title mb-1" id="nodes-h">Nodes</h2>
+    <p class="muted mb-4">The master keys each running node reported (renewed every few minutes; a stopped node drops out within 15 minutes). Key IDs are derived from the keys and reveal nothing about them.</p>
+    <div class="table-wrap" role="region" aria-label="Nodes' master keys table" tabindex="0">
+      <table class="table">
+        <caption class="sr-only">Master keys by node</caption>
+        <thead><tr>
+          <th scope="col">Node</th>
+          <th scope="col">Seals with</th>
+          <th scope="col">Previous keys</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="n in nodes" :key="n.id"><tr>
+            <th scope="row" class="font-normal"><code class="mono" x-text="n.id"></code></th>
+            <td><code class="mono" x-text="n.active"></code> <span :class="n.activeClass" x-text="n.activeNote"></span></td>
+            <td><code class="mono" x-text="n.previousText"></code></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="how-h">
+    <h2 class="section-title mb-1" id="how-h">How a rotation goes</h2>
+    <ol class="muted list-decimal ml-6 space-y-1">
+      <li>Make a new key with <code>quisora genkey</code>.</li>
+      <li>On every node: the old key stays <code>server.master_key</code>, the new one goes in <code>server.previous_master_keys</code>; reload (SIGHUP) or restart.</li>
+      <li>On every node: the new key becomes <code>server.master_key</code>, the old one moves to <code>server.previous_master_keys</code>; reload or restart. The re-seal starts once every node seals with the new key.</li>
+      <li>When this page says so, remove <code>server.previous_master_keys</code> on every node; reload or restart.</li>
+    </ol>
+    <p class="muted mt-3">A single node skips step 2. The same status is <code>GET /api/v1/master-key</code>.</p>
+  </section>
+</div>
+{{end}}

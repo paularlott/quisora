@@ -22,6 +22,7 @@ Settings every deployment sets:
 | `server.listen`                     | `--listen`                | Default `:8443`. HTTPS only; there is no plain-HTTP listener.                                                                                                      |
 | `server.data_dir`                   | `--data-dir`              | Node id, TLS files, cluster state, and the BadgerDB/SQLite store.                                                                                                  |
 | `server.master_key`                 | `--master-key`            | Seals secrets at rest. Required in a cluster (identical on every node); a standalone node generates `<data-dir>/master.key` when unset. Keep it with your backups. |
+| `server.previous_master_keys`       | `--previous-master-keys`  | Earlier master keys, only while [rotating the master key](#rotating-the-master-key). Identical on every node.                                                     |
 | `server.tls_cert`, `server.tls_key` | `--tls-cert`, `--tls-key` | PEM files. Without them a self-signed certificate is generated in `<data-dir>/tls`.                                                                                |
 
 ## First start
@@ -51,6 +52,102 @@ Super admins see the keys under **Signing keys** in the primary organization's a
 (signing, next, previous) and when it starts signing, stops and is removed. **Rotate now** makes a key that signs at
 once (when a key may have been exposed); tokens signed before keep working until they expire. The same is
 `GET /api/v1/keys` and `POST /api/v1/keys/rotate`.
+
+## Rotating the master key
+
+The master key seals every secret Quisora stores: authenticator (TOTP) secrets, sign-in providers' client secrets,
+the signing keys' private keys, upstream refresh tokens and the keys relying parties' refresh tokens are made from.
+Rotate it on a schedule, and at once if it may have been exposed. A rotation re-seals every one of those secrets with
+the new key, without anyone noticing: users keep their authenticators, applications keep their refresh tokens. Then
+the old key is removed, and from that moment it opens nothing the server holds.
+
+Each key has an id (8 characters, derived from the key, revealing nothing about it): sealed values name the key that
+sealed them, and the log names keys by it (`key`).
+
+### Changing the keys: reload or restart
+
+Each step below changes `server.master_key` and `server.previous_master_keys` in a node's config file, then either
+restarts the node or tells it to reload them, without a restart, with SIGHUP:
+
+```bash
+kill -HUP <pid>                          # systemd: systemctl reload quisora (ExecReload=/bin/kill -HUP $MAINPID)
+docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kill -HUP 1, once the mounted file has changed
+```
+
+- SIGHUP reloads only these two settings, read from the config file and the `QUISORA_*` environment variables as at
+  start-up. Nothing else is reloaded.
+- Keys given on the command line (`--master-key`) cannot change while the server runs, so a reload refuses with an
+  error: put them in the config file. Keys from environment variables cannot change either, since a running
+  process keeps its environment; use the config file, or restart.
+- A reload is refused, and the keys in use stay, when the new keys do not include the key in use: a typo or the
+  wrong file cannot make a node seal with a key the others cannot open. The log says `master keys reloaded` or
+  `master keys not reloaded` with the reason.
+
+### Is it done? When can the old key go?
+
+Super admins see **Master key rotation** at the bottom of the admin menu while previous keys are configured. The
+same status is `GET /api/v1/master-key` (super admin). It shows:
+
+- the key every node seals with, and the previous keys every node holds;
+- how many stored secrets are still sealed with a previous key, how many open with no configured key, and how many
+  refresh grants from an earlier version still depend on one;
+- a state: `waiting_for_nodes`, `resealing`, `unopenable`, `legacy_grants`, `complete` (with
+  `previous_keys_removable: true`: remove them now) or `none` (no rotation in progress).
+
+The housekeeping leader also logs `master key rotation complete … remove server.previous_master_keys now`, and repeats
+it every hour until they are removed.
+
+### One node
+
+1. Make a new key: `quisora genkey`.
+2. Set the new key as `server.master_key` and the old one in `server.previous_master_keys`, then reload or restart:
+
+   ```toml
+   [server]
+   master_key = "<new>"
+   previous_master_keys = ["<old>"]
+   ```
+
+   A node that used a generated `<data-dir>/master.key` does the same: the file's content is the old key. Once
+   `master_key` is set, the file is no longer read; delete it after step 3.
+3. Within minutes the status says `complete`. Remove `previous_master_keys`, and reload or restart.
+
+### Several nodes (shared database or gossip)
+
+Every node must be able to open what any other node seals, so the new key is first added everywhere as a previous key,
+and only then made active. Do each step on every node, one node at a time, before starting the next step.
+
+1. `quisora genkey`.
+2. Every node: `master_key = "<old>"`, `previous_master_keys = ["<new>"]`; reload or restart. Nothing changes yet;
+   every node can now open what the new key seals.
+3. Every node: `master_key = "<new>"`, `previous_master_keys = ["<old>"]`; reload or restart. New secrets are sealed
+   with the new key. While some nodes still seal with the old one, the status says `waiting_for_nodes` and names
+   them, and nothing is re-sealed. Once all do, the housekeeping leader re-seals every stored secret, and the status
+   says `complete`.
+4. Every node: remove `previous_master_keys`; reload or restart.
+
+On a shared database the first node with the new key active also moves the database's key check to it: from then on
+a node started with only the old key refuses to start.
+
+### After the rotation
+
+- Nothing the server holds needs the old key. Keep it only with the **backups made before the rotation**: a backup
+  is verified, decrypted and restored with the key it was made with. To restore one, put its key in
+  `previous_master_keys` for the restore (the restored secrets are then re-sealed with the active key as above), and
+  remove it again afterwards. Make a new backup once the rotation is complete.
+- Device cookies (which let a browser that signed in before skip the per-address sign-in limit) are made with the
+  active key only: each browser earns a new one at its next sign-in.
+- If the old key was exposed, so is everything it ever sealed: a copy of the database or a backup from before the
+  rotation can be opened with it. Rotating the master key does not change the secrets themselves. Also rotate the
+  signing keys (**Signing keys → Rotate now**), the sign-in providers' client secrets (at each provider, then in
+  Quisora), revoke the relying parties' refresh tokens, and have users with an authenticator app set it up again.
+- A secret that no configured key opens (the old key removed before the rotation completed, or a damaged value) is
+  logged at error level (`secrets that no configured master key opens`); put the missing key back in
+  `previous_master_keys`.
+- Refresh grants made by a version from before refresh grants had their own key are converted by the re-seal. During
+  a rotation started straight after upgrading, they are converted only when next used, and the log counts the rest
+  (`refresh grants from an earlier version`); removing the old key ends those, and their users sign in again. Upgrade,
+  let the server run a few minutes, then rotate.
 
 ## Changing the primary organization
 
@@ -264,7 +361,9 @@ docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISOR
 ## Backup and restore
 
 A backup is one compressed file of every record. Secrets stay sealed, and the file has an integrity check made with
-the master key. A restore needs the same key, and refuses an altered file before writing anything.
+the master key. A restore needs the key it was made with (the active one, or, for a backup from before a
+[master key rotation](#rotating-the-master-key), the old one put in `server.previous_master_keys` for the restore), and
+refuses an altered file before writing anything.
 
 Back up a running server (any backend; the token is a super admin's API token with the `backup` scope):
 

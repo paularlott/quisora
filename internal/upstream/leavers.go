@@ -26,7 +26,7 @@ import (
 // that rotates refresh tokens returns a new one with each use; it replaces the stored one.
 
 // refreshBinding is the sealing binding of an identity's refresh token.
-func refreshBinding(identityID string) string { return "identity/" + identityID + "/refresh" }
+func refreshBinding(identityID string) string { return service.IdentityRefreshBinding(identityID) }
 
 // keepRefresh stores the provider's refresh token on the identity just used to sign in (best effort: without it the
 // sessions are simply not checked).

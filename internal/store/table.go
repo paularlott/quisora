@@ -37,8 +37,20 @@ func SkewRefused() int64 { return skewRefused.Load() }
 // Ahead reports how far ts is ahead of this machine's clock (0 when it is not).
 func Ahead(ts hlc.Timestamp) time.Duration { return ts.Ahead(time.Now()) }
 
-// Origin is this node's id, stamped on every record written here. Set once at start-up.
-var Origin = "local"
+// origin is this node's id, stamped on every record written here (SetOrigin, at start-up). Atomic: tests run several
+// servers in one process, each setting it as it starts while the others write.
+var origin atomic.Pointer[string]
+
+// SetOrigin sets the id stamped on every record written by this process.
+func SetOrigin(id string) { origin.Store(&id) }
+
+// Origin is the id stamped on every record written by this process ("local" until SetOrigin).
+func Origin() string {
+	if p := origin.Load(); p != nil {
+		return *p
+	}
+	return "local"
+}
 
 // Encode turns an entity into a Record, stamping a fresh version and the Created/Updated times.
 func Encode(e model.Entity) (*Record, error) {
@@ -64,7 +76,7 @@ func EncodeAsIs(e model.Entity) (*Record, error) {
 	m := e.GetMeta()
 	ix := e.Index()
 	return &Record{
-		Kind: e.Kind(), ID: m.ID, Version: m.Version, Origin: Origin, Scope: ix.Scope, Unique: ix.Unique, Fields: ix.Fields,
+		Kind: e.Kind(), ID: m.ID, Version: m.Version, Origin: Origin(), Scope: ix.Scope, Unique: ix.Unique, Fields: ix.Fields,
 		Data: data, Expires: ix.Expires,
 	}, nil
 }
@@ -80,7 +92,7 @@ func Decode(r *Record, e model.Entity) error {
 
 // Tombstone returns a deletion record for kind/id at a fresh version.
 func Tombstone(kind model.Kind, id string) *Record {
-	return &Record{Kind: kind, ID: id, Version: Clock.Now(), Origin: Origin, Deleted: true}
+	return &Record{Kind: kind, ID: id, Version: Clock.Now(), Origin: Origin(), Deleted: true}
 }
 
 // Table gives typed access to one kind. T is the entity struct type, PT its pointer type.

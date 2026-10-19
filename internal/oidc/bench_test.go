@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
-	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -47,11 +46,17 @@ func (e *benchEnv) call(path string, form url.Values, basic bool) (int, []byte) 
 func (e *benchEnv) newGrant(b *testing.B, rotate bool) string {
 	ctx := context.Background()
 	g := &model.Grant{ClientID: e.cl.ID, UserID: e.user.ID, OrgID: e.user.OrgID, SessionID: "bench", Scopes: []string{"openid", "profile", "email", "offline_access"},
-		AMR: []string{"pwd"}, AuthTime: time.Now(), Secret: secure.RandomBytes(32), Expires: time.Now().Add(time.Hour)}
+		AMR: []string{"pwd"}, AuthTime: time.Now(), Expires: time.Now().Add(time.Hour)}
+	g.ID = model.NewID()
+	e.env.Svc.NewGrantKey(g)
 	if err := e.env.Svc.Grants.Create(ctx, g); err != nil {
 		b.Fatal(err)
 	}
-	return e.p.refreshToken(g, rotate)
+	rt, err := e.p.refreshToken(g, rotate)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return rt
 }
 
 func BenchmarkTokenRefreshStatic(b *testing.B) {

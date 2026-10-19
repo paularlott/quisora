@@ -16,6 +16,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -134,73 +135,199 @@ var dummySalt = RandomBytes(16)
 // ---------------------------------------------------------------------------------------------------------------
 // Sealing secrets at rest (AES-256-GCM).
 
-// Sealer encrypts small secrets with the master key, and MACs values with a key derived from it.
+// Sealer encrypts small secrets with the master key, and MACs values with a key derived from it. It holds a keyring:
+// the active master key, which seals and MACs everything new, and previous ones (master key rotation), which only
+// open what they sealed and verify what they MACed until it has been re-sealed or has expired. Replace swaps the ring
+// in place (a reload of the master keys): whoever holds the Sealer uses the new keys from the next call on.
 type Sealer struct {
+	ring atomic.Pointer[[]sealKey] // active first
+}
+
+func (s *Sealer) keys() []sealKey { return *s.ring.Load() }
+
+// Replace makes s use o's keys (o is not used afterwards).
+func (s *Sealer) Replace(o *Sealer) { s.ring.Store(o.ring.Load()) }
+
+func newSealerOf(keys []sealKey) *Sealer {
+	s := &Sealer{}
+	s.ring.Store(&keys)
+	return s
+}
+
+type sealKey struct {
+	kid  string // public key id, carried by sealed values (KeyID)
 	aead cipher.AEAD
 	mac  []byte
 }
 
 // NewSealer builds a sealer from a 32-byte key.
-func NewSealer(key []byte) (*Sealer, error) {
-	if len(key) != 32 {
-		return nil, errors.New("secure: master key must be 32 bytes")
+func NewSealer(key []byte) (*Sealer, error) { return NewKeyring(key) }
+
+// NewKeyring builds a sealer whose active key is active, and which also opens values sealed with (and verifies MACs
+// made under) the previous keys.
+func NewKeyring(active []byte, previous ...[]byte) (*Sealer, error) {
+	var keys []sealKey
+	for i, key := range append([][]byte{active}, previous...) {
+		if len(key) != 32 {
+			return nil, errors.New("secure: master key must be 32 bytes")
+		}
+		b, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		a, err := cipher.NewGCM(b)
+		if err != nil {
+			return nil, err
+		}
+		k := sealKey{kid: KeyID(key), aead: a, mac: MAC(key, "quisora/mac/v1")}
+		for _, o := range keys {
+			if o.kid == k.kid {
+				return nil, fmt.Errorf("secure: master key %d is given twice", i+1)
+			}
+		}
+		keys = append(keys, k)
 	}
-	b, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	a, err := cipher.NewGCM(b)
-	if err != nil {
-		return nil, err
-	}
-	return &Sealer{aead: a, mac: MAC(key, "quisora/mac/v1")}, nil
+	return newSealerOf(keys), nil
 }
 
-// MAC returns HMAC-SHA256 of msg under a key derived from the master key: values stored alongside it in the database
-// prove nothing to someone who has the database but not the key.
-func (s *Sealer) MAC(msg ...string) []byte { return MAC(s.mac, msg...) }
+// KeyID is a master key's public id (8 characters): sealed values name the key that sealed them by it, and logs and
+// the documentation's rotation procedure refer to keys by it. It reveals nothing about the key.
+func KeyID(key []byte) string {
+	return base64.RawURLEncoding.EncodeToString(MAC(key, "quisora/kid/v1")[:6])
+}
 
-// Seal encrypts plaintext; the empty string seals to the empty string.
+// ActiveKeyID is the id of the key that seals now.
+func (s *Sealer) ActiveKeyID() string { return s.keys()[0].kid }
+
+// KeyIDs returns the ids of the ring's keys, the active one first.
+func (s *Sealer) KeyIDs() []string {
+	keys := s.keys()
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.kid
+	}
+	return out
+}
+
+// Previous reports whether the keyring holds keys other than the active one.
+func (s *Sealer) Previous() bool { return len(s.keys()) > 1 }
+
+// Keys returns one single-key sealer per key of the ring, the active one first (to find the key something was made
+// with: a backup).
+func (s *Sealer) Keys() []*Sealer {
+	keys := s.keys()
+	out := make([]*Sealer, len(keys))
+	for i, k := range keys {
+		out[i] = newSealerOf([]sealKey{k})
+	}
+	return out
+}
+
+// MAC returns HMAC-SHA256 of msg under a key derived from the active master key: values stored alongside it in the
+// database prove nothing to someone who has the database but not the key.
+func (s *Sealer) MAC(msg ...string) []byte { return MAC(s.keys()[0].mac, msg...) }
+
+// MACs returns MAC for every key of the ring, the active one first: a value MACed before a rotation still verifies
+// while its key is configured.
+func (s *Sealer) MACs(msg ...string) [][]byte {
+	keys := s.keys()
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		out[i] = MAC(k.mac, msg...)
+	}
+	return out
+}
+
+// Seal encrypts plaintext (unbound; used for short-lived in-memory values, opened by any key of the ring); the empty
+// string seals to the empty string.
 func (s *Sealer) Seal(plaintext []byte) string {
 	if len(plaintext) == 0 {
 		return ""
 	}
-	nonce := RandomBytes(s.aead.NonceSize())
-	return "v1:" + base64.RawStdEncoding.EncodeToString(s.aead.Seal(nonce, nonce, plaintext, nil))
+	a := s.keys()[0].aead
+	nonce := RandomBytes(a.NonceSize())
+	return "v1:" + base64.RawStdEncoding.EncodeToString(a.Seal(nonce, nonce, plaintext, nil))
 }
 
 // SealFor encrypts plaintext bound to binding (e.g. "user/<id>/totp"): the value only opens with the same binding,
-// so a sealed secret copied onto another record or field is useless.
+// so a sealed secret copied onto another record or field is useless. It names the key that sealed it.
 func (s *Sealer) SealFor(binding string, plaintext []byte) string {
 	if len(plaintext) == 0 {
 		return ""
 	}
-	nonce := RandomBytes(s.aead.NonceSize())
-	return "v2:" + base64.RawStdEncoding.EncodeToString(s.aead.Seal(nonce, nonce, plaintext, []byte(binding)))
+	k := s.keys()[0]
+	nonce := RandomBytes(k.aead.NonceSize())
+	return "v3:" + k.kid + ":" + base64.RawStdEncoding.EncodeToString(k.aead.Seal(nonce, nonce, plaintext, []byte(binding)))
 }
 
-// OpenFor decrypts a value produced by SealFor with the same binding.
+// ErrUnknownKey means a value was sealed with a master key that is not configured (removed from
+// server.previous_master_keys too early).
+var ErrUnknownKey = errors.New("secure: sealed with a master key that is not configured")
+
+// OpenFor decrypts a value produced by SealFor with the same binding: with the key it names, or (a value sealed
+// before keys were named) with each key of the ring.
 func (s *Sealer) OpenFor(binding, sealed string) ([]byte, error) {
 	if sealed == "" {
 		return nil, nil
+	}
+	if rest, ok := strings.CutPrefix(sealed, "v3:"); ok {
+		kid, raw, ok := strings.Cut(rest, ":")
+		if !ok {
+			return nil, errors.New("secure: unknown sealed format")
+		}
+		for _, k := range s.keys() {
+			if k.kid == kid {
+				return open(k.aead, raw, []byte(binding))
+			}
+		}
+		return nil, ErrUnknownKey
 	}
 	raw, ok := strings.CutPrefix(sealed, "v2:")
 	if !ok {
 		return nil, errors.New("secure: unknown sealed format")
 	}
-	return s.open(raw, []byte(binding))
+	return s.openAny(raw, []byte(binding))
 }
 
-func (s *Sealer) open(raw string, aad []byte) ([]byte, error) {
+// Stale reports whether a value produced by SealFor is not sealed with the active key (an older key, or a format
+// that names none): Reseal brings it up to date.
+func (s *Sealer) Stale(sealed string) bool {
+	return sealed != "" && !strings.HasPrefix(sealed, "v3:"+s.keys()[0].kid+":")
+}
+
+// Reseal returns sealed re-sealed with the active key (unchanged when it already is).
+func (s *Sealer) Reseal(binding, sealed string) (string, error) {
+	if !s.Stale(sealed) {
+		return sealed, nil
+	}
+	plain, err := s.OpenFor(binding, sealed)
+	if err != nil {
+		return "", err
+	}
+	return s.SealFor(binding, plain), nil
+}
+
+func (s *Sealer) openAny(raw string, aad []byte) ([]byte, error) {
+	var err error
+	for _, k := range s.keys() {
+		var b []byte
+		if b, err = open(k.aead, raw, aad); err == nil {
+			return b, nil
+		}
+	}
+	return nil, err
+}
+
+func open(a cipher.AEAD, raw string, aad []byte) ([]byte, error) {
 	b, err := base64.RawStdEncoding.DecodeString(raw)
 	if err != nil {
 		return nil, err
 	}
-	n := s.aead.NonceSize()
+	n := a.NonceSize()
 	if len(b) < n {
 		return nil, errors.New("secure: sealed value too short")
 	}
-	return s.aead.Open(nil, b[:n], b[n:], aad)
+	return a.Open(nil, b[:n], b[n:], aad)
 }
 
 // Open decrypts a value produced by Seal (unbound; used for short-lived in-memory values).
@@ -212,15 +339,7 @@ func (s *Sealer) Open(sealed string) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("secure: unknown sealed format")
 	}
-	b, err := base64.RawStdEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, err
-	}
-	n := s.aead.NonceSize()
-	if len(b) < n {
-		return nil, errors.New("secure: sealed value too short")
-	}
-	return s.aead.Open(nil, b[:n], b[n:], nil)
+	return s.openAny(raw, nil)
 }
 
 // RootPool returns the system's trusted roots plus the CA certificates in the PEM file (nil, nil when file is ""):

@@ -345,7 +345,10 @@ func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok st
 		return nil, false
 	}
 	g, err := p.svc.Grants.Get(ctx, pr.gid)
-	if err != nil || g.ClientID != caller.ID || g.Revoked || time.Now().After(g.Expires) || !p.authentic(pr, g) {
+	if err != nil || g.ClientID != caller.ID || g.Revoked || time.Now().After(g.Expires) {
+		return nil, false
+	}
+	if ok, _ := p.authentic(pr, g); !ok { // (a legacy grant is converted when it is next refreshed)
 		return nil, false
 	}
 	if pr.counted && pr.counter != g.Counter || !pr.counted && g.Counter != 0 {

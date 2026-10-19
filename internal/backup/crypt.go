@@ -128,7 +128,9 @@ func encrypted(br *bufio.Reader) bool {
 // chunk that does not authenticate is an error.
 type decReader struct {
 	r      *bufio.Reader
-	aead   cipher.AEAD
+	aead   cipher.AEAD   // once the first chunk has opened
+	keys   []cipher.AEAD // candidates until then: one per key of the master keyring
+	key    int           // the index in keys of the one that opened it
 	prefix []byte
 	n      uint32
 	buf    []byte
@@ -143,16 +145,43 @@ func readHeader(br *bufio.Reader) ([]byte, error) {
 	return hdr[len(encMagic):], nil
 }
 
+// newDecReader opens an encrypted backup with whichever key of the master keyring it was made with (a backup made
+// before a master key rotation, while the old key is still configured as a previous one).
 func newDecReader(br *bufio.Reader, s *secure.Sealer) (*decReader, error) {
-	aead, err := encKey(s)
-	if err != nil {
-		return nil, err
+	var keys []cipher.AEAD
+	for _, k := range s.Keys() {
+		aead, err := encKey(k)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, aead)
 	}
 	prefix, err := readHeader(br)
 	if err != nil {
 		return nil, err
 	}
-	return &decReader{r: br, aead: aead, prefix: prefix}, nil
+	return &decReader{r: br, keys: keys, prefix: prefix}, nil
+}
+
+// open opens chunk n (as an inner chunk or as the final one), finding the key on the first.
+func (d *decReader) open(ct []byte) (pt []byte, last bool, err error) {
+	try := func(a cipher.AEAD) ([]byte, bool, error) {
+		if pt, err := a.Open(nil, chunkNonce(d.prefix, d.n, false), ct, nil); err == nil {
+			return pt, false, nil
+		}
+		pt, err := a.Open(nil, chunkNonce(d.prefix, d.n, true), ct, nil)
+		return pt, true, err
+	}
+	if d.aead != nil {
+		return try(d.aead)
+	}
+	for i, a := range d.keys {
+		if pt, last, err := try(a); err == nil {
+			d.aead, d.key = a, i
+			return pt, last, nil
+		}
+	}
+	return nil, false, ErrEncrypted
 }
 
 // nextChunk reads one chunk's ciphertext; io.EOF only exactly at a chunk boundary.
@@ -191,14 +220,11 @@ func (d *decReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		// A chunk opens either as an inner chunk or as the final one; anything else is damaged or forged.
-		pt, err := d.aead.Open(nil, chunkNonce(d.prefix, d.n, false), ct, nil)
+		pt, last, err := d.open(ct)
 		if err != nil {
-			pt, err = d.aead.Open(nil, chunkNonce(d.prefix, d.n, true), ct, nil)
-			if err != nil {
-				return 0, ErrEncrypted
-			}
-			d.done = true
+			return 0, ErrEncrypted
 		}
+		d.done = last
 		d.n++
 		d.buf = pt
 	}

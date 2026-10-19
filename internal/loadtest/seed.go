@@ -372,7 +372,8 @@ func (s *seeder) seedGrants(ctx context.Context) error {
 				now := time.Now().UTC()
 				g := &model.Grant{Meta: model.Meta{ID: id, Created: now}, ClientID: o.clientID(org, 0), UserID: o.userID(org, usr),
 					OrgID: orgID(org), SessionID: id, Scopes: scopes, AMR: []string{"pwd"}, AuthTime: now,
-					Secret: grantSecret(id), Expires: now.Add(s.svc.Cfg.Tokens.Refresh())}
+					Key:     s.svc.Sealer.SealFor(service.GrantKeyBinding(id), grantSecret(id)),
+					Expires: now.Add(s.svc.Cfg.Tokens.Refresh())}
 				if err := s.svc.Grants.Create(ctx, g); err != nil {
 					if exists(err) {
 						continue
@@ -408,7 +409,7 @@ func (s *seeder) dataFile(adminTok string) *Data {
 	for n := range o.Grants {
 		org, _ := s.grantTarget(n)
 		id := grantID(n)
-		d.Grants = append(d.Grants, GrantSample{Token: id + "." + refreshEnc.EncodeToString(s.svc.RefreshKey(id, grantSecret(id))),
+		d.Grants = append(d.Grants, GrantSample{Token: id + "." + refreshEnc.EncodeToString(grantSecret(id)),
 			Org: OrgName(org), ClientID: o.clientID(org, 0), Secret: clientSecret(org, 0), Groups: n%2 == 1})
 	}
 	return d

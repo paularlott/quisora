@@ -375,8 +375,32 @@ func VerifyClientSecret(c *model.Client, secret string) bool {
 	return !c.Public() && c.SecretHash != "" && secure.EqualSecret(secret, []byte(c.SecretHash))
 }
 
-// RefreshKey is the key a grant's refresh tokens are made from: a MAC under the master key over the grant's stored
-// seed, so the database alone can neither produce nor recognise a refresh token.
-func (s *Service) RefreshKey(grantID string, seed []byte) []byte {
-	return s.Sealer.MAC("refresh", grantID, string(seed))
+// NewGrantKey gives g a new refresh token key: random, stored sealed with the master key, so the database alone can
+// neither produce nor recognise a refresh token. Being a sealed secret like any other, it is re-sealed by a master
+// key rotation (ResealSecrets) while the tokens made from it stay the same.
+func (s *Service) NewGrantKey(g *model.Grant) {
+	g.Key, g.Secret = s.Sealer.SealFor(GrantKeyBinding(g.ID), secure.RandomBytes(32)), nil
+}
+
+// GrantRefreshKeys returns the keys g's refresh tokens may be made from: its own (Key), or, for a grant from before
+// grants had one, the key derived from the master key over its seed, under each key of the master keyring (only
+// one of them made it). legacy says it is the latter: ConvertGrantKey stores the one that matched as the grant's own.
+func (s *Service) GrantRefreshKeys(g *model.Grant) (keys [][]byte, legacy bool, err error) {
+	if g.Key != "" {
+		k, err := s.Sealer.OpenFor(GrantKeyBinding(g.ID), g.Key)
+		if err != nil {
+			return nil, false, err
+		}
+		return [][]byte{k}, false, nil
+	}
+	if len(g.Secret) == 0 {
+		return nil, false, nil
+	}
+	return s.Sealer.MACs("refresh", g.ID, string(g.Secret)), true, nil
+}
+
+// ConvertGrantKey makes key (the legacy key g's tokens are made from) g's own sealed key, so its tokens no longer
+// depend on the master key that derived it. The tokens stay the same. The caller saves g.
+func (s *Service) ConvertGrantKey(g *model.Grant, key []byte) {
+	g.Key, g.Secret = s.Sealer.SealFor(GrantKeyBinding(g.ID), key), nil
 }

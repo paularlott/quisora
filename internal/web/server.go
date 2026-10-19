@@ -265,6 +265,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.IsSuper = u.Role == model.RoleSuperAdmin
 		p.IsAdmin = u.Role.Rank() >= model.RoleAdmin.Rank()
 		p.IsMgr = u.Role.Rank() >= model.RoleManager.Rank()
+		p.KeyRotation = p.IsSuper && s.Svc.Sealer.Previous()
 	} else {
 		p.CSRF = s.AnonCSRF(w, r)
 	}

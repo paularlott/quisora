@@ -109,7 +109,7 @@ func seedCmd(cfg *config.Config, serverFlags []cli.Flag) *cli.Command {
 				return fmt.Errorf("storage: %w", err)
 			}
 			defer st.Close()
-			store.Origin = "loadtest-seed"
+			store.SetOrigin("loadtest-seed")
 			svc := service.New(cfg, st, sealer)
 			_, err = loadtest.Seed(ctx, svc, o, os.Stdout)
 			return err

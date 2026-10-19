@@ -195,8 +195,10 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	}
 	now := time.Now().UTC()
 	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
-		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce, Secret: secure.RandomBytes(32),
+		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
+	g.ID = model.NewID() // the key is sealed bound to the id
+	p.svc.NewGrantKey(g)
 	if err := p.svc.Grants.Create(ctx, g); err != nil {
 		return nil, serverError(err)
 	}
@@ -211,7 +213,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		return nil, serverError(err)
 	}
 	if slices.Contains(c.GrantTypes, "refresh_token") {
-		tr.refresh = p.refreshToken(g, c.RotateRefresh || c.Public())
+		if tr.refresh, err = p.refreshToken(g, c.RotateRefresh || c.Public()); err != nil {
+			return nil, serverError(err)
+		}
 	}
 	return tr, nil
 }
@@ -243,23 +247,42 @@ func (p *Provider) revokeGrant(ctx context.Context, id string) {
 //	default:        <grantID>.<base64url(key)>                    pure read, never changes
 //	RotateRefresh:  <grantID>.<counter>.<base64url(HMAC(key, grantID, counter))>
 //
-// where key = HMAC(master-derived key, grantID, grant.Secret). The stored grant secret is only a seed: a copy of the
-// database without the master key cannot produce or recognise a refresh token.
-func (p *Provider) refreshToken(g *model.Grant, rotate bool) string {
-	if !rotate {
-		return g.ID + "." + b64.EncodeToString(p.grantKey(g))
+// where key is the grant's own random key, stored sealed with the master key (model.Grant.Key): a copy of the
+// database without the master key cannot produce or recognise a refresh token, and a master key rotation re-seals
+// the key without changing the tokens.
+func (p *Provider) refreshToken(g *model.Grant, rotate bool) (string, error) {
+	if rotate {
+		return p.counterToken(g)
 	}
-	return p.counterToken(g)
+	key, err := p.grantKey(g)
+	if err != nil {
+		return "", err
+	}
+	return g.ID + "." + b64.EncodeToString(key), nil
 }
 
-// grantKey is the grant's refresh token key (see refreshToken).
-func (p *Provider) grantKey(g *model.Grant) []byte {
-	return p.svc.RefreshKey(g.ID, g.Secret)
+var errNoGrantKey = errors.New("oidc: the grant has no refresh token key")
+
+// grantKey is the grant's refresh token key (see refreshToken). A grant from before grants had their own key is
+// converted (ConvertGrantKey) before it issues a token.
+func (p *Provider) grantKey(g *model.Grant) ([]byte, error) {
+	keys, legacy, err := p.svc.GrantRefreshKeys(g)
+	switch {
+	case err != nil:
+		return nil, err
+	case legacy || len(keys) == 0:
+		return nil, errNoGrantKey
+	}
+	return keys[0], nil
 }
 
-func (p *Provider) counterToken(g *model.Grant) string {
+func (p *Provider) counterToken(g *model.Grant) (string, error) {
+	key, err := p.grantKey(g)
+	if err != nil {
+		return "", err
+	}
 	c := strconv.FormatUint(g.Counter, 10)
-	return g.ID + "." + c + "." + b64.EncodeToString(secure.MAC(p.grantKey(g), g.ID, c))
+	return g.ID + "." + c + "." + b64.EncodeToString(secure.MAC(key, g.ID, c)), nil
 }
 
 // parsedRefresh is a refresh token split into its parts.
@@ -299,16 +322,27 @@ func parseRefresh(tok string) (parsedRefresh, bool) {
 	return pr, true
 }
 
-// authentic verifies the token's secret or MAC against the grant (nothing about counters yet).
-func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) bool {
-	if len(g.Secret) == 0 {
-		return false
+// authentic verifies the token's secret or MAC against the grant (nothing about counters yet). For a grant from
+// before grants had their own key, legacy is the derived key that matched: the caller converts the grant to it.
+func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) (ok bool, legacy []byte) {
+	keys, isLegacy, err := p.svc.GrantRefreshKeys(g)
+	if err != nil {
+		return false, nil
 	}
-	key := p.grantKey(g)
-	if pr.counted {
-		return hmac.Equal(secure.MAC(key, g.ID, strconv.FormatUint(pr.counter, 10)), pr.mac)
+	for _, key := range keys {
+		if pr.counted {
+			ok = hmac.Equal(secure.MAC(key, g.ID, strconv.FormatUint(pr.counter, 10)), pr.mac)
+		} else {
+			ok = subtle.ConstantTimeCompare(pr.secret, key) == 1
+		}
+		if ok {
+			if isLegacy {
+				return true, key
+			}
+			return true, nil
+		}
 	}
-	return subtle.ConstantTimeCompare(pr.secret, key) == 1
+	return false, nil
 }
 
 func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string) (*tokenResponse, *oauthError) {
@@ -324,8 +358,20 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		}
 		return nil, serverError(err)
 	}
-	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !p.authentic(pr, g) || !p.grantLive(ctx, g) {
+	ok, legacy := p.authentic(pr, g)
+	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok || !p.grantLive(ctx, g) {
 		return nil, invalid
+	}
+	if legacy != nil {
+		// A grant from before grants had their own key: the key its tokens are made from becomes its own (the
+		// tokens stay the same), so they no longer depend on the master key that derived it. Saved with the
+		// rotation's counter below, or here.
+		p.svc.ConvertGrantKey(g, legacy)
+		if !(c.RotateRefresh || c.Public()) {
+			if err := p.svc.Grants.Update(ctx, g); err != nil && !errors.Is(err, store.ErrStale) {
+				return nil, serverError(err)
+			}
+		}
 	}
 	// Authentic token for this client. A static token only works while the grant has never rotated.
 	if !pr.counted && g.Counter != 0 {
@@ -397,7 +443,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			}
 			return nil, serverError(err)
 		}
-		newRefresh = p.counterToken(g)
+		if newRefresh, err = p.counterToken(g); err != nil {
+			return nil, serverError(err)
+		}
 	case pr.counted && pr.counter != g.Counter:
 		return nil, invalid
 	}

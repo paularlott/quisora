@@ -47,6 +47,7 @@ type Server struct {
 	TLSCert              string   `toml:"tls_cert" flag:"tls-cert" usage:"TLS certificate (PEM); without it a self-signed certificate is generated in <data-dir>/tls"`
 	TLSKey               string   `toml:"tls_key" flag:"tls-key" usage:"TLS private key (PEM)"`
 	MasterKey            string   `toml:"master_key" flag:"master-key" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
+	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
 	TrustProxy           []string `toml:"trust_proxy" flag:"trust-proxy" usage:"Proxies (CIDRs or IPs) whose X-Forwarded-For is honoured"`
 	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
 	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach private addresses"`
@@ -210,6 +211,54 @@ func Load(path string) (*Config, error) {
 	return c, c.Validate()
 }
 
+// masterKeyErrors checks server.master_key and server.previous_master_keys.
+func masterKeyErrors(master string, previous []string) []error {
+	var errs []error
+	if master != "" {
+		if k, err := base64.StdEncoding.DecodeString(master); err != nil || len(k) != 32 {
+			errs = append(errs, errors.New("server.master_key must be 32 bytes, base64 encoded (quisora genkey)"))
+		}
+	}
+	for i, v := range previous {
+		if k, err := base64.StdEncoding.DecodeString(v); err != nil || len(k) != 32 {
+			errs = append(errs, fmt.Errorf("server.previous_master_keys[%d] must be 32 bytes, base64 encoded", i))
+		} else if v == master {
+			errs = append(errs, fmt.Errorf("server.previous_master_keys[%d] is server.master_key itself", i))
+		}
+	}
+	if len(previous) > 0 && master == "" {
+		errs = append(errs, errors.New("server.previous_master_keys needs server.master_key (rotating the generated "+
+			"data_dir/master.key: set its value as a previous key and a new one as server.master_key)"))
+	}
+	return errs
+}
+
+// LoadMasterKeys reads server.master_key and server.previous_master_keys again, for a running server reloading its
+// master keys (SIGHUP): from the config file path (if non-empty), then the QUISORA_* environment variables, as at
+// start-up; nothing else is read or checked. (Values given on the command line cannot change while it runs.)
+func LoadMasterKeys(path string) (master string, previous []string, err error) {
+	c := Default()
+	if path != "" {
+		if _, err := toml.DecodeFile(path, c); err != nil {
+			return "", nil, fmt.Errorf("config %s: %w", path, err)
+		}
+	}
+	for _, st := range settings(c) {
+		if st.Path != "server.master_key" && st.Path != "server.previous_master_keys" {
+			continue
+		}
+		if val, ok := os.LookupEnv(st.Env); ok {
+			if err := st.set(val); err != nil {
+				return "", nil, fmt.Errorf("%s: %w", st.Env, err)
+			}
+		}
+	}
+	if errs := masterKeyErrors(c.Server.MasterKey, c.Server.PreviousMasterKeys); len(errs) > 0 {
+		return "", nil, errors.Join(errs...)
+	}
+	return c.Server.MasterKey, c.Server.PreviousMasterKeys, nil
+}
+
 // Validate checks the configuration and fills derived defaults.
 func (c *Config) Validate() error {
 	var errs []error
@@ -249,11 +298,7 @@ func (c *Config) Validate() error {
 	if (c.Server.TLSCert == "") != (c.Server.TLSKey == "") {
 		errs = append(errs, errors.New("server.tls_cert and server.tls_key must be set together"))
 	}
-	if c.Server.MasterKey != "" {
-		if k, err := base64.StdEncoding.DecodeString(c.Server.MasterKey); err != nil || len(k) != 32 {
-			errs = append(errs, errors.New("server.master_key must be 32 bytes, base64 encoded (quisora genkey)"))
-		}
-	}
+	errs = append(errs, masterKeyErrors(c.Server.MasterKey, c.Server.PreviousMasterKeys)...)
 	if c.Cluster.Key != "" {
 		if k, err := base64.StdEncoding.DecodeString(c.Cluster.Key); err != nil || len(k) != 32 {
 			errs = append(errs, errors.New("cluster.key must be 32 bytes, base64 encoded (quisora genkey)"))

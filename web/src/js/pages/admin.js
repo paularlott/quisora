@@ -1270,6 +1270,58 @@ export default function (Alpine) {
     },
   }))
 
+  // ---- Master key rotation (super admins): GET /api/v1/master-key, polled --------------------------------------------
+  const MASTER_KEY_POLL_MS = 30000 // the status reads every sealed value: not too often
+  const MASTER_KEY_STATE = {
+    none: { title: 'No rotation in progress.', cls: 'alert alert-success' },
+    waiting_for_nodes: { title: 'Waiting for the nodes.', cls: 'alert alert-warning' },
+    resealing: { title: 'Re-sealing.', cls: 'alert alert-warning' },
+    unopenable: { title: 'Secrets no key opens.', cls: 'alert alert-error' },
+    legacy_grants: { title: 'Almost done.', cls: 'alert alert-warning' },
+    complete: { title: 'Rotation complete: remove the previous keys.', cls: 'alert alert-success' },
+  }
+  const countBadge = (n, danger) => (n ? (danger ? 'badge badge-danger' : 'badge badge-warning') : 'badge badge-success')
+  Alpine.data('adminMasterKey', () => ({
+    st: {}, nodes: [], loading: true, loaded: false, loadError: '', apiBase: '', updated: null, timer: null,
+    init() {
+      this.apiBase = this.$el.dataset.api
+      this.timer = setInterval(() => { if (document.visibilityState === 'visible') this.load() }, MASTER_KEY_POLL_MS)
+      return this.load()
+    },
+    destroy() { clearInterval(this.timer) },
+    async load() {
+      this.loading = true
+      try {
+        const st = await get(`${this.apiBase}/master-key`)
+        this.st = st
+        this.nodes = Object.entries(st.nodes || {}).sort(([a], [b]) => a.localeCompare(b)).map(([id, k]) => ({
+          id, active: k.active_key,
+          activeNote: k.active_key === st.active_key ? 'Same as this node' : 'Different',
+          activeClass: k.active_key === st.active_key ? 'badge badge-success' : 'badge badge-warning',
+          previousText: (k.previous_keys || []).join(', ') || 'None',
+        }))
+        this.updated = new Date()
+        this.loadError = ''
+        this.loaded = true
+      } catch (e) { this.loadError = e.message }
+      this.loading = false
+    },
+    get state() { return MASTER_KEY_STATE[this.st.state] || { title: '', cls: 'alert alert-warning' } },
+    get stateTitle() { return this.state.title },
+    get stateClass() { return this.state.cls },
+    get removable() { return !!this.st.previous_keys_removable },
+    get notRemovable() { return !this.st.previous_keys_removable },
+    get previousText() { return (this.st.previous_keys || []).join(', ') || 'None' },
+    get staleClass() { return countBadge(this.st.stale_secrets) },
+    get unopenableClass() { return countBadge(this.st.unopenable_secrets, true) },
+    get legacyClass() { return countBadge(this.st.legacy_grants) },
+    get busyAttr() { return this.loading ? 'true' : 'false' },
+    get hasLoadError() { return this.loadError !== '' },
+    get updatedText() {
+      return this.updated ? `Checked ${this.updated.toLocaleTimeString()}, every ${MASTER_KEY_POLL_MS / 1000} seconds.` : ''
+    },
+  }))
+
   // ---- Small shared page behaviours -------------------------------------------------------------------------------
   Alpine.data('pageBase', () => ({}))
 }

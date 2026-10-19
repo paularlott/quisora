@@ -41,7 +41,7 @@ func openForCommand(ctx context.Context, c *config.Config) (store.Store, *secure
 	if err != nil {
 		return nil, nil, fmt.Errorf("master key: %w", err)
 	}
-	sealer, err := secure.NewSealer(key)
+	sealer, err := newSealer(c, key)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -52,7 +52,7 @@ func openForCommand(ctx context.Context, c *config.Config) (store.Store, *secure
 		}
 		return nil, nil, fmt.Errorf("storage: %w", err)
 	}
-	store.Origin = "cli"
+	store.SetOrigin("cli")
 	return st, sealer, nil
 }
 

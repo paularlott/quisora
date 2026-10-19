@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/paularlott/cli"
+	logpkg "github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/app"
 	"github.com/paularlott/quisora/internal/build"
 	"github.com/paularlott/quisora/internal/config"
@@ -41,10 +44,58 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if err != nil {
 				return err
 			}
-			<-ctx.Done()
-			log.Info("shutting down")
-			a.Close()
-			return nil
+			// SIGHUP reloads the master keys (a master key rotation without restarts; docs/RUNNING.md). Nothing else is
+			// reloaded.
+			hup := make(chan os.Signal, 1)
+			signal.Notify(hup, syscall.SIGHUP)
+			defer signal.Stop(hup)
+			for {
+				select {
+				case <-ctx.Done():
+					log.Info("shutting down")
+					a.Close()
+					return nil
+				case <-hup:
+					reloadMasterKeys(ctx, c, a, log)
+				}
+			}
 		},
 	}
+}
+
+// reloadMasterKeys reads server.master_key and server.previous_master_keys again (config file and environment) and
+// switches the running server to them (app.ReloadMasterKeys); any problem is logged, and the keys in use stay.
+func reloadMasterKeys(ctx context.Context, c *cli.Command, a *app.App, log logpkg.Logger) {
+	if onCommandLine(os.Args[1:], "master-key", "previous-master-keys") {
+		log.Error("master keys not reloaded: they were given on the command line, which cannot change while the " +
+			"server runs; put them in the config file to rotate without restarting")
+		return
+	}
+	file := ""
+	if c.ConfigFile != nil {
+		file = c.ConfigFile.FileUsed()
+	}
+	master, previous, err := config.LoadMasterKeys(file)
+	if err == nil {
+		err = a.ReloadMasterKeys(ctx, master, previous)
+	}
+	if err != nil {
+		log.Error("master keys not reloaded", "error", err)
+	}
+}
+
+// onCommandLine reports whether one of the flags was given in args (--name, -name, with or without =value). The cli
+// package does not tell a flag given on the command line from one filled from the config file.
+func onCommandLine(args []string, names ...string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		a = strings.TrimLeft(a, "-")
+		a, _, _ = strings.Cut(a, "=")
+		if slices.Contains(names, a) {
+			return true
+		}
+	}
+	return false
 }

@@ -83,3 +83,28 @@ func TestSharedDatabaseMasterKeyCheck(t *testing.T) {
 		t.Fatalf("another key: %v", err)
 	}
 }
+
+// A master key rotation on a shared database: a node whose ring holds the database's key as a previous one starts
+// and moves the database to its active key; from then on a node given only the old key refuses, and one given only the
+// new key starts.
+func TestSharedDatabaseMasterKeyRotation(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	k1, k2 := secure.RandomBytes(32), secure.RandomBytes(32)
+	old, _ := secure.NewSealer(k1)
+	ring, _ := secure.NewKeyring(k2, k1)
+	only2, _ := secure.NewSealer(k2)
+	log := logger.NewNullLogger()
+	if err := checkSharedKey(ctx, st, old, true, log); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSharedKey(ctx, st, ring, true, log); err != nil {
+		t.Fatalf("the rotating node: %v", err)
+	}
+	if err := checkSharedKey(ctx, st, old, true, log); err == nil {
+		t.Fatal("a node with only the old key started after the rotation")
+	}
+	if err := checkSharedKey(ctx, st, only2, true, log); err != nil {
+		t.Fatalf("a node with only the new key: %v", err)
+	}
+}

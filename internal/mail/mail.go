@@ -1,8 +1,8 @@
 // Package mail sends the transactional emails (invitation, password reset, address verification): SMTP with
 // STARTTLS or implicit TLS, a small in-memory retry queue, and durable single-use links from the service.
 //
-// When no SMTP host is configured, messages are logged instead of sent so a development install still works; the
-// log line carries the text body, links included.
+// Without an SMTP host there is no mailer at all: nothing is emailed, and administrators share invitation links
+// themselves (see app.modules).
 package mail
 
 import (

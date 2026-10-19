@@ -341,3 +341,42 @@ func TestSnapshotIsPointInTime(t *testing.T) {
 		t.Fatalf("live count %d", n)
 	}
 }
+
+// A backup made before a master key rotation verifies and restores with a keyring that holds the old key as a
+// previous one (plain and encrypted), and is refused once the old key is gone.
+func TestBackupAcrossKeyRotation(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	k1, k2 := secure.RandomBytes(32), secure.RandomBytes(32)
+	old, _ := secure.NewSealer(k1)
+	src := memstore.New()
+	if _, _, err := service.New(cfg, src, old).Bootstrap(ctx, "root@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	ring, _ := secure.NewKeyring(k2, k1)
+	only2, _ := secure.NewSealer(k2)
+	for _, enc := range []bool{false, true} {
+		var buf bytes.Buffer
+		if _, err := backup.WriteWith(ctx, src, old, &buf, backup.Options{Encrypt: enc}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), ring); err != nil {
+			t.Fatalf("encrypt=%v: verify with the ring: %v", enc, err)
+		}
+		if _, err := backup.Restore(ctx, memstore.New(), ring, bytes.NewReader(buf.Bytes()), false); err != nil {
+			t.Fatalf("encrypt=%v: restore with the ring: %v", enc, err)
+		}
+		if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2); err == nil {
+			t.Fatalf("encrypt=%v: verified without the key it was made with", enc)
+		}
+	}
+	// a backup made after the rotation is made with the new key
+	var buf bytes.Buffer
+	if _, err := backup.WriteWith(ctx, src, ring, &buf, backup.Options{Encrypt: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2); err != nil {
+		t.Fatalf("new backup with the new key: %v", err)
+	}
+}

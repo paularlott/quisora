@@ -12,6 +12,7 @@ node_modules/
 /web/dist/*
 !/web/dist/.gitkeep
 /web/test-results/
+/test-results/
 /web/playwright-report/
 /web/blob-report/
 

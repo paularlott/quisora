@@ -97,3 +97,17 @@ func (m *Module) clusterStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	web.WriteJSON(w, http.StatusOK, m.ClusterStatus())
 }
+
+// masterKeyStatus reports where a master key rotation stands (service.RotationStatus). Super admins only.
+func (m *Module) masterKeyStatus(w http.ResponseWriter, r *http.Request) {
+	if !web.Actor(r).IsSuper() {
+		web.WriteError(w, service.ErrForbidden)
+		return
+	}
+	st, err := m.s.Svc.RotationStatus(r.Context())
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, st)
+}

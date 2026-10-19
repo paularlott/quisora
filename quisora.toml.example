@@ -9,6 +9,8 @@ data_dir = "/var/lib/quisora"
 # tls_key = "/etc/quisora/tls.key"
 # master_key = ""                         # `quisora genkey`; seals secrets at rest. Required (and identical) in a cluster;
                                           # a standalone node generates data_dir/master.key when unset
+# previous_master_keys = []               # during a master key rotation only: the old key, until the log says the rotation is complete
+                                          # (docs/RUNNING.md#rotating-the-master-key)
 # trust_proxy = ["10.0.0.0/8"]            # honour X-Forwarded-For only from these
 # bootstrap_admin = "admin@example.com"   # email of the first super admin (the sign-in name; default admin@example.com),
                                           # created by `quisora bootstrap` with the primary organization (which
@@ -16,6 +18,7 @@ data_dir = "/var/lib/quisora"
                                           # invitation link to set one; `quisora invite primary admin@example.com` reissues it
 # allow_private_networks = false          # let back-channel logout / jwks_uri / upstream calls reach private addresses
 # extra_ca_file = ""                      # PEM of extra CA certificates trusted for those outbound HTTPS calls (an internal CA)
+# restore_from = ""                       # backup file loaded at start-up when the store is empty (ignored once it has data)
 
 [ui]
 site_name = "Identity"
@@ -32,14 +35,19 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 # [storage.sqlite]
 # path = "/var/lib/quisora/quisora.db"
 # [storage.postgres]
-# dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=require"
+# dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=verify-full"
+# max_open_conns = 0                      # 0 = the driver's default (also for mysql and mariadb)
+# max_idle_conns = 0
 # [storage.mysql]
 # dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
 # [storage.mariadb]
 # dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
 # [storage.valkey]
 # addrs = ["valkey:6379"]
+# username = ""
 # password = ""
+# db = 0
+# tls = false
 # key_prefix = "quisora:"
 
 [cluster]
@@ -47,6 +55,7 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 #  - share one database server (postgres, mysql, mariadb, valkey) and leave bind empty: no gossip, the database is
 #    the only copy, short-lived sign-in state lives there too;
 #  - give every node its own database (any backend) and set bind: the nodes replicate to each other over gossip.
+# node_id = ""                            # UUID; default: generated and kept in the data directory
 # bind = "0.0.0.0:7946"                   # empty = no gossip
 # advertise = "10.0.0.11:7946"
 # peers = ["10.0.0.11:7946", "10.0.0.12:7946", "10.0.0.13:7946"]   # every node lists every other (required with bind)
@@ -65,7 +74,7 @@ id_token_ttl = 600
 refresh_ttl = 2592000                     # 30 days
 code_ttl = 60
 key_rotation_days = 30
-api_token_max_days = 365                  # longest personal API token lifetime; 0 = no limit (empty = never)
+api_token_max_days = 365                  # longest personal API token lifetime, days; 0 = tokens may never expire
 
 [session]
 ttl = 604800                              # 7 days from sign-in

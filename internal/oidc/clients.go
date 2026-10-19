@@ -131,8 +131,9 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 // clientAuthFailuresPerMin bounds failed client authentications per client id and IP address and minute (token,
 // introspection and revocation endpoints together): secrets cannot be guessed anyway, but a flood of attempts (and
 // of private_key_jwt signature checks) costs work. Keyed by client as well as address, so one client's failures do
-// not lock out the others behind a shared address (a load balancer without trust_proxy); a correct secret is always
-// accepted, and only a failure touches the counter.
+// not lock out the others behind a shared address (a load balancer without trust_proxy). Only a failure counts; past
+// the limit every attempt from that client and address is refused for the rest of the minute, the right secret too
+// (see authenticateClient).
 const clientAuthFailuresPerMin = 30
 
 // authenticateClient is checkClient with a ceiling on failures.

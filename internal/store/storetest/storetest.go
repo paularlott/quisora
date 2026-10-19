@@ -130,7 +130,7 @@ func testPutGet(t *testing.T, s store.Store) {
 	}
 	r, err := s.Get(ctx, model.KindUser, u.ID)
 	must(t, err)
-	if r.Scope != "org1" || r.Origin != store.Origin || len(r.Unique) != 2 {
+	if r.Scope != "org1" || r.Origin != store.Origin() || len(r.Unique) != 2 {
 		t.Fatalf("record metadata not preserved: %+v", r)
 	}
 }

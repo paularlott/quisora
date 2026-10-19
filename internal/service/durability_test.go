@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/paularlott/gossip/hlc"
@@ -179,5 +180,75 @@ func TestDeleteFromStaleCopyIsRefused(t *testing.T) {
 	st.rec = nil
 	if cur, err := svc.Users.Get(ctx, u.ID); err != nil || cur.Role != model.RoleAdmin {
 		t.Fatalf("the administrator is gone: %v %+v", err, cur)
+	}
+}
+
+// Master key rotation: secrets sealed with the old key are re-sealed by a keyring whose active key is the new one,
+// until a pass finds nothing left; the new key alone then opens every one of them.
+func TestResealSecretsAfterRotation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	k1, k2 := secure.RandomBytes(32), secure.RandomBytes(32)
+	old, _ := secure.NewSealer(k1)
+	st := memstore.New()
+	svc := service.New(cfg, st, old)
+	ctx := context.Background()
+	super, _, err := svc.Bootstrap(ctx, "root@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i := range 5 {
+		u, err := svc.CreateUser(ctx, service.System, super.OrgID, service.UserInput{Username: ptr(fmt.Sprintf("u%d", i)),
+			Email: ptr(fmt.Sprintf("u%d@example.com", i)), GivenName: ptr("U")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.TOTPSecret = old.SealFor(service.TOTPBinding(u.ID), []byte(fmt.Sprintf("totp-%d", i)))
+		if err := svc.Users.Update(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, u.ID)
+	}
+	p, err := svc.CreateProvider(ctx, service.System, super.OrgID, service.ProviderInput{Type: ptr(model.ProviderOIDC),
+		Name: ptr("SSO"), Issuer: ptr("https://sso.example.com"), ClientID: ptr("cid"), ClientSecret: ptr("provider-secret")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ring, _ := secure.NewKeyring(k2, k1)
+	rotated := service.New(cfg, st, ring)
+	r, err := rotated.ResealSecrets(ctx, 3) // a limit below the work: two passes
+	if err != nil || r.Resealed != 3 || r.Done() {
+		t.Fatalf("first pass: %+v %v", r, err)
+	}
+	r, err = rotated.ResealSecrets(ctx, 100)
+	if err != nil || r.Resealed != 3 || !r.Done() {
+		t.Fatalf("second pass: %+v %v", r, err)
+	}
+	if r, _ := rotated.ResealSecrets(ctx, 100); r.Resealed != 0 || !r.Done() {
+		t.Fatalf("third pass: %+v", r)
+	}
+
+	only2, _ := secure.NewSealer(k2)
+	for i, id := range ids {
+		u, _ := svc.Users.Get(ctx, id)
+		if v, err := only2.OpenFor(service.TOTPBinding(id), u.TOTPSecret); err != nil || string(v) != fmt.Sprintf("totp-%d", i) {
+			t.Fatalf("user %d: %q %v", i, v, err)
+		}
+	}
+	pp, _ := svc.Providers.Get(ctx, p.ID)
+	if v, err := only2.OpenFor(service.ProviderSecretBinding(p.ID), pp.ClientSecret); err != nil || string(v) != "provider-secret" {
+		t.Fatalf("provider secret: %q %v", v, err)
+	}
+
+	// a value no configured key opens is reported, not lost
+	k3 := secure.RandomBytes(32)
+	foreign, _ := secure.NewSealer(k3)
+	u, _ := svc.Users.Get(ctx, ids[0])
+	u.TOTPSecret = foreign.SealFor(service.TOTPBinding(u.ID), []byte("x"))
+	_ = svc.Users.Update(ctx, u)
+	if r, _ := rotated.ResealSecrets(ctx, 100); r.Failed != 1 || r.Done() {
+		t.Fatalf("unopenable value: %+v", r)
 	}
 }

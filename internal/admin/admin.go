@@ -147,6 +147,7 @@ func (m *Module) routes() []Route {
 		{"GET", "/api/v1/keys", m.listKeys},
 		{"POST", "/api/v1/keys/rotate", m.rotateKeys},
 		{"GET", "/api/v1/backup", m.downloadBackup},
+		{"GET", "/api/v1/master-key", m.masterKeyStatus},
 		{"GET", "/api/v1/cluster", m.clusterStatus},
 	}
 }

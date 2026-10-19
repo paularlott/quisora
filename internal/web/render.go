@@ -38,8 +38,11 @@ type Page struct {
 	IsSuper bool
 	IsAdmin bool // admin of their own org (or super)
 	IsMgr   bool // manager+ of their own org
-	Nav     string
-	Data    any
+	// KeyRotation: a master key rotation is in progress on this node (previous master keys are configured); super
+	// admins get the master key rotation page in the menu.
+	KeyRotation bool
+	Nav         string
+	Data        any
 }
 
 // Renderer executes page templates: each pages/<name>.html is combined with layouts/*.html and partials/*.html.

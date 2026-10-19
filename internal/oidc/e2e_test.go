@@ -27,7 +27,9 @@ import (
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
 )
@@ -45,10 +47,13 @@ type harness struct {
 
 func ptr[T any](v T) *T { return &v }
 
-func setup(t testing.TB, cfgFn func(*config.Config)) *harness {
+func setup(t testing.TB, cfgFn func(*config.Config)) *harness { return setupKey(t, cfgFn, nil) }
+
+// setupKey is setup with a chosen master key.
+func setupKey(t testing.TB, cfgFn func(*config.Config), masterKey []byte) *harness {
 	t.Helper()
 	var p *Provider
-	env := webtest.New(t, webtest.Options{Configure: cfgFn, Modules: func(s *web.Server) []web.Module {
+	env := webtest.New(t, webtest.Options{Configure: cfgFn, MasterKey: masterKey, Modules: func(s *web.Server) []web.Module {
 		p = New(s)
 		return []web.Module{p}
 	}})
@@ -2623,4 +2628,113 @@ func TestEnterpriseScope(t *testing.T) {
 	if c := claimsOf(t, r2.str("id_token")); c["enterprise"] != nil {
 		t.Error("enterprise claim without the scope")
 	}
+}
+
+// Master key rotation: a refresh token stays the same across a rotation and keeps working once the old key is
+// removed, because the grant's own key is re-sealed with the new one; the old key alone opens nothing any more.
+func TestRefreshTokenAcrossMasterKeyRotation(t *testing.T) {
+	ctx := context.Background()
+	k0, k1 := secure.RandomBytes(32), secure.RandomBytes(32)
+	h := setupKey(t, nil, k0)
+	cl, secret := h.newClient(nil)
+	r, _ := h.login(cl, secret, url.Values{"scope": {"openid profile offline_access"}})
+	rt := r.str("refresh_token")
+	if rt == "" {
+		t.Fatal("no refresh token")
+	}
+	rotating, rsecret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
+	r, _ = h.login(rotating, rsecret, url.Values{"scope": {"openid profile offline_access"}})
+	rrt := r.str("refresh_token")
+
+	ring, _ := secure.NewKeyring(k1, k0)
+	h.env.Svc.Sealer = ring
+	if r := h.refreshWith(cl, secret, rt); r.status != 200 || r.str("refresh_token") != "" {
+		t.Fatalf("during the rotation: %d %v", r.status, r.m)
+	}
+	if res, err := h.env.Svc.ResealSecrets(ctx, 1000); err != nil || !res.Done() {
+		t.Fatalf("reseal: %+v %v", res, err)
+	}
+
+	only1, _ := secure.NewSealer(k1)
+	h.env.Svc.Sealer = only1
+	if r := h.refreshWith(cl, secret, rt); r.status != 200 {
+		t.Fatalf("the same token after the old key was removed: %d %v", r.status, r.m)
+	}
+	r = h.refreshWith(rotating, rsecret, rrt)
+	if r.status != 200 || r.str("refresh_token") == "" {
+		t.Fatalf("rotating token after the old key was removed: %d %v", r.status, r.m)
+	}
+	if r := h.refreshWith(rotating, rsecret, r.str("refresh_token")); r.status != 200 {
+		t.Fatalf("the next rotating token: %d %v", r.status, r.m)
+	}
+
+	// nothing stored opens with the old key any more
+	old, _ := secure.NewSealer(k0)
+	gs, _, _ := h.env.Svc.Grants.List(ctx, store.ListQuery{})
+	for _, g := range gs {
+		if _, err := old.OpenFor(service.GrantKeyBinding(g.ID), g.Key); err == nil {
+			t.Fatalf("grant %s still opens with the old key", g.ID)
+		}
+	}
+}
+
+// A refresh grant from before grants had their own key (its key derived from the master key over a stored seed) is
+// converted: by the re-seal pass when there is one master key, or when its token is next used during a rotation. Its
+// token stays the same either way.
+func TestLegacyGrantKeyConversion(t *testing.T) {
+	ctx := context.Background()
+	k0, k1 := secure.RandomBytes(32), secure.RandomBytes(32)
+	h := setupKey(t, nil, k0)
+	cl, secret := h.newClient(nil)
+	legacy := func() (*model.Grant, string) {
+		g := &model.Grant{ClientID: cl.ID, UserID: h.user.ID, OrgID: h.user.OrgID, SessionID: "legacy",
+			Scopes: []string{"openid", "offline_access"}, AMR: []string{"pwd"}, AuthTime: time.Now(),
+			Secret: secure.RandomBytes(32), Expires: time.Now().Add(time.Hour)}
+		g.ID = model.NewID()
+		if err := h.env.Svc.Grants.Create(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+		return g, g.ID + "." + b64.EncodeToString(h.env.Svc.Sealer.MAC("refresh", g.ID, string(g.Secret)))
+	}
+	sessionLive := func(g *model.Grant) { // the grant's session must exist for a refresh
+		t.Helper()
+		_ = h.env.Svc.Sessions.Create(ctx, &model.Session{Meta: model.Meta{ID: g.SessionID}, UserID: g.UserID,
+			OrgID: g.OrgID, AuthTime: time.Now(), Expires: time.Now().Add(time.Hour), LastSeen: time.Now()})
+	}
+
+	// one master key: the re-seal pass converts it
+	g1, t1 := legacy()
+	sessionLive(g1)
+	if r := h.refreshWith(cl, secret, t1); r.status != 200 {
+		t.Fatalf("legacy token: %d %v", r.status, r.m)
+	}
+	g2, t2 := legacy()
+	if res, err := h.env.Svc.ResealSecrets(ctx, 1000); err != nil || !res.Done() {
+		t.Fatalf("reseal: %+v %v", res, err)
+	}
+	if g, _ := h.env.Svc.Grants.Get(ctx, g2.ID); g.Key == "" || len(g.Secret) != 0 {
+		t.Fatalf("not converted: %+v", g)
+	}
+
+	// during a rotation it cannot be converted blind: it waits for its token, and holds the rotation open
+	g3, t3 := legacy()
+	ring, _ := secure.NewKeyring(k1, k0)
+	h.env.Svc.Sealer = ring
+	if res, _ := h.env.Svc.ResealSecrets(ctx, 1000); res.Legacy != 1 || res.Done() {
+		t.Fatalf("legacy grant during a rotation: %+v", res)
+	}
+	if r := h.refreshWith(cl, secret, t3); r.status != 200 {
+		t.Fatalf("legacy token during a rotation: %d %v", r.status, r.m)
+	}
+	if res, _ := h.env.Svc.ResealSecrets(ctx, 1000); !res.Done() {
+		t.Fatalf("after its token was used: %+v", res)
+	}
+	only1, _ := secure.NewSealer(k1)
+	h.env.Svc.Sealer = only1
+	for _, tok := range []string{t1, t2, t3} {
+		if r := h.refreshWith(cl, secret, tok); r.status != 200 {
+			t.Fatalf("converted token %s after the old key was removed: %d %v", tok, r.status, r.m)
+		}
+	}
+	_ = g3
 }

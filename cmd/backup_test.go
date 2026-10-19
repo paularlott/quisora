@@ -67,3 +67,20 @@ func TestRemoteBackup(t *testing.T) {
 		t.Fatal("plain http accepted")
 	}
 }
+
+func TestOnCommandLine(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--config", "q.toml", "serve"}, false},
+		{[]string{"serve", "--master-key", "x"}, true},
+		{[]string{"serve", "--master-key=x"}, true},
+		{[]string{"serve", "-previous-master-keys=x"}, true},
+		{[]string{"serve", "--", "--master-key"}, false},
+	} {
+		if got := onCommandLine(tc.args, "master-key", "previous-master-keys"); got != tc.want {
+			t.Errorf("%v: %v", tc.args, got)
+		}
+	}
+}

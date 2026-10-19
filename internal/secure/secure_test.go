@@ -1,16 +1,22 @@
 package secure
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -149,4 +155,68 @@ func TestRootPool(t *testing.T) {
 	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
 		t.Errorf("the extra CA is not trusted: %v", err)
 	}
+}
+
+// Master key rotation: a value sealed with the old key opens with a keyring whose active key is the new one, is
+// reported stale, and re-seals into one that the new key alone opens. A value from before sealed values named their
+// key (v2) opens with any key of the ring and is stale too. A key that is not configured is reported as such.
+func TestKeyringRotation(t *testing.T) {
+	k1, k2 := RandomBytes(32), RandomBytes(32)
+	old, _ := NewSealer(k1)
+	ring, err := NewKeyring(k2, k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	only2, _ := NewSealer(k2)
+
+	v := old.SealFor("user/u1/totp", []byte("secret"))
+	if !strings.HasPrefix(v, "v3:"+KeyID(k1)+":") {
+		t.Fatalf("sealed value does not name its key: %s", v)
+	}
+	if p, err := ring.OpenFor("user/u1/totp", v); err != nil || string(p) != "secret" {
+		t.Fatalf("ring opens old value: %q %v", p, err)
+	}
+	if _, err := only2.OpenFor("user/u1/totp", v); !errors.Is(err, ErrUnknownKey) {
+		t.Fatalf("the new key alone: %v", err)
+	}
+	if !ring.Stale(v) || old.Stale(v) {
+		t.Fatal("staleness")
+	}
+	nv, err := ring.Reseal("user/u1/totp", v)
+	if err != nil || ring.Stale(nv) {
+		t.Fatalf("reseal: %v", err)
+	}
+	if p, err := only2.OpenFor("user/u1/totp", nv); err != nil || string(p) != "secret" {
+		t.Fatalf("new key opens re-sealed value: %q %v", p, err)
+	}
+	if _, err := ring.OpenFor("user/u2/totp", nv); err == nil {
+		t.Fatal("binding not enforced")
+	}
+
+	// a v2 value (no key id) from before keys were named
+	a, _ := cipher.NewGCM(must(aes.NewCipher(k1)))
+	nonce := RandomBytes(a.NonceSize())
+	v2 := "v2:" + base64.RawStdEncoding.EncodeToString(a.Seal(nonce, nonce, []byte("legacy"), []byte("b")))
+	if p, err := ring.OpenFor("b", v2); err != nil || string(p) != "legacy" || !ring.Stale(v2) {
+		t.Fatalf("v2 value: %q %v", p, err)
+	}
+
+	// MACs: the active key's first, then the previous ones
+	if m := ring.MACs("x"); len(m) != 2 || !bytes.Equal(m[0], only2.MAC("x")) || !bytes.Equal(m[1], old.MAC("x")) {
+		t.Fatal("MACs")
+	}
+	// unbound values open with any key of the ring
+	if p, err := ring.Open(old.Seal([]byte("tmp"))); err != nil || string(p) != "tmp" {
+		t.Fatalf("unbound: %v", err)
+	}
+	if _, err := NewKeyring(k1, k1); err == nil {
+		t.Fatal("the same key twice accepted")
+	}
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

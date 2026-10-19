@@ -41,7 +41,7 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("master key: %w", err)
 	}
-	sealer, err := secure.NewSealer(key)
+	sealer, err := newSealer(c, key)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -53,7 +53,7 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 		return "", time.Time{}, fmt.Errorf("storage: %w", err)
 	}
 	defer st.Close()
-	store.Origin = "cli"
+	store.SetOrigin("cli")
 	svc := service.New(c, st, sealer)
 	defer cliAudit(c, svc, log)()
 	return InviteUser(ctx, svc, orgName, email)
@@ -136,7 +136,7 @@ func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgNam
 	if err != nil {
 		return "", nil, fmt.Errorf("master key: %w", err)
 	}
-	sealer, err := secure.NewSealer(key)
+	sealer, err := newSealer(c, key)
 	if err != nil {
 		return "", nil, err
 	}
@@ -148,7 +148,7 @@ func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgNam
 		return "", nil, fmt.Errorf("storage: %w", err)
 	}
 	defer st.Close()
-	store.Origin = "cli"
+	store.SetOrigin("cli")
 	svc := service.New(c, st, sealer)
 	defer cliAudit(c, svc, log)()
 	org, err := svc.OrgByName(ctx, orgName)

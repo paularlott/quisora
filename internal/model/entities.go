@@ -608,7 +608,10 @@ type Grant struct {
 	AuthTime  time.Time `msgpack:"at" json:"auth_time"`
 	Nonce     string    `msgpack:"nc" json:"-"`
 	Counter   uint64    `msgpack:"n" json:"-"`
-	Secret    []byte    `msgpack:"k" json:"-"` // seed of the refresh token key (service.RefreshKey)
+	// Key is the grant's refresh token key, random, sealed with the master key (service.GrantKeyBinding); the tokens
+	// are made from it (oidc refreshToken). Grants from before it existed have Secret instead (see GrantRefreshKeys).
+	Key    string `msgpack:"rk,omitempty" json:"-"`
+	Secret []byte `msgpack:"k,omitempty" json:"-"` // legacy: seed of a key derived from the master key
 	// Resources are the resource indicators (RFC 8707) the user authorized; a refresh may narrow them, never widen.
 	Resources []string `msgpack:"rs" json:"resources,omitempty"`
 	// ClaimsUI and ClaimsID are claims requested one by one (the claims request parameter) for userinfo and for

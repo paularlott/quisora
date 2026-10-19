@@ -10,3 +10,7 @@ web/dist
 web/test-results
 **/*.test
 **/.DS_Store
+test-results
+.env
+.env.*
+quisora.toml

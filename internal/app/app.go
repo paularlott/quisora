@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -74,7 +75,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	if err != nil {
 		return nil, fmt.Errorf("master key: %w", err)
 	}
-	sealer, err := secure.NewSealer(key)
+	sealer, err := newSealer(c, key)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +103,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		return nil, fmt.Errorf("cluster: %w", err)
 	}
 	a.Node = node
-	store.Origin = node.ID()
+	store.SetOrigin(node.ID())
 	a.Store = node.Store()
 	a.closers = append(a.closers, func() { _ = a.Store.Close() }, func() { _ = node.Close() })
 	a.Eph = node.EphemeralStore()
@@ -196,21 +197,36 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 		log.Warn("server.master_key is not set: with a shared database every node must be given the same key " +
 			"(quisora genkey); this node uses the one generated in its data directory")
 	}
-	check := []byte(base64.RawURLEncoding.EncodeToString(sealer.MAC("quisora shared master key check")[:12]))
+	var checks [][]byte // one per key of the ring, the active one first
+	for _, m := range sealer.MACs("quisora shared master key check") {
+		checks = append(checks, []byte(base64.RawURLEncoding.EncodeToString(m[:12])))
+	}
 	t := store.NewTable[model.Ephemeral](st)
 	e, err := t.Get(ctx, sharedKeyCheckID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		if err := t.Create(ctx, &model.Ephemeral{Meta: model.Meta{ID: sharedKeyCheckID}, Value: check}); err != nil &&
+		if err := t.Create(ctx, &model.Ephemeral{Meta: model.Meta{ID: sharedKeyCheckID}, Value: checks[0]}); err != nil &&
 			!errors.Is(err, store.ErrStale) {
 			return fmt.Errorf("master key check: %w", err)
 		}
 		return checkSharedKey(ctx, st, sealer, true, logger.NewNullLogger()) // created here or concurrently elsewhere
 	case err != nil:
 		return fmt.Errorf("master key check: %w", err)
-	case string(e.Value) != string(check):
+	}
+	i := slices.IndexFunc(checks, func(c []byte) bool { return string(c) == string(e.Value) })
+	switch {
+	case i < 0:
 		return errors.New("this node's master key differs from the one the other nodes of this shared database use: " +
-			"set server.master_key to the same value on every node")
+			"set server.master_key to the same value on every node (and, during a rotation, the same " +
+			"server.previous_master_keys)")
+	case i > 0:
+		// A rotation: the database names a previous key of this node's ring. From here on it names the new one, so a
+		// node that is still given only the old key refuses to start instead of sealing with it.
+		e.Value = checks[0]
+		if err := t.Update(ctx, e); err != nil && !errors.Is(err, store.ErrStale) {
+			return fmt.Errorf("master key check: %w", err)
+		}
+		log.Info("master key rotation: this shared database now expects the new master key", "key", sealer.ActiveKeyID())
 	}
 	return nil
 }
@@ -268,4 +284,18 @@ func (h *health) Ready() (bool, string) {
 		return false, "not set up: run \"quisora bootstrap\""
 	}
 	return true, ""
+}
+
+// newSealer builds the master keyring: key seals; server.previous_master_keys (a rotation in progress) only open
+// what they sealed and verify what they MACed.
+func newSealer(c *config.Config, key []byte) (*secure.Sealer, error) {
+	var prev [][]byte
+	for _, v := range c.Server.PreviousMasterKeys {
+		k, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("server.previous_master_keys: %w", err)
+		}
+		prev = append(prev, k)
+	}
+	return secure.NewKeyring(key, prev...)
 }

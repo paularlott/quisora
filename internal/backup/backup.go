@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -225,6 +226,7 @@ func Empty(ctx context.Context, st store.Store) (bool, error) {
 // and (with a sealer) the MAC. fn may be nil.
 func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error) (Stats, error) {
 	br0 := bufio.NewReader(r)
+	var dec *decReader
 	if encrypted(br0) {
 		if sealer == nil {
 			// Without the master key only the encryption framing can be checked: every chunk present, the last one
@@ -235,7 +237,7 @@ func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error
 		if err != nil {
 			return nil, err
 		}
-		r = dr
+		r, dec = dr, dr
 	} else {
 		r = br0
 	}
@@ -246,9 +248,6 @@ func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error
 	defer zr.Close()
 	br := bufio.NewReaderSize(zr, 64<<10)
 	var mac hash.Hash
-	if sealer != nil {
-		mac = newMAC(sealer)
-	}
 	next := func() ([]byte, error) {
 		b, err := br.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) { // a long record line
@@ -277,9 +276,17 @@ func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error
 		return nil, fmt.Errorf("%w: version %d is not supported by this build", ErrFormat, h.Version)
 	}
 	if sealer != nil {
-		if h.KeyCheck != keyCheck(sealer) {
+		// The key of the master keyring the backup was made with (a backup from before a master key rotation needs
+		// the old key as one of server.previous_master_keys); an encrypted one was opened with that same key.
+		keys := sealer.Keys()
+		if dec != nil {
+			keys = keys[dec.key : dec.key+1]
+		}
+		i := slices.IndexFunc(keys, func(k *secure.Sealer) bool { return h.KeyCheck == keyCheck(k) })
+		if i < 0 {
 			return nil, ErrKey
 		}
+		mac = newMAC(keys[i])
 		mac.Write(first)
 	}
 	stats := Stats{}

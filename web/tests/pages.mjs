@@ -30,6 +30,8 @@ const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { nam
 
 export const PAGES = [
   { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
+  // Master key rotation status (with the demo's -rotation flag, a rotation halfway through).
+  { name: 'master-key', path: '/admin/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
   { name: 'users', path: `${A}/users`, as: 'admin', steps: [waitRows] },
   { name: 'users-new', path: `${A}/users`, as: 'admin', steps: [waitRows, open('New user')], dialog: true },

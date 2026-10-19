@@ -38,6 +38,7 @@ type Options struct {
 	Store     store.Store          // default: memstore
 	Configure func(*config.Config) // edit config before start
 	Modules   func(*web.Server) []web.Module
+	MasterKey []byte // default: a random one
 }
 
 // New starts a server. The TLS server's certificate is trusted by Client().
@@ -61,7 +62,11 @@ func New(t testing.TB, o Options) *Env {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	key := o.MasterKey
+	if key == nil {
+		key = secure.RandomBytes(32)
+	}
+	sealer, _ := secure.NewSealer(key)
 	svc := service.New(cfg, st, sealer)
 	admin, _, err := svc.Bootstrap(ctx, "admin@example.com")
 	if err != nil {

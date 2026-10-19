@@ -1,0 +1,157 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
+)
+
+// Every node reports its master keys (their ids, secure.KeyID: the one it seals with first, then its previous ones),
+// in a replicated record that expires unless renewed: during a rotation the housekeeping leader re-seals only once
+// every live node seals with the same key as itself, and only then says the previous keys can go. Otherwise a leader still on the old key would re-seal back to
+// it, and a node still on the old key would keep sealing new secrets with it after the re-seal.
+
+const (
+	masterKeyReportPrefix = "master-key/"
+	// MasterKeyReportTTL is how long a node's report counts without being renewed (a stopped node stops counting).
+	MasterKeyReportTTL = 15 * time.Minute
+)
+
+// ReportMasterKey records node nodeID's master keys (this service's keyring), for MasterKeyReportTTL.
+func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
+	id := masterKeyReportPrefix + nodeID
+	for range 5 {
+		until, keys := time.Now().Add(MasterKeyReportTTL), strings.Join(s.Sealer.KeyIDs(), ",")
+		l, err := s.Locks.Get(ctx, id)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			err = s.Locks.Create(ctx, &model.Lock{Meta: model.Meta{ID: id}, Holder: keys, Until: until})
+		case err == nil:
+			l.Holder, l.Until = keys, until
+			err = s.Locks.Update(ctx, l)
+		}
+		if err == nil || (!errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound)) {
+			return mapStore(err)
+		}
+	}
+	return ErrStale
+}
+
+// NodeKeys is what a node reported of its master keys.
+type NodeKeys struct {
+	Active   string   `json:"active_key"`
+	Previous []string `json:"previous_keys"`
+}
+
+// MasterKeyNodes returns the master keys each live node reported, by node id.
+func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, error) {
+	l, _, err := s.Locks.List(ctx, store.ListQuery{})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	now := time.Now()
+	out := map[string]NodeKeys{}
+	for _, r := range l {
+		if node, ok := strings.CutPrefix(r.ID, masterKeyReportPrefix); ok && r.Until.After(now) {
+			ids := strings.Split(r.Holder, ",")
+			out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...)}
+		}
+	}
+	return out, nil
+}
+
+// MasterKeyAgreed reports whether every live node seals with this service's active master key, and the nodes that do
+// not (node id -> key id).
+func (s *Service) MasterKeyAgreed(ctx context.Context) (bool, map[string]string, error) {
+	nodes, err := s.MasterKeyNodes(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	others := map[string]string{}
+	for node, k := range nodes {
+		if k.Active != s.Sealer.ActiveKeyID() {
+			others[node] = k.Active
+		}
+	}
+	return len(others) == 0, others, nil
+}
+
+// MasterKeyStatus is where a master key rotation stands, as any node sees it (GET /api/v1/master-key).
+type MasterKeyStatus struct {
+	Active   string   `json:"active_key"`    // the key this node seals with
+	Previous []string `json:"previous_keys"` // this node's server.previous_master_keys
+	// Nodes are the keys every live node reported, by node id; NodesAgree says they all seal with Active.
+	Nodes      map[string]NodeKeys `json:"nodes"`
+	NodesAgree bool                `json:"nodes_agree"`
+	// Stale counts stored secrets sealed with a previous key (the housekeeping leader re-seals them); Unopenable
+	// those no configured key opens; LegacyGrants the refresh grants from an earlier version still bound to a
+	// previous key (converted when next used).
+	Stale        int `json:"stale_secrets"`
+	Unopenable   int `json:"unopenable_secrets"`
+	LegacyGrants int `json:"legacy_grants"`
+	// Removable says the previous keys can be removed now: every node seals with the active key and nothing stored
+	// needs another one. State is one of none (no previous keys), waiting_for_nodes, resealing, unopenable,
+	// legacy_grants, complete; Detail says what to do.
+	Removable bool   `json:"previous_keys_removable"`
+	State     string `json:"state"`
+	Detail    string `json:"detail"`
+}
+
+// RotationStatus reports where a master key rotation stands. It reads every sealed value (without changing any).
+func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) {
+	ids := s.Sealer.KeyIDs()
+	st := &MasterKeyStatus{Active: ids[0], Previous: ids[1:]}
+	nodes, err := s.MasterKeyNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st.Nodes, st.NodesAgree = nodes, true
+	var others []string
+	for node, k := range nodes {
+		if k.Active != st.Active {
+			st.NodesAgree = false
+			others = append(others, node+" ("+k.Active+")")
+		}
+	}
+	r, err := s.resealSecrets(ctx, 0, true)
+	if err != nil {
+		return nil, err
+	}
+	st.Stale, st.Unopenable, st.LegacyGrants = r.Pending, r.Failed, r.Legacy
+	switch {
+	case !st.NodesAgree:
+		st.State = "waiting_for_nodes"
+		st.Detail = "Not every node seals with " + st.Active + " yet: " + strings.Join(others, ", ") +
+			". Finish the step on every node; the re-seal starts once they all do."
+	case st.Unopenable > 0:
+		st.State = "unopenable"
+		st.Detail = itoa(st.Unopenable) + " stored secrets open with no configured key: put the missing key back in " +
+			"server.previous_master_keys."
+	case st.Stale > 0:
+		st.State = "resealing"
+		st.Detail = itoa(st.Stale) + " stored secrets are still sealed with a previous key; the housekeeping leader " +
+			"re-seals them within minutes."
+	case st.LegacyGrants > 0:
+		st.State = "legacy_grants"
+		st.Detail = itoa(st.LegacyGrants) + " refresh grants from an earlier version still depend on a previous key " +
+			"until they are next used; removing the previous keys now ends them (their users sign in again)."
+	case len(st.Previous) == 0:
+		st.State = "none"
+		st.Detail = "No previous master keys are configured on this node: no rotation in progress."
+	default:
+		st.State, st.Removable = "complete", true
+		st.Detail = "Every node seals with " + st.Active + " and every stored secret is sealed with it: remove " +
+			"server.previous_master_keys on every node now (keep the old keys only with backups made before the rotation)."
+	}
+	for _, k := range nodes { // a node that still lists previous keys is not finished either
+		if st.State == "none" && len(k.Previous) > 0 {
+			st.State, st.Removable = "complete", true
+			st.Detail = "This node has no previous keys, but some nodes still do: remove them there."
+		}
+	}
+	return st, nil
+}

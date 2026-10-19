@@ -33,6 +33,7 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:18443", "listen address")
 	theme := flag.String("theme", "system", "default theme: light, dark or system")
+	rotation := flag.Bool("rotation", false, "show a master key rotation in progress (the master key rotation page)")
 	flag.Parse()
 
 	dir, err := os.MkdirTemp("", "quisora-uidemo")
@@ -56,12 +57,28 @@ func main() {
 
 	hub := events.NewHub()
 	st := &publishing{Store: memstore.New(), hub: hub}
-	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	oldKey := secure.RandomBytes(32)
+	sealer, _ := secure.NewSealer(oldKey)
 	svc := service.New(cfg, st, sealer)
 	ctx := context.Background()
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
 	must(err)
 	demo, byName := seed(ctx, svc, super)
+	if *rotation {
+		// Halfway through a rotation: this node seals with a new key, another still with the old one, and the secrets
+		// sealed so far are under the old key.
+		for _, u := range demo {
+			if cur, err := svc.Users.Get(ctx, u.ID); err == nil && cur.TOTPSecret == "" {
+				cur.TOTPSecret = sealer.SealFor(service.TOTPBinding(cur.ID), []byte("demo-totp"))
+				_ = svc.Users.Update(ctx, cur)
+			}
+		}
+		ring, _ := secure.NewKeyring(secure.RandomBytes(32), oldKey)
+		sealer.Replace(ring)
+		must(svc.ReportMasterKey(ctx, "0199a1c2-demo-node-one"))
+		old, _ := secure.NewKeyring(oldKey)
+		must(service.New(cfg, st, old).ReportMasterKey(ctx, "0199a1c2-demo-node-two"))
+	}
 
 	eph := ephemeral.NewLocal("demo")
 	srv, err := web.New(cfg, svc, eph, logger.NewNullLogger())
