@@ -137,14 +137,7 @@ const clientAuthFailuresPerMin = 30
 
 // authenticateClient is checkClient with a ceiling on failures.
 func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
-	id, _, _ := r.BasicAuth()
-	if id == "" {
-		id = r.PostForm.Get("client_id")
-	}
-	if len(id) > 128 {
-		id = id[:128]
-	}
-	key := "client-auth|" + id + "|" + web.ClientIP(r)
+	key := "client-auth|" + authClientID(r) + "|" + web.ClientIP(r)
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
 		desc: "too many failed client authentications; try again in a minute", retry: true}
 	// Over the limit, every attempt from this client and address is refused, the right secret included, before
@@ -160,6 +153,39 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 		return nil, limited
 	}
 	return ce, e
+}
+
+// authClientID is the client id a request authenticates as, resolved the way checkClient resolves it, for keying the
+// failure limit: the Basic user name form-urldecoded (else "%61bc" and "abc" would be separate budgets for guessing
+// one client), else client_id, else the issuer of a client assertion (client_id is optional with private_key_jwt,
+// RFC 7523 §3; without this such clients would share the empty-id budget that unauthenticated junk drains). Nothing
+// is verified here: naming a client only spends that client's budget from this address, whoever does it.
+func authClientID(r *http.Request) string {
+	id, _, ok := r.BasicAuth()
+	if ok {
+		if u, err := url.QueryUnescape(id); err == nil {
+			id = u
+		}
+	}
+	if id == "" {
+		id = r.PostForm.Get("client_id")
+	}
+	if id == "" {
+		if a := r.PostForm.Get("client_assertion"); a != "" {
+			if pj, err := ParseJWT(a); err == nil {
+				var cl struct {
+					Iss string `json:"iss"`
+				}
+				if json.Unmarshal(pj.Payload, &cl) == nil {
+					id = cl.Iss
+				}
+			}
+		}
+	}
+	if len(id) > 128 {
+		id = id[:128]
+	}
+	return id
 }
 
 func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {

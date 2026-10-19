@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -2198,6 +2199,61 @@ func TestClientAuthFailureLimit(t *testing.T) {
 		t.Errorf("another client from the same address: %d", r.status)
 	}
 	_ = osecret
+}
+
+// Failures that need no secret (unknown client ids, no client authentication at all) do not lock out real clients from
+// the same address: not one sending client_id, nor a private_key_jwt client leaving it out (RFC 7523 §3).
+func TestClientAuthFailureLimitStrangers(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	k := newAssertionKeys(t)[0]
+	jc, _ := h.newClient(func(in *service.ClientInput) {
+		in.AuthMethod = ptr(model.AuthMethodPrivateJWT)
+		in.JWKS = ptr(k.jwks)
+	})
+	for i := 0; i <= clientAuthFailuresPerMin; i++ {
+		h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("nope-%d", i)},
+			"client_secret": {"x"}}, "", "")
+		h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}}, "", "")
+		h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
+			"client_assertion": {"x.y.z"}}, "", "")
+	}
+	if r := h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+		t.Errorf("client_secret_post after the burst: %d %v", r.status, r.m)
+	}
+	for _, path := range []string{"/oauth/introspect", "/oauth/revoke"} {
+		if r := h.post(path, url.Values{"token": {"x"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+			t.Errorf("%s after the burst: %d %v", path, r.status, r.m)
+		}
+	}
+	if r := h.ccWithAssertion(jc, h.assertion(k, h.assertionClaims(jc, nil))); r.status != 200 {
+		t.Errorf("private_key_jwt without client_id after the burst: %d %v", r.status, r.m)
+	}
+}
+
+// The Basic user name is form-urlencoded (RFC 6749 §2.3.1): encoding the client id differently does not get a
+// fresh budget for guessing its secret.
+func TestClientAuthFailureLimitEncodedID(t *testing.T) {
+	h := setup(t, nil)
+	cl, _ := h.newClient(nil)
+	for i := 0; i < clientAuthFailuresPerMin; i++ {
+		h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}}, cl.ID, "wrong")
+	}
+	enc := ""
+	for _, b := range []byte(cl.ID) {
+		enc += fmt.Sprintf("%%%02X", b)
+	}
+	req, _ := http.NewRequest(http.MethodPost, h.env.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(enc, "wrong")
+	resp, err := h.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 429 {
+		t.Errorf("percent-encoded client id past the limit: %d", resp.StatusCode)
+	}
 }
 
 // Without offline_access a refresh token lasts only as long as the user's session; with it, it outlives the session's
