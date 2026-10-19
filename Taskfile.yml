@@ -1,5 +1,8 @@
 version: "3"
 
+# Local settings for the run tasks (never committed: .env is in .gitignore). See .env.example.
+dotenv: ['.env']
+
 vars:
   PROJECT_NAME: quisora
   PLATFORMS:
@@ -70,19 +73,22 @@ tasks:
       - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev'
 
   run-server:
-    desc: Run a standalone instance on https://192.168.8.171:8443 (self-signed certificate in data/dev/tls) with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.10:1025
+    desc: Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.110:1025
     deps: [build]
+    vars:
+      PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
+      LISTEN: '{{.DEV_LISTEN | default "localhost:8443"}}'
     cmds:
       - mkdir -p ./data/dev
       - >-
         {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap
         --data-dir ./data/dev
-        --public-url https://192.168.8.171:8443
+        --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --bootstrap-admin admin@example.com
       - >-
         {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve
-        --listen 0.0.0.0:8443
-        --public-url https://192.168.8.171:8443
+        --listen {{.LISTEN | default "127.0.0.1:8443"}}
+        --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --data-dir ./data/dev
         --smtp-host 192.168.8.110
         --smtp-port 1025

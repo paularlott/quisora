@@ -25,6 +25,7 @@ node_modules/
 /quisora.toml
 .env
 .env.*
+!.env.example
 
 # Editors and OS
 /.claude/
