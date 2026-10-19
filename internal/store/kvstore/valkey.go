@@ -21,6 +21,9 @@ type ValkeyConfig struct {
 	DB        int
 	KeyPrefix string // prepended to every key so several stores can share a server
 	TLS       bool
+	// TLSConfig verifies Valkey (a private CA, the name to verify) and presents a client certificate; nil with TLS:
+	// the system's roots and the address's host.
+	TLSConfig *tls.Config
 	// PipelineMultiplex is the exponent of the number of pipelined connections per node (2^n); 0 uses valkey-go's default.
 	PipelineMultiplex int
 }
@@ -113,6 +116,10 @@ func OpenValkey(ctx context.Context, cfg ValkeyConfig) (*Store, error) {
 	}
 	if cfg.TLS {
 		opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.TLSConfig != nil {
+			opt.TLSConfig = cfg.TLSConfig.Clone()
+			opt.TLSConfig.MinVersion = max(opt.TLSConfig.MinVersion, tls.VersionTLS12)
+		}
 	}
 	c, err := valkey.NewClient(opt)
 	if err != nil {

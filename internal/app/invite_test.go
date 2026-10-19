@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,7 @@ func mustPrimary(t *testing.T, svc *service.Service) string {
 func TestIssueInviteStoreLockedAndFree(t *testing.T) {
 	c := config.Default()
 	c.Server.DataDir = t.TempDir()
+	c.Server.MasterKey = base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
 	c.Server.PublicURL = "https://quisora.example.test"
 	c.Storage.Backend = "badgerdb"
 	c.Limits.PasswordWorkers = 2

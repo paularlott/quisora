@@ -30,7 +30,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip,
   with quorum writes for security-sensitive records.
 - **Audit log.** In the database, or in VictoriaLogs for real deployments. Every event also goes to the structured log.
-- **Backups.** Online, encrypted, verified before restore, into any backend.
+- **Backups.** Online, encrypted with a password by default, verified before restore, into any backend.
 
 ## Install
 
@@ -49,6 +49,7 @@ docker build -t quisora .
 ## Run a single node
 
 ```bash
+export QUISORA_MASTER_KEY="$(bin/quisora genkey)"            # keep it: it seals every secret in the store
 bin/quisora bootstrap --public-url https://localhost:8443   # once: prints the first admin's invitation link
 bin/quisora serve --public-url https://localhost:8443
 ```
@@ -63,7 +64,7 @@ This runs on BadgerDB in `./data` with a self-signed certificate. For a real dep
 - `--public-url` to your address,
 - `--tls-cert` / `--tls-key`,
 - `--data-dir`,
-- `--master-key` (`quisora genkey`).
+- the master key (`quisora genkey`) from a secret store, as `QUISORA_MASTER_KEY` or in the config file.
 
 Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --help` and
 [quisora.toml.example](quisora.toml.example).

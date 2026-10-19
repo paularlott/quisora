@@ -62,8 +62,12 @@ func TestOpenAPIDetails(t *testing.T) {
 	want(t, r, 200)
 	var doc struct {
 		Paths map[string]map[string]struct {
-			Security  []map[string][]string      `json:"security"`
-			Responses map[string]json.RawMessage `json:"responses"`
+			Security   []map[string][]string      `json:"security"`
+			Responses  map[string]json.RawMessage `json:"responses"`
+			Parameters []struct {
+				Name string `json:"name"`
+				In   string `json:"in"`
+			} `json:"parameters"`
 		} `json:"paths"`
 		Comps struct {
 			Schemas map[string]struct {
@@ -76,6 +80,13 @@ func TestOpenAPIDetails(t *testing.T) {
 	}
 	if b := doc.Paths["/api/v1/backup"]["get"]; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
 		t.Errorf("backup security: %+v", b.Security)
+	}
+	in := map[string]string{}
+	for _, p := range doc.Paths["/api/v1/backup"]["get"].Parameters {
+		in[p.Name] = p.In
+	}
+	if in["plain"] != "query" || in["X-Backup-Password"] != "header" {
+		t.Errorf("backup parameters: %v", in)
 	}
 	if _, ok := doc.Paths["/api/v1/orgs/{org}/users"]["post"].Responses["503"]; !ok {
 		t.Error("no 503 response")

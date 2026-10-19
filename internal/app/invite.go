@@ -11,7 +11,6 @@ import (
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
-	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -39,7 +38,7 @@ func InviteUser(ctx context.Context, svc *service.Service, orgName, email string
 func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgName, email string) (string, time.Time, error) {
 	key, err := masterKey(c)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("master key: %w", err)
+		return "", time.Time{}, err
 	}
 	sealer, err := newSealer(c, key)
 	if err != nil {
@@ -65,7 +64,7 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 // or "" when everything existed already (a second run does nothing). Serving never does this. In a gossip cluster
 // run it for the first node, before the others start; a run anywhere else changes nothing that exists.
 func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, link string, err error) {
-	st, sealer, err := openForCommandCreatingKey(ctx, c)
+	st, sealer, err := openForCommand(ctx, c)
 	if err != nil {
 		return "", "", err
 	}
@@ -121,22 +120,13 @@ func storeEmpty(ctx context.Context, st store.Store) (bool, error) {
 	return true, nil
 }
 
-// openForCommandCreatingKey is openForCommand for the first command a new server runs: it creates the master key in
-// the data directory when none is configured (as the first start used to).
-func openForCommandCreatingKey(ctx context.Context, c *config.Config) (store.Store, *secure.Sealer, error) {
-	if _, err := masterKey(c); err != nil {
-		return nil, nil, fmt.Errorf("master key: %w", err)
-	}
-	return openForCommand(ctx, c)
-}
-
 // SetPrimary ("quisora set-primary") opens the configured store, makes orgName the primary organization with the user
 // email as its super admin (service.SetPrimaryOrg), and closes the store. It returns the previous primary's name and
 // the usernames of its super admins, now administrators.
 func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgName, email string) (string, []string, error) {
 	key, err := masterKey(c)
 	if err != nil {
-		return "", nil, fmt.Errorf("master key: %w", err)
+		return "", nil, err
 	}
 	sealer, err := newSealer(c, key)
 	if err != nil {

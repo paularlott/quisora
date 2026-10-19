@@ -2,15 +2,14 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
 	"fmt"
-	"github.com/paularlott/quisora/internal/cluster"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/paularlott/quisora/internal/cluster"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/backup"
@@ -19,27 +18,11 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// existingMasterKey is the configured master key; unlike masterKey it never creates one (a restore into a fresh
-// data directory needs the key of the server the backup came from, not a new one).
-func existingMasterKey(c *config.Config) ([]byte, error) {
-	if c.Server.MasterKey != "" {
-		return base64.StdEncoding.DecodeString(c.Server.MasterKey)
-	}
-	b, err := os.ReadFile(filepath.Join(c.Server.DataDir, "master.key"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("no master key: set server.master_key or copy master.key into %s first", c.Server.DataDir)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-}
-
 // openForCommand opens the configured store and the master key's sealer for an offline command.
 func openForCommand(ctx context.Context, c *config.Config) (store.Store, *secure.Sealer, error) {
-	key, err := existingMasterKey(c)
+	key, err := masterKey(c)
 	if err != nil {
-		return nil, nil, fmt.Errorf("master key: %w", err)
+		return nil, nil, err
 	}
 	sealer, err := newSealer(c, key)
 	if err != nil {
@@ -67,14 +50,14 @@ func Backup(ctx context.Context, c *config.Config, w io.Writer, opt backup.Optio
 }
 
 // Restore loads a backup into the configured store, which must be empty unless force is set.
-func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool) (backup.Stats, error) {
+func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool, password string) (backup.Stats, error) {
 	st, sealer, err := openForCommand(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	defer st.Close()
 	// Checked in full before anything changes: a backup that is refused leaves the node as it was.
-	if _, err := backup.Verify(r, sealer); err != nil {
+	if _, err := backup.Verify(r, sealer, password); err != nil {
 		return nil, err
 	}
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
@@ -85,7 +68,7 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool)
 	if err := os.WriteFile(marker, []byte("quisora restore\n"), 0o600); err != nil {
 		return nil, err
 	}
-	stats, err := backup.Restore(ctx, st, sealer, r, force)
+	stats, err := backup.Restore(ctx, st, sealer, r, force, password)
 	if err != nil {
 		if stats.Total() == 0 {
 			_ = os.Remove(marker) // refused before writing anything
@@ -150,7 +133,7 @@ func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, seale
 	if err := os.WriteFile(marker, []byte(file+"\n"), 0o600); err != nil {
 		return fmt.Errorf("restore: %w", err)
 	}
-	stats, err := backup.Restore(ctx, st, sealer, f, false)
+	stats, err := backup.Restore(ctx, st, sealer, f, false, c.Server.RestorePassword)
 	if err != nil {
 		if stats.Total() == 0 { // refused before writing anything (another master key): nothing to clean up
 			_ = os.Remove(marker)

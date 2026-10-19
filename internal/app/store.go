@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/paularlott/quisora/internal/config"
@@ -15,26 +16,33 @@ func OpenStore(ctx context.Context, c *config.Config) (store.Store, error) {
 	st := c.Storage
 	switch st.Backend {
 	case "badgerdb":
+		var key []byte
+		if st.BadgerDB.EncryptionKey != "" {
+			var err error
+			if key, err = base64.StdEncoding.DecodeString(st.BadgerDB.EncryptionKey); err != nil {
+				return nil, fmt.Errorf("storage.badgerdb.encryption_key: %w", err)
+			}
+		}
 		return kvstore.OpenBadger(ctx, st.BadgerDB.Path, kvstore.BadgerOptions{
-			NoSync: !st.BadgerDB.SyncWrites})
+			NoSync: !st.BadgerDB.SyncWrites, EncryptionKey: key})
 	case "sqlite":
 		return sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: st.SQLite.Path, Feed: c.Replicate()})
-	case "postgres":
-		return sqlstore.Open(ctx, sqlstore.Config{Driver: "postgres", DSN: st.Postgres.DSN,
-			MaxOpenConns: st.Postgres.MaxOpenConns, MaxIdleConns: st.Postgres.MaxIdleConns,
-			Feed: c.Replicate()})
-	case "mysql":
-		return sqlstore.Open(ctx, sqlstore.Config{Driver: "mysql", DSN: st.MySQL.DSN,
-			MaxOpenConns: st.MySQL.MaxOpenConns, MaxIdleConns: st.MySQL.MaxIdleConns,
-			Feed: c.Replicate()})
-	case "mariadb":
-		return sqlstore.Open(ctx, sqlstore.Config{Driver: "mariadb", DSN: st.MariaDB.DSN,
-			MaxOpenConns: st.MariaDB.MaxOpenConns, MaxIdleConns: st.MariaDB.MaxIdleConns,
-			Feed: c.Replicate()})
+	case "postgres", "mysql", "mariadb":
+		db := map[string]config.SQLDSN{"postgres": st.Postgres, "mysql": st.MySQL, "mariadb": st.MariaDB}[st.Backend]
+		pool, err := caPool(db.CAFile, "storage."+st.Backend+".ca_file")
+		if err != nil {
+			return nil, err
+		}
+		return sqlstore.Open(ctx, sqlstore.Config{Driver: st.Backend, DSN: db.DSN, RootCAs: pool,
+			MaxOpenConns: db.MaxOpenConns, MaxIdleConns: db.MaxIdleConns, Feed: c.Replicate()})
 	case "valkey":
 		v := st.Valkey
+		t, err := valkeyTLS(v)
+		if err != nil {
+			return nil, err
+		}
 		return kvstore.OpenValkey(ctx, kvstore.ValkeyConfig{Addrs: v.Addrs, Username: v.Username, Password: v.Password,
-			DB: v.DB, KeyPrefix: v.KeyPrefix, TLS: v.TLS})
+			DB: v.DB, KeyPrefix: v.KeyPrefix, TLS: v.TLS, TLSConfig: t})
 	}
 	return nil, fmt.Errorf("unknown storage backend %q", st.Backend)
 }

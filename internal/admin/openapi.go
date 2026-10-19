@@ -26,6 +26,12 @@ const (
 	pUser = pOrg + "/users/{id}"
 )
 
+// paramDocs describe the Extra parameters that need more than their name.
+var paramDocs = map[string]string{
+	"plain":             "1: download the backup unencrypted (required unless X-Backup-Password is given)",
+	"X-Backup-Password": "password to encrypt the backup with, at least 12 characters (required unless ?plain=1)",
+}
+
 var opDocs = []opDoc{
 	{"GET", "/api/v1/orgs", "Organizations", "List organizations (non-super callers see only their own)", "", "Org", 200, true, "name,display_name,created", nil},
 	{"POST", "/api/v1/orgs", "Organizations", "Create an organization (super admin)", "OrgInput", "Org", 201, false, "", nil},
@@ -94,7 +100,7 @@ var opDocs = []opDoc{
 
 	{"GET", "/api/v1/keys", "Keys", "List signing keys, newest first, with their state (super admin)", "", "Key", 200, true, "", nil},
 	{"POST", "/api/v1/keys/rotate", "Keys", "Rotate the signing key now (super admin): a new key signs from now on; the old one stays published until the tokens it signed have expired", "", "KeyRotated", 200, false, "", nil},
-	{"GET", "/api/v1/backup", "Backup", "Download a backup of the whole store (super admin, with an API token: the backup scope): a gzip stream of every record, secrets still sealed with the master key; ?encrypt=1 encrypts the whole stream with a key derived from the master key. A point-in-time snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise). Restore it with \"quisora restore\" or \"quisora serve --restore-from\"", "", "Backup", 200, false, "", []string{"encrypt"}},
+	{"GET", "/api/v1/backup", "Backup", "Download a backup of the whole store (super admin, with an API token: the backup scope): every record, secrets still sealed with the master key. It is encrypted (AES-256-GCM, the key derived from the X-Backup-Password header by argon2id; application/octet-stream) unless ?plain=1 asks for it unencrypted (a gzip stream); one or the other is required (400 otherwise). \"quisora backup --server\" downloads it with ?plain=1 over TLS and encrypts it on the operator's machine, so the password never reaches the server. A point-in-time snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise). Restore it with \"quisora restore\" or \"quisora serve --restore-from\"", "", "Backup", 200, false, "", []string{"plain", "header:X-Backup-Password"}},
 	{"GET", "/api/v1/master-key", "Keys", "Where a master key rotation stands (super admin): the keys this node and every live node use, how many stored secrets are still sealed with a previous key or open with none, and whether the previous keys can be removed now (previous_keys_removable, state, detail). Reads every sealed value: a few seconds on a large directory", "", "MasterKey", 200, false, "", nil},
 	{"GET", "/api/v1/cluster", "Cluster", "This node's cluster status (super admin): size, quorum, every node with its address, state and role, readiness, and the counts of writes a majority did not confirm, refused writes and clock skew", "", "Cluster", 200, false, "", nil},
 }
@@ -361,7 +367,14 @@ func buildSpec() []byte {
 			}
 		}
 		for _, e := range d.Extra {
-			params = append(params, obj{"name": e, "in": "query", "schema": prop("string")})
+			p := obj{"name": e, "in": "query", "schema": prop("string")}
+			if h, ok := strings.CutPrefix(e, "header:"); ok { // a request header rather than a query parameter
+				p["name"], p["in"] = h, "header"
+			}
+			if desc, ok := paramDocs[p["name"].(string)]; ok {
+				p["description"] = desc
+			}
+			params = append(params, p)
 		}
 		status := d.Status
 		if status == 0 {

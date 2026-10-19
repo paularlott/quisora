@@ -905,15 +905,26 @@ func TestKeys(t *testing.T) {
 	want(t, w.as("admin").post("/api/v1/keys/rotate", nil), 403)
 }
 
-// GET /api/v1/backup streams a complete backup of the live store; super admins only.
+// GET /api/v1/backup streams a complete backup of the live store; super admins only. It is encrypted with the
+// password in X-Backup-Password, or unencrypted with ?plain=1; one or the other must be asked for.
 func TestBackupDownload(t *testing.T) {
 	w := newWorld(t)
-	r := w.as("super").get("/api/v1/backup")
+	want(t, w.as("super").get("/api/v1/backup"), 400)
+	want(t, w.as("super").do("GET", "/api/v1/backup", nil, "X-Backup-Password", "short"), 400)
+	enc := w.as("super").do("GET", "/api/v1/backup", nil, "X-Backup-Password", "correct horse battery")
+	want(t, enc, 200)
+	if !backup.PasswordProtected(enc.Raw) || enc.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("encrypted download: %v", enc.Header)
+	}
+	if _, err := backup.Verify(bytes.NewReader(enc.Raw), w.env.Svc.Sealer, "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	r := w.as("super").get("/api/v1/backup?plain=1")
 	want(t, r, 200)
 	if r.Header.Get("Content-Type") != "application/gzip" || !strings.Contains(r.Header.Get("Content-Disposition"), "attachment") {
 		t.Fatalf("headers %v", r.Header)
 	}
-	stats, err := backup.Verify(bytes.NewReader(r.Raw), w.env.Svc.Sealer)
+	stats, err := backup.Verify(bytes.NewReader(r.Raw), w.env.Svc.Sealer, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +942,7 @@ func TestBackupDownload(t *testing.T) {
 	}
 	c := w.withBearer("super", "api")
 	c.bearer = tok
-	want(t, c.get("/api/v1/backup"), 200)
+	want(t, c.get("/api/v1/backup?plain=1"), 200)
 	for name, in := range map[string]service.APITokenInput{
 		"no expiry": {Name: "b", Scopes: []string{"backup"}},
 		"too long":  {Name: "b", Scopes: []string{"backup"}, Expires: 31},
@@ -946,7 +957,7 @@ func TestBackupDownload(t *testing.T) {
 	}
 	// a node that is not ready (catching up, cut off) refuses rather than back up a partial store
 	w.env.Server.Health = notReady{}
-	want(t, w.as("super").get("/api/v1/backup"), 503)
+	want(t, w.as("super").get("/api/v1/backup?plain=1"), 503)
 	w.env.Server.Health = nil
 	if n := len(auditActions(t, w, "backup.download")); n < 2 {
 		t.Fatalf("backup downloads audited: %d", n)

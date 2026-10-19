@@ -46,11 +46,12 @@ type Server struct {
 	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory (keys, self-signed certificate, embedded databases)"`
 	TLSCert              string   `toml:"tls_cert" flag:"tls-cert" usage:"TLS certificate (PEM); without it a self-signed certificate is generated in <data-dir>/tls"`
 	TLSKey               string   `toml:"tls_key" flag:"tls-key" usage:"TLS private key (PEM)"`
-	MasterKey            string   `toml:"master_key" flag:"master-key" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
-	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
+	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
+	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" secret:"true" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
 	TrustProxy           []string `toml:"trust_proxy" flag:"trust-proxy" usage:"Proxies (CIDRs or IPs) whose X-Forwarded-For is honoured"`
 	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
 	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach private addresses"`
+	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
 }
@@ -76,6 +77,9 @@ type Storage struct {
 type BadgerDB struct {
 	Path       string `toml:"path" flag:"path" usage:"BadgerDB directory (default <data-dir>/badgerdb)"`
 	SyncWrites bool   `toml:"sync_writes" flag:"sync-writes" usage:"Sync every BadgerDB write to disk"`
+	// EncryptionKey encrypts the BadgerDB files at rest (AES-256). It is not the master key, and a store is created
+	// encrypted or not: an existing store cannot be switched (back up, then restore into a new encrypted one).
+	EncryptionKey string `toml:"encryption_key" flag:"encryption-key" secret:"true" usage:"Base64 32-byte key (quisora genkey) encrypting the BadgerDB files at rest; set when the store is created (empty = not encrypted)"`
 }
 
 type SQLite struct {
@@ -83,18 +87,23 @@ type SQLite struct {
 }
 
 type SQLDSN struct {
-	DSN          string `toml:"dsn" flag:"dsn" usage:"Database connection string"`
+	DSN          string `toml:"dsn" flag:"dsn" secret:"true" usage:"Database connection string"`
 	MaxOpenConns int    `toml:"max_open_conns" flag:"max-open-conns" usage:"Maximum open connections (0 = default)"`
 	MaxIdleConns int    `toml:"max_idle_conns" flag:"max-idle-conns" usage:"Maximum idle connections (0 = default)"`
+	CAFile       string `toml:"ca_file" flag:"ca-file" usage:"PEM CA certificates the database server's TLS certificate is verified against (a private CA; MySQL/MariaDB: also turns TLS on)"`
 }
 
 type Valkey struct {
-	Addrs     []string `toml:"addrs" flag:"addrs" usage:"Valkey server addresses (host:port)"`
-	Username  string   `toml:"username" flag:"username" usage:"Valkey username"`
-	Password  string   `toml:"password" flag:"password" usage:"Valkey password"`
-	DB        int      `toml:"db" flag:"db" usage:"Valkey database number"`
-	KeyPrefix string   `toml:"key_prefix" flag:"key-prefix" usage:"Prefix for every Valkey key"`
-	TLS       bool     `toml:"tls" flag:"tls" usage:"Connect to Valkey with TLS"`
+	Addrs      []string `toml:"addrs" flag:"addrs" usage:"Valkey server addresses (host:port)"`
+	Username   string   `toml:"username" flag:"username" usage:"Valkey username"`
+	Password   string   `toml:"password" flag:"password" secret:"true" usage:"Valkey password"`
+	DB         int      `toml:"db" flag:"db" usage:"Valkey database number"`
+	KeyPrefix  string   `toml:"key_prefix" flag:"key-prefix" usage:"Prefix for every Valkey key"`
+	TLS        bool     `toml:"tls" flag:"tls" usage:"Connect to Valkey with TLS"`
+	CAFile     string   `toml:"ca_file" flag:"ca-file" usage:"PEM CA certificates Valkey's TLS certificate is verified against (a private CA)"`
+	ServerName string   `toml:"server_name" flag:"server-name" usage:"Name Valkey's TLS certificate is verified for (default: the address's host)"`
+	CertFile   string   `toml:"cert_file" flag:"cert-file" usage:"Client certificate (PEM) for Valkey mutual TLS"`
+	KeyFile    string   `toml:"key_file" flag:"key-file" usage:"Client private key (PEM) for Valkey mutual TLS"`
 }
 
 type Cluster struct {
@@ -102,7 +111,7 @@ type Cluster struct {
 	Bind      string   `toml:"bind" flag:"bind" usage:"Gossip bind address (empty = standalone)"`
 	Advertise string   `toml:"advertise" flag:"advertise" usage:"Gossip address advertised to peers"`
 	Peers     []string `toml:"peers" flag:"peers" usage:"Gossip addresses of the other nodes"`
-	Key       string   `toml:"key" flag:"key" usage:"Base64 32-byte cluster encryption key (quisora genkey), identical on every node"`
+	Key       string   `toml:"key" flag:"key" secret:"true" usage:"Base64 32-byte cluster encryption key (quisora genkey), identical on every node"`
 	// Size is the number of nodes the cluster is made of, required with cluster.bind. The quorum (size/2+1) is
 	// computed from it and never changes while the cluster runs: not when a node leaves, stops or restarts. Changing
 	// it is a planned change of the whole cluster (see docs/REPLICATION.md, "Scaling").
@@ -142,7 +151,7 @@ type Mail struct {
 	SMTPHost string `toml:"smtp_host" flag:"smtp-host" usage:"SMTP server host name or IP address (without it, nothing is emailed: administrators share invitation links themselves)"`
 	SMTPPort int    `toml:"smtp_port" flag:"smtp-port" usage:"SMTP port"`
 	Username string `toml:"username" flag:"smtp-username" usage:"SMTP username"`
-	Password string `toml:"password" flag:"smtp-password" usage:"SMTP password"`
+	Password string `toml:"password" flag:"smtp-password" secret:"true" usage:"SMTP password"`
 	From     string `toml:"from" flag:"smtp-from" usage:"From address, e.g. Identity <no-reply@example.com>"`
 	TLS      string `toml:"tls" flag:"smtp-tls" usage:"SMTP TLS: starttls, tls or none"`
 }
@@ -153,7 +162,7 @@ type Audit struct {
 	Tokens        bool `toml:"tokens" flag:"tokens" usage:"Also audit every refresh and client_credentials token issued (new grants, revocations and token reuse are always audited)"`
 	// VictoriaLogs sends audit events to VictoriaLogs instead of the database, and the audit pages read them from
 	// there (any node). The base URL; user:password in it is sent as basic authentication.
-	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
+	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" secret:"true" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
 	// SpoolDir keeps audit events VictoriaLogs does not take (unreachable, refusing) on disk until it does, at most
 	// SpoolMaxMB; without it they are retried briefly and then dropped. One directory per node.
 	SpoolDir   string `toml:"victorialogs_spool_dir" flag:"victorialogs-spool-dir" usage:"Directory that keeps audit events VictoriaLogs does not take until it does (one per node; empty = no spool: they are retried briefly, then dropped)"`
@@ -300,6 +309,11 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("server.tls_cert and server.tls_key must be set together"))
 	}
 	errs = append(errs, masterKeyErrors(c.Server.MasterKey, c.Server.PreviousMasterKeys)...)
+	if v := c.Storage.BadgerDB.EncryptionKey; v != "" {
+		if k, err := base64.StdEncoding.DecodeString(v); err != nil || len(k) != 32 {
+			errs = append(errs, errors.New("storage.badgerdb.encryption_key must be 32 bytes, base64 encoded (quisora genkey)"))
+		}
+	}
 	if c.Cluster.Key != "" {
 		if k, err := base64.StdEncoding.DecodeString(c.Cluster.Key); err != nil || len(k) != 32 {
 			errs = append(errs, errors.New("cluster.key must be 32 bytes, base64 encoded (quisora genkey)"))

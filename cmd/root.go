@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/paularlott/cli"
 	cli_toml "github.com/paularlott/cli/toml"
@@ -52,6 +54,10 @@ func Root() *cli.Command {
 				DefaultText: configFileName + " in the current directory, ~/.config/quisora/ or /etc/quisora/",
 				EnvVars:     []string{config.EnvPrefix + "CONFIG"}},
 		}, global...),
+		PreRun: func(ctx context.Context, _ *cli.Command) (context.Context, error) {
+			warnSecretFlags(os.Stderr, cfg, os.Args[1:])
+			return ctx, nil
+		},
 		Commands: []*cli.Command{serveCmd(cfg, others), bootstrapCmd(cfg, server), forceStartCmd(cfg, others), setPrimaryCmd(cfg, others), inviteCmd(cfg, others), backupCmd(cfg, others), restoreCmd(cfg, others),
 			healthcheckCmd(cfg, others), genkeyCmd()},
 	}
@@ -93,4 +99,20 @@ next:
 		out = append(out, f)
 	}
 	return out
+}
+
+// warnSecretFlags warns about secrets given as command-line flags: anyone on the machine sees them in the process
+// list (ps), and orchestration often logs them. They are accepted (development tasks pass them that way); the config
+// file and the environment are the places for them.
+func warnSecretFlags(w io.Writer, cfg *config.Config, args []string) {
+	for _, s := range config.Settings(cfg) {
+		if !s.Secret || !onCommandLine(args, s.Flag) {
+			continue
+		}
+		if s.Path == "audit.victorialogs_url" && !strings.Contains(cfg.Audit.VictoriaLogs, "@") {
+			continue // a secret only when it carries basic-auth credentials
+		}
+		fmt.Fprintf(w, "warning: --%s is a secret on the command line, visible to anyone on this machine (ps); "+
+			"set %s or %s in the config file instead\n", s.Flag, s.Env, s.Path)
+	}
 }

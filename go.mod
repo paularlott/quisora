@@ -15,6 +15,7 @@ require (
 	github.com/shamaton/msgpack/v3 v3.2.4
 	github.com/valkey-io/valkey-go v1.0.79
 	golang.org/x/crypto v0.58.0
+	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.60.1
 	rsc.io/qr v0.2.0

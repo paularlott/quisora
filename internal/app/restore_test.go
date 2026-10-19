@@ -56,17 +56,15 @@ func TestRestoreFromAtStart(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	// without the backup's master key the start is refused, and no key is invented
-	if _, err := Start(ctx, restoreConfig(t, dir, file), logger.NewNullLogger()); err == nil || !strings.Contains(err.Error(), "master key") {
+	// without a master key the start is refused, and no key is invented
+	if _, err := Start(ctx, restoreConfig(t, dir, file), logger.NewNullLogger()); err == nil || !strings.Contains(err.Error(), "master_key is not set") {
 		t.Fatalf("start without the master key: %v", err)
-	}
-	key, _ := os.ReadFile(filepath.Join(src.Cfg.Server.DataDir, "master.key"))
-	if err := os.WriteFile(filepath.Join(dir, "master.key"), key, 0o600); err != nil {
-		t.Fatal(err)
 	}
 	start := func() *App {
 		t.Helper()
-		a, err := Start(ctx, restoreConfig(t, dir, file), logger.NewNullLogger())
+		c := restoreConfig(t, dir, file)
+		c.Server.MasterKey = src.Cfg.Server.MasterKey
+		a, err := Start(ctx, c, logger.NewNullLogger())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +108,9 @@ func TestRestoreFromAtStart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "restore-incomplete"), []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(ctx, restoreConfig(t, dir, file), logger.NewNullLogger()); err == nil || !strings.Contains(err.Error(), "did not finish") {
+	unfinished := restoreConfig(t, dir, file)
+	unfinished.Server.MasterKey = src.Cfg.Server.MasterKey
+	if _, err := Start(ctx, unfinished, logger.NewNullLogger()); err == nil || !strings.Contains(err.Error(), "did not finish") {
 		t.Fatalf("start after an unfinished restore: %v", err)
 	}
 }

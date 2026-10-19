@@ -5,6 +5,8 @@ dotenv: ['.env']
 
 vars:
   PROJECT_NAME: quisora
+  # development only: the master key the dev tasks pass (DEV_MASTER_KEY in .env overrides it); never use it for real data
+  DEV_MASTER_KEY: '{{.DEV_MASTER_KEY | default "sZ3MBZVe5iTdiVcu+MynBZ+sno66576XaxBkMyqMkuQ="}}'
   PLATFORMS:
     - linux/amd64
     - linux/arm64
@@ -69,8 +71,8 @@ tasks:
     desc: Run a local server (BadgerDB, self-signed certificate) on https://localhost:8443
     deps: [build]
     cmds:
-      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap --data-dir ./data/dev'
-      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev'
+      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap --data-dir ./data/dev --master-key "{{.DEV_MASTER_KEY}}"'
+      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev --master-key "{{.DEV_MASTER_KEY}}"'
 
   run-server:
     desc: Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.110:1025
@@ -82,11 +84,13 @@ tasks:
       - mkdir -p ./data/dev
       - >-
         {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap
+        --master-key "{{.DEV_MASTER_KEY}}"
         --data-dir ./data/dev
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --bootstrap-admin admin@example.com
       - >-
         {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve
+        --master-key "{{.DEV_MASTER_KEY}}"
         --listen {{.LISTEN | default "127.0.0.1:8443"}}
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --data-dir ./data/dev

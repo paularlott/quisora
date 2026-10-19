@@ -18,10 +18,13 @@ package sqlstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"runtime"
 	"strings"
@@ -30,8 +33,9 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
-	_ "modernc.org/sqlite"             // registers the "sqlite" database/sql driver
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib" // also registers the "pgx" database/sql driver
+	_ "modernc.org/sqlite"           // registers the "sqlite" database/sql driver
 
 	"github.com/paularlott/quisora/internal/model"
 )
@@ -42,6 +46,9 @@ type Config struct {
 	DSN          string // sqlite: a file path (or file: URI); others: the driver's DSN or URL
 	MaxOpenConns int    // 0 = default (sqlite: readers max(4, CPUs); servers: 32)
 	MaxIdleConns int    // 0 = default (servers: 8)
+	// RootCAs verifies the server's TLS certificate (a private CA; nil: the system's roots). For MySQL/MariaDB it
+	// also turns TLS on when the DSN does not; for PostgreSQL it applies when the DSN asks for TLS (sslmode).
+	RootCAs *x509.CertPool
 	// Feed enables the change feed (Changes, commit-ordered seq). It costs a serialised write path: an in-process
 	// mutex and a counter row locked until commit. Leave it off unless the data is replicated.
 	Feed bool
@@ -87,15 +94,31 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	case d.name == "sqlite":
 		err = s.openSQLite(ctx, cfg)
 	case d.isPG():
-		var db *sql.DB
-		if db, err = sql.Open("pgx", cfg.DSN); err == nil {
-			s.useServerPool(db, cfg)
+		var pc *pgx.ConnConfig
+		if pc, err = pgx.ParseConfig(cfg.DSN); err == nil {
+			if cfg.RootCAs != nil {
+				for _, t := range append([]*tls.Config{pc.TLSConfig}, fallbackTLS(pc)...) {
+					if t != nil && !t.InsecureSkipVerify {
+						t.RootCAs = cfg.RootCAs
+					}
+				}
+			}
+			s.useServerPool(stdlib.OpenDB(*pc), cfg)
 		}
 	default:
 		var mc *mysql.Config
 		if mc, err = mysql.ParseDSN(cfg.DSN); err == nil {
 			mc.Collation = "utf8mb4_bin"
 			mc.InterpolateParams = false
+			if cfg.RootCAs != nil && mc.Net != "unix" {
+				switch {
+				case mc.TLS == nil: // no tls in the DSN: a CA file asks for verified TLS
+					host, _, _ := net.SplitHostPort(mc.Addr)
+					mc.TLS = &tls.Config{RootCAs: cfg.RootCAs, ServerName: host, MinVersion: tls.VersionTLS12}
+				case !mc.TLS.InsecureSkipVerify:
+					mc.TLS.RootCAs = cfg.RootCAs
+				}
+			}
 			var conn driver.Connector
 			if conn, err = mysql.NewConnector(mc); err == nil {
 				s.useServerPool(sql.OpenDB(conn), cfg)
@@ -351,3 +374,13 @@ func (r *row) Scan(dest ...any) error {
 }
 
 func (s *Store) reader() runner { return runner{c: s.rc} }
+
+// fallbackTLS returns the TLS configurations of a PostgreSQL connection's fallbacks (sslmode=prefer tries TLS, then
+// plain).
+func fallbackTLS(pc *pgx.ConnConfig) []*tls.Config {
+	var out []*tls.Config
+	for _, f := range pc.Fallbacks {
+		out = append(out, f.TLSConfig)
+	}
+	return out
+}

@@ -18,7 +18,10 @@ type Setting struct {
 	Env   string // e.g. "QUISORA_POSTGRES_DSN"
 	Path  string // TOML path, e.g. "storage.postgres.dsn"
 	Usage string
-	field reflect.Value
+	// Secret marks a value that must not be seen by others on the machine: given as a flag it is in the process list
+	// (ps) and often in orchestration logs, so the config file or the environment are the places for it.
+	Secret bool
+	field  reflect.Value
 }
 
 // settings walks c and returns every setting, bound to c's fields. Struct fields with a `flag` tag prefix the flag
@@ -45,7 +48,7 @@ func settings(c *Config) []Setting {
 			}
 			flag := flagPrefix + name
 			out = append(out, Setting{Flag: flag, Env: EnvPrefix + strings.ToUpper(strings.ReplaceAll(flag, "-", "_")),
-				Path: path, Usage: f.Tag.Get("usage"), field: fv})
+				Path: path, Usage: f.Tag.Get("usage"), Secret: f.Tag.Get("secret") == "true", field: fv})
 		}
 	}
 	walk(reflect.ValueOf(c).Elem(), "", "")

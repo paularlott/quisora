@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/paularlott/quisora/internal/secure"
 	"io"
 	"net"
 	"net/http"
@@ -45,6 +46,7 @@ func startAppWith(t *testing.T, backend string, edit func(*config.Config)) (*App
 	c.Server.DataDir = t.TempDir()
 	c.Storage.Backend = backend
 	c.Limits.PasswordWorkers = 4
+	c.Server.MasterKey = base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
 	if edit != nil {
 		edit(c)
 	}

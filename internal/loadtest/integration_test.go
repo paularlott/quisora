@@ -2,6 +2,8 @@ package loadtest_test
 
 import (
 	"context"
+	"encoding/base64"
+	"github.com/paularlott/quisora/internal/secure"
 	"io"
 	"net"
 	"path/filepath"
@@ -28,6 +30,7 @@ func TestSeedAndRunEveryScenario(t *testing.T) {
 	c.Storage.Backend = "sqlite"
 	c.Limits.PasswordWorkers = 4
 	c.Limits.LoginPerIPMin = 0 // the load generator is one IP
+	c.Server.MasterKey = base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}

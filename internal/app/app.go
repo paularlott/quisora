@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/paularlott/logger"
@@ -42,23 +40,15 @@ type App struct {
 	closers []func()
 }
 
-// masterKey returns the configured master key, or (standalone only) one generated and kept in the data directory.
+// masterKey returns the configured master key (server.master_key, from the config file, QUISORA_MASTER_KEY or
+// --master-key). It is never generated or kept in the data directory: a key on the same volume as the data it seals
+// protects nothing from whoever copies that volume.
 func masterKey(c *config.Config) ([]byte, error) {
 	if c.Server.MasterKey != "" {
 		return base64.StdEncoding.DecodeString(c.Server.MasterKey)
 	}
-	path := filepath.Join(c.Server.DataDir, "master.key")
-	if b, err := os.ReadFile(path); err == nil {
-		return base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-	}
-	if err := os.MkdirAll(c.Server.DataDir, 0o700); err != nil {
-		return nil, err
-	}
-	k := secure.RandomBytes(32)
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(k)+"\n"), 0o600); err != nil {
-		return nil, err
-	}
-	return k, nil
+	return nil, errors.New("server.master_key is not set: make one with \"quisora genkey\" and set it in the config " +
+		"file, QUISORA_MASTER_KEY or --master-key (keep it safe, apart from the data and the backups)")
 }
 
 // Start opens everything and starts serving. Stop with Close (or cancel ctx and then Close).
@@ -67,13 +57,12 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	if err := os.MkdirAll(c.Server.DataDir, 0o700); err != nil {
 		return nil, err
 	}
-	getKey := masterKey
-	if c.Server.RestoreFrom != "" {
-		getKey = existingMasterKey // a restore needs the backup's key: a freshly generated one cannot open it
-	}
-	key, err := getKey(c)
+	key, err := masterKey(c)
 	if err != nil {
-		return nil, fmt.Errorf("master key: %w", err)
+		return nil, err
+	}
+	for _, w := range transportWarnings(c) {
+		log.Warn("connection without verified TLS: " + w)
 	}
 	sealer, err := newSealer(c, key)
 	if err != nil {
@@ -92,7 +81,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	}
 	if !c.Replicate() && c.SharedStorage() {
 		// Nodes sharing a database must share the master key too, or each seals secrets the others cannot open.
-		if err := checkSharedKey(ctx, inner, sealer, c.Server.MasterKey != "", log); err != nil {
+		if err := checkSharedKey(ctx, inner, sealer, log); err != nil {
 			_ = inner.Close()
 			return nil, err
 		}
@@ -193,11 +182,7 @@ const sharedKeyCheckID = "master-key-check"
 // checkSharedKey refuses to serve from a shared database whose nodes use different master keys: the first node to
 // start leaves a check value of its key in the database (never the key), and a node with another key stops with an
 // error instead of sealing secrets the others cannot open (and failing to open theirs).
-func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, configured bool, log logger.Logger) error {
-	if !configured {
-		log.Warn("server.master_key is not set: with a shared database every node must be given the same key " +
-			"(quisora genkey); this node uses the one generated in its data directory")
-	}
+func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, log logger.Logger) error {
 	var checks [][]byte // one per key of the ring, the active one first
 	for _, m := range sealer.MACs("quisora shared master key check") {
 		checks = append(checks, []byte(base64.RawURLEncoding.EncodeToString(m[:12])))
@@ -210,7 +195,7 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 			!errors.Is(err, store.ErrStale) {
 			return fmt.Errorf("master key check: %w", err)
 		}
-		return checkSharedKey(ctx, st, sealer, true, logger.NewNullLogger()) // created here or concurrently elsewhere
+		return checkSharedKey(ctx, st, sealer, logger.NewNullLogger()) // created here or concurrently elsewhere
 	case err != nil:
 		return fmt.Errorf("master key check: %w", err)
 	}

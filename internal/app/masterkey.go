@@ -15,9 +15,9 @@ import (
 func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []string) error {
 	c := *a.Cfg
 	c.Server.MasterKey, c.Server.PreviousMasterKeys = master, previous
-	key, err := existingMasterKey(&c)
+	key, err := masterKey(&c)
 	if err != nil {
-		return fmt.Errorf("master key: %w", err)
+		return err
 	}
 	next, err := newSealer(&c, key)
 	if err != nil {
@@ -33,7 +33,7 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 			"server.previous_master_keys until the rotation is complete", cur.ActiveKeyID())
 	}
 	if !c.Replicate() && c.SharedStorage() {
-		if err := checkSharedKey(ctx, a.Store, next, master != "", a.Log); err != nil {
+		if err := checkSharedKey(ctx, a.Store, next, a.Log); err != nil {
 			return err
 		}
 	}

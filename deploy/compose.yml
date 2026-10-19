@@ -9,17 +9,19 @@
 # variables (see "quisora serve --help").
 #
 # Keep QUISORA_MASTER_KEY safe: it seals the secrets in the store, and a backup ("quisora backup") can only be restored
-# with it. Without it set, a key is generated into the volume (data/master.key). For real certificates put a
+# with it. It is required: nothing is generated or kept in the volume. For real certificates put a
 # TLS-terminating proxy in front, or mount them and set QUISORA_TLS_CERT / QUISORA_TLS_KEY.
 #
 # Backup while it runs (QUISORA_ADMIN_TOKEN: a super admin's API token with the backup scope, which expires within 30
-# days; the certificate is the container's self-signed one unless you configured your own):
+# days; the certificate is the container's self-signed one unless you configured your own). The backup is encrypted
+# with the password piped in (at least 12 characters; keep it apart from the backup):
 #
-#   docker compose -f deploy/compose.yml exec -T -e QUISORA_ADMIN_TOKEN quisora \
+#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f deploy/compose.yml exec -T -e QUISORA_ADMIN_TOKEN quisora \
 #     quisora backup --server https://127.0.0.1:8443 --insecure - > quisora.bak
 #
-# Restore: start on a new, empty volume with the same QUISORA_MASTER_KEY, the backup mounted and
-# QUISORA_RESTORE_FROM=/backup/quisora.bak (ignored once the store holds data, so it may stay set).
+# Restore: start on a new, empty volume with the same QUISORA_MASTER_KEY, the backup mounted,
+# QUISORA_RESTORE_FROM=/backup/quisora.bak (ignored once the store holds data, so it may stay set) and its password in
+# QUISORA_RESTORE_PASSWORD.
 
 services:
   quisora:
@@ -28,7 +30,7 @@ services:
     restart: unless-stopped
     environment:
       QUISORA_PUBLIC_URL: ${QUISORA_PUBLIC_URL:-https://localhost:8443}
-      QUISORA_MASTER_KEY: ${QUISORA_MASTER_KEY:-}
+      QUISORA_MASTER_KEY: ${QUISORA_MASTER_KEY:?set QUISORA_MASTER_KEY (quisora genkey)}
       QUISORA_BOOTSTRAP_ADMIN: ${QUISORA_BOOTSTRAP_ADMIN:-admin@example.com}
     ports: ["${QUISORA_PORT:-8443}:8443"]
     volumes: ["quisora-data:/data"]

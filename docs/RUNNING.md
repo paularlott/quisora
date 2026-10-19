@@ -12,7 +12,12 @@ which beats the file. The public URL, for example, is `--public-url`, `QUISORA_P
   `/etc/quisora/`. Unknown keys are refused.
 - `quisora serve --help` lists every setting with its variable and key; [quisora.toml.example](../quisora.toml.example) is
   an annotated file.
-- `quisora genkey` prints a key for `server.master_key` and `cluster.key`.
+- `quisora genkey` prints a key for `server.master_key`, `cluster.key` and `storage.badgerdb.encryption_key`.
+- Secrets (the master key and previous master keys, `cluster.key`, database DSNs and passwords, the SMTP password,
+  `storage.badgerdb.encryption_key`, `server.restore_password`, a VictoriaLogs URL with credentials) belong in the config
+  file or the environment. Given as flags they are accepted, but anyone on the machine can read them in the process
+  list (`ps`), so every command prints a warning naming the variable and key to use instead. (The Taskfile's
+  development tasks pass a development key as a flag on purpose.)
 
 Settings every deployment sets:
 
@@ -21,7 +26,7 @@ Settings every deployment sets:
 | `server.public_url`                 | `--public-url`            | The issuer and the address users reach. https only.                                                                                                                |
 | `server.listen`                     | `--listen`                | Default `:8443`. HTTPS only; there is no plain-HTTP listener.                                                                                                      |
 | `server.data_dir`                   | `--data-dir`              | Node id, TLS files, cluster state, and the BadgerDB/SQLite store.                                                                                                  |
-| `server.master_key`                 | `--master-key`            | Seals secrets at rest. Required in a cluster (identical on every node); a standalone node generates `<data-dir>/master.key` when unset. Keep it with your backups. |
+| `server.master_key`                 | `--master-key`            | Seals secrets at rest. Required (identical on every node of a cluster); nothing is generated or kept in the data directory. Keep it safe, apart from the data and the backups. |
 | `server.previous_master_keys`       | `--previous-master-keys`  | Earlier master keys, only while [rotating the master key](#rotating-the-master-key). Identical on every node.                                                     |
 | `server.tls_cert`, `server.tls_key` | `--tls-cert`, `--tls-key` | PEM files. Without them a self-signed certificate is generated in `<data-dir>/tls`.                                                                                |
 
@@ -108,8 +113,6 @@ it every hour until they are removed.
    previous_master_keys = ["<old>"]
    ```
 
-   A node that used a generated `<data-dir>/master.key` does the same: the file's content is the old key. Once
-   `master_key` is set, the file is no longer read; delete it after step 3.
 3. Within minutes the status says `complete`. Remove `previous_master_keys`, and reload or restart.
 
 ### Several nodes (shared database or gossip)
@@ -174,24 +177,55 @@ must exist.
 | `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go. | `storage.sqlite.path` (default `<data-dir>/quisora.db`)                                            |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
 | `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
-| `valkey`           | As PostgreSQL.                                                 | `storage.valkey.addrs`, `username`, `password`, `db`, `key_prefix`, `tls`                        |
+| `valkey`           | As PostgreSQL.                                                 | `storage.valkey.addrs`, `username`, `password`, `db`, `key_prefix`, `tls`, `ca_file`, `server_name`, `cert_file`, `key_file` |
 
 ```bash
-# PostgreSQL
-quisora serve --storage postgres --postgres-dsn 'postgres://quisora:secret@db:5432/quisora?sslmode=require'
+# PostgreSQL (connection strings carry the password: environment or config file, not flags)
+export QUISORA_POSTGRES_DSN='postgres://quisora:secret@db:5432/quisora?sslmode=verify-full'
+quisora serve --storage postgres
 
 # MySQL / MariaDB (the collation is set by Quisora)
-quisora serve --storage mysql --mysql-dsn 'quisora:secret@tcp(db:3306)/quisora'
-quisora serve --storage mariadb --mariadb-dsn 'quisora:secret@tcp(db:3306)/quisora'
+export QUISORA_MYSQL_DSN='quisora:secret@tcp(db:3306)/quisora?tls=true'
+quisora serve --storage mysql
 
 # Valkey
-quisora serve --storage valkey --valkey-addrs valkey:6379 --valkey-password secret --valkey-key-prefix quisora:
+export QUISORA_VALKEY_PASSWORD=secret
+quisora serve --storage valkey --valkey-addrs valkey:6379 --valkey-tls --valkey-key-prefix quisora:
 
 # SQLite
 quisora serve --storage sqlite --sqlite-path /var/lib/quisora/quisora.db
 ```
 
 Every backend passes the same store conformance suite. BadgerDB is the fastest; see [Sizing](#sizing).
+
+### TLS to the database
+
+Off this machine, use TLS that verifies the server: the connection carries the database password and every sealed
+record. Nothing is refused (local and development set-ups work as they are), but `serve` logs a warning at start-up
+for each connection that leaves the machine unencrypted or unverified, and for an SMTP password sent without TLS.
+Connections to `localhost`, a loopback address or a Unix socket are never warned about.
+
+| Backend            | Verified TLS                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| PostgreSQL         | `sslmode=verify-full` in the DSN; a private CA in `storage.postgres.ca_file` (or `sslrootcert` in the DSN)   |
+| MySQL / MariaDB    | `tls=true` in the DSN; a private CA in `storage.mysql.ca_file` / `storage.mariadb.ca_file` (which also turns TLS on) |
+| Valkey             | `storage.valkey.tls = true`; a private CA in `ca_file`, the name to verify in `server_name`, a client certificate for mutual TLS in `cert_file` / `key_file` |
+
+### Encryption at rest
+
+Sealed secrets (TOTP secrets, provider and signing keys, upstream tokens) are encrypted with the master key on every
+backend. The rest of the data (names, email addresses, password hashes, sessions, the audit log in the database) is
+protected at rest by the storage:
+
+- **BadgerDB** encrypts its files when `storage.badgerdb.encryption_key` is set (`quisora genkey`; AES-256; not the
+  master key, and kept apart from the data like it). It is chosen when the store is created: a store made without it
+  cannot be opened with it, and the reverse. To encrypt an existing store, back it up, then restore into a new store
+  with the key set. Every node of a gossip cluster has its own store and may have its own key.
+- **SQLite**: put the data directory on an encrypted volume (LUKS, FileVault, BitLocker, an encrypted cloud disk), or
+  accept plain files for local use.
+- **PostgreSQL, MySQL, MariaDB, Valkey**: encryption at rest is the database's, set up by its administrator: encrypted
+  tablespaces or tables (MySQL and MariaDB InnoDB encryption), the provider's encrypted storage, or an encrypted
+  volume.
 
 ## Clustering
 
@@ -395,14 +429,29 @@ the master key. A restore needs the key it was made with (the active one, or, fo
 [master key rotation](#rotating-the-master-key), the old one put in `server.previous_master_keys` for the restore), and
 refuses an altered file before writing anything.
 
+A backup is encrypted with a password (AES-256-GCM, the key derived by argon2id), not with the master key: a
+master key exposure does not open old backups, and a stolen backup needs its password. Keep the password apart from
+the backups.
+
 Back up a running server (any backend; the token is a super admin's API token with the `backup` scope):
 
 ```bash
-QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com --encrypt quisora.bak
+QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quisora.bak    # asks for the password twice
 ```
 
-- `--encrypt` encrypts the whole file with a key derived from the master key.
-- The same is available as `GET /api/v1/backup`.
+- The password (at least 12 characters) comes from `--password-file` (its first line), else from standard input when
+  it is a pipe, else from the terminal. It is never a flag.
+
+  ```bash
+  quisora backup --server https://id.example.com --password-file /run/secrets/backup-password quisora.bak
+  printf '%s\n' "$BACKUP_PASSWORD" | quisora backup --server https://id.example.com - > quisora.bak
+  ```
+
+- `--plain` writes it unencrypted (secrets inside stay sealed with the master key).
+- `--server` downloads the backup unencrypted over TLS and encrypts it on your machine: the password never reaches the
+  server.
+- `GET /api/v1/backup` needs either the password in the `X-Backup-Password` header (encrypted) or `?plain=1`
+  (unencrypted); without one of them it answers 400.
 - `quisora backup quisora.bak` without `--server` reads the configured store directly. On BadgerDB and SQLite, stop the node
   first.
 - BadgerDB, SQLite, PostgreSQL, MySQL and MariaDB give a point-in-time snapshot. Valkey gives every record that
@@ -414,6 +463,10 @@ Restore into an empty store:
 quisora serve --restore-from quisora.bak      # or QUISORA_RESTORE_FROM; ignored once the store holds data
 quisora restore quisora.bak                   # into the configured store, without serving
 ```
+
+- An encrypted backup needs its password: `quisora restore` reads it as `quisora backup` does (`--password-file`, a
+  pipe, or the terminal); `serve --restore-from` takes it from `server.restore_password` (`QUISORA_RESTORE_PASSWORD`).
+- Backups encrypted with the master key by earlier builds still restore, with no password, given that master key.
 
 - Ids and versions are kept, into any backend (a BadgerDB backup can go into PostgreSQL).
 - A restore that fails part-way leaves `restore-incomplete` in the data directory. Empty the store before trying again.

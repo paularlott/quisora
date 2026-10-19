@@ -11,9 +11,10 @@
 #
 # Every node needs the same QUISORA_MASTER_KEY and QUISORA_PUBLIC_URL. Put a load balancer in front of the three HTTPS
 # ports (QUISORA_PORT, QUISORA_PORT2, QUISORA_PORT3; default 8443-8445), route it on /readyz and point QUISORA_PUBLIC_URL at
-# it. Back up while they run, through any node (QUISORA_ADMIN_TOKEN: a super admin's API token, backup scope):
+# it. Back up while they run, through any node (QUISORA_ADMIN_TOKEN: a super admin's API token, backup scope), encrypted
+# with the password piped in:
 #
-#   docker compose -f deploy/compose.cluster.yml exec -T -e QUISORA_ADMIN_TOKEN node1 \
+#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f deploy/compose.cluster.yml exec -T -e QUISORA_ADMIN_TOKEN node1 \
 #     quisora backup --server https://127.0.0.1:8443 --insecure - > quisora.bak
 
 x-node: &node
@@ -26,6 +27,7 @@ x-node: &node
     QUISORA_MASTER_KEY: ${QUISORA_MASTER_KEY:?set QUISORA_MASTER_KEY (quisora genkey)}
     QUISORA_BOOTSTRAP_ADMIN: ${QUISORA_BOOTSTRAP_ADMIN:-admin@example.com}
     QUISORA_STORAGE: postgres
+    # lab only: no TLS inside the compose network (serve warns about it); use sslmode=verify-full with a real database
     QUISORA_POSTGRES_DSN: postgres://quisora:${POSTGRES_PASSWORD:-quisora}@postgres:5432/quisora?sslmode=disable
 
 services:

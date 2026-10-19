@@ -101,8 +101,8 @@ func (s Stats) Total() int {
 
 // Options adjust Write.
 type Options struct {
-	// Encrypt encrypts the backup with a key derived from the master key (see the package documentation).
-	Encrypt bool
+	// Password encrypts the backup with a key derived from it (see crypt.go); "" writes it unencrypted.
+	Password string
 }
 
 // Write streams every live record of st to w (unencrypted).
@@ -127,8 +127,8 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 			return nil, fmt.Errorf("backup: snapshot: %w", err)
 		}
 	}
-	if opt.Encrypt {
-		ew, err := newEncWriter(w, sealer)
+	if opt.Password != "" {
+		ew, err := newEncWriter(w, opt.Password)
 		if err != nil {
 			return nil, err
 		}
@@ -224,10 +224,13 @@ func Empty(ctx context.Context, st store.Store) (bool, error) {
 
 // read walks a backup: the header, then fn for every record line, then the trailer, which must match the count
 // and (with a sealer) the MAC. fn may be nil.
-func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error) (Stats, error) {
+func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *store.Record) error) (Stats, error) {
 	br0 := bufio.NewReader(r)
-	var dec *decReader
-	if encrypted(br0) {
+	var dec *decReader // an earlier build's backup: decrypted with the master key it was made with
+	switch encryption(br0) {
+	case 0:
+		r = br0
+	case 1:
 		if sealer == nil {
 			// Without the master key only the encryption framing can be checked: every chunk present, the last one
 			// marked as such. The content is verified when it is restored (or verified with the key).
@@ -238,8 +241,18 @@ func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error
 			return nil, err
 		}
 		r, dec = dr, dr
-	} else {
-		r = br0
+	case 2:
+		if password == "" {
+			if sealer == nil {
+				return nil, checkFraming(br0) // as above, without the password
+			}
+			return nil, ErrNeedPassword
+		}
+		dr, err := newPasswordDecReader(br0, password)
+		if err != nil {
+			return nil, err
+		}
+		r = dr
 	}
 	zr, err := gzip.NewReader(r)
 	if err != nil {
@@ -329,10 +342,11 @@ func read(r io.Reader, sealer *secure.Sealer, fn func(line, *store.Record) error
 
 // Verify reads a whole backup and checks it: the header, every record line, the trailer's count and, given the
 // master key's sealer, the key check and the integrity MAC (and, for an encrypted backup, every chunk's
-// authentication). It writes nothing. Without a sealer (a downloaded backup checked where the key is not available)
-// only the structure is checked; for an encrypted backup that is its framing, and the Stats are nil.
-func Verify(r io.Reader, sealer *secure.Sealer) (Stats, error) {
-	return read(r, sealer, nil)
+// authentication: with password for one encrypted with a password). It writes nothing. Without a sealer (a
+// downloaded backup checked where the key is not available) only the structure is checked; for an encrypted backup
+// without its password that is its framing, and the Stats are nil.
+func Verify(r io.Reader, sealer *secure.Sealer, password string) (Stats, error) {
+	return read(r, sealer, password, nil)
 }
 
 // Restore loads a backup from r into st. The whole backup is verified first (structure, master key, integrity MAC)
@@ -340,8 +354,8 @@ func Verify(r io.Reader, sealer *secure.Sealer) (Stats, error) {
 // force is set, in which case records from the backup replace stored ones with an older version, records the backup
 // does not hold are left alone, and of two different records claiming one unique value the one created first keeps
 // it and the other is kept without it (as in replication: a record is never deleted over a unique clash).
-func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.ReadSeeker, force bool) (Stats, error) {
-	if _, err := Verify(r, sealer); err != nil {
+func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.ReadSeeker, force bool, password string) (Stats, error) {
+	if _, err := Verify(r, sealer, password); err != nil {
 		return nil, err
 	}
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
@@ -356,7 +370,7 @@ func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Re
 			return nil, ErrNotEmpty
 		}
 	}
-	return read(r, sealer, func(l line, rec *store.Record) error {
+	return read(r, sealer, password, func(l line, rec *store.Record) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -117,20 +116,12 @@ func seedCmd(cfg *config.Config, serverFlags []cli.Flag) *cli.Command {
 	}
 }
 
-// masterKey mirrors the server: the configured key, else the one kept in the data directory.
+// masterKey mirrors the server: the configured key (server.master_key), never one kept in the data directory.
 func masterKey(c *config.Config) ([]byte, error) {
-	if c.Server.MasterKey != "" {
-		return base64.StdEncoding.DecodeString(c.Server.MasterKey)
+	if c.Server.MasterKey == "" {
+		return nil, errors.New("server.master_key is not set: use the key the server is given (QUISORA_MASTER_KEY or --master-key)")
 	}
-	path := filepath.Join(c.Server.DataDir, "master.key")
-	if b, err := os.ReadFile(path); err == nil {
-		return base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-	}
-	if err := os.MkdirAll(c.Server.DataDir, 0o700); err != nil {
-		return nil, err
-	}
-	k := secure.RandomBytes(32)
-	return k, os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(k)+"\n"), 0o600)
+	return base64.StdEncoding.DecodeString(c.Server.MasterKey)
 }
 
 func runCmd() *cli.Command {

@@ -7,8 +7,8 @@ public_url = "https://id.example.com"     # the issuer; identical on every node
 data_dir = "/var/lib/quisora"
 # tls_cert = "/etc/quisora/tls.crt"           # PEM; without these a self-signed certificate is generated in data_dir/tls
 # tls_key = "/etc/quisora/tls.key"
-# master_key = ""                         # `quisora genkey`; seals secrets at rest. Required (and identical) in a cluster;
-                                          # a standalone node generates data_dir/master.key when unset
+# master_key = ""                         # required: `quisora genkey`; seals secrets at rest; identical on every node of a
+                                          # cluster. Better in QUISORA_MASTER_KEY from a secret store than in this file
 # previous_master_keys = []               # during a master key rotation only: the old key, until the log says the rotation is complete
                                           # (docs/RUNNING.md#rotating-the-master-key)
 # trust_proxy = ["10.0.0.0/8"]            # honour X-Forwarded-For only from these
@@ -19,6 +19,7 @@ data_dir = "/var/lib/quisora"
 # allow_private_networks = false          # let back-channel logout / jwks_uri / upstream calls reach private addresses
 # extra_ca_file = ""                      # PEM of extra CA certificates trusted for those outbound HTTPS calls (an internal CA)
 # restore_from = ""                       # backup file loaded at start-up when the store is empty (ignored once it has data)
+# restore_password = ""                   # its password, when it is encrypted
 
 [ui]
 site_name = "Identity"
@@ -32,14 +33,16 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 # [storage.badgerdb]
 # path = "/var/lib/quisora/badgerdb"
 # sync_writes = true
+# encryption_key = ""                     # `quisora genkey`: encrypt the files at rest; set when the store is created
 # [storage.sqlite]
 # path = "/var/lib/quisora/quisora.db"
 # [storage.postgres]
 # dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=verify-full"
 # max_open_conns = 0                      # 0 = the driver's default (also for mysql and mariadb)
 # max_idle_conns = 0
+# ca_file = ""                            # PEM of a private CA the server's certificate is verified against
 # [storage.mysql]
-# dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
+# dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true&tls=true"
 # [storage.mariadb]
 # dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
 # [storage.valkey]
@@ -48,6 +51,10 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 # password = ""
 # db = 0
 # tls = false
+# ca_file = ""                            # with tls: a private CA, the name to verify, a client certificate
+# server_name = ""
+# cert_file = ""
+# key_file = ""
 # key_prefix = "quisora:"
 
 [cluster]

@@ -11,26 +11,57 @@ import (
 	"io"
 
 	"github.com/paularlott/quisora/internal/secure"
+	"golang.org/x/crypto/argon2"
 )
 
-// Encrypted backups (Options.Encrypt) are the gzip stream sealed with AES-256-GCM in chunks (the STREAM
-// construction):
+// Encrypted backups are the gzip stream sealed with AES-256-GCM in chunks (the STREAM construction):
 //
-//	magic "QSRBKEN1" | 7-byte random nonce prefix | chunk... where chunk = uint32 length | ciphertext
+//	magic "QSRBKEN2" | KDF parameters | 7-byte random nonce prefix | chunk... where chunk = uint32 length | ciphertext
+//
+// The key is derived from a password (Options.Password) with argon2id; its salt and cost travel in the header
+// (16-byte salt, uint32 passes, uint32 memory in KiB, one byte of threads), so the cost can change without changing
+// the format. Encryption no longer depends on the master key, so a backup's confidentiality survives the master key
+// (and a master key exposure does not open old backups). Backups made by earlier builds ("QSRBKEN1": no KDF
+// parameters, the key derived from the master key) are still read.
 //
 // Each chunk holds up to chunkSize bytes of plaintext. Its nonce is the prefix, the chunk's 4-byte big-endian index
 // and a final-chunk flag byte, so chunks cannot be reordered, dropped or repeated, and a stream cut after any chunk
-// but the last is refused. The key is derived from the master key (it never leaves the process).
+// but the last is refused.
 const (
-	encMagic    = "QSRBKEN1"
+	encMagic    = "QSRBKEN1" // read only: the key derived from the master key
+	encMagic2   = "QSRBKEN2" // the key derived from a password
 	prefixLen   = 7
+	saltLen     = 16
+	kdfLen      = saltLen + 4 + 4 + 1
 	chunkSize   = 64 << 10
 	maxChunkLen = chunkSize + 16 // plaintext plus the GCM tag
+
+	// argon2id cost of a backup's key: once per backup and restore, so it can be high.
+	kdfTime    = 3
+	kdfMemory  = 64 * 1024 // KiB
+	kdfThreads = 4
 )
 
-// ErrEncrypted means an encrypted backup cannot be read: it needs the master key it was made with, or it is
-// damaged.
-var ErrEncrypted = errors.New("backup: encrypted backup cannot be decrypted with this master key, or is damaged")
+var (
+	// ErrEncrypted means a backup made with an earlier build cannot be decrypted with this master keyring, or is
+	// damaged.
+	ErrEncrypted = errors.New("backup: encrypted backup cannot be decrypted with this master key, or is damaged")
+	// ErrPassword means the password does not open the backup, or it is damaged.
+	ErrPassword = errors.New("backup: the password does not open this backup, or it is damaged")
+	// ErrNeedPassword means the backup is encrypted with a password and none was given.
+	ErrNeedPassword = errors.New("backup: the backup is encrypted: its password is needed")
+)
+
+// MinPassword is the shortest password a new backup is encrypted with.
+const MinPassword = 12
+
+func passwordKey(password string, salt []byte, t, m uint32, p uint8) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(argon2.IDKey([]byte(password), salt, t, m, p, 32))
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
 
 func encKey(s *secure.Sealer) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(s.MAC("quisora backup encryption v1"))
@@ -60,8 +91,22 @@ type encWriter struct {
 	closed bool
 }
 
-func newEncWriter(w io.Writer, s *secure.Sealer) (*encWriter, error) {
-	aead, err := encKey(s)
+// newEncWriter encrypts what is written to it with a key derived from password.
+func newEncWriter(w io.Writer, password string) (*encWriter, error) {
+	if len(password) < MinPassword {
+		return nil, fmt.Errorf("backup: the password must have at least %d characters", MinPassword)
+	}
+	hdr := make([]byte, 0, len(encMagic2)+kdfLen+prefixLen)
+	hdr = append(hdr, encMagic2...)
+	salt := make([]byte, saltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+	hdr = append(hdr, salt...)
+	hdr = binary.BigEndian.AppendUint32(hdr, kdfTime)
+	hdr = binary.BigEndian.AppendUint32(hdr, kdfMemory)
+	hdr = append(hdr, kdfThreads)
+	aead, err := passwordKey(password, salt, kdfTime, kdfMemory, kdfThreads)
 	if err != nil {
 		return nil, err
 	}
@@ -69,10 +114,16 @@ func newEncWriter(w io.Writer, s *secure.Sealer) (*encWriter, error) {
 	if _, err := rand.Read(prefix); err != nil {
 		return nil, err
 	}
-	if _, err := w.Write(append([]byte(encMagic), prefix...)); err != nil {
+	if _, err := w.Write(append(hdr, prefix...)); err != nil {
 		return nil, err
 	}
 	return &encWriter{w: w, aead: aead, prefix: prefix, buf: make([]byte, 0, chunkSize)}, nil
+}
+
+// EncryptWriter returns a writer that encrypts a backup stream written to it with password (as Options.Password
+// does): for a backup made elsewhere, such as one downloaded unencrypted over TLS. Close it to finish the file.
+func EncryptWriter(w io.Writer, password string) (io.WriteCloser, error) {
+	return newEncWriter(w, password)
 }
 
 func (e *encWriter) Write(p []byte) (int, error) {
@@ -118,10 +169,25 @@ func (e *encWriter) Close() error {
 	return e.flush(true)
 }
 
-// encrypted reports whether the stream starts with the encrypted-backup magic (without consuming it).
-func encrypted(br *bufio.Reader) bool {
+// encryption reports how the stream is encrypted, without consuming it: 0 not at all, 1 with the master key (an
+// earlier build), 2 with a password.
+func encryption(br *bufio.Reader) int {
 	b, err := br.Peek(len(encMagic))
-	return err == nil && string(b) == encMagic
+	switch {
+	case err != nil:
+		return 0
+	case string(b) == encMagic:
+		return 1
+	case string(b) == encMagic2:
+		return 2
+	}
+	return 0
+}
+
+// PasswordProtected reports whether a backup that starts with head (its first bytes, at least 8) is encrypted with
+// a password, which restoring it needs.
+func PasswordProtected(head []byte) bool {
+	return len(head) >= len(encMagic2) && string(head[:len(encMagic2)]) == encMagic2
 }
 
 // decReader opens the chunks of an encrypted backup as they are read; a missing final chunk, trailing data or a
@@ -135,14 +201,42 @@ type decReader struct {
 	n      uint32
 	buf    []byte
 	done   bool
+	bad    error // what a chunk that does not open means (ErrEncrypted, ErrPassword)
 }
 
-func readHeader(br *bufio.Reader) ([]byte, error) {
-	hdr := make([]byte, len(encMagic)+prefixLen)
-	if _, err := io.ReadFull(br, hdr); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
+// readHeader reads an encrypted backup's header: the nonce prefix, and (format 2) the KDF parameters.
+func readHeader(br *bufio.Reader) (prefix, kdf []byte, err error) {
+	n := len(encMagic) + prefixLen
+	if encryption(br) == 2 {
+		n += kdfLen
 	}
-	return hdr[len(encMagic):], nil
+	hdr := make([]byte, n)
+	if _, err := io.ReadFull(br, hdr); err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrFormat, err)
+	}
+	hdr = hdr[len(encMagic):]
+	if n > len(encMagic)+prefixLen {
+		kdf, hdr = hdr[:kdfLen], hdr[kdfLen:]
+	}
+	return hdr, kdf, nil
+}
+
+// newPasswordDecReader opens a password-encrypted backup.
+func newPasswordDecReader(br *bufio.Reader, password string) (*decReader, error) {
+	prefix, kdf, err := readHeader(br)
+	if err != nil {
+		return nil, err
+	}
+	t, m, p := binary.BigEndian.Uint32(kdf[saltLen:]), binary.BigEndian.Uint32(kdf[saltLen+4:]), kdf[saltLen+8]
+	// Bounded, so a crafted file cannot make a restore spend unbounded memory or time before anything is checked.
+	if t < 1 || t > 16 || m < 8*1024 || m > 1024*1024 || p < 1 || p > 32 {
+		return nil, fmt.Errorf("%w: key derivation parameters out of range", ErrFormat)
+	}
+	aead, err := passwordKey(password, kdf[:saltLen], t, m, p)
+	if err != nil {
+		return nil, err
+	}
+	return &decReader{r: br, keys: []cipher.AEAD{aead}, prefix: prefix, bad: ErrPassword}, nil
 }
 
 // newDecReader opens an encrypted backup with whichever key of the master keyring it was made with (a backup made
@@ -156,11 +250,11 @@ func newDecReader(br *bufio.Reader, s *secure.Sealer) (*decReader, error) {
 		}
 		keys = append(keys, aead)
 	}
-	prefix, err := readHeader(br)
+	prefix, _, err := readHeader(br)
 	if err != nil {
 		return nil, err
 	}
-	return &decReader{r: br, keys: keys, prefix: prefix}, nil
+	return &decReader{r: br, keys: keys, prefix: prefix, bad: ErrEncrypted}, nil
 }
 
 // open opens chunk n (as an inner chunk or as the final one), finding the key on the first.
@@ -181,7 +275,7 @@ func (d *decReader) open(ct []byte) (pt []byte, last bool, err error) {
 			return pt, last, nil
 		}
 	}
-	return nil, false, ErrEncrypted
+	return nil, false, d.bad
 }
 
 // nextChunk reads one chunk's ciphertext; io.EOF only exactly at a chunk boundary.
@@ -222,7 +316,7 @@ func (d *decReader) Read(p []byte) (int, error) {
 		// A chunk opens either as an inner chunk or as the final one; anything else is damaged or forged.
 		pt, last, err := d.open(ct)
 		if err != nil {
-			return 0, ErrEncrypted
+			return 0, d.bad
 		}
 		d.done = last
 		d.n++
@@ -237,7 +331,7 @@ func (d *decReader) Read(p []byte) (int, error) {
 // bytes of plaintext and the last one less (the writer flushes a full chunk as soon as it has one), so a stream cut
 // anywhere — inside a chunk or at a chunk boundary — is detected here too. Authentication needs the key.
 func checkFraming(br *bufio.Reader) error {
-	if _, err := readHeader(br); err != nil {
+	if _, _, err := readHeader(br); err != nil {
 		return err
 	}
 	for {

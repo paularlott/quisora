@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,9 @@ type BadgerOptions struct {
 	NoSync bool
 	// InMemory keeps everything in RAM (tests); path is ignored.
 	InMemory bool
+	// EncryptionKey (32 bytes) encrypts the files at rest; nil: not encrypted. A store keeps the choice it was
+	// created with: opening it with another key, or without its key, fails.
+	EncryptionKey []byte
 	// Compression is "none" (default: records are small and the LSM is read from the page cache), "snappy" or "zstd".
 	Compression string
 	// BlockCacheMB and IndexCacheMB size the caches (only used with compression). Default 128 and 64.
@@ -81,8 +85,15 @@ func OpenBadger(ctx context.Context, path string, o BadgerOptions) (*Store, erro
 	opts = opts.WithBlockCacheSize(dflt(o.BlockCacheMB, 128) << 20).
 		WithIndexCacheSize(dflt(o.IndexCacheMB, 64) << 20).
 		WithValueLogFileSize(dflt(o.ValueLogFileSizeMB, 256) << 20)
+	if len(o.EncryptionKey) > 0 {
+		opts = opts.WithEncryptionKey(o.EncryptionKey) // the index cache, which encryption needs, is set above
+	}
 	db, err := badger.Open(opts)
 	if err != nil {
+		if errors.Is(err, badger.ErrEncryptionKeyMismatch) || strings.Contains(err.Error(), "ncryption") {
+			return nil, fmt.Errorf("kvstore: open badger: %w (storage.badgerdb.encryption_key must be the key the "+
+				"store was created with, and set only for a store created encrypted)", err)
+		}
 		return nil, fmt.Errorf("kvstore: open badger: %w", err)
 	}
 	e := &badgerEngine{db: db, stop: make(chan struct{})}
