@@ -508,3 +508,54 @@ func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
 		t.Fatalf("sessions: %+v", sessionsOf(t, u.env, kim))
 	}
 }
+
+// A sign-in through a provider trusted as a second factor (TrustMFA) skips the user's own code, so it does not count
+// as the recent re-authentication that connecting another provider needs: that would let it add further ways in that
+// skip the code too. A re-authentication (which asks for the code) does; and an account with no second factor of its
+// own connects straight after any sign-in, as before.
+func TestConnectNeedsOwnSecondFactor(t *testing.T) {
+	u := newUpEnv(t, nil)
+	ctx := context.Background()
+	trusted := u.oidcProvider(t, func(in *service.ProviderInput) { in.TrustMFA = ptr(true) })
+	other := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Other SSO"); in.AutoProvision = ptr(false) })
+	if res := u.browser(t).via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); res.StatusCode != 303 {
+		t.Fatalf("first sign-in: %d", res.StatusCode)
+	}
+	kim, _ := u.Svc.FindUserByEmail(ctx, u.org.ID, "kim@corp.example")
+
+	// no second factor of her own yet: a fresh provider sign-in is enough
+	b := u.browser(t)
+	if res := b.via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); !b.hasSession() {
+		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	sessionCSRF(t, b)
+	res, out := b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	wantStatus(t, res, out, 200)
+
+	// with an authenticator, the trusted provider's sign-in no longer is
+	u.giveTOTP(t, kim)
+	b = u.browser(t)
+	if res := b.via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); !b.hasSession() {
+		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	sessionCSRF(t, b)
+	res, out = b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	wantStatus(t, res, out, 403)
+	if str(out, "field") != "reauth" {
+		t.Fatalf("refusal: %v", out["_raw"])
+	}
+	b.markReauth()
+	res, out = b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	wantStatus(t, res, out, 200)
+}
+
+// sessionCSRF loads the account page into b's CSRF token (refresh is for signed-out pages).
+func sessionCSRF(t *testing.T, b *browser) {
+	t.Helper()
+	_, body := b.get("/account")
+	m := metaRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no csrf meta on the account page: %.300s", body)
+	}
+	b.csrf = m[1]
+}

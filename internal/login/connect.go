@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -49,7 +50,7 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 // connectProvider handles POST /api/account/providers/{id}/connect: answers {url}, the provider's address to send
 // the browser to; the callback attaches the identity (connectFinish).
 func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct) {
-	if !m.needReauth(w, r, a) {
+	if !m.needOwnFactor(w, r, a) {
 		return
 	}
 	ctx := r.Context()
@@ -72,6 +73,28 @@ func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct)
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: state, Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(upstream.StateTTL.Seconds())})
 	web.WriteJSON(w, http.StatusOK, map[string]string{"url": authURL})
+}
+
+// needOwnFactor is needReauth for connecting a provider. A connected identity is a new way into the account, so a
+// recent sign-in counts only when it used the account's own second factor, if it has one (an authenticator code or a
+// passkey): a provider trusted to count as a second factor (TrustMFA) signs in without it, and must not be able to
+// add further ways in that skip it as well. A re-authentication always asks for that factor, so it counts.
+func (m *Module) needOwnFactor(w http.ResponseWriter, r *http.Request, a acct) bool {
+	ctx := r.Context()
+	if m.reauthed(ctx, a) {
+		return true
+	}
+	if time.Since(a.sess.AuthTime) < reauthTTL {
+		if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
+			return true
+		}
+		pk, err := m.s.Svc.UsablePasskeys(ctx, a.u.ID, "")
+		if err == nil && !a.u.HasTOTP() && pk == 0 {
+			return true
+		}
+	}
+	writeErr(w, http.StatusForbidden, "Confirm it is you with your password or a passkey first.", "reauth")
+	return false
 }
 
 // connectFinish completes a connection on the provider's callback: the browser must still be signed in as the user
