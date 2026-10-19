@@ -34,10 +34,15 @@ func TestIntrospectionTenantIsolation(t *testing.T) {
 		}
 	}
 
-	// same-org resource server (not the audience) sees both
-	rs, rsSecret := h.newClient(nil)
+	// a same-org client that is not the audience sees the API token (it has no audience) but not the access token;
+	// a resource server allowed to introspect every token of the organization sees both
+	other, otherSecret := h.newClient(nil)
+	if h.introspect(other, otherSecret, at)["active"] != false || h.introspect(other, otherSecret, plain)["active"] != true {
+		t.Fatal("same-org client without introspect_org")
+	}
+	rs, rsSecret := h.newClient(func(in *service.ClientInput) { in.IntrospectOrg = ptr(true) })
 	if h.introspect(rs, rsSecret, at)["active"] != true || h.introspect(rs, rsSecret, plain)["active"] != true {
-		t.Fatal("same-org client cannot introspect")
+		t.Fatal("same-org introspect_org client cannot introspect")
 	}
 
 	// a client of another org gets nothing

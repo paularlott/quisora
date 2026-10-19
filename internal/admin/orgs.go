@@ -56,6 +56,10 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
+	// The primary organization's sign-in policy covers the super admins themselves.
+	if o.Primary && in.Settings != nil && *in.Settings != o.Settings && a.IsSuper() && !m.stepUp(w, r) {
+		return
+	}
 	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, o.ID, in)
 	if err != nil {
 		web.WriteError(w, err)
@@ -71,6 +75,9 @@ func (m *Module) deleteOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cascade := r.URL.Query().Get("cascade") == "1"
+	if a.IsSuper() && !m.stepUp(w, r) {
+		return
+	}
 	if err := m.s.Svc.DeleteOrg(r.Context(), a, o.ID, cascade); err != nil {
 		web.WriteError(w, err)
 		return

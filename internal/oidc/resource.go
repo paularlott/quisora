@@ -20,6 +20,12 @@ func isAccessTokenTyp(typ string) bool {
 // VerifyAccessToken validates an access token issued by this provider: signature (kid lookup, algorithm bound to
 // the key), RFC 9068 typ, issuer, expiry, and that the subject is still allowed (user active, refresh grant not
 // revoked, client enabled). SCIM and other resource servers in this process call it directly.
+//
+// It does not check the audience (aud): which token a caller may accept is the caller's decision, and each one
+// makes it. Userinfo takes any user token with the openid scope (OIDC: the token is the client's, not userinfo's);
+// introspection answers only for an audience or an introspect_org client; revocation only for the client the token
+// was issued to; SCIM only for client_credentials tokens with the scim scope from a provisioning client. A new caller
+// must check aud (or the client) itself.
 func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, error) {
 	now := time.Now()
 	k := tokenKey(tok)
@@ -250,14 +256,16 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 	return o.bytes()
 }
 
-// introspectJWT answers for an access token only if the caller is an audience of it or shares the token's
-// organization.
+// introspectJWT answers for an access token only if the caller is an audience of it, or is allowed to introspect
+// every token of the token's organization (introspect_org).
 func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok string) []byte {
 	cl, err := p.VerifyAccessToken(ctx, tok)
 	if err != nil {
 		return inactive
 	}
-	if !slices.Contains(cl.Aud, caller.ID) && cl.Org != caller.OrgID {
+	// Active for the client the token was issued to (or a resource it names: then that resource's own client is in
+	// aud too), or for a client allowed to introspect every token of its organization (introspect_org).
+	if !slices.Contains(cl.Aud, caller.ID) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
 		return inactive
 	}
 	o := newObj(512)

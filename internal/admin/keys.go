@@ -77,6 +77,9 @@ func (m *Module) rotateKeys(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, http.StatusNotImplemented, web.ErrorBody{Error: "Key rotation is not available."})
 		return
 	}
+	if !m.stepUp(w, r) {
+		return
+	}
 	if err := m.RotateKeys(r.Context()); err != nil {
 		web.WriteError(w, err)
 		return

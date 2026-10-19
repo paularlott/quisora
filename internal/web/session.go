@@ -92,7 +92,7 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	opt SessionOptions) (*model.Session, error) {
 	amr := opt.AMR
 	now := time.Now().UTC()
-	ttl, idle := m.lifetime(org)
+	ttl, idle := m.lifetime(org, u)
 	raw := secure.RandomToken(32)
 	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr,
 		AuthTime: now, Expires: now.Add(time.Duration(ttl) * time.Second), IdleTTL: idle, LastSeen: now, Provider: opt.Provider, Passkey: opt.Passkey,
@@ -156,7 +156,7 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 	if old.UserID != u.ID {
 		return nil, errors.New("web: a session is upgraded only by its own user")
 	}
-	ttl, idle := m.lifetime(org)
+	ttl, idle := m.lifetime(org, u)
 	secret := secure.RandomToken(32)
 	for range 5 {
 		s, err := m.svc.Sessions.Get(ctx, old.ID)
@@ -183,14 +183,25 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 	return nil, store.ErrStale
 }
 
-// lifetime is the session lifetime and idle timeout (seconds) for org.
-func (m *Sessions) lifetime(org *model.Org) (ttl, idle int) {
-	ttl, idle = m.svc.Cfg.Session.TTL, m.svc.Cfg.Session.Idle
+// lifetime is the session lifetime and idle timeout (seconds) of u in org: the organization's, never longer than
+// the server's (session.ttl, session.idle), and for managers and above never longer than session.privileged_ttl and
+// session.privileged_idle. An idle timeout of 0 is none.
+func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
+	cfg := m.svc.Cfg.Session
+	ttl, idle = cfg.TTL, cfg.Idle
 	if org != nil && org.Settings.SessionTTL > 0 {
-		ttl = org.Settings.SessionTTL
+		ttl = min(org.Settings.SessionTTL, ttl)
 	}
-	if org != nil && org.Settings.SessionIdle > 0 {
+	if org != nil && org.Settings.SessionIdle > 0 && (idle == 0 || org.Settings.SessionIdle < idle) {
 		idle = org.Settings.SessionIdle
+	}
+	if u != nil && u.Role.Rank() >= model.RoleManager.Rank() {
+		if cfg.PrivilegedTTL > 0 {
+			ttl = min(ttl, cfg.PrivilegedTTL)
+		}
+		if cfg.PrivilegedIdle > 0 && (idle == 0 || cfg.PrivilegedIdle < idle) {
+			idle = cfg.PrivilegedIdle
+		}
 	}
 	return ttl, idle
 }

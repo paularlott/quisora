@@ -83,7 +83,10 @@ func (h *harness) newClient(edit func(*service.ClientInput)) (*model.Client, str
 	in := service.ClientInput{Name: ptr("app"), RedirectURIs: &[]string{rpCallback},
 		GrantTypes: &[]string{"authorization_code", "refresh_token", "client_credentials"},
 		Scopes:     &[]string{"openid", "profile", "email", "groups", "org", "offline_access", "api"}, FirstParty: ptr(true),
-		Resources: &testResources}
+		Resources: &testResources,
+		// Most tests present one refresh token several times: the static format. Tests of rotation (the default
+		// for a new client: TestNewClientsRotateRefreshTokens) set it.
+		RotateRefresh: ptr(false)}
 	if edit != nil {
 		edit(&in)
 	}
@@ -1261,10 +1264,15 @@ func TestIntrospection(t *testing.T) {
 	if m["active"] != true || m["token_type"] != nil || m["token_kind"] != "refresh_token" || m["sub"] != h.user.ID || m["username"] != "alice" {
 		t.Fatalf("refresh: %v", m)
 	}
-	// another client may introspect JWTs but not our refresh token
+	// another client of the organization does not see our access token as active, unless it may introspect every
+	// token of the organization; it never sees our refresh token
 	other, osecret := h.newClient(nil)
-	if h.introspect(other, osecret, at)["active"] != true {
+	if h.introspect(other, osecret, at)["active"] != false {
 		t.Fatal("jwt introspection by another client")
+	}
+	rs, rsecret := h.newClient(func(in *service.ClientInput) { in.IntrospectOrg = ptr(true) })
+	if m := h.introspect(rs, rsecret, at); m["active"] != true || m["sub"] != h.user.ID {
+		t.Fatalf("jwt introspection by an introspect_org client: %v", m)
 	}
 	if h.introspect(other, osecret, rt)["active"] != false {
 		t.Fatal("refresh token visible to another client")
@@ -2840,5 +2848,27 @@ func TestRefreshReuseIsAudited(t *testing.T) {
 	}
 	if len(h.auditEvents("oauth.refresh")) != 0 {
 		t.Fatal("refreshes audited without audit.tokens")
+	}
+}
+
+// A new confidential client rotates its refresh tokens unless told otherwise; a public one cannot introspect.
+func TestNewClientsRotateRefreshTokens(t *testing.T) {
+	h := setup(t, nil)
+	c, _, err := h.env.Svc.CreateClient(context.Background(), h.admin, h.env.Primary.ID, service.ClientInput{Name: ptr("x"),
+		RedirectURIs: &[]string{rpCallback}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.RotateRefresh || c.IntrospectOrg {
+		t.Fatalf("defaults: rotate %v introspect_org %v", c.RotateRefresh, c.IntrospectOrg)
+	}
+	off, _, err := h.env.Svc.CreateClient(context.Background(), h.admin, h.env.Primary.ID, service.ClientInput{Name: ptr("y"),
+		RedirectURIs: &[]string{rpCallback}, RotateRefresh: ptr(false)})
+	if err != nil || off.RotateRefresh {
+		t.Fatalf("rotation turned off: %v %v", off.RotateRefresh, err)
+	}
+	pub := h.publicClient(func(in *service.ClientInput) { in.IntrospectOrg = ptr(true) })
+	if pub.IntrospectOrg {
+		t.Fatal("a public client may introspect")
 	}
 }

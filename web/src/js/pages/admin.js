@@ -174,7 +174,8 @@ function userDialogMixin(Alpine) {
         return
       }
       const f = this.form
-      const res = await this.run(() => {
+      // Making someone an administrator needs a recent re-authentication (the server asks; the dialog provides it).
+      const res = await this.run(() => withReauth(Alpine, () => {
         if (this.editingUser) {
           const body = { username: f.username, email: f.email, given_name: f.given_name, family_name: f.family_name, role: f.role, active: !!f.active, tags: f.tags, ...this.profileBody() }
           if (this.editingSelf) delete body.email
@@ -183,7 +184,7 @@ function userDialogMixin(Alpine) {
         }
         return post(`${this.apiBase}/users`, { username: f.username, email: f.email, given_name: f.given_name, family_name: f.family_name, role: f.role, tags: f.tags, ...this.profileBody(),
           invite: { email: mailOn() && !!f.invite && !!(f.email || '').trim() } })
-      })
+      }, null, this))
       if (!res) return
       this.closeDlg('user-dialog')
       if (this.editingUser) toast('User saved.')
@@ -360,13 +361,13 @@ function clientDialogMixin(Alpine) {
         redirect_uris: listRows(c.redirect_uris, LIST_ITEMS.redirect_uris), post_logout_redirect_uris: listRows(c.post_logout_redirect_uris, LIST_ITEMS.post_logout_redirect_uris, true),
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: listRows(scopes.filter((x) => !STD_NAMES.includes(x)), LIST_ITEMS.custom_scopes, true), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
-        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, require_pkce: c.require_pkce !== false, scim: !!c.scim }
+        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, scim: !!c.scim }
     },
     openCreateClient(opener) {
       this._form = 'client'
       this.editingClient = null
       this.resetForm(this.clientToForm({ tenant_id: this.tenantId, name: '', grant_types: ['authorization_code', 'refresh_token'], scopes: ['openid', 'profile', 'email'],
-        token_endpoint_auth_method: 'client_secret_post', enabled: true }))
+        token_endpoint_auth_method: 'client_secret_post', enabled: true, rotate_refresh_tokens: true }))
       this.openDlg('client-dialog', opener)
     },
     openEditClient(c, opener) {
@@ -384,7 +385,7 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && g === 'client_credentials')),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...listValues(f.custom_scopes)], token_endpoint_auth_method: f.token_endpoint_auth_method,
-        first_party: f.first_party, enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, require_pkce: pub ? true : f.require_pkce }
+        first_party: f.first_party, enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
       if (this.canScim) b.scim = pub ? false : f.scim
@@ -617,10 +618,10 @@ export default function (Alpine) {
         confirmLabel: 'Delete organization', requireText: o.name })
       if (!yes) return
       try {
-        await del(`/api/v1/orgs/${enc(o.name)}${qs({ cascade: o.users > 0 })}`)
+        await withReauth(Alpine, () => del(`/api/v1/orgs/${enc(o.name)}${qs({ cascade: o.users > 0 })}`), ev.target)
         toast(`Organization “${o.display_name}” deleted.`)
         this.load()
-      } catch (e) { toast(e.message, 'error') }
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
   }))
 
@@ -743,7 +744,11 @@ export default function (Alpine) {
       const yes = await confirmAction(Alpine, { title: 'Remove password?', message: `Remove the password of ${this.user.title}?`,
         detail: 'They can no longer sign in with a password until they accept a new invitation. Their sessions end now.', confirmLabel: 'Remove password' })
       if (!yes) return
-      try { await del(`${this.apiBase}/users/${enc(this.userId)}/password`); toast('Password removed. Sessions ended.'); await this.refresh() } catch (e) { toast(e.message, 'error') }
+      try {
+        await withReauth(Alpine, () => del(`${this.apiBase}/users/${enc(this.userId)}/password`), ev.currentTarget || ev.target)
+        toast('Password removed. Sessions ended.')
+        await this.refresh()
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
     async revoke(ev) {
       const yes = await confirmAction(Alpine, { title: 'Sign out everywhere?', message: `End every session of ${this.user.title}?`,
@@ -1138,7 +1143,8 @@ export default function (Alpine) {
       const res = await this.run(async () => {
         const settings = { password_login: f.password_login, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
-        return put(`${this.apiBase}/settings`, { name: f.name.trim(), display_name: f.display_name.trim(), settings })
+        // the primary organization's sign-in settings need a recent re-authentication (the server asks)
+        return withReauth(Alpine, () => put(`${this.apiBase}/settings`, { name: f.name.trim(), display_name: f.display_name.trim(), settings }), null, this)
       })
       if (!res) return
       toast('Settings saved.')
@@ -1211,10 +1217,10 @@ export default function (Alpine) {
       if (!yes) return
       this.busy = true
       try {
-        await post(`${this.apiBase}/keys/rotate`)
+        await withReauth(Alpine, () => post(`${this.apiBase}/keys/rotate`), ev.currentTarget || ev.target)
         toast('Signing keys rotated.')
         await this.load()
-      } catch (e) { toast(e.message, 'error') }
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
       this.busy = false
     },
   }))

@@ -194,6 +194,9 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, service.Invalid("email", "an email address is needed to send an invitation"))
 		return
 	}
+	if input.Role != nil && input.Role.Rank() >= model.RoleAdmin.Rank() && !m.stepUp(w, r) {
+		return
+	}
 	u, err := m.s.Svc.CreateUser(r.Context(), a, org.ID, input)
 	if err != nil {
 		web.WriteError(w, err)
@@ -227,7 +230,11 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
-	upd, err := m.s.Svc.UpdateUser(r.Context(), a, u.ID, in.input())
+	input := in.input()
+	if input.Role != nil && *input.Role != u.Role && input.Role.Rank() >= model.RoleAdmin.Rank() && !m.stepUp(w, r) {
+		return
+	}
+	upd, err := m.s.Svc.UpdateUser(r.Context(), a, u.ID, input)
 	if err != nil {
 		web.WriteError(w, err)
 		return
@@ -266,6 +273,9 @@ func (m *Module) removePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	u, found := m.userFor(w, r, org, a)
 	if !found {
+		return
+	}
+	if u.ID != a.UserID && !m.stepUp(w, r) {
 		return
 	}
 	if err := m.s.Svc.RemovePassword(r.Context(), a, u.ID); err != nil {
@@ -534,6 +544,24 @@ func (m *Module) connectionsUser(w http.ResponseWriter, r *http.Request) (*model
 		return nil, nil, false
 	}
 	return u, a, true
+}
+
+// stepUp lets a dangerous change go ahead only after a recent re-authentication of the acting browser session
+// (signed in or confirmed within the last 5 minutes): deleting an organization, rotating the signing keys, changing
+// the primary organization's sign-in settings, making someone an administrator, removing another user's password. An
+// API token is refused: whoever holds one has not proven anything recently. It writes the response itself; the
+// console answers a 403 with field "reauth" with its re-authentication dialog and retries.
+func (m *Module) stepUp(w http.ResponseWriter, r *http.Request) bool {
+	if web.Session(r) == nil {
+		web.WriteJSON(w, http.StatusForbidden, web.ErrorBody{Field: "reauth",
+			Error: "This change needs a recent re-authentication in the admin console; an API token cannot make it."})
+		return false
+	}
+	if m.s.Reauthed == nil || !m.s.Reauthed(r) {
+		web.WriteReauth(w)
+		return false
+	}
+	return true
 }
 
 // selfCtx is the context for a change to u: when u is the actor, the self-service one, after a recent

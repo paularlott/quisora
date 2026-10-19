@@ -45,6 +45,9 @@ func newWorldWith(t *testing.T, cfgFn func(*config.Config)) *world {
 		s.Mux.Handle("/", admin.NotFound(s))
 		return []web.Module{w.mod}
 	}})
+	// Sessions here count as recently re-authenticated (the dangerous changes need it: stepUp); tests of the
+	// re-authentication itself set their own.
+	w.env.Server.Reauthed = func(*http.Request) bool { return true }
 	ctx := context.Background()
 	sys := service.System
 	var err error
@@ -1737,4 +1740,43 @@ func TestConsoleNeedsSecondFactor(t *testing.T) {
 		t.Errorf("user: %d", res.StatusCode)
 	}
 	want(t, w.as("admin").get(A+"/users"), 200)
+}
+
+// Dangerous changes need a recent re-authentication of the browser session (403 with field "reauth" otherwise, which
+// the console answers with its dialog), and an API token can never make them.
+func TestDangerousChangesNeedStepUp(t *testing.T) {
+	w := newWorld(t)
+	w.mod.RotateKeys = func(context.Context) error { return nil }
+	fresh := false
+	w.env.Server.Reauthed = func(*http.Request) bool { return fresh }
+	su, tok := w.as("super"), w.withBearer("super", "admin")
+	primary, _ := w.env.Svc.PrimaryOrg(context.Background())
+	settings := primary.Settings
+	settings.SessionIdle = 600
+	victim := w.users["manager"].ID
+	for name, call := range map[string]func(c *caller) resp{
+		"delete an organization":        func(c *caller) resp { return c.delete("/api/v1/orgs/globex?cascade=1") },
+		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/v1/keys/rotate", nil) },
+		"primary org sign-in settings":  func(c *caller) resp { return c.patch("/api/v1/orgs/primary", map[string]any{"settings": settings}) },
+		"make someone an administrator": func(c *caller) resp { return c.patch(AU+"/"+victim, map[string]any{"role": "admin"}) },
+		"create an administrator": func(c *caller) resp {
+			return c.post(AU, map[string]any{"username": "boss", "email": "boss@x.example", "given_name": "B", "role": "admin"})
+		},
+		"remove another user's password": func(c *caller) resp { return c.delete(AU + "/" + victim + "/password") },
+	} {
+		fresh = false
+		if r := call(su); r.Status != 403 || r.str("field") != "reauth" {
+			t.Errorf("%s without re-authentication: %d %s", name, r.Status, r.Raw)
+		}
+		if r := call(tok); r.Status != 403 {
+			t.Errorf("%s with an API token: %d %s", name, r.Status, r.Raw)
+		}
+		fresh = true
+		if r := call(su); r.Status/100 != 2 {
+			t.Errorf("%s after re-authentication: %d %s", name, r.Status, r.Raw)
+		}
+	}
+	// ordinary changes need none
+	fresh = false
+	want(t, su.patch("/api/v1/orgs/acme", map[string]any{"display_name": "Acme Ltd"}), 200)
 }

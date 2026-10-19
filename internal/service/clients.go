@@ -29,6 +29,7 @@ type ClientInput struct {
 	FirstParty     *bool     `json:"first_party"`
 	SCIM           *bool     `json:"scim"`
 	RotateRefresh  *bool     `json:"rotate_refresh_tokens"`
+	IntrospectOrg  *bool     `json:"introspect_org"`
 	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
 	Enabled        *bool     `json:"enabled"`
 }
@@ -231,6 +232,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.RotateRefresh != nil {
 		c.RotateRefresh = *in.RotateRefresh
 	}
+	if in.IntrospectOrg != nil {
+		c.IntrospectOrg = *in.IntrospectOrg
+	}
 	if in.RequirePKCE != nil {
 		c.PKCEOptional = !*in.RequirePKCE
 	}
@@ -253,7 +257,8 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		case c.PKCEOptional:
 			return Invalid("require_pkce", "a public client must use PKCE")
 		}
-		c.RotateRefresh = true // public clients always get one-time refresh tokens
+		c.RotateRefresh = true  // public clients always get one-time refresh tokens
+		c.IntrospectOrg = false // and cannot introspect at all
 	}
 	if c.AuthMethod == model.AuthMethodPrivateJWT && c.JWKS == "" && c.JWKSURI == "" {
 		return Invalid("jwks", "private_key_jwt needs the client's public keys (jwks or jwks_uri)")
@@ -289,8 +294,10 @@ func (s *Service) CreateClient(ctx context.Context, a *Actor, orgID string, in C
 	if !s.canAdminOrg(a, orgID) {
 		return nil, "", ErrForbidden
 	}
+	// Refresh tokens rotate by default: a copy that is used after the client used the token is detected and ends the
+	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
-		GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "offline_access"}}
+		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "offline_access"}}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")
 	}

@@ -1,6 +1,6 @@
-{{/* "Confirm it is you": the re-authentication dialog every sensitive change of your own account opens (see
-     withReauth in pages/account.js). org: your organization's name (its sign-in page); next: where signing in again
-     returns to. */}}
+{{/* "Confirm it is you": the re-authentication dialog every sensitive change opens (your own account's, and the
+     dangerous administrative ones; see withReauth in pages/account.js). Every signed-in page carries it (layouts/base).
+     org: your organization's name (its sign-in page); next: where signing in again returns to. */}}
 {{define "reauth-dialog"}}
   <div x-data="accountReauth">
   {{template "dialog-start" (dict "id" "reauth-dialog" "title" "Confirm it is you" "size" "sm")}}

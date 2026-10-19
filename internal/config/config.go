@@ -138,6 +138,10 @@ type Tokens struct {
 type Session struct {
 	TTL  int `toml:"ttl" flag:"ttl" usage:"Browser session lifetime from sign-in, seconds"`
 	Idle int `toml:"idle" flag:"idle" usage:"Browser session ends after this long unused, seconds (0 = never)"`
+	// TTL and Idle are also the most an organization may set. Managers and above (who can change other people's
+	// access) get shorter sessions still: PrivilegedTTL and PrivilegedIdle, when shorter.
+	PrivilegedTTL  int `toml:"privileged_ttl" flag:"privileged-ttl" usage:"Browser session lifetime for managers and above, seconds (0 = as everyone)"`
+	PrivilegedIdle int `toml:"privileged_idle" flag:"privileged-idle" usage:"Idle timeout for managers and above, seconds (0 = as everyone)"`
 	// UpstreamCheckMinutes is how often the refresh token of an upstream provider is replayed for users with sessions
 	// signed in through it (leaver detection: a refusal ends their sessions).
 	UpstreamCheckMinutes int `toml:"upstream_check_minutes" flag:"upstream-check-minutes" usage:"Replay upstream providers' refresh tokens this often, minutes, ending the sessions of users the provider no longer accepts (0 = never)"`
@@ -191,7 +195,7 @@ func Default() *Config {
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
 		Tokens: Tokens{SigningAlg: "ES256", AccessTTL: 600, IDTokenTTL: 600, RefreshTTL: 30 * 86400, CodeTTL: 60,
 			KeyRotationDays: 30, APITokenMaxDays: 365},
-		Session: Session{TTL: 7 * 86400, Idle: 86400, UpstreamCheckMinutes: 60},
+		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
 		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15},
@@ -400,6 +404,8 @@ func (c *Config) Validate() error {
 	positive("tokens.code_ttl", c.Tokens.CodeTTL)
 	positive("session.ttl", c.Session.TTL)
 	nonNegative("session.idle", c.Session.Idle)
+	nonNegative("session.privileged_ttl", c.Session.PrivilegedTTL)
+	nonNegative("session.privileged_idle", c.Session.PrivilegedIdle)
 	nonNegative("session.upstream_check_minutes", c.Session.UpstreamCheckMinutes)
 	nonNegative("tokens.key_rotation_days", c.Tokens.KeyRotationDays)
 	nonNegative("tokens.api_token_max_days", c.Tokens.APITokenMaxDays)

@@ -40,6 +40,10 @@ func (m *Module) putSettings(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
+	// The primary organization's sign-in policy covers the super admins themselves.
+	if org.Primary && in.Settings != nil && *in.Settings != org.Settings && a.IsSuper() && !m.stepUp(w, r) {
+		return
+	}
 	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, org.ID, in)
 	if err != nil {
 		web.WriteError(w, err)

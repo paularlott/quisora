@@ -58,6 +58,39 @@ Super admins see the keys under **Signing keys** in the primary organization's a
 once (when a key may have been exposed); tokens signed before keep working until they expire. The same is
 `GET /api/v1/keys` and `POST /api/v1/keys/rotate`.
 
+## Sessions, tokens and sensitive changes
+
+**Browser sessions** last `session.ttl` from sign-in (7 days) and end after `session.idle` unused (24 hours). An
+organization may set shorter ones on its settings page, never longer. Managers and above get
+`session.privileged_ttl` (12 hours) and `session.privileged_idle` (1 hour) when those are shorter. The primary
+organization's sign-in settings (methods, second factor, session lifetimes) cover the super admins, so only super
+admins change them.
+
+**Refresh tokens** of a new confidential client rotate (one use each): a copy used after the client has used the
+token is detected, and the whole grant ends (`oauth.refresh.reuse` in the audit log). A client that cannot keep the
+latest token can turn it off ("Rotate refresh tokens"). Public clients always rotate.
+
+**Introspection** answers `active` for an access token only to a client the token was issued for (its audience).
+A resource server that serves several applications of the organization needs "May introspect every token of the
+organization" on its client.
+
+**`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
+and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a
+condition of the sign-in. An `acr` claim requested as essential with no value Quisora knows fails with
+`unmet_authentication_requirements`.
+
+**Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks
+with its "Confirm it is you" dialog), and an API token can never make them:
+
+- deleting an organization;
+- rotating the signing keys;
+- changing the primary organization's sign-in settings;
+- making someone an administrator or super admin, or creating one;
+- removing another user's password.
+
+**Personal API tokens** last at most `tokens.api_token_max_days` (365 by default); with 0, a token may be made that
+never expires. A lifetime given explicitly is at most 10 years.
+
 ## Rotating the master key
 
 The master key seals every secret Quisora stores: authenticator (TOTP) secrets, sign-in providers' client secrets,

@@ -380,7 +380,10 @@ type Client struct {
 	FirstParty     bool     `msgpack:"fp" json:"first_party"`           // skip consent
 	SCIM           bool     `msgpack:"scim" json:"scim"`                // client_credentials tokens may call SCIM for its org
 	RotateRefresh  bool     `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
-	Enabled        bool     `msgpack:"en" json:"enabled"`
+	// IntrospectOrg lets the client introspect every access token of its organization (a resource server that serves
+	// several applications); without it introspection answers active only for tokens issued for the client (aud).
+	IntrospectOrg bool `msgpack:"io,omitempty" json:"introspect_org"`
+	Enabled       bool `msgpack:"en" json:"enabled"`
 	// Resources are the resource indicators (RFC 8707) the client may ask tokens for: absolute URIs of the APIs the
 	// access tokens are meant for (their aud). A request may name only these; none listed: no resource parameter.
 	Resources []string `msgpack:"res,omitempty" json:"resources"`

@@ -82,9 +82,10 @@ func TestClaimsParameterNeedsConsent(t *testing.T) {
 	}
 }
 
-// acr_values (or an acr claim request) naming only urn:quisora:acr:mfa makes a second factor a condition of this
-// sign-in; naming both values, or unknown ones, does not. The ID token's acr is always one of the requested known
-// values when any were named.
+// acr values are in order of preference: when the first known one (an acr claim request first, then acr_values) is
+// urn:quisora:acr:mfa a second factor is a condition of this sign-in; when it is basic, or none is known, it is not.
+// An essential acr claim with no known value fails the request. The ID token's acr is always one of the requested
+// known values when any were named.
 func TestACRValues(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
@@ -92,6 +93,7 @@ func TestACRValues(t *testing.T) {
 	weak := h.sessionWith(h.user, []string{"pwd"}, time.Now())
 	for _, extra := range []url.Values{
 		{"acr_values": {acrMFA}},
+		{"acr_values": {"urn:other " + acrMFA + " " + acrBasic}}, // mfa preferred over basic
 		{"claims": {`{"id_token":{"acr":{"essential":true,"values":["` + acrMFA + `"]}}}`}},
 	} {
 		u := h.authorize(weak, authzQuery(cl, ch, extra))
@@ -107,7 +109,7 @@ func TestACRValues(t *testing.T) {
 	if u := h.authorize(strong, authzQuery(cl, ch, url.Values{"acr_values": {acrMFA}})); u.Query().Get("code") == "" {
 		t.Fatalf("mfa session refused: %s", u)
 	}
-	for _, v := range []string{acrBasic + " " + acrMFA, "1 2", acrBasic} {
+	for _, v := range []string{acrBasic + " " + acrMFA, "1 2", acrBasic} { // basic preferred, unknown only, basic
 		u := h.authorize(weak, authzQuery(cl, ch, url.Values{"acr_values": {v}}))
 		if u.Query().Get("code") == "" {
 			t.Fatalf("acr_values %q refused a password session: %s", v, u)
@@ -115,6 +117,15 @@ func TestACRValues(t *testing.T) {
 		if h.p.FlowWantsMFA(context.Background(), "/oauth/authorize/resume?flow=x") {
 			t.Fatal("unknown flow wants MFA")
 		}
+	}
+	// an essential acr Quisora cannot give fails instead of signing the user in at another level
+	u := h.authorize(strong, authzQuery(cl, ch, url.Values{"claims": {`{"id_token":{"acr":{"essential":true,"values":["urn:other:loa:3"]}}}`}}))
+	if u.Query().Get("error") != "unmet_authentication_requirements" || u.Query().Get("code") != "" {
+		t.Fatalf("essential unknown acr: %s", u)
+	}
+	// not essential: ignored
+	if u := h.authorize(weak, authzQuery(cl, ch, url.Values{"claims": {`{"id_token":{"acr":{"values":["urn:other:loa:3"]}}}`}})); u.Query().Get("code") == "" {
+		t.Fatalf("voluntary unknown acr refused: %s", u)
 	}
 	r, _ := h.login(cl, secret, url.Values{"acr_values": {acrBasic + " " + acrMFA}})
 	if acr := claimsOf(t, r.str("id_token"))["acr"]; !slices.Contains([]any{acrBasic, acrMFA}, acr) {

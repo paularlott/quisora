@@ -312,6 +312,7 @@
     {{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}
     {{template "check-field" (dict "name" "enabled" "label" "Client is enabled" "switch" true)}}
     {{template "check-field" (dict "name" "rotate_refresh_tokens" "label" "Rotate refresh tokens" "switch" true "show" "notPublic" "help" "One-time refresh tokens; reuse revokes the grant. Costs a write per refresh.")}}
+    {{template "check-field" (dict "name" "introspect_org" "label" "May introspect every token of the organization" "switch" true "show" "notPublic" "help" "For an API that serves several applications. Otherwise introspection reports only tokens issued for this client as active.")}}
     {{template "check-field" (dict "name" "require_pkce" "label" "Require PKCE" "switch" true "show" "notPublic" "help" "Recommended. Turn off only for an older server-side application that cannot send PKCE: its sign-ins then rely on the client secret alone. Public clients always use PKCE.")}}
     {{if .Data.CanSCIM}}{{template "check-field" (dict "name" "scim" "label" "May provision users with SCIM" "switch" true "show" "notPublic" "help" "Tokens issued to this client can call the SCIM API for this organization.")}}{{end}}
   </div>

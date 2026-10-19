@@ -103,6 +103,7 @@
 <footer class="app-footer"><p>{{with .Site.Footer}}{{.}}{{else}}{{.Site.Name}}{{end}}</p></footer>
 {{template "toasts"}}
 {{template "confirm-dialog"}}
+{{if .User}}{{template "reauth-dialog" (dict "org" .HomeOrg "next" .Path)}}{{end}}
 {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}

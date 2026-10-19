@@ -228,8 +228,8 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if in.Settings.SessionTTL < 0 || in.Settings.SessionIdle < 0 {
-			return nil, Invalid("settings", "lifetimes cannot be negative")
+		if err := s.validOrgSettings(*in.Settings); err != nil {
+			return nil, err
 		}
 		o.Settings = *in.Settings
 	}
@@ -267,8 +267,13 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if in.Settings.SessionTTL < 0 || in.Settings.SessionIdle < 0 {
-			return nil, Invalid("settings", "lifetimes cannot be negative")
+		if err := s.validOrgSettings(*in.Settings); err != nil {
+			return nil, err
+		}
+		// The primary organization's sign-in policy is the super admins' own (they are members of it): only they
+		// change it, not its administrators.
+		if o.Primary && *in.Settings != o.Settings && !a.IsSuper() {
+			return nil, ErrForbidden
 		}
 		o.Settings = *in.Settings
 	}
@@ -324,5 +329,20 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 		return mapStore(err)
 	}
 	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(len(users))})
+	return nil
+}
+
+// validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the
+// server's (session.ttl and session.idle are the most an organization may set; 0 keeps the server's).
+func (s *Service) validOrgSettings(st model.OrgSettings) error {
+	if st.SessionTTL < 0 || st.SessionIdle < 0 {
+		return Invalid("settings", "lifetimes cannot be negative")
+	}
+	if st.SessionTTL > s.Cfg.Session.TTL {
+		return Invalid("session_ttl", "at most "+itoa(s.Cfg.Session.TTL)+" seconds (the server's session.ttl)")
+	}
+	if s.Cfg.Session.Idle > 0 && st.SessionIdle > s.Cfg.Session.Idle {
+		return Invalid("session_idle", "at most "+itoa(s.Cfg.Session.Idle)+" seconds (the server's session.idle)")
+	}
 	return nil
 }

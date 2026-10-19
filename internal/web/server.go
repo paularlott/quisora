@@ -260,8 +260,9 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.User = u
 		p.CSRF = Session(r).CSRF
 		if org, err := s.Svc.GetOrg(r.Context(), nil, u.OrgID); err == nil {
-			p.Org = org
+			p.Org, p.HomeOrg = org, org.Name
 		}
+		p.Path = r.URL.RequestURI()
 		p.IsSuper = u.Role == model.RoleSuperAdmin
 		p.IsAdmin = u.Role.Rank() >= model.RoleAdmin.Rank()
 		p.IsMgr = u.Role.Rank() >= model.RoleManager.Rank()

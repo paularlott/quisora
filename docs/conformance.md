@@ -88,8 +88,9 @@ text before each screenshot.
 ## Fixed because of the runs
 
 - `acr_values` were ignored (a warning). Discovery now lists `acr_values_supported` (`urn:quisora:acr:basic`,
-  `urn:quisora:acr:mfa`); a request naming only the MFA value, through `acr_values` or an `acr` claim request, makes a
-  second factor a condition of that sign-in, and the ID token's `acr` is always one of the requested known values.
+  `urn:quisora:acr:mfa`); the requested values are taken in order of preference, and when the first known one is the
+  MFA value a second factor is a condition of that sign-in. An essential `acr` claim with no known value fails with
+  `unmet_authentication_requirements`. The ID token's `acr` is always one of the requested known values.
 - The `claims` request parameter was not supported (a warning in `oidcc-claims-essential`). It is now: single claims
   for the ID token or userinfo, each only when the client may use the scope that holds it, shown on the consent
   screen, and kept across refreshes.

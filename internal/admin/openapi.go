@@ -203,7 +203,7 @@ func components() obj {
 		"token_endpoint_auth_method":   obj{"type": "string", "enum": []string{"client_secret_post", "client_secret_basic", "private_key_jwt", "none"}, "description": "none = public client (SPA, mobile, CLI): PKCE only, no secret, refresh tokens always rotate"},
 		"id_token_signed_response_alg": prop("string"), "jwks": prop("string"), "jwks_uri": prop("string"),
 		"first_party": prop("boolean"), "scim": prop("boolean"),
-		"rotate_refresh_tokens": prop("boolean"), "enabled": prop("boolean"),
+		"rotate_refresh_tokens": prop("boolean"), "introspect_org": prop("boolean"), "enabled": prop("boolean"),
 		"require_pkce": obj{"type": "boolean", "description": "default true; false lets a confidential client send authorization requests without PKCE (public clients always need it)"}})
 	clientIn := obj{}
 	for k, v := range clientProps {

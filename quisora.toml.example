@@ -84,8 +84,10 @@ key_rotation_days = 30
 api_token_max_days = 365                  # longest personal API token lifetime, days; 0 = tokens may never expire
 
 [session]
-ttl = 604800                              # 7 days from sign-in
-idle = 86400                              # 24 hours without use (0 = no idle limit)
+ttl = 604800                              # 7 days from sign-in; also the most an organization may set
+idle = 86400                              # 24 hours without use (0 = no idle limit); also the most an organization may set
+privileged_ttl = 43200                    # managers and above: 12 hours from sign-in (0 = as everyone)
+privileged_idle = 3600                    # managers and above: 1 hour without use (0 = as everyone)
 upstream_check_minutes = 60               # replay sign-in providers' refresh tokens; a refusal ends the user's sessions (0 = off)
 
 [mail]

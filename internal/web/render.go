@@ -30,11 +30,15 @@ type Site struct {
 
 // Page is the data every template receives; Data carries the page-specific values.
 type Page struct {
-	Site    Site
-	Title   string
-	User    *model.User
-	Org     *model.Org // the signed-in user's org, or the org of a /login/<org> page
-	CSRF    string     // session CSRF token, or the anonymous double-submit token
+	Site  Site
+	Title string
+	User  *model.User
+	Org   *model.Org // the signed-in user's org, or the org of a /login/<org> page
+	// HomeOrg is the signed-in user's organization name (Org may be another one on admin pages), and Path the page's
+	// address: the re-authentication dialog every signed-in page carries signs in there and comes back here.
+	HomeOrg string
+	Path    string
+	CSRF    string // session CSRF token, or the anonymous double-submit token
 	IsSuper bool
 	IsAdmin bool // admin of their own org (or super)
 	IsMgr   bool // manager+ of their own org

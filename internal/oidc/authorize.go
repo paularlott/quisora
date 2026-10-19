@@ -361,7 +361,12 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.ClaimsUI, f.ClaimsID = cp.UserInfo, cp.IDToken
-	f.MFA = demandsMFA(append(strings.Fields(q.Get("acr_values")), cp.ACR...))
+	if cp.ACREssential && !knowsACR(cp.ACR) {
+		fail("unmet_authentication_requirements", "none of the essential acr values can be satisfied (supported: "+
+			acrBasic+", "+acrMFA+")")
+		return
+	}
+	f.MFA = demandsMFA(append(slices.Clone(cp.ACR), strings.Fields(q.Get("acr_values"))...))
 	secret, bind := newFlowSecret()
 	f.Bind = bind
 	b, _ := json.Marshal(f)

@@ -14,10 +14,12 @@ import (
 // consent screen shows those scopes. "essential" changes nothing for these: a claim the user has no value for is
 // left out either way.
 //
-// acr: Quisora's two values are urn:quisora:acr:basic and urn:quisora:acr:mfa (see tokens.go). A request whose known
-// values, through acr_values or an acr claim request for the ID token, are only urn:quisora:acr:mfa makes a second
-// factor a condition of this sign-in, as if the tenant required one. Unknown values are ignored: acr is a voluntary
-// claim, and the ID token always states how the user actually signed in.
+// acr: Quisora's two values are urn:quisora:acr:basic and urn:quisora:acr:mfa (see tokens.go). The values a request
+// names (an acr claim request for the ID token first, then acr_values) are in order of preference, and the first one
+// Quisora knows decides: urn:quisora:acr:mfa makes a second factor a condition of this sign-in, as if the tenant
+// required one. Unknown values are ignored (acr_values is voluntary), except that an acr claim requested as essential
+// whose values Quisora knows none of fails the request (unmet_authentication_requirements) rather than signing the
+// user in at a level the client said it cannot accept. The ID token always states how the user actually signed in.
 
 // claimScopes maps each claim that can be requested individually to the scope that holds it.
 var claimScopes = map[string]string{
@@ -43,6 +45,8 @@ type claimsParam struct {
 	UserInfo []string
 	IDToken  []string
 	ACR      []string
+	// ACREssential: the acr claim was requested as essential.
+	ACREssential bool
 }
 
 var errClaimsParam = errors.New("claims must be a JSON object with userinfo and/or id_token members")
@@ -75,6 +79,7 @@ func parseClaimsParam(raw string, clientScopes []string) (claimsParam, error) {
 	}
 	out.UserInfo, out.IDToken = keep(req.UserInfo), keep(req.IDToken)
 	if a := req.IDToken["acr"]; a != nil {
+		out.ACREssential = a.Essential
 		var v string
 		if json.Unmarshal(a.Value, &v) == nil && v != "" {
 			out.ACR = append(out.ACR, v)
@@ -88,10 +93,23 @@ func parseClaimsParam(raw string, clientScopes []string) (claimsParam, error) {
 	return out, nil
 }
 
-// demandsMFA reports whether acr values ask for a second factor: they name urn:quisora:acr:mfa and not
-// urn:quisora:acr:basic (unknown values are ignored).
+// demandsMFA reports whether acr values, in order of preference, ask for a second factor: the first one Quisora
+// knows is urn:quisora:acr:mfa (unknown values are skipped).
 func demandsMFA(acr []string) bool {
-	return slices.Contains(acr, acrMFA) && !slices.Contains(acr, acrBasic)
+	for _, v := range acr {
+		switch v {
+		case acrMFA:
+			return true
+		case acrBasic:
+			return false
+		}
+	}
+	return false
+}
+
+// knowsACR reports whether any of the acr values is one Quisora issues.
+func knowsACR(acr []string) bool {
+	return slices.Contains(acr, acrMFA) || slices.Contains(acr, acrBasic)
 }
 
 // consentScopes are the scopes a request asks the user for: its scopes and those holding its individually

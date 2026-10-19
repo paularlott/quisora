@@ -153,7 +153,6 @@
 
   {{template "user-dialog" .}}
   {{template "invite-dialog" .}}
-  {{if .Data.Self}}{{template "reauth-dialog" (dict "org" .Org.Name "next" (printf "%s/users/%s" .Data.Base .Data.UserID))}}{{end}}
 
 </div>
 {{end}}
