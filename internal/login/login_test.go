@@ -440,6 +440,53 @@ func TestLockout(t *testing.T) {
 }
 
 // An unknown login locks out after the same number of attempts, so lockout does not reveal which accounts exist.
+// Someone who knows the email address can lock the account, but not its owner's browsers that have signed in to it
+// before: they count failures of their own and lock after as many. A tampered device cookie is no cookie.
+func TestKnownDeviceLockout(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Limits.LockoutAttempts = 3
+		c.Limits.LockoutMinutes = 15
+		c.Limits.LoginPerIPMin = 0
+	})
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	b := e.browser(t)
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+
+	stranger := e.browser(t)
+	for range 3 {
+		res, out = stranger.login("acme", "pat", "bad")
+		wantStatus(t, res, out, 401)
+	}
+	res, out = stranger.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+
+	u, _ := url.Parse(e.URL)
+	c := e.browser(t)
+	for _, ck := range b.c.Jar.Cookies(u) {
+		if ck.Name == "__Host-quisora_dev" {
+			ck.Value = strings.Replace(ck.Value, ".", ".x", 1)
+			c.c.Jar.SetCookies(u, []*http.Cookie{ck})
+		}
+	}
+	res, out = c.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+
+	res, out = b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+
+	// the known browser's own failures lock it (and only it)
+	for range 3 {
+		res, out = b.login("acme", "pat", "bad")
+		wantStatus(t, res, out, 401)
+	}
+	res, out = b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+	res, out = e.browser(t).login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+}
+
 func TestLockoutDoesNotRevealAccounts(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LockoutAttempts = 2; c.Limits.LoginPerIPMin = 0 })
 	b := e.browser(t)

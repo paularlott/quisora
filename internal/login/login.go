@@ -332,6 +332,12 @@ func (m *Module) fail(ctx context.Context, key string) (tripped bool) {
 
 func (m *Module) clearLock(ctx context.Context, key string) { _ = m.s.Eph.Delete(ctx, nsLockout, key) }
 
+// clearLocks clears both of a user's lockout counters: the account's and its known browsers' (lockKeyFor).
+func (m *Module) clearLocks(ctx context.Context, userID string) {
+	m.clearLock(ctx, userID)
+	m.clearLock(ctx, "dev:"+userID)
+}
+
 func (m *Module) lockedResponse(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", strconv.Itoa(int(m.lockWindow().Seconds())))
 	writeErr(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.", "")
@@ -440,7 +446,7 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		}
 	}
 	m.s.Svc.TouchLogin(ctx, u)
-	m.clearLock(ctx, u.ID)
+	m.clearLocks(ctx, u.ID)
 	m.rememberDevice(w, r, u)
 	if m.s.Cfg.Audit.Logins {
 		m.audit(r, "login.success", org, u, u.Username, map[string]string{"amr": strings.Join(amr, " ")})

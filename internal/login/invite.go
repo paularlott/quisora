@@ -164,7 +164,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		u = fresh
 	}
-	m.clearLock(ctx, u.ID)
+	m.clearLocks(ctx, u.ID)
 	m.s.Sessions.Evict("", u.ID)
 	detail := map[string]string{}
 	if wantPassword {

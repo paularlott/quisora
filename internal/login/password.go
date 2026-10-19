@@ -64,7 +64,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	if eff.Password {
 		u, _ = m.s.Svc.FindUserByEmail(ctx, org.ID, login)
 	} // else: treated like an unknown user (generic failure after a dummy hash), so a switched-off org or tenant looks the same
-	key := lockKey(u, org, login)
+	key := m.lockKeyFor(r, u, lockKey(u, org, login))
 	if m.locked(ctx, key) {
 		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -225,7 +225,7 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 		return
 	}
-	key := u.ID
+	key := m.lockKeyFor(r, u, u.ID)
 	if m.locked(ctx, key) {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -361,7 +361,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	m.clearLock(ctx, u.ID)
+	m.clearLocks(ctx, u.ID)
 	m.s.Sessions.Evict("", u.ID)
 	m.audit(r, "password.reset", org, u, u.Username, nil)
 	web.WriteJSON(w, http.StatusOK, stepResp{Next: "/login/" + org.Name})

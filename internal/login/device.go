@@ -15,8 +15,10 @@ import (
 // cookie naming that account. A sign-in request that carries one for the account (or org) it is for is counted
 // against that account's own budget instead of the client address's, so whoever floods the sign-in endpoints from
 // the same address (an office NAT, a load balancer without trusted_proxies) cannot keep people who have signed in
-// from this browser before out. The cookie grants nothing else: the password, second factor, lockout and everything
-// after are unchanged, and a request without a matching cookie is limited by address as before.
+// from this browser before out; and its failed passwords and codes count toward a lockout of the account's known
+// browsers instead of the account's, so whoever knows the email address cannot lock its owner out either. The cookie
+// grants nothing else: the password, second factor and everything after are unchanged, and a request without a
+// matching cookie is limited by address and locked out with the account as before.
 
 const (
 	deviceCookie     = "__Host-quisora_dev"
@@ -128,4 +130,17 @@ func (m *Module) knownLogin(org *model.Org, login string) known {
 		return known{}
 	}
 	return known{orgID: org.ID, login: tag}
+}
+
+// lockKeyFor is the lockout counter a sign-in step for u charges: the one shared by u's known browsers when this
+// browser is one of them, else accountKey (lockKey). A stranger who locks the account does not lock out its owner's
+// browsers, and failures from those browsers still lock them after as many attempts.
+func (m *Module) lockKeyFor(r *http.Request, u *model.User, accountKey string) string {
+	if u == nil {
+		return accountKey
+	}
+	if _, ok := m.knownDevice(r, known{userID: u.ID}); ok {
+		return "dev:" + u.ID
+	}
+	return accountKey
 }
