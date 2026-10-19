@@ -12,9 +12,11 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/admin"
+	"github.com/paularlott/quisora/internal/build"
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/secure"
@@ -126,6 +128,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	srv.ServesTokens = node.ServesTokens
 	srv.Status = func() any { return readyzStatus(node.Status()) }
 	srv.Site.Clustered = !node.Status().Standalone
+	a.registerMetrics()
 	// A record that lost a unique value to another created before it (two nodes accepted the same email address,
 	// name...) is kept: the value is removed from it, it is flagged and the change audited (nothing is deleted).
 	node.OnConflict(func(loser *store.Record) {
@@ -284,4 +287,25 @@ func newSealer(c *config.Config, key []byte) (*secure.Sealer, error) {
 		prev = append(prev, k)
 	}
 	return secure.NewKeyring(key, prev...)
+}
+
+// registerMetrics adds the gauges read from this node when Prometheus scrapes (metrics.token).
+func (a *App) registerMetrics() {
+	m := metrics.Default
+	m.Gauge("quisora_build_info", "The build: 1, labelled with its version.", []string{"version"},
+		func() []metrics.Sample { return []metrics.Sample{{Labels: []string{build.Version}, Value: 1}} })
+	st := func(f func(cluster.Status) float64) func() []metrics.Sample {
+		return metrics.Value(func() float64 { return f(a.Node.Status()) })
+	}
+	m.Gauge("quisora_ready", "1 when this node serves (the /readyz answer).", nil, st(func(s cluster.Status) float64 { return metrics.Bool(s.Ready) }))
+	m.Gauge("quisora_writable", "1 when this node accepts changes (a quorum is reachable, or standalone).", nil,
+		st(func(s cluster.Status) float64 { return metrics.Bool(s.Writable) }))
+	m.Gauge("quisora_leader", "1 on the node that runs housekeeping (signing keys, end dates, re-sealing).", nil,
+		st(func(s cluster.Status) float64 { return metrics.Bool(s.Leader) }))
+	m.Gauge("quisora_cluster_alive_nodes", "Cluster nodes this node sees alive, itself included (1 standalone).", nil,
+		st(func(s cluster.Status) float64 { return float64(max(s.Alive, 1)) }))
+	m.Gauge("quisora_cluster_size", "cluster.size (0 standalone).", nil, st(func(s cluster.Status) float64 { return float64(s.Size) }))
+	m.Gauge("quisora_cluster_quorum", "Nodes needed for a write (0 standalone).", nil, st(func(s cluster.Status) float64 { return float64(s.Quorum) }))
+	m.Gauge("quisora_master_key_rotation", "1 while previous master keys are configured (a rotation in progress).", nil,
+		metrics.Value(func() float64 { return metrics.Bool(a.Svc.Sealer.Previous()) }))
 }

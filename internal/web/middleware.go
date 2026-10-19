@@ -9,11 +9,14 @@ import (
 	"net/url"
 	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -149,6 +152,7 @@ func shed(max int, next http.Handler) http.Handler {
 		}
 		if inFlight.Add(1) > limit {
 			inFlight.Add(-1)
+			metrics.HTTPShed.Inc()
 			w.Header().Set("Retry-After", "1")
 			WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "The server is busy. Please try again."})
 			return
@@ -164,7 +168,7 @@ func shed(max int, next http.Handler) http.Handler {
 // streams have their own per-node limit, see internal/events).
 func unshed(p string) bool {
 	switch p {
-	case EventsPath, "/healthz", "/readyz", "/oauth/jwks", "/.well-known/openid-configuration",
+	case EventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
 		"/.well-known/oauth-authorization-server":
 		return true
 	}
@@ -324,3 +328,66 @@ func fromTrustedProxy(r *http.Request) bool {
 	addr, err := netip.ParseAddr(host)
 	return err == nil && trusted(addr)
 }
+
+// observe counts every request by status class and time taken (metrics), and with log.access logs it: method, path
+// (never the query string: it carries authorization codes, states and link tokens), status, duration, size, client
+// address and request id. The probes, metrics scrapes and static files are counted but not logged.
+func observe(log logger.Logger, access bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		if sw.status == 0 {
+			sw.status = http.StatusOK
+		}
+		d := time.Since(start)
+		metrics.HTTPRequests.Inc(strconv.Itoa(sw.status/100) + "xx")
+		metrics.HTTPDuration.Observe(d.Seconds())
+		if access && !quiet(r.URL.Path) {
+			id := ""
+			if ri := service.RequestFrom(r.Context()); ri != nil {
+				id = ri.ID
+			}
+			log.Info("http", "method", r.Method, "path", r.URL.Path, "status", sw.status,
+				"ms", float64(d.Microseconds())/1000, "bytes", sw.bytes, "ip", ClientIP(r), "request_id", id)
+		}
+	})
+}
+
+// quiet paths are not access-logged: probes, scrapes and static files.
+func quiet(p string) bool {
+	return p == "/healthz" || p == "/readyz" || p == "/metrics" || strings.HasPrefix(p, "/assets/") ||
+		strings.HasPrefix(p, "/branding/") || p == "/favicon.ico"
+}
+
+// statusWriter remembers a response's status and size. Unwrap lets http.ResponseController reach the connection
+// (flushing the event stream, a backup's write deadline).
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

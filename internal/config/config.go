@@ -38,6 +38,13 @@ type Config struct {
 	Audit   Audit   `toml:"audit" flag:"audit"`
 	Limits  Limits  `toml:"limits"`
 	Log     Log     `toml:"log" flag:"log"`
+	Metrics Metrics `toml:"metrics" flag:"metrics"`
+}
+
+// Metrics configures GET /metrics (Prometheus). It is served only with a token: the counters say how the server is
+// used and attacked, which is not for everyone.
+type Metrics struct {
+	Token string `toml:"token" flag:"token" secret:"true" usage:"Bearer token Prometheus sends to GET /metrics; empty = no metrics endpoint"`
 }
 
 type Server struct {
@@ -184,6 +191,9 @@ type Limits struct {
 type Log struct {
 	Level  string `toml:"level" flag:"level" usage:"Log level: trace, debug, info, warn or error"`
 	Format string `toml:"format" flag:"format" usage:"Log format: console or json"`
+	// Access logs every HTTP request (method, path without its query string, status, duration, size, client address,
+	// request id). Query strings are never logged: they carry codes, states and link tokens.
+	Access bool `toml:"access" flag:"access" usage:"Log every HTTP request (never its query string)"`
 }
 
 // Default returns the configuration used when nothing is set.

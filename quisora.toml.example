@@ -117,3 +117,7 @@ password_workers = 0                      # concurrent password hashes (0 = numb
 [log]
 level = "info"                            # trace, debug, info, warn, error
 format = "console"                        # console or json
+access = false                            # log every HTTP request (never its query string)
+
+[metrics]
+# token = ""                              # bearer token Prometheus sends to GET /metrics; empty = no metrics endpoint

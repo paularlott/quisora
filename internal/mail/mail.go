@@ -270,3 +270,6 @@ func Build(from string, m Message) []byte {
 	_ = mp.Close()
 	return b.Bytes()
 }
+
+// Queued is the number of messages waiting to be sent.
+func (m *Mailer) Queued() int { return len(m.queue) }

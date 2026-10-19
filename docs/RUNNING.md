@@ -545,7 +545,46 @@ Until the first release, formats change in place. From then on:
 - `/readyz`: readiness, cluster-aware. Route load balancers on it. It reports size, quorum and counts of unconfirmed
   writes, refusals and clock skew.
 - `GET /api/v1/cluster` (super admins) and the console's settings page: the node's cluster status.
-- The probes, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
+- The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
+
+### Metrics
+
+`GET /metrics` serves Prometheus metrics when `metrics.token` is set (`QUISORA_METRICS_TOKEN`); Prometheus sends it
+as a bearer token (`authorization: { credentials: … }` in the scrape config). Without a token there is no such
+endpoint. Every node serves its own.
+
+| Metric | What |
+| --- | --- |
+| `quisora_http_requests_total{code}` | Requests by status class (`2xx` … `5xx`) |
+| `quisora_http_request_duration_seconds` | Time to answer (histogram) |
+| `quisora_http_shed_total` | Requests refused because too many were in progress |
+| `quisora_audit_events_total{action,outcome}` | Every audit event: `login.failure`, `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `oauth.client_auth.limited`, `passkey.clone` and the rest ([what is recorded](#what-is-recorded)) |
+| `quisora_audit_undelivered_total` | Audit events VictoriaLogs will never receive |
+| `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
+| `quisora_mail_queued` | Emails waiting to be sent |
+| `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
+| `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
+| `quisora_master_key_rotation` | 1 while previous master keys are configured |
+| `quisora_build_info{version}`, `quisora_uptime_seconds`, `quisora_goroutines`, `quisora_memory_heap_bytes` | The process |
+
+Alerts worth having:
+
+- `quisora_ready == 0` or `quisora_writable == 0` for more than a few minutes; `quisora_cluster_alive_nodes <
+  quisora_cluster_quorum`.
+- `increase(quisora_audit_undelivered_total[5m]) > 0`, or `quisora_audit_spool_bytes` growing: audit events at risk.
+- Bursts of `quisora_audit_events_total{outcome="failure"}`, by action: password guessing (`login.failure`,
+  `login.lockout`), floods (`login.limited`, `oauth.client_auth.limited`), stolen tokens (`oauth.refresh.reuse`,
+  `oauth.code.replay`), a cloned passkey (`passkey.clone`).
+- Any `quisora_audit_events_total{action=~"keys.rotate|org.primary|cluster.force_start|backup.download|backup.restore"}`:
+  rare, privileged events someone should know about.
+- `rate(quisora_http_shed_total[5m]) > 0`: the node is overloaded.
+
+### Access log
+
+`log.access = true` (`QUISORA_LOG_ACCESS`) logs every request: method, path, status, duration, size, client address
+and request id (the `X-Request-ID` response header, also in the audit events the request made). The query string is
+never logged: it carries authorization codes, states and link tokens. Probes, scrapes and static files are not
+logged.
 
 ## Sizing
 

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"time"
+
 	"github.com/paularlott/quisora/internal/admin"
 	"github.com/paularlott/quisora/internal/events"
-	"time"
 
 	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/mail"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/scim"
@@ -51,6 +53,8 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var adminMail admin.Mailer
 	if a.Cfg.Mail.Enabled() {
 		mailer := mail.New(a.Cfg, a.Log)
+		metrics.Default.Gauge("quisora_mail_queued", "Emails waiting to be sent (invitations, password resets, verifications).",
+			nil, metrics.Value(func() float64 { return float64(mailer.Queued()) }))
 		a.closers = append(a.closers, mailer.Close)
 		mailer.SetService(a.Server.Svc) // invitation/reset links are durable service records: any node, any restart
 		lopts.Mail = mailer

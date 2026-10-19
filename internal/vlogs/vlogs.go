@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/paularlott/logger"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -122,6 +123,7 @@ func (c *Client) undelivered(reason string, lines [][]byte) {
 	if len(lines) == 0 {
 		return
 	}
+	metrics.AuditUndelivered.Add(uint64(len(lines)))
 	c.mu.Lock()
 	c.dropped += int64(len(lines))
 	n := c.dropped
@@ -409,4 +411,14 @@ func fromRow(r map[string]string) *model.Audit {
 		}
 	}
 	return e
+}
+
+// SpoolBytes is the disk space the spool uses now (0 without one): a growing spool means VictoriaLogs is not
+// taking events.
+func (c *Client) SpoolBytes() int64 {
+	if c.spool == nil {
+		return 0
+	}
+	_, total := c.spool.segments()
+	return total
 }

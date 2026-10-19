@@ -7,6 +7,7 @@ import (
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -28,6 +29,8 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 		}
 		vl.Start()
 		a.closers = append(a.closers, vl.Close)
+		metrics.Default.Gauge("quisora_audit_spool_bytes", "Disk space the VictoriaLogs spool uses: events VictoriaLogs has not taken yet.",
+			nil, metrics.Value(func() float64 { return float64(vl.SpoolBytes()) }))
 		a.Svc.AuditWriter, a.Svc.AuditReader = vl, vl
 		return nil
 	}

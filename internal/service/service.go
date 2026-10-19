@@ -16,6 +16,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
@@ -238,6 +239,7 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 	if a.ClientID != "" && e.Actor == "" {
 		e.Actor = "client:" + a.ClientID
 	}
+	metrics.AuditEvents.Inc(e.Action, e.Outcome)
 	if ri := RequestFrom(ctx); ri != nil {
 		e.RequestID, e.UserAgent, e.SessionID = ri.ID, clip(ri.UserAgent, 512), ri.SessionID
 		if e.IP == "" {

@@ -76,7 +76,9 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 - **Replicated:** every node has its own database (any backend, e.g. BadgerDB) and sets `cluster.bind`, `cluster.peers` (every node), `cluster.size` and `cluster.key`. Run `quisora bootstrap --new-cluster` on one node first.
 
 Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.md](docs/RUNNING.md). Replication rules
-and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md).
+and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it securely (threat model, hardening checklist, incident
+response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md).
+Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Audit log and VictoriaLogs
 

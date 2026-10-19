@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -86,13 +87,14 @@ func (s *Server) Use(mods ...Module) {
 
 // Handler returns the full middleware chain around the mux.
 func (s *Server) Handler() http.Handler {
-	return recoverer(s.Log, requestInfo(securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux))))))
+	return recoverer(s.Log, requestInfo(observe(s.Log, s.Cfg.Log.Access,
+		securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold
 // no data.
 func alwaysServed(p string) bool {
-	return p == "/healthz" || p == "/readyz" || strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/branding/") ||
+	return p == "/healthz" || p == "/readyz" || p == "/metrics" || strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/branding/") ||
 		p == "/favicon.ico"
 }
 
@@ -191,6 +193,7 @@ func (s *Server) baseRoutes() {
 		static.ServeHTTP(w, r)
 	}))
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
+	s.Mux.HandleFunc("GET /metrics", s.metrics)
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -346,4 +349,23 @@ type debugWriter struct{ log logger.Logger }
 func (d debugWriter) Write(p []byte) (int, error) {
 	d.log.Debug(strings.TrimSpace(string(p)))
 	return len(p), nil
+}
+
+// metrics serves the Prometheus metrics (metrics.token as a bearer token; without one there is no such endpoint).
+// It answers whatever the node's state, so a node that is not ready can be watched too.
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	tok := s.Cfg.Metrics.Token
+	if tok == "" {
+		http.NotFound(w, r)
+		return
+	}
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(tok)) != 1 {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = metrics.Default.Write(w)
 }
