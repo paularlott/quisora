@@ -119,6 +119,9 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	if a != System && a.UserID == u.ID {
 		return "", time.Time{}, Invalid("user", "you cannot invite yourself")
 	}
+	if err := s.mayResetSignIn(ctx, a, u, "user"); err != nil {
+		return "", time.Time{}, err
+	}
 	if !u.Enabled(time.Now()) {
 		return "", time.Time{}, Invalid("active", "the account is disabled")
 	}
@@ -145,6 +148,9 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 	}
 	if a.UserID == u.ID {
 		return Invalid("password", "remove your own password from your account page")
+	}
+	if err := s.mayResetSignIn(ctx, a, u, "password"); err != nil {
+		return err
 	}
 	if u.PasswordHash == "" {
 		return nil

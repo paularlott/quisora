@@ -126,7 +126,7 @@ func TestAuthentication(t *testing.T) {
 	if r := e.do("GET", "/scim/v2/acme/Users", tok, nil); r.Status != 200 {
 		t.Fatal(r.Status)
 	}
-	if _, err := e.Svc.UpdateUser(e.ctx, service.ActorForUser(e.users["adm-a"], ""), mgr.ID, service.UserInput{Role: ptr(model.RoleUser)}); err != nil {
+	if _, err := e.Svc.UpdateUser(e.ctx, service.System, mgr.ID, service.UserInput{Role: ptr(model.RoleUser)}); err != nil {
 		t.Fatal(err)
 	}
 	// A token whose scopes now exceed its owner's role is no longer valid at all.

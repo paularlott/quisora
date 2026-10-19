@@ -22,7 +22,9 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   certification plans ([docs/conformance.md](docs/conformance.md)).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
   document, and personal API tokens with scopes.
-- **Roles.** Super admin, admin, manager and user. Managers and above always use a second factor.
+- **Roles.** Super admin, admin, manager and user. Managers and above always use a second factor. Only a super admin
+  can reset a manager's or administrator's sign-in (a new invitation, removing the password) or lower their role, so
+  one administrator cannot take over another's account.
 - **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs.
 - **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL, MariaDB or Valkey.
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip,

@@ -718,8 +718,10 @@ export default function (Alpine) {
       return { ...u, title: u.name || u.username, roleText: ROLE_LABEL[u.role] || u.role, roleClass: 'badge ' + (ROLE_BADGE[u.role] || 'badge-plain'),
         statusText: b.text, statusClass: b.cls, lastLoginText: fmtDateTime(u.last_login), createdText: fmtDateTime(u.created),
         emailText: u.email || '—', emailVerifiedText: u.email ? (u.email_verified ? 'Verified' : 'Not verified') : '',
+        emailVerifiedClass: 'badge ml-1 ' + (u.email_verified ? 'badge-success' : 'badge-warning'),
         groupsText: (u.groups || []).map((g) => g.display_name).join(', ') || 'None', externalText: u.external_id || '—', ...tagView(u.tags, 'users'), initial: (u.name || u.username || '?').slice(0, 1).toUpperCase(),
         phoneText: u.phone_number || '—', phoneVerifiedText: u.phone_number ? (u.phone_number_verified ? 'Verified' : 'Not verified') : '',
+        phoneVerifiedClass: 'badge ml-1 ' + (u.phone_number_verified ? 'badge-success' : 'badge-warning'),
         statusNote: statusNote(u), hasStatusNote: !!u.status_changed,
         passwordDetail: u.password_changed_at ? (u.has_password ? 'Last changed ' : 'Removed ') + fmtDateTime(u.password_changed_at) : '',
         mfaText: u.mfa_enrolled_at ? 'Set up ' + fmtDateTime(u.mfa_enrolled_at) : 'Not set up' }
@@ -733,6 +735,9 @@ export default function (Alpine) {
     get passwordText() { return this.user.has_password ? 'Set' : 'Not set' },
     get passkeysText() { const n = this.user.passkeys; return n === undefined ? '—' : n === 0 ? 'None' : String(n) },
     get hasPassword() { return this.user.has_password },
+    get canResetSignIn() { return this.user.can_reset_sign_in !== false },
+    get resetBySuperOnly() { return this.user.can_reset_sign_in === false },
+    get canRemovePassword() { return this.hasPassword && this.canResetSignIn },
     newInvite(ev) { this.openInvite(this.user, null, ev.currentTarget) },
     async removePassword(ev) {
       const yes = await confirmAction(Alpine, { title: 'Remove password?', message: `Remove the password of ${this.user.title}?`,

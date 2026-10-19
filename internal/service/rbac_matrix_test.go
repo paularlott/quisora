@@ -178,7 +178,11 @@ func TestMatrixRoleChange(t *testing.T) {
 			switch {
 			case ch.to == model.RoleSuperAdmin:
 				want = "denied"
-			case ac.name == "super" || ac.name == "a-admin":
+			case ac.name == "super":
+				want = "ok"
+			case ac.name == "a-admin" && ch.to.Rank() < ch.from.Rank():
+				want = "invalid" // only a super admin lowers a manager's or administrator's role
+			case ac.name == "a-admin":
 				want = "ok"
 			}
 			c.check(t, "role "+string(ch.from)+"->"+string(ch.to)+" as "+ac.name, err, want)

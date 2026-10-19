@@ -159,7 +159,8 @@ func components() obj {
 		"manager": obj{"type": "object", "properties": obj{"id": prop("string"), "name": prop("string")}, "description": "the manager's name; present on GET of one user"},
 		"tags":    tagsSchema(), "has_password": obj{"type": "boolean", "description": "whether a password is set; the password itself is never returned"},
 		"passkeys": obj{"type": "integer", "description": "number of registered passkeys; present on GET of one user"}, "last_login": dateTime(),
-		"groups": obj{"type": "array", "items": schema(nil, obj{"id": prop("string"), "display_name": prop("string")}), "description": "present on GET of one user"}})
+		"can_reset_sign_in": obj{"type": "boolean", "description": "whether the caller may issue this user an invitation or remove their password: for a manager or administrator who has a way to sign in, only a super admin may; present on GET of one user"},
+		"groups":            obj{"type": "array", "items": schema(nil, obj{"id": prop("string"), "display_name": prop("string")}), "description": "present on GET of one user"}})
 	userIn := obj{"username": prop("string"), "email": prop("string"), "given_name": obj{"type": "string", "description": "first name; required on create and never empty"},
 		"family_name": obj{"type": "string", "description": "last name; optional"}, "role": prop("string"), "active": prop("boolean"), "external_id": prop("string"),
 		"locale":                obj{"type": "string", "description": "BCP 47 language tag (en_GB accepted); \"\" clears"},

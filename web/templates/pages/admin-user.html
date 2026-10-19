@@ -27,8 +27,8 @@
       <dl class="kv">
         <div><dt>Name</dt><dd x-text="user.name"></dd></div>
         <div><dt>Username</dt><dd x-text="user.username"></dd></div>
-        <div><dt>Email</dt><dd><span x-text="user.emailText"></span> <span class="badge badge-plain ml-1" x-show="user.emailVerifiedText !== ''" x-text="user.emailVerifiedText"></span></dd></div>
-        <div><dt>Phone</dt><dd><span x-text="user.phoneText"></span> <span class="badge badge-plain ml-1" x-show="user.phoneVerifiedText !== ''" x-text="user.phoneVerifiedText"></span></dd></div>
+        <div><dt>Email</dt><dd><span x-text="user.emailText"></span> <span :class="user.emailVerifiedClass" x-show="user.emailVerifiedText !== ''" x-text="user.emailVerifiedText"></span></dd></div>
+        <div><dt>Phone</dt><dd><span x-text="user.phoneText"></span> <span :class="user.phoneVerifiedClass" x-show="user.phoneVerifiedText !== ''" x-text="user.phoneVerifiedText"></span></dd></div>
         <div><dt>Role</dt><dd x-text="user.roleText"></dd></div>
         <div><dt>Status</dt><dd><span x-text="user.statusText"></span><span class="help block mt-1" x-show="user.hasStatusNote" x-text="user.statusNote"></span></dd></div>
         <div><dt>Last sign-in</dt><dd x-text="user.lastLoginText"></dd></div>
@@ -51,9 +51,10 @@
         <div><dt>Authenticator app</dt><dd x-text="user.mfaText"></dd></div>
         <div><dt>Passkeys</dt><dd x-text="passkeysText"></dd></div>
       </dl>
+      <p class="help mb-3" x-show="resetBySuperOnly" x-cloak>Only a super admin can send a manager or administrator a new invitation link or remove their password.</p>
       <div class="flex flex-wrap gap-3">
-        <button type="button" class="btn btn-secondary" @click="newInvite">{{template "icon" "key"}} New invitation link</button>
-        <button type="button" class="btn btn-secondary" x-show="hasPassword" @click="removePassword">{{template "icon" "trash"}} Remove password</button>
+        <button type="button" class="btn btn-secondary" x-show="canResetSignIn" @click="newInvite">{{template "icon" "key"}} New invitation link</button>
+        <button type="button" class="btn btn-secondary" x-show="canRemovePassword" @click="removePassword">{{template "icon" "trash"}} Remove password</button>
         <button type="button" class="btn btn-secondary" @click="revoke">{{template "icon" "logout"}} Sign out everywhere</button>
       </div>
     </section>

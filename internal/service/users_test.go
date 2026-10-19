@@ -94,7 +94,7 @@ func TestLastAdminProtection(t *testing.T) {
 	}
 	// With a second admin it is allowed, then the remaining one is protected again.
 	second := c.user(org.ID, "second", model.RoleAdmin)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(second), only.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
 		t.Fatalf("demote with two admins: %v", err)
 	}
 	if err := c.svc.DeleteUser(c.ctx, actor(c.super), second.ID); !errors.Is(err, service.ErrLastAdmin) {

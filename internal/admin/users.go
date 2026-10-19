@@ -32,6 +32,9 @@ type userView struct {
 	// Name is the read-only full name (given + family name).
 	Name         string              `json:"name"`
 	LinkedEmails []model.LinkedEmail `json:"linked_emails"` // never null
+	// CanResetSignIn says the caller may issue this user an invitation or remove their password (a manager's or
+	// administrator's only a super admin may, once they have a way to sign in); present on GET of one user.
+	CanResetSignIn *bool `json:"can_reset_sign_in,omitempty"`
 }
 
 func viewOf(u *model.User) userView {
@@ -160,6 +163,8 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 			view.Manager = &userRef{ID: mu.ID, Name: mu.FullName()}
 		}
 	}
+	can := m.s.Svc.CanResetSignIn(r.Context(), a, u)
+	view.CanResetSignIn = &can
 	web.WriteJSON(w, http.StatusOK, view)
 }
 

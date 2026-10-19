@@ -501,6 +501,9 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		if !s.canAssignRole(ctx, a, org, *in.Role) {
 			return nil, ErrForbidden
 		}
+		if privileged(u) && in.Role.Rank() < u.Role.Rank() && a != System && !a.IsSuper() {
+			return nil, Invalid("role", "only a super admin can lower the role of a manager or administrator")
+		}
 		if err := s.guardLastAdmin(ctx, u); err != nil {
 			return nil, err
 		}
