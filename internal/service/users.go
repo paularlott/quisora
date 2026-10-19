@@ -490,6 +490,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	}
 	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
 	before := u.Role
+	was := snapshot(u)
 	if in.Role != nil && *in.Role != u.Role {
 		org, err := s.Orgs.Get(ctx, u.OrgID)
 		if err != nil {
@@ -568,6 +569,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if sessErr != nil {
 		detail["sessions"] = "not all ended: " + sessErr.Error()
 	}
+	detail = addChanges(detail, was, u)
 	s.Audit(ctx, a, u.OrgID, action, u.Username, detail)
 	if err != nil {
 		return nil, mapStore(err)

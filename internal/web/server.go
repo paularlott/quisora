@@ -86,7 +86,7 @@ func (s *Server) Use(mods ...Module) {
 
 // Handler returns the full middleware chain around the mux.
 func (s *Server) Handler() http.Handler {
-	return recoverer(s.Log, securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))
+	return recoverer(s.Log, requestInfo(securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold

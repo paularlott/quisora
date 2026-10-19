@@ -6,7 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"os"
+	"os/user"
 	"slices"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -79,6 +83,19 @@ type Actor struct {
 	IP       string
 }
 
+// CommandOrigin describes the command this process runs (quisora invite, restore, …) for the audit log: the
+// operating-system user, the host and the process id (Service.Origin).
+func CommandOrigin(command string) map[string]string {
+	o := map[string]string{"command": command, "pid": strconv.Itoa(os.Getpid())}
+	if u, err := user.Current(); err == nil {
+		o["os_user"] = u.Username
+	}
+	if h, err := os.Hostname(); err == nil {
+		o["host"] = h
+	}
+	return o
+}
+
 // System is an actor for internal operations (bootstrap, housekeeping).
 var System = &Actor{Role: model.RoleSuperAdmin, Name: "system", Unscoped: true}
 
@@ -106,6 +123,9 @@ type Service struct {
 	// store (nil: the store). Set by the app: every node of a gossip cluster (reader), VictoriaLogs (both).
 	AuditReader AuditReader
 	AuditWriter AuditWriter
+	// Origin is set in a command's process (CommandOrigin): every audit event it records names who ran it and where,
+	// and the system actor is shown as cli:<os user>@<host>.
+	Origin map[string]string
 
 	Orgs       *store.Table[model.Org, *model.Org]
 	Users      *store.Table[model.User, *model.User]
@@ -184,6 +204,28 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 	}
 }
 
+// RequestInfo is the request an operation is made for, as the audit log records it. The web server puts one in
+// every request's context (WithRequest); the session middleware and a sign-in fill in the session.
+type RequestInfo struct {
+	ID        string
+	IP        string // the client address (web.ClientIP), for events whose actor carries none
+	UserAgent string
+	SessionID string
+}
+
+type requestKey struct{}
+
+// WithRequest returns ctx carrying ri.
+func WithRequest(ctx context.Context, ri *RequestInfo) context.Context {
+	return context.WithValue(ctx, requestKey{}, ri)
+}
+
+// RequestFrom returns the request ctx was made for, or nil (a command, housekeeping).
+func RequestFrom(ctx context.Context) *RequestInfo {
+	ri, _ := ctx.Value(requestKey{}).(*RequestInfo)
+	return ri
+}
+
 // Audit records a security event. Failures are not fatal to the operation.
 func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) {
 	if a == nil {
@@ -191,14 +233,35 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 	}
 	// Queryable audit fields are stored in VARCHAR(255) columns on MySQL/MariaDB.
 	e := &model.Audit{OrgID: orgID, ActorID: a.UserID, Actor: clip(a.Name, 255), Action: clip(action, 255),
-		Target: clip(target, 255), IP: a.IP,
+		Target: clip(target, 255), IP: a.IP, Outcome: model.AuditOutcome(action),
 		Detail: detail, Expires: time.Now().Add(time.Duration(s.Cfg.Audit.RetentionDays) * 24 * time.Hour)}
 	if a.ClientID != "" && e.Actor == "" {
 		e.Actor = "client:" + a.ClientID
 	}
+	if ri := RequestFrom(ctx); ri != nil {
+		e.RequestID, e.UserAgent, e.SessionID = ri.ID, clip(ri.UserAgent, 512), ri.SessionID
+		if e.IP == "" {
+			e.IP = ri.IP
+		}
+	}
+	if len(s.Origin) > 0 { // a command: who ran it, where, as what
+		if a == System {
+			e.Actor = clip("cli:"+s.Origin["os_user"]+"@"+s.Origin["host"], 255)
+		}
+		d := make(map[string]string, len(detail)+len(s.Origin))
+		maps.Copy(d, detail)
+		maps.Copy(d, s.Origin)
+		e.Detail, detail = d, d
+	}
 	// The structured log gets every event too: the trail survives a store failure, and a log pipeline sees it
 	// without VictoriaLogs. A request that ends (the client went away) does not lose its audit record.
-	kv := []any{"action", e.Action, "org", orgID, "actor", e.Actor, "actor_id", e.ActorID, "target", e.Target, "ip", e.IP}
+	kv := []any{"action", e.Action, "outcome", e.Outcome, "org", orgID, "actor", e.Actor, "actor_id", e.ActorID,
+		"target", e.Target, "ip", e.IP}
+	for k, v := range map[string]string{"request_id": e.RequestID, "user_agent": e.UserAgent, "session_id": e.SessionID} {
+		if v != "" {
+			kv = append(kv, k, v)
+		}
+	}
 	for k, v := range detail {
 		kv = append(kv, "detail."+k, v)
 	}

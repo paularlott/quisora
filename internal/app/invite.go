@@ -55,6 +55,7 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 	defer st.Close()
 	store.SetOrigin("cli")
 	svc := service.New(c, st, sealer)
+	svc.Origin = service.CommandOrigin("invite")
 	defer cliAudit(c, svc, log)()
 	return InviteUser(ctx, svc, orgName, email)
 }
@@ -70,6 +71,7 @@ func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, 
 	}
 	defer st.Close()
 	svc := service.New(c, st, sealer)
+	svc.Origin = service.CommandOrigin("bootstrap")
 	defer cliAudit(c, svc, log)()
 	if c.Cluster.Bind != "" {
 		// Only an empty database becomes a new cluster's first node: one that holds data belongs to a cluster
@@ -150,6 +152,7 @@ func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgNam
 	defer st.Close()
 	store.SetOrigin("cli")
 	svc := service.New(c, st, sealer)
+	svc.Origin = service.CommandOrigin("set-primary")
 	defer cliAudit(c, svc, log)()
 	org, err := svc.OrgByName(ctx, orgName)
 	if err != nil {

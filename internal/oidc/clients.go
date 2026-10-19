@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,7 +151,16 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if e == nil || e.code != "invalid_client" {
 		return ce, e
 	}
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute); err != nil || n > clientAuthFailuresPerMin {
+	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
+	if err == nil && n == clientAuthFailuresPerMin {
+		// The failure that reaches the limit: once per client, address and minute. Only for a client that exists
+		// (an unknown id has no organization to record it in, and anyone can make up any number of them).
+		if c, cerr := p.client(r.Context(), authClientID(r)); cerr == nil {
+			p.auditClient(r.Context(), c.c, "", "oauth.client_auth.limited", map[string]string{
+				"failures_per_minute": strconv.Itoa(clientAuthFailuresPerMin)})
+		}
+	}
+	if err != nil || n > clientAuthFailuresPerMin {
 		return nil, limited
 	}
 	return ce, e

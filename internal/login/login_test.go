@@ -860,3 +860,16 @@ func TestPasswordSignInStepUp(t *testing.T) {
 		t.Fatalf("plain sign-in: %v", out)
 	}
 }
+
+// A sign-in limit that starts refusing is recorded once per limit and minute, not once per refused request.
+func TestRateLimitIsAuditedOnce(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 3; c.Limits.LockoutAttempts = 0 })
+	b := e.browser(t)
+	for range 8 {
+		b.login("primary", "nobody", "wrong")
+	}
+	ev := e.audits(t, "login.limited")
+	if len(ev) != 1 || ev[0].Detail["limit"] != "organization" || ev[0].Outcome != "failure" {
+		t.Fatalf("login.limited: %+v", ev)
+	}
+}

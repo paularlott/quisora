@@ -255,35 +255,77 @@ func (m *Module) resolveOrg(ctx context.Context, raw string) (*model.Org, string
 // configured limit (Limits.LoginPerIPMin). A request from a browser that has signed in to the account (or org) it is
 // for, as k says, is counted against that account's own budget instead (see device.go), so a flood from the same
 // address does not keep it out.
-func (m *Module) allow(r *http.Request, orgKey string, k known) bool {
-	limit := m.s.Cfg.Limits.LoginPerIPMin
+//
+// tripped names the limit ("device", "address" or "organization") when this request is the first one it refuses in
+// its minute, so the audit log gets one event per limit and minute, not one per refused request.
+func (m *Module) allow(r *http.Request, orgKey string, k known) (ok bool, tripped string, uid string) {
+	limit := int64(m.s.Cfg.Limits.LoginPerIPMin)
 	if limit <= 0 {
-		return true
+		return true, "", ""
 	}
 	if uid, ok := m.knownDevice(r, k); ok {
 		n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-dev|"+uid, 1, time.Minute)
-		return err == nil && n <= int64(limit)
+		return err == nil && n <= limit, tripIf(n == limit+1, "device"), uid
 	}
 	ip := web.ClientIP(r)
 	// An IP-only ceiling (three times the per-org limit) bounds what one client can spend across organizations,
 	// whatever names it sends.
 	// Counters fail closed: a counter that cannot be read or updated refuses rather than allows.
-	if n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-ip|"+ip, 1, time.Minute); err != nil || n > int64(3*limit) {
-		return false
+	if n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-ip|"+ip, 1, time.Minute); err != nil || n > 3*limit {
+		return false, tripIf(n == 3*limit+1, "address"), ""
 	}
 	key := "login|" + strings.ToLower(orgKey) + "|" + ip
 	n, err := m.s.Eph.Incr(r.Context(), nsRate, key, 1, time.Minute)
-	return err == nil && n <= int64(limit)
+	return err == nil && n <= limit, tripIf(n == limit+1, "organization"), ""
+}
+
+// allowed is allow for a page that answers a refusal its own way (a link page shows the link as invalid).
+func (m *Module) allowed(r *http.Request, orgKey string, k known) bool {
+	ok, tripped, uid := m.allow(r, orgKey, k)
+	if tripped != "" {
+		m.auditLimited(r, orgKey, tripped, uid)
+	}
+	return ok
+}
+
+func tripIf(first bool, limit string) string {
+	if first {
+		return limit
+	}
+	return ""
 }
 
 // rateLimit is allow plus the 429 response (with Retry-After); it returns false when the request was rejected.
 func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, orgKey string, k known) bool {
-	if m.allow(r, orgKey, k) {
+	ok, tripped, uid := m.allow(r, orgKey, k)
+	if ok {
 		return true
+	}
+	if tripped != "" {
+		m.auditLimited(r, orgKey, tripped, uid)
 	}
 	w.Header().Set("Retry-After", "60")
 	writeErr(w, http.StatusTooManyRequests, "Too many attempts. Please wait a minute and try again.", "")
 	return false
+}
+
+// auditLimited records that a sign-in limit started refusing requests (login.limited): once per limit and minute.
+func (m *Module) auditLimited(r *http.Request, orgKey, limit, uid string) {
+	ctx := r.Context()
+	org, err := m.s.Svc.OrgByName(ctx, strings.ToLower(orgKey))
+	if err != nil {
+		org, _ = m.s.Svc.PrimaryOrg(ctx) // not an organization (a link, a callback): the primary one's log
+	}
+	orgID := ""
+	if org != nil {
+		orgID = org.ID
+	}
+	target := web.ClientIP(r)
+	if uid != "" {
+		target = uid
+	}
+	m.s.Svc.Audit(ctx, &service.Actor{IP: web.ClientIP(r), Name: "anonymous"}, orgID, "login.limited", target,
+		map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": orgKey})
 }
 
 // ---- lockout -------------------------------------------------------------------------------------------------
@@ -430,8 +472,9 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 			// The same user signing in again (prompt=login, max_age, a second factor asked for, or simply again):
 			// the session is upgraded in place, keeping the refresh grants other applications hold on it, with a
 			// new cookie value.
-			if _, err := m.s.Sessions.Upgrade(ctx, w, r, old, u, org, opt); err == nil {
+			if sess, err := m.s.Sessions.Upgrade(ctx, w, r, old, u, org, opt); err == nil {
 				upgraded = true
+				noteSession(ctx, sess)
 			} else {
 				m.s.Log.Warn("session upgrade failed; starting a new session", "error", err)
 			}
@@ -441,9 +484,11 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		}
 	}
 	if !upgraded {
-		if _, err := m.s.Sessions.CreateWith(ctx, w, r, u, org, opt); err != nil {
+		sess, err := m.s.Sessions.CreateWith(ctx, w, r, u, org, opt)
+		if err != nil {
 			return "", err
 		}
+		noteSession(ctx, sess)
 	}
 	m.s.Svc.TouchLogin(ctx, u)
 	m.clearLocks(ctx, u.ID)
@@ -452,6 +497,13 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		m.audit(r, "login.success", org, u, u.Username, map[string]string{"amr": strings.Join(amr, " ")})
 	}
 	return nextOrDefault(next), nil
+}
+
+// noteSession records the session a sign-in made for the rest of the request's audit events (login.success).
+func noteSession(ctx context.Context, sess *model.Session) {
+	if ri := service.RequestFrom(ctx); ri != nil && sess != nil {
+		ri.SessionID = sess.ID
+	}
 }
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {

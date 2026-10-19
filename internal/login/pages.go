@@ -165,7 +165,7 @@ func (m *Module) linkPage(w http.ResponseWriter, r *http.Request, page, title, p
 	d := linkData{}
 	status := http.StatusOK
 	token := r.URL.Query().Get("token")
-	if token != "" && len(token) < 200 && m.allow(r, "link", known{any: true}) {
+	if token != "" && len(token) < 200 && m.allowed(r, "link", known{any: true}) {
 		if _, u, err := m.s.Svc.PeekLink(ctx, token, purpose); err == nil {
 			if o, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
 				d.Org, d.OrgName = o.DisplayName, o.Name
@@ -206,7 +206,7 @@ func (m *Module) resetPage(w http.ResponseWriter, r *http.Request) {
 func (m *Module) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	result, frag := "invalid", "profile"
-	if m.allow(r, "link", known{any: true}) {
+	if m.allowed(r, "link", known{any: true}) {
 		if l, u, err := m.s.Svc.RedeemLink(ctx, r.URL.Query().Get("token"), service.LinkVerify); err == nil {
 			// The link names the address it was mailed to: the primary one, or a linked one (verified in place).
 			// An address that has since been removed or replaced verifies nothing.

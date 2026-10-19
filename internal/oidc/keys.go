@@ -269,6 +269,12 @@ func (p *Provider) createKey(ctx context.Context, alg string, notBefore time.Tim
 		return nil, err
 	}
 	p.log.Info("oidc: signing key created", "kid", id, "alg", alg, "not_before", k.NotBefore)
+	org := model.PrimaryOrgID
+	if o, err := p.svc.PrimaryOrg(ctx); err == nil {
+		org = o.ID
+	}
+	p.svc.Audit(ctx, service.System, org, "keys.create", id, map[string]string{"alg": alg,
+		"not_before": k.NotBefore.Format(time.RFC3339), "retire_at": k.RetireAt.Format(time.RFC3339)})
 	return k, nil
 }
 

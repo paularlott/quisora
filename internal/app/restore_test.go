@@ -3,11 +3,13 @@ package app
 import (
 	"bytes"
 	"context"
+	"github.com/paularlott/quisora/internal/store"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/backup"
@@ -77,6 +79,20 @@ func TestRestoreFromAtStart(t *testing.T) {
 	srcPrimary, _ := src.Svc.PrimaryOrg(ctx)
 	if got != want || primary == nil || primary.ID != srcPrimary.ID {
 		t.Fatalf("restored %d users (want %d), primary %v", got, want, primary)
+	}
+	// the restore is on record in the primary organization's audit log, with who ran it
+	var restored *model.Audit
+	for deadline := time.Now().Add(10 * time.Second); restored == nil && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		l, _, _ := a.Svc.Audits.List(ctx, store.ListQuery{Scope: primary.ID})
+		for _, e := range l {
+			if e.Action == "backup.restore" {
+				restored = e
+			}
+		}
+	}
+	if restored == nil || restored.Detail["file"] != file || restored.Detail["command"] != "serve --restore-from" ||
+		restored.Detail["records"] == "" {
+		t.Fatalf("backup.restore event: %+v", restored)
 	}
 	// a change made after the restore survives a restart with the setting still in place
 	org := &model.Org{Name: "later", DisplayName: "Later"}

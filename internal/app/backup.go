@@ -93,6 +93,11 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool)
 		return stats, err
 	}
 	forgetClusterState(c)
+	if name, ok := r.(interface{ Name() string }); ok {
+		noteRestore(c, name.Name(), stats.Total(), force, "restore")
+	} else {
+		noteRestore(c, "", stats.Total(), force, "restore")
+	}
 	return stats, os.Remove(marker)
 }
 
@@ -156,6 +161,7 @@ func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, seale
 	if err := os.Remove(marker); err != nil {
 		return fmt.Errorf("restore: %w", err)
 	}
+	noteRestore(c, file, stats.Total(), false, "serve --restore-from")
 	log.Warn("restored the store from a backup", "file", file, "records", stats.Total())
 	return nil
 }

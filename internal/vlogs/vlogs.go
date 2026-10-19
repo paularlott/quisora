@@ -170,7 +170,12 @@ func (c *Client) run() {
 func (c *Client) row(e *model.Audit) map[string]any {
 	r := map[string]any{"_time": e.Created.UTC().Format(time.RFC3339Nano), "_msg": "audit " + e.Action, "app": app,
 		"node": c.node, "id": e.ID, "org": e.OrgID, "action": e.Action, "actor": e.Actor, "actor_id": e.ActorID,
-		"target": e.Target, "ip": e.IP}
+		"target": e.Target, "ip": e.IP, "outcome": e.Outcome}
+	for k, v := range map[string]string{"request_id": e.RequestID, "user_agent": e.UserAgent, "session_id": e.SessionID} {
+		if v != "" {
+			r[k] = v
+		}
+	}
 	for k, v := range e.Detail {
 		r["detail."+k] = v
 	}
@@ -389,7 +394,8 @@ func (c *Client) query(ctx context.Context, q string) ([]map[string]string, erro
 }
 
 func fromRow(r map[string]string) *model.Audit {
-	e := &model.Audit{OrgID: r["org"], ActorID: r["actor_id"], Actor: r["actor"], Action: r["action"], Target: r["target"], IP: r["ip"]}
+	e := &model.Audit{OrgID: r["org"], ActorID: r["actor_id"], Actor: r["actor"], Action: r["action"], Target: r["target"], IP: r["ip"],
+		Outcome: r["outcome"], RequestID: r["request_id"], UserAgent: r["user_agent"], SessionID: r["session_id"]}
 	e.ID = r["id"]
 	if t, err := time.Parse(time.RFC3339Nano, r["_time"]); err == nil {
 		e.Created = t

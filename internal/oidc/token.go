@@ -142,6 +142,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
 				p.revokeGrant(ctx, string(gid))
 				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid))
+				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": "true"})
 			}
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 		}
@@ -203,6 +204,8 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		return nil, serverError(err)
 	}
 	_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(g.ID), usedTTL)
+	p.auditClient(ctx, c, u.Username, "oauth.grant", map[string]string{"grant": g.ID, "user_id": u.ID,
+		"scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID})
 	if c.BackchannelURI != "" {
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
@@ -378,6 +381,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
 			p.revokeGrant(ctx, g.ID)
 			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
+			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again")
 		}
 		return nil, invalid
 	}
@@ -429,6 +433,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
 				p.revokeGrant(ctx, g.ID)
 				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
+				p.auditReuse(ctx, c, g, "an old refresh token was presented again")
 			}
 			return nil, invalid
 		}
@@ -438,6 +443,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				if fresh, ferr := p.svc.Grants.Get(ctx, g.ID); ferr == nil && fresh.Counter > pr.counter {
 					p.revokeGrant(ctx, g.ID)
 					p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID)
+					p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once")
 				}
 				return nil, invalid
 			}
@@ -457,6 +463,10 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		return nil, serverError(err)
 	}
 	tr.refresh = newRefresh
+	if p.cfg.Audit.Tokens {
+		p.auditClient(ctx, c, u.Username, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID,
+			"scopes": strings.Join(scopes, " ")})
+	}
 	return tr, nil
 }
 
@@ -492,8 +502,33 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 		return nil, oerr("invalid_client", "the client's organization no longer exists")
 	}
 	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res}, false)
+	if err == nil && p.cfg.Audit.Tokens {
+		p.auditClient(ctx, c, "", "oauth.client_credentials", map[string]string{"scopes": strings.Join(scopes, " ")})
+	}
 	if err != nil {
 		return nil, serverError(err)
 	}
 	return tr, nil
+}
+
+// auditClient records an OAuth event made by client c (the actor) about target (a username, or "").
+func (p *Provider) auditClient(ctx context.Context, c *model.Client, target, action string, detail map[string]string) {
+	if detail == nil {
+		detail = map[string]string{}
+	}
+	detail["client_id"] = c.ID
+	if target == "" {
+		target = c.Name
+	}
+	p.svc.Audit(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail)
+}
+
+// auditReuse records a refresh token presented after it was replaced: someone kept a copy, and the grant is revoked.
+func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why string) {
+	target := g.UserID
+	if u, err := p.user(ctx, g.UserID); err == nil {
+		target = u.Username
+	}
+	p.auditClient(ctx, c, target, "oauth.refresh.reuse", map[string]string{"grant": g.ID, "user_id": g.UserID,
+		"grant_revoked": "true", "reason": why})
 }

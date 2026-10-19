@@ -743,5 +743,7 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 		f.Decision = "allow"
 	}
 	p.saveFlow(r.Context(), in.Flow, f)
+	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, map[string]string{"client_id": c.ID,
+		"decision": f.Decision, "scopes": strings.Join(f.consent(), " ")})
 	web.WriteJSON(w, http.StatusOK, map[string]string{"redirect": "/oauth/authorize/resume?flow=" + url.QueryEscape(in.Flow)})
 }

@@ -252,6 +252,7 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 	if err != nil {
 		return nil, mapStore(err)
 	}
+	was := snapshot(o)
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)
 		if err := validateOrgName(name); err != nil {
@@ -274,7 +275,7 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 	if err := s.Orgs.Update(ctx, o); err != nil {
 		return nil, orgConflict(err)
 	}
-	s.Audit(ctx, a, o.ID, "org.update", o.Name, nil)
+	s.Audit(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o))
 	return o, nil
 }
 

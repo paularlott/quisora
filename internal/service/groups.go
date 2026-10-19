@@ -99,13 +99,14 @@ func (s *Service) UpdateGroup(ctx context.Context, a *Actor, id string, in Group
 			return nil, err
 		}
 	}
+	was := snapshot(g)
 	if err := applyGroup(g, in); err != nil {
 		return nil, err
 	}
 	if err := s.Groups.Update(ctx, g); err != nil {
 		return nil, s.groupConflict(ctx, err, g)
 	}
-	s.Audit(ctx, a, g.OrgID, "group.update", g.DisplayName, tagDetail(g, in))
+	s.Audit(ctx, a, g.OrgID, "group.update", g.DisplayName, addChanges(tagDetail(g, in), was, g))
 	return g, nil
 }
 

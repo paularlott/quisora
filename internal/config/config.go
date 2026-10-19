@@ -149,7 +149,8 @@ type Mail struct {
 
 type Audit struct {
 	RetentionDays int  `toml:"retention_days" flag:"retention-days" usage:"Keep audit events this many days (in the database; with gossip, on each node)"`
-	Logins        bool `toml:"logins" flag:"logins" usage:"Also audit successful sign-ins"`
+	Logins        bool `toml:"logins" flag:"logins" usage:"Also audit successful sign-ins (default on; failures are always audited)"`
+	Tokens        bool `toml:"tokens" flag:"tokens" usage:"Also audit every refresh and client_credentials token issued (new grants, revocations and token reuse are always audited)"`
 	// VictoriaLogs sends audit events to VictoriaLogs instead of the database, and the audit pages read them from
 	// there (any node). The base URL; user:password in it is sent as basic authentication.
 	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
@@ -183,7 +184,7 @@ func Default() *Config {
 			KeyRotationDays: 30, APITokenMaxDays: 365},
 		Session: Session{TTL: 7 * 86400, Idle: 86400, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
-		Audit:   Audit{RetentionDays: 7, SpoolMaxMB: 256},
+		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
 		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15},
 		Log:     Log{Level: "info", Format: "console"},
 	}

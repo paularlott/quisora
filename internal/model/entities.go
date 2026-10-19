@@ -688,6 +688,24 @@ type Audit struct {
 	IP      string            `msgpack:"ip" json:"ip"`
 	Detail  map[string]string `msgpack:"d" json:"detail,omitempty"`
 	Expires time.Time         `msgpack:"ex" json:"-"`
+	// Outcome is "success" or "failure" (AuditOutcome of the action).
+	Outcome string `msgpack:"oc,omitempty" json:"outcome,omitempty"`
+	// The request the event was recorded for, when there was one: its id (the X-Request-ID response header, for
+	// matching proxy and application logs), the browser or client software, and the session it was made in.
+	RequestID string `msgpack:"rid,omitempty" json:"request_id,omitempty"`
+	UserAgent string `msgpack:"ua,omitempty" json:"user_agent,omitempty"`
+	SessionID string `msgpack:"sid,omitempty" json:"session_id,omitempty"`
+}
+
+// AuditOutcome says whether an audit action records something refused or failed ("failure") or done ("success"),
+// from its name: actions for refusals end in .failure, .refused/_refused, .lockout, .limited, .replay, .reuse or .clone.
+func AuditOutcome(action string) string {
+	for _, s := range []string{".failure", ".refused", "_refused", ".lockout", ".limited", ".replay", ".reuse", ".clone"} {
+		if strings.HasSuffix(action, s) {
+			return "failure"
+		}
+	}
+	return "success"
 }
 
 func (a *Audit) Kind() Kind { return KindAudit }

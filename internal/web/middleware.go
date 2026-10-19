@@ -15,6 +15,7 @@ import (
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -198,6 +199,9 @@ func (s *Server) WithSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, u := s.Sessions.Current(r)
 		if sess != nil {
+			if ri := service.RequestFrom(r.Context()); ri != nil {
+				ri.SessionID = sess.ID
+			}
 			ctx := context.WithValue(r.Context(), ctxSession, sess)
 			ctx = context.WithValue(ctx, ctxUser, u)
 			ctx = context.WithValue(ctx, ctxActor, service.ActorForUser(u, ClientIP(r)))
@@ -282,4 +286,41 @@ func sameOrigin(a, b string) bool {
 		return strings.ToLower(u.Scheme) + "://" + host
 	}
 	return norm(a) == norm(b)
+}
+
+// requestInfo gives every request an id, answered as X-Request-ID, and carries it with the user agent in the
+// context for the audit log (service.RequestInfo). A trusted proxy's X-Request-ID is kept, so its logs and the audit
+// log name a request alike.
+func requestInfo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if !validRequestID(id) || !fromTrustedProxy(r) {
+			id = secure.RandomToken(12)
+		}
+		w.Header().Set("X-Request-ID", id)
+		ri := &service.RequestInfo{ID: id, IP: ClientIP(r), UserAgent: r.UserAgent()}
+		next.ServeHTTP(w, r.WithContext(service.WithRequest(r.Context(), ri)))
+	})
+}
+
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c == '-' || c == '_' || c == '.' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// fromTrustedProxy reports whether the connection comes from one of server.trust_proxy.
+func fromTrustedProxy(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && trusted(addr)
 }

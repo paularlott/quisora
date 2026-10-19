@@ -275,6 +275,7 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 		return nil, err
 	}
 	before := model.ProviderAuthority(p)
+	was := snapshot(p)
 	if err := s.applyProvider(a, p, in); err != nil {
 		return nil, err
 	}
@@ -286,11 +287,20 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	if err := s.Providers.Update(ctx, p); err != nil {
 		return nil, providerConflict(err)
 	}
-	detail := map[string]string(nil)
+	detail := addChanges(nil, was, p)
+	if in.ClientSecret != nil && *in.ClientSecret != "" {
+		if detail == nil {
+			detail = map[string]string{}
+		}
+		detail["client_secret"] = "replaced" // never the value, sealed or not
+	}
 	if model.ProviderAuthority(p) != before {
 		// Another type, issuer or directory: its subjects name other people now. Every link goes.
 		n := s.purgeIdentities(ctx, p.ID)
-		detail = map[string]string{"identities_unlinked": itoa(n)}
+		if detail == nil {
+			detail = map[string]string{}
+		}
+		detail["identities_unlinked"] = itoa(n)
 	}
 	s.Audit(ctx, a, p.OrgID, "provider.update", p.Name, detail)
 	return p, nil

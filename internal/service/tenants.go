@@ -123,13 +123,14 @@ func (s *Service) UpdateTenant(ctx context.Context, a *Actor, id string, in Tena
 	if err != nil {
 		return nil, err
 	}
+	was := snapshot(t)
 	if err := s.applyTenant(ctx, t, in); err != nil {
 		return nil, err
 	}
 	if err := s.Tenants.Update(Durable(ctx), t); err != nil {
 		return nil, tenantConflict(err)
 	}
-	s.Audit(ctx, a, t.OrgID, "tenant.update", t.Name, nil)
+	s.Audit(ctx, a, t.OrgID, "tenant.update", t.Name, addChanges(nil, was, t))
 	return t, nil
 }
 

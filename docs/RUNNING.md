@@ -284,10 +284,40 @@ days, not the year or more an audit period needs; in a gossip cluster each node 
 node loses its events; and it has no protection against someone with write access to the database. With
 VictoriaLogs:
 
-- set its retention to cover the audit period (`-retentionPeriod=1y` or more), and restrict who can delete there;
+- set its retention to cover the audit period (`-retentionPeriod=1y` or more);
+- make it the tamper-evident copy: Quisora does not sign or chain its events, so only Quisora may write to that
+  VictoriaLogs, nobody may delete from or rewrite it during the retention period, and its storage is backed up to
+  write-once (immutable) storage;
 - turn on the spool (below) on every node;
 - ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
   never receive, logged in full so it can still be captured from the log.
+
+### What is recorded
+
+| Area | Events |
+| --- | --- |
+| Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
+| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `backup.download`, `backup.restore`, `cluster.force_start`, `org.primary` |
+| Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |
+
+Updates record what changed, field by field, as `changed.<field>` = `old → new` (`changed.role`, `changed.email`,
+`changed.email_verified`, `changed.settings.require_mfa`, …). Fields that hold secrets never appear; a replaced
+provider secret shows as `client_secret` = `replaced`.
+
+Every event has:
+
+- `outcome`: `failure` for refusals (`*.failure`, `*.refused`, `*.lockout`, `*.limited`, `*.replay`, `*.reuse`,
+  `*.clone`), `success` otherwise;
+- `request_id`: the request's id, also sent as the `X-Request-ID` response header (a trusted proxy's
+  `X-Request-ID` is kept, so its logs and the audit log name a request alike);
+- `user_agent` and `session_id` (the browser session the request was made in, or the one a sign-in created);
+- `ip`.
+
+Commands (`bootstrap`, `invite`, `set-primary`, `restore`) record who ran them: the actor is
+`cli:<os user>@<host>`, with `detail.os_user`, `detail.host`, `detail.pid` and `detail.command`. A restore (offline,
+or `server.restore_from` at start-up) is written to the primary organization's log as `backup.restore` once the
+node can write.
 
 ### With VictoriaLogs
 
@@ -332,8 +362,8 @@ while the spool has room.
   Every event has a unique `id` for removing duplicates when reading.
 - Commands (`bootstrap`, `invite`, offline `restore`) do not use the spool: they retry, then log `audit.undelivered`,
   as without one.
-- Each event has the stream fields `app` (`quisora`) and `org` (organization id), and the fields `action`, `actor`,
-  `actor_id`, `target`, `ip`, `node`, `id` and `detail.<name>`.
+- Each event has the stream fields `app` (`quisora`) and `org` (organization id), and the fields `action`, `outcome`,
+  `actor`, `actor_id`, `target`, `ip`, `node`, `id`, `request_id`, `user_agent`, `session_id` and `detail.<name>`.
 
 ```bash
 curl http://victorialogs:9428/select/logsql/query \

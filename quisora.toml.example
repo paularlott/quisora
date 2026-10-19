@@ -91,7 +91,9 @@ upstream_check_minutes = 60               # replay sign-in providers' refresh to
 
 [audit]
 retention_days = 7                        # in the database (with gossip, on each node): development, home labs, testing. Production and SOC 2: VictoriaLogs
-logins = false                            # also record successful sign-ins (failures are always recorded)
+logins = true                             # also record successful sign-ins (failures are always recorded)
+tokens = false                            # also record every refresh and client_credentials token (new grants,
+                                          # revocations and token reuse are always recorded)
 # victorialogs_url = "http://victorialogs:9428"   # send audit events there instead, and read the audit pages from it
 # victorialogs_spool_dir = "/var/lib/quisora/audit-spool"   # keep events VictoriaLogs does not take on disk until it does (one per node)
 # victorialogs_spool_max_mb = 256        # most disk space the spool may use; past it the oldest events are dropped

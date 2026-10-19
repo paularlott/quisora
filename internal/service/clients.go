@@ -324,13 +324,14 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if c.SCIM && !a.IsSuper() {
 		return nil, ErrForbidden // provisioning clients are managed by super admins only
 	}
+	was := snapshot(c)
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
 	}
 	if err := s.Clients.Update(Durable(ctx), c); err != nil {
 		return nil, mapStore(err)
 	}
-	s.Audit(ctx, a, c.OrgID, "client.update", c.Name, map[string]string{"client_id": c.ID})
+	s.Audit(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c))
 	return c, nil
 }
 

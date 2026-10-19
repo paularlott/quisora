@@ -388,10 +388,17 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// which stops refreshing and makes introspection report it inactive.
 		if cl, err := p.VerifyAccessToken(ctx, tok); err == nil && cl.ClientID == ce.c.ID && cl.GID != "" {
 			p.revokeGrant(ctx, cl.GID)
+			p.auditClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"})
 		}
 	default:
 		if g, ok := p.readRefresh(ctx, ce.c, tok); ok {
 			p.revokeGrant(ctx, g.ID)
+			target := g.UserID
+			if u, err := p.user(ctx, g.UserID); err == nil {
+				target = u.Username
+			}
+			p.auditClient(ctx, ce.c, target, "oauth.revoke", map[string]string{"grant": g.ID, "user_id": g.UserID,
+				"token": "refresh"})
 		}
 	}
 	w.WriteHeader(http.StatusOK)
