@@ -1,7 +1,9 @@
 // Package vlogs sends audit events to VictoriaLogs and reads them back for the audit pages.
 //
 // Events are JSON lines posted to /insert/jsonline in batches by a background writer (a sign-in never waits for
-// VictoriaLogs); each carries app="quisora" and the organization id as stream fields, so a page reads one
+// VictoriaLogs). Without a spool a batch VictoriaLogs does not take is retried a few times and then dropped (the
+// events are in the structured log either way); with one (Spool) it is kept on disk until VictoriaLogs takes it.
+// Each event carries app="quisora" and the organization id as stream fields, so a page reads one
 // organization's events by stream. Reads use LogsQL over /select/logsql/query: every value taken from a request goes
 // into the query quoted (strconv.Quote) and searches are regular expressions of the escaped text.
 package vlogs
@@ -47,6 +49,33 @@ type Client struct {
 	stopped sync.Once
 	dropped int64
 	mu      sync.Mutex
+
+	// The spool and the delivery state below belong to the writer goroutine.
+	spool    *spool
+	retryAt  time.Time     // VictoriaLogs failed: until then batches go straight to the spool
+	backoff  time.Duration // the wait after the next failure
+	spooling bool          // batches are being spooled (logged once per outage)
+	closing  bool          // shutting down: the last batch waits briefly, then goes to the spool
+}
+
+const (
+	minBackoff = time.Second
+	maxBackoff = 30 * time.Second
+)
+
+// Spool keeps batches VictoriaLogs does not take in dir, at most maxMB megabytes (0 = 256), until it takes them:
+// an outage then loses no audit events unless it outlasts the space (the oldest go first, logged as dropped). Call
+// before Start. dir must belong to this process alone (one per node).
+func (c *Client) Spool(dir string, maxMB int) error {
+	s, err := newSpool(dir, maxMB)
+	if err != nil {
+		return err
+	}
+	c.spool = s
+	if !s.empty() {
+		c.log.Info("audit events spooled before a restart will be sent to VictoriaLogs", "dir", dir)
+	}
+	return nil
 }
 
 // New returns a client for the VictoriaLogs base URL (user:password in it is sent as basic authentication); node is
@@ -75,19 +104,37 @@ func (c *Client) Close() {
 	})
 }
 
-// WriteAudit queues an event (service.AuditWriter). A full queue (VictoriaLogs unreachable for long) drops it with
-// an error log line; the event is in the structured log either way.
+// WriteAudit queues an event (service.AuditWriter). An event the queue has no room for (VictoriaLogs unreachable
+// for long, without a spool) is logged in full instead (audit.undelivered).
 func (c *Client) WriteAudit(e *model.Audit) {
 	defer func() { _ = recover() }() // queue closed at shutdown
 	select {
 	case c.queue <- e:
 	default:
-		c.mu.Lock()
-		c.dropped++
-		n := c.dropped
-		c.mu.Unlock()
-		c.log.Error("audit event dropped: the VictoriaLogs queue is full", "action", e.Action, "dropped", n)
+		b, _ := json.Marshal(c.row(e))
+		c.undelivered("the VictoriaLogs queue is full", [][]byte{b})
 	}
+}
+
+// undelivered writes every event VictoriaLogs will never get to the structured log, in full, as "audit.undelivered"
+// with the reason, so a log shipper still captures it. It is the last place an audit event can go.
+func (c *Client) undelivered(reason string, lines [][]byte) {
+	if len(lines) == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.dropped += int64(len(lines))
+	n := c.dropped
+	c.mu.Unlock()
+	for _, l := range lines {
+		var ev map[string]any
+		if json.Unmarshal(l, &ev) != nil {
+			ev = map[string]any{"raw": string(l)}
+		}
+		c.log.Error("audit.undelivered", "reason", reason, "event", ev)
+	}
+	c.log.Error("audit events not delivered to VictoriaLogs: logged as audit.undelivered", "reason", reason,
+		"events", len(lines), "undelivered_total", n)
 }
 
 func (c *Client) run() {
@@ -105,6 +152,7 @@ func (c *Client) run() {
 		select {
 		case e, ok := <-c.queue:
 			if !ok {
+				c.closing = true
 				flush()
 				return
 			}
@@ -113,6 +161,7 @@ func (c *Client) run() {
 			}
 		case <-t.C:
 			flush()
+			c.replay()
 		}
 	}
 }
@@ -128,24 +177,38 @@ func (c *Client) row(e *model.Audit) map[string]any {
 	return r
 }
 
+func (c *Client) insertURL() string {
+	u := *c.base
+	u.Path += "/insert/jsonline"
+	u.RawQuery = url.Values{"_stream_fields": {"app,org"}, "_time_field": {"_time"}, "_msg_field": {"_msg"}}.Encode()
+	return u.String()
+}
+
 func (c *Client) send(batch []*model.Audit) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	for _, e := range batch {
 		_ = enc.Encode(c.row(e))
 	}
-	u := *c.base
-	u.Path += "/insert/jsonline"
-	u.RawQuery = url.Values{"_stream_fields": {"app,org"}, "_time_field": {"_time"}, "_msg_field": {"_msg"}}.Encode()
 	body := buf.Bytes()
+	if c.spool != nil {
+		c.sendSpooled(body)
+		return
+	}
+	if c.closing { // Close waits only so long: one short try, then the structured log
+		if err := c.postTimeout(c.insertURL(), body, closeTimeout); err != nil {
+			c.undelivered("VictoriaLogs did not take them at shutdown: "+err.Error(), jsonLines(body))
+		}
+		return
+	}
 	wait := 500 * time.Millisecond
 	for try := 1; ; try++ {
-		err := c.post(u.String(), body)
+		err := c.post(c.insertURL(), body)
 		if err == nil {
 			return
 		}
 		if try == maxRetries {
-			c.log.WithError(err).Error("audit events not sent to VictoriaLogs", "events", len(batch))
+			c.undelivered("VictoriaLogs did not take them: "+err.Error(), jsonLines(body))
 			return
 		}
 		time.Sleep(wait)
@@ -153,8 +216,78 @@ func (c *Client) send(batch []*model.Audit) {
 	}
 }
 
-func (c *Client) post(u string, body []byte) error {
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
+// sendSpooled posts body once; when VictoriaLogs does not take it (or failed moments ago) it goes to the spool, and
+// replay sends it later. Retrying here would only hold up the events queued behind it.
+func (c *Client) sendSpooled(body []byte) {
+	if time.Now().After(c.retryAt) {
+		timeout := c.http.Timeout
+		if c.closing {
+			timeout = closeTimeout // Close waits only so long; the spool keeps the batch for the next start
+		}
+		err := c.postTimeout(c.insertURL(), body, timeout)
+		if err == nil {
+			c.delivered()
+			c.replay()
+			return
+		}
+		c.failed(err)
+	}
+	c.toSpool(body)
+}
+
+func (c *Client) toSpool(body []byte) {
+	evicted, err := c.spool.store(body)
+	if err != nil {
+		c.undelivered("the VictoriaLogs spool cannot be written: "+err.Error(), jsonLines(body))
+		return
+	}
+	c.undelivered("the VictoriaLogs spool is full: the oldest events were removed from it", evicted)
+}
+
+// replay sends spooled segments, oldest first, while VictoriaLogs takes them.
+func (c *Client) replay() {
+	if c.spool == nil || time.Now().Before(c.retryAt) {
+		return
+	}
+	for range replayPerTick {
+		name, body := c.spool.oldest()
+		if name == "" {
+			if c.spooling {
+				c.spooling = false
+				c.log.Info("spooled audit events sent to VictoriaLogs")
+			}
+			return
+		}
+		if err := c.post(c.insertURL(), body); err != nil {
+			c.failed(err)
+			return
+		}
+		c.spool.remove(name)
+		c.delivered()
+	}
+}
+
+func (c *Client) delivered() { c.retryAt, c.backoff = time.Time{}, 0 }
+
+// failed holds off VictoriaLogs for a while (doubling up to maxBackoff), so an unreachable server is not waited for
+// on every batch.
+func (c *Client) failed(err error) {
+	c.backoff = min(max(c.backoff*2, minBackoff), maxBackoff)
+	c.retryAt = time.Now().Add(c.backoff)
+	if !c.spooling {
+		c.spooling = true
+		c.log.WithError(err).Warn("VictoriaLogs is not taking audit events: spooling them to disk", "dir", c.spool.dir)
+	}
+}
+
+const closeTimeout = 2 * time.Second
+
+func (c *Client) post(u string, body []byte) error { return c.postTimeout(u, body, c.http.Timeout) }
+
+func (c *Client) postTimeout(u string, body []byte, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -152,6 +152,10 @@ type Audit struct {
 	// VictoriaLogs sends audit events to VictoriaLogs instead of the database, and the audit pages read them from
 	// there (any node). The base URL; user:password in it is sent as basic authentication.
 	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
+	// SpoolDir keeps audit events VictoriaLogs does not take (unreachable, refusing) on disk until it does, at most
+	// SpoolMaxMB; without it they are retried briefly and then dropped. One directory per node.
+	SpoolDir   string `toml:"victorialogs_spool_dir" flag:"victorialogs-spool-dir" usage:"Directory that keeps audit events VictoriaLogs does not take until it does (one per node; empty = no spool: they are retried briefly, then dropped)"`
+	SpoolMaxMB int    `toml:"victorialogs_spool_max_mb" flag:"victorialogs-spool-max-mb" usage:"Most disk space the VictoriaLogs spool may use, in megabytes; past it the oldest events are dropped"`
 }
 
 type Limits struct {
@@ -178,7 +182,7 @@ func Default() *Config {
 			KeyRotationDays: 30, APITokenMaxDays: 365},
 		Session: Session{TTL: 7 * 86400, Idle: 86400, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
-		Audit:   Audit{RetentionDays: 7},
+		Audit:   Audit{RetentionDays: 7, SpoolMaxMB: 256},
 		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15},
 		Log:     Log{Level: "info", Format: "console"},
 	}
@@ -345,6 +349,10 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("audit.victorialogs_url %q must be an http(s) URL such as http://victorialogs:9428", v))
 		}
 	}
+	if c.Audit.SpoolDir != "" && c.Audit.VictoriaLogs == "" {
+		errs = append(errs, fmt.Errorf("audit.victorialogs_spool_dir needs audit.victorialogs_url"))
+	}
+	positive("audit.victorialogs_spool_max_mb", c.Audit.SpoolMaxMB)
 	positive("limits.max_in_flight", c.Limits.MaxInFlight)
 	nonNegative("limits.login_per_ip_min", c.Limits.LoginPerIPMin)
 	nonNegative("limits.lockout_attempts", c.Limits.LockoutAttempts)

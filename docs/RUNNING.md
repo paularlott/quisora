@@ -174,13 +174,23 @@ pages read it from one of two places:
 
 |                           | Database (default)                                                                            | VictoriaLogs                                  |
 | ------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| For                       | Small set-ups, labs                                                                           | Real deployments                              |
+| For                       | Development, home labs, testing                                                               | Production; required for SOC 2                |
 | Kept                      | `audit.retention_days` (7)                                                                    | VictoriaLogs' `-retentionPeriod`              |
 | One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database |
 | Gossip cluster            | Each node keeps its own; a page asks every node and merges, and says if a node did not answer | Every node sends; any node reads              |
 
 Admins see their own organization's events. Super admins also see every organization (`/admin/audit`,
 `GET /api/v1/audit?org=<name>`).
+
+**Production, and any deployment that needs SOC 2, must use VictoriaLogs.** The database audit trail keeps events for
+days, not the year or more an audit period needs; in a gossip cluster each node holds only its own slice, so a lost
+node loses its events; and it has no protection against someone with write access to the database. With
+VictoriaLogs:
+
+- set its retention to cover the audit period (`-retentionPeriod=1y` or more), and restrict who can delete there;
+- turn on the spool (below) on every node;
+- ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
+  never receive, logged in full so it can still be captured from the log.
 
 ### With VictoriaLogs
 
@@ -195,7 +205,36 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 ```
 
 - Every node sends events in batches, and so do `bootstrap` and `invite`. A sign-in never waits for VictoriaLogs:
-  events are queued and retried, and dropped with an error log line only if the queue fills.
+  events are queued and sent in the background.
+- Without a spool, a batch VictoriaLogs does not take is retried a few times and then given up; so is an event that
+  finds the queue full.
+- An event VictoriaLogs will never receive is written to the structured log in full, at error level, with the message
+  `audit.undelivered`, a `reason`, and the event under `event` (the same fields VictoriaLogs would have stored). That
+  is the last place it goes: ship the structured log, or such events are lost.
+
+### Spool
+
+```toml
+[audit]
+victorialogs_spool_dir = "/var/lib/quisora/audit-spool"
+victorialogs_spool_max_mb = 256          # default 256
+```
+
+With a spool, a batch VictoriaLogs does not take (unreachable, or answering an error) is written to disk at once, and
+sent when VictoriaLogs answers again, oldest first; a restart keeps it. So an outage of VictoriaLogs loses no events
+while the spool has room.
+
+- The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
+- **One directory per node**, on that node's own disk: never a directory two nodes (or two processes) share.
+- Past `victorialogs_spool_max_mb` the oldest events leave the spool first, each logged as `audit.undelivered`. Size
+  it for the longest outage you must ride out; each event takes roughly 300–500 bytes. So does a batch the spool
+  cannot be written to (a full or failing disk).
+- The log says when spooling starts (`VictoriaLogs is not taking audit events: spooling them to disk`) and when the
+  backlog has been sent (`spooled audit events sent to VictoriaLogs`).
+- Delivery is at least once: a crash just after VictoriaLogs took a batch, before it left the spool, sends it again.
+  Every event has a unique `id` for removing duplicates when reading.
+- Commands (`bootstrap`, `invite`, offline `restore`) do not use the spool: they retry, then log `audit.undelivered`,
+  as without one.
 - Each event has the stream fields `app` (`quisora`) and `org` (organization id), and the fields `action`, `actor`,
   `actor_id`, `target`, `ip`, `node`, `id` and `detail.<name>`.
 

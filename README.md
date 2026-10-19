@@ -78,12 +78,17 @@ and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md).
 ## Audit log and VictoriaLogs
 
 By default audit events are kept in the database for 7 days (`audit.retention_days`). In a gossip cluster each node
-keeps its own, and the audit page merges them. For real deployments, send them to VictoriaLogs; every node's audit
-page then reads from it:
+keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing.
+
+**Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
+(typically a year or more), and should turn on the disk spool so an outage of VictoriaLogs loses nothing. Every node's
+audit page then reads from VictoriaLogs:
 
 ```toml
 [audit]
 victorialogs_url = "http://victorialogs:9428"
+victorialogs_spool_dir = "/var/lib/quisora/audit-spool"   # one per node
+victorialogs_spool_max_mb = 256
 ```
 
 Details: [docs/RUNNING.md](docs/RUNNING.md#audit-log).

@@ -1,9 +1,16 @@
 package vlogs
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,5 +85,225 @@ func TestVictoriaLogsRoundTrip(t *testing.T) {
 	all, _ := c.ReadAudit(ctx, service.AuditQuery{Search: strings.ToUpper(mark), Sort: "created", Desc: true, Limit: 50})
 	if all.Total != 6 {
 		t.Fatalf("search across organizations: %d", all.Total)
+	}
+}
+
+// fakeVL is a VictoriaLogs insert endpoint that can be switched off, and counts the events it took.
+type fakeVL struct {
+	mu  sync.Mutex
+	up  bool
+	ids map[string]int
+	srv *httptest.Server
+}
+
+func newFakeVL(t *testing.T) *fakeVL {
+	f := &fakeVL{ids: map[string]int{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !f.up {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		sc := bufio.NewScanner(r.Body)
+		for sc.Scan() {
+			var row map[string]any
+			if json.Unmarshal(sc.Bytes(), &row) == nil {
+				f.ids[row["id"].(string)]++
+			}
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeVL) set(up bool) { f.mu.Lock(); f.up = up; f.mu.Unlock() }
+
+func (f *fakeVL) count() (distinct, total int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, n := range f.ids {
+		distinct++
+		total += n
+	}
+	return
+}
+
+func event(i int) *model.Audit {
+	return &model.Audit{Meta: model.Meta{ID: fmt.Sprintf("ev-%05d", i), Created: time.Now()}, OrgID: "o", Action: "user.update"}
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// With a spool, events written while VictoriaLogs is down are kept on disk and sent once it is back, also after a
+// restart of the writer; nothing is left in the spool afterwards.
+func TestSpoolKeepsEventsThroughAnOutage(t *testing.T) {
+	vl := newFakeVL(t)
+	dir := t.TempDir()
+	c, err := New(vl.srv.URL, "n1", logger.NewNullLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Spool(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	for i := range 100 {
+		c.WriteAudit(event(i))
+	}
+	waitFor(t, "the spool to fill", func() bool { return !c.spool.empty() })
+	c.Close() // shuts down with events still spooled
+
+	vl.set(true)
+	c2, _ := New(vl.srv.URL, "n1", logger.NewNullLogger())
+	if err := c2.Spool(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	c2.Start()
+	defer c2.Close()
+	for i := 100; i < 110; i++ {
+		c2.WriteAudit(event(i))
+	}
+	waitFor(t, "every event to arrive", func() bool { d, _ := vl.count(); return d == 110 })
+	waitFor(t, "the spool to drain", func() bool {
+		segs, _ := c2.spool.segments()
+		return len(segs) == 0
+	})
+}
+
+// The spool stays within its size: past it the oldest events go (and are counted as dropped), the newest stay.
+func TestSpoolIsBounded(t *testing.T) {
+	s, err := newSpool(t.TempDir(), 1) // 1 MB
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := []byte(`{"id":"x","pad":"` + strings.Repeat("a", 1000) + `"}` + "\n")
+	batch := bytes.Repeat(line, 100) // ~100 KB
+	evicted := 0
+	for range 40 {
+		ev, err := s.store(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evicted += len(ev)
+	}
+	segs, total := s.segments()
+	if total > 1<<20+int64(segmentMax) || len(segs) == 0 {
+		t.Fatalf("spool holds %d bytes in %d segments", total, len(segs))
+	}
+	if evicted == 0 || evicted%100 != 0 {
+		t.Fatalf("evicted %d events", evicted)
+	}
+}
+
+// A line torn by a crash while it was written is skipped on replay; the complete ones are sent.
+func TestSpoolSkipsTornLines(t *testing.T) {
+	s, err := newSpool(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store([]byte("{\"id\":\"a\"}\n{\"id\":\"b\"}\n{\"id\":")); err != nil {
+		t.Fatal(err)
+	}
+	name, body := s.oldest()
+	if name == "" || string(body) != "{\"id\":\"a\"}\n{\"id\":\"b\"}\n" {
+		t.Fatalf("replayed %q", body)
+	}
+}
+
+// A spool directory that cannot be written is refused at startup.
+func TestSpoolDirMustBeWritable(t *testing.T) {
+	f := t.TempDir() + "/file"
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := New("http://127.0.0.1:1", "n1", logger.NewNullLogger())
+	if err := c.Spool(f+"/spool", 0); err == nil {
+		t.Fatal("a spool under a file was accepted")
+	}
+}
+
+// capture is a logger that records Error lines (through With and WithGroup too).
+type capture struct {
+	mu     *sync.Mutex
+	errors *[][]any // message, then key-value pairs
+}
+
+func newCapture() capture { return capture{mu: &sync.Mutex{}, errors: &[][]any{}} }
+
+func (c capture) Trace(string, ...any) {}
+func (c capture) Debug(string, ...any) {}
+func (c capture) Info(string, ...any)  {}
+func (c capture) Warn(string, ...any)  {}
+func (c capture) Fatal(string, ...any) {}
+func (c capture) Error(msg string, kv ...any) {
+	c.mu.Lock()
+	*c.errors = append(*c.errors, append([]any{msg}, kv...))
+	c.mu.Unlock()
+}
+func (c capture) With(string, any) logger.Logger { return c }
+func (c capture) WithError(error) logger.Logger  { return c }
+func (c capture) WithGroup(string) logger.Logger { return c }
+
+// undeliveredIDs returns the event ids logged as audit.undelivered.
+func (c capture) undeliveredIDs() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]bool{}
+	for _, e := range *c.errors {
+		if e[0] != "audit.undelivered" {
+			continue
+		}
+		for i := 1; i+1 < len(e); i += 2 {
+			if e[i] == "event" {
+				if ev, ok := e[i+1].(map[string]any); ok {
+					out[fmt.Sprint(ev["id"])] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// Events VictoriaLogs will never get go to the structured log in full, as audit.undelivered: without a spool once
+// the retries are spent, with one when the spool has to make room.
+func TestUndeliveredEventsAreLoggedInFull(t *testing.T) {
+	vl := newFakeVL(t) // down
+	log := newCapture()
+	c, _ := New(vl.srv.URL, "n1", log)
+	c.Start()
+	for i := range 3 {
+		c.WriteAudit(event(i))
+	}
+	waitFor(t, "the events to be logged as undelivered", func() bool { return len(log.undeliveredIDs()) == 3 })
+	c.Close()
+	if ids := log.undeliveredIDs(); !ids["ev-00000"] || !ids["ev-00002"] {
+		t.Fatalf("logged %v", ids)
+	}
+
+	s, err := newSpool(t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log2 := newCapture()
+	c2, _ := New(vl.srv.URL, "n1", log2)
+	c2.spool = s
+	pad := strings.Repeat("a", 1000)
+	for i := range 2000 { // ~2 MB through a 1 MB spool
+		b, _ := json.Marshal(map[string]any{"id": fmt.Sprintf("ev-%05d", i), "pad": pad})
+		c2.toSpool(append(b, '\n'))
+	}
+	ids := log2.undeliveredIDs()
+	if len(ids) == 0 || !ids["ev-00000"] || ids["ev-01999"] {
+		t.Fatalf("evicted and logged: %d (oldest %v, newest %v)", len(ids), ids["ev-00000"], ids["ev-01999"])
 	}
 }

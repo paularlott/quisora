@@ -21,6 +21,11 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 		if err != nil {
 			return fmt.Errorf("audit: %w", err)
 		}
+		if c.Audit.SpoolDir != "" {
+			if err := vl.Spool(c.Audit.SpoolDir, c.Audit.SpoolMaxMB); err != nil {
+				return fmt.Errorf("audit: %w", err)
+			}
+		}
 		vl.Start()
 		a.closers = append(a.closers, vl.Close)
 		a.Svc.AuditWriter, a.Svc.AuditReader = vl, vl
@@ -33,7 +38,8 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 }
 
 // cliAudit sends a command's audit events to VictoriaLogs when it is configured (where the audit pages read them),
-// as the server does; the returned function sends what is queued and must run before the command exits.
+// as the server does; the returned function sends what is queued and must run before the command exits. Commands
+// do not use the spool: its directory belongs to the server.
 func cliAudit(c *config.Config, svc *service.Service, log logger.Logger) func() {
 	if c.Audit.VictoriaLogs == "" {
 		return func() {}
