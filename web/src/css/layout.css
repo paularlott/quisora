@@ -29,7 +29,7 @@
   @media (min-width: 40rem) { .user-chip-name { display: inline; } }
   .menu-wrap { position: relative; }
   .menu { position: absolute; right: 0; top: calc(100% + 0.6rem); width: min(18rem, calc(100vw - 1.5rem)); padding: 0.5rem; z-index: 40;
-    border-radius: 1.4rem; display: flex; flex-direction: column; gap: 0.15rem; background: var(--glass-bg-strong); }
+    border-radius: 1.4rem; display: flex; flex-direction: column; gap: 0.15rem; }
   .menu-head { padding: 0.6rem 0.75rem 0.7rem; border-bottom: 1px solid var(--edge); margin-bottom: 0.3rem; }
   .menu-item { display: flex; align-items: center; gap: 0.7rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: 0.9rem; color: var(--fg);
     font: inherit; font-weight: 600; text-decoration: none; background: transparent; border: 0; width: 100%; text-align: left; cursor: pointer; }

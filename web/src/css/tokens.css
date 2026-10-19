@@ -5,7 +5,11 @@
    against the worst-case backdrop: the darkest (light theme) or lightest (dark theme) aurora colour below under the
    glass tint. web/tests/contrast.spec.mjs re-checks them. Values:
      light  --fg #0b1220 / --fg-muted #3d4b66 on glass >= 0.78 white over --aurora-worst #6366f1 ->  >= 6.4:1 / 5.2:1
-     dark   --fg #f1f5f9 / --fg-muted #b6c2d9 on glass 0.70 #101530 over --aurora-worst #be185d   ->  >= 12:1 / 8:1 */
+     dark   --fg #f1f5f9 / --fg-muted #b6c2d9 on glass 0.70 #101530 over --aurora-worst #be185d   ->  >= 12:1 / 8:1
+   Floating panels (header, menus, toasts, the sign-in card: --glass-bg-panel) are thinner glass with more blur (dialogs,
+   over their scrim, keep --glass-bg):
+     light  0.62 white over #6366f1   -> --fg 11.3:1, --fg-muted 5.3:1
+     dark   0.50 #0e122a over #be185d -> --fg 10.7:1, --fg-muted 6.6:1  (AA needs 4.5:1; light below ~0.6 fails) */
 
 @theme inline {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue",
@@ -53,6 +57,7 @@
 
   --glass-bg: rgba(255, 255, 255, 0.78);
   --glass-bg-strong: rgba(255, 255, 255, 0.88);
+  --glass-bg-panel: rgba(255, 255, 255, 0.62);
   --glass-solid: #f6f8ff;
   --glass-blur: 22px;
   --glass-sat: 1.7;
@@ -109,6 +114,7 @@
 
   --glass-bg: rgba(16, 21, 48, 0.7);
   --glass-bg-strong: rgba(14, 18, 42, 0.84);
+  --glass-bg-panel: rgba(14, 18, 42, 0.5);
   --glass-solid: #11162f;
   --glass-sheen: radial-gradient(120% 90% at 0% 0%, rgba(255, 255, 255, 0.11), transparent 55%),
     radial-gradient(90% 70% at 100% 100%, rgba(99, 102, 241, 0.16), transparent 60%);
@@ -145,7 +151,8 @@
     --page-bg: #070a18; --fg: #f1f5f9; --fg-muted: #b6c2d9; --accent: #b4c0ff; --accent-solid: #4f46e5;
     --accent-solid-2: #6d28d9; --danger: #ffb4b4; --success: #86efac; --focus: #c7d2fe; --focus-halo: #0b1020;
     --aurora-1: #3730a3; --aurora-2: #86198f; --aurora-3: #0e7490; --aurora-4: #9d174d; --aurora-opacity: 0.8;
-    --glass-bg: rgba(16, 21, 48, 0.7); --glass-bg-strong: rgba(14, 18, 42, 0.84); --glass-solid: #11162f;
+    --glass-bg: rgba(16, 21, 48, 0.7); --glass-bg-strong: rgba(14, 18, 42, 0.84); --glass-bg-panel: rgba(14, 18, 42, 0.5);
+    --glass-solid: #11162f;
     --ctl-bg: rgba(5, 8, 24, 0.55); --ctl-border: #8e9bbb; --th-bg: rgba(255, 255, 255, 0.04);
     --b-success-bg: rgba(16, 185, 129, 0.2); --b-success-fg: #86efac; --b-danger-bg: rgba(248, 113, 113, 0.2);
     --b-danger-fg: #fecaca; --b-warn-bg: rgba(251, 191, 36, 0.18); --b-warn-fg: #fde68a;
@@ -159,6 +166,7 @@
   :root, :root[data-theme] {
     --glass-bg: var(--glass-solid);
     --glass-bg-strong: var(--glass-solid);
+    --glass-bg-panel: var(--glass-solid);
     --glass-blur: 0px;
     --glass-sat: 1;
     --aurora-opacity: 0.35;
@@ -168,6 +176,7 @@
   :root, :root[data-theme] {
     --glass-bg: var(--glass-solid);
     --glass-bg-strong: var(--glass-solid);
+    --glass-bg-panel: var(--glass-solid);
     --glass-blur: 0px;
     --glass-sat: 1;
     --aurora-opacity: 0.25;
