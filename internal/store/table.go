@@ -177,6 +177,12 @@ func (t *Table[T, PT]) Delete(ctx context.Context, id string) error {
 	return t.S.Put(ctx, Tombstone(t.Kind, id))
 }
 
+// DeleteIf tombstones the entity only if nobody changed it since it was read at version expect (optimistic
+// concurrency, as Update): a decision made on that copy cannot be applied to a newer one.
+func (t *Table[T, PT]) DeleteIf(ctx context.Context, id string, expect hlc.Timestamp) error {
+	return t.S.CompareAndPut(ctx, Tombstone(t.Kind, id), expect)
+}
+
 // List returns a page of entities and the total number of matches.
 func (t *Table[T, PT]) List(ctx context.Context, q ListQuery) ([]PT, int, error) {
 	res, err := t.S.List(ctx, t.Kind, q)

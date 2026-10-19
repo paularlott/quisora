@@ -129,3 +129,55 @@ func TestResetCredentialsRetriesConcurrentChange(t *testing.T) {
 		t.Fatal("the password survived the reset")
 	}
 }
+
+// staleUser is a store whose copy of one user is an older one (a node that has not received the latest change yet).
+type staleUser struct {
+	store.Store
+	rec *store.Record
+}
+
+func (s *staleUser) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if s.rec != nil && kind == model.KindUser && id == s.rec.ID {
+		return s.rec, nil
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// A user deleted from a copy that is not the newest is not deleted: here the copy predates the user's promotion to
+// administrator, so neither the admin lock nor the last-admin check would have applied to the deletion.
+func TestDeleteFromStaleCopyIsRefused(t *testing.T) {
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	st := &staleUser{Store: memstore.New()}
+	svc := service.New(cfg, st, sealer)
+	ctx := context.Background()
+	if _, _, err := svc.Bootstrap(ctx, "root@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	org, err := svc.CreateOrg(ctx, service.System, service.OrgInput{Name: ptr("acme")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := svc.CreateUser(ctx, service.System, org.ID, service.UserInput{Username: ptr("pat"), Email: ptr("pat@example.com"),
+		GivenName: ptr("Pat")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := st.Store.Get(ctx, model.KindUser, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := model.RoleAdmin
+	if _, err := svc.UpdateUser(ctx, service.System, u.ID, service.UserInput{Role: &admin}); err != nil {
+		t.Fatal(err)
+	}
+	st.rec = old
+	if err := svc.DeleteUser(ctx, service.System, u.ID); err == nil {
+		t.Fatal("deleted from a stale copy")
+	}
+	st.rec = nil
+	if cur, err := svc.Users.Get(ctx, u.ID); err != nil || cur.Role != model.RoleAdmin {
+		t.Fatalf("the administrator is gone: %v %+v", err, cur)
+	}
+}

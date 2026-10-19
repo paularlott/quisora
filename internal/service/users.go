@@ -658,6 +658,13 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	if err := s.guardLastAdmin(ctx, u); err != nil {
 		return err
 	}
+	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
+	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
+	// last-admin check applied) is refused, instead of deleting an administrator unchecked. What belonged to them
+	// follows.
+	if err := s.Users.DeleteIf(Durable(ctx), u.ID, u.Version); err != nil {
+		return mapStore(err)
+	}
 	if err := s.deleteUserData(Durable(ctx), u); err != nil {
 		return err
 	}

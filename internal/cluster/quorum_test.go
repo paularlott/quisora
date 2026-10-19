@@ -574,6 +574,74 @@ func TestLastAdminGuardIsClusterWide(t *testing.T) {
 	}
 }
 
+// A9b: as A9, with two administrators deleting each other at once on two nodes: at most one deletion succeeds, and
+// the organization always keeps an active administrator.
+func TestLastAdminDeleteIsClusterWide(t *testing.T) {
+	c := newTCluster(t, 3, memBackend)
+	c.startAll()
+	c.waitReady()
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	svcs := []*service.Service{service.New(cfg, c.nodes[0].st(), sealer), service.New(cfg, c.nodes[1].st(), sealer)}
+	admin := model.RoleAdmin
+	for round := range 3 {
+		name := fmt.Sprintf("org-%d", round)
+		org, err := svcs[0].CreateOrg(bg, service.System, service.OrgInput{Name: &name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var us []*model.User
+		for i := range 2 {
+			un, em := fmt.Sprintf("admin%d", i), fmt.Sprintf("admin%d@example.com", i)
+			u, err := svcs[0].CreateUser(bg, service.System, org.ID, service.UserInput{Username: &un, Email: &em,
+				GivenName: &un, Role: &admin})
+			if err != nil {
+				t.Fatal(err)
+			}
+			us = append(us, u)
+		}
+		for _, u := range us {
+			c.waitUser(t, u.ID, func(u *model.User) bool { return u.Role == model.RoleAdmin && u.Active })
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i := range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// each administrator deletes the other, on their own node
+				errs[i] = svcs[i].DeleteUser(bg, service.ActorForUser(us[i], ""), us[1-i].ID)
+			}()
+		}
+		wg.Wait()
+		ok := 0
+		for _, err := range errs {
+			if err == nil {
+				ok++
+			} else if !errors.Is(err, service.ErrLastAdmin) && !errors.Is(err, service.ErrUnavailable) &&
+				!errors.Is(err, service.ErrStale) {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if ok > 1 {
+			t.Fatalf("round %d: both administrators were deleted", round)
+		}
+		time.Sleep(500 * time.Millisecond)
+		for i, tn := range c.nodes {
+			n := 0
+			for _, u := range us {
+				if cur, err := users(tn).Get(bg, u.ID); err == nil && cur.Role == model.RoleAdmin && cur.Active {
+					n++
+				}
+			}
+			if n == 0 {
+				t.Fatalf("round %d: node %d sees the organization without an administrator", round, i)
+			}
+		}
+	}
+}
+
 // A10: a node refuses to start on a clock set before the version clock's epoch; a version far ahead of this node's
 // clock is applied but not followed (counted), so this node's own versions do not inherit the skew.
 func TestClockGuards(t *testing.T) {
