@@ -105,9 +105,10 @@ type Service struct {
 	// Now is the clock used for token validity checks.
 	Now func() time.Time
 
-	mu    sync.Mutex
-	disc  map[string]*discovery
-	cache map[string]*keyCache
+	mu        sync.Mutex
+	disc      map[string]*discovery
+	discCalls map[string]*discoveryCall // fetching, or failed recently (see discover)
+	cache     map[string]*keyCache
 }
 
 // New returns a service. publicURL is the server's own origin (each provider's redirect URI is
@@ -119,7 +120,7 @@ func New(svc *service.Service, eph ephemeral.Store, publicURL string) *Service {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		GitHubAuthURL: "https://github.com/login/oauth/authorize", GitHubTokenURL: "https://github.com/login/oauth/access_token",
 		GitHubAPIURL: "https://api.github.com", MicrosoftAuthority: model.MicrosoftAuthority, Now: time.Now,
-		disc: map[string]*discovery{}, cache: map[string]*keyCache{},
+		disc: map[string]*discovery{}, discCalls: map[string]*discoveryCall{}, cache: map[string]*keyCache{},
 	}
 }
 
@@ -172,6 +173,15 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 	if !p.Enabled || p.OrgID != org.ID {
 		return "", "", ErrDisabled
 	}
+	// Discovery first: a provider that cannot be reached leaves no state behind.
+	var d *discovery
+	switch p.Type {
+	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft:
+		var err error
+		if d, err = s.discoverFor(ctx, p); err != nil {
+			return "", "", err
+		}
+	}
 	st.ProviderID, st.OrgID, st.Nonce, st.Verifier = p.ID, org.ID, secure.RandomToken(24), secure.RandomToken(32)
 	b, _ := json.Marshal(st)
 	id, err := s.Eph.New(ctx, Namespace, b, StateTTL)
@@ -185,10 +195,6 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 	var base string
 	switch p.Type {
 	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft:
-		d, err := s.discoverFor(ctx, p)
-		if err != nil {
-			return "", "", err
-		}
 		base = d.AuthorizationEndpoint
 		scopes := p.Scopes
 		if !contains(scopes, "openid") {

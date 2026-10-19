@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -423,6 +426,61 @@ func TestDiscoveryChecks(t *testing.T) {
 	e.oidc.IssuerOver = "https://evil.example"
 	if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); !errors.Is(err, upstream.ErrUpstream) {
 		t.Fatalf("issuer mismatch accepted: %v", err)
+	}
+}
+
+// A provider whose discovery hangs or fails costs one outbound request per retry interval, not one per sign-in:
+// concurrent sign-ins share one fetch, callers that give up return at once, and a failure is remembered.
+func TestDiscoveryFailureIsShared(t *testing.T) {
+	e := setup(t)
+	var hits atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-release
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); srv.Close() })
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.Issuer = ptr(srv.URL) })
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(e.ctx, 100*time.Millisecond)
+			defer cancel()
+			if _, _, err := e.up.Begin(ctx, e.org, p, ""); !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("abandoned sign-in: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("abandoned sign-ins waited for the upstream: %v", d)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("concurrent sign-ins fetched discovery %d times", n)
+	}
+
+	unblock()
+	for range 3 {
+		if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); err == nil {
+			t.Fatal("failed discovery accepted")
+		}
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("a failed discovery was fetched again within the retry interval: %d", n)
+	}
+	e.advance(31 * time.Second)
+	if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); err == nil {
+		t.Fatal("failed discovery accepted")
+	}
+	if n := hits.Load(); n != 2 {
+		t.Fatalf("discovery not retried after the interval: %d", n)
 	}
 }
 

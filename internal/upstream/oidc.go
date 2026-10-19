@@ -14,7 +14,11 @@ import (
 )
 
 const (
-	discoveryTTL   = time.Hour
+	discoveryTTL = time.Hour
+	// discoveryRetry bounds how often a provider whose discovery failed is asked again: one that is down or never
+	// answers costs at most one outbound request per interval, not one per sign-in, and the sign-ins in between fail
+	// at once instead of each holding a request slot until the upstream timeout.
+	discoveryRetry = 30 * time.Second
 	jwksTTL        = time.Hour
 	jwksMinRefetch = time.Minute // unknown-kid refetches are rate limited
 	clockLeeway    = time.Minute
@@ -59,29 +63,71 @@ func (s *Service) discoverFor(ctx context.Context, p *model.Provider) (*discover
 	return s.discover(ctx, p.Issuer, p.Issuer)
 }
 
-// discover returns the (cached) OpenID configuration published under base, checking that it names issuer.
+// discoveryCall is a discovery fetch in progress, or one that failed less than discoveryRetry ago.
+type discoveryCall struct {
+	done chan struct{} // closed when d, err and at are set
+	d    *discovery
+	err  error
+	at   time.Time
+}
+
+// discover returns the (cached) OpenID configuration published under base, checking that it names issuer. One fetch
+// per base runs at a time, whoever asks, and a failure is remembered for discoveryRetry. The fetch is not tied to
+// the caller: a caller that goes away (a browser that gave up) returns at once and frees its request, and the fetch
+// finishes, bounded by the HTTP client's timeout, for the callers still waiting and the next ones.
 func (s *Service) discover(ctx context.Context, base, issuer string) (*discovery, error) {
 	s.mu.Lock()
-	d := s.disc[base]
-	s.mu.Unlock()
-	if d != nil && s.Now().Sub(d.fetched) < discoveryTTL {
+	if d := s.disc[base]; d != nil && s.Now().Sub(d.fetched) < discoveryTTL {
+		s.mu.Unlock()
 		return d, nil
 	}
-	var nd discovery
-	if err := s.getJSON(ctx, strings.TrimSuffix(base, "/")+"/.well-known/openid-configuration", &nd, nil); err != nil {
-		return nil, err
+	c := s.discCalls[base]
+	if c != nil {
+		select {
+		case <-c.done: // finished calls are kept only when they failed
+			if s.Now().Sub(c.at) >= discoveryRetry {
+				c = nil
+			}
+		default:
+		}
 	}
-	if !sameIssuer(nd.Issuer, issuer) {
-		return nil, fmt.Errorf("%w: discovery issuer mismatch", ErrUpstream)
+	if c == nil {
+		c = &discoveryCall{done: make(chan struct{})}
+		s.discCalls[base] = c
+		go s.fetchDiscovery(context.WithoutCancel(ctx), base, issuer, c)
 	}
-	if !httpsURL(nd.AuthorizationEndpoint) || !httpsURL(nd.TokenEndpoint) || !httpsURL(nd.JWKSURI) {
-		return nil, fmt.Errorf("%w: discovery document has missing or non-https endpoints", ErrUpstream)
-	}
-	nd.fetched = s.Now()
-	s.mu.Lock()
-	s.disc[base] = &nd
 	s.mu.Unlock()
-	return &nd, nil
+	select {
+	case <-c.done:
+		return c.d, c.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) fetchDiscovery(ctx context.Context, base, issuer string, c *discoveryCall) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryRetry) // in case the HTTP client has no timeout of its own
+	defer cancel()
+	var nd discovery
+	err := s.getJSON(ctx, strings.TrimSuffix(base, "/")+"/.well-known/openid-configuration", &nd, nil)
+	switch {
+	case err != nil:
+	case !sameIssuer(nd.Issuer, issuer):
+		err = fmt.Errorf("%w: discovery issuer mismatch", ErrUpstream)
+	case !httpsURL(nd.AuthorizationEndpoint) || !httpsURL(nd.TokenEndpoint) || !httpsURL(nd.JWKSURI):
+		err = fmt.Errorf("%w: discovery document has missing or non-https endpoints", ErrUpstream)
+	}
+	now := s.Now()
+	s.mu.Lock()
+	if err == nil {
+		nd.fetched = now
+		c.d = &nd
+		s.disc[base] = &nd
+		delete(s.discCalls, base)
+	}
+	c.err, c.at = err, now
+	s.mu.Unlock()
+	close(c.done)
 }
 
 type keyCache struct {
