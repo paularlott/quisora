@@ -44,7 +44,7 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 		u, err := m.s.Svc.Users.Get(ctx, t.UserID)
 		if err == nil && u.Enabled(time.Now()) {
 			if org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
-				if !m.rateLimit(w, r, org.Name) {
+				if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 					return nil, nil, nil, false
 				}
 				return t, u, org, true

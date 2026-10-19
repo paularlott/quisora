@@ -340,6 +340,54 @@ func TestRateLimit(t *testing.T) {
 	wantStatus(t, res, out, 200)
 }
 
+// A flood of junk sign-ins from the same address (an office NAT, a load balancer without trusted_proxies) does not
+// keep out a browser that has signed in to the account before: its device cookie moves it onto the account's own
+// budget. A browser without one, another account typed into that browser, or a tampered cookie stay limited by
+// address, and the account's own budget is limited too.
+func TestKnownDeviceSurvivesFlood(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 5; c.Limits.LockoutAttempts = 0 })
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	e.user(t, org, "sam", model.RoleUser)
+	b := e.browser(t)
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+
+	attacker := e.browser(t)
+	for i := 0; i < 20; i++ { // past the per-org limit and the address-wide ceiling
+		attacker.login([]string{"acme", "primary", "nope"}[i%3], "x@y.z", "x")
+	}
+	if res, out := e.browser(t).login("acme", "pat", userPassword); res.StatusCode != 429 {
+		t.Fatalf("flood did not limit the address: %d %v", res.StatusCode, out["_raw"])
+	}
+
+	res, out = b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	// the cookie is for pat: another account typed into the same browser is limited by address
+	res, out = b.login("acme", "sam", userPassword)
+	wantStatus(t, res, out, 429)
+
+	// a tampered cookie is no cookie
+	u, _ := url.Parse(e.URL)
+	c := e.browser(t)
+	for _, ck := range b.c.Jar.Cookies(u) {
+		if ck.Name == "__Host-quisora_dev" {
+			ck.Value = strings.Replace(ck.Value, ".", ".x", 1)
+			c.c.Jar.SetCookies(u, []*http.Cookie{ck})
+		}
+	}
+	res, out = c.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+
+	// the device's own budget is limited like an address's
+	for i := 0; i < 4; i++ {
+		res, out = b.login("acme", "pat", "wrong")
+		wantStatus(t, res, out, 401)
+	}
+	res, out = b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+}
+
 func TestLockout(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) {
 		c.Limits.LockoutAttempts = 3

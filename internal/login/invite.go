@@ -51,7 +51,7 @@ func (m *Module) inviteBegin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "invite") {
+	if !m.rateLimit(w, r, "invite", known{any: true}) {
 		return
 	}
 	u, _, eff, ok := m.inviteContext(w, r, in.Token)
@@ -90,7 +90,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "invite") {
+	if !m.rateLimit(w, r, "invite", known{any: true}) {
 		return
 	}
 	ctx := r.Context()

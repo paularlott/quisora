@@ -252,11 +252,17 @@ func (m *Module) resolveOrg(ctx context.Context, raw string) (*model.Org, string
 }
 
 // allow counts a sign-in request for org+client IP in a one-minute window and reports whether it is within the
-// configured limit (Limits.LoginPerIPMin).
-func (m *Module) allow(r *http.Request, orgKey string) bool {
+// configured limit (Limits.LoginPerIPMin). A request from a browser that has signed in to the account (or org) it is
+// for, as k says, is counted against that account's own budget instead (see device.go), so a flood from the same
+// address does not keep it out.
+func (m *Module) allow(r *http.Request, orgKey string, k known) bool {
 	limit := m.s.Cfg.Limits.LoginPerIPMin
 	if limit <= 0 {
 		return true
+	}
+	if uid, ok := m.knownDevice(r, k); ok {
+		n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-dev|"+uid, 1, time.Minute)
+		return err == nil && n <= int64(limit)
 	}
 	ip := web.ClientIP(r)
 	// An IP-only ceiling (three times the per-org limit) bounds what one client can spend across organizations,
@@ -271,8 +277,8 @@ func (m *Module) allow(r *http.Request, orgKey string) bool {
 }
 
 // rateLimit is allow plus the 429 response (with Retry-After); it returns false when the request was rejected.
-func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, orgKey string) bool {
-	if m.allow(r, orgKey) {
+func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, orgKey string, k known) bool {
+	if m.allow(r, orgKey, k) {
 		return true
 	}
 	w.Header().Set("Retry-After", "60")
@@ -435,6 +441,7 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 	}
 	m.s.Svc.TouchLogin(ctx, u)
 	m.clearLock(ctx, u.ID)
+	m.rememberDevice(w, r, u)
 	if m.s.Cfg.Audit.Logins {
 		m.audit(r, "login.success", org, u, u.Username, map[string]string{"amr": strings.Join(amr, " ")})
 	}

@@ -40,7 +40,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	org, orgKey := m.resolveOrg(ctx, in.Org)
-	if !m.rateLimit(w, r, orgKey) {
+	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
 		return
 	}
 	login := strings.TrimSpace(in.Email) // the email address; the username never signs in
@@ -222,7 +222,7 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 		return
 	}
-	if !m.rateLimit(w, r, org.Name) {
+	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 		return
 	}
 	key := u.ID
@@ -282,7 +282,7 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	org, orgKey := m.resolveOrg(ctx, in.Org)
-	if !m.rateLimit(w, r, orgKey) {
+	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
 		return
 	}
 	if org != nil && org.Settings.PasswordLogin &&
@@ -327,7 +327,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "reset") {
+	if !m.rateLimit(w, r, "reset", known{any: true}) {
 		return
 	}
 	ctx := r.Context()

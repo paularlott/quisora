@@ -52,7 +52,7 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 			return
 		}
-		if !m.rateLimit(w, r, u.OrgID) {
+		if !m.rateLimit(w, r, u.OrgID, known{userID: u.ID}) {
 			return
 		}
 		user = u
@@ -64,7 +64,11 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		if orgName == "" {
 			orgKey = "" // discoverable sign-in without an org
 		}
-		if !m.rateLimit(w, r, orgKey) {
+		k := known{any: true} // discoverable sign-in without an org
+		if org != nil {
+			k = known{orgID: org.ID}
+		}
+		if !m.rateLimit(w, r, orgKey, k) {
 			return
 		}
 		if orgName != "" {
@@ -120,7 +124,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if !m.rateLimit(w, r, "passkey") {
+	if !m.rateLimit(w, r, "passkey", known{any: true}) {
 		return
 	}
 	res, err := m.Passkeys.FinishLoginAs(ctx, in.Challenge, in.Credential, purposeLogin, purposeSecondFactor)

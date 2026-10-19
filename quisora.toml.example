@@ -87,7 +87,7 @@ logins = false                            # also record successful sign-ins (fai
 
 [limits]
 max_in_flight = 4096                      # concurrent requests per node before 503
-login_per_ip_min = 300                    # sign-in attempts per organization and IP per minute
+login_per_ip_min = 300                    # sign-in attempts per organization and IP per minute (per account for a browser that has signed in to it before)
 lockout_attempts = 10                     # failed passwords before an account is locked
 lockout_minutes = 15
 password_workers = 0                      # concurrent password hashes (0 = number of CPUs)

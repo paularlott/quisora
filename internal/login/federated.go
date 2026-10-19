@@ -33,7 +33,7 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	back := func(code string) {
 		http.Redirect(w, r, loginURL(org, next, tenant, code), http.StatusFound)
 	}
-	if !m.rateLimit(w, r, org.Name) {
+	if !m.rateLimit(w, r, org.Name, known{orgID: org.ID}) {
 		return
 	}
 	p, err := m.s.Svc.Providers.Get(ctx, r.PathValue("id"))
@@ -62,7 +62,7 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	if !m.rateLimit(w, r, "callback") {
+	if !m.rateLimit(w, r, "callback", known{any: true}) {
 		return
 	}
 	state, provider := q.Get("state"), r.PathValue("provider")
