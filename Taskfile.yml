@@ -28,7 +28,8 @@ tasks:
     desc: Build the CSS and JavaScript into web/dist (embedded in the binary)
     dir: web
     cmds:
-      - npm ci --silent
+      # no dependency install scripts (as in the Dockerfile): nothing a package ships runs on this machine
+      - npm ci --silent --ignore-scripts
       - node build.mjs
     sources:
       - src/**/*
@@ -106,6 +107,13 @@ tasks:
     cmds:
       - go vet ./...
       - go test -race ./...
+
+  check:
+    desc: "Release gate: vet and every Go test with the race detector, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above)"
+    cmds:
+      - task: test
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - npm --prefix web audit --audit-level=high
 
   test-dbs:
     desc: Start the PostgreSQL, MySQL, MariaDB and Valkey test containers
