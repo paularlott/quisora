@@ -1,0 +1,107 @@
+{{/* App shell for signed-in pages. Pages begin with {{template "base" .}} and define "content"; they may define "head"
+     (extra <head> markup) and "scripts" (extra script tags) blocks. On admin pages .Org is the organization being
+     administered. */}}
+{{define "base"}}<!doctype html>
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-mail="{{if .Site.Mail}}1{{else}}0{{end}}" data-me="{{with .User}}{{.ID}}{{end}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{.CSRF}}">
+<meta name="color-scheme" content="light dark">
+{{with .Org}}<meta name="live-org" content="{{.Name}}">
+{{end}}<title>{{.Title}} · {{.Site.Name}}</title>
+<link rel="icon" href="/branding/logo-light" media="(prefers-color-scheme: light)">
+<link rel="icon" href="/branding/logo-dark" media="(prefers-color-scheme: dark)">
+<script src="{{asset "theme-boot.js"}}"></script>
+<link rel="stylesheet" href="{{asset "main.css"}}">
+<script type="module" src="{{asset "main.js"}}"></script>
+{{block "head" .}}{{end}}
+</head>
+<body x-data="shell" @keydown.escape.window="escUser">
+<a class="skip-link" href="#main">Skip to main content</a>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+
+<header class="app-header glass-panel">
+  {{if .User}}<button type="button" class="btn btn-ghost btn-icon md:hidden" aria-controls="primary-nav" :aria-expanded="navExpanded" :aria-label="navLabel" aria-label="Open navigation menu" aria-expanded="false" @click="toggleNav">{{template "icon" "menu"}}</button>{{end}}
+  <a class="brand" href="{{if .User}}/account{{else}}/{{end}}">
+    <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="32" height="32">
+    <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="32" height="32">
+    <span>{{.Site.Name}}</span>
+  </a>
+  <span class="header-spacer"></span>
+  <div class="header-actions">
+    {{if .IsMgr}}{{template "live-switch"}}{{end}}
+    {{template "theme-switch" .}}
+    {{if .User}}
+    <div class="menu-wrap" @click.outside="closeUser">
+      <button type="button" class="user-chip" x-ref="userButton" aria-haspopup="true" aria-controls="user-menu" aria-expanded="false" :aria-expanded="userExpanded" @click="toggleUser">
+        <span class="avatar" aria-hidden="true">{{template "icon" "user"}}</span>
+        <span class="user-chip-name">{{.User.FullName}}</span>
+        <span class="sr-only">Account menu</span>
+        {{template "icon" "chevron-down"}}
+      </button>
+      <div class="menu glass-panel" id="user-menu" x-show="userOpen" x-cloak>
+        <div class="menu-head">
+          <div class="font-bold">{{.User.FullName}}</div>
+          <div class="cell-sub">{{.User.Email}}</div>
+          <div class="mt-2"><span class="badge badge-accent">{{if eq .User.Role "super_admin"}}Super administrator{{else if eq .User.Role "admin"}}Administrator{{else if eq .User.Role "manager"}}Manager{{else}}User{{end}}</span></div>
+        </div>
+        <a class="menu-item" href="/account">{{template "icon" "user"}} Your account</a>
+        <div x-data="systemTheme"><button type="button" class="menu-item" @click="use">{{template "icon" "sliders"}} Match system theme</button></div>
+        <a class="menu-item" href="/logout">{{template "icon" "logout"}} Sign out</a>
+      </div>
+    </div>
+    {{else}}
+    <a class="btn btn-secondary btn-sm" href="/">Sign in</a>
+    {{end}}
+  </div>
+</header>
+
+<div class="app-body{{if not .User}} no-nav{{end}}">
+  {{if .User}}
+  <nav id="primary-nav" class="app-nav glass" aria-label="Primary" :data-open="navAttr" data-open="false">
+    <div class="nav-group">
+      <span class="eyebrow nav-heading">Account</span>
+      <a class="nav-link" href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
+    </div>
+    {{if .IsMgr}}
+    <div class="nav-group">
+      <span class="eyebrow nav-heading">Administration</span>
+      {{with .Org}}
+      {{if $.IsSuper}}
+      <a class="nav-link nav-org-switch" href="/admin/orgs"{{if eq $.Nav "orgs"}} aria-current="page"{{end}}>
+        {{template "icon" "building"}}
+        <span class="nav-org-text"><span class="nav-org-label">Organization</span><span class="nav-org-name">{{.DisplayName}}</span><span class="sr-only">, switch organization</span></span>
+        {{template "icon" "chevron-right"}}
+      </a>
+      {{else}}
+      <div class="nav-org"><span class="cell-sub block">Organization</span>{{.DisplayName}}</div>
+      {{end}}
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/users"{{if eq $.Nav "users"}} aria-current="page"{{end}}>{{template "icon" "users"}} Users</a>
+      {{if $.IsAdmin}}
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>{{template "icon" "shield"}} Groups</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/settings"{{if eq $.Nav "settings"}} aria-current="page"{{end}}>{{template "icon" "sliders"}} Settings</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
+      {{if and $.IsSuper .Primary}}<a class="nav-link" href="/admin/orgs/{{.Name}}/keys"{{if eq $.Nav "keys"}} aria-current="page"{{end}}>{{template "icon" "key"}} Signing keys</a>{{end}}
+      {{if and $.IsSuper .Primary $.Site.Clustered}}<a class="nav-link" href="/admin/orgs/{{.Name}}/cluster"{{if eq $.Nav "cluster"}} aria-current="page"{{end}}>{{template "icon" "network"}} Cluster</a>{{end}}
+      {{end}}
+      {{end}}
+      {{if and .IsSuper (not .Org)}}<a class="nav-link" href="/admin/orgs"{{if eq .Nav "orgs"}} aria-current="page"{{end}}>{{template "icon" "building"}} Organizations</a>
+      <a class="nav-link" href="/admin/audit"{{if eq .Nav "audit-all"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>{{end}}
+    </div>
+    {{end}}
+  </nav>
+  {{end}}
+  <main id="main" class="app-main" tabindex="-1">
+    {{template "content" .}}
+  </main>
+</div>
+
+<footer class="app-footer"><p>{{with .Site.Footer}}{{.}}{{else}}{{.Site.Name}}{{end}}</p></footer>
+{{template "toasts"}}
+{{template "confirm-dialog"}}
+{{block "scripts" .}}{{end}}
+</body>
+</html>{{end}}

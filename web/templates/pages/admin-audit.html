@@ -1,0 +1,47 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminAudit" data-api="{{.Data.API}}/audit"{{if .Data.AllOrgs}} data-all="1"{{end}} data-sort="created" data-desc="1" data-noun="events" data-live="audit" data-live-text="Audit log updated" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{if .Data.AllOrgs}}Every organization{{else}}{{.Org.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Audit log</h1>
+      <p class="page-sub">{{if .Data.AllOrgs}}Security-relevant changes in every organization, newest first.{{else}}Security-relevant changes in this organization, newest first.{{end}}</p>
+    </div>
+    {{if and .IsSuper (not .Data.AllOrgs)}}<a class="btn btn-secondary" href="/admin/audit">{{template "icon" "list"}} Every organization</a>{{end}}
+  </div>
+
+  <section class="glass-card" aria-label="Audit events">
+    <div class="toolbar mb-4">{{template "search" (dict "label" "Search the audit log" "placeholder" "Search action, actor or target")}}
+      <button type="button" class="btn btn-secondary btn-sm" @click="load">{{template "icon" "refresh"}} Refresh</button></div>
+    <p class="help mb-3" x-show="hasSourceNote" x-cloak x-text="sourceNote"></p>
+    <div class="table-wrap" role="region" aria-label="Audit events table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+      <table class="table">
+        <caption class="sr-only">Audit events</caption>
+        <thead><tr>
+          {{template "sort-th" (dict "key" "created" "label" "When")}}
+          {{if .Data.AllOrgs}}<th scope="col">Organization</th>{{end}}
+          <th scope="col">Actor</th>
+          {{template "sort-th" (dict "key" "action" "label" "Action")}}
+          <th scope="col">Target</th>
+          <th scope="col">Details</th>
+          <th scope="col">IP address</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <td class="whitespace-nowrap" x-text="row.timeText"></td>
+            {{if .Data.AllOrgs}}<td x-text="row.orgText"></td>{{end}}
+            <td class="whitespace-nowrap" x-text="row.actorText"></td>
+            <td class="whitespace-nowrap"><code class="mono" x-text="row.action"></code></td>
+            <td x-text="row.targetText"></td>
+            <td class="cell-sub" x-text="row.detailText"></td>
+            <td class="mono" x-text="row.ipText"></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    {{template "skeleton"}}
+    {{template "empty" (dict "icon" "list" "title" "No events yet" "text" "Changes to users, groups, clients and settings will appear here.")}}
+    {{template "pager"}}
+  </section>
+</div>
+{{end}}

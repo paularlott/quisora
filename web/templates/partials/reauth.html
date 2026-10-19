@@ -1,0 +1,27 @@
+{{/* "Confirm it is you": the re-authentication dialog every sensitive change of your own account opens (see
+     withReauth in pages/account.js). org: your organization's name (its sign-in page); next: where signing in again
+     returns to. */}}
+{{define "reauth-dialog"}}
+  <div x-data="accountReauth">
+  {{template "dialog-start" (dict "id" "reauth-dialog" "title" "Confirm it is you" "size" "sm")}}
+  <form @submit.prevent="reauth" novalidate>
+    <div class="dialog-body">
+      <p>This change needs a fresh sign-in check.</p>
+      <div class="stack" x-show="mustSignIn" x-cloak>
+        <p class="muted">Your account has no password, passkey or Authenticator App to confirm with here. Sign in again, then repeat the change within 5 minutes.</p>
+        <a class="btn btn-primary w-full" href="/login/{{.org}}?reauth=1&amp;next={{.next}}">Sign in again</a>
+      </div>
+      {{template "field" (dict "name" "ra_password" "label" "Password" "type" "password" "autocomplete" "current-password" "autofocus" true "show" "askPassword")}}
+      {{template "otp-field" (dict "name" "ra_code" "label" "Authenticator code" "show" "askCode")}}
+      <div x-show="canUsePasskey" x-cloak>
+        <button type="button" class="btn btn-secondary w-full" :disabled="busy" @click="reauthPasskey">{{template "icon" "key"}} Use a passkey instead</button>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-secondary" @click="closeThis">Cancel</button>
+      <button type="submit" class="btn btn-primary" x-show="canConfirm" :aria-busy="busyAttr" :disabled="saveDisabled"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="reauthLabel">Confirm</span></button>
+    </div>
+  </form>
+  {{template "dialog-end"}}
+  </div>
+{{end}}

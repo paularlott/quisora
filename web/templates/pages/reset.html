@@ -1,0 +1,27 @@
+{{template "auth" .}}
+{{define "content"}}
+{{if .Data.Valid}}
+<div x-data="passwordSetup" data-token="{{.Data.Token}}" data-action="Save new password" class="stack">
+  <div>
+    <h1 class="page-title">Choose a new password</h1>
+    <p class="page-sub">for <strong>{{.Data.Email}}</strong> at {{.Data.Org}}. Signing in elsewhere will end when you save.</p>
+  </div>
+  <form class="stack" x-show="notDone" @submit.prevent="submit" novalidate>
+    <input type="text" name="username" value="{{.Data.Email}}" autocomplete="username" readonly hidden>
+    {{template "field" (dict "name" "password" "label" "New password" "type" "password" "required" true "autofocus" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
+    {{template "field" (dict "name" "confirm" "label" "Confirm new password" "type" "password" "required" true "autocomplete" "new-password")}}
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="submitLabel">Save new password</span></button>
+  </form>
+  <div class="stack" x-show="done" x-cloak>
+    <div class="alert alert-success" role="status">{{template "icon" "check-circle"}}<span>Your password has been changed. You can sign in with it now.</span></div>
+    <a id="signin-link" class="btn btn-primary w-full" :href="nextUrl">Go to sign in</a>
+  </div>
+</div>
+{{else}}
+<div class="stack">
+  <h1 class="page-title">This link has expired</h1>
+  <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>The reset link is invalid, has already been used or has expired. Request a new one from the sign-in page.</span></div>
+  <a class="btn btn-secondary" href="/">Go to sign in</a>
+</div>
+{{end}}
+{{end}}

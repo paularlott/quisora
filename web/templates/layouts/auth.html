@@ -1,0 +1,36 @@
+{{/* Centred glass card for sign-in and consent pages. Pages begin with {{template "auth" .}} and define "content". */}}
+{{define "auth"}}<!doctype html>
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{.CSRF}}">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · {{.Site.Name}}</title>
+<link rel="icon" href="/branding/logo-light" media="(prefers-color-scheme: light)">
+<link rel="icon" href="/branding/logo-dark" media="(prefers-color-scheme: dark)">
+<script src="{{asset "theme-boot.js"}}"></script>
+<link rel="stylesheet" href="{{asset "main.css"}}">
+<script type="module" src="{{asset "main.js"}}"></script>
+{{block "head" .}}{{end}}
+</head>
+<body x-data>
+<a class="skip-link" href="#main">Skip to main content</a>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<div class="auth-top glass rounded-full p-1">{{template "theme-switch" .}}</div>
+<div class="auth-wrap">
+  <main id="main" class="auth-card glass-panel" tabindex="-1">
+    <div class="auth-logo">
+      <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="48" height="48">
+      <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="48" height="48">
+      <span class="eyebrow">{{.Site.Name}}</span>
+    </div>
+    {{template "content" .}}
+  </main>
+  <footer class="app-footer"><p>{{with .Site.Footer}}{{.}}{{else}}{{.Site.Name}}{{end}}</p></footer>
+</div>
+{{template "toasts"}}
+{{template "confirm-dialog"}}
+{{block "scripts" .}}{{end}}
+</body>
+</html>{{end}}

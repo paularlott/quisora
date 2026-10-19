@@ -1,0 +1,19 @@
+{
+  "name": "quisora-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "@alpinejs/csp": "3.17.4",
+    "@alpinejs/focus": "3.17.4",
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/cli": "4.3.3",
+    "alpinejs": "3.17.4",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3"
+  }
+}

@@ -1,0 +1,300 @@
+// Uniform popups, the group members picker and the providers' callback URL.
+import { test, expect } from '@playwright/test'
+import { signIn, apiCall, uniq, axe, fmt } from './helpers.mjs'
+
+const A = '/admin/orgs/acme'
+const API = '/api/v1/orgs/acme'
+
+// A click on the backdrop, well outside the dialog panel.
+async function clickOutside(page) { await page.mouse.click(8, 8) }
+
+test('popups: clicking outside does nothing; Escape, Cancel and the close icon close the current one', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/groups`, { waitUntil: 'load' })
+  const opener = page.getByRole('button', { name: 'New group' })
+  await opener.click()
+  const dlg = page.getByRole('dialog', { name: 'New group' })
+  await expect(dlg).toBeVisible()
+  await clickOutside(page)
+  await expect(dlg).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dlg).toBeHidden()
+  await expect(opener).toBeFocused()
+  await opener.click()
+  await dlg.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(dlg).toBeHidden()
+  await opener.click()
+  await dlg.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dlg).toBeHidden()
+
+  // the confirmation dialog behaves the same, and has a close icon too
+  const g = await apiCall(page, 'POST', `${API}/groups`, { display_name: uniq('Gone') })
+  await page.reload({ waitUntil: 'load' })
+  await page.getByRole('searchbox', { name: 'Search groups' }).fill(g.display_name)
+  const del = page.getByRole('button', { name: 'Delete ' + g.display_name })
+  await del.click()
+  const confirm = page.locator('#confirm-dialog')
+  await expect(confirm).toBeVisible()
+  await clickOutside(page)
+  await expect(confirm).toBeVisible()
+  await confirm.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(confirm).toBeHidden()
+  await expect(del).toBeFocused()
+  await del.click()
+  await page.keyboard.press('Escape')
+  await expect(confirm).toBeHidden()
+  await expect(page.getByRole('row', { name: new RegExp(g.display_name) })).toBeVisible() // nothing was deleted
+})
+
+test('group members: type to find users, arrow keys and Enter add one, members are left out of the results', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/groups`, { waitUntil: 'load' })
+  const g = await apiCall(page, 'POST', `${API}/groups`, { display_name: uniq('Pick') })
+  await page.reload({ waitUntil: 'load' })
+  await page.getByRole('searchbox', { name: 'Search groups' }).fill(g.display_name)
+  await page.getByRole('button', { name: 'Members of ' + g.display_name }).click()
+  const dlg = page.getByRole('dialog', { name: 'Members of ' + g.display_name })
+  const find = dlg.getByRole('combobox', { name: 'Add a user' })
+  await expect(find).toBeFocused()
+  await page.keyboard.type('alan')
+  const list = dlg.getByRole('listbox', { name: 'Users' })
+  const alan = list.getByRole('option', { name: /Alan Turing/ })
+  await expect(alan).toContainText('User')
+  await expect(list.getByRole('option')).toHaveCount(1)
+  // the list floats over the members below it
+  await expect(list).toHaveCSS('position', 'absolute')
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+  await page.keyboard.press('ArrowDown')
+  await expect(alan).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await expect(dlg).toBeVisible()
+  await expect(page.locator('.toasts')).toContainText('Alan Turing added to ' + g.display_name)
+  await expect(dlg.getByRole('table', { name: /Members/ }).or(dlg.locator('table'))).toContainText('Alan Turing')
+  await expect(find).toHaveValue('')
+  await expect(find).toBeFocused()
+  // a member is not offered again
+  await page.keyboard.type('alan')
+  await expect(dlg.locator('.picker-none')).toBeVisible()
+  await expect(list).toBeHidden()
+})
+
+test('providers: each has its own callback URL, shown in the list and the dialog (before saving a new one) and copyable', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await signIn(page, 'admin')
+  await page.goto(`${A}/providers`, { waitUntil: 'load' })
+  await page.waitForSelector('tbody tr')
+  const first = (await apiCall(page, 'GET', `${API}/providers?sort=name`)).items[0]
+  expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/login/callback/' + first.id + '$'))
+  const row = page.getByRole('row', { name: new RegExp(first.name) })
+  await expect(row).toContainText(first.callback_url)
+  await row.getByRole('button', { name: 'Copy callback URL of ' + first.name }).click()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first.callback_url)
+
+  // a new provider shows its address before it is saved, and keeps it
+  await page.getByRole('button', { name: 'New provider' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
+  const shown = (await dlg.locator('#callback-url-dlg').innerText()).trim()
+  expect(shown).toMatch(/\/login\/callback\/[0-9a-f-]{36}$/)
+  await dlg.getByRole('button', { name: /Copy/ }).click()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown)
+  const name = uniq('CB')
+  await page.locator('#f-name').fill(name)
+  await page.locator('#f-issuer').fill('https://login.example.com')
+  await page.locator('#f-client_id').fill('cid')
+  await page.locator('#f-client_secret').fill('secret')
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const made = (await apiCall(page, 'GET', `${API}/providers?q=${encodeURIComponent(name)}`)).items[0]
+  expect(made.callback_url).toBe(shown)
+  await apiCall(page, 'DELETE', `${API}/providers/${made.id}`)
+})
+
+test('header: the Live updates button is there for administrators and managers, not for users', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto('/account', { waitUntil: 'load' })
+  const header = page.locator('header.app-header')
+  await expect(header.getByRole('button', { name: 'Pause live updates' })).toBeVisible()
+  await page.goto(`${A}/groups`, { waitUntil: 'load' })
+  await expect(page.getByRole('button', { name: 'Pause live updates' })).toHaveCount(1) // only the header one
+  await signIn(page, 'user')
+  await page.goto('/account', { waitUntil: 'load' })
+  await expect(page.getByRole('button', { name: 'Pause live updates' })).toHaveCount(0)
+})
+
+test('groups list: each group shows its number of members, kept current', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/groups`, { waitUntil: 'load' })
+  const g = await apiCall(page, 'POST', `${API}/groups`, { display_name: uniq('Count') })
+  await page.reload({ waitUntil: 'load' })
+  await page.getByRole('searchbox', { name: 'Search groups' }).fill(g.display_name)
+  const row = page.getByRole('row', { name: new RegExp(g.display_name) })
+  await expect(row.locator('td').nth(1)).toHaveText('0')
+  const alan = (await apiCall(page, 'GET', `${API}/users?q=alan`)).items[0]
+  await apiCall(page, 'PUT', `${API}/groups/${g.id}/members/${alan.id}`)
+  await expect(row.locator('td').nth(1)).toHaveText('1') // live update
+})
+
+test('header: on a page with nothing live the switch says On, not Connecting', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto('/account', { waitUntil: 'load' })
+  await expect(page.locator('#live-state')).toHaveText('On')
+  await page.goto(`${A}/users`, { waitUntil: 'load' })
+  await expect(page.locator('#live-state')).toHaveText('Connected')
+})
+
+test('providers: allowed email domains are rows, none by default (any address); a bad one is flagged on its row', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/providers`, { waitUntil: 'load' })
+  await page.getByRole('button', { name: 'New provider' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
+  await expect(dlg.getByRole('textbox', { name: /^Domain \d/ })).toHaveCount(0)
+  const name = uniq('Dom')
+  await page.locator('#f-name').fill(name)
+  await page.locator('#f-issuer').fill('https://login.example.com')
+  await page.locator('#f-client_id').fill('cid')
+  await page.locator('#f-client_secret').fill('secret')
+  const add = dlg.getByRole('button', { name: 'Add domain' })
+  await add.click()
+  await expect(dlg.getByLabel('Domain 1', { exact: true })).toBeFocused()
+  await page.keyboard.type('Example.com')
+  await page.keyboard.press('Enter') // a new row below, focused
+  await expect(dlg.getByLabel('Domain 2', { exact: true })).toBeFocused()
+  await page.keyboard.type('not a domain')
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  const bad = dlg.getByLabel('Domain 2', { exact: true })
+  await expect(bad).toHaveAttribute('aria-invalid', 'true')
+  await expect(bad).toBeFocused()
+  await dlg.getByRole('button', { name: 'Remove not a domain' }).click()
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const made = (await apiCall(page, 'GET', `${API}/providers?q=${encodeURIComponent(name)}`)).items[0]
+  expect(made.allowed_domains).toEqual(['example.com'])
+  // editing shows the saved domain as a row; removing it allows any address again
+  await page.getByRole('button', { name: 'Edit ' + name }).click()
+  const ed = page.getByRole('dialog', { name: 'Edit provider' })
+  await expect(ed.getByLabel('Domain 1', { exact: true })).toHaveValue('example.com')
+  await ed.getByRole('button', { name: 'Remove example.com' }).click()
+  await expect(ed.getByRole('textbox', { name: /^Domain \d/ })).toHaveCount(0)
+  await ed.getByRole('button', { name: 'Save changes' }).click()
+  await expect(ed).toBeHidden()
+  expect((await apiCall(page, 'GET', `${API}/providers/${made.id}`)).allowed_domains).toEqual([])
+  await apiCall(page, 'DELETE', `${API}/providers/${made.id}`)
+})
+
+test('providers: each type shows its own fields; Microsoft takes a directory and allowed tenants; Auth0 a domain', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/providers`, { waitUntil: 'load' })
+  await page.getByRole('button', { name: 'New provider' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
+  const type = dlg.getByLabel('Type')
+  const address = page.locator('#f-issuer')
+  // OpenID Connect: an issuer
+  await expect(dlg.locator('label[for="f-issuer"]')).toContainText('Issuer URL')
+  // Google: nothing to enter but the client
+  await type.selectOption('google')
+  await expect(address).toBeHidden()
+  await expect(page.locator('#f-name')).toHaveAttribute('placeholder', 'Google')
+  await expect(dlg).toContainText('authorised redirect URI of your OAuth client in Google Cloud')
+  // GitHub: its own scopes
+  await type.selectOption('github')
+  await expect(page.locator('#f-scopes')).toHaveValue('read:user user:email')
+  // Auth0: a domain
+  await type.selectOption('auth0')
+  await expect(page.locator('#f-scopes')).toHaveValue('openid profile email')
+  await expect(dlg.locator('label[for="f-issuer"]')).toContainText('Auth0 domain')
+  // Microsoft: a directory; "organizations" asks for the allowed tenants
+  await type.selectOption('microsoft')
+  await expect(address).toBeHidden()
+  await page.locator('#f-tenant').fill('organizations')
+  await expect(dlg.getByRole('button', { name: 'Add tenant' })).toBeVisible()
+  await page.locator('#f-client_id').fill('ms-cid')
+  await page.locator('#f-client_secret').fill('ms-secret')
+  const name = uniq('MS')
+  await page.locator('#f-name').fill(name)
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(page.locator('#e-allowed_tenants')).toContainText('list the tenant IDs')
+  await dlg.getByRole('button', { name: 'Add tenant' }).click()
+  await expect(dlg.getByLabel('Tenant ID 1', { exact: true })).toBeFocused()
+  await page.keyboard.type('contoso')
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg.getByLabel('Tenant ID 1', { exact: true })).toHaveAttribute('aria-invalid', 'true')
+  await dlg.getByLabel('Tenant ID 1', { exact: true }).fill('72F988BF-86F1-41AF-91AB-2D7CD011DB47')
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const ms = (await apiCall(page, 'GET', `${API}/providers?q=${encodeURIComponent(name)}`)).items[0]
+  expect(ms.type).toBe('microsoft')
+  expect(ms.tenant).toBe('organizations')
+  expect(ms.allowed_tenants).toEqual(['72f988bf-86f1-41af-91ab-2d7cd011db47'])
+  await expect(page.getByRole('row', { name: new RegExp(name) })).toContainText('Microsoft')
+
+  // Auth0 with an empty button label gets the type's name; the domain becomes its issuer
+  await apiCall(page, 'DELETE', `${API}/providers/${ms.id}`)
+  await page.getByRole('button', { name: 'New provider' }).click()
+  await type.selectOption('auth0')
+  await address.fill('acme-' + Date.now() + '.eu.auth0.com')
+  await page.locator('#f-client_id').fill('a0-cid')
+  await page.locator('#f-client_secret').fill('a0-secret')
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const a0 = (await apiCall(page, 'GET', `${API}/providers?q=Auth0`)).items.find((p) => p.type === 'auth0')
+  expect(a0.name).toBe('Auth0')
+  expect(a0.issuer).toMatch(/^https:\/\/acme-\d+\.eu\.auth0\.com\/$/)
+  await apiCall(page, 'DELETE', `${API}/providers/${a0.id}`)
+})
+
+test('account: sign-in providers can be connected (after confirming it is you) and disconnected', async ({ page }) => {
+  await signIn(page, 'user')
+  let connected = false
+  await page.route('**/api/account/providers', (route) => route.request().method() === 'GET'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [
+      { id: 'p1', name: 'Acme SSO', type: 'oidc', connected, email: connected ? 'alan@acme.example' : '' }] }) })
+    : route.fallback())
+  let begins = 0
+  await page.route('**/api/account/providers/p1/connect', (route) => {
+    begins++
+    if (begins === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/account?provider=connected#providers' }) })
+  })
+  await page.route('**/api/account/reauth', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
+  await page.goto('/account', { waitUntil: 'load' })
+  await expect(page.locator('#providers')).toContainText('Acme SSO')
+  await expect(page.locator('#providers')).toContainText('Not connected')
+  await page.getByRole('button', { name: 'Connect Acme SSO' }).click()
+  const reauth = page.getByRole('dialog', { name: 'Confirm it is you' })
+  await expect(reauth).toBeVisible()
+  await reauth.locator('#f-ra_password').fill('stubbed')
+  connected = true
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.toasts')).toContainText('Provider connected.')
+  await expect(page.locator('#providers')).toContainText('alan@acme.example')
+  await expect(page).toHaveURL(/\/account#providers$/)
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+})
+
+test('clients: Require PKCE is on by default, can be turned off for a confidential client, and is hidden for public ones', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/tenants`, { waitUntil: 'load' })
+  const slug = uniq('pk')
+  const t = await apiCall(page, 'POST', `${API}/tenants`, { name: slug, display_name: 'PKCE ' + slug })
+  await page.goto(`${A}/tenants/${slug}`, { waitUntil: 'load' })
+  await page.getByRole('button', { name: 'New client' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New client' })
+  const pkce = dlg.getByRole('switch', { name: /Require PKCE/ })
+  await expect(pkce).toBeChecked()
+  await page.locator('#f-token_endpoint_auth_method').selectOption('none')
+  await expect(pkce).toBeHidden()
+  await page.locator('#f-token_endpoint_auth_method').selectOption('client_secret_basic')
+  await pkce.uncheck()
+  await page.locator('#f-name').fill('Legacy app')
+  await page.getByLabel('Redirect URI 1', { exact: true }).fill('https://legacy.example/cb')
+  await dlg.getByRole('button', { name: 'Create client' }).click()
+  await expect(page.getByRole('dialog', { name: 'Client created' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  const c = (await apiCall(page, 'GET', `${API}/clients?tenant=${t.id}`)).items[0]
+  expect(c.require_pkce).toBe(false)
+})

@@ -1,0 +1,279 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="stack-lg">
+  <div class="page-head">
+    <div>
+      <p class="eyebrow">{{with .Org}}{{.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Your account</h1>
+      <p class="page-sub">Your details, how you sign in, and where you are signed in.</p>
+    </div>
+  </div>
+
+  <!-- Profile ---------------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="profile" aria-labelledby="profile-h" x-data="accountProfile">
+    <h2 class="section-title mb-4" id="profile-h" tabindex="-1">Profile</h2>
+    <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <div class="alert alert-info mb-4" role="status" x-show="hasNotice" x-cloak>{{template "icon" "info"}}<span x-text="emailNotice"></span></div>
+    <dl class="kv mb-6">
+      <div><dt>Username</dt><dd x-text="info.username"></dd></div>
+      <div><dt>Organization</dt><dd x-text="info.org"></dd></div>
+      <div><dt>Role</dt><dd x-text="info.role"></dd></div>
+      <div><dt>Last sign-in</dt><dd x-text="info.lastLogin"></dd></div>
+      <template x-for="r in workRows" :key="r.key"><div><dt x-text="r.label"></dt><dd x-text="r.value"></dd></div></template>
+    </dl>
+    <p class="help mb-6" x-show="hasWork" x-cloak>Your work details are kept by your administrator.</p>
+    <form class="stack" @submit.prevent="save" novalidate>
+      <div class="field-row sm:grid-cols-2">
+        {{template "field" (dict "name" "given_name" "label" "First name" "required" true "autocomplete" "given-name")}}
+        {{template "field" (dict "name" "family_name" "label" "Last name" "autocomplete" "family-name")}}
+        <div class="field">
+          <label class="label" for="f-email-ro">Email address</label>
+          <input class="input input-static" id="f-email-ro" type="email" readonly :value="info.email" aria-describedby="h-email-ro">
+          <p class="help" id="h-email-ro">Set by your administrator. Ask them if it needs to change.</p>
+        </div>
+        {{template "combo-field" (dict "name" "locale" "label" "Language" "placeholder" "Type to search, such as English" "help" "Applications may use it to choose their language. Leave empty for none.")}}
+        {{template "combo-field" (dict "name" "zoneinfo" "label" "Time zone" "placeholder" "Type to search, such as London" "help" "Applications may use it to show dates and times.")}}
+        {{template "field" (dict "name" "phone_number" "label" "Phone number" "type" "tel" "autocomplete" "tel" "placeholder" "+44 20 7946 0958" "help" "Optional. A contact number for applications, with + and the country code. Never used to sign in.")}}
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <span :class="emailBadgeClass" x-show="hasEmailBadge" x-cloak x-text="emailBadge"></span>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="showVerify" x-cloak :disabled="verifyBusy" @click="sendVerification"><span x-text="verifyLabel">Send verification email</span></button>
+        </div>
+        <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save profile</span></button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Email addresses ----------------------------------------------------------------------------------- -->
+  {{template "emails-card" (dict "comp" "accountEmails" "id" "emails" "help" "Sign-ins from GitHub, Google and other providers that use one of your verified addresses find your account." "lockedHelp" "Your administrator adds and removes these. Verify each one from the link we email to it; a verified address can be made primary.")}}
+
+  <!-- Security --------------------------------------------------------------------------------------------- -->
+  <div class="stack-lg" id="security">
+
+    <section class="glass-card" aria-labelledby="signin-h">
+      <h3 class="section-title mb-2" id="signin-h">Password and Authenticator App</h3>
+      <ul class="setting-list">
+        <li class="setting-row" x-data="accountPassword">
+          <div class="setting-text">
+            <p class="setting-title"><span id="password-h">Password</span> <span :class="statusClass" x-text="statusText">Set</span></p>
+            <p class="muted" id="password-note" x-text="note">Changing your password signs you out of every other browser and device.</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="hasPassword" x-cloak aria-describedby="password-h" @click="open">Change…<span class="sr-only"> password</span></button>
+
+          {{template "dialog-start" (dict "id" "password-dialog" "title" "Change password" "size" "sm")}}
+          <form @submit.prevent="submit" novalidate>
+            <div class="dialog-body">
+              <p class="muted">Changing your password signs you out of every other browser and device.</p>
+              {{template "field" (dict "name" "pw_current" "label" "Current password" "type" "password" "required" true "autofocus" true "autocomplete" "current-password")}}
+              {{template "field" (dict "name" "pw_new" "label" "New password" "type" "password" "required" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
+              {{template "field" (dict "name" "pw_confirm" "label" "Confirm new password" "type" "password" "required" true "autocomplete" "new-password")}}
+            </div>
+            {{template "form-foot" (dict "label" "submitLabel" "default" "Change password")}}
+          </form>
+          {{template "dialog-end"}}
+        </li>
+
+        <li class="setting-row" x-data="accountTotp">
+          <div class="setting-text">
+            <p class="setting-title"><span id="totp-h">Authenticator App</span> <span :class="statusClass" x-text="statusText">Off</span></p>
+            <p class="muted">Ask for a 6-digit code from an app such as 1Password, Authy or Google Authenticator when you sign in with a password.</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="notEnabled" x-cloak :aria-busy="busyAttr" :disabled="busy" aria-describedby="totp-h" @click="begin">Set up…<span class="sr-only"> Authenticator App</span></button>
+          <div class="flex flex-wrap gap-2" x-show="enabled" x-cloak>
+            <button type="button" class="btn btn-secondary btn-sm" :aria-busy="busyAttr" :disabled="busy" aria-describedby="totp-h" @click="beginAgain">Set up again…<span class="sr-only"> Authenticator App</span></button>
+            <button type="button" class="btn btn-secondary btn-sm" aria-describedby="totp-h" @click="startRemove">Remove…<span class="sr-only"> Authenticator App</span></button>
+          </div>
+
+          {{template "dialog-start" (dict "id" "totp-dialog" "title" "Set up Authenticator App" "titleBind" "dialogTitle" "size" "sm")}}
+          <form @submit.prevent="confirm" novalidate>
+            <div class="dialog-body">
+              <p>Scan this QR code with your Authenticator App. If you cannot scan it, enter the key by hand.</p>
+              <p class="muted" x-show="replacing" x-cloak>Scan it on every phone you want to use, including the one you use now. Your current set-up stops working when you confirm.</p>
+              <img class="qr-frame" :src="qr" alt="QR code for your Authenticator App. If you cannot scan it, use the key shown below." width="200" height="200">
+              <div class="code-box" x-data="copyFrom"><code id="totp-secret" aria-label="Setup key" x-text="secret"></code>
+                <button type="button" class="btn btn-secondary btn-sm" data-source="totp-secret" data-what="key" @click="copy"><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+              {{template "otp-field" (dict "name" "totp_code" "label" "Code from the app" "autofocus" true)}}
+            </div>
+            {{template "form-foot" (dict "label" "confirmLabel" "default" "Turn on")}}
+          </form>
+          {{template "dialog-end"}}
+        </li>
+      </ul>
+    </section>
+
+    <section class="glass-card" aria-labelledby="passkeys-h" x-data="accountPasskeys">
+      <div class="card-head">
+        <div>
+          <h3 class="section-title" id="passkeys-h">Passkeys</h3>
+          <p class="muted">Sign in with your fingerprint, face or device PIN instead of a password.</p>
+        </div>
+        <button type="button" class="btn btn-primary" x-show="canAdd" x-cloak @click="openAdd">{{template "icon" "plus"}} Add passkey</button>
+      </div>
+      <div class="alert alert-warning mb-4" x-show="showUnavailable" x-cloak>{{template "icon" "info"}}<span x-text="unavailableText"></span></div>
+      <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+      <p class="muted" x-show="isEmpty" x-cloak>You have not added a passkey yet.</p>
+      <div class="alert alert-warning mb-4" role="status" x-show="hasProblems" x-cloak>{{template "icon" "alert"}}<span x-text="problemsText"></span></div>
+      <div class="table-wrap" role="region" aria-label="Your passkeys" tabindex="0" x-show="hasItems" x-cloak>
+        <table class="table">
+          <caption class="sr-only">Your passkeys</caption>
+          <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Added</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            <template x-for="row in items" :key="row.id"><tr>
+              <th scope="row" class="cell-title"><span x-text="row.name"></span> <span class="badge badge-warning" x-show="row.problemText" x-text="row.problemText"></span></th>
+              <td x-text="row.kind"></td>
+              <td x-text="row.createdText"></td>
+              <td x-text="row.lastText"></td>
+              <td class="actions">
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.renameLabel" :data-id="row.id" @click="openRename">{{template "icon" "pencil"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+              </td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+
+      {{template "dialog-start" (dict "id" "add-passkey-dialog" "title" "Add a passkey" "size" "sm")}}
+      <form @submit.prevent="add" novalidate>
+        <div class="dialog-body">
+          <p>Give this passkey a name so you can recognise it later, then your device will ask you to confirm.</p>
+          {{template "field" (dict "name" "pk_name" "label" "Name" "required" true "autofocus" true "autocomplete" "off" "help" "For example “Work laptop” or “Phone”.")}}
+        </div>
+        {{template "form-foot" (dict "label" "addLabel" "default" "Add passkey")}}
+      </form>
+      {{template "dialog-end"}}
+
+      {{template "dialog-start" (dict "id" "rename-passkey-dialog" "title" "Rename passkey" "size" "sm")}}
+      <form @submit.prevent="rename" novalidate>
+        <div class="dialog-body">
+          {{template "field" (dict "name" "rn_name" "label" "Name" "required" true "autofocus" true "autocomplete" "off")}}
+        </div>
+        {{template "form-foot" (dict "label" "renameSubmitLabel" "default" "Save name")}}
+      </form>
+      {{template "dialog-end"}}
+    </section>
+  </div>
+
+  <!-- Sessions --------------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="sessions" aria-labelledby="sessions-h" x-data="accountSessions">
+    <div class="card-head">
+      <div>
+        <h2 class="section-title" id="sessions-h" tabindex="-1">Sessions</h2>
+        <p class="muted">Browsers and devices where you are signed in.</p>
+      </div>
+      <button type="button" class="btn btn-secondary" x-show="hasOthers" x-cloak @click="revokeOthers">{{template "icon" "logout"}} Sign out all other sessions</button>
+    </div>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <div class="table-wrap" role="region" aria-label="Your sessions" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Your sessions</caption>
+        <thead><tr><th scope="col">Device</th><th scope="col">Address</th><th scope="col">Signed in with</th><th scope="col">Last active</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row"><span class="cell-title" x-text="row.agent"></span> <span class="badge badge-success ml-1" x-show="row.current">This session</span><div class="cell-sub" x-text="row.createdText"></div></th>
+            <td class="mono" x-text="row.ip"></td>
+            <td x-text="row.methods"></td>
+            <td x-text="row.lastText"></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.notCurrent" :aria-label="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "logout"}}</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- API tokens ------------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="tokens" aria-labelledby="tokens-h" x-data="accountTokens">
+    <div class="card-head">
+      <div>
+        <h2 class="section-title" id="tokens-h" tabindex="-1">API tokens</h2>
+        <p class="muted">Personal tokens for scripts and your own applications. A token never has more access than you do.</p>
+      </div>
+      <button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New token</button>
+    </div>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <p class="muted" x-show="isEmpty" x-cloak>You have no API tokens.</p>
+    <div class="table-wrap" role="region" aria-label="Your API tokens" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Your API tokens</caption>
+        <thead><tr><th scope="col">Name</th><th scope="col">Access</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row" class="cell-title" x-text="row.name"></th>
+            <td x-text="row.scopesText"></td>
+            <td x-text="row.expiresText"></td>
+            <td x-text="row.lastText"></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+
+    {{template "dialog-start" (dict "id" "token-dialog" "title" "New API token" "size" "sm")}}
+    <form @submit.prevent="create" novalidate>
+      <div class="dialog-body">
+        {{template "field" (dict "name" "tk_name" "label" "Name" "required" true "autofocus" true "autocomplete" "off" "help" "What the token is for, for example “Deploy script”.")}}
+        <fieldset class="fieldset" aria-describedby="e-tk_scopes">
+          <legend>Access</legend>
+          <template x-for="c in scopeChoices" :key="c.value"><label class="check"><input class="checkbox" type="checkbox" x-model="form.tk_scopes" :value="c.value"><span class="check-text" x-text="c.label"></span></label></template>
+          <p class="field-error" id="e-tk_scopes" x-text="errors.tk_scopes"></p>
+        </fieldset>
+        {{template "field" (dict "name" "tk_expires_days" "label" "Expires after (days)" "type" "number" "inputmode" "numeric" "helpBind" "expiryHelp" "help" " ")}}
+      </div>
+      {{template "form-foot" (dict "label" "submitLabel" "default" "Create token")}}
+    </form>
+    {{template "dialog-end"}}
+
+    {{template "dialog-start" (dict "id" "token-secret-dialog" "title" "Your new token" "size" "sm")}}
+    <div class="dialog-body">
+      <div class="alert alert-warning">{{template "icon" "alert"}}<span>This is the only time the token is shown. Copy it now and keep it somewhere safe.</span></div>
+      <div class="code-box" x-data="copyFrom"><code id="new-token" x-text="created"></code>
+        <button type="button" class="btn btn-secondary btn-sm" data-source="new-token" data-what="token" @click="copy" data-autofocus><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+    </div>
+    <div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">Done</button></div>
+    {{template "dialog-end"}}
+  </section>
+
+  <!-- Connected apps --------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="providers" aria-labelledby="providers-h" x-data="accountProviders" x-show="hasProviders" x-cloak>
+    <h2 class="section-title mb-1" id="providers-h" tabindex="-1">Sign-in providers</h2>
+    <p class="muted mb-4">Sign in with an account you already have elsewhere. Connecting or disconnecting one asks you to confirm it is you.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <ul class="setting-list" aria-label="Sign-in providers">
+      <template x-for="row in items" :key="row.id"><li class="setting-row">
+        <div class="setting-text">
+          <p class="setting-title"><span x-text="row.name"></span> <span :class="row.badgeClass" x-text="row.badgeText"></span></p>
+          <p class="cell-sub" x-show="row.email" x-text="row.email"></p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="btn btn-secondary btn-sm" x-show="row.canConnect" :data-id="row.id" :disabled="busy" @click="connect">Connect<span class="sr-only" x-text="row.forName"></span></button>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="row.connected" :data-id="row.id" :disabled="busy" @click="disconnect">Disconnect<span class="sr-only" x-text="row.forName"></span></button>
+        </div>
+      </li></template>
+    </ul>
+  </section>
+
+  <section class="glass-card" id="apps" aria-labelledby="apps-h" x-data="accountApps">
+    <h2 class="section-title mb-1" id="apps-h" tabindex="-1">Connected apps</h2>
+    <p class="muted mb-4">Applications you have allowed to sign you in. Removing access ends their refresh tokens.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <p class="muted" x-show="isEmpty" x-cloak>No applications are connected to your account.</p>
+    <div class="table-wrap" role="region" aria-label="Connected apps" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Connected apps</caption>
+        <thead><tr><th scope="col">Application</th><th scope="col">Access</th><th scope="col">Connected</th><th scope="col">Last active</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row" class="cell-title" x-text="row.name"></th>
+            <td x-text="row.scopesText"></td>
+            <td x-text="row.sinceText"></td>
+            <td x-text="row.lastText"></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {{template "reauth-dialog" (dict "org" .Org.Name "next" "/account")}}
+</div>
+{{end}}

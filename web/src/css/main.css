@@ -1,0 +1,12 @@
+/* quisora design system: Tailwind v4 (CSS-first) + a liquid-glass component layer.
+   Files: tokens.css (themes), glass.css (surfaces), components.css (controls), layout.css (shell). */
+@import "tailwindcss";
+@source "../../templates";
+@source "../js";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@import "./tokens.css";
+@import "./glass.css";
+@import "./components.css";
+@import "./layout.css";

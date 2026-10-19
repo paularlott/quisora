@@ -1,0 +1,451 @@
+package oidc
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
+)
+
+// userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
+var userScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"}
+
+// codeData is what an authorization code stands for (kept in ephemeral state, single use).
+type codeData struct {
+	ClientID    string   `json:"c"`
+	RedirectURI string   `json:"r"`
+	Challenge   string   `json:"cc"`
+	Nonce       string   `json:"n,omitempty"`
+	SessionID   string   `json:"s"`
+	UserID      string   `json:"u"`
+	OrgID       string   `json:"o"`
+	AuthTime    int64    `json:"at"`
+	AMR         []string `json:"amr"`
+	Scopes      []string `json:"sc"`
+	Resources   []string `json:"res,omitempty"`
+	ClaimsUI    []string `json:"cu,omitempty"`
+	ClaimsID    []string `json:"ci,omitempty"`
+}
+
+func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	p.corsActual(w, r)
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))
+		return
+	}
+	if dup := repeated(r.Form); dup != "" {
+		writeOAuthError(w, oerr("invalid_request", dup+" is repeated"))
+		return
+	}
+	ce, e := p.authenticateClient(r, true)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
+	p.corsRestrict(w, r, ce.c.ID)
+	gt := r.PostForm.Get("grant_type")
+	switch gt {
+	case "authorization_code", "refresh_token", "client_credentials":
+	default:
+		writeOAuthError(w, oerr("unsupported_grant_type", "unsupported grant_type"))
+		return
+	}
+	if !slices.Contains(ce.c.GrantTypes, gt) || (gt == "client_credentials" && ce.c.Public()) {
+		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
+		return
+	}
+	var (
+		tr *tokenResponse
+		oe *oauthError
+	)
+	switch gt {
+	case "authorization_code":
+		tr, oe = p.exchangeCode(r.Context(), ce.c, r.PostForm.Get("code"), r.PostForm.Get("redirect_uri"),
+			r.PostForm.Get("code_verifier"), r.PostForm["resource"])
+	case "refresh_token":
+		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"])
+	default:
+		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"])
+	}
+	if oe != nil {
+		writeOAuthError(w, oe)
+		return
+	}
+	writeTokens(w, tr)
+}
+
+func serverError(err error) *oauthError {
+	if errors.Is(err, store.ErrNotWritable) || errors.Is(err, store.ErrUnconfirmed) {
+		// This node cannot write now (cut off from the majority of its cluster, within the grace that keeps the
+		// token endpoint answering what needs no write): the client retries, here or elsewhere.
+		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
+			desc: "this server cannot make changes now; try again shortly"}
+	}
+	return &oauthError{status: http.StatusInternalServerError, code: "server_error", desc: "temporary failure (" + errString(err) + ")"}
+}
+
+func errString(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "internal"
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// authorization_code
+
+var verifierOK = func() [256]bool {
+	var t [256]bool
+	for _, c := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~" {
+		t[c] = true
+	}
+	return t
+}()
+
+// pkceOK checks an RFC 7636 S256 code_verifier against the stored challenge.
+func pkceOK(verifier, challenge string) bool {
+	if len(verifier) < 43 || len(verifier) > 128 {
+		return false
+	}
+	for i := 0; i < len(verifier); i++ {
+		if !verifierOK[verifier[i]] {
+			return false
+		}
+	}
+	h := sha256.Sum256([]byte(verifier))
+	return subtle.ConstantTimeCompare([]byte(b64.EncodeToString(h[:])), []byte(challenge)) == 1
+}
+
+func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource []string) (*tokenResponse, *oauthError) {
+	if code == "" || len(code) > 200 {
+		return nil, oerr("invalid_request", "code is required")
+	}
+	raw, err := p.s.Eph.Take(ctx, nsCode, code)
+	if err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) {
+			// A code presented twice: everything issued from the first use must die (RFC 6749 §4.1.2).
+			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
+				p.revokeGrant(ctx, string(gid))
+				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid))
+			}
+			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
+		}
+		return nil, serverError(err)
+	}
+	var cd codeData
+	if json.Unmarshal(raw, &cd) != nil || cd.ClientID != c.ID {
+		return nil, oerr("invalid_grant", "the authorization code was not issued to this client")
+	}
+	if redirectURI != cd.RedirectURI {
+		return nil, oerr("invalid_grant", "redirect_uri does not match the authorization request")
+	}
+	// A code issued with a challenge needs its verifier; one issued without (a confidential client allowed to omit
+	// PKCE) must not be given one: a verifier there means the request was tampered with.
+	if cd.Challenge == "" {
+		if verifier != "" || c.RequirePKCE() {
+			return nil, oerr("invalid_grant", "PKCE verification failed")
+		}
+	} else if !pkceOK(verifier, cd.Challenge) {
+		return nil, oerr("invalid_grant", "PKCE verification failed")
+	}
+	res, err := parseResources(resource)
+	if err != nil {
+		return nil, oerr("invalid_target", err.Error())
+	}
+	// RFC 8707 §2.2: the exchange may name the resources the user authorized, or fewer; never others — and none at
+	// all when the authorization request named none (the user never saw them).
+	if len(res) == 0 {
+		res = cd.Resources
+	} else if !subset(res, cd.Resources) {
+		return nil, oerr("invalid_target", "resource was not part of the authorization request")
+	}
+	u, err := p.user(ctx, cd.UserID)
+	if err != nil || !u.Enabled(time.Now()) || u.OrgID != cd.OrgID {
+		return nil, oerr("invalid_grant", "the user is no longer active")
+	}
+	if s, err := p.svc.Sessions.Get(ctx, cd.SessionID); err != nil || !s.Valid(time.Now()) {
+		return nil, oerr("invalid_grant", "the user's session has ended")
+	}
+	org, err := p.org(ctx, cd.OrgID)
+	if err != nil {
+		return nil, oerr("invalid_grant", "the organization no longer exists")
+	}
+	// Access is checked again: it may have been taken away (or expired) since the user was sent back with the code.
+	app, err := p.appAccess(ctx, c, nil, u)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	if !app.Allowed {
+		return nil, oerr("invalid_grant", errNoAccess.Error())
+	}
+	now := time.Now().UTC()
+	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
+		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce, Secret: secure.RandomBytes(32),
+		Expires: now.Add(p.cfg.Tokens.Refresh())}
+	if err := p.svc.Grants.Create(ctx, g); err != nil {
+		return nil, serverError(err)
+	}
+	_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(g.ID), usedTTL)
+	if c.BackchannelURI != "" {
+		p.noteSessionClient(ctx, cd.SessionID, c.ID)
+	}
+	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
+		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID}
+	tr, err := p.mint(ctx, is, true)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	if slices.Contains(c.GrantTypes, "refresh_token") {
+		tr.refresh = p.refreshToken(g, c.RotateRefresh || c.Public())
+	}
+	return tr, nil
+}
+
+// grantLive: a grant made without the offline_access scope lasts only as long as the user's browser session (OIDC
+// Core §11: refreshing while the user is away needs offline_access); with it, it outlives the session's expiry.
+// Either way, ending the session (sign-out, revocation) deletes the grant.
+func (p *Provider) grantLive(ctx context.Context, g *model.Grant) bool {
+	if slices.Contains(g.Scopes, "offline_access") {
+		return true
+	}
+	s, err := p.svc.Sessions.Get(ctx, g.SessionID)
+	return err == nil && s.Valid(time.Now())
+}
+
+// revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it.
+func (p *Provider) revokeGrant(ctx context.Context, id string) {
+	p.grants.put(id, false)
+	if err := p.svc.Grants.Delete(service.Durable(context.WithoutCancel(ctx)), id); err != nil {
+		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// refresh_token
+
+// Refresh token formats:
+//
+//	default:        <grantID>.<base64url(key)>                    pure read, never changes
+//	RotateRefresh:  <grantID>.<counter>.<base64url(HMAC(key, grantID, counter))>
+//
+// where key = HMAC(master-derived key, grantID, grant.Secret). The stored grant secret is only a seed: a copy of the
+// database without the master key cannot produce or recognise a refresh token.
+func (p *Provider) refreshToken(g *model.Grant, rotate bool) string {
+	if !rotate {
+		return g.ID + "." + b64.EncodeToString(p.grantKey(g))
+	}
+	return p.counterToken(g)
+}
+
+// grantKey is the grant's refresh token key (see refreshToken).
+func (p *Provider) grantKey(g *model.Grant) []byte {
+	return p.svc.RefreshKey(g.ID, g.Secret)
+}
+
+func (p *Provider) counterToken(g *model.Grant) string {
+	c := strconv.FormatUint(g.Counter, 10)
+	return g.ID + "." + c + "." + b64.EncodeToString(secure.MAC(p.grantKey(g), g.ID, c))
+}
+
+// parsedRefresh is a refresh token split into its parts.
+type parsedRefresh struct {
+	gid     string
+	secret  []byte // static format
+	counter uint64 // counter format
+	mac     []byte
+	counted bool
+}
+
+func parseRefresh(tok string) (parsedRefresh, bool) {
+	var pr parsedRefresh
+	i := strings.IndexByte(tok, '.')
+	if i <= 0 || len(tok) > 300 {
+		return pr, false
+	}
+	pr.gid = tok[:i]
+	rest := tok[i+1:]
+	if j := strings.IndexByte(rest, '.'); j >= 0 {
+		c, err := strconv.ParseUint(rest[:j], 10, 64)
+		if err != nil {
+			return pr, false
+		}
+		mac, err := b64strict.DecodeString(rest[j+1:])
+		if err != nil {
+			return pr, false
+		}
+		pr.counted, pr.counter, pr.mac = true, c, mac
+		return pr, true
+	}
+	sec, err := b64strict.DecodeString(rest)
+	if err != nil {
+		return pr, false
+	}
+	pr.secret = sec
+	return pr, true
+}
+
+// authentic verifies the token's secret or MAC against the grant (nothing about counters yet).
+func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) bool {
+	if len(g.Secret) == 0 {
+		return false
+	}
+	key := p.grantKey(g)
+	if pr.counted {
+		return hmac.Equal(secure.MAC(key, g.ID, strconv.FormatUint(pr.counter, 10)), pr.mac)
+	}
+	return subtle.ConstantTimeCompare(pr.secret, key) == 1
+}
+
+func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string) (*tokenResponse, *oauthError) {
+	invalid := oerr("invalid_grant", "the refresh token is invalid, expired or revoked")
+	pr, ok := parseRefresh(token)
+	if !ok {
+		return nil, invalid
+	}
+	g, err := p.svc.Grants.Get(ctx, pr.gid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, invalid
+		}
+		return nil, serverError(err)
+	}
+	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !p.authentic(pr, g) || !p.grantLive(ctx, g) {
+		return nil, invalid
+	}
+	// Authentic token for this client. A static token only works while the grant has never rotated.
+	if !pr.counted && g.Counter != 0 {
+		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
+			p.revokeGrant(ctx, g.ID)
+			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
+		}
+		return nil, invalid
+	}
+	u, err := p.user(ctx, g.UserID)
+	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID {
+		return nil, invalid
+	}
+	org, err := p.org(ctx, g.OrgID)
+	if err != nil {
+		return nil, invalid
+	}
+	// Access that was taken away or has expired ends the application's refresh tokens.
+	app, err := p.appAccess(ctx, c, nil, u)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	if !app.Allowed {
+		return nil, oerr("invalid_grant", errNoAccess.Error())
+	}
+	// Scopes the grant still carries and the client may still use.
+	granted := make([]string, 0, len(g.Scopes))
+	for _, s := range g.Scopes {
+		if slices.Contains(c.Scopes, s) {
+			granted = append(granted, s)
+		}
+	}
+	scopes := granted
+	if scope != "" {
+		scopes = dedupe(splitScope(scope))
+		if !subset(scopes, granted) {
+			return nil, oerr("invalid_scope", "the requested scope exceeds the original grant")
+		}
+	}
+	res, err := parseResources(resource)
+	if err != nil {
+		return nil, oerr("invalid_target", err.Error())
+	}
+	// RFC 8707 §2.2: a refresh may ask for the resources the user authorized, or fewer, never others; and never one
+	// the client is no longer registered for.
+	if len(res) == 0 {
+		res = slices.DeleteFunc(slices.Clone(g.Resources), func(r string) bool { return !slices.Contains(c.Resources, r) })
+	} else if !subset(res, g.Resources) || !subset(res, c.Resources) {
+		return nil, oerr("invalid_target", "resource was not part of the authorization")
+	}
+	var newRefresh string
+	switch {
+	case c.RotateRefresh || c.Public():
+		if pr.counted && pr.counter != g.Counter {
+			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
+				p.revokeGrant(ctx, g.ID)
+				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
+			}
+			return nil, invalid
+		}
+		g.Counter++
+		if err := p.svc.Grants.Update(ctx, g); err != nil {
+			if errors.Is(err, store.ErrStale) { // lost a race with another presentation of the same token
+				if fresh, ferr := p.svc.Grants.Get(ctx, g.ID); ferr == nil && fresh.Counter > pr.counter {
+					p.revokeGrant(ctx, g.ID)
+					p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID)
+				}
+				return nil, invalid
+			}
+			return nil, serverError(err)
+		}
+		newRefresh = p.counterToken(g)
+	case pr.counted && pr.counter != g.Counter:
+		return nil, invalid
+	}
+	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
+		authTime: g.AuthTime, amr: g.AMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
+		claimsID: allowedClaims(g.ClaimsID, c.Scopes)}
+	tr, err := p.mint(ctx, is, true)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	tr.refresh = newRefresh
+	return tr, nil
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// client_credentials
+
+func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource []string) (*tokenResponse, *oauthError) {
+	allowed := make([]string, 0, len(c.Scopes)+1)
+	for _, s := range c.Scopes {
+		if !slices.Contains(userScopes, s) {
+			allowed = append(allowed, s)
+		}
+	}
+	if c.SCIM && !slices.Contains(allowed, service.ScopeSCIM) {
+		allowed = append(allowed, service.ScopeSCIM)
+	}
+	scopes := allowed
+	if scope != "" {
+		scopes = dedupe(splitScope(scope))
+		if !subset(scopes, allowed) {
+			return nil, oerr("invalid_scope", "the requested scope is not available to this client")
+		}
+	}
+	res, err := parseResources(resource)
+	if err != nil {
+		return nil, oerr("invalid_target", err.Error())
+	}
+	if !subset(res, c.Resources) {
+		return nil, oerr("invalid_target", "the resource is not registered for this client")
+	}
+	org, err := p.org(ctx, c.OrgID)
+	if err != nil {
+		return nil, oerr("invalid_client", "the client's organization no longer exists")
+	}
+	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res}, false)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	return tr, nil
+}

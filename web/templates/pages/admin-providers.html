@@ -1,0 +1,95 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminProviders" data-api="{{.Data.API}}/providers" data-base="{{.Data.API}}" data-public="{{.Site.PublicURL}}" data-sort="name" data-noun="providers" data-live="provider" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Org.DisplayName}}</p>
+      <h1 class="page-title">Providers</h1>
+      <p class="page-sub">Let people sign in with an existing account from another identity provider. Providers belong to this organization only; <a href="{{.Data.Base}}/tenants">tenants</a> choose which of them their applications offer.</p>
+    </div>
+    <div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New provider</button></div>
+  </div>
+
+  <section class="glass-card" aria-label="Providers list">
+    <div class="toolbar mb-4">{{template "search" (dict "label" "Search providers" "placeholder" "Search providers")}}</div>
+    <div class="table-wrap" role="region" aria-label="Providers table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+      <table class="table">
+        <caption class="sr-only">Providers</caption>
+        <thead><tr>
+          {{template "sort-th" (dict "key" "name" "label" "Provider")}}
+          {{template "sort-th" (dict "key" "type" "label" "Type")}}
+          <th scope="col">Allowed domains</th>
+          <th scope="col">Status</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <td><div class="cell-title" x-text="row.name"></div><div class="cell-sub" x-text="row.sub"></div>
+              <div class="cell-sub copy-id"><span class="sr-only">Callback URL: </span><code class="mono" x-text="row.callback_url"></code>{{template "copy-row" (dict "value" "callback_url" "what" "callback URL" "label" "copyCallbackLabel")}}</div></td>
+            <td x-text="row.typeText"></td>
+            <td><div x-text="row.domainsText"></div><div class="cell-sub" x-text="row.provisionText"></div></td>
+            <td><span :class="row.statusClass" x-text="row.statusText"></span></td>
+            <td class="actions">
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+            </td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    {{template "skeleton"}}
+    {{template "empty" (dict "icon" "link" "title" "No sign-in providers" "text" "Connect an OpenID Connect provider or GitHub so people can use the account they already have.")}}
+    {{template "pager"}}
+  </section>
+
+  {{template "dialog-start" (dict "id" "provider-dialog" "title" "Provider" "titleBind" "dialogTitle" "size" "lg")}}
+  <form @submit.prevent="submit" novalidate>
+    <div class="dialog-body">
+      {{template "edit-notice"}}
+      <div class="field">
+        <p class="label" id="callback-url-l">Callback URL</p>
+        <div class="code-box" x-data="copyFrom"><code id="callback-url-dlg" x-text="callbackUrl"></code>
+          <button type="button" class="btn btn-secondary btn-sm" data-source="callback-url-dlg" data-what="callback URL" aria-describedby="callback-url-l" @click="copy">
+            <span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+        <p class="help" x-text="callbackHelp">Register this address with the provider. Each provider has its own.</p>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label" for="f-type">Type</label>
+          <select class="select" id="f-type" name="type" x-model="form.type" @change="typeChanged" aria-describedby="e-type" :aria-invalid="invalid.type"><option value="oidc">OpenID Connect</option><option value="google">Google</option><option value="microsoft">Microsoft (Entra ID)</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="auth0">Auth0</option></select>
+          <p class="field-error" id="e-type" x-text="errors.type"></p>
+        </div>
+        {{template "field" (dict "name" "name" "label" "Button label" "autofocus" true "autocomplete" "off" "placeholderBind" "namePlaceholder" "help" " " "helpBind" "nameHelp")}}
+      </div>
+      <div class="field" x-show="hasAddress" x-cloak>
+        <label class="label" for="f-issuer"><span x-text="addressLabel">Issuer URL</span> <span class="req" aria-hidden="true" x-show="addressRequired">*</span></label>
+        <input class="input" id="f-issuer" name="issuer" type="text" inputmode="url" autocomplete="off" spellcheck="false" x-model="form.issuer" :placeholder="addressPlaceholder" :aria-required="addressRequiredAttr" :aria-invalid="invalid.issuer" aria-describedby="e-issuer h-issuer">
+        <p class="help" id="h-issuer" x-text="addressHelp"></p>
+        <p class="field-error" id="e-issuer" x-text="errors.issuer"></p>
+      </div>
+      <div class="stack" x-show="isMicrosoft" x-cloak>
+        {{template "field" (dict "name" "tenant" "label" "Directory (tenant)" "required" true "autocomplete" "off" "placeholder" "72f988bf-86f1-41af-91ab-2d7cd011db47" "help" "Your directory (tenant) ID. Or organizations, to let users of several directories sign in: list them below.")}}
+        {{template "list-field" (dict "name" "allowed_tenants" "label" "Allowed tenants" "item" "Tenant ID" "add" "Add tenant" "mono" true "optional" true "show" "multiTenant" "placeholder" "72f988bf-86f1-41af-91ab-2d7cd011db47" "help" "The directories whose users may sign in. Personal Microsoft accounts are not supported.")}}
+        <p class="help">Microsoft's email claim is set by each directory's administrators, so an address counts as verified (for linking existing users) only when Microsoft vouches for its domain: add the optional claim <code>xms_edov</code> to the app registration's ID token.</p>
+      </div>
+      <div class="field-row">
+        {{template "field" (dict "name" "client_id" "label" "Client ID" "required" true "autocomplete" "off")}}
+        <div class="field">
+          <label class="label" for="f-client_secret">Client secret <span class="req" aria-hidden="true" x-show="secretRequired">*</span></label>
+          <input class="input" id="f-client_secret" name="client_secret" type="password" autocomplete="new-password" x-model="form.client_secret" :aria-invalid="invalid.client_secret" aria-describedby="e-client_secret h-client_secret">
+          <p class="help" id="h-client_secret" x-text="secretHelp"></p>
+          <p class="field-error" id="e-client_secret" x-text="errors.client_secret"></p>
+        </div>
+      </div>
+      {{template "field" (dict "name" "scopes" "label" "Scopes" "autocomplete" "off" "help" "Space separated.")}}
+      {{template "list-field" (dict "name" "allowed_domains" "label" "Allowed email domains" "item" "Domain" "add" "Add domain" "mono" true "optional" true "placeholder" "example.com" "help" "Optional. With none, any email address may sign in this way; add domains to allow only addresses at them.")}}
+      {{template "check-field" (dict "name" "auto_provision" "label" "Create accounts automatically" "switch" true "help" "People who sign in for the first time get an account. Otherwise only existing users can.")}}
+      {{template "check-field" (dict "name" "link_by_email" "label" "Link existing users by verified email" "switch" true "help" "On a person's first sign-in, match them to the one existing user whose verified email address (primary or linked) the provider also reports as verified.")}}
+      {{template "check-field" (dict "name" "trust_mfa" "label" "Sign-in through this provider counts as a second factor" "switch" true "help" "Turn on only when the provider itself asks everyone for a second factor. Quisora then asks plain users for none after this provider, even where one is required; managers and administrators always give their own. Only a super admin can change this. Off: the user's own second factor follows when one is required.")}}
+      {{template "check-field" (dict "name" "enabled" "label" "Provider is enabled" "switch" true)}}
+    </div>
+    {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}
+  </form>
+  {{template "dialog-end"}}
+</div>
+{{end}}

@@ -1,0 +1,9 @@
+{{template "auth" .}}{{define "content"}}
+<h1 class="page-title">Continue</h1>
+<form method="post" action="{{.Data.Action}}" x-data="oauthAutoPost">
+  {{range .Data.Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{end}}
+  <noscript><p>JavaScript is turned off. Press the button to return to the application.</p></noscript>
+  <button type="submit" class="btn btn-primary">Continue</button>
+</form>
+{{end}}

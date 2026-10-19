@@ -1,0 +1,149 @@
+{{/* Form controls bound to the page component's form/errors/invalid state (see lib/form.js). Every control has
+     id f-<name>; its error element e-<name> is always present and referenced by aria-describedby. */}}
+{{define "field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="f-{{.name}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>
+  <input class="input" id="f-{{.name}}" name="{{.name}}" type="{{if .type}}{{.type}}{{else}}text{{end}}" x-model="form.{{.name}}" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}"{{if .required}} aria-required="true"{{end}}{{with .autocomplete}} autocomplete="{{.}}"{{end}}{{with .placeholder}} placeholder="{{.}}"{{end}}{{with .placeholderBind}} :placeholder="{{.}}"{{end}}{{with .inputmode}} inputmode="{{.}}"{{end}}{{if .autofocus}} data-autofocus{{end}} spellcheck="false">
+  {{with .help}}<p class="help" id="h-{{$.name}}"{{with $.helpBind}} x-text="{{.}}"{{end}}>{{.}}</p>{{end}}
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{define "textarea-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="f-{{.name}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>
+  <textarea class="textarea input" id="f-{{.name}}" name="{{.name}}" rows="{{if .rows}}{{.rows}}{{else}}3{{end}}" x-model="form.{{.name}}" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}"{{with .placeholder}} placeholder="{{.}}"{{end}} spellcheck="false"></textarea>
+  {{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{/* "options" is a slice of structs/maps with Value and Label. */}}
+{{define "select-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="f-{{.name}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>
+  <select class="select" id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}}{{if or .help .helpBind}} h-{{.name}}{{end}}"{{if .onchange}} @change="{{.onchange}}"{{end}}>
+    {{range .options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+  </select>
+  {{if .helpBind}}<p class="help" id="h-{{.name}}" x-text="{{.helpBind}}"></p>{{else}}{{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}{{end}}
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{/* A checkbox; with "switch" true it renders as a glass switch (role=switch). "class" adds to the field's classes
+   (field-beside: lined up with the input of the field next to it in a field-row). */}}
+{{define "check-field"}}<div class="field{{with .class}} {{.}}{{end}}"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="check" for="f-{{.name}}">
+    <input type="checkbox"{{if .switch}} role="switch" class="switch"{{else}} class="checkbox"{{end}} id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}">
+    <span class="check-text">{{.label}}{{with .help}}<span class="help" id="h-{{$.name}}">{{.}}</span>{{end}}</span>
+  </label>
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{/* Tag editor (see lib/tags.js): chips for form.tags plus an input (#f-tags); the page component mixes in tagsMixin(). */}}
+{{define "tag-field"}}{{$n := or .name "tags"}}{{$noun := or .noun "tag"}}<div class="field" role="group" aria-labelledby="l-{{$n}}" data-chips="{{$n}}" data-noun="{{$noun}}">
+  <label class="label" id="l-{{$n}}" for="f-{{$n}}">{{or .label "Tags"}}</label>
+  <div class="tag-field" @click="clickTagField">
+    <ul class="tag-list" aria-label="Current {{$noun}}s" x-show="hasChips.{{$n}}" x-cloak>
+      <template x-for="t in chips.{{$n}}" :key="t.value"><li class="tag-chip"><span class="tag-chip-text" x-text="t.value"></span><button type="button" class="tag-chip-x" :aria-label="t.removeLabel" :data-tag="t.value" @click="removeTag">{{template "icon" "x"}}</button></li></template>
+    </ul>
+    <input class="tag-input" id="f-{{$n}}" name="{{$n}}" type="text" x-model="chipText.{{$n}}" @keydown="onTagKey" @input="onTagInput" @blur="onTagBlur" :aria-invalid="invalid.{{$n}}" aria-describedby="e-{{$n}} h-{{$n}}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a {{$noun}}">
+  </div>
+  <p class="help" id="h-{{$n}}">{{.help}} Type a {{$noun}} and press Enter, comma or space to add it; Backspace removes the last one. Letters, digits and . _ : / - only{{if eq $noun "tag"}}; a colon marks a namespace, as in dept:finance{{end}}.</p>
+  <p class="field-error" id="e-{{$n}}" x-text="errors.{{$n}}"></p>
+</div>{{end}}
+
+{{/* List editor (see lib/listfield.js): one value per row with a delete button on its right, an Add button, Enter adds
+     a row below. dict: name (form list, rows in form.<name>), label (legend), item (a row's name, "Redirect URI"), add
+     (the Add button's text), help, placeholder, mono, show (x-show expression), optional (start with no rows: the
+     component builds the rows with listRows(values, item, true)). The page component mixes in
+     listFieldMixin(). */}}
+{{define "list-field"}}<fieldset class="fieldset list-field" id="f-{{.name}}" data-list="{{.name}}" data-item="{{.item}}"{{if .optional}} data-optional{{end}} aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}"{{with .show}} x-show="{{.}}"{{end}}>
+  <legend>{{.label}}</legend>
+  {{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}
+  <ul class="list-rows">
+    <template x-for="row in form.{{.name}}" :key="row.id"><li>
+      <div class="list-row">
+        <input class="input{{if .mono}} mono{{end}}" type="text" :id="row.inputId" :value="row.value" :aria-label="row.label" :aria-invalid="row.invalid" :aria-describedby="row.errId" :data-row="row.id" @input="listInput" @keydown.enter="listEnter" autocomplete="off" autocapitalize="off" spellcheck="false"{{with .placeholder}} placeholder="{{.}}"{{end}}>
+        <button type="button" class="btn btn-secondary btn-icon list-remove" :aria-label="row.removeLabel" :data-row="row.id" @click="listRemove">{{template "icon" "trash"}}</button>
+      </div>
+      <p class="field-error" :id="row.errId" x-text="row.error"></p>
+    </li></template>
+  </ul>
+  <div><button type="button" class="btn btn-secondary btn-sm" data-list-add @click="listAdd">{{template "icon" "plus"}} {{.add}}</button></div>
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</fieldset>{{end}}
+
+{{/* Modal dialog shell: {{template "dialog-start" (dict "id" "x-dialog" "title" "Title" "titleBind" "dialogTitle" "size" "lg")}} ...body... {{template "dialog-end"}}.
+     Native <dialog>: focus is trapped and Esc closes; focus returns to the opener. */}}
+{{define "dialog-start"}}<dialog id="{{.id}}" class="dialog{{with .size}} dialog-{{.}}{{end}}" aria-labelledby="{{.id}}-title" @close="onDialogClose">
+  <div class="dialog-panel glass-panel"><div class="dialog-scroll">
+    <p class="sr-only" role="status" data-live="polite"></p><p class="sr-only" role="alert" data-live="assertive"></p>
+    <div class="dialog-head">
+      <h2 class="dialog-title" id="{{.id}}-title"{{with .titleBind}} x-text="{{.}}"{{end}}>{{.title}}</h2>
+      <button type="button" class="btn btn-ghost btn-icon btn-sm" aria-label="Close dialog" @click="closeThis">{{template "icon" "x"}}</button>
+    </div>{{end}}
+{{define "dialog-end"}}</div></div>
+</dialog>{{end}}
+
+{{/* Save/Cancel footer for form dialogs. "label" binds to a getter. */}}
+{{define "form-foot"}}<div class="dialog-foot">
+  <button type="button" class="btn btn-secondary" @click="closeThis">Cancel</button>
+  <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="saveDisabled"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="{{.label}}">{{.default}}</span></button>
+</div>{{end}}
+
+{{/* A six-digit authentication code: one input drawn as six boxes (web/src/js/lib/otp.js). Fills from paste and the
+     OS's one-time-code autofill; the form submits itself once all six digits are in. Options: name, label, show,
+     stepfocus (data-step-focus), autofocus (data-autofocus). */}}
+{{define "otp-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="f-{{.name}}">{{if .label}}{{.label}}{{else}}Authentication code{{end}} <span class="req" aria-hidden="true">*</span></label>
+  <div class="otp"><div class="otp-inner">
+    <input class="otp-input" id="f-{{.name}}" name="{{.name}}" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" x-model="form.{{.name}}" data-otp{{if .stepfocus}} data-step-focus{{end}}{{if .autofocus}} data-autofocus{{end}} :aria-invalid="invalid.{{.name}}" aria-describedby="h-{{.name}} e-{{.name}}" aria-required="true" spellcheck="false">
+    <div class="otp-boxes" aria-hidden="true"><span class="otp-box is-current"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span></div>
+  </div></div>
+  <p class="help" id="h-{{.name}}">The 6-digit code from your Authenticator App. It's checked as soon as all 6 digits are in.</p>
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{/* Search-as-you-type picker (lib/picker.js): dict id (input id), list (listbox id), label, listLabel, placeholder,
+     help, required, show (x-show expression). Field errors use errors.<id without "f-">. */}}
+{{define "picker"}}{{$e := slice .id 2}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="{{.id}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>
+  <div class="picker">
+    <div class="search">
+      {{template "icon" "search"}}
+      <input class="input" id="{{.id}}" type="text" role="combobox" aria-autocomplete="list" aria-controls="{{.list}}" :aria-expanded="pickExpanded"
+        :aria-activedescendant="pickActiveId" :aria-invalid="invalid.{{$e}}" aria-describedby="e-{{$e}} h-{{$e}}"{{if .required}} aria-required="true"{{end}}
+        autocomplete="off" spellcheck="false" placeholder="{{.placeholder}}" x-model="pickQ" @input="pickInput" @keydown="pickKey" @blur="pickBlur" data-autofocus>
+    </div>
+    <ul class="picker-list" id="{{.list}}" role="listbox" aria-label="{{.listLabel}}" x-show="pickListOpen" x-cloak>
+      <template x-for="o in pickOptions" :key="o.key">
+        <li role="option" :id="o.optId" :class="o.cls" :aria-selected="o.selected" :data-index="o.index" @mousedown.prevent="pickClick">
+          <span class="picker-text"><span class="picker-label" x-text="o.label"></span><span class="picker-detail" x-show="o.detail" x-text="o.detail"></span></span>
+          <span class="badge badge-plain" x-text="o.kind"></span>
+        </li>
+      </template>
+    </ul>
+    <p class="picker-none" x-show="pickNone" x-cloak>Nothing matches.</p>
+  </div>
+  <p class="help" id="h-{{$e}}">{{.help}}</p>
+  <p class="field-error" id="e-{{$e}}" x-text="errors.{{$e}}"></p>
+  <p class="sr-only" role="status" x-text="pickStatus"></p>
+</div>{{end}}
+
+{{/* Autocomplete field (lib/combo.js): dict name (form key; input f-<name>, combo state combo.<name>), label,
+     placeholder, help, show. The value is form.<name>; the input shows its label. */}}
+{{define "combo-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
+  <label class="label" for="f-{{.name}}">{{.label}}</label>
+  <div class="picker">
+    <input class="input" id="f-{{.name}}" type="text" role="combobox" aria-autocomplete="list" aria-controls="l-{{.name}}" data-combo="{{.name}}"
+      :aria-expanded="combo.{{.name}}.expanded" :aria-activedescendant="combo.{{.name}}.activeId" :aria-invalid="invalid.{{.name}}"
+      aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}" autocomplete="off" spellcheck="false"{{with .placeholder}} placeholder="{{.}}"{{end}}
+      x-model="combo.{{.name}}.q" @input="comboInput" @keydown="comboKey" @blur="comboBlur">
+    <ul class="picker-list" id="l-{{.name}}" role="listbox" aria-label="{{.label}}" x-show="combo.{{.name}}.listOpen" x-cloak>
+      <template x-for="o in combo.{{.name}}.options" :key="o.key">
+        <li role="option" :id="o.optId" :class="o.cls" :aria-selected="o.selected" :data-combo="o.name" :data-index="o.index" @mousedown.prevent="comboClick">
+          <span class="picker-text"><span class="picker-label" x-text="o.label"></span><span class="picker-detail" x-show="o.hasDetail" x-text="o.detail"></span></span>
+        </li>
+      </template>
+    </ul>
+    <p class="picker-none" x-show="combo.{{.name}}.none" x-cloak>Nothing matches.</p>
+  </div>
+  {{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+  <p class="sr-only" role="status" x-text="combo.{{.name}}.status"></p>
+</div>{{end}}

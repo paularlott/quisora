@@ -1,0 +1,56 @@
+{{template "auth" .}}
+{{define "content"}}
+<div x-data="loginPage" data-org="{{.Data.OrgName}}" data-tenant="{{.Data.Tenant}}" data-next="{{.Data.Next}}" data-hint="{{.Data.Hint}}" data-passkey="{{if .Data.Passkey}}1{{end}}"{{with .Data.Step}} data-step="{{.}}" data-ticket="{{$.Data.Ticket}}" data-methods="{{$.Data.Methods}}"{{end}} class="stack">
+  <div>
+    <h1 class="page-title">Sign in</h1>
+    <p class="page-sub">to <strong>{{.Data.OrgDisplay}}</strong></p>
+  </div>
+
+  {{if .Data.Reauth}}<div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>Please sign in again to continue{{with .Data.CurrentUser}}. You are currently signed in as {{.}}{{end}}.</span></div>{{end}}
+  {{if .Data.Error}}<div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>{{.Data.Error}}</span></div>{{end}}
+  <noscript><div class="alert alert-warning">{{template "icon" "alert"}}<span>Signing in with a password or passkey needs JavaScript.{{if .Data.Providers}} The sign-in providers work without it.{{end}}</span></div></noscript>
+  {{if .Data.NoMethods}}<div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>No sign-in method is enabled for this organization. Ask an administrator.</span></div>{{end}}
+
+  {{/* Providers first: where single sign-on is set up, that is how most people sign in. */}}
+  {{if .Data.Providers}}
+  <div class="provider-list" x-show="isPassword">
+    {{range .Data.Providers}}<a class="btn btn-secondary w-full" href="{{.Href}}">{{template "provider-icon" .Type}}<span>Continue with {{.Name}}</span></a>
+    {{end}}
+  </div>
+  {{if .Data.Password}}<div class="divider" aria-hidden="true" x-show="isPassword">or sign in with email</div>
+  {{else if .Data.Passkey}}<div class="divider" aria-hidden="true" x-show="passkeyChoice" x-cloak>or</div>{{end}}
+  {{end}}
+
+  {{if .Data.Password}}
+  <form class="stack" x-show="isPassword" @submit.prevent="submitPassword" novalidate>
+    {{template "field" (dict "name" "email" "label" "Email" "type" "email" "required" true "autofocus" true "autocomplete" "email webauthn")}}
+    {{template "field" (dict "name" "password" "label" "Password" "type" "password" "required" true "autocomplete" "current-password")}}
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="submitLabel">Sign in</span></button>
+    {{if .Data.CanReset}}<button type="button" class="btn btn-ghost btn-sm self-start" @click="openForgot">Forgot your password?</button>{{end}}
+  </form>
+
+  {{template "login-steps"}}
+
+  {{if .Data.CanReset}}
+  <form class="stack" x-show="isForgot" x-cloak @submit.prevent="submitForgot" novalidate>
+    <h2 class="section-title">Reset your password</h2>
+    <div class="alert alert-success" role="status" x-show="forgotSent" x-cloak>{{template "icon" "mail"}}<span>If an account matches, an email with a reset link is on its way. The link works once and expires in an hour.</span></div>
+    <div class="stack" x-show="forgotNotSent">
+      <p>Enter your email address and we will email you a link.</p>
+      {{template "field" (dict "name" "fg_email" "label" "Email" "type" "email" "required" true "autocomplete" "email")}}
+      <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy">Send reset link</button>
+    </div>
+    <button type="button" class="btn btn-ghost btn-sm self-start" @click="closeForgot">{{template "icon" "chevron-left"}} Back to sign in</button>
+  </form>
+  {{end}}
+  {{end}}
+
+  {{if .Data.Passkey}}
+  <div class="stack" x-show="passkeyChoice" x-cloak>
+    {{if .Data.Password}}<div class="divider" aria-hidden="true">or</div>{{end}}
+    <button type="button" class="btn btn-secondary w-full" :aria-busy="busyAttr" :disabled="busy" @click="signInWithPasskey">{{template "icon" "key"}} Sign in with a passkey</button>
+  </div>
+  {{end}}
+
+</div>
+{{end}}

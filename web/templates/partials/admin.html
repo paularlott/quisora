@@ -1,0 +1,332 @@
+{{/* The user create/edit dialog, shared by the users list and the user page. Dot = the page. */}}
+{{define "user-dialog"}}
+{{template "dialog-start" (dict "id" "user-dialog" "title" "User" "titleBind" "userDialogTitle" "size" "lg")}}
+<form @submit.prevent="submitUser" novalidate>
+  <div class="dialog-body">
+    {{template "edit-notice"}}
+    {{template "field" (dict "name" "email" "label" "Email" "type" "email" "required" true "autocomplete" "off" "autofocus" true "show" "emailEditable" "help" "The address the user signs in with. Unique in the organization.")}}
+    <div class="field" x-show="editingSelf" x-cloak>
+      <label class="label" for="f-email-self">Email</label>
+      <input class="input input-static" id="f-email-self" type="email" readonly :value="form.email" aria-describedby="h-email-self">
+      <p class="help" id="h-email-self">Your own address is changed by another manager or administrator.</p>
+    </div>
+    <div class="field-row">
+      {{template "field" (dict "name" "given_name" "label" "First name" "required" true "autocomplete" "off")}}
+      {{template "field" (dict "name" "family_name" "label" "Last name" "autocomplete" "off")}}
+    </div>
+    <div class="field-row">
+    {{template "field" (dict "name" "username" "label" "Username" "autocomplete" "off" "help" "Sent to applications as preferred_username; defaults to the email.")}}
+    {{template "select-field" (dict "name" "role" "label" "Role" "options" .Data.Roles "help" "Managers manage users; administrators also manage groups, clients, providers and settings.")}}
+    </div>
+    {{template "tag-field" (dict "help" "Labels that applications receive in the tags claim.")}}
+    <div class="field-row">
+      {{template "combo-field" (dict "name" "locale" "label" "Language" "placeholder" "Type to search, such as English" "help" "Sent to applications in the locale claim. Leave empty for none.")}}
+      {{template "combo-field" (dict "name" "zoneinfo" "label" "Time zone" "placeholder" "Type to search, such as London" "help" "Sent in the zoneinfo claim.")}}
+    </div>
+    <div class="field-row">
+      {{template "field" (dict "name" "phone_number" "label" "Phone number" "type" "tel" "autocomplete" "off" "placeholder" "+44 20 7946 0958" "help" "Optional, with + and the country code. Sent in the phone_number claim; never used to sign in.")}}
+      {{template "check-field" (dict "name" "phone_number_verified" "label" "Verified" "switch" true "class" "field-beside")}}
+    </div>
+    <div class="field-row">
+      {{template "combo-field" (dict "name" "user_type" "label" "User type" "placeholder" "employee, contractor, guest…" "help" "Optional; any short value.")}}
+      {{template "field" (dict "name" "valid_until" "label" "End date" "type" "date" "help" "From this date (00:00 UTC) the user can no longer sign in; within a minute they are disabled and signed out everywhere. Empty: no end.")}}
+    </div>
+    <details class="disclosure" :open="workOpen">
+      <summary>Work details</summary>
+      <div class="stack">
+        <div class="field-row">
+          {{template "field" (dict "name" "work_title" "label" "Job title" "autocomplete" "off")}}
+          {{template "field" (dict "name" "work_department" "label" "Department" "autocomplete" "off")}}
+        </div>
+        <div class="field-row">
+          {{template "field" (dict "name" "work_organization" "label" "Organization" "autocomplete" "off")}}
+          {{template "field" (dict "name" "work_division" "label" "Division" "autocomplete" "off")}}
+        </div>
+        <div class="field-row">
+          {{template "field" (dict "name" "work_cost_center" "label" "Cost center" "autocomplete" "off")}}
+          {{template "field" (dict "name" "work_employee_number" "label" "Employee number" "autocomplete" "off")}}
+        </div>
+        {{template "combo-field" (dict "name" "manager_id" "label" "Manager" "placeholder" "Type a name or email address" "help" "Another user of this organization.")}}
+        <p class="help">Applications that ask for the enterprise scope receive these in the enterprise claim.</p>
+      </div>
+    </details>
+    {{if .Site.Mail}}{{template "check-field" (dict "name" "invite" "label" "Email the invitation" "show" "isCreate" "help" "Sends the user a link to set a password or create a passkey. You also get the link to share yourself.")}}
+    {{else}}<p class="help" x-show="isCreate">After creating the user you get an invitation link to share with them (email is not set up on this server).</p>{{end}}
+    {{template "check-field" (dict "name" "active" "label" "Account is active" "switch" true "show" "isEdit" "help" "Disabled users cannot sign in and their sessions end.")}}
+    {{template "field" (dict "name" "status_reason" "label" "Reason" "show" "statusChanging" "autocomplete" "off" "helpBind" "statusReasonHelp" "help" "Optional. Shown on the user's page and kept in the audit log.")}}
+  </div>
+  {{template "form-foot" (dict "label" "busyLabel" "default" "Save")}}
+</form>
+{{template "dialog-end"}}
+{{end}}
+
+{{/* Invitation link dialog, shared by the users list (after creating a user) and the user page. Dot = the page. */}}
+{{define "invite-dialog"}}
+{{template "dialog-start" (dict "id" "invite-dialog" "title" "Invitation link" "titleBind" "inviteTitle" "size" "sm")}}
+<div class="dialog-body">
+  <div class="alert alert-error" role="alert" x-show="hasInviteError" x-cloak>{{template "icon" "alert"}}<span x-text="inviteError"></span></div>
+  <div x-show="noInvite" class="stack">
+    <p>Create a single-use link for <strong x-text="inviteWho"></strong>. They open it to set a new password, if their organization allows passwords, or to create a passkey.</p>
+    <p class="help">Any earlier invitation link for this user stops working.</p>
+  </div>
+  <div x-show="hasInvite" x-cloak class="stack">
+    <p>Share this link with <strong x-text="inviteWho"></strong>. They open it to set a password, if their organization allows passwords, or to create a passkey.</p>
+    <div class="code-box" x-data="copyFrom"><code id="invite-url" x-text="inviteUrl"></code>
+      <button type="button" id="invite-copy" class="btn btn-secondary btn-sm" data-source="invite-url" data-what="invitation link" @click="copy">
+        <span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+    <p class="help">The link works once and expires <span x-text="inviteExpiresText"></span>. It is shown only now. {{if .Site.Mail}}Creating another invitation, including emailing one, stops this link working.{{else}}Creating another invitation stops this link working. Email is not set up on this server, so send it to them yourself.{{end}}</p>
+    <p role="status" x-show="inviteSent" x-text="inviteSentText"></p>
+    <div class="alert alert-warning" x-show="hasInviteNote" x-cloak>{{template "icon" "alert"}}<span x-text="inviteNote"></span></div>
+  </div>
+</div>
+<div class="dialog-foot">
+  {{if .Site.Mail}}<button type="button" class="btn btn-ghost" x-show="canEmailInvite" x-cloak :disabled="inviteBusy" @click="sendInvite" x-text="inviteMailLabel">Send by email</button>{{end}}
+  <button type="button" class="btn btn-primary" x-show="noInvite" :disabled="inviteBusy" @click="generateInvite" x-text="inviteGenLabel" id="invite-generate">Generate link</button>
+  <button type="button" class="btn btn-secondary" @click="closeThis">Done</button>
+</div>
+{{template "dialog-end"}}
+{{end}}
+
+{{/* Non-modal notice inside an edit dialog: the record changed or was deleted elsewhere. The wrapper is a status
+     region that always exists, so the text is announced politely when it appears; focus never moves. */}}
+{{define "edit-notice"}}<div role="status" class="edit-notice status-slot"><div class="alert alert-warning" x-show="hasEditNotice" x-cloak>{{template "icon" "alert"}}<span x-text="editNotice"></span></div></div>{{end}}
+
+{{/* The "Live updates" pause switch (WCAG 2.2.2), shown in every admin page head. */}}
+{{define "live-switch"}}<div class="live-switch" x-data="liveSwitch">
+  <button type="button" id="live-toggle" :class="btnClass" class="live-btn" aria-pressed="false" :aria-pressed="pressed" aria-label="Pause live updates" :title="titleText" aria-describedby="live-state" @click="flip">
+    <span class="live-icon" x-show="on">{{template "icon" "pause-circle"}}</span><span class="live-icon" x-show="paused" x-cloak>{{template "icon" "play-circle"}}</span>
+  </button>
+  <span class="sr-only" id="live-state" x-text="stateText"></span>
+</div>{{end}}
+
+{{/* The tenant create / edit dialog (tenants list and tenant page). Dot = the page. Form keys tenant_name and
+     tenant_description keep ids distinct from the client dialog on the tenant page. */}}
+{{define "tenant-dialog"}}
+{{template "dialog-start" (dict "id" "tenant-dialog" "title" "Tenant" "titleBind" "tenantDialogTitle" "size" "lg")}}
+<form @submit.prevent="submitTenant" novalidate>
+  <div class="dialog-body">
+    {{template "edit-notice"}}
+    <div class="field-row">
+      {{template "field" (dict "name" "display_name" "label" "Display name" "required" true "autofocus" true "autocomplete" "off")}}
+      {{template "field" (dict "name" "tenant_name" "label" "Name" "required" true "autocomplete" "off" "help" "Lowercase letters, digits and hyphens. Used in sign-in links and in this tenant's address.")}}
+    </div>
+    {{template "field" (dict "name" "tenant_description" "label" "Description" "autocomplete" "off")}}
+
+    <fieldset class="fieldset">
+      <legend>Who can sign in</legend>
+      <label class="check" for="f-who-members">
+        <input type="radio" class="radio" id="f-who-members" name="who" value="members" x-model="form.who" aria-describedby="h-who-members">
+        <span class="check-text">Only users and groups given access<span class="help" id="h-who-members">Add them in the tenant's Access list.</span></span>
+      </label>
+      <label class="check" for="f-who-everyone">
+        <input type="radio" class="radio" id="f-who-everyone" name="who" value="everyone" x-model="form.who" aria-describedby="h-who-everyone">
+        <span class="check-text">Everyone in the organization<span class="help" id="h-who-everyone">The Access list is not used; it is kept in case you switch back.</span></span>
+      </label>
+    </fieldset>
+
+    <fieldset class="fieldset" aria-describedby="h-methods">
+      <legend>Sign-in methods</legend>
+      <p class="help" id="h-methods">A method is offered only when both the organization and this tenant allow it.</p>
+      <div class="field">
+        <label class="check" for="f-password_login">
+          <input type="checkbox" role="switch" class="switch" id="f-password_login" name="password_login" x-model="form.password_login" :disabled="passwordOff" aria-describedby="e-password_login h-password_login">
+          <span class="check-text">Password<span class="help" id="h-password_login" x-show="passwordOff" x-cloak>Turned off for the organization</span></span>
+        </label>
+        <p class="field-error" id="e-password_login" x-text="errors.password_login"></p>
+      </div>
+      <div class="field">
+        <label class="check" for="f-passkey_login">
+          <input type="checkbox" role="switch" class="switch" id="f-passkey_login" name="passkey_login" x-model="form.passkey_login" :disabled="passkeyOff" aria-describedby="e-passkey_login h-passkey_login">
+          <span class="check-text">Passkey<span class="help" id="h-passkey_login" x-show="passkeyOff" x-cloak>Turned off for the organization</span></span>
+        </label>
+        <p class="field-error" id="e-passkey_login" x-text="errors.passkey_login"></p>
+      </div>
+    </fieldset>
+
+    <fieldset class="fieldset" aria-describedby="h-providers">
+      <legend>Providers</legend>
+      <p class="help" id="h-providers" x-text="providerHelp"></p>
+      <div class="field">
+        <label class="check" for="f-all_providers">
+          <input type="checkbox" role="switch" class="switch" id="f-all_providers" name="all_providers" x-model="form.all_providers" aria-describedby="e-all_providers">
+          <span class="check-text">All of the organization's providers<span class="help">Includes providers added later.</span></span>
+        </label>
+        <p class="field-error" id="e-all_providers" x-text="errors.all_providers"></p>
+      </div>
+      <div class="stack" x-show="pickProviders" x-cloak>
+        <template x-for="p in providers" :key="p.id">
+          <label class="check"><input class="checkbox" type="checkbox" :value="p.id" x-model="form.providers"><span class="check-text"><span x-text="p.name"></span><span class="help"><span x-text="p.typeText"></span>, <span x-text="p.stateText"></span></span></span></label>
+        </template>
+        <p class="muted" x-show="noProviders" x-cloak>No providers to choose from. Add them under Providers.</p>
+      </div>
+      <p class="field-error" id="e-settings" x-text="errors.settings"></p>
+    </fieldset>
+
+    <div x-show="tenantMFAOption">
+    {{template "check-field" (dict "name" "require_mfa" "label" "Require a second factor" "switch" true "help" "Every sign-in to this tenant's applications needs a second factor, unless the provider used counts as one.")}}
+    </div>
+    <p class="help" x-show="orgMFA" x-cloak>A second factor is required: the organization requires one for every sign-in.</p>
+  </div>
+  {{template "form-foot" (dict "label" "tenantSubmitLabel" "default" "Save")}}
+</form>
+{{template "dialog-end"}}
+{{end}}
+
+{{/* The tenant page's Access card and its add / edit dialog (pages/access.js). Dot = the page. */}}
+{{define "tenant-access"}}
+<section class="glass-card" aria-labelledby="access-h" x-show="membersOnly" x-data="tenantAccess" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/access" data-base="{{.Data.API}}" data-tenant="{{.Data.TenantID}}" data-sort="name" data-noun="entries" data-live="access user group" data-live-text="Access list updated" data-search="access-search">
+  <div class="card-head">
+    <div>
+      <h2 class="section-title" id="access-h">Access <span class="badge badge-plain ml-1" x-text="accessCountText"></span></h2>
+      <p class="muted mt-1 max-w-prose" x-text="accessIntro"></p>
+    </div>
+    <button type="button" class="btn btn-primary" @click="openAdd">{{template "icon" "plus"}} Add access</button>
+  </div>
+  <div class="toolbar mb-4">{{template "search" (dict "id" "access-search" "region" "Access" "label" "Search access" "placeholder" "Search by name or email")}}</div>
+  <div class="table-wrap" role="region" aria-label="Access table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+    <table class="table">
+      <caption class="sr-only">Users and groups with access to this tenant's applications</caption>
+      <thead><tr>
+        {{template "sort-th" (dict "key" "name" "label" "Who")}}
+        <th scope="col">Roles</th>
+        <th scope="col">Applications</th>
+        {{template "sort-th" (dict "key" "expires" "label" "Ends")}}
+        <th scope="col"><span class="sr-only">Actions</span></th>
+      </tr></thead>
+      <tbody>
+        <template x-for="row in items" :key="row.id"><tr>
+          <td><div class="cell-title"><span x-text="row.whoName"></span> <span class="badge badge-plain" x-show="row.isGroup">Group</span></div><div class="cell-sub" x-show="row.detail" x-text="row.detail"></div></td>
+          <td><span x-text="row.rolesText"></span><div class="cell-sub" x-show="row.tagsText" x-text="row.tagsText"></div></td>
+          <td x-text="row.appsText"></td>
+          <td><span :class="row.expiresClass" x-text="row.expiresText"></span></td>
+          <td class="actions">
+            <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
+            <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.removeLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+          </td>
+        </tr></template>
+      </tbody>
+    </table>
+  </div>
+  {{template "skeleton"}}
+  <div class="empty-state" x-show="showEmpty" x-cloak>
+    <div class="empty-icon">{{template "icon" "users"}}</div>
+    <h3 class="section-title">No one has been given access</h3>
+    <p class="muted max-w-prose" x-text="accessEmptyText"></p>
+  </div>
+  <div class="empty-state" x-show="showNoResults" x-cloak>
+    <div class="empty-icon">{{template "icon" "search"}}</div>
+    <h3 class="section-title">Nothing matches your search</h3>
+    <p class="muted">Try a different word.</p>
+  </div>
+  <div class="p-6" x-show="loadError !== ''" x-cloak>
+    <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<div><strong>The access list could not be loaded.</strong> <span x-text="loadError"></span>
+      <button type="button" class="btn btn-secondary btn-sm ml-2" @click="load">Try again</button></div></div>
+  </div>
+  {{template "pager-for" "access-page-size"}}
+
+  {{template "dialog-start" (dict "id" "access-dialog" "title" "Add access" "titleBind" "accessDialogTitle" "size" "lg")}}
+  <form @submit.prevent="submitAccess" novalidate>
+    <div class="dialog-body">
+      <p class="font-semibold" x-show="isEditAccess" x-cloak><span class="muted">For</span> <span x-text="editingWho"></span></p>
+      {{template "picker" (dict "id" "f-acc_subject" "list" "acc-picks" "label" "Find a user or group" "listLabel" "Users and groups" "required" true "show" "isAdd" "placeholder" "Name, email address or group" "help" "Type to search, use the arrow keys to move through the results and Enter to choose. A group gives access to every member, including people who join later.")}}
+
+      {{template "tag-field" (dict "name" "roles" "noun" "role" "label" "Roles" "help" "Optional. Application roles, such as editor or viewer, sent in the roles claim.")}}
+      {{template "tag-field" (dict "help" "Optional. Added to the tags claim for this tenant's applications.")}}
+
+      <fieldset class="fieldset">
+        <legend>Applications</legend>
+        <div class="field">
+          <label class="check" for="f-acc_all">
+            <input type="checkbox" role="switch" class="switch" id="f-acc_all" name="acc_all" x-model="form.acc_all" aria-describedby="e-acc_clients">
+            <span class="check-text">All of this tenant's applications<span class="help">Includes applications added later.</span></span>
+          </label>
+        </div>
+        <div class="stack" x-show="pickClients" x-cloak>
+          <template x-for="c in clients" :key="c.id">
+            <label class="check"><input class="checkbox" type="checkbox" :value="c.id" x-model="form.acc_clients"><span class="check-text" x-text="c.name"></span></label>
+          </template>
+          <p class="muted" x-show="noClients" x-cloak>This tenant has no applications yet.</p>
+        </div>
+        <p class="field-error" id="e-acc_clients" x-text="errors.acc_clients"></p>
+      </fieldset>
+
+      {{template "field" (dict "name" "acc_expires" "label" "Access ends" "type" "date" "help" "Optional. Access stops at the start of this day. Leave empty for no end.")}}
+    </div>
+    {{template "form-foot" (dict "label" "accessSubmitLabel" "default" "Add access")}}
+  </form>
+  {{template "dialog-end"}}
+</section>
+{{end}}
+
+{{/* The client create / edit dialog and the secret-shown-once dialog (tenant page). Dot = the page. */}}
+{{define "client-dialogs"}}
+{{template "dialog-start" (dict "id" "client-dialog" "title" "Client" "titleBind" "clientDialogTitle" "size" "lg")}}
+<form @submit.prevent="submitClient" novalidate>
+  <div class="dialog-body">
+    {{template "edit-notice"}}
+    <div class="field-row">
+      {{template "field" (dict "name" "name" "label" "Name" "required" true "autofocus" true "autocomplete" "off")}}
+      {{template "field" (dict "name" "description" "label" "Description" "autocomplete" "off")}}
+    </div>
+    <div class="field" x-show="canMove" x-cloak>
+      <label class="label" for="f-tenant_id">Tenant</label>
+      <select class="select" id="f-tenant_id" name="tenant_id" x-model="form.tenant_id" aria-describedby="h-tenant_id e-tenant_id" :aria-invalid="invalid.tenant_id">
+        <template x-for="t in tenants" :key="t.id"><option :value="t.id" x-text="t.display_name"></option></template>
+      </select>
+      <p class="help" id="h-tenant_id">Choose another tenant to move this client there: it leaves this list and offers that tenant's sign-in methods.</p>
+      <p class="field-error" id="e-tenant_id" x-text="errors.tenant_id"></p>
+    </div>
+    <div class="field">
+      <label class="label" for="f-token_endpoint_auth_method">Authentication</label>
+      <select class="select" id="f-token_endpoint_auth_method" name="token_endpoint_auth_method" x-model="form.token_endpoint_auth_method" aria-describedby="h-token_endpoint_auth_method e-token_endpoint_auth_method" :aria-invalid="invalid.token_endpoint_auth_method">
+        <option value="client_secret_post">Client secret (POST body)</option>
+        <option value="client_secret_basic">Client secret (HTTP Basic)</option>
+        <option value="private_key_jwt">Private key JWT</option>
+        <option value="none">Public — no secret (SPA, mobile, CLI)</option>
+      </select>
+      <p class="help" id="h-token_endpoint_auth_method" x-text="methodHelp"></p>
+      <p class="field-error" id="e-token_endpoint_auth_method" x-text="errors.token_endpoint_auth_method"></p>
+    </div>
+    {{template "list-field" (dict "name" "redirect_uris" "label" "Redirect URIs" "item" "Redirect URI" "add" "Add URI" "mono" true "placeholder" "https://app.example.com/callback" "show" "usesRedirects" "help" "Where the application receives the sign-in result. Use https; http is allowed for localhost. Native apps may use a reverse-domain scheme such as com.example.app:/callback.")}}
+    {{template "list-field" (dict "name" "post_logout_redirect_uris" "label" "Post-logout redirect URIs" "item" "Post-logout redirect URI" "add" "Add URI" "mono" true "optional" true "placeholder" "https://app.example.com/signed-out" "show" "usesRedirects" "help" "Where users may be sent after signing out. Same rules as redirect URIs.")}}
+    {{template "field" (dict "name" "backchannel_logout_uri" "label" "Back-channel logout URI" "type" "url" "autocomplete" "off" "placeholder" "https://app.example.com/logout" "help" "Optional. An https address Quisora calls when a user's session ends, so the application can sign them out too.")}}
+    {{template "list-field" (dict "name" "resources" "label" "Resources (APIs)" "item" "Resource" "add" "Add resource" "mono" true "optional" true "placeholder" "https://api.example.com/" "help" "Optional. The APIs this application may ask access tokens for with the resource parameter (RFC 8707); they become the token's audience. A request naming any other is refused.")}}
+    <fieldset class="fieldset" aria-describedby="h-grants">
+      <legend>Grant types</legend>
+      <label class="check"><input class="checkbox" type="checkbox" value="authorization_code" x-model="form.grant_types"><span class="check-text">Authorization code<span class="help">Sign users in (always with PKCE).</span></span></label>
+      <label class="check"><input class="checkbox" type="checkbox" value="refresh_token" x-model="form.grant_types"><span class="check-text">Refresh token</span></label>
+      <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="client_credentials" x-model="form.grant_types"><span class="check-text">Client credentials<span class="help">The application acts as itself, without a user.</span></span></label>
+      <p class="help" id="h-grants" x-show="isPublic" x-cloak>Public clients use the authorization code grant with refresh tokens; refresh tokens always rotate.</p>
+      <p class="field-error" id="e-grant_types" x-text="errors.grant_types"></p>
+    </fieldset>
+    <fieldset class="fieldset" aria-describedby="h-std_scopes">
+      <legend>Allowed scopes</legend>
+      <p class="help" id="h-std_scopes">What the application may ask users to release.</p>
+      <template x-for="sc in stdScopes" :key="sc.value">
+        <label class="check"><input class="checkbox" type="checkbox" :id="sc.id" :value="sc.value" x-model="form.std_scopes"><span class="check-text"><span class="mono" x-text="sc.value"></span><span class="help" x-text="sc.help"></span></span></label>
+      </template>
+    </fieldset>
+    {{template "list-field" (dict "name" "custom_scopes" "label" "Scopes for your own APIs" "item" "Scope" "add" "Add scope" "mono" true "optional" true "placeholder" "orders:read" "help" "Optional. Scope names your own APIs check in access tokens, such as orders:read. No spaces; the standard scopes above are ticked, not listed here.")}}
+    {{template "textarea-field" (dict "name" "jwks" "label" "Public keys (JWKS)" "rows" 4 "show" "isJwt" "help" "The client's public keys as a JSON Web Key Set. Or give a JWKS URI below.")}}
+    {{template "field" (dict "name" "jwks_uri" "label" "JWKS URI" "show" "isJwt" "autocomplete" "off")}}
+    {{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}
+    {{template "check-field" (dict "name" "enabled" "label" "Client is enabled" "switch" true)}}
+    {{template "check-field" (dict "name" "rotate_refresh_tokens" "label" "Rotate refresh tokens" "switch" true "show" "notPublic" "help" "One-time refresh tokens; reuse revokes the grant. Costs a write per refresh.")}}
+    {{template "check-field" (dict "name" "require_pkce" "label" "Require PKCE" "switch" true "show" "notPublic" "help" "Recommended. Turn off only for an older server-side application that cannot send PKCE: its sign-ins then rely on the client secret alone. Public clients always use PKCE.")}}
+    {{if .Data.CanSCIM}}{{template "check-field" (dict "name" "scim" "label" "May provision users with SCIM" "switch" true "show" "notPublic" "help" "Tokens issued to this client can call the SCIM API for this organization.")}}{{end}}
+  </div>
+  {{template "form-foot" (dict "label" "clientSubmitLabel" "default" "Save")}}
+</form>
+{{template "dialog-end"}}
+
+{{template "dialog-start" (dict "id" "secret-dialog" "title" "Client secret" "titleBind" "secretTitle" "size" "sm")}}
+<div class="dialog-body">
+  <div class="alert alert-warning">{{template "icon" "alert"}}<span>This secret is shown once. Copy it now and store it safely; it cannot be retrieved later.</span></div>
+  <p>Secret for <strong x-text="secretClient"></strong></p>
+  <div class="code-box" x-data="copyFrom"><code id="client-secret" x-text="secret"></code>
+    <button type="button" class="btn btn-secondary btn-sm" data-source="client-secret" data-what="client secret" @click="copy" data-autofocus>
+      <span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+</div>
+<div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">I have stored it</button></div>
+{{template "dialog-end"}}
+{{end}}

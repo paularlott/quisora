@@ -1,0 +1,12 @@
+{{template "base" .}}
+{{define "content"}}
+<section class="glass-card empty-state" aria-labelledby="err-h">
+  <p class="eyebrow">Error {{.Data.Status}}</p>
+  <div class="empty-icon">{{template "icon" "alert"}}</div>
+  <h1 class="page-title" id="err-h">{{.Data.Heading}}</h1>
+  <p class="muted max-w-prose">{{.Data.Message}}</p>
+  <div class="flex flex-wrap justify-center gap-3 mt-2">
+    <a class="btn btn-primary" href="{{if .User}}/account{{else}}/{{end}}">{{template "icon" "home"}} {{if .User}}Go to your account{{else}}Go to sign in{{end}}</a>
+  </div>
+</section>
+{{end}}

@@ -1,0 +1,10 @@
+{{template "auth" .}}{{define "content"}}
+<h1 class="page-title">Sign out?</h1>
+<p>{{if .Data.Client}}<strong>{{.Data.Client}}</strong> has asked to sign you out.{{else}}Do you want to sign out?{{end}} You are signed in as <strong>{{.Data.Username}}</strong>.</p>
+<form method="post" action="/oauth/logout/confirm" class="toolbar">
+  <input type="hidden" name="id" value="{{.Data.ID}}">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button type="submit" class="btn btn-primary">Sign out</button>
+  <a class="btn btn-secondary" href="/account">Stay signed in</a>
+</form>
+{{end}}

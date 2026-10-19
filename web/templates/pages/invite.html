@@ -1,0 +1,46 @@
+{{template "auth" .}}
+{{define "content"}}
+{{if .Data.Valid}}
+<div x-data="invitePage" data-token="{{.Data.Token}}" data-password="{{if .Data.Password}}1{{end}}" data-passkey="{{if .Data.Passkey}}1{{end}}" class="stack">
+  <div x-show="isSetup">
+    <h1 class="page-title">Welcome{{with .Data.Name}}, {{.}}{{end}}</h1>
+    <p class="page-sub">You have been invited to <strong>{{.Data.Org}}</strong>{{with .Data.Email}} as <span class="mono">{{.}}</span>{{end}}.
+      {{if and .Data.Password .Data.Passkey}}Set a password, create a passkey, or both.
+      {{else if .Data.Password}}Choose a password for your account.
+      {{else if .Data.Passkey}}Create a passkey for your account.{{end}}</p>
+  </div>
+  <noscript><div class="alert alert-warning">{{template "icon" "alert"}}<span>Setting up your account needs JavaScript.</span></div></noscript>
+
+  {{if .Data.NoMethods}}
+  <div class="stack" x-show="isSetup">
+    <div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>{{.Data.Org}} signs people in through its sign-in providers, so there is no password or passkey to set up here. Sign in with your organization's provider instead.</span></div>
+    <a class="btn btn-primary w-full" href="/login/{{.Data.OrgName}}">Go to sign in</a>
+  </div>
+  {{else}}
+  <form class="stack" x-show="isSetup" @submit.prevent="submitPassword" novalidate>
+    {{if .Data.Password}}
+    <input type="text" name="username" value="{{.Data.Email}}" autocomplete="username" readonly hidden>
+    {{template "field" (dict "name" "password" "label" "Password" "required" (not $.Data.Passkey) "type" "password" "autofocus" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
+    {{template "field" (dict "name" "confirm" "label" "Confirm password" "required" (not $.Data.Passkey) "type" "password" "autocomplete" "new-password")}}
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="passwordLabel">{{if .Data.Passkey}}Set password{{else}}Activate account{{end}}</span></button>
+    {{end}}
+    {{if .Data.Passkey}}
+    <div class="stack" x-show="showPasskeyButton" x-cloak>
+      {{if .Data.Password}}<p class="eyebrow text-center" aria-hidden="true">or</p>
+      <p class="help">A passkey replaces the password: you sign in with your fingerprint, face or device PIN. Fill in the password above as well to set up both.</p>{{end}}
+      <button type="button" class="btn {{if .Data.Password}}btn-secondary{{else}}btn-primary{{end}} w-full" :aria-busy="busyAttr" :disabled="busy" @click="createPasskey">{{template "icon" "key"}} Create a passkey</button>
+    </div>
+    <div class="alert alert-warning" role="status" x-show="noPasskeySupport" x-cloak>{{template "icon" "alert"}}<span>This browser or device cannot create passkeys.{{if .Data.Password}} Set a password instead.{{else}} Open this link on a device that supports them.{{end}}</span></div>
+    {{end}}
+  </form>
+  {{template "login-steps"}}
+  {{end}}
+</div>
+{{else}}
+<div class="stack">
+  <h1 class="page-title">This link has expired</h1>
+  <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>The invitation link is invalid, has already been used or has expired. Ask your administrator to send a new one.</span></div>
+  <a class="btn btn-secondary" href="/">Go to sign in</a>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,45 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminKeys" data-api="{{.Data.API}}" data-rotation="{{.Data.KeyRotationDays}}" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Org.DisplayName}}</p>
+      <h1 class="page-title">Signing keys</h1>
+      <p class="page-sub">The keys that sign every token this server issues, in every organization.</p>
+    </div>
+    <button type="button" class="btn btn-primary" id="rotate-keys" :disabled="busy" :aria-busy="busyAttr" @click="rotate">{{template "icon" "refresh"}} <span x-text="rotateLabel">Rotate now</span></button>
+  </div>
+
+  <section class="glass-card" aria-labelledby="keys-h">
+    <h2 class="section-title mb-1" id="keys-h">Keys</h2>
+    <p class="muted mb-4"><span x-text="scheduleText"></span> Applications pick up new keys by themselves, and tokens already issued keep working. Rotate now if a key may have been exposed.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <div class="table-wrap" role="region" aria-label="Signing keys table" tabindex="0" x-show="showTable" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Signing keys, newest first</caption>
+        <thead><tr>
+          <th scope="col">State</th>
+          <th scope="col">Key ID</th>
+          <th scope="col">Algorithm</th>
+          <th scope="col">Signs from</th>
+          <th scope="col">Stops signing</th>
+          <th scope="col">Removed</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="k in keys" :key="k.id"><tr>
+            <td><span :class="k.stateClass" x-text="k.stateText"></span><span class="cell-sub block mt-1" x-text="k.stateNote"></span></td>
+            <td><code class="mono" x-text="k.id"></code></td>
+            <td x-text="k.alg"></td>
+            <td class="whitespace-nowrap" x-text="k.fromText"></td>
+            <td class="whitespace-nowrap" x-text="k.retireText"></td>
+            <td class="whitespace-nowrap" x-text="k.removeText"></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" x-show="noKeys" x-cloak>No keys yet: the first one is made when the server first signs a token, or within a minute of starting.</p>
+    <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  </section>
+
+</div>
+{{end}}

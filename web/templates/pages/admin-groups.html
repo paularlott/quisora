@@ -1,0 +1,80 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminGroups" data-api="{{.Data.API}}/groups" data-base="{{.Data.API}}" data-sort="display_name" data-noun="groups" data-live="group member" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Org.DisplayName}}</p>
+      <h1 class="page-title">Groups</h1>
+      <p class="page-sub">Groups collect users so applications can grant access by membership. They appear in the <code>groups</code> token claim.</p>
+    </div>
+    <div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New group</button></div>
+  </div>
+
+  <section class="glass-card" aria-label="Groups list">
+    <div class="toolbar mb-4">{{template "search" (dict "label" "Search groups" "placeholder" "Search groups")}}</div>
+    <div class="table-wrap" role="region" aria-label="Groups table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+      <table class="table">
+        <caption class="sr-only">Groups</caption>
+        <thead><tr>
+          {{template "sort-th" (dict "key" "display_name" "label" "Group")}}
+          <th scope="col" class="text-right">Members</th>
+          <th scope="col">External ID</th>
+          {{template "sort-th" (dict "key" "created" "label" "Created")}}
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <td><span class="cell-title" x-text="row.display_name"></span>
+              <ul class="tag-badges" aria-label="Tags" x-show="row.hasTags" x-cloak><template x-for="t in row.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></td>
+            <td class="text-right tabular-nums" x-text="row.membersText"></td>
+            <td class="mono" x-text="row.externalText"></td>
+            <td x-text="row.createdText"></td>
+            <td class="actions">
+              <button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" @click="openMembers">{{template "icon" "users"}} Members<span class="sr-only"> of <span x-text="row.display_name"></span></span></button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+            </td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    {{template "skeleton"}}
+    {{template "empty" (dict "icon" "shield" "title" "No groups yet" "text" "Create a group, then add users to it.")}}
+    {{template "pager"}}
+  </section>
+
+  {{template "dialog-start" (dict "id" "group-dialog" "title" "Group" "titleBind" "dialogTitle" "size" "sm")}}
+  <form @submit.prevent="submit" novalidate>
+    <div class="dialog-body">
+      {{template "edit-notice"}}
+      {{template "field" (dict "name" "display_name" "label" "Group name" "required" true "autofocus" true "autocomplete" "off")}}
+      {{template "field" (dict "name" "external_id" "label" "External ID" "autocomplete" "off" "help" "Optional identifier from another system (used by SCIM).")}}
+      {{template "tag-field" (dict "help" "Every member of the group receives these in their tags claim.")}}
+    </div>
+    {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}
+  </form>
+  {{template "dialog-end"}}
+
+  {{template "dialog-start" (dict "id" "members-dialog" "title" "Members" "titleBind" "membersTitle" "size" "lg")}}
+  <div class="dialog-body">
+    <div role="status" class="status-slot"><div class="alert alert-warning" x-show="membersDeleted" x-cloak>{{template "icon" "alert"}}<span>This group was deleted by someone else.</span></div></div>
+    {{template "picker" (dict "id" "f-member" "list" "member-picks" "label" "Add a user" "listLabel" "Users" "placeholder" "Name or email address" "help" "Type to find active users who are not in this group yet; use the arrow keys and Enter to add one.")}}
+    <div>
+      <h3 class="section-title mb-2"><span x-text="memberCount">Members</span></h3>
+      <p class="muted" x-show="noMembers" x-cloak>This group has no members yet.</p>
+      <div class="table-wrap" role="region" aria-label="Group members" tabindex="0" x-show="hasMembers" x-cloak>
+        <table class="table min-w-0">
+          <caption class="sr-only">Members</caption>
+          <thead><tr><th scope="col">User</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody><template x-for="m in members" :key="m.id"><tr>
+            <td><span class="cell-title" x-text="m.title"></span><div class="cell-sub" x-text="m.email"></div></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="m.removeLabel" :data-id="m.id" @click="removeMember">{{template "icon" "x"}}</button></td>
+          </tr></template></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">Done</button></div>
+  {{template "dialog-end"}}
+</div>
+{{end}}

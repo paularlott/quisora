@@ -1,0 +1,192 @@
+import { apiCall, uniq } from './helpers.mjs'
+
+// Every page under audit. `as` picks the demo identity; `steps` open dialogs or otherwise prepare the page.
+const A = '/admin/orgs/acme'
+const open = (name) => async (p) => { await p.getByRole('button', { name }).first().click(); await p.waitForTimeout(450) }
+const waitRows = async (p) => { await p.waitForSelector('tbody tr', { timeout: 5000 }) }
+
+const userStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.waitForSelector('text=Profile') }]
+
+// Reload the account page with the security summary altered (the demo user has a password and no Authenticator App).
+export const accountStub = (security) => async (p) => {
+  await p.route('**/api/account', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const res = await route.fetch()
+    const body = await res.json()
+    body.security = { ...body.security, ...security }
+    await route.fulfill({ response: res, json: body })
+  })
+  await p.reload({ waitUntil: 'load' })
+  await p.waitForTimeout(800)
+  await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80))
+}
+
+// Scroll the email addresses card into view once its list has loaded.
+const emailsStep = async (p) => {
+  await p.getByRole('list', { name: 'Email addresses' }).waitFor()
+  await p.locator('#emails-h').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)); await p.waitForTimeout(300)
+}
+const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.getByRole('list', { name: 'Email addresses' }).waitFor() }, emailsStep]
+
+export const PAGES = [
+  { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
+  { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
+  { name: 'users', path: `${A}/users`, as: 'admin', steps: [waitRows] },
+  { name: 'users-new', path: `${A}/users`, as: 'admin', steps: [waitRows, open('New user')], dialog: true },
+  { name: 'user', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.waitForSelector('text=Profile') }] },
+  // The tag editor: chips added from the keyboard, plus its inline error for an invalid tag.
+  { name: 'users-new-tags', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('New user'), async (p) => {
+      await p.locator('#f-tags').fill('dept:finance,vip ')
+      await p.locator('#f-tags').type('-bad'); await p.keyboard.press('Enter')
+      await p.locator('#e-tags').filter({ hasText: 'is not a valid tag' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'users-edit-tags', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing')] },
+  // Work details open (Alan has some), and the language autocompleter showing its list.
+  { name: 'users-edit-work', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+      await p.locator('#f-work_title').waitFor({ state: 'visible' })
+      await p.locator('#f-locale').fill('Eng')
+      await p.getByRole('listbox', { name: 'Language' }).waitFor(); await p.waitForTimeout(300)
+    }] },
+  { name: 'users-edit-manager', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+      await p.locator('#f-manager_id').fill('ada')
+      await p.getByRole('listbox', { name: 'Manager' }).waitFor(); await p.waitForTimeout(300)
+    }] },
+  { name: 'users-filtered-by-tag', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => {
+      await p.getByRole('button', { name: 'Show users tagged vip' }).first().click(); await p.waitForTimeout(600)
+    }] },
+  { name: 'users-new-invite', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('New user'), async (p) => {
+      const id = 'invitee' + Date.now() + Math.floor(Math.random() * 1e6)
+      await p.locator('#f-email').fill(id + '@acme.example')
+      await p.locator('#f-given_name').fill('Invitee')
+      await p.getByRole('button', { name: 'Create user' }).click()
+      await p.getByRole('dialog', { name: 'Invitation link' }).waitFor()
+      await p.waitForTimeout(450)
+    }] },
+  { name: 'user-disabled', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Dennis Ritchie' }).click(); await p.waitForSelector('text=Left the company') }] },
+  { name: 'users-edit-disable', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+    await p.locator('#f-active').uncheck(); await p.locator('#f-status_reason').fill('On leave'); await p.locator('#f-status_reason').scrollIntoViewIfNeeded() }] },
+  { name: 'user-emails', path: `${A}/users`, as: 'admin', steps: userEmailsStep },
+  { name: 'user-sessions', path: `${A}/users`, as: 'admin', steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('heading', { name: 'Sessions' }).scrollIntoViewIfNeeded(); await p.waitForTimeout(300)
+    }] },
+  { name: 'user-connections', path: `${A}/users`, as: 'admin', steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('heading', { name: 'Sign-in providers' }).scrollIntoViewIfNeeded(); await p.waitForTimeout(300)
+    }] },
+  { name: 'user-app-remove', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('button', { name: 'Remove access for Customer portal' }).click()
+      await p.getByRole('dialog', { name: 'Remove access?' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'user-provider-disconnect', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('button', { name: 'Disconnect Acme SSO' }).click()
+      await p.getByRole('dialog', { name: 'Disconnect provider?' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'user-emails-add', path: `${A}/users`, as: 'admin', steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('button', { name: 'Add email' }).click(); await p.locator('#f-em_address').waitFor(); await p.waitForTimeout(300)
+    }] },
+  { name: 'user-emails-remove', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userEmailsStep, async (p) => {
+      await p.getByRole('button', { name: 'Remove alan.turing@bletchley.example' }).click()
+      await p.getByRole('dialog', { name: 'Remove email address' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'user-remove-password', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, async (p) => {
+      await p.getByRole('button', { name: 'Remove password' }).click(); await p.getByRole('alertdialog').or(p.getByRole('dialog', { name: 'Remove password?' })).first().waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'user-invite', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, async (p) => {
+      await p.getByRole('button', { name: 'New invitation link' }).click(); await p.waitForTimeout(450)
+    }] },
+  { name: 'user-invite-link', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, async (p) => {
+      await p.getByRole('button', { name: 'New invitation link' }).click(); await p.waitForTimeout(300)
+      await p.getByRole('button', { name: 'Generate link' }).click(); await p.locator('#invite-url').waitFor(); await p.waitForTimeout(450)
+    }] },
+  // An edit dialog whose record another administrator changed: the non-modal notice inside the dialog.
+  { name: 'users-edit-notice', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+      const id = uniq('notice')
+      const u = await apiCall(p, 'POST', '/api/v1/orgs/acme/users', { username: id, email: id + '@acme.example', given_name: 'Notice', family_name: id })
+      await p.getByRole('searchbox', { name: 'Search users' }).fill(id)
+      await p.getByRole('button', { name: 'Edit Notice ' + id }).click()
+      await p.waitForTimeout(450)
+      await apiCall(p, 'PATCH', `/api/v1/orgs/acme/users/${u.id}`, { family_name: 'Renamed ' + id })
+      await p.locator('.edit-notice .alert').waitFor({ timeout: 4000 })
+      await p.waitForTimeout(300)
+    }] },
+  { name: 'users-super', path: `${A}/users`, as: 'super', steps: [waitRows] },
+  { name: 'groups', path: `${A}/groups`, as: 'admin', steps: [waitRows] },
+  { name: 'groups-members', path: `${A}/groups`, as: 'admin', steps: [waitRows, open('Members of Engineering')], dialog: true },
+  { name: 'groups-members-picker', path: `${A}/groups`, as: 'admin', dialog: true, steps: [waitRows, open('Members of Engineering'), async (p) => {
+      await p.locator('#f-member').fill('a'); await p.locator('#member-picks [role=option]').first().waitFor()
+      await p.keyboard.press('ArrowDown'); await p.waitForTimeout(300)
+    }] },
+  { name: 'groups-new-tags', path: `${A}/groups`, as: 'admin', dialog: true, steps: [waitRows, open('New group'), async (p) => {
+      await p.locator('#f-tags').fill('team:a,team:b '); await p.locator('#f-tags').type('x y!'); await p.keyboard.press('Enter')
+      await p.locator('#e-tags').filter({ hasText: 'is not a valid tag' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'groups-edit-tags', path: `${A}/groups`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Engineering')] },
+  { name: 'tenants', path: `${A}/tenants`, as: 'admin', steps: [waitRows] },
+  { name: 'tenants-new', path: `${A}/tenants`, as: 'admin', steps: [waitRows, open('New tenant')], dialog: true },
+  { name: 'tenants-new-org-mfa', path: '/admin/orgs/northwind/tenants', as: 'super', steps: [waitRows, open('New tenant')], dialog: true },
+  { name: 'tenants-edit', path: `${A}/tenants`, as: 'admin', steps: [waitRows, open('Edit Staff tools')], dialog: true },
+  { name: 'tenant', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows] },
+  { name: 'tenant-customers', path: `${A}/tenants/customers`, as: 'admin', steps: [waitRows] },
+  { name: 'tenant-empty', path: `${A}/tenants/partners`, as: 'admin', steps: [async (p) => { await p.getByText('No clients in this tenant yet').waitFor() }] },
+  { name: 'tenant-super', path: `${A}/tenants/staff`, as: 'super', steps: [waitRows] },
+  { name: 'tenant-edit-rules', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit sign-in rules')], dialog: true },
+  { name: 'tenant-client-new', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('New client')], dialog: true },
+  { name: 'tenant-client-edit', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit Internal tool 1')], dialog: true },
+  { name: 'tenant-client-secret', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+      await p.getByRole('button', { name: 'Rotate secret of Internal tool 2' }).click()
+      await p.getByRole('button', { name: 'Rotate secret', exact: true }).click()
+      await p.getByRole('dialog', { name: 'New client secret' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'tenant-client-delete', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+      await p.getByRole('button', { name: 'Delete Internal tool 3' }).click()
+      await p.getByRole('dialog', { name: 'Delete client?' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'providers', path: `${A}/providers`, as: 'admin', steps: [waitRows] },
+  { name: 'providers-new', path: `${A}/providers`, as: 'admin', steps: [waitRows, open('New provider')], dialog: true },
+  { name: 'settings', path: `${A}/settings`, as: 'admin', steps: [async (p) => { await p.waitForSelector('#f-display_name') }] },
+  { name: 'audit', path: `${A}/audit`, as: 'admin', steps: [waitRows] },
+  { name: 'audit-org-super', path: `${A}/audit`, as: 'super', steps: [waitRows] },
+  { name: 'audit-all', path: '/admin/audit', as: 'super', steps: [waitRows] },
+  { name: 'keys', path: '/admin/orgs/primary/keys', as: 'super', steps: [waitRows] },
+  { name: 'keys-rotate', path: '/admin/orgs/primary/keys', as: 'super', dialog: true, steps: [waitRows, open('Rotate now')] },
+  { name: 'error-404', path: '/admin/nowhere', as: 'admin' },
+  { name: 'users-manager', path: `${A}/users`, as: 'manager', steps: [waitRows] },
+]
+
+// Pages owned by the login module (anonymous and account pages).
+PAGES.push(
+  { name: 'landing', path: '/', as: 'none' },
+  { name: 'landing-picker', path: '/?next=%2Foauth%2Fauthorize%2Fresume', as: 'none' },
+  { name: 'login-org', path: '/login/acme', as: 'none' },
+  { name: 'account', path: '/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
+  // Email addresses: the list (a verified and an unverified linked address), the inline add input, the remove confirmation.
+  { name: 'account-emails', path: '/account', as: 'user', steps: [emailsStep] },
+  { name: 'account-password', path: '/account', as: 'user', dialog: true, steps: [async (p) => {
+      await p.getByRole('button', { name: /Change… password/ }).click(); await p.getByRole('dialog', { name: 'Change password' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'account-zone-open', path: '/account', as: 'user', steps: [async (p) => {
+      await p.locator('#f-zoneinfo').fill('lond')
+      await p.getByRole('listbox', { name: 'Time zone' }).waitFor(); await p.waitForTimeout(300)
+    }] },
+  { name: 'account-totp-setup', path: '/account', as: 'user', dialog: true, steps: [async (p) => {
+      await p.getByRole('button', { name: /Set up… Authenticator App/ }).click(); await p.getByRole('dialog', { name: 'Set up Authenticator App' }).waitFor()
+      await p.waitForSelector('#totp-dialog img[src^="data:"]'); await p.waitForTimeout(450)
+    }] },
+  { name: 'account-totp-on', path: '/account', as: 'user', steps: [accountStub({ totp: true })] },
+  { name: 'account-no-password', path: '/account', as: 'user', steps: [accountStub({ has_password: false })] },
+  { name: 'account-totp-remove', path: '/account', as: 'user', dialog: true, steps: [accountStub({ totp: true }), async (p) => {
+      await p.getByRole('button', { name: /Remove… Authenticator App/ }).click(); await p.getByRole('dialog', { name: 'Remove Authenticator App' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'account-admin', path: '/account', as: 'admin', steps: [async (p) => { await p.waitForTimeout(800) }] },
+  { name: 'logout', path: '/logout', as: 'user' },
+)
+
+// Invitation sign-up page states (see pages-invite.mjs).
+import { INVITE_PAGES, INVITE_NO_PASSKEY } from './pages-invite.mjs'
+PAGES.push(...INVITE_PAGES)
+
+// The live-updates switch in its paused state (last: the choice is remembered per browser).
+PAGES.push({ name: 'tenant-live-paused', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('button', { name: 'Pause live updates' }).click(); await p.waitForTimeout(200) }] })
+// Client dialog list editors (see pages-clients.mjs).
+import { CLIENT_PAGES } from "./pages-clients.mjs"
+PAGES.push(...CLIENT_PAGES)
+PAGES.push(INVITE_NO_PASSKEY)

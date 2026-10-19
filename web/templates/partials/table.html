@@ -1,0 +1,54 @@
+{{/* Sortable column header. {{template "sort-th" (dict "key" "username" "label" "User")}} (optional "class"). The
+     header cell carries aria-sort; the <button> inside sorts. Icons are switched purely by CSS from aria-sort. */}}
+{{define "sort-th"}}<th scope="col" :aria-sort="sortState.{{.key}}"{{with .class}} class="{{.}}"{{end}}><button type="button" class="th-sort" data-key="{{.key}}" @click="sortBy">{{.label}}<svg class="icon i-none" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m8 9 4-4 4 4M8 15l4 4 4-4"/></svg><svg class="icon i-asc" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg><svg class="icon i-desc" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button></th>{{end}}
+
+{{/* Search box. {{template "search" (dict "label" "Search users" "placeholder" "Search by name or email")}}; "id" (default
+     list-search) and "region" (the search landmark's name) when a page has more than one table. */}}
+{{define "search"}}{{$id := or .id "list-search"}}<div class="search" role="search"{{with .region}} aria-label="{{.}}"{{end}}>
+  <label class="sr-only" for="{{$id}}">{{.label}}</label>
+  {{template "icon" "search"}}
+  <input class="input" id="{{$id}}" type="search" name="q" autocomplete="off" placeholder="{{.placeholder}}" x-model="q" @input="onSearch" data-return-focus>
+  <button type="button" class="btn btn-ghost btn-icon btn-sm search-clear" aria-label="Clear search" x-show="hasQuery" x-cloak @click="clearSearch">{{template "icon" "x"}}</button>
+</div>{{end}}
+
+{{/* Loading skeleton rows (decorative; the live region announces loading). */}}
+{{define "skeleton"}}<div x-show="showSkeleton" aria-hidden="true">
+  <div class="skeleton-row"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  <div class="skeleton-row"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  <div class="skeleton-row"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  <div class="skeleton-row"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+</div>{{end}}
+
+{{/* Empty state. {{template "empty" (dict "icon" "users" "title" "No users yet" "text" "..." "action" "New user" "click" "openCreateUser")}}.
+     Omit "action" when the viewer cannot create. */}}
+{{define "empty"}}<div class="empty-state" x-show="showEmpty" x-cloak>
+  <div class="empty-icon">{{template "icon" .icon}}</div>
+  <h2 class="section-title">{{.title}}</h2>
+  {{with .text}}<p class="muted max-w-prose">{{.}}</p>{{end}}
+  {{if .action}}<button type="button" class="btn btn-primary mt-2" @click="{{.click}}">{{template "icon" "plus"}} {{.action}}</button>{{end}}
+</div>
+<div class="empty-state" x-show="showNoResults" x-cloak>
+  <div class="empty-icon">{{template "icon" "search"}}</div>
+  <h2 class="section-title">Nothing matches your search</h2>
+  <p class="muted">Try a different word or filter.</p>
+</div>
+<div class="p-6" x-show="loadError !== ''" x-cloak>
+  <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<div><strong>The list could not be loaded.</strong> <span x-text="loadError"></span>
+    <button type="button" class="btn btn-secondary btn-sm ml-2" @click="load">Try again</button></div></div>
+</div>{{end}}
+
+{{define "pager"}}{{template "pager-for" "page-size"}}{{end}}
+
+{{/* Pager with its page-size select id given as the dot (a page with more than one table). */}}
+{{define "pager-for"}}<div class="pager" x-show="showPager" x-cloak>
+  <p class="muted" x-text="summary"></p>
+  <div class="pager-group">
+    <label class="sr-only" for="{{.}}">Rows per page</label>
+    <select class="select" id="{{.}}" @change="setLimit"><option value="10">10 per page</option><option value="25" selected>25 per page</option><option value="50">50 per page</option><option value="100">100 per page</option></select>
+    <button type="button" class="btn btn-secondary btn-sm" :disabled="noPrev" @click="prev">{{template "icon" "chevron-left"}} Previous</button>
+    <button type="button" class="btn btn-secondary btn-sm" :disabled="noNext" @click="next">Next {{template "icon" "chevron-right"}}</button>
+  </div>
+</div>{{end}}
+
+{{/* Copy-to-clipboard icon button for a value in a dynamic row: needs row.<valueField> and a label field. */}}
+{{define "copy-row"}}<button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyButton" :data-copy="row.{{.value}}" data-what="{{.what}}" :aria-label="row.{{.label}}" @click="copy"><span x-show="iconCopy">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button>{{end}}

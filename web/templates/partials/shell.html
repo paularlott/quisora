@@ -1,0 +1,34 @@
+{{define "theme-switch"}}<button type="button" role="switch" class="glass-switch" x-data="themeSwitch" aria-checked="false" :aria-checked="checked" aria-label="Dark theme" @click="toggle"><span class="glass-switch-thumb"><svg class="icon i-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon i-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg></span></button>{{end}}
+
+{{/* Live regions exist from page load so announcements are reliable. Toasts are shown inside them. */}}
+{{define "toasts"}}<div class="toasts" x-data="toasts">
+  <div role="status" aria-live="polite" aria-atomic="false" class="toast-region"><p id="live-polite" class="sr-only"></p>
+    <template x-for="t in polite" :key="t.id"><div class="toast toast-success glass-panel">{{template "icon" "check-circle"}}<span x-text="t.message"></span></div></template>
+  </div>
+  <div role="alert" class="toast-region"><p id="live-assertive" class="sr-only"></p>
+    <template x-for="t in errors" :key="t.id"><div class="toast toast-error glass-panel">{{template "icon" "alert"}}<span class="flex-1" x-text="t.message"></span><button type="button" class="btn btn-ghost btn-icon btn-sm -my-1 -mr-2" aria-label="Dismiss message" :data-id="t.id" @click="dismiss">{{template "icon" "x"}}</button></div></template>
+  </div>
+</div>{{end}}
+
+{{/* One shared confirmation dialog: Alpine.store('confirm').ask({title, message, detail, confirmLabel, danger, requireText}). */}}
+{{define "confirm-dialog"}}<dialog id="confirm-dialog" class="dialog dialog-sm" x-data="confirmDialog" aria-labelledby="confirm-title" aria-describedby="confirm-message" @close="onClose">
+  <div class="dialog-panel glass-panel"><div class="dialog-scroll">
+    <p class="sr-only" role="status" data-live="polite"></p><p class="sr-only" role="alert" data-live="assertive"></p>
+    <div class="dialog-head">
+      <h2 class="dialog-title" id="confirm-title" x-text="c.title"></h2>
+      <button type="button" class="btn btn-ghost btn-icon btn-sm" aria-label="Close dialog" @click="no">{{template "icon" "x"}}</button>
+    </div>
+    <div class="dialog-body">
+      <p id="confirm-message" class="font-semibold" x-text="c.message"></p>
+      <p class="muted" x-text="c.detail"></p>
+      <div class="field" x-show="c.needsText">
+        <label class="label" for="confirm-text" x-text="c.typeLabel"></label>
+        <input class="input" id="confirm-text" type="text" autocomplete="off" x-model="c.typed" data-autofocus>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-secondary" @click="no" data-autofocus>Cancel</button>
+      <button type="button" :class="c.confirmClass" :disabled="c.blocked" @click="yes" x-text="c.confirmLabel">Confirm</button>
+    </div>
+  </div></div>
+</dialog>{{end}}

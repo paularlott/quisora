@@ -1,0 +1,14 @@
+{{template "auth" .}}
+{{define "content"}}
+<div class="stack">
+  <div>
+    <h1 class="page-title">Sign in through your application</h1>
+    <p class="page-sub">{{if .Data.NotFound}}This page does not exist, or you need to sign in first.{{else}}There is nothing to sign in to on this page.{{end}}</p>
+  </div>
+  {{if .Data.Error}}<div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>{{.Data.Error}}</span></div>{{end}}
+  <ul class="stack" role="list">
+    <li class="flex gap-3">{{template "icon" "app"}}<span><strong>Open the application you want to use.</strong> It brings you here to sign in and takes you back when you're done.</span></li>
+    <li class="flex gap-3">{{template "icon" "link"}}<span><strong>Or use your organization's sign-in link</strong> to manage your account. Your administrator can give it to you.</span></li>
+  </ul>
+</div>
+{{end}}

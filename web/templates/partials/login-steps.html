@@ -1,0 +1,24 @@
+{{/* The steps after a verified password or an invitation: authenticator code, passkey as second factor, MFA
+     enrolment. Bound to the stepsMixin in pages/login.js (loginPage and invitePage). */}}
+{{define "login-steps"}}
+  <form class="stack" x-show="isTotp" x-cloak @submit.prevent="submitTotp" novalidate>
+    {{template "otp-field" (dict "name" "code" "stepfocus" true)}}
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
+  </form>
+
+  <div class="stack" x-show="isPasskeyStep" x-cloak>
+    <p>Your organization asks for your passkey as well as your password.</p>
+    <button type="button" class="btn btn-primary w-full" data-step-focus :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Confirm with your passkey</button>
+  </div>
+
+  <div class="stack" x-show="isEnrol" x-cloak>
+    <form class="stack" @submit.prevent="confirmTotpEnrol" novalidate>
+      <p>Scan this QR code with your Authenticator App, or enter the key by hand. Then type the code it shows.</p>
+      <img class="mx-auto rounded-xl" x-show="hasQR" x-cloak :src="qr" alt="QR code for your Authenticator App" width="200" height="200">
+      <div class="code-box" x-show="hasQR" x-cloak><code x-text="secret"></code></div>
+      {{template "otp-field" (dict "name" "ecode" "stepfocus" true)}}
+      <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
+    </form>
+    <button type="button" class="btn btn-secondary w-full" x-show="canEnrolPasskey" x-cloak :disabled="busy" @click="enrolPasskey">{{template "icon" "key"}} Use a passkey instead</button>
+  </div>
+{{end}}

@@ -1,0 +1,799 @@
+// Package kvstore implements store.Store once, over a small ordered key-value engine interface, with two engines:
+// BadgerDB (embedded, node-local) and Valkey (shared server).
+//
+// Key layout (Valkey keys additionally carry the configured prefix):
+//
+//	rec/<kind>/<id>                    -> [8-byte feed seq][msgpack wireRecord]
+//	uq/<kind>/<value>                  -> id
+//	sc/<kind>/<scope>/<id>             -> ordered scope index (scope escaped so it never contains '/')
+//	al/<kind>/<id>                     -> ordered "all" index of a kind (unscoped listing)
+//	seq/<20-digit seq>/<kind>/<id>     -> change feed (the record stores its current seq; the old entry is removed)
+//	exp/<unix-ms 15 digits>/<kind>/<id> -> expiry index, range-deleted by Purge
+//	tomb/<version 20 digits>/<kind>/<id> -> tombstone index, range-deleted by Purge
+//	meta/feed_id, meta/seq
+//
+// Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix in Badger, sorted sets
+// with lexicographic ordering in Valkey. Housekeeping (Purge, Changes) only ever range-scans the exp, tomb and
+// seq indexes, never the records.
+//
+// Listing: plain ID-ordered scans page through the scope index without loading the scope; the total is a count of
+// the index (key-only iteration in Badger, ZCARD arithmetic in Valkey) that excludes expired records, because the
+// index carries each member's expiry. Searched, filtered or sorted listings load every record of the scope
+// (O(scope size)); doing that without a scope is O(kind size) and should be avoided for large kinds.
+package kvstore
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
+)
+
+// Store is a store.Store over a kv engine.
+type Store struct {
+	eng    engine
+	mu     sync.RWMutex
+	feedID string
+}
+
+var (
+	_ store.Store           = (*Store)(nil)
+	_ store.BatchReplicator = (*Store)(nil)
+)
+
+func newStore(ctx context.Context, eng engine, feedID string) *Store {
+	return &Store{eng: eng, feedID: feedID}
+}
+
+func (s *Store) FeedID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.feedID
+}
+
+// formatVersion is the stored record format (wireRecord with Epoch and Created). A store written by an earlier
+// pre-release build is refused at open: there is no conversion — wipe it and start clean.
+const (
+	metaFormat    = "meta/format"
+	formatVersion = "2"
+)
+
+// checkFormat refuses a store written in another format and marks a new one.
+func (s *Store) checkFormat(ctx context.Context) error {
+	b, err := s.eng.Get(ctx, metaFormat)
+	if err != nil {
+		return err
+	}
+	if string(b) == formatVersion {
+		return nil
+	}
+	if b == nil {
+		seq, err := s.eng.Get(ctx, metaSeq)
+		if err != nil {
+			return err
+		}
+		if seqOf(seq) == 0 { // nothing written yet: a new store
+			return s.markFormat(ctx)
+		}
+	}
+	return fmt.Errorf("kvstore: the store holds data written by an earlier, incompatible pre-release build of Quisora "+
+		"(format %q, this build writes %q): there is no conversion; wipe the store and start clean (restore from a "+
+		"backup made by this build if needed)", string(b), formatVersion)
+}
+
+// seqOf reads the stored feed counter: 8 bytes big endian (Badger) or a decimal integer (Valkey's INCR).
+func seqOf(b []byte) uint64 {
+	if len(b) == 8 {
+		return binary.BigEndian.Uint64(b)
+	}
+	n, _ := strconv.ParseUint(string(b), 10, 64)
+	return n
+}
+
+func (s *Store) markFormat(ctx context.Context) error {
+	return s.eng.Update(ctx, func(tx txn) error { tx.Set(metaFormat, []byte(formatVersion)); return nil })
+}
+
+// Wipe deletes every record and index of this store (only keys under its own prefix for Valkey), restarts the
+// sequence and assigns a new FeedID so peers restart their cursors. Callers must not write concurrently.
+func (s *Store) Wipe(ctx context.Context) error {
+	id := model.NewID()
+	if err := s.eng.wipe(ctx, id); err != nil {
+		return err
+	}
+	if err := s.markFormat(ctx); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.feedID = id
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Store) Close() error { return s.eng.Close() }
+
+// Snapshot returns a read-only, point-in-time view of the whole store (store.Snapshotter): on Badger one read
+// transaction, so a backup taken through it is consistent. Valkey has no such view: ErrNoSnapshot. Close the view
+// when done.
+func (s *Store) Snapshot(context.Context) (store.Reader, error) {
+	e, ok := s.eng.(*badgerEngine)
+	if !ok {
+		return nil, store.ErrNoSnapshot
+	}
+	return &Store{eng: &badgerSnapshot{t: e.db.NewTransaction(false)}, feedID: s.FeedID()}, nil
+}
+
+// ---- keys ----
+
+func recKey(kind model.Kind, id string) string { return "rec/" + string(kind) + "/" + id }
+func uqKey(kind model.Kind, v string) string   { return "uq/" + string(kind) + "/" + v }
+func allBucket(kind model.Kind) string         { return "al/" + string(kind) }
+
+var scopeEscaper = strings.NewReplacer("%", "%25", "/", "%2F")
+
+func scopeBucket(kind model.Kind, scope string) string {
+	return "sc/" + string(kind) + "/" + scopeEscaper.Replace(scope)
+}
+
+func listBucket(kind model.Kind, scope string) string {
+	if scope == "" {
+		return allBucket(kind)
+	}
+	return scopeBucket(kind, scope)
+}
+
+func seqMember(seq uint64, entry string) string {
+	b := make([]byte, 0, 21+len(entry))
+	return string(append(append(appendPadded(b, seq, 20), '/'), entry...))
+}
+
+// appendPadded appends v in decimal, zero-padded to width digits (fmt's %0*d without the allocations).
+func appendPadded(b []byte, v uint64, width int) []byte {
+	var d [20]byte
+	n := strconv.AppendUint(d[:0], v, 10)
+	for i := len(n); i < width; i++ {
+		b = append(b, '0')
+	}
+	return append(b, n...)
+}
+
+// indexMember is "<padded n>/<kind>/<id>", the member of the tomb and exp indexes.
+func indexMember(n uint64, width int, kind model.Kind, id string) string {
+	b := make([]byte, 0, width+2+len(kind)+len(id))
+	b = appendPadded(b, n, width)
+	b = append(append(append(append(b, '/'), kind...), '/'), id...)
+	return string(b)
+}
+
+func entryOf(kind model.Kind, id string) string { return string(kind) + "/" + id }
+
+// expMs rounds an expiry up to whole milliseconds so an index entry never reads as expired early.
+func expMs(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return (t.UnixNano() + int64(time.Millisecond) - 1) / int64(time.Millisecond)
+}
+
+// indexEntry is one ordered-set membership of a record.
+type indexEntry struct {
+	bucket, member string
+	exp            int64
+}
+
+// indexEntries lists every ordered-set membership of rec other than the change feed.
+func indexEntries(r *store.Record) []indexEntry {
+	if r.Deleted {
+		return []indexEntry{{"tomb", indexMember(uint64(r.Version), 20, r.Kind, r.ID), 0}}
+	}
+	exp := expMs(r.Expires)
+	out := make([]indexEntry, 1, 3)
+	out[0] = indexEntry{allBucket(r.Kind), r.ID, exp}
+	if r.Scope != "" {
+		out = append(out, indexEntry{scopeBucket(r.Kind, r.Scope), r.ID, exp})
+	}
+	if exp > 0 {
+		out = append(out, indexEntry{"exp", indexMember(uint64(exp), 15, r.Kind, r.ID), 0})
+	}
+	return out
+}
+
+// ---- transactional helpers ----
+
+func loadRec(tx txn, kind model.Kind, id string) (*stored, error) {
+	b, err := tx.Get(recKey(kind, id))
+	if err != nil || b == nil {
+		return nil, err
+	}
+	return decodeRecord(b)
+}
+
+func live(s *stored) bool { return s != nil && s.rec.Live(time.Now()) }
+
+// stamp applies store.StampLocal for a local write of rec over old.
+func stamp(rec *store.Record, old *stored, create bool) error {
+	if old == nil {
+		return store.StampLocal(rec, nil, create)
+	}
+	return store.StampLocal(rec, old.rec.Head(), create)
+}
+
+// holder returns the live record other than id holding the unique value indexed under key (uqKey).
+func holder(tx txn, kind model.Kind, key, id string) (*stored, error) {
+	b, err := tx.Get(key)
+	if err != nil || b == nil || string(b) == id {
+		return nil, err
+	}
+	other, err := loadRec(tx, kind, string(b))
+	if err != nil || !live(other) {
+		return nil, err
+	}
+	return other, nil
+}
+
+// conflicts reports whether another live record holds one of rec's unique values. It returns the index keys of those
+// values (for apply).
+func conflicts(tx txn, rec *store.Record) (bool, []string, error) {
+	if rec.Deleted || len(rec.Unique) == 0 {
+		return false, nil, nil
+	}
+	keys := make([]string, len(rec.Unique))
+	for i, u := range rec.Unique {
+		keys[i] = uqKey(rec.Kind, u)
+		o, err := holder(tx, rec.Kind, keys[i], rec.ID)
+		if err != nil || o != nil {
+			return o != nil, nil, err
+		}
+	}
+	return false, keys, nil
+}
+
+// apply writes rec over old (which may be nil), indexing it under the unique values in index, whose index keys are
+// keys (built here when nil).
+func apply(tx txn, old *stored, rec *store.Record, index, keys []string) error {
+	r := *rec
+	if r.Deleted {
+		r.Data, r.Fields, r.Unique, r.Scope, r.Expires, r.Epoch, r.Created = nil, nil, nil, "", time.Time{}, 0, 0
+		index = nil
+	}
+	var oldSeq uint64
+	var oldEntries []indexEntry
+	if old != nil {
+		oldSeq = old.seq
+		oldEntries = indexEntries(old.rec)
+		for _, u := range old.rec.Unique {
+			if slices.Contains(index, u) {
+				continue
+			}
+			k := uqKey(r.Kind, u)
+			if b, err := tx.Get(k); err != nil {
+				return err
+			} else if string(b) == r.ID {
+				tx.Delete(k)
+			}
+		}
+	}
+	for i, u := range index {
+		var k string
+		if keys != nil {
+			k = keys[i]
+		} else {
+			k = uqKey(r.Kind, u)
+		}
+		if b, err := tx.Get(k); err != nil {
+			return err
+		} else if string(b) != r.ID {
+			tx.Set(k, []byte(r.ID))
+		}
+	}
+	newEntries := indexEntries(&r)
+	for _, o := range oldEntries {
+		if !hasEntry(newEntries, o) {
+			tx.SetDel(o.bucket, o.member)
+		}
+	}
+	for _, n := range newEntries {
+		if !hasEntry(oldEntries, n) {
+			tx.SetAdd(n.bucket, n.member, n.exp)
+		}
+	}
+	body, err := encodeRecord(&r)
+	if err != nil {
+		return err
+	}
+	tx.Feed(recKey(r.Kind, r.ID), body, entryOf(r.Kind, r.ID), oldSeq)
+	return nil
+}
+
+func hasEntry(list []indexEntry, e indexEntry) bool {
+	for _, x := range list {
+		if x == e {
+			return true
+		}
+	}
+	return false
+}
+
+// remove deletes a record and everything that indexes it.
+func remove(tx txn, old *stored) error {
+	r := old.rec
+	for _, u := range r.Unique {
+		k := uqKey(r.Kind, u)
+		if b, err := tx.Get(k); err != nil {
+			return err
+		} else if string(b) == r.ID {
+			tx.Delete(k)
+		}
+	}
+	for _, e := range indexEntries(r) {
+		tx.SetDel(e.bucket, e.member)
+	}
+	tx.Feed(recKey(r.Kind, r.ID), nil, entryOf(r.Kind, r.ID), old.seq)
+	return nil
+}
+
+// ---- reads ----
+
+func (s *Store) get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	b, err := s.eng.Get(ctx, recKey(kind, id))
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return nil, store.ErrNotFound
+	}
+	st, err := decodeRecord(b)
+	if err != nil {
+		return nil, err
+	}
+	if !st.rec.Live(time.Now()) {
+		return nil, store.ErrNotFound
+	}
+	return st.rec, nil
+}
+
+func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	return s.get(ctx, kind, id)
+}
+
+// Lookup returns the stored record whatever its state (store.Store).
+func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	b, err := s.eng.Get(ctx, recKey(kind, id))
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return nil, store.ErrNotFound
+	}
+	st, err := decodeRecord(b)
+	if err != nil {
+		return nil, err
+	}
+	return st.rec, nil
+}
+
+func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
+	b, err := s.eng.Get(ctx, uqKey(kind, value))
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return nil, store.ErrNotFound
+	}
+	return s.get(ctx, kind, string(b))
+}
+
+// ---- writes ----
+
+// write runs fn as a write of the record kind/id: through the engine's group commit when it has one.
+func (s *Store) write(ctx context.Context, kind model.Kind, id string, fn func(tx txn) error) error {
+	if g, ok := s.eng.(grouper); ok {
+		return g.Group(ctx, string(kind), id, fn)
+	}
+	return s.eng.Update(ctx, fn)
+}
+
+func (s *Store) Put(ctx context.Context, rec *store.Record) error {
+	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error {
+		old, err := loadRec(tx, rec.Kind, rec.ID)
+		if err != nil {
+			return err
+		}
+		if old != nil && old.rec.Version >= rec.Version {
+			return store.ErrStale
+		}
+		if err := stamp(rec, old, false); err != nil {
+			return err
+		}
+		c, keys, err := conflicts(tx, rec)
+		if err != nil {
+			return err
+		} else if c {
+			return store.ErrConflict
+		}
+		return apply(tx, old, rec, rec.Unique, keys)
+	})
+}
+
+func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error {
+		old, err := loadRec(tx, rec.Kind, rec.ID)
+		if err != nil {
+			return err
+		}
+		if expect == 0 {
+			if live(old) || (old != nil && old.rec.Version >= rec.Version) {
+				return store.ErrStale
+			}
+		} else {
+			if !live(old) {
+				return store.ErrNotFound
+			}
+			if old.rec.Version != expect || rec.Version <= expect {
+				return store.ErrStale
+			}
+		}
+		if err := stamp(rec, old, expect == 0); err != nil {
+			return err
+		}
+		c, keys, err := conflicts(tx, rec)
+		if err != nil {
+			return err
+		} else if c {
+			return store.ErrConflict
+		}
+		return apply(tx, old, rec, rec.Unique, keys)
+	})
+}
+
+func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, []string, error) {
+	var applied bool
+	var losers []string
+	store.Witness(rec.Version)
+	err := s.write(ctx, rec.Kind, rec.ID, func(tx txn) (err error) {
+		applied, losers, err = replicateOne(tx, rec)
+		return err
+	})
+	if err != nil {
+		return false, nil, err
+	}
+	return applied, losers, nil
+}
+
+// replicateOne applies rec inside tx with the PutReplicated semantics.
+func replicateOne(tx txn, rec *store.Record) (bool, []string, error) {
+	old, err := loadRec(tx, rec.Kind, rec.ID)
+	if err != nil {
+		return false, nil, err
+	}
+	if old != nil && !store.Newer(rec, old.rec) {
+		return false, nil, nil
+	}
+	var losers []string
+	index := make([]string, 0, len(rec.Unique))
+	keys := make([]string, 0, len(rec.Unique))
+	if !rec.Deleted {
+		for _, u := range rec.Unique {
+			k := uqKey(rec.Kind, u)
+			other, err := holder(tx, rec.Kind, k, rec.ID)
+			if err != nil {
+				return false, nil, err
+			}
+			switch {
+			case other == nil:
+				index, keys = append(index, u), append(keys, k)
+			case store.KeepsUnique(other.rec.Head(), rec.Head(), other.rec.ID, rec.ID):
+				losers = appendOnce(losers, rec.ID)
+			default:
+				// The value moves to rec; apply overwrites the index, the other record keeps its data.
+				losers = appendOnce(losers, other.rec.ID)
+				index, keys = append(index, u), append(keys, k)
+			}
+		}
+	}
+	if err := apply(tx, old, rec, index, keys); err != nil {
+		return false, nil, err
+	}
+	return true, losers, nil
+}
+
+// batchGroup is the most records applied in one transaction.
+const batchGroup = 256
+
+// PutReplicatedBatch applies recs with the PutReplicated semantics, many per write transaction on Badger (one
+// fsync per group instead of one per record). It implements store.BatchReplicator. Engines without cheap
+// multi-record transactions (Valkey) fall back to one transaction per record.
+func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([]bool, [][]string, error) {
+	applied := make([]bool, len(recs))
+	losers := make([][]string, len(recs))
+	if _, ok := s.eng.(*badgerEngine); !ok {
+		for i, r := range recs {
+			var err error
+			if applied[i], losers[i], err = s.PutReplicated(ctx, r); err != nil {
+				return nil, nil, err
+			}
+		}
+		return applied, losers, nil
+	}
+	for _, r := range recs {
+		store.Witness(r.Version)
+	}
+	// Records of one group run in order in one transaction; each sees the ones before it (the same record twice, or
+	// two records claiming one unique value, resolve as if applied one by one).
+	for i := 0; i < len(recs); {
+		size := batchGroup
+		for {
+			j := min(i+size, len(recs))
+			err := s.eng.Update(ctx, func(tx txn) error {
+				for k := i; k < j; k++ {
+					a, l, err := replicateOne(tx, recs[k])
+					if err != nil {
+						return err
+					}
+					applied[k], losers[k] = a, l
+				}
+				return nil
+			})
+			if err == nil {
+				i = j
+				break
+			}
+			if isTxnTooBig(err) && size > 1 {
+				size /= 2
+				continue
+			}
+			return nil, nil, err
+		}
+	}
+	return applied, losers, nil
+}
+
+func appendOnce(list []string, id string) []string {
+	for _, v := range list {
+		if v == id {
+			return list
+		}
+	}
+	return append(list, id)
+}
+
+// ---- listing ----
+
+func nowMs() int64 { return time.Now().UnixMilli() }
+
+func (s *Store) loadMembers(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	if len(ids) == 0 {
+		return []*store.Record{}, nil
+	}
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = recKey(kind, id)
+	}
+	vals, err := s.eng.MGet(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	out := make([]*store.Record, 0, len(ids))
+	for _, v := range vals {
+		if v == nil {
+			continue
+		}
+		st, err := decodeRecord(v)
+		if err != nil {
+			return nil, err
+		}
+		if st.rec.Live(now) {
+			out = append(out, st.rec)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if err := store.ValidateQuery(kind, q); err != nil {
+		return nil, err
+	}
+	bucket := listBucket(kind, q.Scope)
+	if store.IsPlainScan(q) && q.After != "" {
+		return s.listAfter(ctx, kind, bucket, q.After, q.Limit)
+	}
+	if store.IsPlainScan(q) {
+		offset := max(q.Offset, 0)
+		ids, total, err := s.eng.Page(ctx, bucket, q.Desc, offset, q.Limit, nowMs())
+		if err != nil {
+			return nil, err
+		}
+		recs, err := s.loadMembers(ctx, kind, ids)
+		if err != nil {
+			return nil, err
+		}
+		return &store.ListResult{Records: recs, Total: total}, nil
+	}
+	ids, _, err := s.eng.Page(ctx, bucket, false, 0, 0, nowMs())
+	if err != nil {
+		return nil, err
+	}
+	recs, err := s.loadMembers(ctx, kind, ids)
+	if err != nil {
+		return nil, err
+	}
+	return store.ApplyQuery(kind, recs, q)
+}
+
+// listAfter returns up to limit live records with an ID greater than after, in ID order. Index members are the
+// record ids; expired members still in the index are skipped (and do not end the page early).
+func (s *Store) listAfter(ctx context.Context, kind model.Kind, bucket, after string, limit int) (*store.ListResult, error) {
+	out := []*store.Record{}
+	from := after + "\x00" // the smallest member greater than after
+	batch := 512
+	if limit > 0 && limit < batch {
+		batch = limit
+	}
+	for limit <= 0 || len(out) < limit {
+		ids, err := s.eng.Range(ctx, bucket, from, "", batch)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		recs, err := s.loadMembers(ctx, kind, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range recs {
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+			out = append(out, r)
+		}
+		from = ids[len(ids)-1] + "\x00"
+	}
+	return &store.ListResult{Records: out, Total: len(out)}, nil
+}
+
+func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
+	return s.eng.Count(ctx, listBucket(kind, scope), nowMs())
+}
+
+// ---- change feed ----
+
+func (s *Store) Changes(ctx context.Context, since uint64, limit int) ([]store.Change, uint64, error) {
+	out := []store.Change{}
+	next := since
+	from := fmt.Sprintf("%020d", since+1)
+	batch := 512
+	if limit > 0 && limit < batch {
+		batch = limit
+	}
+	for {
+		members, err := s.eng.Range(ctx, feedBkt, from, "", batch)
+		if err != nil {
+			return nil, since, err
+		}
+		if len(members) == 0 {
+			return out, next, nil
+		}
+		keys := make([]string, len(members))
+		seqs := make([]uint64, len(members))
+		for i, m := range members {
+			seqStr, entry, ok := strings.Cut(m, "/")
+			n, err := strconv.ParseUint(seqStr, 10, 64)
+			if !ok || err != nil {
+				return nil, since, fmt.Errorf("kvstore: corrupt feed entry %q", m)
+			}
+			seqs[i], keys[i] = n, "rec/"+entry
+		}
+		vals, err := s.eng.MGet(ctx, keys)
+		if err != nil {
+			return nil, since, err
+		}
+		for i, v := range vals {
+			next = seqs[i]
+			if v == nil {
+				continue
+			}
+			st, err := decodeRecord(v)
+			if err != nil {
+				return nil, since, err
+			}
+			if st.seq != seqs[i] { // rewritten since: its newer entry comes later
+				continue
+			}
+			out = append(out, store.Change{Seq: seqs[i], Record: st.rec})
+			if limit > 0 && len(out) >= limit {
+				return out, next, nil
+			}
+		}
+		from = fmt.Sprintf("%020d", seqs[len(seqs)-1]+1)
+	}
+}
+
+// ---- purge ----
+
+const purgeBatch = 100
+
+func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
+	total := 0
+	tombTo := fmt.Sprintf("%020d/\xff", hlc.FromTime(tombstonesBefore).Uint64()+(1<<hlc.CounterBits))
+	n, err := s.purgeIndex(ctx, "tomb", tombTo, func(r *store.Record) bool {
+		return r.Deleted && r.Version.Time().Before(tombstonesBefore)
+	})
+	total += n
+	if err != nil {
+		return total, err
+	}
+	expTo := fmt.Sprintf("%015d/\xff", max(expMs(expiredBefore), 0))
+	n, err = s.purgeIndex(ctx, "exp", expTo, func(r *store.Record) bool {
+		return !r.Deleted && !r.Expires.IsZero() && r.Expires.Before(expiredBefore)
+	})
+	return total + n, err
+}
+
+// purgeIndex removes the records listed in an index bucket up to member `to` whose current state still satisfies
+// due. Each entry is re-verified against the record inside the transaction.
+func (s *Store) purgeIndex(ctx context.Context, bucket, to string, due func(*store.Record) bool) (int, error) {
+	removed := 0
+	from := ""
+	for {
+		members, err := s.eng.Range(ctx, bucket, from, to, purgeBatch)
+		if err != nil {
+			return removed, err
+		}
+		if len(members) == 0 {
+			return removed, nil
+		}
+		from = members[len(members)-1] + "\x00"
+		var n int
+		err = s.eng.Update(ctx, func(tx txn) error {
+			n = 0
+			for _, m := range members {
+				parts := strings.SplitN(m, "/", 3)
+				if len(parts) != 3 {
+					return fmt.Errorf("kvstore: corrupt %s index entry %q", bucket, m)
+				}
+				st, err := loadRec(tx, model.Kind(parts[1]), parts[2])
+				if err != nil {
+					return err
+				}
+				if st == nil || !due(st.rec) {
+					continue
+				}
+				if err := remove(tx, st); err != nil {
+					return err
+				}
+				n++
+			}
+			return nil
+		})
+		if err != nil {
+			return removed, err
+		}
+		removed += n
+	}
+}
+
+// retry runs fn until it stops reporting a conflict; used by engines.
+func retry(ctx context.Context, attempt func() error) error {
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		if err = attempt(); !errors.Is(err, errConflict) {
+			return err
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		time.Sleep(time.Duration(i%8+1) * 100 * time.Microsecond)
+	}
+	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
+}

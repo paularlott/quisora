@@ -1,0 +1,33 @@
+# Build output
+/bin/
+*.test
+*.out
+*.prof
+*.pprof
+coverage.*
+
+# Web: dependencies, the built assets (`task webassets`; the binary embeds them, the Dockerfile builds them) and
+# browser-test output. The placeholder keeps web/dist present so the Go packages compile before a build.
+node_modules/
+/web/dist/*
+!/web/dist/.gitkeep
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/
+
+# Local runs and state
+/data/
+/conformance/.run/
+/.task/
+*.log
+
+# Local configuration and secrets (quisora.toml.example is the template)
+/quisora.toml
+.env
+.env.*
+
+# Editors and OS
+/.claude/
+/.idea/
+/.vscode/
+.DS_Store

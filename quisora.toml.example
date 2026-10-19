@@ -1,0 +1,97 @@
+# Quisora configuration. Every value has a default. Each key can also be given as a command-line flag or an QUISORA_*
+# environment variable (flag > environment > this file); `quisora serve --help` lists them all.
+
+[server]
+listen = ":8443"                          # HTTPS only; there is no plain-HTTP listener
+public_url = "https://id.example.com"     # the issuer; identical on every node
+data_dir = "/var/lib/quisora"
+# tls_cert = "/etc/quisora/tls.crt"           # PEM; without these a self-signed certificate is generated in data_dir/tls
+# tls_key = "/etc/quisora/tls.key"
+# master_key = ""                         # `quisora genkey`; seals secrets at rest. Required (and identical) in a cluster;
+                                          # a standalone node generates data_dir/master.key when unset
+# trust_proxy = ["10.0.0.0/8"]            # honour X-Forwarded-For only from these
+# bootstrap_admin = "admin@example.com"   # email of the first super admin (the sign-in name; default admin@example.com),
+                                          # created by `quisora bootstrap` with the primary organization (which
+                                          # requires a second factor). The admin has no password: bootstrap prints the
+                                          # invitation link to set one; `quisora invite primary admin@example.com` reissues it
+# allow_private_networks = false          # let back-channel logout / jwks_uri / upstream calls reach private addresses
+# extra_ca_file = ""                      # PEM of extra CA certificates trusted for those outbound HTTPS calls (an internal CA)
+
+[ui]
+site_name = "Identity"
+default_theme = "system"                  # light, dark or system
+# logo_light = "/etc/quisora/logo.svg"        # file path or https URL
+# logo_dark = "/etc/quisora/logo-dark.svg"    # optional; falls back to logo_light
+# footer = "© Example Ltd · Support: help@example.com"
+
+[storage]
+backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, mariadb or valkey
+# [storage.badgerdb]
+# path = "/var/lib/quisora/badgerdb"
+# sync_writes = true
+# [storage.sqlite]
+# path = "/var/lib/quisora/quisora.db"
+# [storage.postgres]
+# dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=require"
+# [storage.mysql]
+# dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
+# [storage.mariadb]
+# dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
+# [storage.valkey]
+# addrs = ["valkey:6379"]
+# password = ""
+# key_prefix = "quisora:"
+
+[cluster]
+# Two ways to run several nodes:
+#  - share one database server (postgres, mysql, mariadb, valkey) and leave bind empty: no gossip, the database is
+#    the only copy, short-lived sign-in state lives there too;
+#  - give every node its own database (any backend) and set bind: the nodes replicate to each other over gossip.
+# bind = "0.0.0.0:7946"                   # empty = no gossip
+# advertise = "10.0.0.11:7946"
+# peers = ["10.0.0.11:7946", "10.0.0.12:7946", "10.0.0.13:7946"]   # every node lists every other (required with bind)
+# size = 3                                # required with bind: the number of nodes, identical on every node; the
+#                                         # quorum is size/2+1 and never shrinks (scaling: docs/REPLICATION.md)
+# key = ""                                # `quisora genkey`; identical on every node
+# minority_grace = 300                    # seconds a node cut off from the majority keeps answering the token,
+#                                         # userinfo and introspection endpoints (requests that need no write)
+# strict_durability = false               # true: a durable write of a kind that is not quorum-committed fails when a
+#                                         # majority does not confirm it; see docs/REPLICATION.md
+
+[tokens]
+signing_alg = "ES256"                     # ES256 or EdDSA (RS256 is added per client when asked for)
+access_ttl = 600                          # seconds
+id_token_ttl = 600
+refresh_ttl = 2592000                     # 30 days
+code_ttl = 60
+key_rotation_days = 30
+api_token_max_days = 365                  # longest personal API token lifetime; 0 = no limit (empty = never)
+
+[session]
+ttl = 604800                              # 7 days from sign-in
+idle = 86400                              # 24 hours without use (0 = no idle limit)
+upstream_check_minutes = 60               # replay sign-in providers' refresh tokens; a refusal ends the user's sessions (0 = off)
+
+[mail]
+# smtp_host = "smtp.example.com"          # host name or IP; without it nothing is emailed (admins share invitation links)
+# smtp_port = 587
+# username = ""
+# password = ""
+# from = "Identity <no-reply@example.com>"
+# tls = "starttls"                        # starttls, tls or none
+
+[audit]
+retention_days = 7                        # in the database (with gossip, on each node); not used with VictoriaLogs
+logins = false                            # also record successful sign-ins (failures are always recorded)
+# victorialogs_url = "http://victorialogs:9428"   # send audit events there instead, and read the audit pages from it
+
+[limits]
+max_in_flight = 4096                      # concurrent requests per node before 503
+login_per_ip_min = 300                    # sign-in attempts per organization and IP per minute
+lockout_attempts = 10                     # failed passwords before an account is locked
+lockout_minutes = 15
+password_workers = 0                      # concurrent password hashes (0 = number of CPUs)
+
+[log]
+level = "info"                            # trace, debug, info, warn, error
+format = "console"                        # console or json

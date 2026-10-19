@@ -1,0 +1,209 @@
+// Package admin is the administration UI: the JSON API under /api/admin and the HTML pages under /admin. Every
+// permission decision is made by the service layer; this package resolves which organization is being administered
+// (path /admin/orgs/{org}/..., org = URL name; non-super users reach only their own), decodes requests and shapes
+// responses.
+package admin
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
+)
+
+// ErrMailerDisabled is returned by a Mailer that cannot send (no SMTP configured).
+var ErrMailerDisabled = errors.New("email is not configured")
+
+// Mailer sends the emails the admin UI can trigger. The application wires a real implementation; the default does
+// nothing and reports ErrMailerDisabled.
+type Mailer interface {
+	// SendInviteLink emails u an invitation: url is the single-use link and expires its end of life.
+	SendInviteLink(ctx context.Context, org *model.Org, u *model.User, url string, expires time.Time) error
+	// SendVerifyAddress emails a verification link to one of u's addresses.
+	SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error
+}
+
+type noopMailer struct{}
+
+func (noopMailer) SendInviteLink(context.Context, *model.Org, *model.User, string, time.Time) error {
+	return ErrMailerDisabled
+}
+
+func (noopMailer) SendVerifyAddress(context.Context, *model.Org, *model.User, string) error {
+	return ErrMailerDisabled
+}
+
+// Module registers the admin routes.
+type Module struct {
+	Mailer Mailer
+	// RotateKeys mints a new signing key (wired to the OAuth provider by the app).
+	RotateKeys func(ctx context.Context) error
+	// ClusterStatus reports this node's cluster status (wired to cluster.Node.Status by the app).
+	ClusterStatus func() any
+	s             *web.Server
+}
+
+// New returns the admin module with a no-op mailer.
+func New() *Module { return &Module{Mailer: noopMailer{}} }
+
+// Register implements web.Module.
+func (m *Module) Register(s *web.Server) {
+	m.s = s
+	if m.Mailer == nil {
+		m.Mailer = noopMailer{}
+	}
+	for _, rt := range m.routes() {
+		s.Mux.Handle(rt.Method+" "+rt.Path, s.RequireManagement(rt.Handler))
+	}
+	s.Mux.HandleFunc("GET /api/openapi.json", serveOpenAPI)
+	m.registerPages(s)
+}
+
+// Route is one management API operation.
+type Route struct {
+	Method  string
+	Path    string // OpenAPI-style template, e.g. /api/v1/orgs/{org}
+	Handler http.HandlerFunc
+}
+
+// Routes lists every /api/v1 operation this module serves. The OpenAPI document must describe each one (tested).
+func (m *Module) Routes() []Route { return m.routes() }
+
+func (m *Module) routes() []Route {
+	const o = "/api/v1/orgs/{org}"
+	return []Route{
+		{"GET", "/api/v1/orgs", m.listOrgs},
+		{"POST", "/api/v1/orgs", m.createOrg},
+		{"GET", o, m.getOrg},
+		{"PATCH", o, m.updateOrg},
+		{"DELETE", o, m.deleteOrg},
+
+		{"GET", o + "/users", m.listUsers},
+		{"POST", o + "/users", m.createUser},
+		{"GET", o + "/users/{id}", m.getUser},
+		{"PATCH", o + "/users/{id}", m.updateUser},
+		{"DELETE", o + "/users/{id}", m.deleteUser},
+		{"DELETE", o + "/users/{id}/password", m.removePassword},
+		{"POST", o + "/users/{id}/invite", m.inviteUser},
+		{"POST", o + "/users/{id}/emails", m.addEmail},
+		{"DELETE", o + "/users/{id}/emails/{address}", m.removeEmail},
+		{"POST", o + "/users/{id}/emails/{address}/primary", m.primaryEmail},
+		{"POST", o + "/users/{id}/emails/{address}/verify", m.resendEmail},
+		{"GET", o + "/users/{id}/apps", m.listUserApps},
+		{"DELETE", o + "/users/{id}/apps/{client}", m.removeUserApp},
+		{"GET", o + "/users/{id}/providers", m.listUserProviders},
+		{"GET", o + "/users/{id}/sessions", m.listUserSessions},
+		{"DELETE", o + "/users/{id}/sessions/{session}", m.revokeUserSession},
+		{"DELETE", o + "/users/{id}/providers/{provider}", m.disconnectUserProvider},
+		{"DELETE", o + "/users/{id}/sessions", m.revokeSessions},
+		{"GET", o + "/users/{id}/tokens", m.listUserTokens},
+		{"DELETE", o + "/users/{id}/tokens/{token}", m.revokeUserToken},
+
+		{"GET", o + "/groups", m.listGroups},
+		{"POST", o + "/groups", m.createGroup},
+		{"GET", o + "/groups/{id}", m.getGroup},
+		{"PATCH", o + "/groups/{id}", m.updateGroup},
+		{"DELETE", o + "/groups/{id}", m.deleteGroup},
+		{"GET", o + "/groups/{id}/members", m.listMembers},
+		{"PUT", o + "/groups/{id}/members/{user}", m.addMember},
+		{"DELETE", o + "/groups/{id}/members/{user}", m.removeMember},
+
+		{"GET", o + "/tenants", m.listTenants},
+		{"POST", o + "/tenants", m.createTenant},
+		{"GET", o + "/tenants/{id}", m.getTenant},
+		{"PATCH", o + "/tenants/{id}", m.updateTenant},
+		{"DELETE", o + "/tenants/{id}", m.deleteTenant},
+		{"GET", o + "/tenants/{id}/access", m.listAccess},
+		{"POST", o + "/tenants/{id}/access", m.addAccess},
+		{"GET", o + "/tenants/{id}/access/{aid}", m.getAccess},
+		{"PATCH", o + "/tenants/{id}/access/{aid}", m.updateAccess},
+		{"DELETE", o + "/tenants/{id}/access/{aid}", m.removeAccess},
+
+		{"GET", o + "/clients", m.listClients},
+		{"POST", o + "/clients", m.createClient},
+		{"GET", o + "/clients/{id}", m.getClient},
+		{"PATCH", o + "/clients/{id}", m.updateClient},
+		{"DELETE", o + "/clients/{id}", m.deleteClient},
+		{"POST", o + "/clients/{id}/secret", m.rotateSecret},
+
+		{"GET", o + "/providers", m.listProviders},
+		{"POST", o + "/providers", m.createProvider},
+		{"GET", o + "/providers/{id}", m.getProvider},
+		{"PATCH", o + "/providers/{id}", m.updateProvider},
+		{"DELETE", o + "/providers/{id}", m.deleteProvider},
+
+		{"GET", o + "/settings", m.getSettings},
+		{"PUT", o + "/settings", m.putSettings},
+		{"GET", o + "/audit", m.listAudit},
+
+		{"GET", "/api/v1/audit", m.listAllAudit},
+		{"GET", "/api/v1/keys", m.listKeys},
+		{"POST", "/api/v1/keys/rotate", m.rotateKeys},
+		{"GET", "/api/v1/backup", m.downloadBackup},
+		{"GET", "/api/v1/cluster", m.clusterStatus},
+	}
+}
+
+// orgFor resolves the {org} path value for the signed-in actor. Unknown orgs and orgs the actor may not see are
+// both reported as not found.
+func (m *Module) orgFor(w http.ResponseWriter, r *http.Request) (*model.Org, *service.Actor, bool) {
+	a := web.Actor(r)
+	o, err := m.s.Svc.OrgByName(r.Context(), r.PathValue("org"))
+	if err != nil || (!a.IsSuper() && o.ID != a.OrgID) {
+		web.WriteError(w, service.ErrNotFound)
+		return nil, nil, false
+	}
+	return o, a, true
+}
+
+const (
+	defaultLimit = 25
+	maxLimit     = 100
+)
+
+// listQuery parses ?q=&sort=&desc=1&offset=&limit=.
+func listQuery(r *http.Request) store.ListQuery {
+	v := r.URL.Query()
+	q := store.ListQuery{Search: strings.TrimSpace(v.Get("q")), Sort: v.Get("sort"), Limit: defaultLimit}
+	switch v.Get("desc") {
+	case "1", "true":
+		q.Desc = true
+	}
+	if n, err := strconv.Atoi(v.Get("offset")); err == nil && n > 0 {
+		q.Offset = n
+	}
+	if n, err := strconv.Atoi(v.Get("limit")); err == nil && n > 0 {
+		q.Limit = min(n, maxLimit)
+	}
+	return q
+}
+
+// listResponse is the list envelope: {"items": [...], "total": n}.
+type listResponse[T any] struct {
+	Items []T `json:"items"`
+	Total int `json:"total"`
+}
+
+func writeList[T any](w http.ResponseWriter, items []T, total int) {
+	if items == nil {
+		items = []T{}
+	}
+	web.WriteJSON(w, http.StatusOK, listResponse[T]{Items: items, Total: total})
+}
+
+func ok(w http.ResponseWriter) { web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true}) }
+
+// emptyToNil turns a pointer to a blank string into nil (meaning "leave unchanged").
+func emptyToNil(p *string) *string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return p
+}

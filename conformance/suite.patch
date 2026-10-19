@@ -1,0 +1,57 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index f1c35a4..9823294 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -7,7 +7,7 @@ services:
+     build:
+       context: ./nginx
+     ports:
+-     - "8443:8443"
++     - "8453:8453"
+     depends_on:
+      - server
+   server:
+@@ -19,7 +19,7 @@ services:
+       java
+       -jar /server/fapi-test-suite.jar
+       -Djdk.tls.maxHandshakeMessageSize=65536
+-      --fintechlabs.base_url=https://localhost.emobix.co.uk:8443
++      --fintechlabs.base_url=https://localhost.emobix.co.uk:8453
+       --fintechlabs.devmode=true
+       --fintechlabs.startredir=true
+     links:
+diff --git a/nginx/nginx.conf b/nginx/nginx.conf
+index 57d6668..693ed62 100644
+--- a/nginx/nginx.conf
++++ b/nginx/nginx.conf
+@@ -30,7 +30,7 @@ http {
+     resolver 127.0.0.11 ipv6=off;
+ 
+     server {
+-        listen 8443 ssl;
++        listen 8453 ssl;
+         server_name localhost;
+         ssl_verify_client off;
+         client_header_buffer_size 32k;
+@@ -42,7 +42,7 @@ http {
+             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+             proxy_set_header X-Forwarded-Proto $scheme;
+             proxy_set_header X-Forwarded-Host $host;
+-            proxy_set_header X-Forwarded-Port 8443;
++            proxy_set_header X-Forwarded-Port 8453;
+             proxy_set_header X-Forwarded-Uri $request_uri;
+             proxy_set_header X-Ssl-Cipher $ssl_cipher;
+             proxy_set_header X-Ssl-Protocol $ssl_protocol;
+diff --git a/src/main/java/net/openid/conformance/Application.java b/src/main/java/net/openid/conformance/Application.java
+index 04e6d75..80468f7 100644
+--- a/src/main/java/net/openid/conformance/Application.java
++++ b/src/main/java/net/openid/conformance/Application.java
+@@ -110,7 +110,7 @@ public class Application {
+ 				if (startRedir) {
+ 					try {
+ 						logger.info(key + ": true - launching redir process");
+-						Process process = new ProcessBuilder("redir", ":8443", "nginx:8443").start();
++						Process process = new ProcessBuilder("redir", ":8453", "nginx:8453").start();
+ 						// redir immediately forks into a daemon so there's no need to read it's I/O streams
+ 						process.waitFor();
+ 					} catch (Exception err) {

@@ -1,0 +1,4 @@
+{{template "auth" .}}{{define "content"}}
+<h1 class="page-title">{{.Data.Heading}}</h1>
+{{with .Data.Body}}<p>{{.}}</p>{{end}}
+{{end}}

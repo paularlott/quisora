@@ -1,0 +1,15 @@
+{{template "auth" .}}
+{{define "content"}}
+<div x-data="logoutPage" data-next="{{.Data.Next}}" class="stack">
+  <div>
+    <h1 class="page-title">Sign out?</h1>
+    <p class="page-sub">You are signed in as <strong>{{.User.FullName}}</strong>{{with .Org}} at {{.DisplayName}}{{end}}.</p>
+  </div>
+  <form method="post" action="/logout" class="toolbar" @submit.prevent="submit">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{if .Data.Next}}<input type="hidden" name="next" value="{{.Data.Next}}">{{end}}
+    <button type="submit" class="btn btn-primary" data-autofocus :aria-busy="busyAttr" :disabled="busy"><span x-text="submitLabel">Sign out</span></button>
+    <a class="btn btn-secondary" href="/account">Stay signed in</a>
+  </form>
+</div>
+{{end}}

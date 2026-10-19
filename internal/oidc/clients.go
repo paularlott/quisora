@@ -1,0 +1,434 @@
+package oidc
+
+import (
+	"context"
+	"crypto"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
+)
+
+const assertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+
+// clientEntry is a cached client with its registered public keys parsed.
+type clientEntry struct {
+	c    *model.Client
+	keys []pubKey // from client.JWKS
+}
+
+type pubKey struct {
+	kid string
+	alg string
+	pub crypto.PublicKey
+}
+
+func parseKeys(jwks []JWK) []pubKey {
+	var out []pubKey
+	for _, j := range jwks {
+		if j.Use == "enc" {
+			continue
+		}
+		pub, err := j.PublicKey()
+		if err != nil {
+			continue
+		}
+		alg := j.KeyAlg()
+		if j.Alg != "" && j.Alg != alg {
+			continue
+		}
+		out = append(out, pubKey{kid: j.Kid, alg: alg, pub: pub})
+	}
+	return out
+}
+
+// client returns the (cached) client record.
+func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) {
+	if len(id) == 0 || len(id) > 128 {
+		return nil, store.ErrNotFound
+	}
+	if e, ok := p.clients.get(id); ok {
+		return e, nil
+	}
+	c, err := p.svc.Clients.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	e := &clientEntry{c: c}
+	if c.JWKS != "" {
+		if jwks, err := ParseJWKS([]byte(c.JWKS)); err == nil {
+			e.keys = parseKeys(jwks)
+		}
+	}
+	p.clients.put(id, e)
+	return e, nil
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// OAuth errors
+
+type oauthError struct {
+	status int
+	code   string
+	desc   string
+	realm  bool // add WWW-Authenticate: Basic
+	retry  bool // add Retry-After (rate limited)
+}
+
+func (e *oauthError) Error() string { return e.code + ": " + e.desc }
+
+func oerr(code, desc string) *oauthError {
+	return &oauthError{status: http.StatusBadRequest, code: code, desc: desc}
+}
+
+func errInvalidClient(desc string) *oauthError {
+	return &oauthError{status: http.StatusUnauthorized, code: "invalid_client", desc: desc, realm: true}
+}
+
+func setNoStore(w http.ResponseWriter) {
+	h := w.Header()
+	h["Cache-Control"], h["Pragma"] = noStore, noCache // shared read-only slices (cap 1): no allocation
+}
+
+var (
+	noStore = []string{"no-store"}[:1:1]
+	noCache = []string{"no-cache"}[:1:1]
+)
+
+// writeOAuthError writes an RFC 6749 §5.2 error response.
+func writeOAuthError(w http.ResponseWriter, e *oauthError) {
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if e.realm {
+		w.Header().Set("WWW-Authenticate", `Basic realm="quisora", charset="UTF-8"`)
+	}
+	if e.retry {
+		w.Header().Set("Retry-After", "60")
+	}
+	w.WriteHeader(e.status)
+	o := newObj(96)
+	o.str("error", e.code)
+	o.strIf("error_description", e.desc)
+	_, _ = w.Write(o.bytes())
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Client authentication
+
+// authenticateClient authenticates the caller of a back-channel endpoint (token, introspect, revoke) with
+// client_secret_basic, client_secret_post or private_key_jwt. There is no "none" method.
+// clientAuthFailuresPerMin bounds failed client authentications per client id and IP address and minute (token,
+// introspection and revocation endpoints together): secrets cannot be guessed anyway, but a flood of attempts (and
+// of private_key_jwt signature checks) costs work. Keyed by client as well as address, so one client's failures do
+// not lock out the others behind a shared address (a load balancer without trust_proxy); a correct secret is always
+// accepted, and only a failure touches the counter.
+const clientAuthFailuresPerMin = 30
+
+// authenticateClient is checkClient with a ceiling on failures.
+func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
+	id, _, _ := r.BasicAuth()
+	if id == "" {
+		id = r.PostForm.Get("client_id")
+	}
+	if len(id) > 128 {
+		id = id[:128]
+	}
+	key := "client-auth|" + id + "|" + web.ClientIP(r)
+	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
+		desc: "too many failed client authentications; try again in a minute", retry: true}
+	// Over the limit, every attempt from this client and address is refused, the right secret included, before
+	// anything is checked: guessing cannot go on, and a correct guess among the refused ones teaches nothing.
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 0, time.Minute); err != nil || n >= clientAuthFailuresPerMin {
+		return nil, limited
+	}
+	ce, e := p.checkClient(r, allowPublic)
+	if e == nil || e.code != "invalid_client" {
+		return ce, e
+	}
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute); err != nil || n > clientAuthFailuresPerMin {
+		return nil, limited
+	}
+	return ce, e
+}
+
+func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
+	form := r.PostForm
+	var id, secret, used string
+	haveSecret := false
+	methods := 0
+	if h := r.Header.Get("Authorization"); h != "" {
+		scheme, cred, _ := strings.Cut(h, " ")
+		if !strings.EqualFold(scheme, "Basic") {
+			return nil, errInvalidClient("unsupported authorization scheme")
+		}
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cred))
+		if err != nil {
+			return nil, errInvalidClient("malformed Basic credentials")
+		}
+		u, pw, ok := strings.Cut(string(raw), ":")
+		if !ok {
+			return nil, errInvalidClient("malformed Basic credentials")
+		}
+		// RFC 6749 §2.3.1: both parts are form-urlencoded before Base64.
+		if id, err = url.QueryUnescape(u); err != nil {
+			return nil, errInvalidClient("malformed Basic credentials")
+		}
+		if secret, err = url.QueryUnescape(pw); err != nil {
+			return nil, errInvalidClient("malformed Basic credentials")
+		}
+		haveSecret, used = true, model.AuthMethodSecretBasic
+		methods++
+		if v := form.Get("client_id"); v != "" && v != id {
+			return nil, errInvalidClient("client_id mismatch")
+		}
+	}
+	if v := form.Get("client_secret"); v != "" {
+		if methods > 0 {
+			return nil, oerr("invalid_request", "use exactly one client authentication method")
+		}
+		id, secret, haveSecret, used = form.Get("client_id"), v, true, model.AuthMethodSecretPost
+		methods++
+	}
+	assertion := form.Get("client_assertion")
+	if assertion != "" {
+		if methods > 0 || form.Get("client_assertion_type") != assertionType {
+			return nil, oerr("invalid_request", "use exactly one client authentication method")
+		}
+		methods++
+	}
+	ctx := r.Context()
+	if methods == 0 {
+		// Public clients identify themselves by client_id alone; a confidential client never falls back to this.
+		if allowPublic {
+			if cid := form.Get("client_id"); cid != "" {
+				if e, err := p.client(ctx, cid); err == nil && e.c.Enabled && e.c.Public() {
+					return e, nil
+				}
+			}
+		}
+		return nil, errInvalidClient("client authentication required")
+	}
+	if assertion != "" {
+		return p.authAssertion(ctx, form.Get("client_id"), assertion)
+	}
+	e, err := p.client(ctx, id)
+	if err != nil || !e.c.Enabled {
+		return nil, errInvalidClient("unknown client or wrong credentials")
+	}
+	// The client authenticates the way it was registered to (token_endpoint_auth_method), nothing else.
+	if !haveSecret || used != e.c.AuthMethod || secret == "" || !service.VerifyClientSecret(e.c, secret) {
+		return nil, errInvalidClient("unknown client or wrong credentials")
+	}
+	return e, nil
+}
+
+// authAssertion verifies an RFC 7523 private_key_jwt client assertion.
+func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion string) (*clientEntry, *oauthError) {
+	bad := errInvalidClient("invalid client assertion")
+	pj, err := ParseJWT(assertion)
+	if err != nil {
+		return nil, bad
+	}
+	var cl Claims
+	if err := json.Unmarshal(pj.Payload, &cl); err != nil || cl.Iss == "" || cl.Iss != cl.Sub {
+		return nil, bad
+	}
+	if formClientID != "" && formClientID != cl.Iss {
+		return nil, bad
+	}
+	e, err := p.client(ctx, cl.Iss)
+	if err != nil || !e.c.Enabled || e.c.AuthMethod != model.AuthMethodPrivateJWT {
+		return nil, bad
+	}
+	if !p.verifyWithClientKeys(ctx, e, pj) {
+		return nil, bad
+	}
+	now := time.Now()
+	exp := time.Unix(int64(cl.Exp), 0)
+	if cl.Exp == 0 || now.After(exp.Add(leeway)) || exp.After(now.Add(5*time.Minute+leeway)) {
+		return nil, errInvalidClient("assertion expired or valid for too long")
+	}
+	if cl.Iat != 0 && time.Unix(int64(cl.Iat), 0).After(now.Add(leeway)) ||
+		cl.Nbf != 0 && time.Unix(int64(cl.Nbf), 0).After(now.Add(leeway)) {
+		return nil, errInvalidClient("assertion not yet valid")
+	}
+	if !cl.Aud.Has(p.tokenURL) && !cl.Aud.Has(p.issuer) {
+		return nil, errInvalidClient("assertion audience must be the token endpoint or issuer")
+	}
+	if cl.Jti == "" || len(cl.Jti) > 256 {
+		return nil, errInvalidClient("assertion needs a jti")
+	}
+	window := max(time.Until(exp), 0) + 2*leeway
+	n, err := p.s.Eph.Incr(ctx, nsJTI, e.c.ID+"|"+cl.Jti, 1, window)
+	if err != nil {
+		return nil, &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable"}
+	}
+	if n != 1 {
+		return nil, errInvalidClient("assertion already used")
+	}
+	return e, nil
+}
+
+// verifyWithClientKeys verifies pj against the client's registered keys (inline JWKS first, then jwks_uri).
+func (p *Provider) verifyWithClientKeys(ctx context.Context, e *clientEntry, pj *Parsed) bool {
+	try := func(keys []pubKey) (matched, ok bool) {
+		for _, k := range keys {
+			if k.alg != pj.Header.Alg || (pj.Header.Kid != "" && k.kid != "" && k.kid != pj.Header.Kid) {
+				continue
+			}
+			matched = true
+			if pj.Verify(k.pub) == nil {
+				return true, true
+			}
+		}
+		return matched, false
+	}
+	if _, ok := try(e.keys); ok {
+		return true
+	}
+	if e.c.JWKSURI == "" {
+		return false
+	}
+	keys := p.remoteKeys(ctx, e.c.JWKSURI, false)
+	matched, ok := try(keys)
+	if ok {
+		return true
+	}
+	// A key rotation at the client shows up as a kid we have not seen: refetch (rate limited). A bad signature
+	// from a known kid (or, without a kid, from a key of the right algorithm) never triggers outbound traffic.
+	if pj.Header.Kid != "" {
+		for _, k := range keys {
+			if k.kid == pj.Header.Kid {
+				return false
+			}
+		}
+	} else if matched {
+		return false
+	}
+	_, ok = try(p.remoteKeys(ctx, e.c.JWKSURI, true))
+	return ok
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Remote JWKS (jwks_uri) with a small cache
+
+type remoteJWKS struct {
+	keys    []pubKey
+	fetched time.Time
+	forced  time.Time
+	retryAt time.Time // no fetch before this after a failure (exponential backoff)
+	fails   int
+}
+
+const (
+	jwksTTL      = 10 * time.Minute
+	jwksMaxBytes = 64 << 10
+)
+
+// Variables so tests can shorten them. Failed fetches back off jwksForceEvery * 2^(fails-1), capped at jwksBackoffMax.
+var (
+	jwksForceEvery = 30 * time.Second
+	jwksBackoffMax = 10 * time.Minute
+)
+
+func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pubKey {
+	p.jwksMu.Lock()
+	rj := p.remoteKey[uri]
+	now := time.Now()
+	if rj != nil && ((!force && now.Sub(rj.fetched) < jwksTTL) || (force && now.Sub(rj.forced) < jwksForceEvery)) {
+		keys := rj.keys
+		p.jwksMu.Unlock()
+		return keys
+	}
+	if rj != nil && now.Before(rj.retryAt) { // backing off after a failed fetch
+		keys := rj.keys
+		p.jwksMu.Unlock()
+		return keys
+	}
+	if rj == nil {
+		if len(p.remoteKey) > 5000 {
+			clear(p.remoteKey)
+		}
+		rj = &remoteJWKS{}
+		p.remoteKey[uri] = rj
+	}
+	rj.forced = now
+	p.jwksMu.Unlock()
+
+	cached := func() []pubKey {
+		p.jwksMu.Lock()
+		defer p.jwksMu.Unlock()
+		return rj.keys
+	}
+	fail := func() {
+		p.jwksMu.Lock()
+		rj.fails++
+		d := jwksBackoffMax
+		if rj.fails < 32 {
+			d = min(jwksForceEvery<<(rj.fails-1), jwksBackoffMax)
+		}
+		rj.retryAt = time.Now().Add(d)
+		p.jwksMu.Unlock()
+	}
+	body, err := p.fetch(ctx, uri, jwksMaxBytes)
+	if err != nil {
+		p.log.Warn("oidc: fetching client jwks", "uri", uri, "error", err)
+		fail()
+		return cached()
+	}
+	jwks, err := ParseJWKS(body)
+	if err != nil {
+		p.log.Warn("oidc: parsing client jwks", "uri", uri, "error", err)
+		fail()
+		return cached()
+	}
+	keys := parseKeys(jwks)
+	p.jwksMu.Lock()
+	rj.keys, rj.fetched, rj.fails, rj.retryAt = keys, time.Now(), 0, time.Time{}
+	p.jwksMu.Unlock()
+	return keys
+}
+
+func (p *Provider) fetch(ctx context.Context, uri string, limit int64) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, errors.New("response too large")
+	}
+	return b, nil
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Outbound HTTP with an SSRF guard
+
+func (p *Provider) safeClient() *http.Client {
+	return secure.OutboundClient(func() bool { return p.AllowPrivateNetworks }, p.roots, p.log)
+}

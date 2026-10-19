@@ -1,0 +1,120 @@
+version: "3"
+
+vars:
+  PROJECT_NAME: quisora
+  PLATFORMS:
+    - linux/amd64
+    - linux/arm64
+    - darwin/amd64
+    - darwin/arm64
+    - windows/amd64
+    - windows/arm64
+  VERSION:
+    sh: git describe --tags --always 2>/dev/null || echo dev
+  BUILD_FLAGS: '-ldflags="-s -w -X github.com/paularlott/quisora/internal/build.Version={{.VERSION}}" -trimpath'
+  OUTPUT_DIR: bin
+
+tasks:
+  default:
+    desc: Build the binary for all platforms
+    deps: [all]
+
+  webassets:
+    desc: Build the CSS and JavaScript into web/dist (embedded in the binary)
+    dir: web
+    cmds:
+      - npm ci --silent
+      - node build.mjs
+    sources:
+      - src/**/*
+      - templates/**/*
+      - build.mjs
+      - package.json
+    generates:
+      - dist/manifest.json
+
+  build:
+    desc: Build the binary for the current platform
+    deps: [webassets]
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} .
+
+  conformance-tools:
+    desc: Build the OpenID conformance harness tools (bin/seed, bin/fakeidp); see conformance/README.md
+    cmds:
+      - go build -o {{.OUTPUT_DIR}}/seed ./conformance/seed
+      - go build -o {{.OUTPUT_DIR}}/fakeidp ./conformance/fakeidp
+
+  loadtest:
+    desc: Build the load test tool (bin/loadtest); development only, not part of the quisora binary
+    cmds:
+      - go build -o {{.OUTPUT_DIR}}/loadtest{{exeExt}} ./tools/loadtest
+
+  all:
+    desc: Build the binary for every platform
+    deps: [webassets]
+    cmds:
+      - for: { var: PLATFORMS }
+        cmd: >-
+          CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
+          go build {{.BUILD_FLAGS}}
+          -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
+
+  run:
+    desc: Run a local server (BadgerDB, self-signed certificate) on https://localhost:8443
+    deps: [build]
+    cmds:
+      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap --data-dir ./data/dev'
+      - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev'
+
+  run-server:
+    desc: Run a standalone instance on https://192.168.8.171:8443 (self-signed certificate in data/dev/tls) with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.10:1025
+    deps: [build]
+    cmds:
+      - mkdir -p ./data/dev
+      - >-
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap
+        --data-dir ./data/dev
+        --public-url https://192.168.8.171:8443
+        --bootstrap-admin admin@example.com
+      - >-
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve
+        --listen 0.0.0.0:8443
+        --public-url https://192.168.8.171:8443
+        --data-dir ./data/dev
+        --smtp-host 192.168.8.110
+        --smtp-port 1025
+        --smtp-tls none
+        --smtp-from "Quisora <quisora@example.com>"
+        --allow-private-networks
+        --log-level debug
+
+  test:
+    desc: Vet and run every Go test with the race detector (set the QUISORA_TEST_* variables for database servers)
+    cmds:
+      - go vet ./...
+      - go test -race ./...
+
+  test-dbs:
+    desc: Start the PostgreSQL, MySQL, MariaDB and Valkey test containers
+    cmds:
+      - scripts/test-dbs.sh up valkey
+
+  test-all:
+    desc: Run every Go test against every storage backend
+    deps: [test-dbs]
+    cmds:
+      - eval "$(scripts/test-dbs.sh env)" && QUISORA_TEST_VALKEY_ADDR=127.0.0.1:56379 go test -race ./...
+
+  test-ui:
+    desc: Accessibility (axe, WCAG 2.2 AA) and keyboard tests in Chromium
+    dir: web
+    cmds:
+      - npx playwright test
+
+  bench:
+    desc: Run the Go benchmarks
+    cmds:
+      - go test -run '^$' -bench . -benchmem ./...

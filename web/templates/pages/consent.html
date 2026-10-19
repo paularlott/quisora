@@ -1,0 +1,29 @@
+{{template "auth" .}}{{define "content"}}
+<div x-data="oauthConsent" data-flow="{{.Data.Flow}}" class="stack">
+  <h1 class="page-title">Authorize {{.Data.ClientName}}</h1>
+  <div>
+    <p>Signed in as <strong>{{.Data.Username}}</strong>. <strong>{{.Data.ClientName}}</strong> is asking to:</p>
+    {{with .Data.Tenant}}<p class="help">Tenant: {{.}}</p>{{end}}
+    <ul class="bullet-list" aria-label="Requested access">
+      {{range .Data.Scopes}}<li>{{.Description}}</li>
+      {{end}}
+    </ul>
+  </div>
+  {{with .Data.Resources}}<div>
+    <p>For use with:</p>
+    <ul class="bullet-list" aria-label="Services the access is for">
+      {{range .}}<li><span class="mono">{{.}}</span></li>
+      {{end}}
+    </ul>
+  </div>{{end}}
+  <p class="help">You can remove this access at any time from your account.</p>
+  <div role="alert" class="status-slot"><div class="alert alert-error" x-show="error" x-cloak>{{template "icon" "alert"}}<span x-text="error"></span></div></div>
+  <div class="toolbar" x-show="!closed">
+    <button type="button" class="btn btn-primary" x-on:click="approve" x-bind:disabled="busy">Allow</button>
+    <button type="button" class="btn btn-secondary" x-on:click="deny" x-bind:disabled="busy">Deny</button>
+  </div>
+  {{with .Data.ReturnURL}}<div class="toolbar" hidden x-bind:hidden="!closed">
+    <a class="btn btn-primary" href="{{.}}" x-ref="back">Return to {{$.Data.ClientName}}</a>
+  </div>{{end}}
+</div>
+{{end}}

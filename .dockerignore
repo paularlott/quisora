@@ -1,0 +1,12 @@
+# Build context: sources only. The web assets and the binary are built inside the image.
+.git
+.task
+bin
+data
+uidemo
+conformance/.run
+web/node_modules
+web/dist
+web/test-results
+**/*.test
+**/.DS_Store

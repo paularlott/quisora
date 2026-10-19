@@ -1,0 +1,42 @@
+{{/* The "Email addresses" card shared by the account page and the admin user page. Params: comp (Alpine component
+     name, composed with lib/emails.js), help (the one-line explanation), id (section id). */}}
+{{define "emails-card"}}
+<section class="glass-card" id="{{.id}}" aria-labelledby="emails-h" x-data="{{.comp}}" x-show="showCard" x-cloak>
+  <div class="card-head">
+    <div>
+      <h2 class="section-title" id="emails-h" tabindex="-1">Email addresses</h2>
+      <p class="muted" id="emails-help">{{.help}}</p>
+      {{with .lockedHelp}}<p class="muted mt-1" x-show="locked">{{.}}</p>{{end}}
+    </div>
+    <button type="button" class="btn btn-primary" id="email-add-btn" x-show="canAdd" x-cloak aria-haspopup="dialog" @click="openAdd">{{template "icon" "plus"}} Add email</button>
+  </div>
+  <div class="alert alert-error mb-4" role="alert" x-show="hasEmailsError" x-cloak>{{template "icon" "alert"}}<span x-text="emailsError"></span></div>
+  <p class="muted mb-2" x-show="atLimit" x-cloak>You have reached the limit of 10 linked addresses.</p>
+  <p class="muted mb-2" x-show="mailOff" x-cloak>Email is not set up on this server, so addresses cannot be verified here. Ask an administrator to add one.</p>
+  <ul class="setting-list" aria-label="Email addresses">
+    <li class="setting-row">
+      <div class="setting-text">
+        <p class="setting-title"><span x-text="primary.address"></span> <span class="badge badge-accent">Primary</span> <span :class="primaryBadgeClass" x-text="primaryBadge">Verified</span></p>
+      </div>
+    </li>
+    <template x-for="row in items" :key="row.address"><li class="setting-row">
+      <div class="setting-text">
+        <p class="setting-title"><span x-text="row.address"></span> <span :class="row.badgeClass" x-text="row.badgeText">Unverified</span></p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn btn-secondary btn-sm" x-show="row.canResend" :data-address="row.address" @click="resend">Resend link<span class="sr-only" x-text="row.forAddress"></span></button>
+        <button type="button" class="btn btn-secondary btn-sm" x-show="row.canPrimary" :data-address="row.address" @click="makePrimary">Make primary<span class="sr-only" x-text="row.forAddress"></span></button>
+        <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="manage" :data-address="row.address" :aria-label="row.removeLabel" @click="remove">{{template "icon" "trash"}}</button>
+      </div>
+    </li></template>
+  </ul>
+  {{template "dialog-start" (dict "id" "email-add-dialog" "title" "Add email address" "size" "sm")}}
+  <form id="email-add-form" @submit.prevent="submitAdd" novalidate>
+    <div class="dialog-body">
+      {{template "field" (dict "name" "em_address" "label" "Email address" "type" "email" "required" true "autofocus" true "autocomplete" "off" "help" .addHelp)}}
+    </div>
+    {{template "form-foot" (dict "label" "addLabel" "default" "Add")}}
+  </form>
+  {{template "dialog-end"}}
+</section>
+{{end}}

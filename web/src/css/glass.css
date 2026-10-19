@@ -1,0 +1,111 @@
+/* Liquid-glass surfaces: layered translucency (blur + saturation), a gradient rim drawn with a mask, a specular
+   sheen behind the content, inner edge lighting and soft depth shadows, over an animated aurora backdrop. */
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; scroll-padding-top: 6rem; }
+  body {
+    background: var(--page-bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    line-height: 1.55;
+    min-height: 100dvh;
+    display: flex; flex-direction: column; /* the footer sits at the bottom of short pages (layout.css) */
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+  }
+  [x-cloak] { display: none !important; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 0.09em; text-underline-offset: 0.2em; }
+  a:hover { text-decoration-thickness: 0.16em; }
+  ::selection { background: color-mix(in srgb, var(--accent-solid) 35%, transparent); }
+  code, kbd, samp { font-family: var(--font-mono); font-size: 0.9em; }
+  h1, h2, h3 { text-wrap: balance; }
+
+  /* Focus: a thick, offset ring in a colour that holds 3:1+ against glass in both themes. */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 3px;
+  }
+}
+
+/* ---- Aurora backdrop ---------------------------------------------------------------------------------------- */
+.aurora {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+  background: var(--page-bg);
+}
+.aurora i {
+  position: absolute; border-radius: 50%; opacity: var(--aurora-opacity); will-change: transform;
+  width: max(70vw, 34rem); height: max(70vw, 34rem);
+  background: radial-gradient(closest-side, var(--c) 0%, color-mix(in srgb, var(--c) 40%, transparent) 55%, transparent 100%);
+}
+.aurora i:nth-child(1) { --c: var(--aurora-1); top: -25%; left: -15%; animation: var(--animate-drift-a); }
+.aurora i:nth-child(2) { --c: var(--aurora-2); top: -10%; right: -25%; animation: var(--animate-drift-b); }
+.aurora i:nth-child(3) { --c: var(--aurora-3); bottom: -35%; left: 5%; animation: var(--animate-drift-c); }
+.aurora i:nth-child(4) { --c: var(--aurora-4); bottom: -30%; right: -10%; width: max(50vw, 26rem); height: max(50vw, 26rem);
+  animation: var(--animate-drift-a) reverse; }
+.aurora::after {
+  content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.2px);
+  background-size: 26px 26px;
+  mask-image: radial-gradient(ellipse at 50% 30%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 20%, transparent 78%);
+}
+@media (prefers-reduced-motion: reduce) { .aurora i { animation: none !important; } }
+
+/* ---- Glass ---------------------------------------------------------------------------------------------------- */
+@layer components {
+  .glass, .glass-card, .glass-panel, .page-head:not(:where(.glass-card, .glass, .glass-panel) *), .stack-lg > h2.section-title {
+    position: relative; isolation: isolate;
+    border-radius: var(--radius-glass);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    box-shadow: var(--glass-shadow);
+    color: var(--fg);
+  }
+  /* Each glass surface is its own stacking context, so an open suggestion list would be painted under the next
+     card. Lift the surface holding it above its siblings while the list is showing. */
+  :is(.glass, .glass-card, .glass-panel):has(:is(.picker-list, .picker-none):not([x-cloak], [style*="display: none"])) { z-index: 10; }
+  /* Gradient rim: a 1px ring painted with a gradient, cut out of a full-size box with a mask. */
+  .glass::before, .glass-card::before, .glass-panel::before, .page-head:not(:where(.glass-card, .glass, .glass-panel) *)::before, .stack-lg > h2.section-title::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: var(--glass-rim);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+    z-index: 1;
+  }
+  /* Specular sheen sits behind the content (z-index -1 inside the isolated stacking context). */
+  .glass::after, .glass-card::after, .glass-panel::after, .page-head:not(:where(.glass-card, .glass, .glass-panel) *)::after, .stack-lg > h2.section-title::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+    background: var(--glass-sheen);
+  }
+  /* A bare heading between glass cards sits on a glass chip so its text never lands on the raw backdrop. */
+  .stack-lg > h2.section-title { width: fit-content; max-width: 100%; padding: 0.4rem 1.2rem; border-radius: 999px; }
+  /* A bare heading's text cannot be lifted above the rim like card content, so the rim goes beneath the text. */
+  .stack-lg > h2.section-title::before { z-index: -1; }
+  .glass-card { padding: 1.25rem; }
+  @media (min-width: 40rem) { .glass-card { padding: 1.75rem; } }
+  .glass-panel { background: var(--glass-bg-strong); --glass-blur: 34px; }
+  /* A tinted well inside glass: no blur of its own (nested backdrop filters are costly and muddy). */
+  .glass-inset {
+    background: var(--glass-inset); border-radius: 1rem; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--edge);
+  }
+
+  /* Hover lift for interactive cards. */
+  .glass-lift { transition: transform 0.25s cubic-bezier(.2, .8, .2, 1), box-shadow 0.25s; }
+  .glass-lift:hover { transform: translateY(-2px); }
+  @media (prefers-reduced-motion: reduce) { .glass-lift { transition: none; } .glass-lift:hover { transform: none; } }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass, .glass-card, .glass-panel, .page-head:not(:where(.glass-card, .glass, .glass-panel) *), .stack-lg > h2.section-title { background: var(--glass-solid); }
+}
+
+/* Forced colours (Windows High Contrast): drop decoration, use system colours and real borders. */
+@media (forced-colors: active) {
+  .aurora { display: none; }
+  .glass, .glass-card, .glass-panel, .page-head:not(:where(.glass-card, .glass, .glass-panel) *), .stack-lg > h2.section-title { background: Canvas; box-shadow: none; border: 1px solid CanvasText; backdrop-filter: none; }
+  .glass::before, .glass::after, .glass-card::before, .glass-card::after, .glass-panel::before, .glass-panel::after,
+  .page-head:not(:where(.glass-card, .glass, .glass-panel) *)::before, .page-head:not(:where(.glass-card, .glass, .glass-panel) *)::after, .stack-lg > h2.section-title::before, .stack-lg > h2.section-title::after { display: none; }
+}
