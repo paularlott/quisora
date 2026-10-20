@@ -196,7 +196,7 @@ func components() obj {
 	for k, v := range userProps {
 		userCreated["properties"].(obj)[k] = v
 	}
-	tenantResources := obj{"type": "array", "items": prop("string"), "description": "the APIs the tenant owns (resource indicators, RFC 8707: an MCP server's URL, say), unique across the server; a self-registered application asking for one is governed by this tenant"}
+	tenantResources := obj{"type": "array", "items": prop("string"), "description": "the APIs the tenant owns (resource indicators, RFC 8707: an API's URL), unique across the server; a self-registered application asking for one is governed by this tenant"}
 	tenantSettings := schema(nil, obj{"members_only": obj{"type": "boolean", "description": "only users and groups with access (see Tenant access) may sign in to the tenant's applications; otherwise everyone in the organization may"},
 		"password_login": prop("boolean"), "passkey_login": prop("boolean"),
 		"all_providers":     obj{"type": "boolean", "description": "allow every enabled provider of the organization, including future ones"},

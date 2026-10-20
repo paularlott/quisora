@@ -169,9 +169,9 @@
 
     <fieldset class="fieldset" aria-describedby="h-selfreg">
       <legend>Self-registered apps</legend>
-      <p class="help" id="h-selfreg">AI clients and other tools connecting to an MCP server or API listed here can register themselves and ask users to sign in, without an administrator setting them up. Users always see a consent screen that says the app is not verified. The rules above still apply.</p>
+      <p class="help" id="h-selfreg">Applications that use an API listed below can register themselves and ask users to sign in, without an administrator setting them up. Users always see a consent screen that says the app is not verified. The rules above still apply.</p>
       {{template "check-field" (dict "name" "self_registration" "label" "Allow self-registered apps" "switch" true)}}
-      {{template "list-field" (dict "name" "tenant_resources" "label" "Resources" "item" "Resource" "add" "Add resource" "mono" true "optional" true "placeholder" "https://mcp.example.com/mcp" "help" "The MCP servers and APIs this tenant owns, as the resource address clients ask tokens for. Each belongs to one tenant.")}}
+      {{template "list-field" (dict "name" "tenant_resources" "label" "Resources" "item" "Resource" "add" "Add resource" "mono" true "optional" true "placeholder" "https://api.example.com/" "help" "The APIs this tenant owns, as the resource address applications ask tokens for. Each belongs to one tenant.")}}
     </fieldset>
   </div>
   {{template "form-foot" (dict "label" "tenantSubmitLabel" "default" "Save")}}
