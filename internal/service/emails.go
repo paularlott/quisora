@@ -135,6 +135,12 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 		return nil, ErrForbidden
 	}
 	verified = verified && !self
+	if verified {
+		// as MarkEmailVerified: a verified address links sign-ins from providers to the account
+		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+			return nil, err
+		}
+	}
 	addr, err := normEmail(address)
 	if err != nil {
 		return nil, err
@@ -250,6 +256,56 @@ func (s *Service) IssueEmailLink(ctx context.Context, u *model.User, address str
 	}
 	tok, _, err := s.IssueLink(ctx, u, LinkVerify, address, VerifyTTL)
 	return tok, err
+}
+
+// MarkEmailVerified marks one of u's unverified addresses (the primary or a linked one) verified without the mailed
+// link: a manager's call, for someone whose address they know to be right. A verified address links sign-ins from
+// providers to the account and reaches every application as email_verified, so it is never done for your own
+// account, and for an established manager or administrator only by a super admin (as changing their address).
+func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, address string) (*model.User, error) {
+	u, err := s.Users.Get(ctx, userID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if a != System && a.UserID == u.ID {
+		return nil, Invalid("email", "your own email address is verified by the link mailed to it")
+	}
+	if _, err := s.emailActor(ctx, a, u); err != nil {
+		return nil, err
+	}
+	if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+		return nil, err
+	}
+	address = strings.TrimSpace(address)
+	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+		if strings.EqualFold(u.Email, address) {
+			if u.EmailVerified {
+				return &conflictErr{Invalid("email", "is already verified")}
+			}
+			u.EmailVerified = true
+			return nil
+		}
+		for i := range u.LinkedEmails {
+			if strings.EqualFold(u.LinkedEmails[i].Address, address) {
+				if u.LinkedEmails[i].Verified {
+					return &conflictErr{Invalid("email", "is already verified")}
+				}
+				u.LinkedEmails[i].Verified = true
+				return nil
+			}
+		}
+		return ErrNotFound
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.Audit(ctx, a, u.OrgID, "user.email.verify", u.Username, map[string]string{"email": address, "method": "manual"})
+	return u, nil
+}
+
+// CanMarkEmailVerified reports whether a may mark u's addresses verified (MarkEmailVerified), for what to show.
+func (s *Service) CanMarkEmailVerified(ctx context.Context, a *Actor, u *model.User) bool {
+	return a != System && a.UserID != u.ID && s.CanResetSignIn(ctx, a, u)
 }
 
 // VerifyEmailAddress marks one address of the user verified, as proven by a redeemed LinkVerify link. A link whose

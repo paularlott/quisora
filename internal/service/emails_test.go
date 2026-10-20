@@ -275,3 +275,66 @@ func TestFullNameAndGivenNameRequired(t *testing.T) {
 		t.Fatal("full name fallbacks")
 	}
 }
+
+func TestMarkEmailVerified(t *testing.T) {
+	c := newCast(t)
+	self := service.SelfService(c.ctx)
+	if _, err := c.svc.AddLinkedEmail(c.ctx, service.System, c.aUser.ID, "alt@example.org", false); err != nil {
+		t.Fatal(err)
+	}
+	// a manager marks a user's linked and primary addresses verified; once is enough
+	u, err := c.svc.MarkEmailVerified(c.ctx, actor(c.aManager), c.aUser.ID, "ALT@example.org")
+	if err != nil || !u.LinkedEmails[0].Verified {
+		t.Fatalf("linked: %v %+v", err, u.LinkedEmails)
+	}
+	if u, err = c.svc.MarkEmailVerified(c.ctx, actor(c.aManager), c.aUser.ID, c.aUser.Email); err != nil || !u.EmailVerified {
+		t.Fatalf("primary: %v", err)
+	}
+	if _, err := c.svc.MarkEmailVerified(c.ctx, actor(c.aManager), c.aUser.ID, c.aUser.Email); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("already verified: %v", err)
+	}
+	if _, err := c.svc.MarkEmailVerified(c.ctx, actor(c.aManager), c.aUser.ID, "nobody@example.org"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("not on the account: %v", err)
+	}
+	// who: not plain users, not other orgs, never yourself (self-service or not, super admin or not)
+	if _, err := c.svc.MarkEmailVerified(c.ctx, actor(c.pUser), c.aManager.ID, c.aManager.Email); err == nil {
+		t.Error("a plain user marked an address")
+	}
+	if _, err := c.svc.MarkEmailVerified(c.ctx, actor(c.bAdmin), c.aManager.ID, c.aManager.Email); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("other org's admin: %v", err)
+	}
+	for _, who := range []*model.User{c.aAdmin, c.super} {
+		for _, ctx := range []context.Context{c.ctx, self} {
+			if _, err := c.svc.MarkEmailVerified(ctx, actor(who), who.ID, who.Email); !errors.Is(err, service.ErrInvalid) {
+				t.Errorf("%s marks own address: %v", who.Username, err)
+			}
+			if _, err := c.svc.UpdateUser(ctx, actor(who), who.ID, service.UserInput{Verified: ptr(true)}); err == nil {
+				t.Errorf("%s sets own email_verified", who.Username)
+			}
+		}
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aAdmin.ID, service.UserInput{PhoneVerified: ptr(true)}); err == nil {
+		t.Error("admin sets own phone_number_verified")
+	}
+	// an established manager's address: only a super admin, by either route
+	if _, err := c.svc.UpdateUser(c.ctx, service.System, c.aManager.ID, service.UserInput{Password: ptr("a long enough password")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.MarkEmailVerified(c.ctx, actor(c.aAdmin), c.aManager.ID, c.aManager.Email); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("admin marks an established manager's address: %v", err)
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aManager.ID, service.UserInput{Verified: ptr(true)}); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("admin sets an established manager's email_verified: %v", err)
+	}
+	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), c.aManager.ID, "mgr-alt@example.org", true); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("admin adds a verified address for an established manager: %v", err)
+	}
+	mgr, _ := c.svc.Users.Get(c.ctx, c.aManager.ID) // now with a password
+	if !c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), c.aUser) || c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), mgr) ||
+		c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), c.aAdmin) {
+		t.Error("CanMarkEmailVerified")
+	}
+	if u, err := c.svc.MarkEmailVerified(c.ctx, actor(c.super), c.aManager.ID, c.aManager.Email); err != nil || !u.EmailVerified {
+		t.Errorf("super admin: %v", err)
+	}
+}

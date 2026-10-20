@@ -2,7 +2,8 @@
 // other providers). One mixin serves the account page and the admin user page. Adding and removing addresses is a
 // manager's job (the admin user page; managers and up also on their own account page, re-authenticated): set
 // this.manage = false and only verifying, resending and making a verified address primary remain. New addresses are
-// unverified until the link mailed to them is followed (on the admin page only when email is set up).
+// unverified until the link mailed to them is followed (on the admin page only when email is set up), or until a
+// manager marks them verified (the admin user page, when the user's can_verify_email says so: never your own).
 //
 // Compose with formMixin(): mix(formMixin(), emailsMixin({...}), {...}). cfg:
 //   load()            -> Promise of the user (primary: email/email_verified, linked_emails)
@@ -25,18 +26,19 @@ const mailOn = () => document.documentElement.dataset.mail === '1'
 export function emailsMixin(cfg) {
   const guard = cfg.guard || ((fn) => fn())
   return mix(dialogMixin(), {
-    primary: { address: '', verified: false }, items: [], emailsLoading: true, emailsError: '', pending: false,
+    primary: { address: '', verified: false }, items: [], emailsLoading: true, emailsError: '', pending: false, canMark: false,
     manage: cfg.manage !== false,
 
     async loadEmails() {
       try { this.setEmails(await cfg.load.call(this)); this.emailsError = '' } catch (e) { this.emailsError = e.message } finally { this.emailsLoading = false }
     },
     setEmails(u) {
+      if ('can_verify_email' in u) this.canMark = !!u.can_verify_email // only on GET of one user: kept otherwise
       this.primary = { address: u.email, verified: !!u.email_verified }
       this.items = (u.linked_emails || []).map((l) => ({
         address: l.address, verified: !!l.verified,
         badgeText: l.verified ? 'Verified' : 'Unverified', badgeClass: l.verified ? 'badge badge-success' : 'badge badge-warning',
-        canResend: !l.verified && !!cfg.canResend && mailOn(), canPrimary: !!l.verified,
+        canResend: !l.verified && !!cfg.canResend && mailOn(), canPrimary: !!l.verified, canMark: !l.verified && this.canMark,
         forAddress: ' for ' + l.address, removeLabel: 'Remove ' + l.address,
       }))
     },
@@ -44,6 +46,8 @@ export function emailsMixin(cfg) {
     get primaryBadge() { return this.primary.verified ? 'Verified' : 'Not verified' },
     get primaryBadgeClass() { return this.primary.verified ? 'badge badge-success' : 'badge badge-warning' },
     get hasItems() { return this.items.length > 0 },
+    get canMarkPrimary() { return this.canMark && !this.primary.verified },
+    get forPrimary() { return ' for ' + this.primary.address },
     // The card: always where addresses can be managed; otherwise only once there is more than the primary address
     // (which the profile shows, with its own verification button).
     get showCard() { return this.manage || this.items.length > 0 },
@@ -86,6 +90,21 @@ export function emailsMixin(cfg) {
       if (this.pending) return
       this.pending = true
       try { await post(cfg.url.call(this, '/' + enc(address) + '/verify')); toast('Verification link sent to ' + address + '.') } catch (e) { toast(e.message, 'error') } finally { this.pending = false }
+    },
+    async markVerified(ev) {
+      const address = ev.currentTarget.dataset.address
+      const ok = await window.Alpine.store('confirm').ask({ title: 'Mark as verified', message: 'Mark ' + address + ' as verified?',
+        detail: 'Only do this if you know this person receives email at this address. Sign-ins from providers that use it will find this account, and applications are told it is verified.',
+        confirmLabel: 'Mark as verified', danger: false })
+      if (!ok) return
+      try {
+        const r = await post(cfg.url.call(this, '/' + enc(address) + '/mark-verified'))
+        this.setEmails(userOf(r))
+        this.notify(userOf(r))
+        toast(address + ' is now verified.')
+        announce(address + ' is now verified.')
+        this.focusAddButton()
+      } catch (e) { toast(e.message, 'error') }
     },
     async makePrimary(ev) {
       const address = ev.currentTarget.dataset.address

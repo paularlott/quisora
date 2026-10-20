@@ -96,6 +96,7 @@ func (m *Module) routes() []Route {
 		{"DELETE", o + "/users/{id}/emails/{address}", m.removeEmail},
 		{"POST", o + "/users/{id}/emails/{address}/primary", m.primaryEmail},
 		{"POST", o + "/users/{id}/emails/{address}/verify", m.resendEmail},
+		{"POST", o + "/users/{id}/emails/{address}/mark-verified", m.markEmailVerified},
 		{"GET", o + "/users/{id}/apps", m.listUserApps},
 		{"DELETE", o + "/users/{id}/apps/{client}", m.removeUserApp},
 		{"GET", o + "/users/{id}/providers", m.listUserProviders},

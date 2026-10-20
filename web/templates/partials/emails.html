@@ -18,6 +18,9 @@
       <div class="setting-text">
         <p class="setting-title"><span x-text="primary.address"></span> <span class="badge badge-accent">Primary</span> <span :class="primaryBadgeClass" x-text="primaryBadge">Verified</span></p>
       </div>
+      <div class="flex flex-wrap items-center gap-2" x-show="canMarkPrimary" x-cloak>
+        <button type="button" class="btn btn-secondary btn-sm" :data-address="primary.address" @click="markVerified">Mark as verified<span class="sr-only" x-text="forPrimary"></span></button>
+      </div>
     </li>
     <template x-for="row in items" :key="row.address"><li class="setting-row">
       <div class="setting-text">
@@ -25,6 +28,7 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <button type="button" class="btn btn-secondary btn-sm" x-show="row.canResend" :data-address="row.address" @click="resend">Resend link<span class="sr-only" x-text="row.forAddress"></span></button>
+        <button type="button" class="btn btn-secondary btn-sm" x-show="row.canMark" :data-address="row.address" @click="markVerified">Mark as verified<span class="sr-only" x-text="row.forAddress"></span></button>
         <button type="button" class="btn btn-secondary btn-sm" x-show="row.canPrimary" :data-address="row.address" @click="makePrimary">Make primary<span class="sr-only" x-text="row.forAddress"></span></button>
         <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="manage" :data-address="row.address" :aria-label="row.removeLabel" @click="remove">{{template "icon" "trash"}}</button>
       </div>

@@ -489,6 +489,17 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		// of their verified addresses primary.
 		return nil, Invalid("email", "is changed by another manager or administrator, not by yourself")
 	}
+	if self && a != System && ((in.Verified != nil && *in.Verified && !u.EmailVerified) ||
+		(in.PhoneVerified != nil && *in.PhoneVerified && !u.PhoneVerified)) {
+		// Applications trust these claims: your own address or number is verified only by proving you receive it.
+		return nil, Invalid("email_verified", "your own email address is verified by the link mailed to it, not by marking it")
+	}
+	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || strings.EqualFold(strings.TrimSpace(*in.Email), u.Email)) {
+		// A verified address links sign-ins from providers to the account, as changing it does (just above).
+		if err := s.mayResetSignIn(ctx, a, u, "email_verified"); err != nil {
+			return nil, err
+		}
+	}
 	if self && ((in.Role != nil && *in.Role != u.Role) || (in.Active != nil && !*in.Active)) {
 		return nil, Invalid("role", "you cannot change your own role or disable yourself")
 	}

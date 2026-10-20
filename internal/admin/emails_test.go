@@ -126,3 +126,31 @@ func TestOwnAddressesNeedReauth(t *testing.T) {
 	fresh = false
 	want(t, ad.post(AU+"/"+w.users["user"].ID+"/emails", map[string]any{"address": "alan.alt@x.example"}), 201)
 }
+
+func TestMarkEmailVerifiedAPI(t *testing.T) {
+	w := newWorld(t)
+	w.env.Server.Site.Mail = true
+	w.mod.Mailer = &fakeMailer{}
+	E := AU + "/" + w.users["user"].ID
+	want(t, w.as("admin").post(E+"/emails", map[string]any{"address": "pending@x.example"}), 201)
+
+	r := w.as("manager").get(E)
+	want(t, r, 200)
+	if r.JSON["can_verify_email"] != true {
+		t.Fatalf("manager on user: %s", r.Raw)
+	}
+	r = w.as("admin").get(AU + "/" + w.users["admin"].ID)
+	if r.JSON["can_verify_email"] != false {
+		t.Fatalf("own account: %s", r.Raw)
+	}
+	wantField(t, w.as("user").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil), 422, "email") // their own
+	want(t, w.as("user").post(AU+"/"+w.users["manager"].ID+"/emails/"+url.PathEscape(w.users["manager"].Email)+"/mark-verified", nil), 404) // cannot see others
+	r = w.as("manager").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil)
+	want(t, r, 200)
+	if l := r.JSON["linked_emails"].([]any)[0].(map[string]any); l["verified"] != true {
+		t.Fatalf("marked: %s", r.Raw)
+	}
+	want(t, w.as("manager").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil), 409)
+	me := AU + "/" + w.users["admin"].ID
+	wantField(t, w.as("admin").post(me+"/emails/"+url.PathEscape(w.users["admin"].Email)+"/mark-verified", nil), 422, "email")
+}

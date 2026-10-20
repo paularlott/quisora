@@ -35,6 +35,9 @@ type userView struct {
 	// CanResetSignIn says the caller may issue this user an invitation or remove their password (a manager's or
 	// administrator's only a super admin may, once they have a way to sign in); present on GET of one user.
 	CanResetSignIn *bool `json:"can_reset_sign_in,omitempty"`
+	// CanVerifyEmail says the caller may mark the user's unverified addresses verified (never their own); present
+	// on GET of one user.
+	CanVerifyEmail *bool `json:"can_verify_email,omitempty"`
 }
 
 func viewOf(u *model.User) userView {
@@ -165,6 +168,8 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 	}
 	can := m.s.Svc.CanResetSignIn(r.Context(), a, u)
 	view.CanResetSignIn = &can
+	canVerify := m.s.Svc.CanMarkEmailVerified(r.Context(), a, u)
+	view.CanVerifyEmail = &canVerify
 	web.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -493,6 +498,25 @@ func (m *Module) resendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w)
+}
+
+// markEmailVerified handles POST /users/{id}/emails/{address}/mark-verified: marks one of the user's unverified
+// addresses verified without the mailed link (service.MarkEmailVerified).
+func (m *Module) markEmailVerified(w http.ResponseWriter, r *http.Request) {
+	org, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	u, found := m.userFor(w, r, org, a)
+	if !found {
+		return
+	}
+	upd, err := m.s.Svc.MarkEmailVerified(r.Context(), a, u.ID, r.PathValue("address"))
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, viewOf(upd))
 }
 
 // removeEmail handles DELETE /users/{id}/emails/{address}.
