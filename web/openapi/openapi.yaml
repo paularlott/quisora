@@ -1,0 +1,4339 @@
+openapi: 3.1.0
+info:
+  title: Quisora management API
+  version: "2026-10-20"
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+  description: |-
+    Everything an administrator can do. The path prefix /api never changes; select the API version with the Api-Version header. Versions are dates (YYYY-MM-DD): the release that introduced them; a new one comes only with a change that would break existing callers. The current version is 2026-10-20. Without the header the oldest supported version is served.
+
+    With a browser session, managers and above must have signed in with a second factor; otherwise every call answers 403 with field "mfa".
+
+    SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).
+
+    Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api-internal/account (the signed-in user, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).
+servers:
+  - url: /
+    description: this server
+security:
+  - session: []
+  - bearer: [admin]
+tags:
+  - name: Organizations
+    description: Organizations hold users, groups, tenants, clients and sign-in providers. Creating, renaming and deleting them is for super admins.
+  - name: Users
+    description: People who sign in, with their email addresses, invitations, sessions, linked providers, passkeys and personal API tokens.
+  - name: Groups
+    description: Groups of users. Their tags reach applications in the tags claim, and tenant access can be given to a whole group.
+  - name: Tenants
+    description: Groups of applications that share sign-in rules and resources.
+  - name: Tenant access
+    description: Which users and groups may use a tenant's applications, with their roles, tags and end dates.
+  - name: Clients
+    description: "OAuth 2 / OpenID Connect clients: the applications that sign users in through this server."
+  - name: Providers
+    description: Upstream sign-in providers (other OpenID Connect or OAuth 2 identity providers) users can sign in with.
+  - name: Audit
+    description: The audit log, per organization and across all of them.
+  - name: Keys
+    description: Token signing keys and the master key that seals stored secrets (super admins).
+  - name: Backup
+    description: A backup of the whole store (super admins).
+  - name: Cluster
+    description: The state of a server cluster (super admins).
+  - name: SCIM
+    description: SCIM 2.0 provisioning (RFC 7643, RFC 7644). Bodies are application/scim+json; the base URL for an organization is /scim/v2/{org}.
+paths:
+  /api/orgs:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Organizations]
+      summary: List organizations (non-super callers see only their own)
+      operationId: get_orgs
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, display_name, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OrgList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Organizations]
+      summary: Create an organization (super admin)
+      operationId: post_orgs
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OrgInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Org"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Organizations]
+      summary: Get an organization
+      operationId: get_orgs_org
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Org"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Organizations]
+      summary: Rename an organization or change its sign-in and session settings
+      description: Rename an organization or change its sign-in and session settings (super admin)
+      operationId: patch_orgs_org
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OrgInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Org"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Organizations]
+      summary: Delete an organization
+      description: Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers
+      operationId: delete_orgs_org
+      parameters:
+        - name: cascade
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: List users
+      description: List users; ?tag=<tag> keeps only users carrying exactly that tag; q also matches tags
+      operationId: get_orgs_org_users
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [username, email, name, role, active, created, last_login]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: role
+          in: query
+          schema:
+            type: string
+        - name: active
+          in: query
+          schema:
+            type: string
+        - name: tag
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Users]
+      summary: Create a user without a password
+      description: Create a user without a password; optionally issue (and email) an invitation link
+      operationId: post_orgs_org_users
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserCreate"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserCreated"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: Get a user with their groups
+      operationId: get_orgs_org_users_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Users]
+      summary: Update a user (role, active, profile)
+      operationId: patch_orgs_org_users_id
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Users]
+      summary: Delete a user and everything that belongs to them
+      operationId: delete_orgs_org_users_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/password:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Remove the user's password and end their sessions
+      description: Remove the user's password and end their sessions; they can sign in with a password again only after
+        accepting a new invitation
+      operationId: delete_orgs_org_users_id_password
+      responses:
+        "204":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/invite:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Issue a new single-use invitation link
+      description: Issue a new single-use invitation link (valid 7 days; earlier links stop working) through which the user
+        sets a password, if their organization allows passwords, or creates a passkey; optionally email it
+      operationId: post_orgs_org_users_id_invite
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/InviteRequest"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Invite"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/emails:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Link another email address to the user
+      description: "Link another email address to the user (managers and up, for users they manage and themselves; for
+        yourself it needs a recent re-authentication: 403, field reauth). With email set up it starts unverified and the
+        user is mailed a link to verify it; without email it counts as verified at once (your own: always unverified).
+        409 when the address is already anyone's primary or linked address, 422 beyond 10 addresses"
+      operationId: post_orgs_org_users_id_emails
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EmailInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/emails/{address}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Unlink an email address
+      description: Unlink an email address; the primary address cannot be removed (make another address primary first)
+      operationId: delete_orgs_org_users_id_emails_address
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/emails/{address}/primary:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Make a verified linked address the primary one
+      description: Make a verified linked address the primary one; the old primary becomes a linked address
+      operationId: post_orgs_org_users_id_emails_address_primary
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/emails/{address}/mark-verified:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Mark an address verified
+      description: "Mark one of the user's unverified addresses (primary or linked) verified without the mailed link, for an
+        address you know to be right: it then links sign-ins from providers and reaches applications as email_verified.
+        Managers and up, for users they manage; never your own; a manager's or administrator's who can already sign in
+        only by a super admin. Audited as user.email.verify. 409 when already verified"
+      operationId: post_orgs_org_users_id_emails_address_mark-verified
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/emails/{address}/verify:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: address
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Mail the user a new verification link for one of their unverified addresses
+      description: Mail the user a new verification link for one of their unverified addresses; 503 when email is not set up
+      operationId: post_orgs_org_users_id_emails_address_verify
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/apps:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: The applications the user granted access to
+      description: The applications the user granted access to (managers and up, for users they manage, and yourself)
+      operationId: get_orgs_org_users_id_apps
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ConnectedAppList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/apps/{client}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: client
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: End the user's access to one application
+      description: "End the user's access to one application: it is sent a back-channel logout and its refresh tokens stop
+        working; 404 when the user granted it nothing"
+      operationId: delete_orgs_org_users_id_apps_client
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/sessions:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: The user's signed-in sessions
+      description: The user's signed-in sessions, the current one first (managers and up, for users they manage, and yourself)
+      operationId: get_orgs_org_users_id_sessions
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserSessionList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Users]
+      summary: Sign the user out everywhere (revoke sessions and refresh grants)
+      operationId: delete_orgs_org_users_id_sessions
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/sessions/{session}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: session
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Sign the user out of one session
+      description: Sign the user out of one session (its applications are sent back-channel logouts); 409 for the session
+        making the request
+      operationId: delete_orgs_org_users_id_sessions_session
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/providers:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: The sign-in providers linked to the user
+      description: The sign-in providers linked to the user (managers and up, for users they manage, and yourself)
+      operationId: get_orgs_org_users_id_providers
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LinkedProviderList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/providers/{provider}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: provider
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Unlink the user's account at one sign-in provider
+      description: Unlink the user's account at one sign-in provider; for someone else it may be their last way to sign in
+        (send an invitation afterwards), for yourself it may not (409) and needs a recent re-authentication (403, field
+        reauth); 404 when none is linked
+      operationId: delete_orgs_org_users_id_providers_provider
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/passkeys:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: The user's passkeys
+      description: The user's passkeys, oldest first (managers and up, for users they manage, and yourself)
+      operationId: get_orgs_org_users_id_passkeys
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserPasskeyList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/passkeys/{passkey}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: passkey
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Remove one of the user's passkeys and end the sessions that signed in with it
+      description: Remove one of the user's passkeys and end the sessions that signed in with it; for someone else it may be
+        their last way to sign in (send an invitation afterwards), for yourself it may not (409) and needs a recent
+        re-authentication (403, field reauth)
+      operationId: delete_orgs_org_users_id_passkeys_passkey
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/tokens:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Users]
+      summary: List the user's personal API tokens
+      description: List the user's personal API tokens, newest first (offset/limit only; secrets are never shown again)
+      operationId: get_orgs_org_users_id_tokens
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/APITokenList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/tokens/{token}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: token
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Revoke one of the user's personal API tokens at once
+      operationId: delete_orgs_org_users_id_tokens_token
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/groups:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Groups]
+      summary: List groups
+      operationId: get_orgs_org_groups
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [display_name, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GroupList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Groups]
+      summary: Create a group
+      operationId: post_orgs_org_groups
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GroupInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Group"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/groups/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Groups]
+      summary: Get a group
+      operationId: get_orgs_org_groups_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Group"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Groups]
+      summary: Update a group
+      operationId: patch_orgs_org_groups_id
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GroupInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Group"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Groups]
+      summary: Delete a group
+      operationId: delete_orgs_org_groups_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/groups/{id}/members:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Groups]
+      summary: List the members of a group (offset/limit only)
+      operationId: get_orgs_org_groups_id_members
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MemberList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/groups/{id}/members/{user}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - name: user
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    put:
+      tags: [Groups]
+      summary: Add a user to a group (idempotent)
+      operationId: put_orgs_org_groups_id_members_user
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Groups]
+      summary: Remove a user from a group
+      operationId: delete_orgs_org_groups_id_members_user
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Tenants]
+      summary: List tenants
+      description: List tenants (groups of applications sharing sign-in rules); each carries its client count
+      operationId: get_orgs_org_tenants
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, display_name, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TenantList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Tenants]
+      summary: Create a tenant
+      operationId: post_orgs_org_tenants
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TenantInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Tenants]
+      summary: Get a tenant
+      operationId: get_orgs_org_tenants_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Tenants]
+      summary: Update a tenant
+      description: Update a tenant (name, display name, description, sign-in settings, resources)
+      operationId: patch_orgs_org_tenants_id
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TenantInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Tenants]
+      summary: Delete a tenant
+      description: Delete a tenant; 409 while it still has clients
+      operationId: delete_orgs_org_tenants_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/self-registered:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Tenants]
+      summary: The self-registered applications users of this tenant have authorized
+      description: The self-registered applications users of this tenant have authorized, with how many users they hold access for
+      operationId: get_orgs_org_tenants_id_self-registered
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SelfRegisteredAppList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/self-registered/{client}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - name: client
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Tenants]
+      summary: End a self-registered application's access in the organization
+      description: "End a self-registered application's access in the organization: every user's grants to it go; it can come
+        back only by asking users again"
+      operationId: delete_orgs_org_tenants_id_self-registered_client
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/access:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Tenant access]
+      summary: List the users and groups with access to the tenant's applications
+      description: List the users and groups with access to the tenant's applications (q searches name and email)
+      operationId: get_orgs_org_tenants_id_access
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, type, expires, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Tenant access]
+      summary: Give a user or group access
+      description: Give a user or group access; 409 when they already have it
+      operationId: post_orgs_org_tenants_id_access
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Access"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/access/{aid}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - name: aid
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Tenant access]
+      summary: Get one access entry
+      operationId: get_orgs_org_tenants_id_access_aid
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Access"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Tenant access]
+      summary: Change an access entry
+      description: Change roles, tags, applications or the end date (subject_type and subject_id are ignored)
+      operationId: patch_orgs_org_tenants_id_access_aid
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Access"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Tenant access]
+      summary: Remove an access entry
+      operationId: delete_orgs_org_tenants_id_access_aid
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/clients:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Clients]
+      summary: List OAuth clients
+      description: List OAuth clients; ?tenant=<tenant id> keeps only that tenant's clients
+      operationId: get_orgs_org_clients
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, auth_method, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: tenant
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClientList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Clients]
+      summary: Create an OAuth client
+      description: Create an OAuth client; the response carries its secret, shown once
+      operationId: post_orgs_org_clients
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClientInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClientWithSecret"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/clients/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Clients]
+      summary: Get an OAuth client
+      operationId: get_orgs_org_clients_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Client"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Clients]
+      summary: Update an OAuth client
+      operationId: patch_orgs_org_clients_id
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClientInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Client"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Clients]
+      summary: Delete an OAuth client
+      operationId: delete_orgs_org_clients_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/clients/{id}/secret:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Clients]
+      summary: Rotate the client secret
+      description: Rotate the client secret; the old one stops working at once
+      operationId: post_orgs_org_clients_id_secret
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SecretResult"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/providers:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Providers]
+      summary: List upstream sign-in providers
+      operationId: get_orgs_org_providers
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, type, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProviderList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Providers]
+      summary: Create a provider (client_secret is write-only)
+      operationId: post_orgs_org_providers
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProviderInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Provider"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/providers/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Providers]
+      summary: Get a provider
+      operationId: get_orgs_org_providers_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Provider"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Providers]
+      summary: Update a provider (omit client_secret to keep it)
+      operationId: patch_orgs_org_providers_id
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProviderInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Provider"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Providers]
+      summary: Delete a provider
+      operationId: delete_orgs_org_providers_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/audit:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Audit]
+      summary: List audit events
+      description: "List audit events, newest first by default. Also: source (store, cluster or victorialogs) and, in a gossip
+        cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)"
+      operationId: get_orgs_org_audit
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [action, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/audit:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Audit]
+      summary: List the audit events of every organization
+      description: List the audit events of every organization (super admins), newest first by default; ?org=<name> for one.
+        Items carry org_name; source, nodes and nodes_answered as for an organization's audit log
+      operationId: get_audit
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [action, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: org
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/keys:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Keys]
+      summary: List signing keys, newest first, with their state (super admin)
+      operationId: get_keys
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KeyList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/keys/rotate:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Keys]
+      summary: Rotate the signing key now
+      description: "Rotate the signing key now (super admin): a new key signs from now on; the old one stays published until
+        the tokens it signed have expired"
+      operationId: post_keys_rotate
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KeyRotated"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/backup:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Backup]
+      summary: Download a backup of the whole store
+      description: "Download a backup of the whole store (super admin, with an API token: the backup scope): every record,
+        secrets still sealed with the master key. It is encrypted (AES-256-GCM, the key derived from the
+        X-Backup-Password header by argon2id; application/octet-stream) unless ?plain=1 asks for it unencrypted (a gzip
+        stream); one or the other is required (400 otherwise). \"quisora backup --server\" downloads it with ?plain=1
+        over TLS and encrypts it on the operator's machine, so the password never reaches the server. A point-in-time
+        snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise).
+        Restore it with \"quisora restore\" or \"quisora serve --restore-from\""
+      operationId: get_backup
+      security:
+        - session: []
+        - bearer: [backup]
+      parameters:
+        - name: plain
+          in: query
+          description: "1: download the backup unencrypted (required unless X-Backup-Password is given)"
+          schema:
+            type: string
+        - name: X-Backup-Password
+          in: header
+          description: password to encrypt the backup with, at least 12 characters (required unless ?plain=1)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/gzip:
+              schema:
+                format: binary
+                type: string
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/ForbiddenBackup"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/master-key:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Keys]
+      summary: Where a master key rotation stands
+      description: "Where a master key rotation stands (super admin): the keys this node and every live node use, how many
+        stored secrets are still sealed with a previous key or open with none, and whether the previous keys can be
+        removed now (previous_keys_removable, state, detail). Reads every sealed value: a few seconds on a large
+        directory"
+      operationId: get_master-key
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MasterKey"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/cluster:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Cluster]
+      summary: This node's cluster status
+      description: "This node's cluster status (super admin): size, quorum, every node with its address, state and role,
+        readiness, and the counts of writes a majority did not confirm, refused writes and clock skew"
+      operationId: get_cluster
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Cluster"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /scim/v2/Organizations:
+    get:
+      tags: [SCIM]
+      summary: List organizations (super admins)
+      operationId: get_scim_Organizations
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      parameters:
+        - {$ref: "#/components/parameters/ScimFilter"}
+        - {$ref: "#/components/parameters/ScimSortBy"}
+        - {$ref: "#/components/parameters/ScimSortOrder"}
+        - {$ref: "#/components/parameters/ScimStartIndex"}
+        - {$ref: "#/components/parameters/ScimCount"}
+        - {$ref: "#/components/parameters/ScimAttributes"}
+        - {$ref: "#/components/parameters/ScimExcludedAttributes"}
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimListResponse"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    post:
+      tags: [SCIM]
+      summary: Create an organization (super admins)
+      operationId: post_scim_Organizations
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimOrganization"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimOrganization"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+  /scim/v2/Organizations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: resource id
+        schema:
+          type: string
+    get:
+      tags: [SCIM]
+      summary: Get an organization (super admins)
+      operationId: get_scim_Organizations_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimOrganization"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    put:
+      tags: [SCIM]
+      summary: Replace an organization (super admins)
+      operationId: put_scim_Organizations_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimOrganization"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimOrganization"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    patch:
+      tags: [SCIM]
+      summary: Change an organization (super admins)
+      operationId: patch_scim_Organizations_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimPatchOp"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimOrganization"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    delete:
+      tags: [SCIM]
+      summary: Delete an organization (super admins)
+      operationId: delete_scim_Organizations_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "204":
+          description: Deleted
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+  /scim/v2/ResourceTypes:
+    get:
+      tags: [SCIM]
+      summary: The resource types, at the root
+      operationId: get_scim_ResourceTypes
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/Schemas:
+    get:
+      tags: [SCIM]
+      summary: The schemas, at the root
+      operationId: get_scim_Schemas
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/ServiceProviderConfig:
+    get:
+      tags: [SCIM]
+      summary: What this server supports, at the root (for Organizations)
+      operationId: get_scim_ServiceProviderConfig
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/{org}/Groups:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    get:
+      tags: [SCIM]
+      summary: List or filter groups
+      operationId: get_scim_org_Groups
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      parameters:
+        - {$ref: "#/components/parameters/ScimFilter"}
+        - {$ref: "#/components/parameters/ScimSortBy"}
+        - {$ref: "#/components/parameters/ScimSortOrder"}
+        - {$ref: "#/components/parameters/ScimStartIndex"}
+        - {$ref: "#/components/parameters/ScimCount"}
+        - {$ref: "#/components/parameters/ScimAttributes"}
+        - {$ref: "#/components/parameters/ScimExcludedAttributes"}
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimListResponse"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    post:
+      tags: [SCIM]
+      summary: Create a group (administrator's token)
+      operationId: post_scim_org_Groups
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimGroup"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimGroup"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+  /scim/v2/{org}/Groups/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: resource id
+        schema:
+          type: string
+    get:
+      tags: [SCIM]
+      summary: Get a group
+      operationId: get_scim_org_Groups_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimGroup"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    put:
+      tags: [SCIM]
+      summary: Replace a group
+      operationId: put_scim_org_Groups_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimGroup"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimGroup"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    patch:
+      tags: [SCIM]
+      summary: Change a group, members included (PatchOp)
+      operationId: patch_scim_org_Groups_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimPatchOp"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimGroup"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    delete:
+      tags: [SCIM]
+      summary: Delete a group
+      operationId: delete_scim_org_Groups_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "204":
+          description: Deleted
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+  /scim/v2/{org}/ResourceTypes:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    get:
+      tags: [SCIM]
+      summary: The resource types
+      operationId: get_scim_org_ResourceTypes
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/{org}/Schemas:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    get:
+      tags: [SCIM]
+      summary: The schemas, Quisora's extensions included
+      operationId: get_scim_org_Schemas
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/{org}/ServiceProviderConfig:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    get:
+      tags: [SCIM]
+      summary: What this server supports (RFC 7644 §4)
+      operationId: get_scim_org_ServiceProviderConfig
+      security: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimDiscovery"}
+  /scim/v2/{org}/Users:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    get:
+      tags: [SCIM]
+      summary: List or filter users (filter, sortBy, startIndex, count, attributes)
+      operationId: get_scim_org_Users
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      parameters:
+        - {$ref: "#/components/parameters/ScimFilter"}
+        - {$ref: "#/components/parameters/ScimSortBy"}
+        - {$ref: "#/components/parameters/ScimSortOrder"}
+        - {$ref: "#/components/parameters/ScimStartIndex"}
+        - {$ref: "#/components/parameters/ScimCount"}
+        - {$ref: "#/components/parameters/ScimAttributes"}
+        - {$ref: "#/components/parameters/ScimExcludedAttributes"}
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimListResponse"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    post:
+      tags: [SCIM]
+      summary: Create a user
+      operationId: post_scim_org_Users
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimUser"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimUser"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+  /scim/v2/{org}/Users/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: resource id
+        schema:
+          type: string
+    get:
+      tags: [SCIM]
+      summary: Get a user
+      operationId: get_scim_org_Users_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimUser"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    put:
+      tags: [SCIM]
+      summary: Replace a user
+      operationId: put_scim_org_Users_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimUser"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimUser"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    patch:
+      tags: [SCIM]
+      summary: Change a user (PatchOp)
+      operationId: patch_scim_org_Users_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimPatchOp"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimUser"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+    delete:
+      tags: [SCIM]
+      summary: Delete a user
+      operationId: delete_scim_org_Users_id
+      security:
+        - bearer: [scim]
+        - scimClient: [scim]
+      responses:
+        "204":
+          description: Deleted
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "409": {$ref: "#/components/responses/ScimConflict"}
+components:
+  parameters:
+    ApiVersion:
+      name: Api-Version
+      in: header
+      required: false
+      description: "API version: the date (YYYY-MM-DD) of the release that introduced it; responses echo it. Without it the oldest supported version is served."
+      schema:
+        type: string
+        enum: ["2026-10-20"]
+    Org:
+      name: org
+      in: path
+      required: true
+      description: organization URL name
+      schema:
+        type: string
+        pattern: ^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$
+    Q:
+      name: q
+      in: query
+      description: case-insensitive substring search
+      schema:
+        type: string
+    Desc:
+      name: desc
+      in: query
+      description: descending order (1)
+      schema:
+        type: boolean
+    Offset:
+      name: offset
+      in: query
+      description: items to skip
+      schema:
+        type: integer
+    Limit:
+      name: limit
+      in: query
+      description: page size, default 25, max 100
+      schema:
+        type: integer
+    ScimFilter:
+      name: filter
+      in: query
+      description: SCIM filter, for example userName eq "alan"
+      schema:
+        type: string
+    ScimSortBy:
+      name: sortBy
+      in: query
+      description: attribute to sort by
+      schema:
+        type: string
+    ScimSortOrder:
+      name: sortOrder
+      in: query
+      description: ascending or descending
+      schema:
+        type: string
+    ScimStartIndex:
+      name: startIndex
+      in: query
+      description: 1-based index of the first result
+      schema:
+        type: integer
+    ScimCount:
+      name: count
+      in: query
+      description: page size
+      schema:
+        type: integer
+    ScimAttributes:
+      name: attributes
+      in: query
+      description: attributes to return, comma separated
+      schema:
+        type: string
+    ScimExcludedAttributes:
+      name: excludedAttributes
+      in: query
+      description: attributes to leave out
+      schema:
+        type: string
+  headers:
+    ApiVersion:
+      description: the API version that answered
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Unsupported Api-Version or unreadable body
+    Unauthorized:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Not signed in or invalid token
+    Forbidden:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Not permitted (or CSRF check failed, or the token lacks the admin scope)
+    ForbiddenBackup:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Not permitted (or CSRF check failed, or the token lacks the backup scope)
+    NotFound:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Not found
+    Conflict:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Conflict
+    ValidationFailed:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: Validation failed; `field` names the input
+    Unavailable:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: This server cannot make the change now (catching up with its cluster, or cut off from its majority), or a
+        majority has not confirmed it yet; Retry-After says when to try again
+    ScimBadRequest:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: Invalid request (scimType says which)
+    ScimUnauthorized:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: No token, or an invalid one
+    ScimForbidden:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: Not permitted, or the token lacks the scim scope
+    ScimNotFound:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: No such organization or resource
+    ScimConflict:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: Conflict (uniqueness, or a stale ETag)
+  securitySchemes:
+    bearer:
+      bearerFormat: qsr_<id>_<secret>
+      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope). The
+        owning user's role still limits every call."
+      scheme: bearer
+      type: http
+    scimClient:
+      description: A confidential client with SCIM provisioning turned on; it acts as an administrator of its own organization
+        (never granting administrator roles).
+      flows:
+        clientCredentials:
+          scopes:
+            scim: SCIM provisioning
+          tokenUrl: /oauth/token
+      type: oauth2
+    session:
+      description: Browser session. Unsafe methods must also send the X-CSRF-Token header (from the page's csrf-token meta tag).
+      in: cookie
+      name: __Host-quisora_session
+      type: apiKey
+  schemas:
+    APIToken:
+      type: object
+      properties:
+        id:
+          type: string
+        app_scopes:
+          type: array
+          description: "api tokens: the application scopes the token is narrowed to; empty: its owner's full access"
+          items:
+            type: string
+        audience:
+          type: array
+          description: "api tokens: the client ids that may introspect the token; empty: any confidential client of the
+            organization"
+          items:
+            type: string
+        expires:
+          type: string
+          description: "absent: never"
+          format: date-time
+        last_used:
+          type: string
+          description: "absent: never used"
+          format: date-time
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        created:
+          type: string
+          format: date-time
+    APITokenList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/APIToken"}
+        total:
+          type: integer
+    Access:
+      type: object
+      properties:
+        id:
+          type: string
+        all_clients:
+          type: boolean
+        clients:
+          type: array
+          description: client ids, when all_clients is false
+          items:
+            type: string
+        detail:
+          type: string
+          description: the user's email address
+        expired:
+          type: boolean
+        expires:
+          type: string
+          description: "absent: no end"
+          format: date-time
+        name:
+          type: string
+          description: the user's full name or the group's name
+        org_id:
+          type: string
+        roles:
+          type: array
+          description: application role names (same characters as tags); sent in the roles claim of tokens for the tenant's
+            applications
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        subject_id:
+          type: string
+        subject_type:
+          type: string
+          enum: [user, group]
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        tenant_id:
+          type: string
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    AccessInput:
+      type: object
+      properties:
+        all_clients:
+          type: boolean
+          description: default true
+        clients:
+          type: array
+          description: client ids of this tenant, when all_clients is false
+          items:
+            type: string
+        expires:
+          type: string
+          description: "RFC 3339 time, or a date (YYYY-MM-DD: access ends at the start of that day, UTC); empty: no end; omitted
+            on update: unchanged"
+        roles:
+          type: array
+          description: application role names (same characters as tags); sent in the roles claim of tokens for the tenant's
+            applications
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        subject_id:
+          type: string
+          description: user or group id; required on create
+        subject_type:
+          type: string
+          description: required on create
+          enum: [user, group]
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+    AccessList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Access"}
+        total:
+          type: integer
+    Audit:
+      type: object
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+        actor:
+          type: string
+        actor_id:
+          type: string
+        detail:
+          type: object
+          additionalProperties:
+            type: string
+        ip:
+          type: string
+        org_id:
+          type: string
+        target:
+          type: string
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    AuditList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Audit"}
+        total:
+          type: integer
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+        backchannel_logout_uri:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        first_party:
+          type: boolean
+        grant_types:
+          type: array
+          items:
+            type: string
+        id_token_signed_response_alg:
+          type: string
+        introspect_org:
+          type: boolean
+        jwks:
+          type: string
+        jwks_uri:
+          type: string
+        name:
+          type: string
+        org_id:
+          type: string
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        require_pkce:
+          type: boolean
+          description: default true; false lets a confidential client send authorization requests without PKCE (public clients
+            always need it)
+        resources:
+          type: array
+          description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
+            20; a request naming any other is refused with invalid_target"
+          items:
+            type: string
+        rotate_refresh_tokens:
+          type: boolean
+        scim:
+          type: boolean
+        scopes:
+          type: array
+          items:
+            type: string
+        tenant_id:
+          type: string
+          description: tenant of this organization; defaults to the organization's default tenant
+        token_endpoint_auth_method:
+          type: string
+          description: "none = public client (SPA, mobile, CLI): PKCE only, no secret, refresh tokens always rotate"
+          enum: [client_secret_post, client_secret_basic, private_key_jwt, none]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    ClientInput:
+      type: object
+      properties:
+        backchannel_logout_uri:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        first_party:
+          type: boolean
+        grant_types:
+          type: array
+          items:
+            type: string
+        id_token_signed_response_alg:
+          type: string
+        introspect_org:
+          type: boolean
+        jwks:
+          type: string
+        jwks_uri:
+          type: string
+        name:
+          type: string
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        require_pkce:
+          type: boolean
+          description: default true; false lets a confidential client send authorization requests without PKCE (public clients
+            always need it)
+        resources:
+          type: array
+          description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
+            20; a request naming any other is refused with invalid_target"
+          items:
+            type: string
+        rotate_refresh_tokens:
+          type: boolean
+        scim:
+          type: boolean
+        scopes:
+          type: array
+          items:
+            type: string
+        tenant_id:
+          type: string
+          description: tenant of this organization; defaults to the organization's default tenant
+        token_endpoint_auth_method:
+          type: string
+          description: "none = public client (SPA, mobile, CLI): PKCE only, no secret, refresh tokens always rotate"
+          enum: [client_secret_post, client_secret_basic, private_key_jwt, none]
+    ClientList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Client"}
+        total:
+          type: integer
+    ClientWithSecret:
+      type: object
+      properties:
+        id:
+          type: string
+        backchannel_logout_uri:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        first_party:
+          type: boolean
+        grant_types:
+          type: array
+          items:
+            type: string
+        id_token_signed_response_alg:
+          type: string
+        introspect_org:
+          type: boolean
+        jwks:
+          type: string
+        jwks_uri:
+          type: string
+        name:
+          type: string
+        org_id:
+          type: string
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        require_pkce:
+          type: boolean
+          description: default true; false lets a confidential client send authorization requests without PKCE (public clients
+            always need it)
+        resources:
+          type: array
+          description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
+            20; a request naming any other is refused with invalid_target"
+          items:
+            type: string
+        rotate_refresh_tokens:
+          type: boolean
+        scim:
+          type: boolean
+        scopes:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+          description: shown once
+        tenant_id:
+          type: string
+          description: tenant of this organization; defaults to the organization's default tenant
+        token_endpoint_auth_method:
+          type: string
+          description: "none = public client (SPA, mobile, CLI): PKCE only, no secret, refresh tokens always rotate"
+          enum: [client_secret_post, client_secret_basic, private_key_jwt, none]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    Cluster:
+      type: object
+      properties:
+        alive:
+          type: integer
+        behind:
+          type: boolean
+        catching_up:
+          type: boolean
+        clock_skewed:
+          type: integer
+        forced_start:
+          type: string
+        last_sync:
+          type: string
+          format: date-time
+        leader:
+          type: boolean
+        members:
+          type: integer
+        node_id:
+          type: string
+        nodes:
+          type: array
+          description: every member, as this node sees it (replicated clusters only)
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              address:
+                type: string
+              leader:
+                type: boolean
+              ready:
+                type: boolean
+              self:
+                type: boolean
+              state:
+                type: string
+                enum: [alive, suspect, dead, leaving]
+              version:
+                type: string
+        quorum:
+          type: integer
+        ready:
+          type: boolean
+        refused:
+          type: integer
+        replicating:
+          type: boolean
+        size:
+          type: integer
+        skew_refused:
+          type: integer
+        standalone:
+          type: boolean
+        sync_point:
+          type: string
+          format: date-time
+        unconfirmed:
+          type: integer
+        writable:
+          type: boolean
+    ConnectedApp:
+      type: object
+      properties:
+        client_id:
+          type: string
+        grants:
+          type: integer
+          description: live refresh grants (one per signed-in session)
+        last_used:
+          type: string
+          format: date-time
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        since:
+          type: string
+          format: date-time
+    ConnectedAppList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/ConnectedApp"}
+        total:
+          type: integer
+    EmailInput:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        field:
+          type: string
+          description: the input field the error is about, when there is one
+    Group:
+      type: object
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        external_id:
+          type: string
+        members:
+          type: integer
+          description: number of users in the group
+        org_id:
+          type: string
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    GroupInput:
+      type: object
+      properties:
+        display_name:
+          type: string
+        external_id:
+          type: string
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+    GroupList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Group"}
+        total:
+          type: integer
+    Invite:
+      type: object
+      required: [url, expires]
+      properties:
+        email_warning:
+          type: string
+          description: why the email was not sent; the link still works
+        emailed:
+          type: boolean
+        expires:
+          type: string
+          format: date-time
+        url:
+          type: string
+          description: single-use link; shown only now
+    InviteRequest:
+      type: object
+      properties:
+        email:
+          type: boolean
+          description: also email the link (needs an email address)
+    Key:
+      type: object
+      properties:
+        id:
+          type: string
+        alg:
+          type: string
+        expires:
+          type: string
+          format: date-time
+        not_before:
+          type: string
+          format: date-time
+        retire_at:
+          type: string
+          format: date-time
+        state:
+          type: string
+          description: "signing: signs new tokens now; next: published, signs from not_before; previous: no longer signs,
+            published until expires so its tokens still verify"
+          enum: [signing, next, previous]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    KeyList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Key"}
+        total:
+          type: integer
+    KeyRotated:
+      type: object
+      required: [rotated]
+      properties:
+        rotated:
+          type: boolean
+    LinkedEmail:
+      type: object
+      required: [address, verified]
+      properties:
+        added:
+          type: string
+          format: date-time
+        address:
+          type: string
+        verified:
+          type: boolean
+    LinkedProvider:
+      type: object
+      properties:
+        email:
+          type: string
+        enabled:
+          type: boolean
+        linked:
+          type: string
+          format: date-time
+        name:
+          type: string
+        provider_id:
+          type: string
+        type:
+          type: string
+        via:
+          type: string
+          description: how it was linked
+          enum: [email, provision, connect, admin]
+    LinkedProviderList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/LinkedProvider"}
+        total:
+          type: integer
+    MasterKey:
+      type: object
+      properties:
+        active_key:
+          type: string
+        detail:
+          type: string
+        legacy_grants:
+          type: integer
+          description: refresh grants from an earlier version still bound to a previous key
+        nodes:
+          type: object
+          description: the keys every live node reported, by node id
+          additionalProperties:
+            type: object
+            properties:
+              active_key:
+                type: string
+              previous_keys:
+                type: array
+                items:
+                  type: string
+        nodes_agree:
+          type: boolean
+          description: every live node seals with active_key
+        previous_keys:
+          type: array
+          description: this node's server.previous_master_keys, by key id
+          items:
+            type: string
+        previous_keys_removable:
+          type: boolean
+          description: the previous keys can be removed now
+        stale_secrets:
+          type: integer
+          description: stored secrets sealed with a previous key (being re-sealed)
+        state:
+          type: string
+          enum: [none, waiting_for_nodes, resealing, unopenable, legacy_grants, complete]
+        unopenable_secrets:
+          type: integer
+          description: stored secrets no configured key opens
+    Member:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+          description: the user's full name
+        role:
+          type: string
+        username:
+          type: string
+    MemberList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Member"}
+        total:
+          type: integer
+    Ok:
+      type: object
+      properties:
+        ok:
+          type: boolean
+    Org:
+      type: object
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        name:
+          type: string
+          description: URL name
+        primary:
+          type: boolean
+        settings: {$ref: "#/components/schemas/OrgSettings"}
+        users:
+          type: integer
+          description: user count, super admins only
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    OrgInput:
+      type: object
+      properties:
+        display_name:
+          type: string
+        name:
+          type: string
+        settings: {$ref: "#/components/schemas/OrgSettings"}
+    OrgList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Org"}
+        total:
+          type: integer
+    OrgSettings:
+      type: object
+      properties:
+        passkey_login:
+          type: boolean
+        password_login:
+          type: boolean
+        password_reset:
+          type: boolean
+          description: users may reset a forgotten password by email (with password_login); tenants can turn it off for their
+            applications
+        require_mfa:
+          type: boolean
+        session_idle:
+          type: integer
+          description: seconds; 0 = server default
+        session_ttl:
+          type: integer
+          description: seconds; 0 = server default
+    Provider:
+      type: object
+      properties:
+        id:
+          type: string
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        allowed_tenants:
+          type: array
+          items:
+            type: string
+        auto_provision:
+          type: boolean
+        callback_url:
+          type: string
+          description: this provider's redirect URI, to register with the provider
+        client_id:
+          type: string
+        enabled:
+          type: boolean
+        has_secret:
+          type: boolean
+        issuer:
+          type: string
+        link_by_email:
+          type: boolean
+        name:
+          type: string
+        org_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        tenant:
+          type: string
+        trust_mfa:
+          type: boolean
+        type:
+          type: string
+          enum: [oidc, google, microsoft, github, gitlab, auth0]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    ProviderInput:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "create only, optional: choose the id (and so the callback URL) before the provider is set up"
+          format: uuid
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        allowed_tenants:
+          type: array
+          description: "microsoft with organizations: the tenant IDs whose users may sign in"
+          items:
+            type: string
+        auto_provision:
+          type: boolean
+        client_id:
+          type: string
+        client_secret:
+          type: string
+          writeOnly: true
+        enabled:
+          type: boolean
+        issuer:
+          type: string
+          description: "oidc: the https issuer; gitlab: the server address (empty: gitlab.com); auth0: the domain; ignored for
+            google, github and microsoft"
+        link_by_email:
+          type: boolean
+        name:
+          type: string
+          description: button label; on create, empty means the type's name (Google, Microsoft…)
+        scopes:
+          type: array
+          items:
+            type: string
+        tenant:
+          type: string
+          description: "microsoft: a tenant ID, or organizations (then allowed_tenants is required)"
+        trust_mfa:
+          type: boolean
+        type:
+          type: string
+          enum: [oidc, google, microsoft, github, gitlab, auth0]
+    ProviderList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Provider"}
+        total:
+          type: integer
+    ScimDiscovery:
+      type: object
+      description: ServiceProviderConfig, or a ListResponse of ResourceTypes or Schemas (RFC 7644 §4).
+      additionalProperties: true
+    ScimError:
+      type: object
+      required: [schemas, status]
+      properties:
+        detail:
+          type: string
+        schemas:
+          type: array
+          items:
+            type: string
+        scimType:
+          type: string
+        status:
+          type: string
+    ScimGroup:
+      type: object
+      description: "A SCIM Group (RFC 7643 §4.2). Every attribute: the server's Schemas endpoint,
+        urn:ietf:params:scim:schemas:core:2.0:Group."
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        externalId:
+          type: string
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              display:
+                type: string
+              value:
+                type: string
+        meta:
+          type: object
+        schemas:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+    ScimListResponse:
+      type: object
+      required: [schemas, totalResults, Resources]
+      properties:
+        Resources:
+          type: array
+          items:
+            type: object
+        itemsPerPage:
+          type: integer
+        schemas:
+          type: array
+          items:
+            type: string
+        startIndex:
+          type: integer
+        totalResults:
+          type: integer
+    ScimOrganization:
+      type: object
+      description: "A Quisora organization as a SCIM resource (super admins). Every attribute: the server's Schemas endpoint,
+        urn:paularlott:quisora:scim:schemas:2.0:Organization."
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        meta:
+          type: object
+        name:
+          type: string
+        schemas:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+    ScimPatchOp:
+      type: object
+      required: [schemas, Operations]
+      properties:
+        Operations:
+          type: array
+          items:
+            type: object
+            required: [op]
+            properties:
+              op:
+                type: string
+                enum: [add, remove, replace]
+              path:
+                type: string
+              value: {}
+        schemas:
+          type: array
+          items:
+            type: string
+    ScimUser:
+      type: object
+      description: "A SCIM User (RFC 7643 §4.1) with Quisora's extension. Every attribute: the server's Schemas endpoint,
+        urn:ietf:params:scim:schemas:core:2.0:User."
+      properties:
+        id:
+          type: string
+        active:
+          type: boolean
+        displayName:
+          type: string
+        emails:
+          type: array
+          items:
+            type: object
+            properties:
+              primary:
+                type: boolean
+              type:
+                type: string
+              value:
+                type: string
+        externalId:
+          type: string
+        groups:
+          type: array
+          items:
+            type: object
+        meta:
+          type: object
+        name:
+          type: object
+          properties:
+            familyName:
+              type: string
+            givenName:
+              type: string
+        schemas:
+          type: array
+          items:
+            type: string
+        userName:
+          type: string
+      additionalProperties: true
+    SecretResult:
+      type: object
+      properties:
+        client_id:
+          type: string
+        secret:
+          type: string
+    SelfRegisteredApp:
+      type: object
+      properties:
+        client_id:
+          type: string
+        last_used:
+          type: string
+          format: date-time
+        metadata_document:
+          type: boolean
+          description: client_id is the URL of its Client ID Metadata Document
+        name:
+          type: string
+          description: the name the application gave itself
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        users:
+          type: integer
+          description: users of the organization it holds access for
+        created:
+          type: string
+          format: date-time
+    SelfRegisteredAppList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/SelfRegisteredApp"}
+        total:
+          type: integer
+    Tenant:
+      type: object
+      properties:
+        id:
+          type: string
+        clients:
+          type: integer
+          description: number of clients in the tenant
+        description:
+          type: string
+        display_name:
+          type: string
+        name:
+          type: string
+          description: URL-safe, unique in the organization
+        org_id:
+          type: string
+        resources:
+          type: array
+          description: "the APIs the tenant owns (resource indicators, RFC 8707: an API's URL), unique across the server; a
+            self-registered application asking for one is governed by this tenant"
+          items:
+            type: string
+        settings: {$ref: "#/components/schemas/TenantSettings"}
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    TenantInput:
+      type: object
+      properties:
+        description:
+          type: string
+        display_name:
+          type: string
+        name:
+          type: string
+        resources:
+          type: array
+          description: "the APIs the tenant owns (resource indicators, RFC 8707: an API's URL), unique across the server; a
+            self-registered application asking for one is governed by this tenant"
+          items:
+            type: string
+        settings: {$ref: "#/components/schemas/TenantSettings"}
+    TenantList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Tenant"}
+        total:
+          type: integer
+    TenantSettings:
+      type: object
+      properties:
+        all_providers:
+          type: boolean
+          description: allow every enabled provider of the organization, including future ones
+        members_only:
+          type: boolean
+          description: only users and groups with access (see Tenant access) may sign in to the tenant's applications; otherwise
+            everyone in the organization may
+        passkey_login:
+          type: boolean
+        password_login:
+          type: boolean
+        password_reset:
+          type: boolean
+          description: offer "Forgot your password?" on the sign-in form for the tenant's applications (with password_login, and
+            when the organization allows resets)
+        providers:
+          type: array
+          description: provider ids allowed when all_providers is false
+          items:
+            type: string
+        require_mfa:
+          type: boolean
+          description: in addition to the organization setting
+        self_registration:
+          type: boolean
+          description: applications that registered themselves (RFC 7591, or a Client ID Metadata Document) may sign users in for
+            the tenant's resources; off by default
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        active:
+          type: boolean
+        can_reset_sign_in:
+          type: boolean
+          description: "whether the caller may issue this user an invitation or remove their password: for a manager or
+            administrator who has a way to sign in, only a super admin may; present on GET of one user"
+        can_verify_email:
+          type: boolean
+          description: "whether the caller may mark this user's unverified addresses verified (mark-verified): never for yourself,
+            and for a manager or administrator who has a way to sign in only a super admin may; present on GET of one
+            user"
+        email:
+          type: string
+        email_verified:
+          type: boolean
+        external_id:
+          type: string
+        family_name:
+          type: string
+        given_name:
+          type: string
+        groups:
+          type: array
+          description: present on GET of one user
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              display_name:
+                type: string
+        has_password:
+          type: boolean
+          description: whether a password is set; the password itself is never returned
+        last_login:
+          type: string
+          format: date-time
+        linked_emails:
+          type: array
+          description: further addresses of the user; they let upstream providers find the user and never sign in by themselves
+          items: {$ref: "#/components/schemas/LinkedEmail"}
+        locale:
+          type: string
+          description: BCP 47 language tag such as en-GB (the locale claim); en_GB is accepted and stored as en-GB
+        manager:
+          type: object
+          description: the manager's name; present on GET of one user
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        mfa_enrolled_at:
+          type: string
+          description: when the authenticator app was last set up; null without one
+          format: date-time
+        name:
+          type: string
+          description: "read-only full name: given and family name"
+        org_id:
+          type: string
+        passkeys:
+          type: integer
+          description: number of registered passkeys; present on GET of one user
+        password_changed_at:
+          type: string
+          description: when the password was last set or removed; null if never
+          format: date-time
+        phone_number:
+          type: string
+          description: contact number in E.164 form (the phone_number claim); never used to sign in
+        phone_number_verified:
+          type: boolean
+        role:
+          type: string
+          enum: [super_admin, admin, manager, user]
+        status_changed:
+          type: object
+          description: the last time the account was disabled or enabled again (active says which); null if never
+          properties:
+            at:
+              type: string
+              format: date-time
+            by:
+              type: string
+              description: a username, client:<name> or system
+            by_id:
+              type: string
+            reason:
+              type: string
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        user_type:
+          type: string
+          description: employee, contractor, guest, service, or another short value from provisioning
+        username:
+          type: string
+        valid_until:
+          type: string
+          description: "null for no end; otherwise the end of the account: from then it cannot sign in or use tokens, and within a
+            minute it is disabled with its sessions ended (back-channel logout)"
+          format: date-time
+        work: {$ref: "#/components/schemas/Work"}
+        zoneinfo:
+          type: string
+          description: IANA time zone such as Europe/London (the zoneinfo claim)
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    UserCreate:
+      type: object
+      required: [email, given_name]
+      properties:
+        active:
+          type: boolean
+        email:
+          type: string
+          description: required on create, unique in the organization; the sign-in name (email address + password)
+        email_verified:
+          type: boolean
+          description: "true marks the primary address verified without the mailed link: never for yourself, and for a manager or
+            administrator who has a way to sign in only by a super admin"
+        external_id:
+          type: string
+        family_name:
+          type: string
+          description: last name; optional
+        given_name:
+          type: string
+          description: first name; required on create and never empty
+        invite:
+          type: object
+          description: issue an invitation link and return it in the response
+          properties:
+            email:
+              type: boolean
+              description: also email it (needs an email address)
+        locale:
+          type: string
+          description: BCP 47 language tag (en_GB accepted); "" clears
+        phone_number:
+          type: string
+          description: international form (+ and the country code; spaces, dots, dashes and brackets are dropped); "" clears; a
+            new number is unverified unless phone_number_verified is sent
+        phone_number_verified:
+          type: boolean
+        role:
+          type: string
+        status_reason:
+          type: string
+          description: recorded when this change sets active to a new value (at most 500 characters)
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        user_type:
+          type: string
+        username:
+          type: string
+          description: optional; shown to applications as preferred_username, defaults to the email; never used to sign in
+        valid_until:
+          type: string
+          description: RFC 3339 time or a date (YYYY-MM-DD, ends at the start of that day UTC); "" = no end
+        work:
+          $ref: "#/components/schemas/Work"
+          description: fields left out are unchanged; "" clears one
+        zoneinfo:
+          type: string
+          description: IANA time zone; "" clears
+    UserCreated:
+      type: object
+      properties:
+        id:
+          type: string
+        active:
+          type: boolean
+        can_reset_sign_in:
+          type: boolean
+          description: "whether the caller may issue this user an invitation or remove their password: for a manager or
+            administrator who has a way to sign in, only a super admin may; present on GET of one user"
+        can_verify_email:
+          type: boolean
+          description: "whether the caller may mark this user's unverified addresses verified (mark-verified): never for yourself,
+            and for a manager or administrator who has a way to sign in only a super admin may; present on GET of one
+            user"
+        email:
+          type: string
+        email_verified:
+          type: boolean
+        external_id:
+          type: string
+        family_name:
+          type: string
+        given_name:
+          type: string
+        groups:
+          type: array
+          description: present on GET of one user
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              display_name:
+                type: string
+        has_password:
+          type: boolean
+          description: whether a password is set; the password itself is never returned
+        invite: {$ref: "#/components/schemas/Invite"}
+        last_login:
+          type: string
+          format: date-time
+        linked_emails:
+          type: array
+          description: further addresses of the user; they let upstream providers find the user and never sign in by themselves
+          items: {$ref: "#/components/schemas/LinkedEmail"}
+        locale:
+          type: string
+          description: BCP 47 language tag such as en-GB (the locale claim); en_GB is accepted and stored as en-GB
+        manager:
+          type: object
+          description: the manager's name; present on GET of one user
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        mfa_enrolled_at:
+          type: string
+          description: when the authenticator app was last set up; null without one
+          format: date-time
+        name:
+          type: string
+          description: "read-only full name: given and family name"
+        org_id:
+          type: string
+        passkeys:
+          type: integer
+          description: number of registered passkeys; present on GET of one user
+        password_changed_at:
+          type: string
+          description: when the password was last set or removed; null if never
+          format: date-time
+        phone_number:
+          type: string
+          description: contact number in E.164 form (the phone_number claim); never used to sign in
+        phone_number_verified:
+          type: boolean
+        role:
+          type: string
+          enum: [super_admin, admin, manager, user]
+        status_changed:
+          type: object
+          description: the last time the account was disabled or enabled again (active says which); null if never
+          properties:
+            at:
+              type: string
+              format: date-time
+            by:
+              type: string
+              description: a username, client:<name> or system
+            by_id:
+              type: string
+            reason:
+              type: string
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        user_type:
+          type: string
+          description: employee, contractor, guest, service, or another short value from provisioning
+        username:
+          type: string
+        valid_until:
+          type: string
+          description: "null for no end; otherwise the end of the account: from then it cannot sign in or use tokens, and within a
+            minute it is disabled with its sessions ended (back-channel logout)"
+          format: date-time
+        work: {$ref: "#/components/schemas/Work"}
+        zoneinfo:
+          type: string
+          description: IANA time zone such as Europe/London (the zoneinfo claim)
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    UserInput:
+      type: object
+      properties:
+        active:
+          type: boolean
+        email:
+          type: string
+          description: required on create, unique in the organization; the sign-in name (email address + password)
+        email_verified:
+          type: boolean
+          description: "true marks the primary address verified without the mailed link: never for yourself, and for a manager or
+            administrator who has a way to sign in only by a super admin"
+        external_id:
+          type: string
+        family_name:
+          type: string
+          description: last name; optional
+        given_name:
+          type: string
+          description: first name; required on create and never empty
+        locale:
+          type: string
+          description: BCP 47 language tag (en_GB accepted); "" clears
+        phone_number:
+          type: string
+          description: international form (+ and the country code; spaces, dots, dashes and brackets are dropped); "" clears; a
+            new number is unverified unless phone_number_verified is sent
+        phone_number_verified:
+          type: boolean
+        role:
+          type: string
+        status_reason:
+          type: string
+          description: recorded when this change sets active to a new value (at most 500 characters)
+        tags:
+          type: array
+          description: "identifiers (letters, digits and . _ : / -, 1-64 characters, starting and ending with a letter or digit; a
+            colon separates a namespace, e.g. dept:finance); stored sorted; sent to applications in the tags claim
+            together with the tags of the user's groups"
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$
+        user_type:
+          type: string
+        username:
+          type: string
+          description: optional; shown to applications as preferred_username, defaults to the email; never used to sign in
+        valid_until:
+          type: string
+          description: RFC 3339 time or a date (YYYY-MM-DD, ends at the start of that day UTC); "" = no end
+        work:
+          $ref: "#/components/schemas/Work"
+          description: fields left out are unchanged; "" clears one
+        zoneinfo:
+          type: string
+          description: IANA time zone; "" clears
+    UserList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/User"}
+        total:
+          type: integer
+    UserPasskey:
+      type: object
+      properties:
+        id:
+          type: string
+        backup_eligible:
+          type: boolean
+        backup_state:
+          type: boolean
+        last_used:
+          type: string
+          format: date-time
+        name:
+          type: string
+        problem:
+          type: string
+          description: why it cannot sign in; absent when it works
+          enum: [disabled, unverified]
+        transports:
+          type: array
+          items:
+            type: string
+        created:
+          type: string
+          format: date-time
+    UserPasskeyList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/UserPasskey"}
+        total:
+          type: integer
+    UserSession:
+      type: object
+      properties:
+        id:
+          type: string
+          description: an opaque handle, not the session's id
+        amr:
+          type: array
+          items:
+            type: string
+        current:
+          type: boolean
+          description: the session making this request
+        expires:
+          type: string
+          format: date-time
+        ip:
+          type: string
+        last_seen:
+          type: string
+          format: date-time
+        user_agent:
+          type: string
+        created:
+          type: string
+          format: date-time
+    UserSessionList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/UserSession"}
+        total:
+          type: integer
+    Work:
+      type: object
+      properties:
+        cost_center:
+          type: string
+        department:
+          type: string
+        division:
+          type: string
+        employee_number:
+          type: string
+        manager_id:
+          type: string
+          description: id of another user of the organization (no reporting loops)
+        organization:
+          type: string
+        title:
+          type: string

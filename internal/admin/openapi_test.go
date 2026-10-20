@@ -2,47 +2,152 @@ package admin_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/paularlott/quisora/internal/admin"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/scim"
+	"github.com/paularlott/quisora/internal/web"
+	"go.yaml.in/yaml/v3"
 )
 
+// openAPISpec returns the OpenAPI description as JSON, read from its source: the server serves the copy the web
+// build bundles (dist/openapi.json), which go test does not need.
+func openAPISpec(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("../../web/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("openapi.yaml: %v", err)
+	}
+	raw, err := json.MarshalIndent(stringKeys(doc), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// stringKeys turns mappings with non-string keys (an unquoted 200: response code decodes as an int) into
+// map[string]any, which JSON can encode.
+func stringKeys(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			t[k] = stringKeys(x)
+		}
+	case map[any]any:
+		m := make(map[string]any, len(t))
+		for k, x := range t {
+			m[fmt.Sprint(k)] = stringKeys(x)
+		}
+		return m
+	case []any:
+		for i, x := range t {
+			t[i] = stringKeys(x)
+		}
+	}
+	return v
+}
+
+// openAPIMethods are the keys of a path item that are operations (the others: parameters, summary, description).
+var openAPIMethods = map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true,
+	"head": true, "options": true, "trace": true}
+
+// openAPIOp decodes the operation method of path from the OpenAPI document raw into v.
+func openAPIOp(t *testing.T, raw []byte, path, method string, v any) {
+	t.Helper()
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	op, ok := doc.Paths[path][method]
+	if !ok {
+		t.Fatalf("no %s %s in the OpenAPI document", method, path)
+	}
+	if err := json.Unmarshal(op, v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type openAPIParam struct {
+	Ref    string `json:"$ref"`
+	Name   string `json:"name"`
+	In     string `json:"in"`
+	Schema struct {
+		Pattern string `json:"pattern"`
+	} `json:"schema"`
+}
+
 // Every registered /api route must be described in the OpenAPI document, and the document must not describe
-// routes that do not exist.
+// routes that do not exist. The document is written by hand (web/openapi/openapi.yaml), so this also checks what a
+// generator would have guaranteed: every path parameter is declared and every reference resolves.
 func TestOpenAPIMatchesRoutes(t *testing.T) {
 	w := newWorld(t)
-	r := w.anon().get("/api/openapi.json")
-	want(t, r, 200)
+	raw := openAPISpec(t)
 	var doc struct {
-		OpenAPI string                                `json:"openapi"`
-		Paths   map[string]map[string]json.RawMessage `json:"paths"`
-		Comps   struct {
-			Schemas         map[string]json.RawMessage `json:"schemas"`
-			SecuritySchemes map[string]struct {
-				Type   string `json:"type"`
-				Scheme string `json:"scheme"`
-				In     string `json:"in"`
-			} `json:"securitySchemes"`
-			Parameters map[string]struct {
-				Name string `json:"name"`
-				In   string `json:"in"`
-			} `json:"parameters"`
-		} `json:"components"`
+		OpenAPI string `json:"openapi"`
+		Info    struct {
+			Version string `json:"version"`
+		} `json:"info"`
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+		Comps map[string]map[string]json.RawMessage `json:"components"`
 	}
-	if err := json.Unmarshal(r.Raw, &doc); err != nil {
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("openapi version %q", doc.OpenAPI)
 	}
-	if ss := doc.Comps.SecuritySchemes; ss["bearer"].Scheme != "bearer" || ss["session"].In != "cookie" {
-		t.Errorf("security schemes: %+v", ss)
+	var schemes map[string]struct {
+		Type   string `json:"type"`
+		Scheme string `json:"scheme"`
+		In     string `json:"in"`
 	}
-	if p := doc.Comps.Parameters["ApiVersion"]; p.Name != "Api-Version" || p.In != "header" {
+	if err := json.Unmarshal(mustJSON(t, doc.Comps["securitySchemes"]), &schemes); err != nil {
+		t.Fatal(err)
+	}
+	if schemes["bearer"].Scheme != "bearer" || schemes["session"].In != "cookie" {
+		t.Errorf("security schemes: %+v", schemes)
+	}
+	params := map[string]openAPIParam{}
+	for name, raw := range doc.Comps["parameters"] {
+		var p openAPIParam
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatal(err)
+		}
+		params[name] = p
+	}
+	if p := params["ApiVersion"]; p.Name != "Api-Version" || p.In != "header" {
 		t.Errorf("Api-Version parameter: %+v", p)
+	}
+	var version struct {
+		Schema struct {
+			Enum []string `json:"enum"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(doc.Comps["parameters"]["ApiVersion"], &version); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(version.Schema.Enum, ",") != strings.Join(web.APIVersions, ",") {
+		t.Errorf("Api-Version enum %v, supported versions %v", version.Schema.Enum, web.APIVersions)
+	}
+	if doc.Info.Version != web.APIVersionLatest {
+		t.Errorf("info.version %q, latest API version %q", doc.Info.Version, web.APIVersionLatest)
+	}
+	resolve := func(p openAPIParam) openAPIParam {
+		if name, ok := strings.CutPrefix(p.Ref, "#/components/parameters/"); ok {
+			return params[name]
+		}
+		return p
 	}
 
 	registered := map[string]bool{}
@@ -68,11 +173,42 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 			t.Errorf("SCIM route %s %s is missing from the OpenAPI document", rt.Method, rt.Path)
 		}
 	}
+	pathParam := regexp.MustCompile(`\{([^}]+)\}`)
 	var extra []string
-	for path, ops := range doc.Paths {
-		for m := range ops {
+	for path, item := range doc.Paths {
+		var shared []openAPIParam
+		if raw, ok := item["parameters"]; ok {
+			if err := json.Unmarshal(raw, &shared); err != nil {
+				t.Fatalf("%s parameters: %v", path, err)
+			}
+		}
+		for m, raw := range item {
+			if !openAPIMethods[m] {
+				continue
+			}
 			if !registered[strings.ToUpper(m)+" "+path] {
 				extra = append(extra, strings.ToUpper(m)+" "+path)
+			}
+			var op struct {
+				Parameters []openAPIParam `json:"parameters"`
+			}
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("%s %s: %v", m, path, err)
+			}
+			declared := map[string]bool{}
+			for _, p := range append(append([]openAPIParam{}, shared...), op.Parameters...) {
+				if p = resolve(p); p.In == "path" {
+					declared[p.Name] = true
+				}
+			}
+			for _, sub := range pathParam.FindAllStringSubmatch(path, -1) {
+				if !declared[sub[1]] {
+					t.Errorf("%s %s: path parameter %s is not declared", strings.ToUpper(m), path, sub[1])
+				}
+				delete(declared, sub[1])
+			}
+			for name := range declared {
+				t.Errorf("%s %s: declares path parameter %s, which the path does not have", strings.ToUpper(m), path, name)
 			}
 		}
 	}
@@ -80,28 +216,27 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	if len(extra) > 0 {
 		t.Errorf("the OpenAPI document describes routes that are not registered: %v", extra)
 	}
-	// every $ref resolves
-	for _, ref := range strings.Split(string(r.Raw), `"$ref": "#/components/schemas/`)[1:] {
-		name := ref[:strings.Index(ref, `"`)]
-		if _, ok := doc.Comps.Schemas[name]; !ok {
-			t.Errorf("unresolved schema reference %s", name)
+	// every local $ref resolves
+	for _, m := range regexp.MustCompile(`"\$ref": "#/components/([^/"]+)/([^"]+)"`).FindAllStringSubmatch(string(raw), -1) {
+		if _, ok := doc.Comps[m[1]][m[2]]; !ok {
+			t.Errorf("unresolved reference #/components/%s/%s", m[1], m[2])
 		}
 	}
-	_ = admin.New
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // Tags are documented on users and groups (read and write) and the user list takes ?tag=.
 func TestOpenAPITags(t *testing.T) {
-	w := newWorld(t)
-	r := w.anon().get("/api/openapi.json")
-	want(t, r, 200)
+	raw := openAPISpec(t)
 	var doc struct {
-		Paths map[string]map[string]struct {
-			Parameters []struct {
-				Name string `json:"name"`
-				In   string `json:"in"`
-			} `json:"parameters"`
-		} `json:"paths"`
 		Comps struct {
 			Schemas map[string]struct {
 				Properties map[string]struct {
@@ -111,7 +246,7 @@ func TestOpenAPITags(t *testing.T) {
 			} `json:"schemas"`
 		} `json:"components"`
 	}
-	if err := json.Unmarshal(r.Raw, &doc); err != nil {
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"User", "UserInput", "UserCreate", "UserCreated", "Group", "GroupInput"} {
@@ -120,13 +255,51 @@ func TestOpenAPITags(t *testing.T) {
 			t.Errorf("schema %s: tags property %+v", name, p)
 		}
 	}
+	var op struct {
+		Parameters []openAPIParam `json:"parameters"`
+	}
+	openAPIOp(t, raw, "/api/orgs/{org}/users", "get", &op)
 	found := false
-	for _, p := range doc.Paths["/api/orgs/{org}/users"]["get"].Parameters {
+	for _, p := range op.Parameters {
 		if p.Name == "tag" && p.In == "query" {
 			found = true
 		}
 	}
 	if !found {
 		t.Error("GET users does not document the tag query parameter")
+	}
+}
+
+// The values the document lists by hand match the code: provider types and the organization name pattern.
+func TestOpenAPIMatchesModel(t *testing.T) {
+	raw := openAPISpec(t)
+	var doc struct {
+		Comps struct {
+			Parameters map[string]openAPIParam `json:"parameters"`
+			Schemas    map[string]struct {
+				Properties map[string]struct {
+					Enum []string `json:"enum"`
+				} `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Provider", "ProviderInput"} {
+		if got := doc.Comps.Schemas[name].Properties["type"].Enum; strings.Join(got, ",") != strings.Join(model.ProviderTypes, ",") {
+			t.Errorf("schema %s: type enum %v, model.ProviderTypes %v", name, got, model.ProviderTypes)
+		}
+	}
+	re, err := regexp.Compile(doc.Comps.Parameters["Org"].Schema.Pattern)
+	if err != nil || doc.Comps.Parameters["Org"].Schema.Pattern == "" {
+		t.Fatalf("Org parameter pattern %q: %v", doc.Comps.Parameters["Org"].Schema.Pattern, err)
+	}
+	// reserved names match the pattern but are refused, so the samples avoid them
+	for _, name := range []string{"acme", "a", "acme-corp", "a1", "Acme", "-acme", "acme-", "acme_corp", "Organizations",
+		strings.Repeat("a", 63), strings.Repeat("a", 64), "", "x.y"} {
+		if re.MatchString(name) != model.ValidOrgName(name) {
+			t.Errorf("organization name %q: pattern says %v, model.ValidOrgName %v", name, re.MatchString(name), model.ValidOrgName(name))
+		}
 	}
 }

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // Report is the result of one run.
@@ -196,7 +198,7 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 		}, nil
 
 	case "mgmt_list":
-		hdr := []string{"Authorization", "Bearer " + d.APIToken, "Api-Version", "1"}
+		hdr := []string{"Authorization", "Bearer " + d.APIToken, web.APIVersionHeader, web.APIVersionLatest}
 		return func(rng *rand.Rand, base string) *request {
 			off := 50 * rng.Intn(max(d.Users/50, 1))
 			return get(base, fmt.Sprintf("/api/orgs/%s/users?limit=50&offset=%d&sort=username", orgName(rng), off), hdr...)

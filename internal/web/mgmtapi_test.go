@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
@@ -53,20 +56,47 @@ func TestManagementAuthAndVersion(t *testing.T) {
 		{"wrong scope", map[string]string{"Authorization": "Bearer scim"}, 403},
 		{"admin token", map[string]string{"Authorization": "Bearer admin"}, 200},
 		{"bad version", map[string]string{"Authorization": "Bearer admin", "Api-Version": "99"}, 400},
+		{"unknown date", map[string]string{"Authorization": "Bearer admin", "Api-Version": "2026-10-19"}, 400},
+		{"old numeric version", map[string]string{"Authorization": "Bearer admin", "Api-Version": "1"}, 400},
 	}
 	for _, c := range cases {
 		if r := do(anon, c.hdr); r.StatusCode != c.want {
 			t.Errorf("%s: got %d want %d", c.name, r.StatusCode, c.want)
 		}
 	}
-	if r := do(anon, map[string]string{"Authorization": "Bearer admin"}); r.Header.Get("Api-Version") != "1" {
+	if r := do(anon, map[string]string{"Authorization": "Bearer admin"}); r.Header.Get("Api-Version") != web.APIVersionLatest {
 		t.Error("version not echoed")
 	}
 	sess, csrf := env.ConsoleSession(env.Admin)
 	if r := do(sess, nil); r.StatusCode != 403 {
 		t.Errorf("session without CSRF: %d", r.StatusCode)
 	}
-	if r := do(sess, map[string]string{"X-CSRF-Token": csrf, "Api-Version": "1"}); r.StatusCode != 200 {
+	if r := do(sess, map[string]string{"X-CSRF-Token": csrf, "Api-Version": web.APIVersionLatest}); r.StatusCode != 200 {
 		t.Errorf("session with CSRF: %d", r.StatusCode)
+	}
+}
+
+// API versions are release dates, oldest first, ending with the latest; the browser UI sends the latest.
+func TestAPIVersions(t *testing.T) {
+	prev := ""
+	for _, v := range web.APIVersions {
+		d, err := time.Parse(time.DateOnly, v)
+		if err != nil || d.Format(time.DateOnly) != v {
+			t.Errorf("API version %q is not a YYYY-MM-DD date", v)
+		}
+		if v <= prev {
+			t.Errorf("API versions out of order: %q after %q", v, prev)
+		}
+		prev = v
+	}
+	if prev != web.APIVersionLatest {
+		t.Errorf("the last API version is %q, APIVersionLatest %q", prev, web.APIVersionLatest)
+	}
+	js, err := os.ReadFile("../../web/src/js/lib/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(js), "export const API_VERSION = '"+web.APIVersionLatest+"'") {
+		t.Errorf("web/src/js/lib/api.js does not send API version %s", web.APIVersionLatest)
 	}
 }

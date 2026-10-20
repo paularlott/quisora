@@ -41,7 +41,7 @@ def rotate():
     _, out = post("/api-internal/login/password", {"org": "primary", "email": login["email"], "password": login["password"]}, tok)
     ticket = json.loads(out)["ticket"]
     post("/api-internal/login/totp", {"ticket": ticket, "code": totp(login["totp_secret"])}, tok)
-    status, out = post("/api/keys/rotate", {}, csrf("/account"), {"Api-Version": "1"})
+    status, out = post("/api/keys/rotate", {}, csrf("/account"), {"Api-Version": "2026-10-20"})
     print("rotated:", status, out)
 
 

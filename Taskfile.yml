@@ -25,19 +25,35 @@ tasks:
     deps: [all]
 
   webassets:
-    desc: Build the CSS and JavaScript into web/dist (embedded in the binary)
+    desc: Build the CSS, JavaScript and the API reference (/api-docs/) into web/dist with Vite (embedded in the binary)
     dir: web
     cmds:
       # no dependency install scripts (as in the Dockerfile): nothing a package ships runs on this machine
       - npm ci --silent --ignore-scripts
-      - node build.mjs
+      - npm run build --silent
     sources:
       - src/**/*
       - templates/**/*
-      - build.mjs
+      - api-docs/**/*
+      - openapi/**/*
+      - vite.config.js
+      - redocly.yaml
       - package.json
+      - package-lock.json
     generates:
       - dist/manifest.json
+
+  webassets-watch:
+    desc: Rebuild web/dist whenever the sources change (run the server from another terminal)
+    dir: web
+    cmds:
+      - npm run watch
+
+  apidocs-lint:
+    desc: Lint the OpenAPI description (web/openapi/openapi.yaml) with Redocly CLI
+    dir: web
+    cmds:
+      - npm run lint:api --silent
 
   build:
     desc: Build the binary for the current platform
@@ -109,9 +125,10 @@ tasks:
       - go test -race ./...
 
   check:
-    desc: "Release gate: vet and every Go test with the race detector, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
+    desc: "Release gate: vet and every Go test with the race detector, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
     cmds:
       - task: test
+      - task: apidocs-lint
       - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - cd web && node audit.mjs  # npm audit, high and above, with the accepted advisories it lists
 

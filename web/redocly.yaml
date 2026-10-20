@@ -1,0 +1,18 @@
+# Redocly CLI configuration: lints the management API description (npm run lint:api, part of npm run build).
+# The rendered reference at /api-docs/ is Redoc 3, bundled by Vite (vite.config.js, src/js/api-docs.js).
+apis:
+  quisora@v1:
+    root: ./openapi/openapi.yaml
+
+extends:
+  - recommended
+
+rules:
+  # /scim/v2/Organizations/{id} looks like /scim/v2/{org}/Users to this rule, but organization names are lower case
+  # (the Org parameter's pattern), so "Organizations" is never one.
+  no-ambiguous-paths: off
+  # The SCIM discovery endpoints are public and always answer.
+  operation-4xx-response: off
+
+# No usage reports to Redocly: builds run on machines without internet access.
+telemetry: off

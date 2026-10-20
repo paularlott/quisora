@@ -18,6 +18,7 @@ import (
 	"github.com/paularlott/quisora/internal/backup"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 const storeNote = "Uses the same config file / QUISORA_* environment as serve. With a shared database (postgres, mysql, " +
@@ -131,7 +132,7 @@ func remoteBackup(ctx context.Context, server, token, caFile string, insecure bo
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Api-Version", "1")
+	req.Header.Set(web.APIVersionHeader, web.APIVersionLatest)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

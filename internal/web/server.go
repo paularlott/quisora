@@ -194,6 +194,11 @@ func (s *Server) baseRoutes() {
 		static.ServeHTTP(w, r)
 	}))
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
+	s.Mux.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
+	})
+	s.Mux.HandleFunc("GET /api-docs/{$}", apiDocs)
+	s.Mux.HandleFunc("GET /api/openapi.json", openAPIDocument)
 	s.Mux.HandleFunc("GET /metrics", s.metrics)
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -214,6 +219,38 @@ func (s *Server) baseRoutes() {
 		}
 		WriteJSON(w, http.StatusOK, body)
 	})
+}
+
+// apiDocsCSP lets Redoc run from this server only: its script is a built asset, it styles itself with inline styles,
+// and it fetches nothing but /api/openapi.json (no telemetry, fonts or icons from elsewhere).
+const apiDocsCSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+	"font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+// apiDocs serves the API reference page (web/api-docs/index.html, built into dist by Vite).
+func apiDocs(w http.ResponseWriter, r *http.Request) {
+	b, err := fs.ReadFile(webassets.Dist, "dist/api-docs/index.html")
+	if err != nil {
+		http.Error(w, "The API reference was not built into this binary.", http.StatusNotFound)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-cache") // it names the current hashed assets
+	h.Set("Content-Security-Policy", apiDocsCSP)
+	_, _ = w.Write(b)
+}
+
+// openAPIDocument serves the OpenAPI description of the management API: web/openapi/openapi.yaml, bundled into
+// dist/openapi.json by the web build.
+func openAPIDocument(w http.ResponseWriter, r *http.Request) {
+	b, err := fs.ReadFile(webassets.Dist, "dist/openapi.json")
+	if err != nil {
+		WriteJSON(w, http.StatusNotFound, ErrorBody{Error: "The OpenAPI document was not built into this binary."})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(b)
 }
 
 // branding serves the configured logos (local files or redirects to https URLs), else the built-in one.

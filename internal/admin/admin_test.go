@@ -210,7 +210,7 @@ func TestOrgs(t *testing.T) {
 	if r.total() != 3 || len(r.items()) != 3 { // primary, acme, globex
 		t.Fatalf("list: %s", r.Raw)
 	}
-	if r.Header.Get("Api-Version") != "1" {
+	if r.Header.Get("Api-Version") != web.APIVersionLatest {
 		t.Error("Api-Version not echoed")
 	}
 	first := r.items()[0].(map[string]any)
@@ -987,7 +987,7 @@ func TestBearerAndVersioning(t *testing.T) {
 	mt := w.withBearer("manager", service.ScopeAdmin)
 	r := mt.get(AU)
 	want(t, r, 200)
-	if r.Header.Get("Api-Version") != "1" {
+	if r.Header.Get("Api-Version") != web.APIVersionLatest {
 		t.Error("version not echoed")
 	}
 	want(t, mt.post(AU, map[string]any{"given_name": "T", "username": "viabearer", "email": "viabearer@x.example"}), 201)
@@ -1016,14 +1016,14 @@ func TestBearerAndVersioning(t *testing.T) {
 	want(t, w.anon().get("/api/orgs"), 401)
 
 	// version negotiation
-	want(t, st.do("GET", "/api/orgs", nil, "Api-Version", "1"), 200)
-	r = st.do("GET", "/api/orgs", nil, "Api-Version", "2")
+	want(t, st.do("GET", "/api/orgs", nil, "Api-Version", web.APIVersionLatest), 200)
+	r = st.do("GET", "/api/orgs", nil, "Api-Version", "2000-01-01")
 	wantField(t, r, 400, "")
-	if r.Header.Get("Api-Version") != "1" {
+	if r.Header.Get("Api-Version") != web.APIVersionLatest {
 		t.Error("an unsupported version is answered with the latest supported one")
 	}
 	// session callers may send the header too, and the old /api/admin paths are gone
-	want(t, w.as("admin").do("GET", AU, nil, "Api-Version", "1"), 200)
+	want(t, w.as("admin").do("GET", AU, nil, "Api-Version", web.APIVersionLatest), 200)
 	want(t, w.as("admin").get("/api/admin/orgs"), 404)
 }
 

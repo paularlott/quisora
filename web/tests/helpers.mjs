@@ -42,7 +42,7 @@ export async function flatBackdrop(page, color) {
 export async function apiCall(page, method, path, body) {
   return page.evaluate(async ([method, path, body]) => {
     const csrf = document.querySelector('meta[name="csrf-token"]').content
-    const r = await fetch(path, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf, 'Api-Version': '1' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const r = await fetch(path, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf, 'Api-Version': '2026-10-20' }, body: body === undefined ? undefined : JSON.stringify(body) })
     const text = await r.text()
     if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${text}`)
     return text ? JSON.parse(text) : null

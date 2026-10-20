@@ -62,7 +62,6 @@ func (m *Module) Register(s *web.Server) {
 	for _, rt := range m.routes() {
 		s.Mux.Handle(rt.Method+" "+rt.Path, s.RequireManagement(rt.Handler))
 	}
-	s.Mux.HandleFunc("GET /api/openapi.json", serveOpenAPI)
 	m.registerPages(s)
 }
 
@@ -73,7 +72,8 @@ type Route struct {
 	Handler http.HandlerFunc
 }
 
-// Routes lists every /api operation this module serves. The OpenAPI document must describe each one (tested).
+// Routes lists every /api operation this module serves. The OpenAPI document (web/openapi/openapi.yaml, served at
+// /api/openapi.json) must describe each one (tested).
 func (m *Module) Routes() []Route { return m.routes() }
 
 func (m *Module) routes() []Route {

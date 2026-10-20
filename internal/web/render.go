@@ -65,7 +65,12 @@ type manifestEntry struct {
 func NewRenderer(tfs, dist fs.FS) (*Renderer, error) {
 	r := &Renderer{pages: map[string]*template.Template{}, manifest: map[string]manifestEntry{}}
 	if b, err := fs.ReadFile(dist, "dist/manifest.json"); err == nil {
-		_ = json.Unmarshal(b, &r.manifest)
+		// Vite's manifest is keyed by source path (src/js/main.js); templates name entries by file name (main.js).
+		var m map[string]manifestEntry
+		_ = json.Unmarshal(b, &m)
+		for src, e := range m {
+			r.manifest[path.Base(src)] = e
+		}
 	}
 	funcs := template.FuncMap{
 		"asset": r.asset,
@@ -110,7 +115,7 @@ func NewRenderer(tfs, dist fs.FS) (*Renderer, error) {
 	return r, nil
 }
 
-// asset returns the hashed URL of a built entry ("main.js" or "main.css").
+// asset returns the hashed URL of a built entry, named by its source file ("main.js", "theme-boot.js", "main.css").
 func (r *Renderer) asset(entry string) string {
 	if e, ok := r.manifest[entry]; ok {
 		return "/" + e.File

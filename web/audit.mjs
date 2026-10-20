@@ -4,12 +4,7 @@
 import { execFileSync } from 'node:child_process'
 
 // Accepted advisories: url -> why it does not apply, and when that was decided. Review them at each release.
-const accepted = {
-  'https://github.com/advisories/GHSA-vfj7-8cjw-p6xm':
-    'braces stack exhaustion on deeply nested glob patterns (no fixed release; reached through @tailwindcss/cli -> ' +
-    '@parcel/watcher -> micromatch). Build-time only, and the only patterns are our own build configuration: no ' +
-    'untrusted input reaches it. Accepted 2026-10-19.',
-}
+const accepted = {}
 
 let report
 try {

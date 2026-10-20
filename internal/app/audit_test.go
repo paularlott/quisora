@@ -10,6 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // The audit API: an organization's administrator reads that organization only; GET /api/audit (every
@@ -54,7 +55,7 @@ func auditAPI(t *testing.T, vl string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return map[string]string{"Authorization": "Bearer " + tok, "Api-Version": "1"}
+		return map[string]string{"Authorization": "Bearer " + tok, "Api-Version": web.APIVersionLatest}
 	}
 	bossHdr, superHdr := token(boss), token(super)
 

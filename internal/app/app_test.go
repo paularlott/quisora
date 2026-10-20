@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/web"
 	"io"
 	"net"
 	"net/http"
@@ -167,7 +168,7 @@ func testIntegration(t *testing.T, backend string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hdr := map[string]string{"Authorization": "Bearer " + apiTok, "Api-Version": "1"}
+	hdr := map[string]string{"Authorization": "Bearer " + apiTok, "Api-Version": web.APIVersionLatest}
 	code, orgs := doJSON(t, hc, "GET", base+"/api/orgs", hdr, nil)
 	if code == 404 {
 		t.Skip("management API not registered yet")

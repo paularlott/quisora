@@ -8,7 +8,8 @@ import "embed"
 //go:embed templates
 var Templates embed.FS
 
-// Dist holds the frontend build output (assets/ and manifest.json), produced by `npm run build` in web/.
+// Dist holds the frontend build output (assets/, api-docs/, openapi.json and manifest.json), produced by
+// `npm run build` in web/.
 //
 //go:embed all:dist
 var Dist embed.FS

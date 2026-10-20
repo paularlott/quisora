@@ -10,15 +10,18 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// Management API versioning: callers send "Api-Version: <n>"; responses echo the version served. A request without
-// the header gets the oldest supported version, so integrations written against it never break silently.
+// Management API versioning: callers send "Api-Version: <date>"; responses echo the version served. A version is
+// the date (YYYY-MM-DD) of the release that introduced it; a new one is added only for a change that would break
+// existing callers. A request without the header gets the oldest supported version, so integrations written against
+// it never break silently.
 const (
 	APIVersionHeader = "Api-Version"
-	APIVersionLatest = "1"
+	APIVersionLatest = "2026-10-20"
 )
 
-// APIVersions lists the supported versions, oldest first.
-var APIVersions = []string{"1"}
+// APIVersions lists the supported versions, oldest first (tested: dates, in order, ending with APIVersionLatest).
+// web/src/js/lib/api.js and web/openapi/openapi.yaml name them too (tested).
+var APIVersions = []string{APIVersionLatest}
 
 // APIVersion returns the version negotiated for the request (set by RequireManagement).
 func APIVersion(r *http.Request) string {

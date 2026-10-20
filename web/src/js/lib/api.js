@@ -1,5 +1,6 @@
 // fetch wrapper for the management API (/api): JSON in and out, CSRF header, Api-Version header, error mapping.
-export const API_VERSION = '1'
+// the management API version this UI was written against (internal/web/mgmtapi.go, tested to match)
+export const API_VERSION = '2026-10-20'
 
 export class ApiError extends Error {
   constructor(status, body) {

@@ -88,7 +88,7 @@ sleep 10 # let the tail of the feed drain, then verify user counts
 for n in 1 2 3; do
 	tok=$(python3 -c "import json; print(json.load(open('$WORK/seed.json'))['api_token'])")
 	for o in org-00001 org-00250 org-00500; do
-		t=$(curl -sk -H "Authorization: Bearer $tok" -H 'Api-Version: 1' "https://127.0.0.1:$((BASE + n))/api/orgs/$o/users?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total"))')
+		t=$(curl -sk -H "Authorization: Bearer $tok" -H 'Api-Version: 2026-10-20' "https://127.0.0.1:$((BASE + n))/api/orgs/$o/users?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total"))')
 		say "node $n $o users: $t"
 	done
 done

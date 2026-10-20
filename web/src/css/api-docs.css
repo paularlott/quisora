@@ -1,0 +1,95 @@
+/* Quisora skin for the API reference (/api-docs/): Redoc 3 themes through CSS variables. Redoc injects its own
+   :root and :root.dark rules at run time, after this file, so these use html:root to win on specificity. The colours
+   follow tokens.css: indigo accents with the same contrast as the app (links and primary text >= 7:1). */
+
+html:root {
+  --font-family-base: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-family-monospaced: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Redoc derives every primary colour (buttons, active menu items, tabs, highlights) from this scale */
+  --color-brand-1: #eef2ff;
+  --color-brand-2: #e0e7ff;
+  --color-brand-3: #c7d2fe;
+  --color-brand-4: #a5b4fc;
+  --color-brand-5: #6366f1;
+  --color-brand-6: #4338ca; /* the app's --accent-solid: white text 7.3:1 */
+  --color-brand-7: #3730a3; /* the app's --accent */
+  --color-brand-8: #3730a3;
+  --color-brand-9: #312e81;
+
+  --link-color-primary: #3730a3;
+  --link-color-primary-hover: #312e81;
+  --link-color-primary-pressed: #1e1b4b;
+  --link-color-visited: #5b21b6;
+}
+
+html:root.dark {
+  /* light enough to be text too: Redoc uses the base colour for link-style buttons and schema names */
+  --color-brand-1: #1e1b4b;
+  --color-brand-2: #272463;
+  --color-brand-3: #3730a3;
+  --color-brand-4: #4338ca;
+  --color-brand-5: #818cf8;
+  --color-brand-6: #a5b4fc;
+  --color-brand-7: #c7d2fe;
+  --color-brand-8: #b4c0ff; /* the app's dark --accent */
+  --color-brand-9: #e0e7ff;
+
+  --link-color-primary: #b4c0ff;
+  --link-color-primary-hover: #c7d2fe;
+  --link-color-primary-pressed: #e0e7ff;
+  --link-color-visited: #d8b4fe;
+
+  /* filled buttons keep white text, so they keep the app's solid indigo rather than the light base colour */
+  --button-bg-color-primary: #4f46e5;
+  --button-bg-color-primary-hover: #4338ca;
+  --button-bg-color-primary-pressed: #3730a3;
+}
+
+/* Contrast fixes for Redoc's own colours (WCAG 2.2 AA, 4.5:1): the search hint and, in the light theme, the HTTP
+   method tags and boolean code tokens. Redoc's dark values already pass. */
+html:root {
+  --search-trigger-color: var(--text-color-secondary);
+}
+html:root:not(.dark) {
+  --code-block-tokens-boolean-color: #15803d;
+}
+/* Redoc colours nested property names by depth from a fixed palette, most of which fails 4.5:1 on one theme or the
+   other; the indentation already shows the depth. */
+html:root .schema-name {
+  color: var(--color-primary-text);
+}
+/* The expand/collapse toggles in JSON samples are 18px: grow them to the 24px target size (WCAG 2.5.8), with
+   negative margins so the text around them does not move. */
+html:root pre button[aria-label="collapse"],
+html:root pre button[aria-label="expand"] {
+  width: 24px;
+  height: 24px;
+  margin: -3px;
+}
+html:root pre:has(button[aria-label="collapse"], button[aria-label="expand"]) {
+  line-height: 24px; /* toggles on consecutive lines must not overlap */
+}
+html:root:not(.dark) .tag-get { --tag-color: #166534; }
+html:root:not(.dark) .tag-post { --tag-color: #1d4ed8; }
+html:root:not(.dark) .tag-put { --tag-color: #9a3412; }
+html:root:not(.dark) .tag-patch { --tag-color: #854d0e; }
+html:root:not(.dark) .tag-delete { --tag-color: #b91c1c; }
+
+/* No "API docs by Redocly" badge: the reference is part of Quisora, and its link leads off the network. */
+span:has(> a[href^="https://redocly.com/redoc"]) {
+  display: none;
+}
+
+/* Each page's Copy button stays (it copies the page as Markdown); its menu does not: besides copying, it offers
+   "Open in Claude" and "Open in ChatGPT", which send the page to those services. */
+[data-testid="page-actions"] [data-testid="dropdown"] {
+  display: none;
+}
+html:root [data-testid="page-actions"] [data-component-name="Button/ButtonGroup"] > .button {
+  /* now a plain button rather than the left half of a split button */
+  border-radius: var(--button-border-radius);
+  border-right-style: solid;
+  border-right-width: 1px;
+}

@@ -58,43 +58,45 @@ func TestBearerSchemeCaseInsensitive(t *testing.T) {
 // the 503 answers.
 func TestOpenAPIDetails(t *testing.T) {
 	w := newWorld(t)
-	r := w.anon().get("/api/openapi.json")
-	want(t, r, 200)
+	raw := openAPISpec(t)
 	var doc struct {
-		Paths map[string]map[string]struct {
-			Security   []map[string][]string      `json:"security"`
-			Responses  map[string]json.RawMessage `json:"responses"`
-			Parameters []struct {
-				Name string `json:"name"`
-				In   string `json:"in"`
-			} `json:"parameters"`
-		} `json:"paths"`
 		Comps struct {
 			Schemas map[string]struct {
 				Properties map[string]json.RawMessage `json:"properties"`
 			} `json:"schemas"`
 		} `json:"components"`
 	}
-	if err := json.Unmarshal(r.Raw, &doc); err != nil {
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if b := doc.Paths["/api/backup"]["get"]; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
+	type op struct {
+		Security   []map[string][]string      `json:"security"`
+		Responses  map[string]json.RawMessage `json:"responses"`
+		Parameters []struct {
+			Name string `json:"name"`
+			In   string `json:"in"`
+		} `json:"parameters"`
+	}
+	var backup, createUser op
+	openAPIOp(t, raw, "/api/backup", "get", &backup)
+	openAPIOp(t, raw, "/api/orgs/{org}/users", "post", &createUser)
+	if b := backup; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
 		t.Errorf("backup security: %+v", b.Security)
 	}
 	in := map[string]string{}
-	for _, p := range doc.Paths["/api/backup"]["get"].Parameters {
+	for _, p := range backup.Parameters {
 		in[p.Name] = p.In
 	}
 	if in["plain"] != "query" || in["X-Backup-Password"] != "header" {
 		t.Errorf("backup parameters: %v", in)
 	}
-	if _, ok := doc.Paths["/api/orgs/{org}/users"]["post"].Responses["503"]; !ok {
+	if _, ok := createUser.Responses["503"]; !ok {
 		t.Error("no 503 response")
 	}
 	if p := doc.Comps.Schemas["Member"].Properties; p["name"] == nil || p["display_name"] != nil {
 		t.Errorf("Member schema: %v", p)
 	}
-	if !strings.Contains(string(r.Raw), `"#/components/schemas/KeyRotated"`) || doc.Comps.Schemas["KeyRotated"].Properties["rotated"] == nil {
+	if !strings.Contains(string(raw), `"#/components/schemas/KeyRotated"`) || doc.Comps.Schemas["KeyRotated"].Properties["rotated"] == nil {
 		t.Error("rotate response schema")
 	}
 	rot := w.as("super").post("/api/keys/rotate", nil)
