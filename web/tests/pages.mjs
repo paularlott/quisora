@@ -160,6 +160,10 @@ PAGES.push(
   { name: 'landing-picker', path: '/?next=%2Foauth%2Fauthorize%2Fresume', as: 'none' },
   { name: 'login-org', path: '/login/acme', as: 'none' },
   { name: 'account', path: '/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
+  // The user menu: a floating glass panel over the page, open for the audit (contrast budget of --glass-bg-panel).
+  { name: 'account-usermenu', path: '/account', as: 'user', steps: [async (p) => {
+      await p.getByRole('button', { name: /Account menu/ }).click(); await p.locator('#user-menu').waitFor(); await p.waitForTimeout(450)
+    }] },
   // Email addresses: the list (a verified and an unverified linked address), the inline add input, the remove confirmation.
   { name: 'account-emails', path: '/account', as: 'user', steps: [emailsStep] },
   { name: 'account-password', path: '/account', as: 'user', dialog: true, steps: [async (p) => {

@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/service"
@@ -25,5 +26,37 @@ func TestPrivilegedEmailChangeIsASignInReset(t *testing.T) {
 	}
 	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aUser.ID, service.UserInput{Email: ptr("other@acme.example")}); err != nil {
 		t.Fatalf("a plain user's address: %v", err)
+	}
+}
+
+// The same guard covers making a verified linked address the primary one (MakePrimary): resets go to the primary
+// address, so an administrator who could set an established manager's would take the account over; the manager's own
+// linked address stays their own change.
+func TestMakePrimaryOfPrivilegedIsASignInReset(t *testing.T) {
+	c := newCast(t)
+	pw := "correct horse battery staple 9"
+	if _, err := c.svc.UpdateUser(c.ctx, service.System, c.aManager.ID, service.UserInput{Password: &pw}); err != nil {
+		t.Fatal(err)
+	}
+	addr, other := "linked@acme.example", "other@acme.example"
+	for _, a := range []string{addr, other} {
+		if _, err := c.svc.AddLinkedEmail(c.ctx, service.System, c.aManager.ID, a, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.svc.MakePrimary(c.ctx, actor(c.aAdmin), c.aManager.ID, addr); err == nil {
+		t.Fatal("an admin made an established manager's linked address primary")
+	}
+	self := service.SelfService(c.ctx)
+	u, err := c.svc.MakePrimary(self, actor(c.aManager), c.aManager.ID, addr)
+	if err != nil || !strings.EqualFold(u.Email, addr) {
+		t.Fatalf("the manager's own: %v %s", err, u.Email)
+	}
+	u, err = c.svc.MakePrimary(c.ctx, actor(c.super), c.aManager.ID, other)
+	if err != nil {
+		t.Fatalf("a super admin: %v", err)
+	}
+	if !strings.EqualFold(u.Email, other) {
+		t.Fatalf("a super admin: email is %s", u.Email)
 	}
 }
