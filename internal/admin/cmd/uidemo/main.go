@@ -60,6 +60,12 @@ func main() {
 	oldKey := secure.RandomBytes(32)
 	sealer, _ := secure.NewSealer(oldKey)
 	svc := service.New(cfg, st, sealer)
+	hub.OrgOfUser = func(id string) string {
+		if u, err := svc.Users.Get(context.Background(), id); err == nil {
+			return u.OrgID
+		}
+		return ""
+	}
 	ctx := context.Background()
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
 	must(err)

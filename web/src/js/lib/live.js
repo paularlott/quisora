@@ -22,7 +22,12 @@ let enabled = readPref()
 function readPref() { try { return localStorage.getItem(KEY) !== '0' } catch { return true } }
 function writePref(v) { try { localStorage.setItem(KEY, v ? '1' : '0') } catch { /* private mode */ } }
 
+// The account page listens to the signed-in user's own stream instead of the administrators' (useStream).
+let streamPath = ''
+export function useStream(path) { streamPath = path }
+
 function streamUrl() {
+  if (streamPath) return streamPath
   const m = document.querySelector('meta[name="live-org"]')
   return '/api/v1/events' + (m && m.content ? '?org=' + encodeURIComponent(m.content) : '')
 }
@@ -57,6 +62,9 @@ function open() {
   })
   es.addEventListener('change', (e) => { try { emit(JSON.parse(e.data)) } catch { /* ignore malformed */ } })
   es.addEventListener('resync', () => emit({ kind: '*', op: 'resync' }))
+  // The server ended the stream: the session ended, the account was disabled, the viewer lost the role or the
+  // token was revoked. Reloading shows what they may still see (the sign-in page when nothing).
+  es.addEventListener('ended', () => { close(); enabled && location.reload() })
   es.onerror = () => {
     setConnected(false)
     syncNext = true

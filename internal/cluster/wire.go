@@ -23,6 +23,7 @@ const (
 	msgAbort   gossip.MessageType = gossip.UserMsg + 8  // one-way: release a quorum compare-and-swap's intents
 	msgRead    gossip.MessageType = gossip.UserMsg + 9  // request/response: records by id (quorum read)
 	msgAudit   gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's audit events
+	msgNotice  gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
 )
 
 // recordMsg carries one encoded record (see encodeRecord).

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,12 +24,22 @@ var streamed = map[model.Kind]bool{
 	model.KindOrg: true, model.KindUser: true, model.KindGroup: true, model.KindMember: true,
 	model.KindTenant: true, model.KindAccess: true, model.KindClient: true, model.KindProvider: true, model.KindAudit: true,
 	model.KindKey: true,
+	// a user's own records (the admin user page's cards); scoped by the user, so the hub looks up their organization
+	model.KindSession: true, model.KindPasskey: true, model.KindAPIToken: true, model.KindIdentity: true, model.KindGrant: true,
+}
+
+// userScoped are the streamed kinds whose record scope is the owning user's id, not an organization's.
+var userScoped = map[model.Kind]bool{
+	model.KindSession: true, model.KindPasskey: true, model.KindAPIToken: true, model.KindIdentity: true, model.KindGrant: true,
 }
 
 // Event is one change notification.
 type Event struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id,omitempty"`
+	// User is the owning user of a user's own record (session, passkey, API token, provider link, grant), so a page
+	// showing one user refetches only for theirs. Sent only with the ID.
+	User string `json:"user,omitempty"`
 	Op   string `json:"op"` // "put" or "delete"
 	org  string // organization id; "" when unknown (deletions replicated without their scope)
 }
@@ -47,7 +58,8 @@ var recheckEvery = time.Minute
 
 type subscriber struct {
 	ch     chan Event
-	orgID  string // organization the viewer administers
+	orgID  string // organization the viewer administers (a personal stream: the user's own)
+	self   string // a personal stream (the account page): only changes to this user's own records
 	super  bool
 	who    string // the viewer, for the per-viewer cap
 	lagged bool   // events were dropped: the client must reload everything
@@ -59,6 +71,37 @@ type Hub struct {
 	subs  map[*subscriber]struct{}
 	perID map[string]int
 	now   func() time.Time
+	// OrgOfUser returns a user's organization id ("" when unknown), for records scoped by their owner. Set before
+	// the hub is used; nil leaves those events without an organization (sent to everyone, without an id).
+	OrgOfUser func(userID string) string
+	orgMu     sync.Mutex
+	orgOf     map[string]string // user id -> organization id (users never change organization)
+}
+
+// maxOrgCache bounds the user -> organization cache; it starts over when full.
+const maxOrgCache = 10000
+
+func (h *Hub) userOrg(userID string) string {
+	if h.OrgOfUser == nil || userID == "" {
+		return ""
+	}
+	h.orgMu.Lock()
+	org, ok := h.orgOf[userID]
+	h.orgMu.Unlock()
+	if ok {
+		return org
+	}
+	org = h.OrgOfUser(userID)
+	if org == "" {
+		return ""
+	}
+	h.orgMu.Lock()
+	if h.orgOf == nil || len(h.orgOf) >= maxOrgCache {
+		h.orgOf = map[string]string{}
+	}
+	h.orgOf[userID] = org
+	h.orgMu.Unlock()
+	return org
 }
 
 // NewHub returns an empty hub.
@@ -76,6 +119,9 @@ func (h *Hub) Publish(rec *store.Record) {
 	if rec.Kind == model.KindOrg {
 		ev.org = rec.ID
 	}
+	if userScoped[rec.Kind] {
+		ev.User, ev.org = rec.Scope, h.userOrg(rec.Scope)
+	}
 	if rec.Kind == model.KindKey {
 		ev.org = ""
 	}
@@ -90,7 +136,7 @@ func (h *Hub) Publish(rec *store.Record) {
 		}
 		e := ev
 		if ev.org == "" || (ev.org != s.orgID && !s.super) {
-			e.ID = "" // unknown or foreign scope: say only that something of this kind changed
+			e.ID, e.User = "", "" // unknown or foreign scope: say only that something of this kind changed
 		}
 		select {
 		case s.ch <- e:
@@ -101,6 +147,9 @@ func (h *Hub) Publish(rec *store.Record) {
 }
 
 func (s *subscriber) wants(ev Event) bool {
+	if s.self != "" {
+		return s.ownChange(ev)
+	}
 	switch {
 	case ev.Kind == string(model.KindKey):
 		return s.super
@@ -110,6 +159,23 @@ func (s *subscriber) wants(ev Event) bool {
 		return true
 	}
 	return ev.org == s.orgID
+}
+
+// ownChange: is ev about the personal stream's user? Their user record, a membership of theirs, or one of their own
+// records (sessions, passkeys, API tokens, provider links, grants), in their organization.
+func (s *subscriber) ownChange(ev Event) bool {
+	if ev.org != s.orgID {
+		return false
+	}
+	switch {
+	case ev.Kind == string(model.KindUser):
+		return ev.ID == s.self
+	case ev.Kind == string(model.KindMember):
+		return strings.HasSuffix(ev.ID, ":"+s.self)
+	case userScoped[model.Kind(ev.Kind)]:
+		return ev.User == s.self
+	}
+	return false
 }
 
 func (h *Hub) add(s *subscriber) bool {
@@ -146,7 +212,8 @@ func (h *Hub) Count() int {
 	return len(h.subs)
 }
 
-// Module serves GET /api/v1/events?org=<org name>.
+// Module serves GET /api/v1/events?org=<org name> (administrators: their organization's changes) and
+// GET /api/account/events (any signed-in user: changes to their own records, for the account page).
 type Module struct {
 	Hub *Hub
 	s   *web.Server
@@ -156,6 +223,26 @@ type Module struct {
 func (m *Module) Register(s *web.Server) {
 	m.s = s
 	s.Mux.Handle("GET "+web.EventsPath, s.RequireManagement(m.stream))
+	s.Mux.Handle("GET "+web.AccountEventsPath, s.WithSession(http.HandlerFunc(m.accountStream)))
+}
+
+// accountStream is the account page's stream: the signed-in user's own changes (an administrator elsewhere adding
+// an address, a sign-in on another device, a link followed in another tab). Session only.
+func (m *Module) accountStream(w http.ResponseWriter, r *http.Request) {
+	u := web.User(r)
+	if u == nil {
+		web.WriteJSON(w, http.StatusUnauthorized, web.ErrorBody{Error: "Your session has ended. Please sign in again."})
+		return
+	}
+	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: u.OrgID, self: u.ID, who: "u:" + u.ID}
+	m.serve(w, r, sub, func() bool {
+		sess := web.Session(r)
+		if sess == nil {
+			return false
+		}
+		s, cur := m.s.Sessions.Lookup(r.Context(), sess.ID)
+		return s != nil && cur != nil && cur.ID == u.ID
+	})
 }
 
 func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +262,13 @@ func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: orgID, super: a.IsSuper(), who: viewer(a)}
+	m.serve(w, r, sub, func() bool { return m.stillAllowed(r, orgID, sub.super) })
+}
+
+// serve streams sub's events until the client goes, or allowed (checked every recheckEvery) says the viewer may no
+// longer have the stream.
+func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, allowed func() bool) {
+	ctx := r.Context()
 	if !m.Hub.add(sub) {
 		w.Header().Set("Retry-After", "30")
 		web.WriteJSON(w, http.StatusServiceUnavailable, web.ErrorBody{Error: "Too many live connections."})
@@ -207,7 +301,7 @@ func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-recheck.C:
-			if !m.stillAllowed(r, orgID, sub.super) {
+			if !allowed() {
 				_ = write("event: ended\ndata: {}\n\n") // the client reloads, and signs in again if it must
 				return
 			}

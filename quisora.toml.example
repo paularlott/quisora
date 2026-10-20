@@ -59,8 +59,9 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 
 [cluster]
 # Two ways to run several nodes:
-#  - share one database server (postgres, mysql, mariadb, valkey) and leave bind empty: no gossip, the database is
-#    the only copy, short-lived sign-in state lives there too;
+#  - share one database server (postgres, mysql, mariadb, valkey) and leave bind empty: no replication, the database
+#    is the only copy, short-lived sign-in state lives there too; set [cluster.notify] so the nodes tell each other
+#    of changes (caches and live pages follow at once instead of within 5 seconds);
 #  - give every node its own database (any backend) and set bind: the nodes replicate to each other over gossip.
 # node_id = ""                            # UUID; default: generated and kept in the data directory
 # bind = "0.0.0.0:7946"                   # empty = no gossip
@@ -74,6 +75,14 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 #                                         # userinfo and introspection endpoints (requests that need no write)
 # strict_durability = false               # true: a durable write of a kind that is not quorum-committed fails when a
 #                                         # majority does not confirm it; see docs/REPLICATION.md
+
+[cluster.notify]
+# Shared database only (ignored, with a warning, when cluster.bind is set): a gossip network of its own that carries
+# change notices between the nodes, never data. Open its port (TCP and UDP) between the nodes only.
+# bind = "0.0.0.0:7947"
+# advertise = "10.0.0.11:7947"            # required when bind is a wildcard address
+# peers = ["10.0.0.11:7947", "10.0.0.12:7947", "10.0.0.13:7947"]   # every node (listing itself is fine)
+# key = ""                                # `quisora genkey`; identical on every node, not cluster.key
 
 [tokens]
 signing_alg = "ES256"                     # ES256 or EdDSA (RS256 is added per client when asked for)

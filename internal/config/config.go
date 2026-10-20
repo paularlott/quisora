@@ -134,6 +134,18 @@ type Cluster struct {
 	// on this node and reaching the others later. Security-sensitive kinds (users, credentials, clients, providers,
 	// organizations, tenants, access, memberships) are always quorum compare-and-swaps.
 	StrictDurability bool `toml:"strict_durability" flag:"strict-durability" usage:"With cluster.bind: a durable write of a kind that is not quorum-committed fails when a majority does not confirm it (undone where possible), instead of standing here and replicating later"`
+	// Notify links nodes that share one database server by a gossip network of their own that carries only change
+	// notices (no data): each node's caches and live admin pages then follow the others' changes within moments.
+	// Ignored, with a warning, when cluster.bind is set (replication delivers the changes already).
+	Notify Notify `toml:"notify" flag:"notify"`
+}
+
+// Notify is the change-notice gossip of nodes sharing one database (cluster.notify).
+type Notify struct {
+	Bind      string   `toml:"bind" flag:"bind" usage:"Shared database: gossip bind address for change notices between the nodes (empty: none; caches then follow other nodes' changes within 5 seconds)"`
+	Advertise string   `toml:"advertise" flag:"advertise" usage:"Shared database: notice gossip address advertised to the other nodes"`
+	Peers     []string `toml:"peers" flag:"peers" usage:"Shared database: notice gossip addresses of the other nodes"`
+	Key       string   `toml:"key" flag:"key" secret:"true" usage:"Shared database: base64 32-byte key for the notice gossip (quisora genkey), identical on every node"`
 }
 
 type Tokens struct {
@@ -332,6 +344,14 @@ func clusterKeyErrors(key string, previous []string) []error {
 	return errs
 }
 
+// keyErrors checks a 32-byte base64 key setting.
+func keyErrors(name, key string) []error {
+	if k, err := base64.StdEncoding.DecodeString(key); err != nil || len(k) != 32 {
+		return []error{errors.New(name + " must be 32 bytes, base64 encoded (quisora genkey)")}
+	}
+	return nil
+}
+
 // Validate checks the configuration and fills derived defaults.
 func (c *Config) Validate() error {
 	var errs []error
@@ -400,6 +420,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Cluster.Bind != "" && c.Cluster.Key == "" {
 		errs = append(errs, errors.New("cluster.key is required when clustering"))
+	}
+	if n := c.Cluster.Notify; n.Bind != "" && c.Cluster.Bind == "" {
+		if c.LocalStorage() {
+			errs = append(errs, errors.New("cluster.notify is for nodes that share one database server: "+c.Storage.Backend+
+				" is this node's own (several nodes with their own databases use cluster.bind)"))
+		}
+		if n.Key == "" {
+			errs = append(errs, errors.New("cluster.notify.key is required with cluster.notify.bind"))
+		} else {
+			errs = append(errs, keyErrors("cluster.notify.key", n.Key)...)
+		}
+		if _, _, err := net.SplitHostPort(n.Bind); err != nil {
+			errs = append(errs, fmt.Errorf("cluster.notify.bind %q must be host:port", n.Bind))
+		} else if host, _, _ := net.SplitHostPort(n.Bind); n.Advertise == "" && (host == "" || host == "0.0.0.0" || host == "::") {
+			errs = append(errs, errors.New("cluster.notify.advertise is required when cluster.notify.bind is a wildcard address"))
+		}
+		others := 0
+		for _, p := range n.Peers {
+			if _, _, err := net.SplitHostPort(p); err != nil {
+				errs = append(errs, fmt.Errorf("cluster.notify.peers: %q must be host:port", p))
+			} else if p != n.Bind && p != n.Advertise {
+				others++
+			}
+		}
+		if others == 0 {
+			errs = append(errs, errors.New("cluster.notify.peers must list the other nodes sharing the database"))
+		}
 	}
 	if c.Cluster.Bind != "" && c.Server.MasterKey == "" {
 		errs = append(errs, errors.New("server.master_key is required when clustering (identical on every node)"))

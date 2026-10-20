@@ -153,6 +153,12 @@ func modules(ctx context.Context, a *App) []web.Module {
 	})
 
 	hub := events.NewHub()
+	hub.OrgOfUser = func(id string) string {
+		if u, err := a.Svc.Users.Get(context.WithoutCancel(ctx), id); err == nil {
+			return u.OrgID
+		}
+		return ""
+	}
 	a.onChange = append(a.onChange, hub.Publish)
 
 	adm := admin.New()

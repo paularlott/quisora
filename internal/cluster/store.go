@@ -95,7 +95,9 @@ func (s *Store) write(ctx context.Context, rec *store.Record, do func() error) e
 		prev, _ = s.inner.Get(ctx, rec.Kind, rec.ID) // what to put back if a majority does not confirm
 	}
 	rec.Origin = n.id
+	n.noteScope(ctx, rec)
 	if err := do(); err != nil {
+		n.forgetScope(rec)
 		return err
 	}
 	err := s.afterWrite(ctx, rec)
@@ -173,7 +175,8 @@ func (s *Store) Close() error { return s.inner.Close() }
 // ErrNotReplicated (wrapped) when it does not come (the write stands: counted and logged).
 func (s *Store) afterWrite(ctx context.Context, rec *store.Record) error {
 	n := s.n
-	n.fire(rec, true)
+	// the hooks, then (with a deletion's scope added) the notice to the nodes sharing the database (cluster.notify)
+	n.notice(n.fire(rec, true))
 	if n.gc == nil || localOnly(rec.Kind) { // node-local: never replicated
 		return nil
 	}
@@ -220,7 +223,11 @@ func (s *Store) applyReplica(ctx context.Context, rec *store.Record) (bool, erro
 		return false, errRefused
 	}
 	n.checkSkew(rec)
+	n.noteScope(ctx, rec)
 	applied, losers, err := s.inner.PutReplicated(ctx, rec)
+	if err != nil || !applied {
+		n.forgetScope(rec)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -252,12 +259,19 @@ func (s *Store) applyBatch(ctx context.Context, recs []*store.Record) error {
 	})
 	for _, r := range keep {
 		n.checkSkew(r)
+		n.noteScope(ctx, r)
 	}
 	applied, losers, err := br.PutReplicatedBatch(ctx, keep)
 	if err != nil {
+		for _, r := range keep {
+			n.forgetScope(r)
+		}
 		return err
 	}
 	for i, rec := range keep {
+		if !applied[i] {
+			n.forgetScope(rec)
+		}
 		if applied[i] {
 			n.holdsData.Store(true)
 			n.fire(rec, false)

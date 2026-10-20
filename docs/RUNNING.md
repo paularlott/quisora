@@ -279,22 +279,34 @@ protected at rest by the storage:
 
 Two modes. Do not mix them.
 
-### Shared database (no gossip)
+### Shared database
 
 Several nodes on one PostgreSQL, MySQL, MariaDB or Valkey database, which is the only copy. Leave `cluster.bind`
-empty.
+empty (that is the replicated mode below).
 
 - Short-lived sign-in state (codes, sign-in steps, rate limits) lives in the database too: any node serves any
   request, and the load balancer needs no sticky sessions.
 - A lease in the database picks the node that runs housekeeping (key rotation, purges, user end dates).
-- A change made on one node applies on the others within 5 seconds (caches).
+- **With `cluster.notify`** (recommended): the nodes form a small gossip network of their own that carries only change
+  notices (what changed, never the data). A change made on one node clears the others' caches and updates their open
+  admin and account pages within moments. A lost notice only waits for a cache to expire.
+- **Without it**, a node learns of another's change when its cache expires, within 5 seconds (a disabled user or a
+  revoked client keeps working that long on the other nodes), and its pages do not follow other nodes' changes live.
 - Every node has the same `server.master_key`. A node with a different key refuses to start.
 - High availability is the database's: run it as your own HA cluster.
 
 ```bash
 quisora serve --public-url https://id.example.com --master-key "$KEY" \
-  --storage postgres --postgres-dsn 'postgres://quisora:secret@db:5432/quisora'
+  --storage postgres --postgres-dsn 'postgres://quisora:secret@db:5432/quisora' \
+  --cluster-notify-bind 0.0.0.0:7947 --cluster-notify-advertise node1:7947 \
+  --cluster-notify-peers node1:7947 --cluster-notify-peers node2:7947 --cluster-notify-peers node3:7947 \
+  --cluster-notify-key "$NOTIFY_KEY"
 ```
+
+`cluster.notify` takes `bind`, `advertise` (required when `bind` is a wildcard), `peers` (every node; listing itself
+is fine; on the command line repeat the flag, in `QUISORA_CLUSTER_NOTIFY_PEERS` separate them with commas) and `key` (`quisora genkey`, the same on every node, apart from `cluster.key`). Open its port (TCP and UDP)
+between the nodes only. With `cluster.bind` set, `cluster.notify` is ignored with a warning: replication carries
+every change already. It is refused with a node-local database (BadgerDB, SQLite).
 
 Run `quisora bootstrap` once, against the database, before the first node starts.
 
@@ -497,7 +509,8 @@ docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISOR
 - `quisora healthcheck` is the container health check (liveness, `/healthz`). Don't restart a node for being unready:
   a cluster node catching up is alive. `quisora healthcheck --ready` checks `/readyz`.
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
-  (three nodes on PostgreSQL, a lab example: it needs `POSTGRES_PASSWORD` as well as `QUISORA_MASTER_KEY`).
+  (three nodes on PostgreSQL with the notice gossip, a lab example: it needs `POSTGRES_PASSWORD` and `QUISORA_NOTIFY_KEY`
+  as well as `QUISORA_MASTER_KEY`).
 
 ## Backup and restore
 

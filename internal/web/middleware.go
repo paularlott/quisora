@@ -164,11 +164,11 @@ func shed(max int, next http.Handler) http.Handler {
 
 // unshed reports whether a path is exempt from load shedding: the liveness and readiness probes (a busy node must
 // not look dead or unready to its orchestrator and be restarted or drained for it), discovery and the signing keys
-// (cheap, cached, and every relying party's token validation depends on them), and the event stream (long-lived
+// (cheap, cached, and every relying party's token validation depends on them), and the event streams (long-lived
 // streams have their own per-node limit, see internal/events).
 func unshed(p string) bool {
 	switch p {
-	case EventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
+	case EventsPath, AccountEventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
 		"/.well-known/oauth-authorization-server":
 		return true
 	}
@@ -177,6 +177,9 @@ func unshed(p string) bool {
 
 // EventsPath is the Server-Sent Events stream of the management API.
 const EventsPath = "/api/v1/events"
+
+// AccountEventsPath is the account page's live-update stream (the signed-in user's own changes).
+const AccountEventsPath = "/api/account/events"
 
 // Session returns the request's session (set by WithSession / RequireUser).
 func Session(r *http.Request) *model.Session {

@@ -177,7 +177,14 @@ type Node struct {
 	// Nodes sharing one database without gossip: short-lived state lives in the database and leadership is a lease
 	// there (both nil otherwise).
 	shared *ephemeral.Shared
-	lease  *lease
+	// ngc is the notice gossip of a node sharing its database (cluster.notify; nil otherwise): change notices only.
+	ngc         *gossip.Cluster
+	notifyPeers []string
+	// delScopes holds the scope of a record being deleted (kind/id -> scope) from just before the deletion is
+	// applied until the change hooks run: a tombstone carries none, and the hooks need it (which organization's
+	// administrators, which user's pages, the notices).
+	delScopes sync.Map
+	lease     *lease
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -274,8 +281,19 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 		if cfg.SharedStorage() {
 			n.shared = ephemeral.NewShared(st)
 			n.lease = &lease{st: store.NewTable[model.Ephemeral](st), self: n.id}
+			if cfg.Cluster.Notify.Bind != "" {
+				if err := n.buildNotify(); err != nil {
+					n.eph.local.Close()
+					return nil, err
+				}
+			} else {
+				n.log.Info("shared database without cluster.notify: other nodes' changes reach this node's caches within 5 seconds, and its admin pages do not follow them live")
+			}
 		}
 		return n, nil
+	}
+	if cfg.Cluster.Notify.Bind != "" {
+		n.log.Warn("cluster.notify is ignored with cluster.bind: replication delivers every change already")
 	}
 	if err := n.buildGossip(); err != nil {
 		n.eph.local.Close()
@@ -467,6 +485,9 @@ func (n *Node) Start(ctx context.Context) error {
 				n.checkNoGossip(ctx)
 				n.wg.Add(1)
 				go n.runLease()
+				if n.ngc != nil {
+					n.startNotify()
+				}
 			})
 		}
 		return nil
@@ -527,6 +548,9 @@ func (n *Node) Close() error {
 		if n.gc != nil {
 			n.gc.Stop()
 		}
+		if n.ngc != nil {
+			n.ngc.Stop()
+		}
 		n.wg.Wait()
 		n.saveState()
 		n.eph.local.Close()
@@ -582,12 +606,21 @@ func (n *Node) OnChange(fn func(rec *store.Record, local bool)) {
 // it is tombstoned. Every node that resolves the clash calls it, so an audit writer should tolerate duplicates.
 func (n *Node) OnConflict(fn func(loser *store.Record)) { n.onConflict.Store(&fn) }
 
-func (n *Node) fire(rec *store.Record, local bool) {
+// fire runs the change hooks for rec and returns the record they were given (a deletion with its scope added).
+func (n *Node) fire(rec *store.Record, local bool) *store.Record {
+	if rec.Deleted && rec.Scope == "" { // a tombstone has no scope: the hooks get the one noted before (noteScope)
+		if v, ok := n.delScopes.LoadAndDelete(scopeKey(rec)); ok {
+			cp := *rec
+			cp.Scope = v.(string)
+			rec = &cp
+		}
+	}
 	if p := n.hooks.Load(); p != nil {
 		for _, fn := range *p {
 			fn(rec, local)
 		}
 	}
+	return rec
 }
 
 // PrefixOf derives the short ephemeral id prefix of a node id: 8 lower-case base32 characters of its hash (no dots).
@@ -1215,4 +1248,24 @@ func (n *Node) SetClusterKeys(key string, previous []string) (bool, error) {
 	}
 	n.clusterKs = next
 	return true, nil
+}
+
+func scopeKey(rec *store.Record) string { return string(rec.Kind) + "\x00" + rec.ID }
+
+// noteScope notes the scope of the record a deletion is about to remove, for the change hooks (see fire). It does
+// nothing for other writes, or when the record is not there (nothing to tell anyone about).
+func (n *Node) noteScope(ctx context.Context, rec *store.Record) {
+	if !rec.Deleted || rec.Scope != "" {
+		return
+	}
+	if cur, err := n.st.inner.Get(ctx, rec.Kind, rec.ID); err == nil && cur.Scope != "" {
+		n.delScopes.Store(scopeKey(rec), cur.Scope)
+	}
+}
+
+// forgetScope drops a noted scope whose deletion was not applied.
+func (n *Node) forgetScope(rec *store.Record) {
+	if rec.Deleted {
+		n.delScopes.Delete(scopeKey(rec))
+	}
 }

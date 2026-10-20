@@ -16,6 +16,22 @@ import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TE
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
 
+// aboutUser: may a live event concern this user? Their own record, a membership of theirs or one of their own records
+// (sessions, passkeys...: the event names its owner) does; another user's does not; an event naming nobody (a foreign
+// or unknown scope, a group, a client) might, so it counts.
+function aboutUser(ev, userId) {
+  if (ev.kind === '*') return true
+  const who = ev.kind === 'user' ? ev.id : ev.kind === 'member' ? (ev.id || '').split(':')[1] : ev.user
+  return !who || who === userId
+}
+// liveUser: on the user page, run fn (quietly, held back while a dialog is open or someone types) when a record of
+// one of kinds changes for the user the page shows.
+function liveUser(el, kinds, fn) {
+  const userId = el.closest('[data-user]').dataset.user
+  const run = liveRunner(fn)
+  subscribe(kinds, (ev) => { if (aboutUser(ev, userId)) run.trigger() })
+}
+
 const enc = encodeURIComponent
 
 // Confirmation through the shared dialog; resolves true/false.
@@ -436,7 +452,7 @@ function userEmailsComponent(Alpine) {
     url(s) { const d = this.$el.closest('[data-user]').dataset; return `${d.base}/users/${enc(d.user)}/emails${s}` },
     changed() { window.dispatchEvent(new CustomEvent('user-emails-changed')) },
   }), {
-    init() { return this.loadEmails() },
+    init() { liveUser(this.$el, ['user'], () => this.loadEmails()); return this.loadEmails() },
   }))
 }
 
@@ -444,7 +460,7 @@ function userEmailsComponent(Alpine) {
 function userTokensComponent(Alpine) {
   Alpine.data('adminUserTokens', () => ({
     items: [], loading: true, loadError: '',
-    init() { return this.load() },
+    init() { liveUser(this.$el, ['apitoken'], () => this.load()); return this.load() },
     url(s = '') { const d = this.$el.closest('[data-user]').dataset; return `${d.base}/users/${enc(d.user)}/tokens${s}` },
     async load() {
       try {
@@ -485,7 +501,7 @@ function userConnectionsComponents(Alpine) {
   const focusHeading = (id) => setTimeout(() => { const h = document.getElementById(id); if (h) h.focus() }, 80)
 
   Alpine.data('adminUserSessions', () => mix(listState(), {
-    init() { return this.load() },
+    init() { liveUser(this.$el, ['session'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(base(this.$el, '/sessions'))
@@ -514,7 +530,7 @@ function userConnectionsComponents(Alpine) {
   }))
 
   Alpine.data('adminUserApps', () => mix(listState(), { // mix keeps listState's getters live (a spread would copy values)
-    init() { return this.load() },
+    init() { liveUser(this.$el, ['grant', 'client'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(base(this.$el, '/apps'))
@@ -540,7 +556,7 @@ function userConnectionsComponents(Alpine) {
   }))
 
   Alpine.data('adminUserPasskeys', () => mix(listState(), {
-    init() { return this.load() },
+    init() { liveUser(this.$el, ['passkey'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(base(this.$el, '/passkeys'))
@@ -570,7 +586,7 @@ function userConnectionsComponents(Alpine) {
   }))
 
   Alpine.data('adminUserProviders', () => mix(listState(), {
-    init() { return this.load() },
+    init() { liveUser(this.$el, ['identity', 'provider'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(base(this.$el, '/providers'))
@@ -719,7 +735,7 @@ export default function (Alpine) {
       this.userId = d.user
       this.listUrl = d.list
       this._lr = liveRunner(() => this.refresh(true))
-      subscribe(['user', 'group', 'member'], () => this._lr.trigger())
+      subscribe(['user', 'group', 'member', 'passkey'], (ev) => { if (aboutUser(ev, this.userId)) this._lr.trigger() })
       return this.refresh()
     },
     // quiet = a live refresh: nothing changes on screen unless the record did; a deleted user is reported.
@@ -1218,6 +1234,9 @@ export default function (Alpine) {
     init() {
       this.apiBase = this.$el.dataset.api
       this.rotationDays = Number(this.$el.dataset.rotation) || 0
+      // keys made, rotated or retired elsewhere (another administrator, the rotation schedule, another node)
+      const live = liveRunner(async () => { await this.load(); announceUpdate('Signing keys updated') })
+      subscribe(['key'], () => live.trigger())
       return this.load()
     },
     async load() {

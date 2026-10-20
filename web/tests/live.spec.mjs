@@ -262,3 +262,55 @@ test('super admin: the organizations list follows new organizations', async ({ b
   await expect(a.getByRole('link', { name: 'Live Org ' + slug })).toHaveCount(0, { timeout: 3500 })
   await ctx.close(); await ctx2.close()
 })
+
+// The user page's cards follow the user's own records: a session started elsewhere appears in Sessions, and one
+// signed out by another administrator goes, without a reload.
+test('user page cards: sessions follow sign-ins and sign-outs elsewhere', async ({ browser, baseURL }) => {
+  const { a, b, close } = await twoAdmins(browser, baseURL, `${A}/audit`)
+  const uctx = await browser.newContext({ ignoreHTTPSErrors: true, baseURL })
+  try {
+    const up = await uctx.newPage()
+    await signIn(up, 'user')
+    await up.goto('/account')
+    const me = await apiCall(up, 'GET', '/api/account')
+    const id = me.id || me.user_id || (me.user && me.user.id)
+    expect(id, JSON.stringify(me).slice(0, 200)).toBeTruthy()
+    await a.goto(`${A}/users/${id}`)
+    const rows = a.getByRole('region', { name: 'Sessions of this user' }).getByRole('row')
+    await expect(rows.first()).toBeVisible()
+    const before = await rows.count()
+    // the user signs in once more, in another browser
+    const other = await browser.newContext({ ignoreHTTPSErrors: true, baseURL })
+    const op = await other.newPage()
+    await signIn(op, 'user')
+    await expect(rows).toHaveCount(before + 1, { timeout: 4000 })
+    // another administrator signs that one session out (only it: the demo store is shared, and signing the user out
+    // everywhere would also end the application grants other tests use)
+    const list = await apiCall(b, 'GET', `${API}/users/${id}/sessions`)
+    const newest = [...list.items].sort((x, y) => y.created.localeCompare(x.created))[0]
+    await apiCall(b, 'DELETE', `${API}/users/${id}/sessions/${newest.id}`)
+    await expect(rows).toHaveCount(before, { timeout: 4000 })
+    await other.close()
+  } finally { await uctx.close(); await close() }
+})
+
+// The account page follows changes made elsewhere to the user's own records: an administrator adding and removing an
+// address shows in Email addresses without a reload.
+test('account page: addresses an administrator adds and removes appear and go', async ({ browser, baseURL }) => {
+  const { b, close } = await twoAdmins(browser, baseURL, `${A}/audit`)
+  const uctx = await browser.newContext({ ignoreHTTPSErrors: true, baseURL })
+  try {
+    const up = await uctx.newPage()
+    await signIn(up, 'user')
+    await up.goto('/account')
+    const me = await apiCall(up, 'GET', '/api/account')
+    const id = me.user.id
+    const list = up.getByRole('list', { name: 'Email addresses' })
+    await expect(list).toBeVisible()
+    const address = uniq('live') + '@example.com'
+    await apiCall(b, 'POST', `${API}/users/${id}/emails`, { address })
+    await expect(list).toContainText(address, { timeout: 4000 })
+    await apiCall(b, 'DELETE', `${API}/users/${id}/emails/${encodeURIComponent(address)}`)
+    await expect(list).not.toContainText(address, { timeout: 4000 })
+  } finally { await uctx.close(); await close() }
+})

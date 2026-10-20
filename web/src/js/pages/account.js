@@ -2,6 +2,7 @@
 // submits through /api/account (session + CSRF); errors appear inline next to the field and are announced.
 import { ApiError, get, post, patch, del } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
+import { subscribe, liveRunner, useStream } from '../lib/live.js'
 import { dialogMixin } from '../lib/dialog.js'
 import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
@@ -45,7 +46,18 @@ export async function withReauth(Alpine, fn, opener, vm) {
   }
 }
 
-// Shared account state: loaded once, reloaded after changes that alter what the page shows.
+// liveSelf: on the account page, run fn (quietly; held back while a dialog is open or someone types) when a record of
+// one of kinds changes. The page's stream is the signed-in user's own: an administrator adding an address, a sign-in
+// on another device, a verification link followed in another tab.
+function liveSelf(kinds, fn) {
+  useStream('/api/account/events')
+  const run = liveRunner(fn)
+  subscribe(kinds, () => run.trigger())
+}
+
+// Shared account state: loaded once, reloaded after changes that alter what the page shows. On the account page
+// (watch) a change to the user's own record or passkeys elsewhere reloads it and tells the cards that read it
+// (account-live).
 function accountStore(Alpine) {
   Alpine.store('account', {
     loaded: false, user: null, org: null, security: { has_password: false, totp: false, passkeys: 0 },
@@ -59,6 +71,15 @@ function accountStore(Alpine) {
       return this._p
     },
     reload() { return this.load(true) },
+    // Called by the account page (accountProfile): the store is on every page, the personal stream is not.
+    watch() {
+      if (this._watching) return
+      this._watching = true
+      liveSelf(['user', 'passkey', 'identity'], async () => {
+        try { await this.reload() } catch { return }
+        window.dispatchEvent(new CustomEvent('account-live'))
+      })
+    },
   })
 }
 
@@ -149,6 +170,7 @@ export default function (Alpine) {
       if (q === 'verified') this.emailNotice = 'Your email address is verified.'
       else if (q === 'invalid') this.emailNotice = 'That verification link is invalid or has expired.'
       window.addEventListener('account-emails-changed', async () => { try { this.fill(await Alpine.store('account').reload()) } catch { /* the card shows errors */ } })
+      Alpine.store('account').watch() // the account page follows the user's own changes made elsewhere
       try {
         const r = await Alpine.store('account').load()
         this.fill(r)
@@ -205,7 +227,10 @@ export default function (Alpine) {
     guard: (fn, opener, vm) => withReauth(Alpine, fn, opener, vm),
     changed: () => { Alpine.store('account').reload(); window.dispatchEvent(new CustomEvent('account-emails-changed')) },
   }), {
-    init() { return this.loadEmails() },
+    init() {
+      window.addEventListener('account-live', () => this.loadEmails())
+      return this.loadEmails()
+    },
   }))
 
   // ---- Password ----------------------------------------------------------------------------------------------
@@ -214,7 +239,9 @@ export default function (Alpine) {
     hasPassword: false, loaded: false,
     async init() {
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })
-      try { this.hasPassword = (await Alpine.store('account').load()).security.has_password; this.loaded = true } catch { /* shown by the profile card */ }
+      const read = async () => { try { this.hasPassword = (await Alpine.store('account').load()).security.has_password; this.loaded = true } catch { /* shown by the profile card */ } }
+      window.addEventListener('account-live', read)
+      await read()
     },
     get statusText() { return !this.loaded ? '' : this.hasPassword ? 'Set' : 'Not set' },
     get statusClass() { return this.hasPassword ? 'badge badge-success' : 'badge badge-plain' },
@@ -247,6 +274,7 @@ export default function (Alpine) {
     items: [], loading: true, loadError: '', available: true, supported: true, renaming: null, nameDefault: '',
     async init() {
       this.supported = passkeysSupported()
+      liveSelf(['passkey'], () => this.load())
       await this.load()
     },
     async load() {
@@ -330,6 +358,7 @@ export default function (Alpine) {
     enabled: false, replacing: false, loading: true, qr: '', secret: '', hasPassword: true, hasPasskeys: false, passkeyOk: false, requireMFA: false,
     async init() {
       this.passkeyOk = passkeysSupported()
+      window.addEventListener('account-live', () => this.refresh())
       await this.refresh()
     },
     async refresh() {
@@ -391,7 +420,7 @@ export default function (Alpine) {
   // ---- Sessions ----------------------------------------------------------------------------------------------
   Alpine.data('accountSessions', () => ({
     items: [], loading: true, loadError: '', busy: false,
-    init() { return this.load() },
+    init() { liveSelf(['session'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get('/api/account/sessions')
@@ -429,7 +458,7 @@ export default function (Alpine) {
   Alpine.data('accountTokens', () => mix(formMixin(), dialogMixin(), scoped(), {
     items: [], loading: true, loadError: '', scopes: [], maxDays: 0, created: '', createdName: '', regenerated: false, scopeChoices: [],
     apps: [], editingToken: null,
-    init() { return this.load() },
+    init() { liveSelf(['apitoken'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get('/api/account/tokens')
@@ -561,6 +590,7 @@ export default function (Alpine) {
         toast(msg[0], msg[1])
         history.replaceState(null, '', window.location.pathname + window.location.hash)
       }
+      liveSelf(['identity'], () => this.load())
       return this.load()
     },
     async load() {
@@ -600,7 +630,7 @@ export default function (Alpine) {
 
   Alpine.data('accountApps', () => ({
     items: [], loading: true, loadError: '',
-    init() { return this.load() },
+    init() { liveSelf(['grant'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get('/api/account/apps')

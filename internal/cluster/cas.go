@@ -335,7 +335,11 @@ func (n *Node) handleRead(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 // applyCommitted applies a committed quorum write on this node (the writer's own commit when local).
 func (s *Store) applyCommitted(ctx context.Context, rec *store.Record, local bool) (bool, error) {
 	n := s.n
+	n.noteScope(ctx, rec)
 	applied, losers, err := s.inner.PutReplicated(ctx, rec)
+	if err != nil || !applied {
+		n.forgetScope(rec)
+	}
 	if err != nil {
 		return false, err
 	}

@@ -62,6 +62,25 @@ func TestInvalid(t *testing.T) {
 		"cluster only itself": func(c *Config) {
 			c.Cluster.Bind, c.Cluster.Key, c.Server.MasterKey, c.Cluster.Peers = "10.0.0.1:7946", "k", "m", []string{"10.0.0.1:7946"}
 		},
+		"notify on a local database": func(c *Config) {
+			c.Cluster.Notify = Notify{Bind: "10.0.0.1:7947", Peers: []string{"10.0.0.2:7947"}, Key: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+		},
+		"notify without a key": func(c *Config) {
+			c.Storage.Backend = "postgres"
+			c.Cluster.Notify = Notify{Bind: "10.0.0.1:7947", Peers: []string{"10.0.0.2:7947"}}
+		},
+		"notify with a bad key": func(c *Config) {
+			c.Storage.Backend = "postgres"
+			c.Cluster.Notify = Notify{Bind: "10.0.0.1:7947", Peers: []string{"10.0.0.2:7947"}, Key: "short"}
+		},
+		"notify without peers": func(c *Config) {
+			c.Storage.Backend = "postgres"
+			c.Cluster.Notify = Notify{Bind: "10.0.0.1:7947", Peers: []string{"10.0.0.1:7947"}, Key: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+		},
+		"notify on a wildcard without advertise": func(c *Config) {
+			c.Storage.Backend = "postgres"
+			c.Cluster.Notify = Notify{Bind: "0.0.0.0:7947", Peers: []string{"10.0.0.2:7947"}, Key: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+		},
 		"half tls": func(c *Config) { c.Server.TLSCert = "x" },
 		"bad alg":  func(c *Config) { c.Tokens.SigningAlg = "HS256" },
 	} {
@@ -92,5 +111,23 @@ func TestLoadMasterKeys(t *testing.T) {
 	t.Setenv(EnvPrefix+"MASTER_KEY", "short")
 	if _, _, err = LoadMasterKeys(f); err == nil {
 		t.Fatal("an invalid key was accepted")
+	}
+}
+
+// A shared database with the notice gossip is valid; with cluster.bind too the notice settings are not checked (the
+// node ignores them, with a warning).
+func TestNotifyConfig(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	c := Default()
+	c.Storage.Backend = "postgres"
+	c.Storage.Postgres.DSN = "postgres://u:p@db/quisora"
+	c.Cluster.Notify = Notify{Bind: "10.0.0.1:7947", Peers: []string{"10.0.0.1:7947", "10.0.0.2:7947"}, Key: key}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("shared database with notify: %v", err)
+	}
+	for _, s := range settings(c) {
+		if s.Path == "cluster.notify.bind" && s.Env != EnvPrefix+"CLUSTER_NOTIFY_BIND" {
+			t.Errorf("env name %s", s.Env)
+		}
 	}
 }

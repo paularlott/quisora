@@ -1,6 +1,8 @@
-# Quisora, three nodes on one PostgreSQL database (mode 1: shared database, no gossip). From the repository root:
+# Quisora, three nodes on one PostgreSQL database (shared database; the nodes tell each other of changes over the
+# notice gossip, cluster.notify). From the repository root:
 #
 #   export QUISORA_MASTER_KEY=$(docker run --rm quisora genkey)
+#   export QUISORA_NOTIFY_KEY=$(docker run --rm quisora genkey)
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 24)   # hex: it goes into the database URL unescaped
 #   docker compose -f deploy/compose.cluster.yml up -d --build postgres
 #   docker compose -f deploy/compose.cluster.yml run --rm node1 bootstrap   # once, for the whole cluster
@@ -18,18 +20,23 @@
 #   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f deploy/compose.cluster.yml exec -T -e QUISORA_ADMIN_TOKEN node1 \
 #     quisora backup --server https://127.0.0.1:8443 --insecure - > quisora.bak
 
-x-node: &node
-  image: quisora
-  build: ..
-  restart: unless-stopped
-  depends_on: { postgres: { condition: service_healthy } }
-  environment:
+x-env: &env
     QUISORA_PUBLIC_URL: ${QUISORA_PUBLIC_URL:-https://localhost:8443}
     QUISORA_MASTER_KEY: ${QUISORA_MASTER_KEY:?set QUISORA_MASTER_KEY (quisora genkey)}
     QUISORA_BOOTSTRAP_ADMIN: ${QUISORA_BOOTSTRAP_ADMIN:-admin@example.com}
     QUISORA_STORAGE: postgres
     # lab only: no TLS inside the compose network (serve warns about it); use sslmode=verify-full with a real database
     QUISORA_POSTGRES_DSN: postgres://quisora:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (openssl rand -hex 24)}@postgres:5432/quisora?sslmode=disable
+    # change notices between the nodes (never data), on the compose network only
+    QUISORA_CLUSTER_NOTIFY_BIND: 0.0.0.0:7947
+    QUISORA_CLUSTER_NOTIFY_PEERS: node1:7947,node2:7947,node3:7947
+    QUISORA_CLUSTER_NOTIFY_KEY: ${QUISORA_NOTIFY_KEY:?set QUISORA_NOTIFY_KEY (quisora genkey)}
+
+x-node: &node
+  image: quisora
+  build: ..
+  restart: unless-stopped
+  depends_on: { postgres: { condition: service_healthy } }
 
 services:
   postgres:
@@ -46,16 +53,19 @@ services:
 
   node1:
     <<: *node
+    environment: { <<: *env, QUISORA_CLUSTER_NOTIFY_ADVERTISE: "node1:7947" }
     ports: ["${QUISORA_PORT:-8443}:8443"]
     volumes: ["node1-data:/data"]
 
   node2:
     <<: *node
+    environment: { <<: *env, QUISORA_CLUSTER_NOTIFY_ADVERTISE: "node2:7947" }
     ports: ["${QUISORA_PORT2:-8444}:8443"]
     volumes: ["node2-data:/data"]
 
   node3:
     <<: *node
+    environment: { <<: *env, QUISORA_CLUSTER_NOTIFY_ADVERTISE: "node3:7947" }
     ports: ["${QUISORA_PORT3:-8445}:8443"]
     volumes: ["node3-data:/data"]
 
