@@ -88,6 +88,11 @@
   @media (forced-colors: active) { .live-btn.is-paused { border: 2px solid ButtonText; } }
   /* A card with a heading, help text and its primary action on one row. */
   .card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem 1.5rem; margin-bottom: 1.1rem; }
+  /* The text shrinks and wraps beside the action, so long help text never
+     pushes the button onto its own row; on narrow cards it still wraps
+     under the text, kept at the right like the row above. */
+  .card-head > :first-child { flex: 1 1 20rem; min-width: 0; }
+  .card-head > :not(:first-child) { margin-inline-start: auto; }
 
   .auth-wrap { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; padding: 1.5rem 0.75rem 0; }
   .auth-wrap > main { margin-block: auto 0; } /* the card in the middle, the footer at the bottom */
