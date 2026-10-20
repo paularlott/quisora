@@ -641,7 +641,7 @@ export default function (Alpine) {
     get isEdit() { return this.editing !== null },
     get dialogTitle() { return this.editing ? 'Edit organization' : 'New organization' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create organization' },
-    get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + ' h).' },
+    get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + 'h).' },
     get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
     get resetOff() { return !this.form.password_login },
