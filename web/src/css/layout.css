@@ -2,10 +2,11 @@
   /* The header, the page body and the auth toggle share one width: --page-max wide at most, --page-gutter inset. */
   /* --header-h is fixed so the sticky sidebar's offset (below) equals where it starts: no jump between short and long
      pages, and the sidebar and the first content block share one top edge. */
-  :root { --page-max: 92rem; --page-gutter: 0.75rem; --header-h: 3.75rem; --header-gap: 0.75rem; }
+  /* --panel-gap separates the panels on a page, and the header from the first panel and the sidebar below it. */
+  :root { --page-max: 92rem; --page-gutter: 0.75rem; --header-h: 3.75rem; --header-gap: 0.75rem; --panel-gap: 1.5rem; }
   @media (min-width: 48rem) { :root { --page-gutter: 1.25rem; } }
   .app-header { position: relative; z-index: 30; width: min(calc(100% - 2 * var(--page-gutter)), calc(var(--page-max) - 2 * var(--page-gutter)));
-    height: var(--header-h); margin: var(--header-gap) auto; padding: 0.4rem 0.6rem 0.4rem 0.9rem; border-radius: 1.6rem;
+    height: var(--header-h); margin: var(--header-gap) auto var(--panel-gap); padding: 0.4rem 0.6rem 0.4rem 0.9rem; border-radius: 1.6rem;
     display: flex; align-items: center; gap: 0.5rem; }
   @media (min-height: 40rem) { .app-header { position: sticky; top: var(--header-gap); } }
   .brand { display: inline-flex; align-items: center; gap: 0.65rem; min-height: 2.75rem; font-weight: 750; font-size: 1.1rem;
@@ -36,10 +37,10 @@
   .menu-item:hover { background: var(--ctl-hover); text-decoration: none; }
 
   .app-body { display: grid; gap: 0.75rem; width: 100%; max-width: var(--page-max); margin: 0 auto; padding: 0 var(--page-gutter) 1.5rem; }
-  @media (min-width: 48rem) { .app-body { grid-template-columns: 15.5rem minmax(0, 1fr); gap: 1.25rem; align-items: start; } }
+  @media (min-width: 48rem) { .app-body { grid-template-columns: 15.5rem minmax(0, 1fr); gap: var(--panel-gap); align-items: start; } }
   .app-body.no-nav { grid-template-columns: minmax(0, 1fr); }
   .app-nav { padding: 0.75rem; }
-  @media (min-width: 48rem) and (min-height: 40rem) { .app-nav { position: sticky; top: calc(2 * var(--header-gap) + var(--header-h)); } }
+  @media (min-width: 48rem) and (min-height: 40rem) { .app-nav { position: sticky; top: calc(var(--header-gap) + var(--header-h) + var(--panel-gap)); } }
   @media (max-width: 47.99rem) { html.js .app-nav:not([data-open="true"]) { display: none; } }
   .nav-group { display: flex; flex-direction: column; gap: 0.2rem; }
   .nav-group + .nav-group { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--edge); }
@@ -58,7 +59,7 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 8px 18px -8px color-mix(in srgb, var(--accent-solid) 80%, transparent); }
   .nav-link[aria-current="page"]::before { content: ""; position: absolute; left: 0.35rem; top: 50%; width: 0.25rem; height: 1.1rem; margin-top: -0.55rem;
     border-radius: 99px; background: rgba(255, 255, 255, 0.85); }
-  .app-main { min-width: 0; display: flex; flex-direction: column; gap: 1.25rem; outline: none; }
+  .app-main { min-width: 0; display: flex; flex-direction: column; gap: var(--panel-gap); outline: none; }
   /* The footer: quiet small print at the bottom of the window when the page is shorter, after the content otherwise. */
   .app-footer { margin-top: auto; width: 100%; text-align: center; padding: 0.55rem 1rem; font-size: 0.8125rem; line-height: 1.4;
     color: var(--fg); background: var(--glass-bg-header); border-top: 1px solid var(--edge);
@@ -103,7 +104,7 @@
   .auth-logo img { height: 3rem; width: auto; max-width: 12rem; border-radius: 0.75rem; }
   .auth-top { position: fixed; top: 0.75rem; right: max(var(--page-gutter), calc(50% - var(--page-max) / 2 + var(--page-gutter))); z-index: 20; }
   .stack { display: flex; flex-direction: column; gap: 1rem; }
-  .stack-lg { display: flex; flex-direction: column; gap: 1.5rem; }
+  .stack-lg { display: flex; flex-direction: column; gap: var(--panel-gap); }
 }
 
 @media print { .aurora, .app-header, .app-nav, .toasts { display: none !important; } }
