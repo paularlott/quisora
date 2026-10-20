@@ -243,7 +243,7 @@ function methodsText(t) {
 // the element ids distinct from the client dialog's name / description on the tenant page.
 function tenantDialogMixin(Alpine) {
   return {
-    editingTenant: null, apiBase: '', providers: [], orgPassword: true, orgPasskey: true, orgMFA: false, _form: 'tenant',
+    editingTenant: null, apiBase: '', providers: [], orgPassword: true, orgReset: true, orgPasskey: true, orgMFA: false, _form: 'tenant',
     errorKey(f) {
       if (this._form === 'tenant' && (f === 'name' || f === 'description' || f === 'resources')) return 'tenant_' + f
       if (this._form === 'client' && f === 'scopes') return 'custom_scopes' // shown on the scopes chip field
@@ -253,6 +253,7 @@ function tenantDialogMixin(Alpine) {
       try {
         const [org, provs] = await Promise.all([get(`${this.apiBase}/settings`), get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`)])
         this.orgPassword = org.settings.password_login
+        this.orgReset = !!org.settings.password_reset
         this.orgPasskey = org.settings.passkey_login
         this.orgMFA = !!org.settings.require_mfa
         this.providers = provs.items.map(shapeProvider)
@@ -262,6 +263,8 @@ function tenantDialogMixin(Alpine) {
     get tenantSubmitLabel() { return this.busy ? 'Saving…' : this.editingTenant ? 'Save changes' : 'Create tenant' },
     get passwordOff() { return !this.orgPassword },
     get passkeyOff() { return !this.orgPasskey },
+    get orgResetOff() { return !this.orgPassword || !this.orgReset },
+    get resetOff() { return this.orgResetOff || !this.form.password_login },
     get tenantMFAOption() { return !this.orgMFA },
     get hasProviders() { return this.providers.length > 0 },
     get noProviders() { return this.providers.length === 0 },
@@ -269,14 +272,14 @@ function tenantDialogMixin(Alpine) {
     get providerHelp() { return this.hasProviders ? 'Only enabled providers can be used to sign in, whatever is ticked here.' : 'This organization has no sign-in providers yet.' },
     tenantToForm(t) {
       const s = t.settings
-      return { tenant_name: t.name, display_name: t.display_name, tenant_description: t.description || '', who: s.members_only ? 'members' : 'everyone', password_login: !!s.password_login, passkey_login: !!s.passkey_login,
+      return { tenant_name: t.name, display_name: t.display_name, tenant_description: t.description || '', who: s.members_only ? 'members' : 'everyone', password_login: !!s.password_login, password_reset: !!s.password_reset, passkey_login: !!s.passkey_login,
         all_providers: s.all_providers !== false, providers: [...(s.providers || [])], require_mfa: !!s.require_mfa,
         self_registration: !!s.self_registration, tenant_resources: listRows(t.resources || [], 'Resource', true) }
     },
     openCreateTenant(opener) {
       this._form = 'tenant'
       this.editingTenant = null
-      this.resetForm(this.tenantToForm({ name: '', display_name: '', settings: { members_only: true, password_login: true, passkey_login: true, all_providers: true, providers: [], require_mfa: true } }))
+      this.resetForm(this.tenantToForm({ name: '', display_name: '', settings: { members_only: true, password_login: true, password_reset: true, passkey_login: true, all_providers: true, providers: [], require_mfa: true } }))
       this.openDlg('tenant-dialog', opener)
       this.loadOrgInfo()
     },
@@ -290,7 +293,7 @@ function tenantDialogMixin(Alpine) {
     },
     async submitTenant() {
       const f = this.form
-      const body = { display_name: f.display_name, description: f.tenant_description, settings: { members_only: f.who === 'members', password_login: f.password_login, passkey_login: f.passkey_login,
+      const body = { display_name: f.display_name, description: f.tenant_description, settings: { members_only: f.who === 'members', password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login,
         all_providers: f.all_providers, providers: f.all_providers ? [] : f.providers, require_mfa: f.require_mfa,
         self_registration: f.self_registration }, resources: listValues(f.tenant_resources) }
       if (!this.editingTenant || f.tenant_name !== this.editingTenant.name) body.name = f.tenant_name
@@ -1026,6 +1029,7 @@ export default function (Alpine) {
         this.tenant = t
         Alpine.store('tenantPage').tenant = t // read by the Access card (pages/access.js)
         this.orgPassword = org.settings.password_login
+        this.orgReset = org.settings.password_login && !!org.settings.password_reset
         this.orgPasskey = org.settings.passkey_login
         this.providers = provs.items.map(shapeProvider)
         this.tenants = tenants.items
@@ -1059,6 +1063,7 @@ export default function (Alpine) {
         { label: 'Who can sign in', text: s.members_only ? 'Only users and groups given access' : 'Everyone in the organization',
           cls: s.members_only ? 'badge badge-info' : 'badge badge-plain', note: s.members_only ? 'Manage them under Access below.' : 'Every user of the organization can sign in to its applications.' },
         row('Password', s.password_login, this.orgPassword, 'passwords'),
+        row('Password reset', s.password_login && s.password_reset, this.orgReset, 'password resets'),
         row('Passkeys', s.passkey_login, this.orgPasskey, 'passkeys'),
         { label: 'Sign-in providers', text: prov.text, cls: 'cell-title', note: prov.note },
         this.orgMFA ? { label: 'Second factor', text: 'Required', cls: 'badge badge-info', note: 'The organization requires one for every sign-in.' }
@@ -1209,7 +1214,7 @@ export default function (Alpine) {
       this.org = o
       const s = o.settings
       this.defaults = { ttl: Math.round(o.default_session_ttl / 3600), idle: Math.round(o.default_session_idle / 60) }
-      this.resetForm({ name: o.name, display_name: o.display_name, password_login: s.password_login, passkey_login: s.passkey_login,
+      this.resetForm({ name: o.name, display_name: o.display_name, password_login: s.password_login, password_reset: !!s.password_reset, passkey_login: s.passkey_login,
         require_mfa: s.require_mfa, session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' })
       this._pristine = JSON.stringify(this.form)
     },
@@ -1219,6 +1224,7 @@ export default function (Alpine) {
     get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
     get saveLabel() { return this.busy ? 'Saving…' : 'Save settings' },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
+    get resetOff() { return !this.form.password_login },
     async submit() {
       const f = this.form
       const num = (v, mult, field) => {
@@ -1228,7 +1234,7 @@ export default function (Alpine) {
         return Math.round(n * mult)
       }
       const res = await this.run(async () => {
-        const settings = { password_login: f.password_login, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
+        const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
         // the primary organization's sign-in settings need a recent re-authentication (the server asks)
         return withReauth(Alpine, () => put(`${this.apiBase}/settings`, { name: f.name.trim(), display_name: f.display_name.trim(), settings }), null, this)

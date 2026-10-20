@@ -266,8 +266,8 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	staff := tenant("staff", "Staff tools", "Internal applications for employees",
 		model.TenantSettings{PasswordLogin: false, PasskeyLogin: true, Providers: []string{sso.ID}, RequireMFA: true})
 	customers := tenant("customers", "Customer apps", "Public-facing applications",
-		model.TenantSettings{PasswordLogin: true, PasskeyLogin: true, AllProviders: true})
-	_ = tenant("partners", "Partners", "", model.TenantSettings{PasswordLogin: true, AllProviders: true})
+		model.TenantSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true})
+	_ = tenant("partners", "Partners", "", model.TenantSettings{PasswordLogin: true, PasswordReset: true, AllProviders: true})
 	curTenant := customers.ID
 
 	client := func(name, desc, method string, grants []string, uris []string) *model.Client {

@@ -147,7 +147,8 @@ func components() obj {
 		return p
 	}
 	orgSettings := schema(nil, obj{"password_login": prop("boolean"), "passkey_login": prop("boolean"),
-		"require_mfa": prop("boolean"), "session_ttl": obj{"type": "integer", "description": "seconds; 0 = server default"},
+		"password_reset": obj{"type": "boolean", "description": "users may reset a forgotten password by email (with password_login); tenants can turn it off for their applications"},
+		"require_mfa":    prop("boolean"), "session_ttl": obj{"type": "integer", "description": "seconds; 0 = server default"},
 		"session_idle": obj{"type": "integer", "description": "seconds; 0 = server default"}})
 	userProps := meta(obj{"org_id": prop("string"), "username": prop("string"), "email": prop("string"),
 		"email_verified": prop("boolean"), "name": obj{"type": "string", "description": "read-only full name: given and family name"},
@@ -199,6 +200,7 @@ func components() obj {
 	tenantResources := obj{"type": "array", "items": prop("string"), "description": "the APIs the tenant owns (resource indicators, RFC 8707: an API's URL), unique across the server; a self-registered application asking for one is governed by this tenant"}
 	tenantSettings := schema(nil, obj{"members_only": obj{"type": "boolean", "description": "only users and groups with access (see Tenant access) may sign in to the tenant's applications; otherwise everyone in the organization may"},
 		"password_login": prop("boolean"), "passkey_login": prop("boolean"),
+		"password_reset":    obj{"type": "boolean", "description": "offer \"Forgot your password?\" on the sign-in form for the tenant's applications (with password_login, and when the organization allows resets)"},
 		"all_providers":     obj{"type": "boolean", "description": "allow every enabled provider of the organization, including future ones"},
 		"providers":         obj{"type": "array", "items": prop("string"), "description": "provider ids allowed when all_providers is false"},
 		"require_mfa":       obj{"type": "boolean", "description": "in addition to the organization setting"},

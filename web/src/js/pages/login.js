@@ -326,7 +326,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Enter your email address.', field: 'fg_email' }))
         return
       }
-      const res = await this.call('fg_', () => anon('/api-internal/password/forgot', { org: this.org, email: this.form.fg_email.trim() }))
+      const res = await this.call('fg_', () => anon('/api-internal/password/forgot', { org: this.org, tenant: this.tenant, email: this.form.fg_email.trim() }))
       if (res) { this.forgotSent = true; announce('If an account matches, a reset link is on its way.') }
     },
   }))

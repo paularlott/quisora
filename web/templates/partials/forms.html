@@ -28,7 +28,7 @@
    (field-beside: lined up with the input of the field next to it in a field-row). */}}
 {{define "check-field"}}<div class="field{{with .class}} {{.}}{{end}}"{{with .show}} x-show="{{.}}"{{end}}>
   <label class="check" for="f-{{.name}}">
-    <input type="checkbox"{{if .switch}} role="switch" class="switch"{{else}} class="checkbox"{{end}} id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}">
+    <input type="checkbox"{{if .switch}} role="switch" class="switch"{{else}} class="checkbox"{{end}} id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}"{{with .disabled}} :disabled="{{.}}"{{end}} aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}">
     <span class="check-text">{{.label}}{{with .help}}<span class="help" id="h-{{$.name}}">{{.}}</span>{{end}}</span>
   </label>
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>

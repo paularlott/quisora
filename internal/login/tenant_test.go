@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -182,4 +183,64 @@ func TestTenantProviders(t *testing.T) {
 	if !strings.Contains(loc, "error=disabled") || !strings.Contains(loc, "tenant=sso") || b3.hasSession() {
 		t.Fatalf("callback after tenant change: %d %q session=%v", res.StatusCode, loc, b3.hasSession())
 	}
+}
+
+func TestTenantPasswordReset(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	e.tenant(t, org, "noreset", model.TenantSettings{PasswordLogin: true, AllProviders: true})
+	e.tenant(t, org, "withreset", model.TenantSettings{PasswordLogin: true, PasswordReset: true, AllProviders: true})
+	b := e.browser(t)
+
+	// the tenant without reset keeps the password form but drops "Forgot your password?"
+	_, page := b.get("/login/acme?tenant=noreset")
+	if !strings.Contains(page, passwordForm) || strings.Contains(page, "Forgot your password?") {
+		t.Fatalf("noreset page: %.1500s", page)
+	}
+	for _, p := range []string{"/login/acme?tenant=withreset", "/login/acme"} {
+		if _, page := b.get(p); !strings.Contains(page, "Forgot your password?") {
+			t.Fatalf("%s: no forgot link", p)
+		}
+	}
+
+	// asking anyway answers the same, but mails nothing
+	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": "noreset", "email": "pat@example.com"})
+	wantStatus(t, res, out, 200)
+	e.noMail(t)
+	res, out = b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": "withreset", "email": "pat@example.com"})
+	wantStatus(t, res, out, 200)
+	select {
+	case <-e.mailCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reset mail for a tenant that allows it")
+	}
+}
+
+func TestOrgPasswordResetOff(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasswordReset = false })
+	pat := e.user(t, org, "pat", model.RoleUser)
+	e.tenant(t, org, "withreset", model.TenantSettings{PasswordLogin: true, PasswordReset: true, AllProviders: true})
+	b := e.browser(t)
+
+	// no link on the org's page nor on a tenant's that allows resets: the org's switch wins
+	for _, p := range []string{"/login/acme", "/login/acme?tenant=withreset"} {
+		if _, page := b.get(p); !strings.Contains(page, passwordForm) || strings.Contains(page, "Forgot your password?") {
+			t.Fatalf("%s: forgot link shown", p)
+		}
+	}
+	for _, tn := range []string{"", "withreset"} {
+		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": tn, "email": "pat@example.com"})
+		wantStatus(t, res, out, 200)
+	}
+	e.noMail(t)
+
+	// a link issued before the switch was turned off no longer works
+	tok, _, err := e.Svc.IssueLink(context.Background(), pat, service.LinkReset, pat.Email, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "a long enough password"})
+	wantStatus(t, res, out, 410)
 }

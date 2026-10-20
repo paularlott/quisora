@@ -102,7 +102,7 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 	d := loginData{OrgName: org.Name, OrgDisplay: org.DisplayName, Tenant: tenant, Next: next, Reauth: reauth,
 		Password: eff.Password, Passkey: eff.Passkey && m.Passkeys != nil,
 		Error: upstreamMessages[q.Get("error")]}
-	d.CanReset = d.Password && m.Mail != nil
+	d.CanReset = eff.PasswordReset && m.Mail != nil
 	if c, err := r.Cookie(stepCookie); err == nil && q.Get("step") == "1" && c.Value != "" && len(c.Value) < 200 {
 		// only the step a provider sign-in left, for this org
 		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "enrol"); ok && t.Provider != "" {

@@ -150,6 +150,7 @@ var orgAttrs = []attrDef{
 	attr("primary", "boolean", "Whether this is the primary organization", readOnly),
 	attr("settings", "complex", "Sign-in and session policy", subs(
 		attr("passwordLogin", "boolean", "Allow password sign-in"),
+		attr("passwordReset", "boolean", "Allow resetting a forgotten password by email"),
 		attr("passkeyLogin", "boolean", "Allow passkey sign-in"),
 		attr("requireMfa", "boolean", "Require a second factor"),
 		attr("sessionTtl", "integer", "Session lifetime in seconds (0 = server default)"),

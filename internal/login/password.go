@@ -267,8 +267,9 @@ func (m *Module) consumeTOTP(ctx context.Context, u *model.User, secret, code st
 // Forgotten password
 
 type forgotReq struct {
-	Org   string `json:"org"`
-	Email string `json:"email"`
+	Org    string `json:"org"`
+	Tenant string `json:"tenant"`
+	Email  string `json:"email"`
 }
 
 // forgot handles POST /api-internal/password/forgot. It always answers 200 so it cannot be used to find accounts.
@@ -285,8 +286,12 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
 		return
 	}
-	if org != nil && org.Settings.PasswordLogin &&
-		m.Mail != nil && len(in.Email) <= 256 {
+	allowed := false
+	if org != nil {
+		eff, _, err := m.methods(ctx, org, in.Tenant, "")
+		allowed = err == nil && eff.PasswordReset
+	}
+	if allowed && m.Mail != nil && len(in.Email) <= 256 {
 		if u, err := m.s.Svc.FindUserByEmail(ctx, org.ID, in.Email); err == nil && u.Enabled(time.Now()) && u.PasswordHash != "" {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
 			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
@@ -309,10 +314,10 @@ type resetReq struct {
 const msgBadLink = "This link is invalid or has expired."
 
 // resettable reports whether the user of a reset link may still set a password this way: the org allows password
-// sign-in and the account has a password (accounts without one use an invitation).
+// sign-in and resets, and the account has a password (accounts without one use an invitation).
 func (m *Module) resettable(ctx context.Context, u *model.User) (*model.Org, bool) {
 	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil || !org.Settings.PasswordLogin || u.PasswordHash == "" {
+	if err != nil || !org.Settings.PasswordLogin || !org.Settings.PasswordReset || u.PasswordHash == "" {
 		return org, false
 	}
 	return org, true

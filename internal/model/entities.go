@@ -15,6 +15,7 @@ import (
 // OrgSettings are per-organization sign-in and session policies. Zero durations mean "use the server default".
 type OrgSettings struct {
 	PasswordLogin bool `msgpack:"pw" json:"password_login"`
+	PasswordReset bool `msgpack:"pr" json:"password_reset"` // users may reset a forgotten password by email
 	PasskeyLogin  bool `msgpack:"pk" json:"passkey_login"`
 	RequireMFA    bool `msgpack:"mfa" json:"require_mfa"`
 	SessionTTL    int  `msgpack:"sttl" json:"session_ttl"`  // seconds
@@ -23,7 +24,7 @@ type OrgSettings struct {
 
 // DefaultOrgSettings is applied to new organizations.
 func DefaultOrgSettings() OrgSettings {
-	return OrgSettings{PasswordLogin: true, PasskeyLogin: true}
+	return OrgSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true}
 }
 
 type Org struct {
@@ -271,6 +272,7 @@ type TenantSettings struct {
 	// otherwise everyone in the organization may sign in.
 	MembersOnly   bool     `msgpack:"mo" json:"members_only"`
 	PasswordLogin bool     `msgpack:"pw" json:"password_login"`
+	PasswordReset bool     `msgpack:"pr" json:"password_reset"` // "Forgot your password?" on the sign-in form
 	PasskeyLogin  bool     `msgpack:"pk" json:"passkey_login"`
 	AllProviders  bool     `msgpack:"ap" json:"all_providers"` // every enabled provider of the org, including future ones
 	Providers     []string `msgpack:"p" json:"providers"`      // provider ids, when AllProviders is false
@@ -283,7 +285,7 @@ type TenantSettings struct {
 // DefaultTenantSettings allows every sign-in method the organization allows, for everyone in it, with a second
 // factor.
 func DefaultTenantSettings() TenantSettings {
-	return TenantSettings{PasswordLogin: true, PasskeyLogin: true, AllProviders: true, RequireMFA: true}
+	return TenantSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true, RequireMFA: true}
 }
 
 // DefaultTenantName is the tenant every organization starts with.

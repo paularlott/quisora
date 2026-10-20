@@ -233,10 +233,12 @@ func (s *Service) ClientTenant(ctx context.Context, c *model.Client) (*model.Ten
 // SignInMethods is what a user may sign in with for an org (and optionally a tenant): the intersection of the
 // org's and the tenant's settings.
 type SignInMethods struct {
-	Password   bool
-	Passkey    bool
-	Providers  []*model.Provider // enabled org providers the tenant allows, sorted by name
-	RequireMFA bool
+	Password bool
+	// PasswordReset offers "forgot password" (only with Password; the tenant may turn it off).
+	PasswordReset bool
+	Passkey       bool
+	Providers     []*model.Provider // enabled org providers the tenant allows, sorted by name
+	RequireMFA    bool
 }
 
 // AllowsProvider reports whether providerID is among the allowed providers.
@@ -258,10 +260,12 @@ func (s *Service) EffectiveSignIn(ctx context.Context, org *model.Org, t *model.
 	}
 	m := &SignInMethods{Password: org.Settings.PasswordLogin, Passkey: org.Settings.PasskeyLogin,
 		RequireMFA: org.Settings.RequireMFA, Providers: providers}
+	m.PasswordReset = m.Password && org.Settings.PasswordReset
 	if t == nil {
 		return m, nil
 	}
 	m.Password = m.Password && t.Settings.PasswordLogin
+	m.PasswordReset = m.PasswordReset && m.Password && t.Settings.PasswordReset
 	m.Passkey = m.Passkey && t.Settings.PasskeyLogin
 	m.RequireMFA = m.RequireMFA || t.Settings.RequireMFA
 	if !t.Settings.AllProviders {

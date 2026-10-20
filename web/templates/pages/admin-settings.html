@@ -24,7 +24,10 @@
     <section class="glass-card stack" aria-labelledby="meth-h">
       <h2 class="section-title" id="meth-h">Sign-in methods</h2>
       <p class="muted">These apply to the whole organization. <a href="{{.Data.Base}}/tenants">Tenants</a> can narrow them further for each group of applications, but never switch on a method that is off here.</p>
-      {{template "check-field" (dict "name" "password_login" "label" "Password" "switch" true "help" "Users sign in with their email address and a password.")}}
+      <div class="field-row">
+        {{template "check-field" (dict "name" "password_login" "label" "Password" "switch" true "help" "Users sign in with their email address and a password.")}}
+        {{template "check-field" (dict "name" "password_reset" "label" "Allow password reset" "switch" true "disabled" "resetOff" "help" "Users who forget their password can have a reset link emailed to them.")}}
+      </div>
       {{template "check-field" (dict "name" "passkey_login" "label" "Passkeys" "switch" true "help" "Users sign in with a passkey: fingerprint, face, or a security key.")}}
       <div class="alert alert-warning" x-show="noMethod" x-cloak>{{template "icon" "alert"}}<span>With both switched off, users can only sign in through an upstream provider.</span></div>
       {{template "check-field" (dict "name" "require_mfa" "label" "Require a second factor" "switch" true "help" "Password sign-ins must also enter a one-time code from an Authenticator App.")}}

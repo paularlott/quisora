@@ -127,12 +127,21 @@
     <fieldset class="fieldset" aria-describedby="h-methods">
       <legend>Sign-in methods</legend>
       <p class="help" id="h-methods">A method is offered only when both the organization and this tenant allow it.</p>
-      <div class="field">
-        <label class="check" for="f-password_login">
-          <input type="checkbox" role="switch" class="switch" id="f-password_login" name="password_login" x-model="form.password_login" :disabled="passwordOff" aria-describedby="e-password_login h-password_login">
-          <span class="check-text">Password<span class="help" id="h-password_login" x-show="passwordOff" x-cloak>Turned off for the organization</span></span>
-        </label>
-        <p class="field-error" id="e-password_login" x-text="errors.password_login"></p>
+      <div class="field-row">
+        <div class="field">
+          <label class="check" for="f-password_login">
+            <input type="checkbox" role="switch" class="switch" id="f-password_login" name="password_login" x-model="form.password_login" :disabled="passwordOff" aria-describedby="e-password_login h-password_login">
+            <span class="check-text">Password<span class="help" id="h-password_login" x-show="passwordOff" x-cloak>Turned off for the organization</span></span>
+          </label>
+          <p class="field-error" id="e-password_login" x-text="errors.password_login"></p>
+        </div>
+        <div class="field">
+          <label class="check" for="f-password_reset">
+            <input type="checkbox" role="switch" class="switch" id="f-password_reset" name="password_reset" x-model="form.password_reset" :disabled="resetOff" aria-describedby="e-password_reset h-password_reset">
+            <span class="check-text">Show “Forgot your password?”<span class="help" id="h-password_reset" x-show="orgResetOff" x-cloak>Turned off for the organization</span></span>
+          </label>
+          <p class="field-error" id="e-password_reset" x-text="errors.password_reset"></p>
+        </div>
       </div>
       <div class="field">
         <label class="check" for="f-passkey_login">

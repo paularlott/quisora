@@ -22,6 +22,7 @@ func (rq *request) orgResource(o *model.Org) map[string]any {
 		"primary":     o.Primary,
 		"settings": map[string]any{
 			"passwordLogin": o.Settings.PasswordLogin,
+			"passwordReset": o.Settings.PasswordReset,
 			"passkeyLogin":  o.Settings.PasskeyLogin,
 			"requireMfa":    o.Settings.RequireMFA,
 			"sessionTtl":    o.Settings.SessionTTL,
@@ -73,7 +74,7 @@ func (rq *request) orgInput(res map[string]any, existing *model.Org) (service.Or
 		}
 		for k, v := range sm {
 			switch strings.ToLower(k) {
-			case "passwordlogin", "passkeylogin", "requiremfa":
+			case "passwordlogin", "passwordreset", "passkeylogin", "requiremfa":
 				b, e := parseBool(v, "settings."+k)
 				if e != nil {
 					return in, e
@@ -81,6 +82,8 @@ func (rq *request) orgInput(res map[string]any, existing *model.Org) (service.Or
 				switch strings.ToLower(k) {
 				case "passwordlogin":
 					s.PasswordLogin = b
+				case "passwordreset":
+					s.PasswordReset = b
 				case "passkeylogin":
 					s.PasskeyLogin = b
 				default:
