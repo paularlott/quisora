@@ -3,6 +3,7 @@ package service_test
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -336,5 +337,29 @@ func TestProviderTypes(t *testing.T) {
 	p, err = mk(service.ProviderInput{Type: ptr(model.ProviderGoogle), Tenant: ptr(tid), AllowedTenants: &[]string{tid}})
 	if err != nil || p.Tenant != "" || p.AllowedTenants != nil {
 		t.Errorf("tenant on google: %v %+v", err, p)
+	}
+}
+
+// A provider's scopes follow the client rule (RFC 6749 scope tokens): each goes into the upstream authorization
+// request, so one with a space or a quote is refused rather than stored; blanks and repeats are dropped.
+func TestProviderScopes(t *testing.T) {
+	c := newCast(t)
+	a := actor(c.aAdmin)
+	in := goodProvider("scopes")
+	in.Scopes = &[]string{"openid", " email ", "openid", "", "api://app/access_as_user"}
+	p, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(p.Scopes, " ") != "openid email api://app/access_as_user" {
+		t.Errorf("scopes %q", p.Scopes)
+	}
+	for _, bad := range []string{"two words", `say"what`, `back\slash`, strings.Repeat("s", 101)} {
+		in := goodProvider("bad-" + strconv.Itoa(len(bad)))
+		in.Scopes = &[]string{"openid", bad}
+		var fe *service.FieldError
+		if _, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, in); !errors.As(err, &fe) || fe.Field != "scopes" {
+			t.Errorf("scope %q: %v", bad, err)
+		}
 	}
 }

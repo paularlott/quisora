@@ -1,4 +1,4 @@
-// The client dialog's list editors (redirect URIs, post-logout redirect URIs, custom scopes) and standard scope
+// The client dialog's list editors (redirect URIs, post-logout redirect URIs), its custom scopes chips and standard scope
 // checkboxes: keyboard use, row errors, a11y in this theme (axe), and the JSON that is saved.
 import { test, expect } from '@playwright/test'
 import { signIn, apiCall, uniq, axe, fmt } from './helpers.mjs'
@@ -53,7 +53,7 @@ test('list editor: add with the button and Enter, remove with the delete button,
   await expect(row(page, 'Redirect URI', 1)).toHaveValue('https://two.example/cb')
   // post-logout URIs and custom scopes are optional: they start with no rows, just their Add buttons
   await expect(dlg.getByRole('textbox', { name: /^Post-logout redirect URI \d/ })).toHaveCount(0)
-  await expect(dlg.getByRole('textbox', { name: /^Scope \d/ })).toHaveCount(0)
+  await expect(dlg.getByRole('list', { name: 'Current scopes' })).toBeHidden()
   const addLogout = dlg.getByRole('button', { name: 'Add URI' }).nth(1)
   await addLogout.click()
   await expect(row(page, 'Post-logout redirect URI', 1)).toBeFocused()
@@ -62,19 +62,24 @@ test('list editor: add with the button and Enter, remove with the delete button,
   await dlg.getByRole('button', { name: 'Remove https://one.example/bye' }).click()
   await expect(dlg.getByRole('textbox', { name: /^Post-logout redirect URI \d/ })).toHaveCount(0)
   await expect(addLogout).toBeFocused()
-  // custom scopes, an empty row is ignored; standard scopes are checkboxes with descriptions
+  // custom scopes are chips (a pasted space-separated list becomes several, a repeat is ignored); the word still
+  // being typed is added on save; standard scopes are checkboxes with descriptions
   await expect(dlg.getByText("The user’s group names and tags")).toBeVisible()
   await dlg.getByRole('checkbox', { name: /^groups/ }).check()
-  await dlg.getByRole('button', { name: 'Add scope' }).click()
-  await row(page, 'Scope', 1).fill('orders:read')
-  await dlg.getByRole('button', { name: 'Add scope' }).click()
+  const custom = page.locator('#f-custom_scopes')
+  await custom.fill('orders:read orders:read ')
+  await expect(dlg.getByRole('list', { name: 'Current scopes' }).getByRole('listitem')).toHaveText(['orders:read'])
+  await custom.fill('a,b')
+  await page.keyboard.press('Enter') // a comma belongs to a scope: one chip
+  await dlg.getByRole('button', { name: 'Remove scope a,b' }).click()
+  await custom.fill('billing.write')
   await dlg.getByRole('button', { name: 'Create client' }).click()
   await expect(page.getByRole('dialog', { name: 'Client created' })).toBeVisible()
   await page.keyboard.press('Escape')
   const saved = (await apiCall(page, 'GET', `${API}/clients?tenant=${t.id}`)).items[0]
   expect(saved.redirect_uris).toEqual(['https://two.example/cb', 'https://three.example/cb'])
   expect(saved.post_logout_redirect_uris).toEqual([])
-  expect(saved.scopes).toEqual(['openid', 'profile', 'email', 'groups', 'orders:read'])
+  expect(saved.scopes).toEqual(['openid', 'profile', 'email', 'groups', 'orders:read', 'billing.write'])
 })
 
 test('list editor: a server error lands on its row, and a standard scope is refused in the custom list', async ({ page }) => {
@@ -95,16 +100,18 @@ test('list editor: a server error lands on its row, and a standard scope is refu
   // editing the row clears its error
   await bad.fill('https://good.example/cb')
   await expect(bad).not.toHaveAttribute('aria-invalid', 'true')
-  // a standard scope typed into the custom list is refused before anything is sent
-  await dlg.getByRole('button', { name: 'Add scope' }).click()
-  await row(page, 'Scope', 1).fill('email')
+  // a standard scope typed into the custom scopes is refused before anything is sent, as is an invalid one
+  const custom = page.locator('#f-custom_scopes')
+  await custom.fill('email ')
   await dlg.getByRole('button', { name: 'Create client' }).click()
-  await expect(row(page, 'Scope', 1)).toHaveAttribute('aria-invalid', 'true')
-  await expect(row(page, 'Scope', 1)).toBeFocused()
-  await expect(dlg.locator('.list-field .field-error').filter({ hasText: 'standard scope' })).toBeVisible()
-  await row(page, 'Scope', 1).fill('bad"scope')
-  await dlg.getByRole('button', { name: 'Create client' }).click()
-  await expect(dlg.locator('.list-field .field-error').filter({ hasText: 'not a valid scope' })).toBeVisible()
+  await expect(custom).toHaveAttribute('aria-invalid', 'true')
+  await expect(custom).toBeFocused()
+  await expect(page.locator('#e-custom_scopes')).toContainText('standard scope')
+  await dlg.getByRole('button', { name: 'Remove scope email' }).click()
+  await custom.fill('bad"scope')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#e-custom_scopes')).toContainText('not a valid scope')
+  await expect(custom).toHaveValue('bad"scope') // kept for correction
 })
 
 test('client dialog a11y with several rows, a row error, scope checkboxes and custom scopes (axe, this theme); edit shows saved rows', async ({ page }) => {
@@ -119,7 +126,7 @@ test('client dialog a11y with several rows, a row error, scope checkboxes and cu
   await page.waitForTimeout(450)
   await expect(dlg.getByRole('textbox', { name: /^Redirect URI \d$/ })).toHaveCount(3)
   await expect(row(page, 'Post-logout redirect URI', 2)).toHaveValue('https://b.example/bye')
-  await expect(row(page, 'Scope', 2)).toHaveValue('billing.write')
+  await expect(dlg.getByRole('list', { name: 'Current scopes' }).getByRole('listitem')).toHaveText(['orders:read', 'billing.write'])
   await expect(dlg.getByRole('checkbox', { name: /^openid/ })).toBeChecked()
   await expect(dlg.getByRole('checkbox', { name: /^email/ })).not.toBeChecked()
   await expect(page.locator('#f-backchannel_logout_uri')).toHaveValue('https://a.example/back')
@@ -135,7 +142,7 @@ test('client dialog a11y with several rows, a row error, scope checkboxes and cu
   // fix and save; scopes round-trip
   await row(page, 'Redirect URI', 2).fill('https://b2.example/cb')
   await dlg.getByRole('checkbox', { name: /^email/ }).check()
-  await dlg.getByRole('button', { name: 'Remove billing.write' }).click()
+  await dlg.getByRole('button', { name: 'Remove scope billing.write' }).click()
   await dlg.getByRole('button', { name: 'Save changes' }).click()
   await expect(dlg).toBeHidden()
   const saved = (await apiCall(page, 'GET', `${API}/clients?tenant=${t.id}`)).items[0]

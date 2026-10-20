@@ -81,7 +81,7 @@
           <p class="field-error" id="e-client_secret" x-text="errors.client_secret"></p>
         </div>
       </div>
-      {{template "field" (dict "name" "scopes" "label" "Scopes" "autocomplete" "off" "help" "Space separated.")}}
+      {{template "tag-field" (dict "name" "scopes" "noun" "scope" "label" "Scopes" "help" "What Quisora asks the provider for when a user signs in.")}}
       {{template "list-field" (dict "name" "allowed_domains" "label" "Allowed email domains" "item" "Domain" "add" "Add domain" "mono" true "optional" true "placeholder" "example.com" "help" "Optional. With none, any email address may sign in this way; add domains to allow only addresses at them.")}}
       {{template "check-field" (dict "name" "auto_provision" "label" "Create accounts automatically" "switch" true "help" "People who sign in for the first time get an account. Otherwise only existing users can.")}}
       {{template "check-field" (dict "name" "link_by_email" "label" "Link existing users by verified email" "switch" true "help" "On a person's first sign-in, match them to the one existing user whose verified email address (primary or linked) the provider also reports as verified.")}}

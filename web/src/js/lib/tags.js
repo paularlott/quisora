@@ -1,8 +1,9 @@
-// Chip editor logic for the "tag-field" partial: a chip list with a text input, used for tags and for application
-// roles. Compose into a form component with mix() next to formMixin(). One component may hold several such fields;
-// each lives in form.<name> (insertion order while editing, the server sorts them) and the partial marks its root
-// with data-chips="<name>" and data-noun="tag" | "role".
+// Chip editor logic for the "tag-field" partial: a chip list with a text input, used for tags, application roles and
+// OAuth scopes. Compose into a form component with mix() next to formMixin(). One component may hold several such
+// fields; each lives in form.<name> (insertion order while editing, the server sorts tags) and the partial marks its
+// root with data-chips="<name>" and data-noun="tag" | "role" | "scope".
 //   type and press Enter, comma or space -> the value is added      Backspace in the empty input -> removes the last
+//   (a scope may contain a comma, so only Enter and space separate scopes)
 //   each chip has a remove button named "Remove <noun> <value>"     errors show inline (#e-<name>) and are announced
 // Templates read chips.<name>, hasChips.<name> and bind the input to chipText.<name>.
 import { announce } from './announce.js'
@@ -10,9 +11,17 @@ import { announce } from './announce.js'
 // Same rule as the server (internal/model/tags.go).
 export const TAG_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,62}[A-Za-z0-9])?$/
 export const MAX_TAGS = 50
-const FIELDS = ['tags', 'roles']
+// An OAuth scope token (RFC 6749 §3.3): printable ASCII without space, " or \; the server's rule
+// (service.validScopeToken) adds at most 100 characters and 50 scopes.
+export const SCOPE_RE = /^[\x21\x23-\x5B\x5D-\x7E]{1,100}$/
+const MAX_SCOPES = 50
+const NOUN = { tags: 'tag', roles: 'role', custom_scopes: 'scope', scopes: 'scope' }
+const FIELDS = Object.keys(NOUN)
+const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1)
+const separators = (noun) => (noun === 'scope' ? /\s+/ : /[\s,]+/)
 
 export function tagError(t, noun = 'tag') {
+  if (noun === 'scope') return `“${t}” is not a valid scope: use printable characters without spaces, quotes or backslashes (at most 100).`
   return `“${t}” is not a valid ${noun}: use letters, digits and . _ : / - (1–64 characters, starting and ending with a letter or digit).`
 }
 
@@ -26,10 +35,10 @@ function fieldOf(el) {
 
 export function tagsMixin() {
   return {
-    chipText: { tags: '', roles: '' },
+    chipText: Object.fromEntries(FIELDS.map((k) => [k, ''])),
     get chips() {
       const out = {}
-      for (const k of FIELDS) out[k] = (this.form[k] || []).map((v) => ({ value: v, removeLabel: `Remove ${k === 'roles' ? 'role' : 'tag'} ${v}` }))
+      for (const k of FIELDS) out[k] = (this.form[k] || []).map((v) => ({ value: v, removeLabel: `Remove ${NOUN[k]} ${v}` }))
       return out
     },
     get hasChips() {
@@ -55,16 +64,18 @@ export function tagsMixin() {
       this.errors = errs
       this.invalid = inv
     },
-    resetChipText() { this.chipText = { tags: '', roles: '' } },
+    resetChipText() { this.chipText = Object.fromEntries(FIELDS.map((k) => [k, ''])) },
 
     // Add one value; returns false (and shows the error) when it is not acceptable.
     addChip(name, noun, raw) {
       const t = raw.trim()
       if (!t) return true
       const list = this.form[name] || []
-      if (!TAG_RE.test(t)) { this.setChipError(name, tagError(t, noun)); return false }
-      if (list.includes(t)) { announce(`${noun === 'role' ? 'Role' : 'Tag'} ${t} is already added.`); return true }
-      if (list.length >= MAX_TAGS) { this.setChipError(name, `At most ${MAX_TAGS} ${noun}s are allowed.`); return false }
+      const scope = noun === 'scope'
+      if (!(scope ? SCOPE_RE : TAG_RE).test(t)) { this.setChipError(name, tagError(t, noun)); return false }
+      if (list.includes(t)) { announce(`${capital(noun)} ${t} is already added.`); return true }
+      const max = scope ? MAX_SCOPES : MAX_TAGS
+      if (list.length >= max) { this.setChipError(name, `At most ${max} ${noun}s are allowed.`); return false }
       this.form[name] = [...list, t]
       this.clearChipError(name)
       announce(`Added ${noun} ${t}. ${plural(this.form[name].length, noun)}.`)
@@ -72,7 +83,7 @@ export function tagsMixin() {
     },
     // Commit whatever is typed in a field's input; false when it was invalid (the text stays for correction).
     commitChips(name, noun) {
-      const parts = (this.chipText[name] || '').split(/[\s,]+/).filter(Boolean)
+      const parts = (this.chipText[name] || '').split(separators(noun)).filter(Boolean)
       for (let i = 0; i < parts.length; i++) {
         if (!this.addChip(name, noun, parts[i])) { this.chipText = { ...this.chipText, [name]: parts.slice(i).join(' ') }; return false }
       }
@@ -89,7 +100,7 @@ export function tagsMixin() {
         ev.preventDefault()
         this.chipText = { ...this.chipText, [name]: el.value }
         this.commitChips(name, noun)
-      } else if (ev.key === ',' || ev.key === ' ') {
+      } else if (ev.key === ' ' || (ev.key === ',' && noun !== 'scope')) {
         ev.preventDefault()
         if (el.value.trim() !== '') { this.chipText = { ...this.chipText, [name]: el.value }; this.commitChips(name, noun) }
       } else if (ev.key === 'Backspace' && el.value === '' && (this.form[name] || []).length > 0) {
@@ -106,9 +117,10 @@ export function tagsMixin() {
       const v = ev.currentTarget.value
       this.chipText = { ...this.chipText, [name]: v }
       if (this.errors[name]) this.clearChipError(name)
-      if (!/[\s,]/.test(v)) return
-      const finished = /[\s,]$/.test(v)
-      const parts = v.split(/[\s,]+/).filter(Boolean)
+      const sep = separators(noun)
+      if (!new RegExp(sep.source).test(v)) return
+      const finished = new RegExp('(?:' + sep.source + ')$').test(v)
+      const parts = v.split(sep).filter(Boolean)
       const rest = finished ? '' : parts.pop() || ''
       for (const p of parts) {
         if (!this.addChip(name, noun, p)) { this.chipText = { ...this.chipText, [name]: [p, ...parts.slice(parts.indexOf(p) + 1), rest].join(' ').trim() }; return }
@@ -144,7 +156,7 @@ export function tagsMixin() {
       let ok = true
       for (const name of FIELDS) {
         if (!(name in this.form) || (this.chipText[name] || '').trim() === '') continue
-        if (!this.commitChips(name, name === 'roles' ? 'role' : 'tag')) ok = false
+        if (!this.commitChips(name, NOUN[name])) ok = false
       }
       return ok
     },

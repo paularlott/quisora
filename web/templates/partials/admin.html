@@ -306,7 +306,7 @@
         <label class="check"><input class="checkbox" type="checkbox" :id="sc.id" :value="sc.value" x-model="form.std_scopes"><span class="check-text"><span class="mono" x-text="sc.value"></span><span class="help" x-text="sc.help"></span></span></label>
       </template>
     </fieldset>
-    {{template "list-field" (dict "name" "custom_scopes" "label" "Scopes for your own APIs" "item" "Scope" "add" "Add scope" "mono" true "optional" true "placeholder" "orders:read" "help" "Optional. Scope names your own APIs check in access tokens, such as orders:read. No spaces; the standard scopes above are ticked, not listed here.")}}
+    {{template "tag-field" (dict "name" "custom_scopes" "noun" "scope" "label" "Scopes for your own APIs" "help" "Optional. Scope names your own APIs check in access tokens, such as orders:read; the standard scopes above are ticked, not listed here.")}}
     {{template "textarea-field" (dict "name" "jwks" "label" "Public keys (JWKS)" "rows" 4 "show" "isJwt" "help" "The client's public keys as a JSON Web Key Set. Or give a JWKS URI below.")}}
     {{template "field" (dict "name" "jwks_uri" "label" "JWKS URI" "show" "isJwt" "autocomplete" "off")}}
     {{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}

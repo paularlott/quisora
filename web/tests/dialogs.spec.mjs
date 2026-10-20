@@ -198,10 +198,11 @@ test('providers: each type shows its own fields; Microsoft takes a directory and
   await expect(dlg).toContainText('authorised redirect URI of your OAuth client in Google Cloud')
   // GitHub: its own scopes
   await type.selectOption('github')
-  await expect(page.locator('#f-scopes')).toHaveValue('read:user user:email')
+  const scopeChips = dlg.getByRole('list', { name: 'Current scopes' }).getByRole('listitem')
+  await expect(scopeChips).toHaveText(['read:user', 'user:email'])
   // Auth0: a domain
   await type.selectOption('auth0')
-  await expect(page.locator('#f-scopes')).toHaveValue('openid profile email')
+  await expect(scopeChips).toHaveText(['openid', 'profile', 'email'])
   await expect(dlg.locator('label[for="f-issuer"]')).toContainText('Auth0 domain')
   // Microsoft: a directory; "organizations" asks for the allowed tenants
   await type.selectOption('microsoft')

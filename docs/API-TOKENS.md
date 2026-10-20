@@ -45,6 +45,12 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   "$QUISORA/api/v1/orgs/acme/users"
 curl -X POST -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/invite"
 
+# read back what the console edits: scopes, tags and groups are JSON arrays
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/clients/<client id>"     # "scopes": ["openid", "orders:read"]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/providers/<provider id>" # "scopes": ["openid", "profile", "email"]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>"         # "tags": [...], "groups": [{"id", "display_name"}]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/groups/<group id>"       # "tags": [...]
+
 # sign a user out everywhere
 curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/sessions"
 
@@ -90,8 +96,39 @@ A client set to `client_secret_basic` sends them as HTTP Basic instead (`curl -u
 
 ```json
 {"active": true, "token_type": "Bearer", "token_kind": "api_token", "sub": "<user id>", "username": "alan",
- "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "iat": 1760000000, "exp": 1790000000}
+ "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "tags": ["dept:finance", "vpn"],
+ "iat": 1760000000, "exp": 1790000000}
 ```
+
+What the application gets back:
+
+- `scope` is always `api`, whatever else the token has: an `api` token carries no finer scopes. Scopes such as
+  `orders:read` (a client's "Scopes for your own APIs") are for OAuth access tokens, which an application gets when
+  a user signs in to it; they are not in personal tokens.
+- `tags` is one list: the user's own tags and the tags of every group they belong to, merged, without duplicates and
+  sorted. It is absent when there are none. Group names and application roles are not included (they belong to a
+  sign-in to a particular application).
+- `role` is the user's Quisora role; `exp` is absent for a token that never expires.
+
+Tags are stored apart: in the management API a user's `tags` are their own, and each group's are on the group
+(`GET …/groups/<group id>`). Only what applications receive merges them.
+
+### Application roles
+
+Roles are given per tenant, to a user or to a group, on the tenant's **Access** tab (members-only tenants). Read them
+back with the management API; each entry is one user or one group, with its own `roles` and `tags`:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenant id>/access"
+#   {"items": [{"subject_type": "group", "subject_id": "<group id>", "name": "Finance", "roles": ["approver"],
+#               "tags": ["region:eu"], "all_clients": true, ...}], "total": 1}
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenant id>/access/<tenant id>:<user or group id>"
+```
+
+Applications get roles only when a user signs in to them: the access token (and its introspection, and userinfo)
+carries `roles`, the union of the user's own entry and their groups' entries that cover that application, and adds
+those entries' tags to `tags`. A personal API token is not tied to an application, so its introspection has no
+`roles`.
 
 The token is active only to clients of the owner's organization, and, if you gave the token an audience when making
 it, only to those applications. Anything else (another organization's client, a token without the `api` scope, a

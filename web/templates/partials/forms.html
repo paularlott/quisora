@@ -43,7 +43,7 @@
     </ul>
     <input class="tag-input" id="f-{{$n}}" name="{{$n}}" type="text" x-model="chipText.{{$n}}" @keydown="onTagKey" @input="onTagInput" @blur="onTagBlur" :aria-invalid="invalid.{{$n}}" aria-describedby="e-{{$n}} h-{{$n}}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a {{$noun}}">
   </div>
-  <p class="help" id="h-{{$n}}">{{.help}} Type a {{$noun}} and press Enter, comma or space to add it; Backspace removes the last one. Letters, digits and . _ : / - only{{if eq $noun "tag"}}; a colon marks a namespace, as in dept:finance{{end}}.</p>
+  <p class="help" id="h-{{$n}}">{{.help}}{{if eq $noun "scope"}} Type a scope and press Enter or space to add it; Backspace removes the last one. No spaces, quotes or backslashes.{{else}} Type a {{$noun}} and press Enter, comma or space to add it; Backspace removes the last one. Letters, digits and . _ : / - only{{if eq $noun "tag"}}; a colon marks a namespace, as in dept:finance{{end}}.{{end}}</p>
   <p class="field-error" id="e-{{$n}}" x-text="errors.{{$n}}"></p>
 </div>{{end}}
 

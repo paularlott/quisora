@@ -116,7 +116,13 @@ func (s *Service) applyProvider(a *Actor, p *model.Provider, in ProviderInput) e
 		p.ClientSecret = s.Sealer.SealFor(ProviderSecretBinding(p.ID), []byte(*in.ClientSecret))
 	}
 	if in.Scopes != nil {
-		p.Scopes = *in.Scopes
+		// The same rule as a client's scopes: each one goes into the upstream authorization request, where a space
+		// would split it in two.
+		scopes, err := checkScopes(*in.Scopes)
+		if err != nil {
+			return err
+		}
+		p.Scopes = scopes
 	}
 	if in.LinkByEmail != nil {
 		p.LinkByEmail = *in.LinkByEmail

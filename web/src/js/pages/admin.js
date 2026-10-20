@@ -2,7 +2,7 @@
 // (search, sort, paging); every form submits through the management API (/api/v1) and shows errors inline.
 import { get, post, put, patch, del, qs, ApiError } from '../lib/api.js'
 import { tableMixin } from '../lib/table.js'
-import { formMixin, lines, words } from '../lib/form.js'
+import { formMixin, lines } from '../lib/form.js'
 import { dialogMixin } from '../lib/dialog.js'
 import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
@@ -228,7 +228,11 @@ function methodsText(t) {
 function tenantDialogMixin(Alpine) {
   return {
     editingTenant: null, apiBase: '', providers: [], orgPassword: true, orgPasskey: true, orgMFA: false, _form: 'tenant',
-    errorKey(f) { return this._form === 'tenant' && (f === 'name' || f === 'description') ? 'tenant_' + f : f },
+    errorKey(f) {
+      if (this._form === 'tenant' && (f === 'name' || f === 'description')) return 'tenant_' + f
+      if (this._form === 'client' && f === 'scopes') return 'custom_scopes' // shown on the scopes chip field
+      return f
+    },
     async loadOrgInfo() {
       try {
         const [org, provs] = await Promise.all([get(`${this.apiBase}/settings`), get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`)])
@@ -295,13 +299,11 @@ const STD_SCOPES = [
   { value: 'offline_access', help: 'Refresh tokens, so the application can stay signed in.' },
 ]
 const STD_NAMES = STD_SCOPES.map((s) => s.value)
-// Scope tokens are printable ASCII except space, " and \ (RFC 6749 §3.3); the server enforces the same.
-const SCOPE_RE = /^[\x21\x23-\x5B\x5D-\x7E]{1,100}$/
 // Server field -> the list editor that shows it.
-const LIST_OF_FIELD = { redirect_uris: 'redirect_uris', post_logout_redirect_uris: 'post_logout_redirect_uris', scopes: 'custom_scopes', resources: 'resources' }
-const LIST_ITEMS = { redirect_uris: 'Redirect URI', post_logout_redirect_uris: 'Post-logout redirect URI', custom_scopes: 'Scope', resources: 'Resource' }
+const LIST_OF_FIELD = { redirect_uris: 'redirect_uris', post_logout_redirect_uris: 'post_logout_redirect_uris', resources: 'resources' }
+const LIST_ITEMS = { redirect_uris: 'Redirect URI', post_logout_redirect_uris: 'Post-logout redirect URI', resources: 'Resource' }
 function clientDialogMixin(Alpine) {
-  return mix(listFieldMixin(), {
+  return mix(listFieldMixin(), tagsMixin(), {
     stdScopes: STD_SCOPES.map((s) => ({ ...s, id: 'f-scope-' + s.value })),
     // A server error about a list field goes onto the row it names; otherwise it is shown under the whole list.
     listError(err) {
@@ -314,24 +316,17 @@ function clientDialogMixin(Alpine) {
       this.$nextTick(() => { const r = this.form[name][0]; const el = r && document.getElementById(r.inputId); if (el) el.focus() })
       return true
     },
-    // Checks the editor can make itself; marks the rows and returns false when the form must not be sent.
+    // Checks the editor can make itself (the chip field checks each scope as it is added); false when the form must
+    // not be sent.
     clientListsValid() {
-      let first = null
-      const seen = []
-      for (const r of this.form.custom_scopes) {
-        const v = r.value.trim()
-        if (!v) continue
-        let msg = ''
-        if (!SCOPE_RE.test(v)) msg = `${v} is not a valid scope: use printable characters without spaces, quotes or backslashes (at most 100).`
-        else if (STD_NAMES.includes(v)) msg = `${v} is a standard scope: tick it above instead.`
-        else if (seen.includes(v)) msg = `${v} is listed twice.`
-        seen.push(v)
-        if (msg) { this.setRowError(r, msg); first = first || r }
+      if (!this.tagsReady()) { this.focusTagInput(); return false }
+      const std = this.form.custom_scopes.find((v) => STD_NAMES.includes(v))
+      if (std) {
+        this.setChipError('custom_scopes', `${std} is a standard scope: tick it above instead.`)
+        this.focusTagInput()
+        return false
       }
-      if (!first) return true
-      announce(first.error, 'assertive')
-      this.$nextTick(() => { const el = document.getElementById(first.inputId); if (el) el.focus() })
-      return false
+      return true
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
     editingClient: null, apiBase: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
@@ -360,7 +355,7 @@ function clientDialogMixin(Alpine) {
       return { tenant_id: c.tenant_id || '', name: c.name, description: c.description || '',
         redirect_uris: listRows(c.redirect_uris, LIST_ITEMS.redirect_uris), post_logout_redirect_uris: listRows(c.post_logout_redirect_uris, LIST_ITEMS.post_logout_redirect_uris, true),
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
-        std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: listRows(scopes.filter((x) => !STD_NAMES.includes(x)), LIST_ITEMS.custom_scopes, true), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
+        std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
         first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, scim: !!c.scim }
     },
     openCreateClient(opener) {
@@ -368,12 +363,14 @@ function clientDialogMixin(Alpine) {
       this.editingClient = null
       this.resetForm(this.clientToForm({ tenant_id: this.tenantId, name: '', grant_types: ['authorization_code', 'refresh_token'], scopes: ['openid', 'profile', 'email'],
         token_endpoint_auth_method: 'client_secret_post', enabled: true, rotate_refresh_tokens: true }))
+      this.resetChipText()
       this.openDlg('client-dialog', opener)
     },
     openEditClient(c, opener) {
       this._form = 'client'
       this.editingClient = c
       this.resetForm(this.clientToForm(c))
+      this.resetChipText()
       this.openDlg('client-dialog', opener)
       this.watchEdit({ kinds: ['client'], record: c, fetchOne: () => getOrNull(`${this.apiBase}/clients/${enc(c.id)}`) })
     },
@@ -384,7 +381,7 @@ function clientDialogMixin(Alpine) {
       const b = { name: f.name, description: f.description, redirect_uris: redirects ? listValues(f.redirect_uris) : [], post_logout_redirect_uris: redirects ? listValues(f.post_logout_redirect_uris) : [],
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && g === 'client_credentials')),
-        scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...listValues(f.custom_scopes)], token_endpoint_auth_method: f.token_endpoint_auth_method,
+        scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
         first_party: f.first_party, enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
@@ -1034,7 +1031,7 @@ export default function (Alpine) {
   }))
 
   // ---- Providers --------------------------------------------------------------------------------------------------
-  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), {
+  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), {
     editing: null, apiBase: '', publicUrl: '', newId: '',
     init() { this.apiBase = this.$el.dataset.base; this.publicUrl = this.$el.dataset.public; this.initTable() },
     transform(p) {
@@ -1066,9 +1063,10 @@ export default function (Alpine) {
     // a new provider: the type's own scopes until they are edited
     typeChanged() {
       if (this.editing) return
-      const gh = 'read:user user:email'
-      const oidc = 'openid profile email'
-      if (this.form.scopes === gh || this.form.scopes === oidc) this.form.scopes = this.form.type === 'github' ? gh : oidc
+      const gh = ['read:user', 'user:email']
+      const oidc = ['openid', 'profile', 'email']
+      const now = (this.form.scopes || []).join(' ')
+      if (now === gh.join(' ') || now === oidc.join(' ')) this.form.scopes = this.form.type === 'github' ? gh : oidc
     },
     // Each provider has its own callback address. A new one gets its id now, so the address can be registered with the
     // provider before its client ID and secret are known.
@@ -1078,27 +1076,30 @@ export default function (Alpine) {
     get dialogTitle() { return this.editing ? 'Edit provider' : 'New sign-in provider' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create provider' },
     toForm(p) {
-      return { type: p.type, name: p.name, issuer: p.issuer || '', client_id: p.client_id || '', client_secret: '', scopes: (p.scopes || []).join(' '),
+      return { type: p.type, name: p.name, issuer: p.issuer || '', client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
         allowed_domains: listRows(p.allowed_domains, 'Domain', true), tenant: p.tenant || '', allowed_tenants: listRows(p.allowed_tenants, 'Tenant ID', true), auto_provision: !!p.auto_provision, trust_mfa: !!p.trust_mfa, link_by_email: p.link_by_email !== false, enabled: p.enabled !== false }
     },
     openCreate(ev) {
       this.editing = null
       this.newId = crypto.randomUUID()
       this.resetForm(this.toForm({ type: 'oidc', name: '', scopes: ['openid', 'profile', 'email'], enabled: true }))
+      this.resetChipText()
       this.openDlg('provider-dialog', ev.currentTarget)
     },
     edit(ev) {
       const p = this.rowFromEvent(ev)
       this.editing = p
       this.resetForm(this.toForm(p))
+      this.resetChipText()
       this.openDlg('provider-dialog', ev.currentTarget)
       this.watchEdit({ kinds: ['provider'], record: p, fetchOne: () => getOrNull(`${this.apiBase}/providers/${enc(p.id)}`) })
     },
     // a server message about one domain goes on its row (it starts with the domain)
     listError(err) { return (err.field === 'allowed_domains' || err.field === 'allowed_tenants') && this.setListError(err.field, err.message) },
     async submit() {
+      if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
-      const body = { type: f.type, name: f.name, client_id: f.client_id, scopes: words(f.scopes), allowed_domains: listValues(f.allowed_domains),
+      const body = { type: f.type, name: f.name, client_id: f.client_id, scopes: f.scopes, allowed_domains: listValues(f.allowed_domains),
         auto_provision: f.auto_provision, trust_mfa: f.trust_mfa, link_by_email: f.link_by_email, enabled: f.enabled }
       if (PROVIDER_TYPES[f.type] && PROVIDER_TYPES[f.type].address) body.issuer = f.issuer
       if (f.type === 'microsoft') { body.tenant = f.tenant; body.allowed_tenants = listValues(f.allowed_tenants) }
