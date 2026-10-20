@@ -132,7 +132,10 @@ function passkeyMixin() {
         this.afterPasskey(res)
       } catch (e) {
         if (!(e && e.name === 'AbortError')) { /* autofill is best effort: stay quiet */ }
-      } finally { this.conditional = null }
+      } finally {
+        // only this ceremony's controller: a stopped one finishing late must not clear one started since
+        if (this.conditional && this.conditional.signal === signal) this.conditional = null
+      }
     },
     stopConditional() { if (this.conditional) { this.conditional.abort(); this.conditional = null } },
 
@@ -247,6 +250,7 @@ export default function (Alpine) {
       this.passkeyOn = d.passkey === '1'
       this.canPasskey = passkeysSupported()
       this.resetForm({ email: d.hint || '', password: '', code: '', ecode: '', fg_email: '' })
+      this.step = 'email' // the sign-in starts with the email address (or a provider, or a passkey)
       // Back from a provider with a second factor due: continue with that step.
       if (d.step && d.ticket) {
         this.handle({ step: d.step, ticket: d.ticket, methods: (d.methods || '').split(' ').filter(Boolean) })
@@ -256,17 +260,50 @@ export default function (Alpine) {
     },
 
     // step getters (the CSP build wants plain property paths in templates)
+    get isEmail() { return this.step === 'email' },
+    get emailInitial() { return (this.form.email || '?').charAt(0).toUpperCase() },
     get isPassword() { return this.step === 'password' && !this.forgotOpen },
-    get passkeyChoice() { return this.isPassword && this.showPasskey }, // the passkey button below the email form
+    get passkeyChoice() { return this.isEmail && this.showPasskey }, // the passkey button below the email form
     get isForgot() { return this.step === 'password' && this.forgotOpen },
     get submitLabel() { return this.busy ? 'Signing in…' : 'Sign in' },
     get forgotNotSent() { return !this.forgotSent },
 
+    // An error about the address (from the server, after the password step) is shown on the email step.
+    errorKey(field) {
+      if (field === 'email' && this.step === 'password') this.step = 'email'
+      return field
+    },
+
+    // continueToPassword moves from the email step to the password step. It asks the server nothing, so the next
+    // step is the same for every address, an account or not.
+    continueToPassword() {
+      const email = this.form.email.trim()
+      if (!email) {
+        this.setErrors(new ApiError(422, { error: 'Enter your email address.', field: 'email' }))
+        return
+      }
+      if (!/^[^\s@]+@[^\s@]+$/.test(email)) {
+        this.setErrors(new ApiError(422, { error: 'Enter an email address, like name@example.com.', field: 'email' }))
+        return
+      }
+      this.form.email = email
+      this.stopConditional()
+      this.clearErrors()
+      this.step = 'password'
+      this.focusFirst()
+    },
+    changeEmail() {
+      this.form.password = ''
+      this.clearErrors()
+      this.step = 'email'
+      this.$nextTick(() => { const el = document.getElementById('f-email'); if (el) el.focus() })
+      this.startConditional({ org: this.org, next: this.next, tenant: this.tenant })
+    },
+
     async submitPassword() {
       const f = this.form
-      if (!f.email.trim() || !f.password) {
-        this.setErrors(new ApiError(422, { error: f.email.trim() ? 'Enter your password.' : 'Enter your email address.',
-          field: f.email.trim() ? 'password' : 'email' }))
+      if (!f.password) {
+        this.setErrors(new ApiError(422, { error: 'Enter your password.', field: 'password' }))
         return
       }
       const res = await this.call('', () => anon('/api/login/password', { org: this.org, email: f.email.trim(), password: f.password, next: this.next, tenant: this.tenant }))

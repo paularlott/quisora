@@ -33,7 +33,7 @@ func TestPagesRender(t *testing.T) {
 	}
 	res, body = b.get("/login/primary")
 	if res.StatusCode != 200 || !strings.Contains(body, `data-org="primary"`) || !strings.Contains(body, `id="f-email"`) ||
-		!strings.Contains(body, `autocomplete="email webauthn"`) {
+		!strings.Contains(body, `autocomplete="username webauthn"`) {
 		t.Fatalf("login page: %d %.400s", res.StatusCode, body)
 	}
 	// An unknown organization: the help page, as a 404.

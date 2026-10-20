@@ -13,18 +13,37 @@
 
   {{/* Providers first: where single sign-on is set up, that is how most people sign in. */}}
   {{if .Data.Providers}}
-  <div class="provider-list" x-show="isPassword">
+  <div class="provider-list" x-show="isEmail">
     {{range .Data.Providers}}<a class="btn btn-secondary w-full" href="{{.Href}}">{{template "provider-icon" .Type}}<span>Continue with {{.Name}}</span></a>
     {{end}}
   </div>
-  {{if .Data.Password}}<div class="divider" aria-hidden="true" x-show="isPassword">or sign in with email</div>
+  {{if .Data.Password}}<div class="divider" aria-hidden="true" x-show="isEmail">or sign in with email</div>
   {{else if .Data.Passkey}}<div class="divider" aria-hidden="true" x-show="passkeyChoice" x-cloak>or</div>{{end}}
   {{end}}
 
   {{if .Data.Password}}
-  <form class="stack" x-show="isPassword" @submit.prevent="submitPassword" novalidate>
-    {{template "field" (dict "name" "email" "label" "Email" "type" "email" "required" true "autofocus" true "autocomplete" "email webauthn")}}
-    {{template "field" (dict "name" "password" "label" "Password" "type" "password" "required" true "autocomplete" "current-password")}}
+  {{/* Email first, then the password. Nothing is asked of the server between the two, so the password step looks the
+       same whether or not an account exists: the email step reveals nothing. A passkey signs in from the email step
+       (autofill on the field, or the button below) and needs neither the password nor a second factor. */}}
+  <form class="stack" x-show="isEmail" @submit.prevent="continueToPassword" novalidate>
+    {{template "field" (dict "name" "email" "label" "Email" "type" "email" "required" true "autofocus" true "autocomplete" "username webauthn")}}
+    <button type="submit" class="btn btn-primary w-full">Continue</button>
+  </form>
+
+  <form class="stack" x-show="isPassword" x-cloak @submit.prevent="submitPassword" novalidate>
+    {{/* The account the password is for, with the way back to the email step. The hidden field carries the address
+         as the username, so password managers fill and save the pair. */}}
+    <div class="account-chip">
+      <span class="avatar" aria-hidden="true" x-text="emailInitial"></span>
+      <span class="account-chip-email" x-text="form.email"></span>
+      <button type="button" class="btn btn-ghost btn-sm" @click="changeEmail">Change<span class="sr-only"> email address</span></button>
+    </div>
+    <input class="sr-only" id="f-login_email" type="email" autocomplete="username" readonly tabindex="-1" aria-hidden="true" :value="form.email">
+    <div class="field">
+      <label class="label" for="f-password">Password <span class="req" aria-hidden="true">*</span></label>
+      <input class="input" id="f-password" name="password" type="password" x-model="form.password" :aria-invalid="invalid.password" aria-describedby="e-password" aria-required="true" autocomplete="current-password" data-step-focus spellcheck="false">
+      <p class="field-error" id="e-password" x-text="errors.password"></p>
+    </div>
     <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="submitLabel">Sign in</span></button>
     {{if .Data.CanReset}}<button type="button" class="btn btn-ghost btn-sm self-start" @click="openForgot">Forgot your password?</button>{{end}}
   </form>

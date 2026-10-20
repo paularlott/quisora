@@ -13,9 +13,12 @@
      light  0.62 white over scrim 0.30 over #6366f1 -> --fg 9.9:1, --fg-muted 4.8:1
      dark   0.30 #0e122a over scrim 0.45 over #be185d -> --fg 13.2:1, --fg-muted 8.1:1
    Toasts (--glass-bg-toast) hold only bold --fg text and status icons, so they are thinner than other panels:
-     light  0.42 white over #6366f1   -> --fg 8.4:1
-     dark   0.32 #0e122a over #be185d -> --fg 8.6:1
-   The header and footer (--glass-bg-header) hold only --fg text and controls, so they are thinner still:
+     light  0.42 white over #6366f1 / #2f3380 -> --fg 8.4:1 / 5.6:1
+     dark   0.32 #0e122a over #be185d / #0e7490 -> --fg 8.6:1 / 7.6:1
+   The footer (--glass-bg-footer) holds only small --fg text, which needs 4.5:1 over the darker backdrop too:
+     light  0.38 white over #6366f1 / #2f3380 -> --fg 7.9:1 / 5.0:1   (0.25 gives 3.5:1 over #2f3380: below AA)
+     dark   0.25 #0e122a over #be185d / #0e7490 -> --fg 7.8:1 / 6.9:1
+   The header (--glass-bg-header) holds only large, bold --fg text and controls (3:1), so it is thinner still:
      light  0.25 white over #6366f1   -> --fg 6.4:1     (no tint at all: 4.2:1, below AA)
      dark   0.25 #0e122a over #be185d -> --fg 7.8:1, --fg-muted 4.8:1 */
 
@@ -67,6 +70,7 @@
   --glass-bg-strong: rgba(255, 255, 255, 0.88);
   --glass-bg-panel: rgba(255, 255, 255, 0.62);
   --glass-bg-header: rgba(255, 255, 255, 0.25);
+  --glass-bg-footer: rgba(255, 255, 255, 0.38);
   --glass-bg-toast: rgba(255, 255, 255, 0.42);
   --glass-bg-dialog: rgba(255, 255, 255, 0.62);
   --glass-solid: #f6f8ff;
@@ -127,6 +131,7 @@
   --glass-bg-strong: rgba(14, 18, 42, 0.84);
   --glass-bg-panel: rgba(14, 18, 42, 0.5);
   --glass-bg-header: rgba(14, 18, 42, 0.25);
+  --glass-bg-footer: rgba(14, 18, 42, 0.25);
   --glass-bg-toast: rgba(14, 18, 42, 0.32);
   --glass-bg-dialog: rgba(14, 18, 42, 0.3);
   --glass-solid: #11162f;
@@ -166,7 +171,7 @@
     --accent-solid-2: #6d28d9; --danger: #ffb4b4; --success: #86efac; --focus: #c7d2fe; --focus-halo: #0b1020;
     --aurora-1: #3730a3; --aurora-2: #86198f; --aurora-3: #0e7490; --aurora-4: #9d174d; --aurora-opacity: 0.8;
     --glass-bg: rgba(16, 21, 48, 0.7); --glass-bg-strong: rgba(14, 18, 42, 0.84); --glass-bg-panel: rgba(14, 18, 42, 0.5);
-    --glass-bg-header: rgba(14, 18, 42, 0.25); --glass-bg-toast: rgba(14, 18, 42, 0.32); --glass-bg-dialog: rgba(14, 18, 42, 0.3); --glass-solid: #11162f;
+    --glass-bg-header: rgba(14, 18, 42, 0.25); --glass-bg-toast: rgba(14, 18, 42, 0.32); --glass-bg-footer: rgba(14, 18, 42, 0.25); --glass-bg-dialog: rgba(14, 18, 42, 0.3); --glass-solid: #11162f;
     --scrim: rgba(2, 4, 14, 0.45);
     --ctl-bg: rgba(5, 8, 24, 0.55); --ctl-border: #8e9bbb; --th-bg: rgba(255, 255, 255, 0.04);
     --b-success-bg: rgba(16, 185, 129, 0.2); --b-success-fg: #86efac; --b-danger-bg: rgba(248, 113, 113, 0.2);
@@ -183,6 +188,7 @@
     --glass-bg-strong: var(--glass-solid);
     --glass-bg-panel: var(--glass-solid);
     --glass-bg-header: var(--glass-solid);
+    --glass-bg-footer: var(--glass-solid);
     --glass-bg-toast: var(--glass-solid);
     --glass-bg-dialog: var(--glass-solid);
     --glass-blur: 0px;
@@ -196,6 +202,7 @@
     --glass-bg-strong: var(--glass-solid);
     --glass-bg-panel: var(--glass-solid);
     --glass-bg-header: var(--glass-solid);
+    --glass-bg-footer: var(--glass-solid);
     --glass-bg-toast: var(--glass-solid);
     --glass-bg-dialog: var(--glass-solid);
     --glass-blur: 0px;

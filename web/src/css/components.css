@@ -339,6 +339,12 @@
   }
 
   .avatar-lg { width: 4rem; height: 4rem; font-size: 1.5rem; }
+  /* The account a sign-in step is for (the password step): who, and the way back to change it. */
+  .account-chip { display: flex; align-items: center; gap: 0.7rem; min-height: 3.25rem; padding: 0.4rem 0.4rem 0.4rem 0.55rem;
+    border-radius: var(--radius-ctl); border: 1px solid var(--edge); background: var(--glass-inset); }
+  .account-chip .avatar { width: 2.1rem; height: 2.1rem; font-size: 0.85rem; }
+  .account-chip-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .account-chip .btn { flex: none; }
   .clients-link { display: inline-flex; align-items: center; gap: 0.25rem; min-height: 1.75rem; font-weight: 600; white-space: nowrap; }
   .clients-link .icon { width: 1rem; height: 1rem; }
   /* Always-present live-region wrappers: when their alert is hidden they take no space (cancels the flex gap). */
