@@ -3,7 +3,7 @@
 
    CONTRAST BUDGET (WCAG 2.2 AA). Text sits on translucent glass over an animated backdrop, so every pair is checked
    against the worst-case backdrop: the darkest (light theme) or lightest (dark theme) aurora colour below under the
-   glass tint. web/tests/contrast.spec.mjs re-checks them. Values:
+   glass tint. web/tests/a11y.spec.mjs re-checks them (axe colour contrast against the worst-case backdrops). Values:
      light  --fg #0b1220 / --fg-muted #3d4b66 on glass >= 0.78 white over --aurora-worst #6366f1 ->  >= 6.4:1 / 5.2:1
      dark   --fg #f1f5f9 / --fg-muted #b6c2d9 on glass 0.70 #101530 over --aurora-worst #be185d   ->  >= 12:1 / 8:1
    Floating panels (menus, toasts, the sign-in card: --glass-bg-panel) are thinner glass with more blur:
