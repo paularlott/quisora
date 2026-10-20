@@ -21,7 +21,11 @@ func TestSessionTouchSkippedWhenNotWritable(t *testing.T) {
 	svc := service.New(config.Default(), memstore.New(), sealer)
 	writable := false
 	svc.Writable = func() bool { return writable }
-	u := &model.User{OrgID: "org1", Username: "touch", Email: "touch@example.com", Role: model.RoleUser, Active: true}
+	org := &model.Org{Name: "org1", Primary: true}
+	if err := svc.Orgs.Create(ctx, org); err != nil {
+		t.Fatal(err)
+	}
+	u := &model.User{OrgID: org.ID, Username: "touch", Email: "touch@example.com", Role: model.RoleUser, Active: true}
 	if err := svc.Users.Create(ctx, u); err != nil {
 		t.Fatal(err)
 	}

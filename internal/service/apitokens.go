@@ -166,6 +166,9 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	secret := secure.RandomToken(32)
 	plain := apiTokenPrefix + t.ID + "_" + secret
 	t.SecretHash = secure.HashSecret(secret)
+	if t.Stamp, err = s.APITokenStamp(ctx, a.OrgID); err != nil {
+		return nil, "", mapStore(err)
+	}
 	if err := s.APITokens.Create(ctx, t); err != nil {
 		return nil, "", mapStore(err)
 	}
@@ -386,6 +389,9 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	t, err := s.APITokens.Get(ctx, id)
 	if err != nil || !secure.EqualSecret(secret, t.SecretHash) {
 		return nil, nil, ErrBadToken
+	}
+	if !s.APITokenCurrent(ctx, t.OrgID, t.Stamp) {
+		return nil, nil, ErrBadToken // ended by an emergency sign-out
 	}
 	u, err := s.Users.Get(ctx, t.UserID)
 	if err != nil || !u.Enabled(time.Now()) {

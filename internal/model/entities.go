@@ -33,6 +33,12 @@ type Org struct {
 	DisplayName string      `msgpack:"dn" json:"display_name"`
 	Primary     bool        `msgpack:"p" json:"primary"`
 	Settings    OrgSettings `msgpack:"s" json:"settings"`
+	// SignOut are the organization's emergency sign-out counters (signout.go); LastSignOut the last pull.
+	SignOut     SignOutCounters `msgpack:"so" json:"-"`
+	LastSignOut *SignOutEvent   `msgpack:"lso,omitempty" json:"last_sign_out,omitempty"`
+	// ServerSignOut and LastServerSignOut are the server's, kept on the primary organization (moved with the role).
+	ServerSignOut     SignOutCounters `msgpack:"sso" json:"-"`
+	LastServerSignOut *SignOutEvent   `msgpack:"lsso,omitempty" json:"-"`
 }
 
 func (o *Org) Kind() Kind { return KindOrg }
@@ -631,6 +637,8 @@ type Session struct {
 	// Clients are the applications that were issued tokens for this session: they are told when it ends
 	// (back-channel logout) even after their refresh grant was revoked.
 	Clients []string `msgpack:"cl" json:"-"`
+	// Stamp is the session sign-out counters it was made under (signout.go).
+	Stamp SignOutStamp `msgpack:"st" json:"-"`
 }
 
 func (s *Session) Kind() Kind { return KindSession }
@@ -679,6 +687,8 @@ type Grant struct {
 	ClaimsID []string  `msgpack:"cid,omitempty" json:"claims_id_token,omitempty"`
 	Expires  time.Time `msgpack:"ex" json:"expires"`
 	Revoked  bool      `msgpack:"rv" json:"revoked"`
+	// Stamp is the session sign-out counters it was made under (signout.go).
+	Stamp SignOutStamp `msgpack:"st" json:"-"`
 }
 
 func (g *Grant) Kind() Kind { return KindGrant }
@@ -709,6 +719,8 @@ type APIToken struct {
 	AppScopes []string  `msgpack:"as,omitempty" json:"app_scopes"`
 	Expires   time.Time `msgpack:"ex" json:"expires"`
 	LastUsed  time.Time `msgpack:"lu" json:"last_used"`
+	// Stamp is the API token sign-out counters it was made under (signout.go).
+	Stamp SignOutStamp `msgpack:"st" json:"-"`
 }
 
 func (t *APIToken) Kind() Kind { return KindAPIToken }

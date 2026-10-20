@@ -58,7 +58,7 @@ func Root() *cli.Command {
 			warnSecretFlags(os.Stderr, cfg, os.Args[1:])
 			return ctx, nil
 		},
-		Commands: []*cli.Command{serveCmd(cfg, others), bootstrapCmd(cfg, server), forceStartCmd(cfg, others), setPrimaryCmd(cfg, others), inviteCmd(cfg, others), backupCmd(cfg, others), restoreCmd(cfg, others),
+		Commands: []*cli.Command{serveCmd(cfg, others), bootstrapCmd(cfg, server), forceStartCmd(cfg, others), setPrimaryCmd(cfg, others), signOutCmd(cfg, others), inviteCmd(cfg, others), backupCmd(cfg, others), restoreCmd(cfg, others),
 			healthcheckCmd(cfg, others), genkeyCmd()},
 	}
 }

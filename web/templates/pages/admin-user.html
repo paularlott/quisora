@@ -160,12 +160,34 @@
       </div>
     </section>
 
+    {{if not .Data.Self}}
+    <section class="glass-card" aria-labelledby="lockout-h">
+      <h2 class="section-title mb-1" id="lockout-h">Lock out</h2>
+      <p class="muted mb-4">For a compromised account or someone who has left: disables the account, signs them out everywhere, and removes every way they had to sign in (password, authenticator app, passkeys, linked providers, API tokens and unused links). The account and its history stay. Enabling it again brings none of that back: send a new invitation to let them in.</p>
+      <button type="button" class="btn btn-danger" id="lockout-open" @click="openLockOut">{{template "icon" "lock"}} Lock out…</button>
+    </section>
+    {{end}}
+
     <section class="glass-card" aria-labelledby="danger-h">
       <h2 class="section-title mb-1" id="danger-h">Delete user</h2>
       <p class="muted mb-4">Deleting a user removes their sessions, passkeys and API tokens. This cannot be undone.</p>
       <button type="button" class="btn btn-danger" @click="remove">{{template "icon" "trash"}} Delete user</button>
     </section>
   </div></template>
+
+{{template "dialog-start" (dict "id" "lockout-dialog" "title" "Lock this user out?" "size" "sm")}}
+  <form @submit.prevent="lockOut" novalidate>
+    <div class="dialog-body">
+      <p class="font-semibold" x-text="lockOutWhat"></p>
+      <p class="muted">They are signed out everywhere, and their password, authenticator app, passkeys, linked providers, API tokens and unused links are removed. This cannot be undone: to let them back in, enable the account and send a new invitation.</p>
+      {{template "textarea-field" (dict "name" "reason" "label" "Reason" "rows" 2 "help" "Optional. Shown on the user's page and kept in the audit log.")}}
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-secondary" @click="closeThis" data-autofocus>Cancel</button>
+      <button type="submit" class="btn btn-danger" id="lockout-submit" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="lockOutLabel">Lock out</span></button>
+    </div>
+  </form>
+{{template "dialog-end"}}
 
   {{template "user-dialog" .}}
   {{template "invite-dialog" .}}

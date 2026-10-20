@@ -34,3 +34,17 @@ func (d demoMailer) SendInviteLink(ctx context.Context, org *model.Org, u *model
 func (d demoMailer) SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error {
 	return d.m.SendVerifyAddress(ctx, u, org, address)
 }
+
+// demoClusterStatus is a made-up three-node gossip cluster (-cluster), in the shape of GET /api/cluster.
+func demoClusterStatus() any {
+	return map[string]any{
+		"node_id": "node-a", "replicating": true, "size": 3, "quorum": 2, "members": 3, "alive": 3, "leader": true,
+		"ready": true, "writable": true, "last_sync": time.Now().Add(-2 * time.Second).UTC(), "refused": 0,
+		"unconfirmed": 0, "clock_skewed": 0, "skew_refused": 0, "cluster_keys": []string{"k2", "k1"},
+		"nodes": []map[string]any{
+			{"id": "node-a", "address": "10.0.0.11:7946", "state": "alive", "ready": true, "leader": true, "self": true, "version": "dev"},
+			{"id": "node-b", "address": "10.0.0.12:7946", "state": "alive", "ready": true, "version": "dev"},
+			{"id": "node-c", "address": "10.0.0.13:7946", "state": "suspect", "ready": false, "version": "dev"},
+		},
+	}
+}

@@ -95,7 +95,7 @@ func New(t testing.TB, o Options) *Env {
 	}
 	hs.Config.Handler = srv.Handler()
 	primary, _ := svc.PrimaryOrg(ctx)
-	t.Cleanup(func() { hs.Close(); eph.Close(); st.Close() })
+	t.Cleanup(func() { hs.Close(); svc.WaitBackground(); eph.Close(); st.Close() })
 	return &Env{T: t, Cfg: cfg, Store: st, Svc: svc, Server: srv, HTTP: hs, URL: hs.URL, Admin: admin, Password: pw,
 		Primary: primary}
 }

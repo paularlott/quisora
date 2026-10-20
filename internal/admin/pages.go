@@ -89,50 +89,34 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/orgs/{org}/providers", m.orgPage("admin-providers", "Providers", "providers", true, nil))
 	page("GET /admin/orgs/{org}/audit", m.orgPage("admin-audit", "Audit log", "audit", true, nil))
 	page("GET /admin/audit", m.pageAllAudit)
-	page("GET /admin/orgs/{org}/keys", m.pageKeys)
-	page("GET /admin/orgs/{org}/cluster", m.pageCluster)
-	page("GET /admin/master-key", m.pageMasterKey)
+	page("GET /admin/system", m.systemPage("admin-system", "System overview", "system"))
+	page("GET /admin/system/master-key", m.systemPage("admin-master-key", "Master key rotation", "system"))
 }
 
-// pageMasterKey shows where a master key rotation stands (GET /api/master-key): super admins only. The menu links
-// to it while previous master keys are configured.
-func (m *Module) pageMasterKey(w http.ResponseWriter, r *http.Request) {
-	if !web.Actor(r).IsSuper() {
-		m.errorPage(w, r, http.StatusNotFound)
-		return
+// adminOrgCookie remembers the organization last administered in this browser, so the system pages (which belong to
+// none) keep its menu, one click back.
+const adminOrgCookie = "__Host-quisora_admin_org"
+
+// systemPage builds the handler of a page about the server as a whole (/admin/system/...): super admins only. The menu
+// keeps the organization last administered.
+func (m *Module) systemPage(name, title, nav string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !web.Actor(r).IsSuper() {
+			m.errorPage(w, r, http.StatusNotFound)
+			return
+		}
+		m.renderSystemPage(w, r, name, title, nav)
 	}
-	p := m.s.Page(w, r, "Master key rotation", "master-key", &View{API: "/api"})
-	m.s.Render.Render(w, http.StatusOK, "admin-master-key", p)
 }
 
-// pageCluster shows the cluster's nodes and this node's view of it: super admins, on the primary organization's pages,
-// when nodes replicate over gossip (a single node or nodes sharing one database have no cluster to show).
-func (m *Module) pageCluster(w http.ResponseWriter, r *http.Request) {
-	org, v, ok := m.orgGate(w, r, true)
-	if !ok {
-		return
+func (m *Module) renderSystemPage(w http.ResponseWriter, r *http.Request, name, title, nav string) {
+	p := m.s.Page(w, r, title, nav, &View{API: "/api", KeyRotationDays: m.s.Cfg.Tokens.KeyRotationDays})
+	if c, err := r.Cookie(adminOrgCookie); err == nil {
+		if org, err := m.s.Svc.OrgByName(r.Context(), c.Value); err == nil {
+			p.Org = org // super admins administer every organization
+		}
 	}
-	if !web.Actor(r).IsSuper() || !org.Primary || !m.s.Site.Clustered {
-		m.errorPage(w, r, http.StatusNotFound)
-		return
-	}
-	v.API = "/api"
-	m.renderOrgPage(w, r, org, "admin-cluster", "Cluster", "cluster", v)
-}
-
-// pageKeys lists the signing keys and rotates them: super admins, on the primary organization's pages only (the keys
-// are the whole server's; every other place reports not found).
-func (m *Module) pageKeys(w http.ResponseWriter, r *http.Request) {
-	org, v, ok := m.orgGate(w, r, true)
-	if !ok {
-		return
-	}
-	if !web.Actor(r).IsSuper() || !org.Primary {
-		m.errorPage(w, r, http.StatusNotFound)
-		return
-	}
-	v.API, v.KeyRotationDays = "/api", m.s.Cfg.Tokens.KeyRotationDays
-	m.renderOrgPage(w, r, org, "admin-keys", "Signing keys", "keys", v)
+	m.s.Render.Render(w, http.StatusOK, name, p)
 }
 
 // pageAllAudit is the audit log of every organization (super admins).
@@ -150,7 +134,9 @@ func (m *Module) pageHome(w http.ResponseWriter, r *http.Request) {
 	u := web.User(r)
 	switch {
 	case u.Role == model.RoleSuperAdmin:
-		http.Redirect(w, r, "/admin/orgs", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/system", http.StatusSeeOther)
+	case u.Role == model.RoleAdmin:
+		http.Redirect(w, r, "/admin/orgs/"+m.orgName(r, u.OrgID), http.StatusSeeOther)
 	case u.Role.Rank() >= model.RoleManager.Rank():
 		http.Redirect(w, r, "/admin/orgs/"+m.orgName(r, u.OrgID)+"/users", http.StatusSeeOther)
 	default:
@@ -165,8 +151,18 @@ func (m *Module) orgName(r *http.Request, id string) string {
 	return ""
 }
 
+// pageOrgHome is an organization's overview, with its emergency sign-out: its administrators and super admins.
+// Managers, who administer users only, go to the users page.
 func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/admin/orgs/"+url.PathEscape(r.PathValue("org"))+"/users", http.StatusSeeOther)
+	if web.Actor(r).Role.Rank() < model.RoleAdmin.Rank() {
+		http.Redirect(w, r, "/admin/orgs/"+url.PathEscape(r.PathValue("org"))+"/users", http.StatusSeeOther)
+		return
+	}
+	org, v, ok := m.orgGate(w, r, true)
+	if !ok {
+		return
+	}
+	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }
 
 func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +218,10 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 func (m *Module) renderOrgPage(w http.ResponseWriter, r *http.Request, org *model.Org, name, title, nav string, v *View) {
 	p := m.s.Page(w, r, title, nav, v)
 	p.Org = org // on admin pages Org is the organization being administered
+	if p.IsSuper {
+		http.SetCookie(w, &http.Cookie{Name: adminOrgCookie, Value: org.Name, Path: "/", Secure: true, HttpOnly: true,
+			SameSite: http.SameSiteLaxMode})
+	}
 	m.s.Render.Render(w, http.StatusOK, name, p)
 }
 

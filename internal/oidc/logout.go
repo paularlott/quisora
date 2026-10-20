@@ -322,7 +322,7 @@ func (p *Provider) BackchannelLogoutClient(ctx context.Context, userID, clientID
 	if grants, err := p.svc.Grants.All(ctx, userID); err == nil {
 		for _, g := range grants {
 			if g.ClientID == clientID {
-				p.grants.put(g.ID, false)
+				p.grants.put(g.ID, grantState{})
 			}
 		}
 	}

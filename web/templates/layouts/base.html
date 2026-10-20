@@ -77,19 +77,23 @@
       {{else}}
       <div class="nav-org"><span class="cell-sub block">Organization</span>{{.DisplayName}}</div>
       {{end}}
+      {{if $.IsAdmin}}<a class="nav-link" href="/admin/orgs/{{.Name}}"{{if eq $.Nav "overview"}} aria-current="page"{{end}}>{{template "icon" "home"}} Overview</a>{{end}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/users"{{if eq $.Nav "users"}} aria-current="page"{{end}}>{{template "icon" "users"}} Users</a>
       {{if $.IsAdmin}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>{{template "icon" "shield"}} Groups</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
-      {{if and $.IsSuper .Primary}}<a class="nav-link" href="/admin/orgs/{{.Name}}/keys"{{if eq $.Nav "keys"}} aria-current="page"{{end}}>{{template "icon" "key"}} Signing keys</a>{{end}}
-      {{if and $.IsSuper .Primary $.Site.Clustered}}<a class="nav-link" href="/admin/orgs/{{.Name}}/cluster"{{if eq $.Nav "cluster"}} aria-current="page"{{end}}>{{template "icon" "network"}} Cluster</a>{{end}}
       {{end}}
       {{end}}
       {{if and .IsSuper (not .Org)}}<a class="nav-link" href="/admin/orgs"{{if eq .Nav "orgs"}} aria-current="page"{{end}}>{{template "icon" "building"}} Organizations</a>
       <a class="nav-link" href="/admin/audit"{{if eq .Nav "audit-all"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>{{end}}
-      {{if or .KeyRotation (eq .Nav "master-key")}}<a class="nav-link" href="/admin/master-key"{{if eq .Nav "master-key"}} aria-current="page"{{end}}>{{template "icon" "key"}} Master key rotation</a>{{end}}
+    </div>
+    {{end}}
+    {{if .IsSuper}}
+    <div class="nav-group">
+      <span class="eyebrow nav-heading">System</span>
+      <a class="nav-link" href="/admin/system"{{if eq .Nav "system"}} aria-current="page"{{end}}>{{template "icon" "network"}} System overview</a>
     </div>
     {{end}}
   </nav>

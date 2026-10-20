@@ -2900,3 +2900,97 @@ func TestNewClientsRotateRefreshTokens(t *testing.T) {
 		t.Fatal("a public client may introspect")
 	}
 }
+
+// An emergency sign-out of the user's organization ends the application's tokens at once: userinfo and introspection
+// refuse the access token, and the refresh token no longer works. A fresh sign-in works again.
+func TestEmergencySignOutEndsTokens(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	other, osecret := h.newClient(func(in *service.ClientInput) { in.Name = ptr("other") })
+	r, _ := h.login(cl, secret, nil)
+	at, rt := r.str("access_token"), r.str("refresh_token")
+	if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 200 {
+		t.Fatalf("userinfo before: %d", resp.StatusCode)
+	}
+	if _, err := h.env.Svc.SignOutOrg(context.Background(), service.System, h.user.OrgID,
+		service.SignOutOptions{Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
+		t.Errorf("userinfo after the sign-out: %d", resp.StatusCode)
+	}
+	if m := h.introspect(other, osecret, at); m["active"] != false {
+		t.Errorf("introspection after the sign-out: %v", m)
+	}
+	if m := h.introspect(cl, secret, rt); m["active"] != false {
+		t.Errorf("refresh token introspection after the sign-out: %v", m)
+	}
+	if x := h.refreshWith(cl, secret, rt); x.status != 400 {
+		t.Errorf("refresh after the sign-out: %d %v", x.status, x.m)
+	}
+	if _, err := h.p.VerifyAccessToken(context.Background(), at); err == nil {
+		t.Error("VerifyAccessToken accepted a signed-out token")
+	}
+	r, _ = h.login(cl, secret, nil)
+	if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token")); resp.StatusCode != 200 {
+		t.Errorf("userinfo after signing in again: %d", resp.StatusCode)
+	}
+}
+
+// A key that may have been exposed: rotate, then remove the old key at once. Its tokens stop verifying; the refresh
+// token still works and its new access token is signed with the new key. The key that signs cannot be removed.
+func TestRemoveSigningKey(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	r, _ := h.login(cl, secret, nil)
+	at, rt := r.str("access_token"), r.str("refresh_token")
+	ctx := context.Background()
+	pj, err := ParseJWT(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := pj.Header.Kid
+	if err := h.p.RemoveKey(ctx, old); outcomeOf(err) != "invalid" {
+		t.Fatalf("removing the key that signs: %v", err)
+	}
+	if err := h.p.RotateKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.p.VerifyAccessToken(ctx, at); err != nil {
+		t.Fatalf("a rotation alone stopped the old key's token: %v", err)
+	}
+	if err := h.p.RemoveKey(ctx, "no-such-key"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("unknown key: %v", err)
+	}
+	if err := h.p.RemoveKey(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.p.VerifyAccessToken(ctx, at); err == nil {
+		t.Error("the removed key's token still verifies")
+	}
+	if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
+		t.Errorf("userinfo with the removed key's token: %d", resp.StatusCode)
+	}
+	x := h.refreshWith(cl, secret, rt)
+	if x.status != 200 {
+		t.Fatalf("refresh after removing the key: %d %v", x.status, x.m)
+	}
+	nat, _ := x.m["access_token"].(string)
+	if npj, err := ParseJWT(nat); err != nil || npj.Header.Kid == old {
+		t.Errorf("the new token: %v %+v", err, npj)
+	}
+	if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+nat); resp.StatusCode != 200 {
+		t.Errorf("userinfo with the new token: %d", resp.StatusCode)
+	}
+}
+
+func outcomeOf(err error) string {
+	var fe *service.FieldError
+	if errors.As(err, &fe) {
+		return "invalid"
+	}
+	if err == nil {
+		return "ok"
+	}
+	return err.Error()
+}

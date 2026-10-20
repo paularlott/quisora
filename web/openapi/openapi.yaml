@@ -40,8 +40,12 @@ tags:
     description: Token signing keys and the master key that seals stored secrets (super admins).
   - name: Backup
     description: A backup of the whole store (super admins).
+  - name: System
+    description: The server as a whole (super admins).
   - name: Cluster
     description: The state of a server cluster (super admins).
+  - name: Emergency sign-out
+    description: Break glass. End every session of an organization, or of the whole server, at once.
   - name: SCIM
     description: SCIM 2.0 provisioning (RFC 7643, RFC 7644). Bodies are application/scim+json; the base URL for an organization is /scim/v2/{org}.
 paths:
@@ -168,6 +172,36 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/sign-out:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Emergency sign-out]
+      summary: Sign everyone in the organization out
+      description: |-
+        Ends every browser session and refresh grant of the organization at once, on every node, and so every access token issued from them; with `api_tokens`, its personal API tokens too. The session making the request is kept. Organization administrators and super admins, from a browser session that re-authenticated in the last 5 minutes (otherwise 403 with field `reauth`; an API token is refused). Applications are then told (back-channel logout) and the ended records deleted, in the background. Applications that check access tokens themselves rather than through introspection accept the ones already issued until they expire. Tokens of applications acting for themselves (client credentials) are not affected: rotate the client's secret.
+      operationId: post_orgs_org_sign_out
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SignOutRequest"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignOutEvent"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -340,6 +374,47 @@ paths:
           description: Success
           headers:
             Api-Version: {$ref: "#/components/headers/ApiVersion"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/lock-out:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Users]
+      summary: Disable the user and remove every way they had to sign in
+      description: |-
+        For a compromised account or a leaver. The user is disabled (with the reason, as when disabling them), their sessions and refresh grants end at once (applications are told, and remembered consent goes with the grants), and their password, authenticator app, passkeys, linked sign-in providers, personal API tokens and unused invitation, reset and verification links are removed. The account stays, for the audit log. Enabling it again brings none of that back: it then needs a new invitation. The rules are those of removing someone's password and of disabling them (never your own account; an established administrator's only by a super admin), from a browser session that re-authenticated in the last 5 minutes (otherwise 403 with field `reauth`; an API token is refused). Audited as user.locked_out.
+      operationId: post_orgs_org_users_id_lock_out
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: shown on the user's page and kept in the audit log (optional)
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -1937,6 +2012,90 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/system:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [System]
+      summary: The server as a whole
+      description: "Super admins: version, counts of organizations, users and browser sessions (sessions not yet removed, some
+        perhaps expired), whether nodes replicate over gossip, the key rotation schedule, whether a master key rotation is
+        configured, and the last server-wide emergency sign-out."
+      operationId: get_system
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/System"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/sign-out:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Emergency sign-out]
+      summary: Sign everyone on the server out
+      description: |-
+        The same as signing an organization out, for every organization at once. Super admins only, from a browser session that re-authenticated in the last 5 minutes.
+      operationId: post_sign_out
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SignOutRequest"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignOutEvent"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: key id (kid)
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Keys]
+      summary: Remove a signing key now
+      description: |-
+        Removes a key that no longer signs (state previous) at once, rather than when the tokens it signed expire: they stop verifying here now (userinfo, introspection), and applications stop accepting them once they fetch the key set again. For a key that may have been exposed: rotate first, then remove the old key (the key that signs now, or will, cannot be removed: 422). Applications get new tokens through their refresh tokens; nobody is signed out. Super admins, from a browser session that re-authenticated in the last 5 minutes. Audited as keys.remove.
+      operationId: delete_keys_id
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/backup:
     parameters:
       - {$ref: "#/components/parameters/ApiVersion"}
@@ -3447,6 +3606,7 @@ components:
         primary:
           type: boolean
         settings: {$ref: "#/components/schemas/OrgSettings"}
+        last_sign_out: {$ref: "#/components/schemas/SignOutEvent"}
         users:
           type: integer
           description: user count, super admins only
@@ -3456,6 +3616,54 @@ components:
         updated:
           type: string
           format: date-time
+    System:
+      type: object
+      properties:
+        version:
+          type: string
+        organizations:
+          type: integer
+        users:
+          type: integer
+        sessions:
+          type: integer
+          description: browser sessions not yet removed (some may have expired)
+        clustered:
+          type: boolean
+          description: nodes replicate over gossip (GET /api/cluster has their state)
+        key_rotation_days:
+          type: integer
+          description: a new signing key every this many days; 0 = by hand only
+        master_key_rotation:
+          type: boolean
+          description: previous master keys are configured (GET /api/master-key has where the rotation stands)
+        last_sign_out: {$ref: "#/components/schemas/SignOutEvent"}
+    SignOutEvent:
+      type: object
+      description: an emergency sign-out (on an organization, the last one; absent when there has been none)
+      properties:
+        at:
+          type: string
+          format: date-time
+        by:
+          type: string
+          description: username of who did it
+        reason:
+          type: string
+        api_tokens:
+          type: boolean
+          description: personal API tokens ended too
+    SignOutRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: why; recorded in the audit log
+        api_tokens:
+          type: boolean
+          description: end personal API tokens too (default false)
     OrgInput:
       type: object
       properties:

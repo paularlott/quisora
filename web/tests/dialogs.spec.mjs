@@ -137,7 +137,7 @@ test('groups list: each group shows its number of members, kept current', async 
 
 test('header: on a page with nothing live the switch says On, not Connecting', async ({ page }) => {
   await signIn(page, 'super')
-  await page.goto('/admin/master-key', { waitUntil: 'load' })
+  await page.goto('/admin/system/master-key', { waitUntil: 'load' })
   await expect(page.locator('#live-state')).toHaveText('On')
   await page.goto(`${A}/users`, { waitUntil: 'load' })
   await expect(page.locator('#live-state')).toHaveText('Connected')

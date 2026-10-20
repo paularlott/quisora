@@ -46,24 +46,37 @@ Before production:
 Every step below is in the audit log. Where it says "the audit log", search it (the console's audit page, or LogsQL in
 VictoriaLogs) by target, actor, action or `request_id`.
 
-**An administrator's account may be compromised.**
-1. Disable the account (it ends every session and refresh grant at once), or remove its password and send a new
-   invitation.
-2. Revoke its API tokens (`DELETE /api/orgs/{org}/users/{id}/tokens/{token}`).
-3. Review what it did: the audit log with that actor. Look for new administrators, new clients or providers, changed
-   organization settings, invitations, and backups downloaded.
-4. If it was a super admin, also consider the steps for the master key and the signing keys below.
+**Everyone must be signed out now** (an attacker may hold sessions or tokens, and you do not know whose). Pull the
+emergency sign-out: an organization's **Overview** page (its administrators and super admins), the **System overview**
+for every organization (super admins), `POST /api/orgs/{org}/sign-out` or `POST /api/sign-out`, or, when the console
+cannot be used, `quisora sign-out --org <name>` / `--all` on a server with the master key. Every browser session and
+refresh grant stops at once on every node (so do the access tokens issued from them, through userinfo and
+introspection), and with the API-token option every personal API token too. Your own session stays. Applications are
+told (back-channel logout); ones that check access tokens themselves accept those already issued until they expire
+(`tokens.access_ttl`, 10 minutes by default). Applications acting for themselves (client credentials) are not
+affected: rotate their secrets, and disable a client to end the tokens it already holds. It is audited as `org.signout` / `server.signout`, then `signout.sweep`. See
+[emergency sign-out](RUNNING.md#emergency-sign-out).
 
-**A user's account may be compromised.** Revoke its sessions (`DELETE /api/orgs/{org}/users/{id}/sessions`), remove
-its password and send a new invitation (it resets the second factor too), and review the applications it consented
-to (`oauth.consent`, `oauth.grant`).
+**An administrator's account may be compromised.**
+1. Lock it out: the user's page, **Lock out** (`POST /api/orgs/{org}/users/{id}/lock-out`). It disables the account,
+   ends every session and refresh grant at once, and removes its password, authenticator app, passkeys, linked
+   providers, API tokens and unused invitation and reset links, so enabling it again brings none of that back. An
+   established manager's or administrator's account is locked out by a super admin.
+2. Review what it did: the audit log with that actor. Look for new administrators, new clients or providers, changed
+   organization settings, invitations, and backups downloaded.
+3. If it was a super admin, also consider the steps for the master key and the signing keys below.
+
+**A user's account may be compromised, or someone has left.** Lock it out (as above), then, to let the right person
+back in, enable it and send a new invitation. Review the applications it consented to (`oauth.consent`,
+`oauth.grant`).
 
 **A client secret leaked.** Rotate it (`POST /api/orgs/{org}/clients/{id}/secret`); the old one stops working at
 once. Revoke the client's grants by disabling the client if tokens may have been issued with it.
 
-**Signing keys may be exposed.** Rotate now (the console's Signing keys page, or `POST /api/keys/rotate`). The new
-key signs at once; tokens signed with the old one keep working until they expire (`tokens.access_ttl`, 10 minutes by
-default).
+**Signing keys may be exposed.** Rotate now (the console's **System overview**, or `POST /api/keys/rotate`),
+then **Remove** on the old key (`DELETE /api/keys/{id}`). The new key signs at once; the tokens the old one signed
+stop verifying here at once, and in applications once they fetch the key set again. Applications get new tokens
+through their refresh tokens: nobody is signed out. Without the removal they keep working until they expire.
 
 **The master key may be exposed.** [Rotate it](RUNNING.md#rotating-the-master-key) and remove the old key as soon as the
 re-seal is done; relying parties' refresh tokens from before then stop working and their users sign in again. Treat

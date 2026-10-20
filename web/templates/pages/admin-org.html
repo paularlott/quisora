@@ -1,0 +1,48 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminOrg" data-api="{{.Data.API}}" data-org="{{.Data.OrgName}}" data-display="{{.Data.OrgDisplay}}" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Data.OrgDisplay}}{{if .Data.IsPrimary}} <span class="badge badge-accent ml-1">Primary</span>{{end}}</p>
+      <h1 class="page-title">Overview</h1>
+      <p class="page-sub">Who and what this organization holds, how its people sign in, and its emergency sign-out.</p>
+    </div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="totals-h">
+    <h2 class="section-title mb-4" id="totals-h">At a glance</h2>
+    <dl class="kv kv-stats" x-show="loaded" x-cloak>
+      <div><dt>Users</dt><dd><a href="{{.Data.Base}}/users" x-text="n.users"></a></dd></div>
+      <div><dt>Groups</dt><dd><a href="{{.Data.Base}}/groups" x-text="n.groups"></a></dd></div>
+      <div><dt>Tenants</dt><dd><a href="{{.Data.Base}}/tenants" x-text="n.tenants"></a></dd></div>
+      <div><dt>Sign-in providers</dt><dd><a href="{{.Data.Base}}/providers" x-text="n.providers"></a></dd></div>
+    </dl>
+    <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="signin-h" x-show="loaded" x-cloak>
+    <h2 class="section-title mb-1" id="signin-h">Sign-in</h2>
+    <p class="muted mb-4">{{if .IsSuper}}Changed from the <a href="/admin/orgs">organizations</a> page.{{else}}A super admin changes these.{{end}} Tenants can tighten them for their applications.</p>
+    <dl class="kv">
+      <div><dt>Passwords</dt><dd x-text="passwordText"></dd></div>
+      <div><dt>Passkeys</dt><dd x-text="passkeyText"></dd></div>
+      <div><dt>Second factor</dt><dd x-text="mfaText"></dd></div>
+      <div><dt>Session lifetime</dt><dd x-text="ttlText"></dd></div>
+      <div><dt>Signed out when idle for</dt><dd x-text="idleText"></dd></div>
+    </dl>
+  </section>
+
+  <section class="glass-card" aria-labelledby="signout-h">
+    <h2 class="section-title mb-1" id="signout-h">Emergency sign-out</h2>
+    <p class="muted mb-4">Ends every session in this organization at once, on every node: browser sessions, and the refresh tokens of
+      every application, so their access tokens stop working through this server too. Optionally personal API tokens as well.
+      Your own session stays, and other organizations are not affected. Everyone can sign in again at once.</p>
+    {{template "signout-last"}}
+    <button type="button" class="btn btn-danger" id="signout-open" @click="openSignOut">{{template "icon" "logout"}} Sign everyone out…</button>
+  </section>
+
+  {{template "signout-dialog" (dict "scope" "org")}}
+</div>
+{{end}}

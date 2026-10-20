@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -150,6 +151,8 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 
 	primary *orgCache
+	signOut signOutCache   // emergency sign-out counters (signout.go)
+	bg      sync.WaitGroup // Background work
 
 	// Writable reports whether this node may change replicated data now (cluster.Node.Writable; nil: always). Writes
 	// made in passing while serving reads (a session's or token's last use, a sign-in's last-login stamp) are skipped

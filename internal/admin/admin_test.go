@@ -1072,35 +1072,31 @@ func TestPages(t *testing.T) {
 		t.Error("super admin on another org")
 	}
 
-	// signing keys: super admins on the primary organization's pages only, with a link there only
-	if b := html(su, "/admin/orgs/primary/keys", 200); !strings.Contains(b, `x-data="adminKeys"`) ||
-		!strings.Contains(b, `href="/admin/orgs/primary/keys" aria-current="page"`) {
-		t.Error("keys page for a super admin on the primary organization")
+	// the system overview (the server as a whole: cluster, signing keys, emergency sign-out): super admins only, one
+	// link at the bottom of the menu, which keeps the organization last administered
+	if b := html(su, "/admin/system", 200); !strings.Contains(b, `x-data="adminSystem"`) ||
+		!strings.Contains(b, `href="/admin/system" aria-current="page"`) || !strings.Contains(b, `id="signout-dialog"`) ||
+		!strings.Contains(b, `id="rotate-keys"`) || !strings.Contains(b, `aria-label="Cluster nodes table"`) {
+		t.Error("system overview")
 	}
-	html(su, "/admin/orgs/acme/keys", 404)
-	html(ad, "/admin/orgs/acme/keys", 404)
-	if b := html(su, "/admin/orgs/acme/users", 200); strings.Contains(b, "/keys") {
-		t.Error("keys link outside the primary organization")
+	if b := html(su, "/admin/orgs/acme/users", 200); !strings.Contains(b, `href="/admin/system"`) {
+		t.Error("no system link for a super admin")
 	}
-	if b := html(ad, "/admin/orgs/acme/users", 200); strings.Contains(b, "/keys") {
-		t.Error("keys link for an organization admin")
+	if b := html(su, "/admin/system", 200); !strings.Contains(b, `href="/admin/orgs/acme/users"`) {
+		t.Error("the system overview does not keep the organization last administered")
 	}
-
-	// cluster: like the keys, and only when the nodes replicate over gossip
-	html(su, "/admin/orgs/primary/cluster", 404)
-	if b := html(su, "/admin/orgs/primary/users", 200); strings.Contains(b, "/cluster") {
-		t.Error("cluster link without a cluster")
+	html(su, "/admin/orgs/globex/users", 200)
+	if b := html(su, "/admin/system", 200); !strings.Contains(b, `href="/admin/orgs/globex/users"`) {
+		t.Error("the system overview does not follow the organization last administered")
+	}
+	for _, path := range []string{"/admin/system", "/admin/system/master-key"} {
+		html(ad, path, 404)
+		html(mg, path, 404)
+	}
+	if b := html(ad, "/admin/orgs/acme/users", 200); strings.Contains(b, "/admin/system") {
+		t.Error("system link for an organization admin")
 	}
 	w.env.Server.Site.Clustered = true
-	if b := html(su, "/admin/orgs/primary/cluster", 200); !strings.Contains(b, `x-data="adminCluster"`) ||
-		!strings.Contains(b, `href="/admin/orgs/primary/cluster" aria-current="page"`) {
-		t.Error("cluster page for a super admin on the primary organization")
-	}
-	html(su, "/admin/orgs/acme/cluster", 404)
-	html(ad, "/admin/orgs/acme/cluster", 404)
-	if b := html(ad, "/admin/orgs/acme/users", 200); strings.Contains(b, "/cluster") {
-		t.Error("cluster link for an organization admin")
-	}
 	html(su, "/admin/orgs/primary/settings", 404) // organization settings are edited from the organizations list
 	w.env.Server.Site.Clustered = false
 
@@ -1115,8 +1111,16 @@ func TestPages(t *testing.T) {
 	html(ad, "/admin/orgs/globex/users", 404)
 	html(ad, "/admin/orgs/nope/users", 404)
 	html(ad, "/admin/orgs/acme/users/not-a-user", 200) // the page loads; the API reports the missing user
-	if b := html(ad, "/admin/orgs/acme", 303); b != "" && false {
-		t.Log(b)
+	// an organization's overview, with its emergency sign-out: its administrators and super admins; managers go to users
+	if b := html(ad, "/admin/orgs/acme", 200); !strings.Contains(b, `x-data="adminOrg"`) ||
+		!strings.Contains(b, `href="/admin/orgs/acme" aria-current="page"`) || !strings.Contains(b, `id="signout-dialog"`) {
+		t.Error("organization overview")
+	}
+	html(su, "/admin/orgs/globex", 200)
+	html(ad, "/admin/orgs/globex", 404)
+	html(mg, "/admin/orgs/acme", 303)
+	if b := html(mg, "/admin/orgs/acme/users", 200); strings.Contains(b, `href="/admin/orgs/acme" `) {
+		t.Error("overview link for a manager")
 	}
 
 	// redirects
@@ -1136,14 +1140,17 @@ func TestPages(t *testing.T) {
 	if l := loc(w.anon(), "/admin/orgs/acme/users?q=x"); l != "/login/acme?next="+url.QueryEscape("/admin/orgs/acme/users?q=x") {
 		t.Errorf("anonymous redirect from an organization's page %q", l)
 	}
-	if l := loc(su, "/admin"); l != "/admin/orgs" {
+	if l := loc(su, "/admin"); l != "/admin/system" {
 		t.Errorf("super /admin -> %q", l)
 	}
-	if l := loc(ad, "/admin"); l != "/admin/orgs/acme/users" {
+	if l := loc(ad, "/admin"); l != "/admin/orgs/acme" {
 		t.Errorf("admin /admin -> %q", l)
 	}
-	if l := loc(ad, "/admin/orgs/acme"); l != "/admin/orgs/acme/users" {
-		t.Errorf("org home -> %q", l)
+	if l := loc(mg, "/admin"); l != "/admin/orgs/acme/users" {
+		t.Errorf("manager /admin -> %q", l)
+	}
+	if l := loc(mg, "/admin/orgs/acme"); l != "/admin/orgs/acme/users" {
+		t.Errorf("org home for a manager -> %q", l)
 	}
 	html(w.as("user"), "/admin", 403)
 	// clients live under tenants: the old page redirects to the tenants list
@@ -1751,6 +1758,7 @@ func TestConsoleNeedsSecondFactor(t *testing.T) {
 func TestDangerousChangesNeedStepUp(t *testing.T) {
 	w := newWorld(t)
 	w.mod.RotateKeys = func(context.Context) error { return nil }
+	w.mod.RemoveKey = func(context.Context, string) error { return nil }
 	fresh := false
 	w.env.Server.Reauthed = func(*http.Request) bool { return fresh }
 	su, tok := w.as("super"), w.withBearer("super", "admin")
@@ -1761,12 +1769,20 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 	for name, call := range map[string]func(c *caller) resp{
 		"delete an organization":        func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
 		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
+		"remove a signing key":          func(c *caller) resp { return c.delete("/api/keys/old") },
 		"primary org sign-in settings":  func(c *caller) resp { return c.patch("/api/orgs/primary", map[string]any{"settings": settings}) },
 		"make someone an administrator": func(c *caller) resp { return c.patch(AU+"/"+victim, map[string]any{"role": "admin"}) },
 		"create an administrator": func(c *caller) resp {
 			return c.post(AU, map[string]any{"username": "boss", "email": "boss@x.example", "given_name": "B", "role": "admin"})
 		},
 		"remove another user's password": func(c *caller) resp { return c.delete(AU + "/" + victim + "/password") },
+		"sign an organization out": func(c *caller) resp {
+			return c.post("/api/orgs/acme/sign-out", map[string]any{"reason": "test"})
+		},
+		"sign the server out": func(c *caller) resp { return c.post("/api/sign-out", map[string]any{"reason": "test"}) },
+		"lock a user out": func(c *caller) resp {
+			return c.post(AU+"/"+w.users["user"].ID+"/lock-out", map[string]any{"reason": "test"})
+		},
 	} {
 		fresh = false
 		if r := call(su); r.Status != 403 || r.str("field") != "reauth" {

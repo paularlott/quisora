@@ -1,0 +1,130 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminSystem" data-api="{{.Data.API}}" data-rotation="{{.Data.KeyRotationDays}}" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">System</p>
+      <h1 class="page-title">Overview</h1>
+      <p class="page-sub">This identity provider as a whole, across every organization.</p>
+    </div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="totals-h">
+    <h2 class="section-title mb-4" id="totals-h">At a glance</h2>
+    <dl class="kv kv-stats" x-show="loaded" x-cloak>
+      <div><dt>Organizations</dt><dd><a href="/admin/orgs" x-text="s.organizations"></a></dd></div>
+      <div><dt>Users</dt><dd x-text="s.users"></dd></div>
+      <div><dt>Browser sessions</dt><dd x-text="s.sessions"></dd></div>
+      <div><dt>Version</dt><dd><code class="mono" x-text="s.version"></code></dd></div>
+    </dl>
+    <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="cluster-h">
+    <h2 class="section-title mb-1" id="cluster-h">Cluster</h2>
+    <p class="muted" x-show="standalone" x-cloak>This server does not replicate over gossip: a single node, or nodes sharing one database.</p>
+    <div x-show="s.clustered" x-cloak>
+      <p class="muted mb-4" x-text="clusterUpdatedText"></p>
+      <div class="alert alert-error mb-4" role="alert" x-show="hasClusterError" x-cloak>{{template "icon" "alert"}}<span x-text="clError"></span></div>
+      <p class="mb-4"><span :class="clusterClass" x-text="clusterState"></span> <span class="muted" x-text="quorumText"></span></p>
+      <div class="table-wrap mb-6" role="region" aria-label="Cluster nodes table" tabindex="0" x-show="showNodes" x-cloak>
+        <table class="table">
+          <caption class="sr-only">Cluster nodes, by node ID</caption>
+          <thead><tr>
+            <th scope="col">Node</th>
+            <th scope="col">Address</th>
+            <th scope="col">State</th>
+            <th scope="col">Role</th>
+            <th scope="col">Version</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="n in nodes" :key="n.id"><tr>
+              <th scope="row" class="font-normal"><code class="mono" x-text="n.id"></code><span class="cell-sub block mt-1" x-show="n.self">This node</span></th>
+              <td><code class="mono" x-text="n.addressText"></code></td>
+              <td><span :class="n.stateClass" x-text="n.stateText"></span></td>
+              <td><span class="flex flex-wrap gap-1">
+                <span class="badge badge-accent" x-show="n.leader">Leader</span>
+                <span :class="n.readyClass" x-text="n.readyText"></span>
+              </span></td>
+              <td x-text="n.versionText"></td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+      <h3 class="font-semibold mb-1">This node</h3>
+      <p class="muted mb-4">Its own view of the cluster. The same figures are in <code>GET /api/cluster</code>; <code>/readyz</code> has the counts.</p>
+      <dl class="kv">
+        <div><dt>Node ID</dt><dd><code class="mono" x-text="here.id"></code></dd></div>
+        <div><dt>Ready</dt><dd x-text="here.readyText"></dd></div>
+        <div><dt>Accepts changes</dt><dd x-text="here.writableText"></dd></div>
+        <div><dt>Last synced</dt><dd x-text="here.syncText"></dd></div>
+        <div><dt>Writes not confirmed by a majority</dt><dd><span :class="here.unconfirmedClass" x-text="here.unconfirmed"></span></dd></div>
+        <div><dt>Refused (stale, superseded or foreign)</dt><dd x-text="here.refused"></dd></div>
+        <div><dt>Records from clocks too far ahead</dt><dd x-text="here.skewText"></dd></div>
+        <div><dt>Cluster key</dt><dd><code class="mono" x-text="here.keysText"></code></dd></div>
+        <div x-show="here.forced"><dt>Forced start</dt><dd x-text="here.forced"></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="keys-h">
+    <div class="flex flex-wrap items-start justify-between gap-3 mb-1">
+      <h2 class="section-title" id="keys-h">Signing keys</h2>
+      <button type="button" class="btn btn-primary btn-sm" id="rotate-keys" :disabled="rotating" :aria-busy="rotateBusyAttr" @click="rotate">{{template "icon" "refresh"}} <span x-text="rotateLabel">Rotate now</span></button>
+    </div>
+    <p class="muted mb-4"><span x-text="scheduleText"></span> They sign every token this server issues, in every organization. Applications pick up new keys by themselves, and tokens already issued keep working. If a key may have been exposed, rotate now, then remove the old key: the tokens it signed stop working at once, and applications get new ones through their refresh tokens.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasKeysError" x-cloak>{{template "icon" "alert"}}<span x-text="keysError"></span></div>
+    <div class="table-wrap" role="region" aria-label="Signing keys table" tabindex="0" x-show="showKeysTable" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Signing keys, newest first</caption>
+        <thead><tr>
+          <th scope="col">State</th>
+          <th scope="col">Key ID</th>
+          <th scope="col">Algorithm</th>
+          <th scope="col">Signs from</th>
+          <th scope="col">Stops signing</th>
+          <th scope="col">Removed</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="k in keys" :key="k.id"><tr>
+            <td><span :class="k.stateClass" x-text="k.stateText"></span><span class="cell-sub block mt-1" x-text="k.stateNote"></span></td>
+            <td class="whitespace-nowrap"><code class="mono" :title="k.id" x-text="k.shortId"></code></td>
+            <td x-text="k.alg"></td>
+            <td class="whitespace-nowrap" x-text="k.fromText"></td>
+            <td class="whitespace-nowrap" x-text="k.retireText"></td>
+            <td class="whitespace-nowrap" x-text="k.removeText"></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-sm" x-show="k.removable" :aria-label="k.removeLabel" :data-id="k.id" @click="removeKey">{{template "icon" "trash"}} Remove</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" x-show="noKeys" x-cloak>No keys yet: the first one is made when the server first signs a token, or within a minute of starting.</p>
+    <div class="skeleton-row" x-show="keysLoading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="mk-h">
+    <h2 class="section-title mb-1" id="mk-h">Master key</h2>
+    <template x-if="s.master_key_rotation">
+      <div>
+        <p class="muted mb-4">Previous master keys are configured: a rotation is in progress, or its old keys have not been removed yet.</p>
+        <a class="btn btn-secondary btn-sm" href="/admin/system/master-key">{{template "icon" "lock"}} Where the rotation stands</a>
+      </div>
+    </template>
+    <p class="muted" x-show="noMasterKeyRotation" x-cloak>No rotation in progress: every secret is sealed with the one master key.</p>
+  </section>
+
+  <section class="glass-card" aria-labelledby="signout-h">
+    <h2 class="section-title mb-1" id="signout-h">Emergency sign-out</h2>
+    <p class="muted mb-4">Ends every session in every organization at once, on every node: browser sessions, and the refresh tokens of
+      every application, so their access tokens stop working through this server too. Optionally personal API tokens as well.
+      Your own session stays. Everyone can sign in again at once. To sign out one organization, use its page.</p>
+    {{template "signout-last"}}
+    <button type="button" class="btn btn-danger" id="signout-open" @click="openSignOut">{{template "icon" "logout"}} Sign everyone out…</button>
+  </section>
+
+  {{template "signout-dialog" (dict "scope" "server")}}
+</div>
+{{end}}

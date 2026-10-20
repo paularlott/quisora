@@ -71,7 +71,7 @@ type Provider struct {
 	users   *ttlCache[*model.User]
 	orgs    *ttlCache[*model.Org]
 	tenants *ttlCache[*model.Tenant]
-	grants  *ttlCache[bool]
+	grants  *ttlCache[grantState]
 	groups  *ttlCache[groupEntry]
 	memGen  sync.Map // org id -> *atomic.Uint64, bumped by InvalidateMembership
 	memAll  atomic.Uint64
@@ -91,7 +91,7 @@ type Provider struct {
 func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log, issuer: s.Cfg.Issuer(),
 		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), users: newTTLCache[*model.User](shortTTL, 200_000),
-		orgs: newTTLCache[*model.Org](shortTTL, 20_000), tenants: newTTLCache[*model.Tenant](shortTTL, 20_000), grants: newTTLCache[bool](grantTTL, 200_000), groups: newTTLCache[groupEntry](shortTTL, 200_000),
+		orgs: newTTLCache[*model.Org](shortTTL, 20_000), tenants: newTTLCache[*model.Tenant](shortTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](shortTTL, 200_000),
 		remoteKey: map[string]*remoteJWKS{}, bcSem: make(chan struct{}, 32)}
 	p.tokenURL = p.issuer + "/oauth/token"
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
@@ -256,15 +256,26 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 
 // grantAlive reports whether a refresh grant still exists (not revoked, not expired).
 func (p *Provider) grantAlive(ctx context.Context, id string) bool {
-	if v, ok := p.grants.get(id); ok {
-		return v
+	st, ok := p.grants.get(id)
+	if !ok {
+		g, err := p.svc.Grants.Get(ctx, id)
+		if err == nil && !g.Revoked {
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp}
+		}
+		if err == nil || errors.Is(err, store.ErrNotFound) {
+			p.grants.put(id, st)
+		}
 	}
-	g, err := p.svc.Grants.Get(ctx, id)
-	alive := err == nil && !g.Revoked
-	if err == nil || errors.Is(err, store.ErrNotFound) {
-		p.grants.put(id, alive)
-	}
-	return alive
+	// The stamp is compared on every use, cached or not: an emergency sign-out ends the grant's tokens at once.
+	return st.alive && p.svc.SessionCurrent(ctx, st.org, st.stamp)
+}
+
+// grantState is what the grant cache knows of a grant: whether it exists (not revoked), and its organization and
+// sign-out stamp.
+type grantState struct {
+	alive bool
+	org   string
+	stamp model.SignOutStamp
 }
 
 // ---------------------------------------------------------------------------------------------------------------

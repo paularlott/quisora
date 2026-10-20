@@ -53,10 +53,22 @@ supports it). A new key is made every `tokens.key_rotation_days` (30 by default;
 housekeeping leader. It is published in the JWKS at once and signs 15 minutes later, so relying parties already know
 it; the previous key stays published until the tokens it signed have expired, then it is removed.
 
-Super admins see the keys under **Signing keys** in the primary organization's admin pages: each key's state
-(signing, next, previous) and when it starts signing, stops and is removed. **Rotate now** makes a key that signs at
-once (when a key may have been exposed); tokens signed before keep working until they expire. The same is
-`GET /api/keys` and `POST /api/keys/rotate`.
+Super admins see the keys on the **System overview**: each key's state (signing, next, previous) and when it
+starts signing, stops and is removed. **Rotate now** makes a key that signs at once; tokens signed before keep working
+until they expire. When a key may have been exposed, rotate, then **Remove** on the old key: the tokens it signed
+stop verifying here at once, and in applications once they fetch the key set again (applications get new tokens
+through their refresh tokens; nobody is signed out). The key that signs now cannot be removed. The same is
+`GET /api/keys`, `POST /api/keys/rotate` and `DELETE /api/keys/{id}`.
+
+## The system overview
+
+Super admins have **System overview** at the bottom of the console's menu: one page for the server as a whole. It
+shows the counts of organizations, users and sessions; the cluster, when nodes replicate over gossip (every node with
+its state and role, the quorum, and this node's own view, refreshed every 5 seconds); the signing keys (rotate, and
+remove an old one); whether a master key rotation is in progress (with a link to where it stands); and the
+server-wide [emergency sign-out](#emergency-sign-out). The menu keeps the organization you were last administering,
+so it is one click back. `GET /api/system`, `GET /api/cluster` and `GET /api/keys` have the same figures. Each
+organization has an **Overview** page too, for its administrators and super admins, with its own emergency sign-out.
 
 ## Sessions, tokens and sensitive changes
 
@@ -105,6 +117,38 @@ lifetime gets the maximum. Tokens with the backup scope always expire within 30 
 account page (after confirming): the old secret stops working at once, and the name, access and expiry stay the same,
 so a new secret never extends a token's life.
 
+## Emergency sign-out
+
+Break glass: end every session of an organization, or of every organization, at once, on every node, when an attacker
+may hold sessions or tokens and you do not know whose.
+
+- **Console:** an organization's **Overview** page (its administrators and super admins), or the **System overview**
+  for every organization (super admins: **System overview**). It asks for a reason and for the organization's name (or `everyone`) to be
+  typed, and a re-authentication if you have not signed in or confirmed it is you in the last 5 minutes.
+- **API:** `POST /api/orgs/{org}/sign-out` or `POST /api/sign-out` with `{"reason": "…", "api_tokens": false}`, from a
+  browser session (an API token cannot pull it).
+- **Command line**, when the console cannot be used: `quisora sign-out --org acme --reason "…"` or
+  `quisora sign-out --all --reason "…"` (add `--api-tokens` to end personal API tokens too). It needs the master key and
+  the same settings as `serve`. On a shared database it works while the servers run; on BadgerDB or SQLite stop the
+  server first; in a gossip cluster stop one node, run it there and start the node again.
+
+What ends: every browser session and refresh grant (so the access tokens issued from them stop working through
+userinfo and introspection), and with the option every personal API token. The session you pulled it from stays.
+Applications are told (back-channel logout), and the ended records are deleted in the background. Signing in again
+works at once. Not ended: tokens of applications acting for themselves (client credentials; rotate the client's
+secret or disable the client), and access tokens already in the hands of applications that check them themselves
+rather than through introspection, until they expire (`tokens.access_ttl`, 10 minutes by default).
+
+How it works: each organization, and the server, keep sign-out counters, and every session, grant and API token is
+stamped with them when it is made. Pulling the lever increments a counter in one write, which the cluster confirms
+like any other; from then on everything stamped before it is refused. It does not depend on the nodes' clocks, and it
+cannot be half done. The counters are part of backups, and move with the primary organization (`quisora
+set-primary`), so nothing a sign-out ended comes back.
+
+To lock out one person instead (a compromised account, or a leaver), use **Lock out** on their user page
+(`POST /api/orgs/{org}/users/{id}/lock-out`): it disables the account, signs them out everywhere and removes every way
+they had to sign in. Enabling the account again brings none of that back; send a new invitation.
+
 ## Rotating the master key
 
 The master key seals every secret Quisora stores: authenticator (TOTP) secrets, sign-in providers' client secrets,
@@ -138,7 +182,7 @@ docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kil
 
 ### Is it done? When can the old key go?
 
-Super admins see **Master key rotation** at the bottom of the admin menu while previous keys are configured. The
+Super admins see that a rotation is in progress on the **System overview**, which links to its status. The
 same status is `GET /api/master-key` (super admin). It shows:
 
 - the key every node seals with, and the previous keys every node holds;
@@ -209,7 +253,8 @@ quisora set-primary acme --super-admin alice@acme.example
 ```
 
 - `alice@acme.example` (a user of `acme`) becomes its super admin; the previous primary organization's super admins
-  become administrators of that organization. The change is audited in both.
+  become administrators of that organization. The change is audited in both. The server's emergency sign-out
+  counters move with it.
 - On a shared database it works while the servers run; they follow within seconds. On BadgerDB or SQLite stop the
   server first. In a gossip cluster stop one node, run it there and start the node again: the others receive the
   change from it.
@@ -380,7 +425,7 @@ previous_keys = ["<old>"]     # rounds 1 and 2 only
 ```
 
 - The log says `cluster keys reloaded` (with the key ids: 8 characters derived from each key, revealing nothing) or
-  `cluster keys not reloaded` with the reason. The cluster page (and `GET /api/cluster`) lists each node's key ids
+  `cluster keys not reloaded` with the reason. The system overview (and `GET /api/cluster`) lists each node's key ids
   under `cluster_keys`, the one that encrypts first.
 - A reload is refused when the new keys do not include the key in use: a typo cannot cut a node off. Keys given on the
   command line cannot be reloaded.
@@ -421,7 +466,8 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `backup.download`, `backup.restore`, `cluster.force_start`, `org.primary` |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `org.primary` |
+| Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |
 
 Updates record what changed, field by field, as `changed.<field>` = `old → new` (`changed.role`, `changed.email`,
@@ -437,7 +483,7 @@ Every event has:
 - `user_agent` and `session_id` (the browser session the request was made in, or the one a sign-in created);
 - `ip`.
 
-Commands (`bootstrap`, `invite`, `set-primary`, `restore`) record who ran them: the actor is
+Commands (`bootstrap`, `invite`, `set-primary`, `sign-out`, `restore`) record who ran them: the actor is
 `cli:<os user>@<host>`, with `detail.os_user`, `detail.host`, `detail.pid` and `detail.command`. A restore (offline,
 or `server.restore_from` at start-up) is written to the primary organization's log as `backup.restore` once the
 node can write.

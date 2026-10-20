@@ -97,6 +97,11 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr,
 		AuthTime: now, Expires: now.Add(time.Duration(ttl) * time.Second), IdleTTL: idle, LastSeen: now, Provider: opt.Provider, Passkey: opt.Passkey,
 		IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
+	stamp, err := m.svc.SessionStamp(ctx, u.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	s.Stamp = stamp
 	if err := m.svc.Sessions.Create(ctx, s); err != nil {
 		return nil, err
 	}
@@ -212,6 +217,12 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 	m.mu.RLock()
 	cs := m.cache[id]
 	m.mu.RUnlock()
+	// An emergency sign-out ends a session whose stamp is no longer current (service/signout.go). A cached copy may
+	// predate the session's re-stamping (the one the lever was pulled from is kept), so it is read again before
+	// being refused.
+	if cs != nil && now.Sub(cs.fetched) <= m.CacheTTL && !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
+		cs = nil
+	}
 	if cs == nil || now.Sub(cs.fetched) > m.CacheTTL {
 		s, err := m.svc.Sessions.Get(ctx, id)
 		if err != nil {
@@ -243,6 +254,9 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		m.mu.Unlock()
 	}
 	if !cs.sess.Valid(now) || !cs.user.Enabled(time.Now()) {
+		return nil, nil
+	}
+	if !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
 		return nil, nil
 	}
 	if now.Sub(cs.sess.LastSeen) > lastSeenThrottle {

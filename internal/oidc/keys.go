@@ -335,6 +335,36 @@ func (p *Provider) rotate(ctx context.Context, force bool) error {
 	return nil
 }
 
+// RemoveKey removes a signing key that no longer signs, at once rather than when the tokens it signed expire: they stop
+// verifying here now, and relying parties stop accepting them once they fetch the key set again. For a key that may
+// have been exposed (rotate first: the key that signs now, or will, cannot be removed). The caller audits it.
+func (p *Provider) RemoveKey(ctx context.Context, id string) error {
+	p.keyMu.Lock()
+	defer p.keyMu.Unlock()
+	ks, err := p.loadKeys(ctx)
+	if err != nil {
+		return err
+	}
+	k := ks.byKID[id]
+	if k == nil {
+		return service.ErrNotFound
+	}
+	now := time.Now()
+	switch {
+	case k.rec.NotBefore.After(now):
+		return service.Invalid("id", "this key has not started signing yet; only a key that no longer signs can be removed")
+	case ks.signer(k.alg, now) == k:
+		return service.Invalid("id", "this key signs tokens now: rotate the keys first, then remove it")
+	}
+	if err := p.svc.Keys.Delete(service.Durable(ctx), id); !store.Applied(err) {
+		return err
+	}
+	if ks, err = p.loadKeys(ctx); err == nil {
+		p.keySet.Store(ks)
+	}
+	return nil
+}
+
 // jwksJSON returns the published key set: every unexpired key (including ones that have not started signing).
 func (p *Provider) jwksJSON(ctx context.Context) ([]byte, error) {
 	if c := p.jwksCache.Load(); c != nil && time.Since(c.at) < 30*time.Second && c.loaded == p.keySet.Load() {

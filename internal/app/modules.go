@@ -170,6 +170,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 
 	adm := admin.New()
 	adm.RotateKeys = op.RotateKeys
+	adm.RemoveKey = op.RemoveKey
 	adm.ClusterStatus = func() any { return a.Node.Status() }
 	if adminMail != nil {
 		adm.Mailer = adminMail

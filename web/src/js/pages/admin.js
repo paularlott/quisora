@@ -34,6 +34,172 @@ function liveUser(el, kinds, fn) {
 
 const enc = encodeURIComponent
 
+const KEY_STATE = {
+  signing: { text: 'Signing', cls: 'badge badge-success', note: 'Signs every new token.' },
+  next: { text: 'Next', cls: 'badge badge-info', note: 'Takes over at its start time.' },
+  previous: { text: 'Previous', cls: 'badge badge-plain', note: 'Kept until the tokens it signed expire.' },
+}
+
+// clusterMixin: the cluster on the system page (GET /api/cluster): every node, and this node's own view, polled while
+// the page is visible. The page calls startCluster when the server replicates over gossip, and stopCluster.
+const NODE_STATE = {
+  alive: { text: 'Alive', cls: 'badge badge-success' },
+  suspect: { text: 'Suspect', cls: 'badge badge-warning' },
+  dead: { text: 'Dead', cls: 'badge badge-danger' },
+  leaving: { text: 'Leaving', cls: 'badge badge-plain' },
+}
+const CLUSTER_POLL_MS = 5000
+function clusterMixin() {
+  return {
+    cluster: {}, nodes: [], here: {}, clLoaded: false, clError: '', clUpdated: null, clTimer: null,
+    startCluster() {
+      if (this.clTimer) return
+      this.clTimer = setInterval(() => { if (document.visibilityState === 'visible') this.loadCluster() }, CLUSTER_POLL_MS)
+      return this.loadCluster()
+    },
+    stopCluster() { clearInterval(this.clTimer); this.clTimer = null },
+    async loadCluster() {
+      try {
+        const st = await get(`${this.apiBase}/cluster`)
+        this.cluster = st
+        this.nodes = (st.nodes || []).map((n) => {
+          const s = NODE_STATE[n.state] || { text: n.state, cls: 'badge badge-plain' }
+          return { ...n, stateText: s.text, stateClass: s.cls, addressText: n.address || '—', versionText: n.version || '—',
+            readyText: n.ready ? 'Ready' : 'Not ready', readyClass: n.ready ? 'badge badge-success' : 'badge badge-warning' }
+        })
+        this.here = { // this node's own figures
+          id: st.node_id,
+          readyText: (st.ready ? 'Yes' : 'No') + (st.catching_up ? ' (catching up)' : '') + (st.behind ? ' (out of date: the others purged deletions it never saw)' : ''),
+          writableText: st.writable ? 'Yes' : 'No',
+          syncText: fmtDateTime(st.last_sync),
+          unconfirmed: st.unconfirmed || 0,
+          unconfirmedClass: st.unconfirmed ? 'badge badge-danger' : '',
+          refused: st.refused || 0,
+          skewText: `${st.clock_skewed || 0} received, ${st.skew_refused || 0} not followed`,
+          forced: st.forced_start || '',
+          // gossip keys: the one that encrypts, then those still read during a cluster key rotation
+          keysText: (st.cluster_keys || []).length === 0 ? '—'
+            : st.cluster_keys[0] + (st.cluster_keys.length > 1 ? ` (still reads ${st.cluster_keys.slice(1).join(', ')})` : ''),
+        }
+        this.clUpdated = new Date()
+        this.clError = ''
+        this.clLoaded = true
+      } catch (e) { this.clError = e.message }
+    },
+    get showNodes() { return this.clLoaded && this.nodes.length > 0 },
+    get hasClusterError() { return this.clError !== '' },
+    get clusterHealthy() { return !!(this.cluster.ready && this.cluster.writable) },
+    get clusterState() { return this.clusterHealthy ? 'Healthy' : this.cluster.ready ? 'Not accepting changes' : 'Not ready' },
+    get clusterClass() { return this.clusterHealthy ? 'badge badge-success' : 'badge badge-warning' },
+    get quorumText() {
+      const c = this.cluster
+      return this.clLoaded ? `${c.alive || 0} of ${c.size || 0} nodes in view. Changes need a majority: ${c.quorum || 0} of ${c.size || 0}.` : ''
+    },
+    get clusterUpdatedText() {
+      return this.clUpdated ? `As this node sees it; updated ${this.clUpdated.toLocaleTimeString()}, every ${CLUSTER_POLL_MS / 1000} seconds.` : ''
+    },
+  }
+}
+
+// keysMixin: the signing keys on the system page (GET /api/keys), rotating them and removing one that no longer signs.
+// The page calls loadKeys; it sets apiBase and rotationDays.
+function keysMixin(Alpine) {
+  return {
+    keys: [], keysLoading: true, keysError: '', rotating: false, rotationDays: 0,
+    async loadKeys() {
+      try {
+        const res = await get(`${this.apiBase}/keys`)
+        this.keys = res.items.map((k) => {
+          const st = KEY_STATE[k.state] || KEY_STATE.previous
+          return { ...k, stateText: st.text, stateClass: st.cls, stateNote: st.note, fromText: fmtDateTime(k.not_before),
+            retireText: fmtDateTime(k.retire_at), removeText: fmtDateTime(k.expires),
+            removable: k.state === 'previous', removeLabel: `Remove now, key ${k.id}`,
+            shortId: k.id.length > 16 ? `${k.id.slice(0, 8)}…${k.id.slice(-6)}` : k.id }
+        })
+        this.keysError = ''
+      } catch (e) { this.keysError = e.message }
+      this.keysLoading = false
+    },
+    get showKeysTable() { return !this.keysLoading && this.keys.length > 0 },
+    get noKeys() { return !this.keysLoading && !this.keysError && this.keys.length === 0 },
+    get hasKeysError() { return this.keysError !== '' },
+    get rotateBusyAttr() { return this.rotating ? 'true' : 'false' },
+    get rotateLabel() { return this.rotating ? 'Rotating…' : 'Rotate now' },
+    get scheduleText() {
+      return this.rotationDays > 0
+        ? `A new key is made automatically every ${this.rotationDays} days.`
+        : 'Keys are only rotated by hand.'
+    },
+    async rotate(ev) {
+      const opener = ev.currentTarget
+      const yes = await confirmAction(Alpine, { title: 'Rotate signing keys?', message: 'Make a new signing key now?',
+        detail: 'Applications pick it up by themselves, and tokens already issued keep working.', confirmLabel: 'Rotate now' })
+      if (!yes) return
+      this.rotating = true
+      try {
+        await withReauth(Alpine, () => post(`${this.apiBase}/keys/rotate`), opener)
+        toast('Signing keys rotated.')
+        await this.loadKeys()
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+      this.rotating = false
+    },
+    async removeKey(ev) {
+      const opener = ev.currentTarget
+      const id = opener.dataset.id
+      const yes = await confirmAction(Alpine, { title: 'Remove this key now?', message: `Remove key ${id} now?`,
+        detail: 'Tokens it signed stop working at once, here and in applications once they fetch the keys again. Applications get new tokens through their refresh tokens; nobody is signed out. Do this for a key that may have been exposed.',
+        confirmLabel: 'Remove key' })
+      if (!yes) return
+      try {
+        await withReauth(Alpine, () => del(`${this.apiBase}/keys/${enc(id)}`), opener)
+        toast('Key removed. The tokens it signed no longer work.')
+        await this.loadKeys()
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+    },
+  }
+}
+
+// signOutMixin: the emergency sign-out (break glass) of the system page (signOutScope 'server') and of an
+// organization's page (signOutScope = its URL name, signOutDisplay = its display name): the dialog in
+// partials/admin.html (signout-dialog), the last pull (signout-last). The page sets lastSignOut from what it loads.
+function signOutMixin(Alpine) {
+  return {
+    lastSignOut: null, signOutScope: '', signOutDisplay: '',
+    get signOutServer() { return this.signOutScope === 'server' },
+    openSignOut(ev) {
+      this.resetForm({ reason: '', api_tokens: false, confirm: '' })
+      this.openDlg('signout-dialog', ev.currentTarget)
+    },
+    get signOutWord() { return this.signOutServer ? 'everyone' : this.signOutScope },
+    get signOutConfirmLabel() { return `Type ${this.signOutWord} to confirm` },
+    get signOutWhat() {
+      return this.signOutServer ? 'Everyone in every organization will be signed out.'
+        : `Everyone in ${this.signOutDisplay || this.signOutScope} will be signed out.`
+    },
+    get signOutBlocked() { return this.busy || (this.form.confirm || '').trim() !== this.signOutWord },
+    get signOutLabel() { return this.busy ? 'Signing everyone out…' : 'Sign everyone out' },
+    get hasLastSignOut() { return !!this.lastSignOut },
+    get lastSignOutText() {
+      const l = this.lastSignOut
+      if (!l) return ''
+      return `${fmtDateTime(l.at)} by ${l.by}${l.api_tokens ? ', with API tokens' : ''}: ${l.reason}`
+    },
+    async pullSignOut(ev) {
+      if (this.signOutBlocked) return
+      this.clearErrors()
+      this.busy = true
+      const url = `${this.apiBase}/sign-out` // /api (the server) or /api/orgs/<name>
+      const body = { reason: this.form.reason, api_tokens: !!this.form.api_tokens }
+      try {
+        this.lastSignOut = await withReauth(Alpine, () => post(url, body), ev.submitter || ev.currentTarget, this)
+        this.closeDlg('signout-dialog')
+        toast(this.signOutServer ? 'Everyone in every organization was signed out.' : 'Everyone in the organization was signed out.')
+      } catch (e) { if (e.name !== 'AbortError') this.setErrors(e) }
+      this.busy = false
+    },
+  }
+}
+
 // Confirmation through the shared dialog; resolves true/false.
 // mailOn: the server has email set up (an SMTP server); without it nothing offers to send email.
 const mailOn = () => document.documentElement.dataset.mail === '1'
@@ -831,6 +997,24 @@ export default function (Alpine) {
       if (!yes) return
       try { await del(`${this.apiBase}/users/${enc(this.userId)}/sessions`); toast('Sessions revoked.') } catch (e) { toast(e.message, 'error') }
     },
+    openLockOut(ev) {
+      this.resetForm({ reason: '' })
+      this.openDlg('lockout-dialog', ev.currentTarget)
+    },
+    get lockOutWhat() { return this.user ? `Lock ${this.user.title} (${this.user.username}) out?` : '' },
+    get lockOutLabel() { return this.busy ? 'Locking out…' : 'Lock out' },
+    async lockOut(ev) {
+      this.clearErrors()
+      this.busy = true
+      try {
+        await withReauth(Alpine, () => post(`${this.apiBase}/users/${enc(this.userId)}/lock-out`, { reason: this.form.reason }),
+          ev.submitter || ev.currentTarget, this)
+        this.closeDlg('lockout-dialog')
+        toast(`${this.user.title} is locked out.`)
+        await this.refresh()
+      } catch (e) { if (e.name !== 'AbortError') this.setErrors(e) }
+      this.busy = false
+    },
     async remove(ev) {
       const yes = await confirmAction(Alpine, { title: 'Delete user?', message: `Delete ${this.user.title} (${this.user.username})?`,
         detail: 'Their sessions, passkeys and API tokens are deleted too. This cannot be undone.', confirmLabel: 'Delete user' })
@@ -1230,117 +1414,6 @@ export default function (Alpine) {
     get hasSourceNote() { return this.sourceNote !== '' },
   }))
 
-  // ---- Signing keys (super admins, primary organization) -----------------------------------------------------------
-  const KEY_STATE = {
-    signing: { text: 'Signing', cls: 'badge badge-success', note: 'Signs every new token.' },
-    next: { text: 'Next', cls: 'badge badge-info', note: 'Takes over at its start time.' },
-    previous: { text: 'Previous', cls: 'badge badge-plain', note: 'Kept until the tokens it signed expire.' },
-  }
-  Alpine.data('adminKeys', () => ({
-    keys: [], loading: true, loadError: '', busy: false, apiBase: '', rotationDays: 0,
-    init() {
-      this.apiBase = this.$el.dataset.api
-      this.rotationDays = Number(this.$el.dataset.rotation) || 0
-      // keys made, rotated or retired elsewhere (another administrator, the rotation schedule, another node)
-      const live = liveRunner(async () => { await this.load(); announceUpdate('Signing keys updated') })
-      subscribe(['key'], () => live.trigger())
-      return this.load()
-    },
-    async load() {
-      try {
-        const res = await get(`${this.apiBase}/keys`)
-        this.keys = res.items.map((k) => {
-          const st = KEY_STATE[k.state] || KEY_STATE.previous
-          return { ...k, stateText: st.text, stateClass: st.cls, stateNote: st.note, fromText: fmtDateTime(k.not_before),
-            retireText: fmtDateTime(k.retire_at), removeText: fmtDateTime(k.expires) }
-        })
-        this.loadError = ''
-      } catch (e) { this.loadError = e.message }
-      this.loading = false
-    },
-    get showTable() { return !this.loading && this.keys.length > 0 },
-    get noKeys() { return !this.loading && !this.loadError && this.keys.length === 0 },
-    get hasLoadError() { return this.loadError !== '' },
-    get busyAttr() { return this.busy ? 'true' : 'false' },
-    get rotateLabel() { return this.busy ? 'Rotating…' : 'Rotate now' },
-    get scheduleText() {
-      return this.rotationDays > 0
-        ? `A new key is made automatically every ${this.rotationDays} days.`
-        : 'Keys are only rotated by hand.'
-    },
-    async rotate(ev) {
-      const yes = await confirmAction(Alpine, { title: 'Rotate signing keys?', message: 'Make a new signing key now?',
-        detail: 'Applications pick it up by themselves, and tokens already issued keep working.', confirmLabel: 'Rotate now' })
-      if (!yes) return
-      this.busy = true
-      try {
-        await withReauth(Alpine, () => post(`${this.apiBase}/keys/rotate`), ev.currentTarget || ev.target)
-        toast('Signing keys rotated.')
-        await this.load()
-      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
-      this.busy = false
-    },
-  }))
-
-  // ---- Cluster: the nodes and this node's view, refreshed while the page is visible ---------------------------------
-  const NODE_STATE = {
-    alive: { text: 'Alive', cls: 'badge badge-success' },
-    suspect: { text: 'Suspect', cls: 'badge badge-warning' },
-    dead: { text: 'Dead', cls: 'badge badge-danger' },
-    leaving: { text: 'Leaving', cls: 'badge badge-plain' },
-  }
-  const CLUSTER_POLL_MS = 5000
-  Alpine.data('adminCluster', () => ({
-    nodes: [], here: {}, size: 0, quorum: 0, alive: 0, loading: true, loaded: false, loadError: '', apiBase: '',
-    updated: null, timer: null,
-    init() {
-      this.apiBase = this.$el.dataset.api
-      this.timer = setInterval(() => { if (document.visibilityState === 'visible') this.load() }, CLUSTER_POLL_MS)
-      return this.load()
-    },
-    destroy() { clearInterval(this.timer) },
-    async load() {
-      try {
-        const st = await get(`${this.apiBase}/cluster`)
-        this.size = st.size || 0
-        this.quorum = st.quorum || 0
-        this.alive = st.alive || 0
-        this.nodes = (st.nodes || []).map((n) => {
-          const s = NODE_STATE[n.state] || { text: n.state, cls: 'badge badge-plain' }
-          return { ...n, stateText: s.text, stateClass: s.cls, addressText: n.address || '—', versionText: n.version || '—',
-            readyText: n.ready ? 'Ready' : 'Not ready', readyClass: n.ready ? 'badge badge-success' : 'badge badge-warning' }
-        })
-        this.here = { // this node's own figures
-          id: st.node_id,
-          readyText: (st.ready ? 'Yes' : 'No') + (st.catching_up ? ' (catching up)' : '') + (st.behind ? ' (out of date: the others purged deletions it never saw)' : ''),
-          writableText: st.writable ? 'Yes' : 'No',
-          syncText: fmtDateTime(st.last_sync),
-          unconfirmed: st.unconfirmed || 0,
-          unconfirmedClass: st.unconfirmed ? 'badge badge-danger' : '',
-          refused: st.refused || 0,
-          skewText: `${st.clock_skewed || 0} received, ${st.skew_refused || 0} not followed`,
-          forced: st.forced_start || '',
-          // gossip keys: the one that encrypts, then those still read during a cluster key rotation
-          keysText: (st.cluster_keys || []).length === 0 ? '—'
-            : st.cluster_keys[0] + (st.cluster_keys.length > 1 ? ` (still reads ${st.cluster_keys.slice(1).join(', ')})` : ''),
-        }
-        this.updated = new Date()
-        this.loadError = ''
-        this.loaded = true
-      } catch (e) { this.loadError = e.message }
-      this.loading = false
-    },
-    get showTable() { return this.loaded && this.nodes.length > 0 },
-    get hasLoadError() { return this.loadError !== '' },
-    get quorumText() {
-      if (!this.loaded) return ''
-      return `${this.alive} of ${this.size} nodes in view. Changes need a majority: ${this.quorum} of ${this.size}.`
-    },
-    get updatedText() {
-      return this.updated ? `Updated ${this.updated.toLocaleTimeString()}, every ${CLUSTER_POLL_MS / 1000} seconds.` : ''
-    },
-  }))
-
   // ---- Master key rotation (super admins): GET /api/master-key, polled --------------------------------------------
   const MASTER_KEY_POLL_MS = 30000 // the status reads every sealed value: not too often
   const MASTER_KEY_STATE = {
@@ -1391,6 +1464,72 @@ export default function (Alpine) {
     get updatedText() {
       return this.updated ? `Checked ${this.updated.toLocaleTimeString()}, every ${MASTER_KEY_POLL_MS / 1000} seconds.` : ''
     },
+  }))
+
+  // ---- An organization's overview (its administrators and super admins), and its emergency sign-out --------------
+  const hours = (sec) => `${Math.round(sec / 3600)} hour${Math.round(sec / 3600) === 1 ? '' : 's'}`
+  const minutes = (sec) => `${Math.round(sec / 60)} minute${Math.round(sec / 60) === 1 ? '' : 's'}`
+  Alpine.data('adminOrg', () => mix(formMixin(), dialogMixin(), signOutMixin(Alpine), {
+    org: { settings: {} }, n: {}, loading: true, loaded: false, loadError: '', apiBase: '',
+    init() {
+      const d = this.$el.dataset
+      this.apiBase = d.api
+      this.signOutScope = d.org
+      this.signOutDisplay = d.display
+      const live = liveRunner(async () => { await this.load(); announceUpdate('Overview updated') })
+      subscribe(['org', 'user', 'group', 'tenant', 'provider'], () => live.trigger())
+      return this.load()
+    },
+    async load() {
+      const total = async (what) => (await get(`${this.apiBase}/${what}?limit=1`)).total
+      try {
+        const [org, users, groups, tenants, providers] = await Promise.all([get(this.apiBase), total('users'),
+          total('groups'), total('tenants'), total('providers')])
+        this.org = org
+        this.n = { users, groups, tenants, providers }
+        this.lastSignOut = org.last_sign_out || null
+        this.loadError = ''
+        this.loaded = true
+      } catch (e) { this.loadError = e.message }
+      this.loading = false
+    },
+    get hasLoadError() { return this.loadError !== '' },
+    get passwordText() {
+      const s = this.org.settings
+      return !s.password_login ? 'Off' : s.password_reset ? 'On, with reset by email' : 'On, no reset by email'
+    },
+    get passkeyText() { return this.org.settings.passkey_login ? 'On' : 'Off' },
+    get mfaText() { return this.org.settings.require_mfa ? 'Required' : 'Optional' },
+    get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
+    get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },
+  }))
+
+  // ---- System overview (super admins): the server as a whole, and its emergency sign-out --------------------------
+  Alpine.data('adminSystem', () => mix(formMixin(), dialogMixin(), signOutMixin(Alpine), keysMixin(Alpine), clusterMixin(), {
+    s: {}, loading: true, loaded: false, loadError: '', apiBase: '', signOutScope: 'server',
+    init() {
+      this.apiBase = this.$el.dataset.api
+      this.rotationDays = Number(this.$el.dataset.rotation) || 0
+      // a key rotated, an organization added or removed, a sign-out elsewhere (another administrator, another node)
+      const live = liveRunner(async () => { await this.load(); announceUpdate('Overview updated') })
+      subscribe(['key', 'org'], () => live.trigger())
+      return this.load()
+    },
+    async load() {
+      try {
+        const [s] = await Promise.all([get(`${this.apiBase}/system`), this.loadKeys()])
+        if (s.clustered) await this.startCluster()
+        this.s = s
+        this.lastSignOut = s.last_sign_out || null
+        this.loadError = ''
+        this.loaded = true
+      } catch (e) { this.loadError = e.message }
+      this.loading = false
+    },
+    get hasLoadError() { return this.loadError !== '' },
+    destroy() { this.stopCluster() },
+    get standalone() { return this.loaded && !this.s.clustered },
+    get noMasterKeyRotation() { return this.loaded && !this.s.master_key_rotation },
   }))
 
   // ---- Small shared page behaviours -------------------------------------------------------------------------------

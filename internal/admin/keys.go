@@ -88,6 +88,30 @@ func (m *Module) rotateKeys(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"rotated": true})
 }
 
+// removeKey removes a signing key that no longer signs, at once (DELETE /api/keys/{id}): the tokens it signed stop
+// working instead of lasting until they expire. Super admins, after a recent re-authentication.
+func (m *Module) removeKey(w http.ResponseWriter, r *http.Request) {
+	a := web.Actor(r)
+	if !a.IsSuper() {
+		web.WriteError(w, service.ErrForbidden)
+		return
+	}
+	if m.RemoveKey == nil {
+		web.WriteJSON(w, http.StatusNotImplemented, web.ErrorBody{Error: "Key removal is not available."})
+		return
+	}
+	if !m.stepUp(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := m.RemoveKey(r.Context(), id); err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	m.s.Svc.Audit(r.Context(), a, a.OrgID, "keys.remove", id, nil)
+	web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // clusterStatus reports this node's cluster status (GET /api/cluster). Super admins only.
 func (m *Module) clusterStatus(w http.ResponseWriter, r *http.Request) {
 	if !web.Actor(r).IsSuper() {

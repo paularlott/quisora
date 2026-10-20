@@ -148,8 +148,14 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 		return nil, nil, mapStore(err)
 	}
 	// The new primary first: there is never a moment without one (two for a moment is harmless: the cached
-	// primary is re-checked, and the old one is cleared next).
+	// primary is re-checked, and the old one is cleared next). The server's emergency sign-out counters move with the
+	// role: starting again from the new primary's would bring back everything a server-wide sign-out ended.
 	target.Primary = true
+	target.ServerSignOut.Sessions = max(target.ServerSignOut.Sessions, old.ServerSignOut.Sessions)
+	target.ServerSignOut.APITokens = max(target.ServerSignOut.APITokens, old.ServerSignOut.APITokens)
+	if old.LastServerSignOut != nil {
+		target.LastServerSignOut = old.LastServerSignOut
+	}
 	if err := s.Orgs.Update(ctx, target); !store.Applied(err) {
 		return nil, nil, mapStore(err)
 	}
@@ -171,6 +177,7 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 	s.primary.mu.Lock()
 	s.primary.primaryID = target.ID
 	s.primary.mu.Unlock()
+	s.InvalidateSignOut()
 	names := make([]string, len(demoted))
 	for i, u := range demoted {
 		names[i] = u.Username

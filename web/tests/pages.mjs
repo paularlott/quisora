@@ -32,11 +32,14 @@ export const PAGES = [
   { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
   { name: 'orgs-edit', path: '/admin/orgs', as: 'super', dialog: true, steps: [waitRows, open('Edit Acme Corporation')] },
   // Master key rotation status (with the demo's -rotation flag, a rotation halfway through).
-  { name: 'master-key', path: '/admin/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
+  { name: 'master-key', path: '/admin/system/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
+  { name: 'org', path: A, as: 'admin', steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }] },
+  { name: 'org-signout', path: A, as: 'admin', dialog: true, steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }, open('Sign everyone out…')] },
   { name: 'users', path: `${A}/users`, as: 'admin', steps: [waitRows] },
   { name: 'users-new', path: `${A}/users`, as: 'admin', steps: [waitRows, open('New user')], dialog: true },
   { name: 'user', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.waitForSelector('text=Profile') }] },
+  { name: 'user-lockout', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.waitForSelector('text=Profile') }, open('Lock out…')] },
   // The tag editor: chips added from the keyboard, plus its inline error for an invalid tag.
   { name: 'users-new-tags', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('New user'), async (p) => {
       await p.locator('#f-tags').fill('dept:finance,vip ')
@@ -148,8 +151,9 @@ export const PAGES = [
   { name: 'audit', path: `${A}/audit`, as: 'admin', steps: [waitRows] },
   { name: 'audit-org-super', path: `${A}/audit`, as: 'super', steps: [waitRows] },
   { name: 'audit-all', path: '/admin/audit', as: 'super', steps: [waitRows] },
-  { name: 'keys', path: '/admin/orgs/primary/keys', as: 'super', steps: [waitRows] },
-  { name: 'keys-rotate', path: '/admin/orgs/primary/keys', as: 'super', dialog: true, steps: [waitRows, open('Rotate now')] },
+  { name: 'system', path: '/admin/system', as: 'super', steps: [waitRows] },
+  { name: 'system-signout', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Sign everyone out…')] },
+  { name: 'keys-rotate', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Rotate now')] },
   { name: 'error-404', path: '/admin/nowhere', as: 'admin' },
   { name: 'users-manager', path: `${A}/users`, as: 'manager', steps: [waitRows] },
 ]

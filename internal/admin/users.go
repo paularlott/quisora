@@ -290,6 +290,34 @@ func (m *Module) removePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// lockOutUser handles POST /users/{id}/lock-out: disables the user and removes every way they had to sign in (a
+// compromised account, or a leaver), after a recent re-authentication. See service.LockOutUser.
+func (m *Module) lockOutUser(w http.ResponseWriter, r *http.Request) {
+	org, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	u, found := m.userFor(w, r, org, a)
+	if !found {
+		return
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !web.DecodeJSON(w, r, &in) {
+		return
+	}
+	if !m.stepUp(w, r) {
+		return
+	}
+	upd, err := m.s.Svc.LockOutUser(r.Context(), a, u.ID, in.Reason)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+}
+
 type inviteResult struct {
 	URL       string    `json:"url"`
 	Expires   time.Time `json:"expires"`

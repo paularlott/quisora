@@ -34,6 +34,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:18443", "listen address")
 	theme := flag.String("theme", "system", "default theme: light, dark or system")
 	rotation := flag.Bool("rotation", false, "show a master key rotation in progress (the master key rotation page)")
+	clustered := flag.Bool("cluster", false, "show a three-node gossip cluster on the system overview (a made-up status)")
 	flag.Parse()
 
 	dir, err := os.MkdirTemp("", "quisora-uidemo")
@@ -90,6 +91,10 @@ func main() {
 	srv, err := web.New(cfg, svc, eph, logger.NewNullLogger())
 	must(err)
 	adm := admin.New()
+	if *clustered {
+		srv.Site.Clustered = true
+		adm.ClusterStatus = demoClusterStatus
+	}
 	srv.Use(adm)
 	srv.Use(&events.Module{Hub: hub})
 	extraModules(srv, adm)

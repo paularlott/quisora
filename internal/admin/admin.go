@@ -45,6 +45,8 @@ type Module struct {
 	Mailer Mailer
 	// RotateKeys mints a new signing key (wired to the OAuth provider by the app).
 	RotateKeys func(ctx context.Context) error
+	// RemoveKey removes a signing key that no longer signs, at once (wired to the OAuth provider by the app).
+	RemoveKey func(ctx context.Context, id string) error
 	// ClusterStatus reports this node's cluster status (wired to cluster.Node.Status by the app).
 	ClusterStatus func() any
 	s             *web.Server
@@ -84,6 +86,7 @@ func (m *Module) routes() []Route {
 		{"GET", o, m.getOrg},
 		{"PATCH", o, m.updateOrg},
 		{"DELETE", o, m.deleteOrg},
+		{"POST", o + "/sign-out", m.signOutOrg},
 
 		{"GET", o + "/users", m.listUsers},
 		{"POST", o + "/users", m.createUser},
@@ -91,6 +94,7 @@ func (m *Module) routes() []Route {
 		{"PATCH", o + "/users/{id}", m.updateUser},
 		{"DELETE", o + "/users/{id}", m.deleteUser},
 		{"DELETE", o + "/users/{id}/password", m.removePassword},
+		{"POST", o + "/users/{id}/lock-out", m.lockOutUser},
 		{"POST", o + "/users/{id}/invite", m.inviteUser},
 		{"POST", o + "/users/{id}/emails", m.addEmail},
 		{"DELETE", o + "/users/{id}/emails/{address}", m.removeEmail},
@@ -149,9 +153,12 @@ func (m *Module) routes() []Route {
 		{"GET", "/api/audit", m.listAllAudit},
 		{"GET", "/api/keys", m.listKeys},
 		{"POST", "/api/keys/rotate", m.rotateKeys},
+		{"DELETE", "/api/keys/{id}", m.removeKey},
 		{"GET", "/api/backup", m.downloadBackup},
 		{"GET", "/api/master-key", m.masterKeyStatus},
 		{"GET", "/api/cluster", m.clusterStatus},
+		{"POST", "/api/sign-out", m.signOutServer},
+		{"GET", "/api/system", m.systemStatus},
 	}
 }
 

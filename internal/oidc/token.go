@@ -202,6 +202,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	g.ID = model.NewID() // the key is sealed bound to the id
+	if g.Stamp, err = p.svc.SessionStamp(ctx, u.OrgID); err != nil {
+		return nil, serverError(err)
+	}
 	p.svc.NewGrantKey(g)
 	if err := p.svc.Grants.Create(ctx, g); err != nil {
 		return nil, serverError(err)
@@ -230,6 +233,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 // Core §11: refreshing while the user is away needs offline_access); with it, it outlives the session's expiry.
 // Either way, ending the session (sign-out, revocation) deletes the grant.
 func (p *Provider) grantLive(ctx context.Context, g *model.Grant) bool {
+	if !p.svc.SessionCurrent(ctx, g.OrgID, g.Stamp) { // ended by an emergency sign-out
+		return false
+	}
 	if slices.Contains(g.Scopes, "offline_access") {
 		return true
 	}
@@ -239,7 +245,7 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) bool {
 
 // revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it.
 func (p *Provider) revokeGrant(ctx context.Context, id string) {
-	p.grants.put(id, false)
+	p.grants.put(id, grantState{})
 	if err := p.svc.Grants.Delete(service.Durable(context.WithoutCancel(ctx)), id); err != nil {
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
 	}

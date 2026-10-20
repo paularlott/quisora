@@ -347,3 +347,29 @@
 <div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">I have stored it</button></div>
 {{template "dialog-end"}}
 {{end}}
+
+{{/* Emergency sign-out (break glass), shared by the system page (scope "server") and an organization's page. The page
+     component mixes in signOutMixin (pages/admin.js). */}}
+{{define "signout-last"}}<p class="mb-4" x-show="hasLastSignOut" x-cloak><span class="badge badge-warning">Last used</span> <span x-text="lastSignOutText"></span></p>{{end}}
+
+{{define "signout-dialog"}}
+{{template "dialog-start" (dict "id" "signout-dialog" "title" "Sign everyone out?" "size" "sm")}}
+<form @submit.prevent="pullSignOut" novalidate>
+  <div class="dialog-body">
+    <p class="font-semibold" x-text="signOutWhat"></p>
+    <p class="muted">They are signed out of the console, the account page and every application at once, and must sign in again. Your own session stays.</p>
+    {{template "textarea-field" (dict "name" "reason" "label" "Reason" "required" true "rows" 2 "help" "Recorded in the audit log.")}}
+    {{template "check-field" (dict "name" "api_tokens" "label" "End personal API tokens too" "help" "Scripts and integrations using them stop working until their owners make new ones.")}}
+    <div class="field">
+      <label class="label" for="f-confirm" x-text="signOutConfirmLabel"></label>
+      <input class="input" id="f-confirm" name="confirm" type="text" autocomplete="off" spellcheck="false" x-model="form.confirm" aria-describedby="e-confirm">
+      <p class="field-error" id="e-confirm" x-text="errors.confirm"></p>
+    </div>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" class="btn btn-secondary" @click="closeThis" data-autofocus>Cancel</button>
+    <button type="submit" class="btn btn-danger" id="signout-submit" :aria-busy="busyAttr" :disabled="signOutBlocked"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="signOutLabel">Sign everyone out</span></button>
+  </div>
+</form>
+{{template "dialog-end"}}
+{{end}}
