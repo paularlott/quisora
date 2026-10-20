@@ -646,9 +646,13 @@ type APIToken struct {
 	Scopes     []string `msgpack:"sc" json:"scopes"`
 	// Audience limits an "api" token to the listed clients (ids of the owner's organization): only they see it as
 	// active through introspection. Empty: any confidential client of the organization.
-	Audience []string  `msgpack:"aud,omitempty" json:"audience"`
-	Expires  time.Time `msgpack:"ex" json:"expires"`
-	LastUsed time.Time `msgpack:"lu" json:"last_used"`
+	Audience []string `msgpack:"aud,omitempty" json:"audience"`
+	// AppScopes (api scope only) narrows the token to some of its applications' own scopes (their "scopes for your
+	// own APIs"): introspection reports them, and an application declaring none of them sees the token inactive.
+	// Empty: the token acts with its owner's full access in every application it is for.
+	AppScopes []string  `msgpack:"as,omitempty" json:"app_scopes"`
+	Expires   time.Time `msgpack:"ex" json:"expires"`
+	LastUsed  time.Time `msgpack:"lu" json:"last_used"`
 }
 
 func (t *APIToken) Kind() Kind { return KindAPIToken }

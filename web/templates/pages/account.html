@@ -244,22 +244,37 @@
             <td x-text="row.scopesText"></td>
             <td x-text="row.expiresText"></td>
             <td x-text="row.lastText"></td>
-            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.regenLabel" :title="row.regenLabel" :data-id="row.id" @click="regenerate">{{template "icon" "refresh"}}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :title="row.editLabel" :data-id="row.id" @click="openEdit">{{template "icon" "pencil"}}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.regenLabel" :title="row.regenLabel" :data-id="row.id" @click="regenerate">{{template "icon" "refresh"}}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button></td>
           </tr></template>
         </tbody>
       </table>
     </div>
 
-    {{template "dialog-start" (dict "id" "token-dialog" "title" "New API token" "size" "sm")}}
-    <form @submit.prevent="create" novalidate>
+    {{template "dialog-start" (dict "id" "token-dialog" "title" "New API token" "titleBind" "tokenDialogTitle" "size" "sm")}}
+    <form @submit.prevent="submitToken" novalidate>
       <div class="dialog-body">
         {{template "field" (dict "name" "tk_name" "label" "Name" "required" true "autofocus" true "autocomplete" "off" "help" "What the token is for, for example “Deploy script”.")}}
-        <fieldset class="fieldset" aria-describedby="e-tk_scopes">
+        <fieldset class="fieldset" aria-describedby="e-tk_scopes" x-show="!isEditToken">
           <legend>Access</legend>
           <template x-for="c in scopeChoices" :key="c.value"><label class="check"><input class="checkbox" type="checkbox" x-model="form.tk_scopes" :value="c.value"><span class="check-text" x-text="c.label"></span></label></template>
           <p class="field-error" id="e-tk_scopes" x-text="errors.tk_scopes"></p>
         </fieldset>
-        {{template "field" (dict "name" "tk_expires_days" "label" "Expires after (days)" "type" "number" "inputmode" "numeric" "helpBind" "expiryHelp" "help" " ")}}
+        {{/* An api token: which applications may see it, and optionally which of their own scopes it is narrowed to. */}}
+        <fieldset class="fieldset" aria-describedby="h-tk_audience e-tk_audience" x-show="forApps" x-cloak>
+          <legend>Applications</legend>
+          <p class="help" id="h-tk_audience">Leave all unticked for every application you can use, with your full access. Tick some to choose which, and optionally limit what the token may do in them.</p>
+          <p class="muted" x-show="noApps">There are no applications you can use a token with yet.</p>
+          <template x-for="app in apps" :key="app.id"><label class="check"><input class="checkbox" type="checkbox" x-model="form.tk_audience" :value="app.id"><span class="check-text" x-text="app.name"></span></label></template>
+          <p class="field-error" id="e-tk_audience" x-text="errors.tk_audience"></p>
+        </fieldset>
+        <fieldset class="fieldset" aria-describedby="h-tk_app_scopes e-tk_app_scopes" x-show="hasScopeChoices" x-cloak>
+          <legend>Limit to these scopes</legend>
+          <p class="help" id="h-tk_app_scopes">Optional. Leave all unticked for your full access in each application; tick some to let the token do only those things.</p>
+          <template x-for="sc in appScopeChoices" :key="sc.value"><label class="check"><input class="checkbox" type="checkbox" x-model="form.tk_app_scopes" :value="sc.value"><span class="check-text"><span class="mono" x-text="sc.value"></span><span class="help" x-text="sc.apps"></span></span></label></template>
+          <p class="field-error" id="e-tk_app_scopes" x-text="errors.tk_app_scopes"></p>
+        </fieldset>
+        <div x-show="!isEditToken">{{template "field" (dict "name" "tk_expires_days" "label" "Expires after (days)" "type" "number" "inputmode" "numeric" "helpBind" "expiryHelp" "help" " ")}}</div>
+        <p class="help" x-show="isEditToken" x-cloak x-text="editExpiryText"></p>
       </div>
       {{template "form-foot" (dict "label" "submitLabel" "default" "Create token")}}
     </form>

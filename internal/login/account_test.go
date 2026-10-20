@@ -42,7 +42,7 @@ func TestAccountEndpointsNeedSessionAndCSRF(t *testing.T) {
 		{"GET", "/api/account/reauth"}, {"POST", "/api/account/reauth"}, {"POST", "/api/account/reauth/passkey/begin"},
 		{"POST", "/api/account/reauth/passkey/finish"}, {"GET", "/api/account/sessions"}, {"DELETE", "/api/account/sessions/x"},
 		{"DELETE", "/api/account/sessions"}, {"GET", "/api/account/tokens"}, {"POST", "/api/account/tokens"},
-		{"DELETE", "/api/account/tokens/x"}, {"POST", "/api/account/tokens/x/regenerate"}, {"GET", "/api/account/apps"},
+		{"DELETE", "/api/account/tokens/x"}, {"POST", "/api/account/tokens/x/regenerate"}, {"PATCH", "/api/account/tokens/x"}, {"GET", "/api/account/apps"},
 		{"DELETE", "/api/account/apps/x"},
 	}
 	for _, p := range all {
@@ -928,4 +928,45 @@ func sameSecond(a, b string) bool {
 	ta, errA := time.Parse(time.RFC3339Nano, a)
 	tb, errB := time.Parse(time.RFC3339Nano, b)
 	return errA == nil && errB == nil && ta.Truncate(time.Second).Equal(tb.Truncate(time.Second))
+}
+
+// The token list offers the applications a token can be for, with their own scopes; editing a token changes its
+// name, applications and scopes (checked as when it was made), and only for its owner.
+func TestAccountTokenEdit(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	sam := e.user(t, org, "sam", model.RoleUser)
+	app, _, err := e.Svc.CreateClient(context.Background(), service.System, org.ID, service.ClientInput{Name: ptr("Orders"),
+		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{"orders:read", "orders:write"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := e.signedIn(t, pat)
+	b.markReauth()
+	res, out := b.api("GET", "/api/account/tokens", nil)
+	wantStatus(t, res, out, 200)
+	apps, _ := out["apps"].([]any)
+	if len(apps) != 1 || str(apps[0].(map[string]any), "id") != app.ID {
+		t.Fatalf("apps: %v", out["apps"])
+	}
+	res, out = b.api("POST", "/api/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"},
+		"audience": []string{app.ID}, "app_scopes": []string{"orders:read"}})
+	wantStatus(t, res, out, 201)
+	id := str(out["item"].(map[string]any), "id")
+
+	res, out = b.api("PATCH", "/api/account/tokens/"+id, map[string]any{"app_scopes": []string{"billing:read"}})
+	wantStatus(t, res, out, 422)
+	if str(out, "field") != "app_scopes" {
+		t.Fatalf("field %v", out)
+	}
+	res, out = b.api("PATCH", "/api/account/tokens/"+id, map[string]any{"name": "ci (read/write)", "app_scopes": []string{"orders:read", "orders:write"}})
+	wantStatus(t, res, out, 200)
+	if it := out["item"].(map[string]any); str(it, "name") != "ci (read/write)" || len(it["app_scopes"].([]any)) != 2 {
+		t.Fatalf("edited %v", it)
+	}
+	other := e.signedIn(t, sam)
+	other.markReauth()
+	res, out = other.api("PATCH", "/api/account/tokens/"+id, map[string]any{"name": "mine"})
+	wantStatus(t, res, out, 404)
 }

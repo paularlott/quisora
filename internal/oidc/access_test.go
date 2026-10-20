@@ -280,3 +280,77 @@ func TestCrossSitePostLogout(t *testing.T) {
 		t.Fatal("the session survived the logout")
 	}
 }
+
+// A personal api token introspected by an application carries what a sign-in to that application would: the user's
+// roles for it and their access's tags, merged from their own entry and their groups'. Without access to a
+// members-only tenant's application the token is inactive there; an open tenant's application gets no roles.
+func TestAPITokenIntrospectionCarriesAccess(t *testing.T) {
+	ctx := context.Background()
+	h := setup(t, nil)
+	tn := h.tenant("apps", membersOnly())
+	app, appSecret := h.tenantClient(tn, nil)
+	open, openSecret := h.newClient(nil)
+	tags := []string{"vpn"}
+	if _, err := h.env.Svc.UpdateUser(ctx, h.admin, h.user.ID, service.UserInput{Tags: &tags}); err != nil {
+		t.Fatal(err)
+	}
+	_, tok, err := h.env.Svc.CreateAPIToken(ctx, service.ActorForUser(h.user, ""), service.APITokenInput{Name: "script", Scopes: []string{"api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.introspect(app, appSecret, tok); got["active"] != false {
+		t.Fatalf("no access, still active: %v", got)
+	}
+
+	h.grant(tn, model.SubjectUser, h.user.ID, service.AccessInput{Roles: &[]string{"editor"}, Tags: &[]string{"team:blue"}})
+	g, err := h.env.Svc.CreateGroup(ctx, h.admin, h.env.Primary.ID, service.GroupInput{DisplayName: ptr("Ops"), Tags: &[]string{"dept:ops"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.env.Svc.SetMembership(ctx, h.admin, g.ID, h.user.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateMembership(h.env.Primary.ID)
+	h.grant(tn, model.SubjectGroup, g.ID, service.AccessInput{Roles: &[]string{"viewer"}})
+
+	got := h.introspect(app, appSecret, tok)
+	if got["active"] != true || got["scope"] != "api" || !slices.Equal(strsOf(got["roles"]), []string{"editor", "viewer"}) ||
+		!slices.Equal(strsOf(got["tags"]), []string{"dept:ops", "team:blue", "vpn"}) {
+		t.Fatalf("members-only app: %v", got)
+	}
+	got = h.introspect(open, openSecret, tok)
+	if got["active"] != true || got["roles"] != nil || !slices.Equal(strsOf(got["tags"]), []string{"dept:ops", "vpn"}) {
+		t.Fatalf("open app: %v", got)
+	}
+}
+
+// A token narrowed to application scopes: the application declaring them sees "api" and those scopes; another
+// application, declaring none of them, sees the token inactive (else "api" alone would read as full access). An
+// unnarrowed token is "api" everywhere.
+func TestAPITokenIntrospectionAppScopes(t *testing.T) {
+	ctx := context.Background()
+	h := setup(t, nil)
+	orders, ordersSecret := h.newClient(func(in *service.ClientInput) { in.Scopes = ptr([]string{"openid", "orders:read", "orders:write"}) })
+	billing, billingSecret := h.newClient(func(in *service.ClientInput) { in.Scopes = ptr([]string{"billing:read"}) })
+	a := service.ActorForUser(h.user, "")
+	_, narrow, err := h.env.Svc.CreateAPIToken(ctx, a, service.APITokenInput{Name: "n", Scopes: []string{"api"},
+		Audience: []string{orders.ID, billing.ID}, AppScopes: []string{"orders:read"}}) // billing may see it, but declares none of its scopes
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, full, _ := h.env.Svc.CreateAPIToken(ctx, a, service.APITokenInput{Name: "f", Scopes: []string{"api"}})
+	if got := h.introspect(orders, ordersSecret, narrow); got["active"] != true || got["scope"] != "api orders:read" {
+		t.Fatalf("orders, narrowed: %v", got)
+	}
+	if got := h.introspect(billing, billingSecret, narrow); got["active"] != false {
+		t.Fatalf("billing, narrowed to orders: %v", got)
+	}
+	for _, c := range []struct {
+		cl  *model.Client
+		sec string
+	}{{orders, ordersSecret}, {billing, billingSecret}} {
+		if got := h.introspect(c.cl, c.sec, full); got["active"] != true || got["scope"] != "api" {
+			t.Fatalf("%s, full: %v", c.cl.Name, got)
+		}
+	}
+}

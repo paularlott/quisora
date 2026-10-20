@@ -38,6 +38,37 @@ type APITokenInput struct {
 	// Audience (api scope only) lists the clients of the owner's organization that may see the token through
 	// introspection; empty: any of its confidential clients.
 	Audience []string `json:"audience"`
+	// AppScopes (api scope only) narrows the token to some of its applications' own scopes; empty: full access.
+	AppScopes []string `json:"app_scopes"`
+}
+
+// APITokenUpdate changes a token's name, applications or scopes; nil leaves a field as it is. The secret, the
+// Quisora scopes and the expiry never change here (a new secret: RegenerateAPIToken).
+type APITokenUpdate struct {
+	Name      *string   `json:"name"`
+	Audience  *[]string `json:"audience"`
+	AppScopes *[]string `json:"app_scopes"`
+}
+
+// StandardScopes are the OpenID Connect scopes Quisora defines; a client's other scopes are its own, for its APIs.
+var StandardScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"}
+
+// AppScopesOf returns a client's own scopes (those that are not standard).
+func AppScopesOf(c *model.Client) []string {
+	out := []string{}
+	for _, sc := range c.Scopes {
+		if !slices.Contains(StandardScopes, sc) {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+// TokenApp is an application a personal api token can be made for, with its own scopes.
+type TokenApp struct {
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Scopes []string `json:"scopes"`
 }
 
 // maxTokenDays bounds a typed-in lifetime when the server sets no maximum (10 years).
@@ -123,8 +154,12 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if err != nil {
 		return nil, "", err
 	}
+	appScopes, err := s.tokenAppScopes(ctx, a, in.Scopes, aud, in.AppScopes)
+	if err != nil {
+		return nil, "", err
+	}
 	t := &model.APIToken{Meta: model.Meta{ID: model.NewID()}, UserID: a.UserID, OrgID: a.OrgID, Name: name,
-		Scopes: slices.Clone(in.Scopes), Audience: aud}
+		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes}
 	if days > 0 {
 		t.Expires = time.Now().Add(time.Duration(days) * 24 * time.Hour)
 	}
@@ -164,6 +199,127 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	}
 	s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
 	return t, apiTokenPrefix + t.ID + "_" + secret, nil
+}
+
+// TokenApps lists the applications the actor may make a personal api token for: the enabled confidential clients of
+// their organization they have access to (as a sign-in to each would decide), by name, each with its own scopes.
+func (s *Service) TokenApps(ctx context.Context, a *Actor) ([]TokenApp, error) {
+	if a.UserID == "" {
+		return nil, ErrForbidden
+	}
+	u, err := s.Users.Get(ctx, a.UserID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	groups, err := s.UserGroups(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	gids := make([]string, 0, len(groups))
+	for _, g := range groups {
+		gids = append(gids, g.ID)
+	}
+	cs, _, err := s.Clients.List(ctx, store.ListQuery{Scope: u.OrgID})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	out := []TokenApp{}
+	for _, c := range cs {
+		if !c.Enabled || c.Public() {
+			continue
+		}
+		t, err := s.ClientTenant(ctx, c)
+		if err != nil {
+			continue
+		}
+		if acc, err := s.ClientAccess(ctx, t, c, u, gids); err != nil || !acc.Allowed {
+			continue
+		}
+		out = append(out, TokenApp{ID: c.ID, Name: c.Name, Scopes: AppScopesOf(c)})
+	}
+	slices.SortFunc(out, func(x, y TokenApp) int { return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)) })
+	return out, nil
+}
+
+// tokenAppScopes validates the scopes a token is narrowed to: an api token's only, with applications chosen, each
+// scope declared by one of them. (A token for every application is not narrowed: there is no one set of scopes.)
+func (s *Service) tokenAppScopes(ctx context.Context, a *Actor, scopes, audience, appScopes []string) ([]string, error) {
+	out, err := checkScopes(appScopes)
+	if err != nil {
+		var fe *FieldError
+		if errors.As(err, &fe) {
+			fe.Field = "app_scopes"
+		}
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	if !slices.Contains(scopes, ScopeAPI) {
+		return nil, Invalid("app_scopes", "only a token with the api scope has application scopes")
+	}
+	if len(audience) == 0 {
+		return nil, Invalid("app_scopes", "choose the applications the token is for to limit it to their scopes")
+	}
+	apps, err := s.TokenApps(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]bool{}
+	for _, app := range apps {
+		if !slices.Contains(audience, app.ID) {
+			continue
+		}
+		for _, sc := range app.Scopes {
+			declared[sc] = true
+		}
+	}
+	for _, sc := range out {
+		if !declared[sc] {
+			return nil, Invalid("app_scopes", sc+" is not a scope of an application this token is for")
+		}
+	}
+	return out, nil
+}
+
+// UpdateAPIToken changes one of the actor's own tokens: its name, the applications it is for and the scopes it is
+// narrowed to, checked as when it was made. Making a token with the new settings would give the same; the secret
+// and the expiry stay.
+func (s *Service) UpdateAPIToken(ctx context.Context, a *Actor, id string, in APITokenUpdate) (*model.APIToken, error) {
+	if a.UserID == "" || a.Scoped() {
+		return nil, ErrForbidden
+	}
+	t, err := s.APITokens.Get(ctx, id)
+	if err != nil || t.UserID != a.UserID {
+		return nil, ErrNotFound
+	}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" || len(name) > 100 {
+			return nil, Invalid("name", "required, at most 100 characters")
+		}
+		t.Name = name
+	}
+	if in.Audience != nil {
+		aud, err := s.tokenAudience(ctx, a.OrgID, APITokenInput{Scopes: t.Scopes, Audience: *in.Audience})
+		if err != nil {
+			return nil, err
+		}
+		t.Audience = aud
+	}
+	appScopes := t.AppScopes
+	if in.AppScopes != nil {
+		appScopes = *in.AppScopes
+	}
+	// checked again whenever the applications change too: a scope must stay one of theirs
+	if t.AppScopes, err = s.tokenAppScopes(ctx, a, t.Scopes, t.Audience, appScopes); err != nil {
+		return nil, err
+	}
+	if err := s.APITokens.Update(Durable(ctx), t); err != nil {
+		return nil, mapStore(err)
+	}
+	s.Audit(ctx, a, t.OrgID, "apitoken.update", t.Name, nil)
+	return t, nil
 }
 
 // tokenAudience validates the audience of a new token: clients of the owner's organization, for an api token only.

@@ -22,7 +22,7 @@ export function describeAgent(ua) {
   return os ? `${browser} on ${os}` : browser
 }
 
-const SCOPE_TEXT = { api: 'Your own applications (introspection)', scim: 'Provisioning (SCIM)', admin: 'Administration API',
+const SCOPE_TEXT = { api: 'Your organization’s applications (they check the token with Quisora)', scim: 'Provisioning (SCIM)', admin: 'Administration API',
   backup: 'Backups of the whole server (expires within 30 days)' }
 
 // Sensitive actions (changing the email address, adding or deleting a passkey, creating an API token, removing the
@@ -428,6 +428,7 @@ export default function (Alpine) {
   // ---- API tokens --------------------------------------------------------------------------------------------
   Alpine.data('accountTokens', () => mix(formMixin(), dialogMixin(), scoped(), {
     items: [], loading: true, loadError: '', scopes: [], maxDays: 0, created: '', createdName: '', regenerated: false, scopeChoices: [],
+    apps: [], editingToken: null,
     init() { return this.load() },
     async load() {
       try {
@@ -435,26 +436,78 @@ export default function (Alpine) {
         this.scopes = r.scopes
         this.maxDays = r.max_days
         this.scopeChoices = r.scopes.map((s) => ({ value: s, label: SCOPE_TEXT[s] || s }))
-        this.items = r.items.map((t) => ({ ...t, scopesText: t.scopes.join(', '), expiresText: isSet(t.expires) ? fmtDate(t.expires) : 'Never',
-          lastText: relTime(t.last_used, 'Never used'), deleteLabel: 'Delete token ' + t.name, regenLabel: 'New secret for token ' + t.name }))
+        this.apps = r.apps || []
+        const appName = (id) => (this.apps.find((a) => a.id === id) || { name: 'an application' }).name
+        this.items = r.items.map((t) => ({ ...t, audience: t.audience || [], app_scopes: t.app_scopes || [] })).map((t) => ({ ...t, expiresText: isSet(t.expires) ? fmtDate(t.expires) : 'Never',
+          scopesText: [t.scopes.join(', '), t.audience.length ? 'for ' + t.audience.map(appName).join(', ') : '',
+            t.app_scopes.length ? 'only ' + t.app_scopes.join(', ') : ''].filter(Boolean).join('; '),
+          lastText: relTime(t.last_used, 'Never used'), deleteLabel: 'Delete token ' + t.name, regenLabel: 'New secret for token ' + t.name,
+          editLabel: 'Edit token ' + t.name }))
         this.loadError = ''
       } catch (e) { this.loadError = e.message } finally { this.loading = false }
     },
     get hasItems() { return this.items.length > 0 },
     get isEmpty() { return !this.loading && this.items.length === 0 && this.loadError === '' },
     get hasLoadError() { return this.loadError !== '' },
-    get submitLabel() { return this.busy ? 'Creating…' : 'Create token' },
+    get isEditToken() { return this.editingToken !== null },
+    get tokenDialogTitle() { return this.isEditToken ? 'Edit API token' : 'New API token' },
+    get submitLabel() { return this.isEditToken ? (this.busy ? 'Saving…' : 'Save changes') : this.busy ? 'Creating…' : 'Create token' },
+    get editExpiryText() {
+      const t = this.editingToken
+      return t ? (isSet(t.expires) ? `Expires ${fmtDate(t.expires)}; the expiry cannot be changed.` : 'Never expires.') : ''
+    },
+    // the applications section is for api tokens only
+    get forApps() { return (this.form.tk_scopes || []).includes('api') },
+    get noApps() { return this.apps.length === 0 },
+    // the scopes of the ticked applications only, each with the applications declaring it (none ticked: the token is
+    // for every application, with full access, and there is nothing to limit)
+    get appScopeChoices() {
+      const chosen = this.form.tk_audience || []
+      const by = new Map()
+      for (const app of this.apps) {
+        if (!chosen.includes(app.id)) continue
+        for (const sc of app.scopes) by.set(sc, [...(by.get(sc) || []), app.name])
+      }
+      return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, names]) => ({ value, apps: names.join(', ') }))
+    },
+    get hasScopeChoices() { return this.forApps && this.appScopeChoices.length > 0 },
+    // ticked scopes that the chosen applications no longer offer are dropped
+    tokenScopesPicked() {
+      const offered = this.appScopeChoices.map((c) => c.value)
+      return this.forApps ? (this.form.tk_app_scopes || []).filter((s) => offered.includes(s)) : []
+    },
     get expiryHelp() { return this.maxDays > 0 ? `Between 1 and ${this.maxDays} days. Leave empty for ${this.maxDays}.` : 'Leave empty for a token that never expires, or enter 1 to 3650 days.' },
     openCreate(ev) {
-      this.resetForm({ tk_name: '', tk_expires_days: '', tk_scopes: ['api'] })
+      this.editingToken = null
+      this.resetForm({ tk_name: '', tk_expires_days: '', tk_scopes: ['api'], tk_audience: [], tk_app_scopes: [] })
       this.openDlg('token-dialog', ev.currentTarget)
+    },
+    openEdit(ev) {
+      const t = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      if (!t) return
+      this.editingToken = t
+      this.resetForm({ tk_name: t.name, tk_expires_days: '', tk_scopes: [...t.scopes], tk_audience: [...t.audience], tk_app_scopes: [...t.app_scopes] })
+      this.openDlg('token-dialog', ev.currentTarget)
+    },
+    submitToken() { return this.isEditToken ? this.saveEdit() : this.create() },
+    async saveEdit() {
+      const f = this.form
+      const t = this.editingToken
+      const opener = document.activeElement
+      const body = { name: (f.tk_name || '').trim(), audience: this.forApps ? f.tk_audience : [], app_scopes: this.tokenScopesPicked() }
+      const res = await this.runIn('tk_', () => withReauth(Alpine, () => patch('/api/account/tokens/' + enc(t.id), body), opener, this))
+      if (!res) return
+      this.closeDlg('token-dialog')
+      toast('Token saved.')
+      await this.load()
     },
     async create() {
       const f = this.form
       const days = String(f.tk_expires_days || '').trim()
       const opener = document.activeElement
       const res = await this.runIn('tk_', () => withReauth(Alpine, () => post('/api/account/tokens', { name: (f.tk_name || '').trim(),
-        scopes: f.tk_scopes, expires_days: days === '' ? 0 : Number(days) }), opener, this))
+        scopes: f.tk_scopes, expires_days: days === '' ? 0 : Number(days), audience: this.forApps ? f.tk_audience : [],
+        app_scopes: this.tokenScopesPicked() }), opener, this))
       if (!res) return
       this.closeDlg('token-dialog')
       this.created = res.token

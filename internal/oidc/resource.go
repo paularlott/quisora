@@ -223,11 +223,35 @@ func (p *Provider) introspect(ctx context.Context, caller *model.Client, tok str
 // only to a caller in the owner's organization that is in the token's audience (when it has one). A token holding
 // only Quisora's own scopes (scim, admin, backup) is no business of an application: it is inactive to every caller, as
 // is anything else that does not qualify, so introspection is no oracle across organizations or applications.
+//
+// The caller is the application the token is used with, so the answer carries what a sign-in to it would: the
+// user's application roles for it and their access's tags (their own entry and their groups', in its tenant). A user
+// without access to a members-only tenant's application could not sign in to it, so the token is inactive there too.
 func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client, tok string) []byte {
 	t, u, err := p.svc.ValidateAPIToken(ctx, tok)
 	if err != nil || u.OrgID != caller.OrgID || !slices.Contains(t.Scopes, service.ScopeAPI) ||
 		(len(t.Audience) > 0 && !slices.Contains(t.Audience, caller.ID)) {
 		return inactive
+	}
+	app, err := p.appAccess(ctx, caller, nil, u)
+	if err != nil || !app.Allowed {
+		return inactive
+	}
+	// A token narrowed to application scopes reports those of the caller's; one narrowed to none of the caller's is
+	// not for it (else "api" alone, which means full access, would be all it saw).
+	scope := service.ScopeAPI
+	if len(t.AppScopes) > 0 {
+		own := service.AppScopesOf(caller)
+		var mine []string
+		for _, sc := range t.AppScopes {
+			if slices.Contains(own, sc) {
+				mine = append(mine, sc)
+			}
+		}
+		if len(mine) == 0 {
+			return inactive
+		}
+		scope += " " + strings.Join(mine, " ")
 	}
 	o := newObj(256)
 	o.boolean("active", true)
@@ -235,7 +259,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 	o.str("token_kind", "api_token") // Quisora's own field: which kind of credential this is
 	o.str("sub", u.ID)
 	o.str("username", u.Username)
-	o.str("scope", service.ScopeAPI) // only the scope applications act on, whatever else a token was given
+	o.str("scope", scope) // api, and the application scopes it is narrowed to (none: full access)
 	if len(t.Audience) == 1 {
 		o.str("aud", t.Audience[0])
 	} else if len(t.Audience) > 1 {
@@ -246,8 +270,11 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 		o.str("org_name", org.Name)
 	}
 	o.str("role", string(u.Role))
-	if tags := p.userTags(ctx, u, nil); len(tags) > 0 { // personal API tokens are not tied to an application
+	if tags := p.userTags(ctx, u, app); len(tags) > 0 {
 		o.strs("tags", tags)
+	}
+	if len(app.Roles) > 0 {
+		o.strs("roles", app.Roles)
 	}
 	if !t.Expires.IsZero() {
 		o.num("exp", t.Expires.Unix())

@@ -68,6 +68,7 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("POST /api/account/tokens", m.createToken)
 	h("DELETE /api/account/tokens/{id}", m.deleteToken)
 	h("POST /api/account/tokens/{id}/regenerate", m.regenerateToken)
+	h("PATCH /api/account/tokens/{id}", m.updateToken)
 
 	h("GET /api/account/providers", m.listProviders)
 	h("POST /api/account/providers/{id}/connect", m.connectProvider)
@@ -991,21 +992,25 @@ func (m *Module) revokeOtherSessions(w http.ResponseWriter, r *http.Request, a a
 // API tokens
 
 type tokenItem struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Scopes   []string  `json:"scopes"`
-	Audience []string  `json:"audience"`
-	Created  time.Time `json:"created"`
-	Expires  time.Time `json:"expires"`
-	LastUsed time.Time `json:"last_used"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Scopes    []string  `json:"scopes"`
+	Audience  []string  `json:"audience"`
+	AppScopes []string  `json:"app_scopes"`
+	Created   time.Time `json:"created"`
+	Expires   time.Time `json:"expires"`
+	LastUsed  time.Time `json:"last_used"`
 }
 
 func toTokenItem(t *model.APIToken) tokenItem {
-	aud := t.Audience
-	if aud == nil {
-		aud = []string{}
+	nn := func(l []string) []string {
+		if l == nil {
+			return []string{}
+		}
+		return l
 	}
-	return tokenItem{ID: t.ID, Name: t.Name, Scopes: t.Scopes, Audience: aud, Created: t.Created, Expires: t.Expires, LastUsed: t.LastUsed}
+	return tokenItem{ID: t.ID, Name: t.Name, Scopes: t.Scopes, Audience: nn(t.Audience), AppScopes: nn(t.AppScopes),
+		Created: t.Created, Expires: t.Expires, LastUsed: t.LastUsed}
 }
 
 func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
@@ -1026,8 +1031,33 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 		}
 		scopes = append(scopes, sc)
 	}
+	// the applications an api token can be for, with their own scopes (for the audience and scope choices)
+	apps, err := m.s.Svc.TokenApps(r.Context(), a.actor)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "scopes": scopes,
-		"max_days": m.s.Cfg.Tokens.APITokenMaxDays})
+		"max_days": m.s.Cfg.Tokens.APITokenMaxDays, "apps": apps})
+}
+
+// updateToken changes a token's name, applications or scopes. It can give a narrowed token its full access back, so
+// it asks what making a token asks: a recent re-authentication, and a second factor for managers and up.
+func (m *Module) updateToken(w http.ResponseWriter, r *http.Request, a acct) {
+	var in service.APITokenUpdate
+	if !decode(w, r, &in) || !m.needReauth(w, r, a) {
+		return
+	}
+	if a.u.Role.Privileged() && !model.MFA(a.sess.AMR) {
+		writeErr(w, http.StatusForbidden, "Sign in again with your second factor to change an API token.", "mfa")
+		return
+	}
+	t, err := m.s.Svc.UpdateAPIToken(r.Context(), a.actor, r.PathValue("id"), in)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"item": toTokenItem(t)})
 }
 
 func (m *Module) createToken(w http.ResponseWriter, r *http.Request, a acct) {

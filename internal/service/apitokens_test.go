@@ -310,3 +310,72 @@ func TestAPITokenRegenerate(t *testing.T) {
 		t.Fatalf("demoted owner: %v", err)
 	}
 }
+
+// An api token can be narrowed to its applications' own scopes: only with applications chosen, only scopes they
+// declare, only on an api token; editing checks again, and keeps the expiry.
+func TestAPITokenAppScopes(t *testing.T) {
+	c := newCast(t)
+	sys := service.System
+	orders, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
+		Scopes: ptr([]string{"openid", "orders:read", "orders:write"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	billing, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Billing"), GrantTypes: ptr([]string{"client_credentials"}),
+		Scopes: ptr([]string{"billing:read"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := actor(c.aUser)
+	apps, err := c.svc.TokenApps(c.ctx, a)
+	if err != nil || len(apps) < 2 {
+		t.Fatalf("apps: %v %v", apps, err)
+	}
+	for _, app := range apps {
+		if app.ID == orders.ID && strings.Join(app.Scopes, " ") != "orders:read orders:write" {
+			t.Errorf("orders scopes %v (standard ones are not the application's own)", app.Scopes)
+		}
+	}
+	tok, _, err := c.svc.CreateAPIToken(c.ctx, a, service.APITokenInput{Name: "r", Scopes: []string{"api"}, Audience: []string{orders.ID},
+		AppScopes: []string{"orders:read"}, Expires: 5})
+	if err != nil || strings.Join(tok.AppScopes, " ") != "orders:read" {
+		t.Fatalf("narrowed token: %v %v", tok, err)
+	}
+	var fe *service.FieldError
+	for name, in := range map[string]service.APITokenInput{
+		"another app's scope": {Name: "x", Scopes: []string{"api"}, Audience: []string{orders.ID}, AppScopes: []string{"billing:read"}},
+		"undeclared":          {Name: "x", Scopes: []string{"api"}, Audience: []string{orders.ID}, AppScopes: []string{"nope:read"}},
+		"standard":            {Name: "x", Scopes: []string{"api"}, Audience: []string{orders.ID}, AppScopes: []string{"openid"}},
+	} {
+		if _, _, err := c.svc.CreateAPIToken(c.ctx, a, in); !errors.As(err, &fe) || fe.Field != "app_scopes" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, _, err := c.svc.CreateAPIToken(c.ctx, actor(c.aManager), service.APITokenInput{Name: "x", Scopes: []string{"scim"}, AppScopes: []string{"orders:read"}}); !errors.As(err, &fe) || fe.Field != "app_scopes" {
+		t.Errorf("app scopes on a scim token: %v", err)
+	}
+	// without chosen applications there is nothing to narrow
+	if _, _, err := c.svc.CreateAPIToken(c.ctx, a, service.APITokenInput{Name: "y", Scopes: []string{"api"}, AppScopes: []string{"orders:read"}}); !errors.As(err, &fe) || fe.Field != "app_scopes" {
+		t.Errorf("no audience: %v", err)
+	}
+	// with two applications, either one's scopes
+	if _, _, err := c.svc.CreateAPIToken(c.ctx, a, service.APITokenInput{Name: "z", Scopes: []string{"api"}, Audience: []string{orders.ID, billing.ID},
+		AppScopes: []string{"billing:read", "orders:read"}}); err != nil {
+		t.Errorf("two applications: %v", err)
+	}
+
+	// edit: rename, move to the billing app (its scope must come with it), widen back to full access
+	if _, err := c.svc.UpdateAPIToken(c.ctx, a, tok.ID, service.APITokenUpdate{Audience: &[]string{billing.ID}}); !errors.As(err, &fe) || fe.Field != "app_scopes" {
+		t.Errorf("moved app, kept its scope: %v", err)
+	}
+	got, err := c.svc.UpdateAPIToken(c.ctx, a, tok.ID, service.APITokenUpdate{Name: ptr("billing reader"), Audience: &[]string{billing.ID}, AppScopes: &[]string{"billing:read"}})
+	if err != nil || got.Name != "billing reader" || strings.Join(got.AppScopes, " ") != "billing:read" || !got.Expires.Equal(tok.Expires) {
+		t.Fatalf("edit: %+v %v", got, err)
+	}
+	if got, err = c.svc.UpdateAPIToken(c.ctx, a, tok.ID, service.APITokenUpdate{AppScopes: &[]string{}}); err != nil || len(got.AppScopes) != 0 {
+		t.Fatalf("back to full access: %v %v", got, err)
+	}
+	if _, err := c.svc.UpdateAPIToken(c.ctx, actor(c.aAdmin), tok.ID, service.APITokenUpdate{Name: ptr("mine")}); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("someone else edited it: %v", err)
+	}
+}

@@ -96,19 +96,26 @@ A client set to `client_secret_basic` sends them as HTTP Basic instead (`curl -u
 
 ```json
 {"active": true, "token_type": "Bearer", "token_kind": "api_token", "sub": "<user id>", "username": "alan",
- "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "tags": ["dept:finance", "vpn"],
- "iat": 1760000000, "exp": 1790000000}
+ "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "roles": ["approver"],
+ "tags": ["dept:finance", "region:eu", "vpn"], "iat": 1760000000, "exp": 1790000000}
 ```
 
-What the application gets back:
+One call gives the application everything it needs about the person behind the token, as it applies to **that
+application** (the client making the call):
 
-- `scope` is always `api`, whatever else the token has: an `api` token carries no finer scopes. Scopes such as
-  `orders:read` (a client's "Scopes for your own APIs") are for OAuth access tokens, which an application gets when
-  a user signs in to it; they are not in personal tokens.
-- `tags` is one list: the user's own tags and the tags of every group they belong to, merged, without duplicates and
-  sorted. It is absent when there are none. Group names and application roles are not included (they belong to a
-  sign-in to a particular application).
-- `role` is the user's Quisora role; `exp` is absent for a token that never expires.
+- who: `sub` (user id), `username`, `org`, `org_name`, and `role`, the user's Quisora role.
+- `roles`: the user's application roles for this application, from their own access entry and their groups' entries
+  in its tenant (see [Application roles](#application-roles)). Absent when there are none, and always for an
+  application in a tenant open to everyone.
+- `tags`: one list, merged, without duplicates and sorted: the user's own tags, the tags of every group they belong
+  to, and the tags of the access entries that gave them this application. Absent when there are none.
+- `scope` is `api`, then the application scopes the token is limited to, for example `api orders:read`. Just `api`
+  means the token is not limited: it acts with the user's full access (their `roles`) in this application. Limited
+  or not, the application should allow only what both the user's roles and the token's scopes allow.
+- `exp` is absent for a token that never expires. Group names are not included.
+
+If the application is in a members-only tenant and the user has no access to it (they could not sign in to it
+either), the token is `{"active": false}` for that application.
 
 Tags are stored apart: in the management API a user's `tags` are their own, and each group's are on the group
 (`GET …/groups/<group id>`). Only what applications receive merges them.
@@ -125,14 +132,29 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenan
 curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenant id>/access/<tenant id>:<user or group id>"
 ```
 
-Applications get roles only when a user signs in to them: the access token (and its introspection, and userinfo)
-carries `roles`, the union of the user's own entry and their groups' entries that cover that application, and adds
-those entries' tags to `tags`. A personal API token is not tied to an application, so its introspection has no
-`roles`.
+Applications receive them as `roles`: the union of the user's own entry and their groups' entries that cover that
+application, with those entries' tags added to `tags`. A sign-in's access token (and its introspection, and
+userinfo) carries them, and so does the introspection of a personal `api` token, for the application that asks.
 
-The token is active only to clients of the owner's organization, and, if you gave the token an audience when making
-it, only to those applications. Anything else (another organization's client, a token without the `api` scope, a
-revoked or expired token) answers `{"active": false}`.
+The token is active only to clients of the owner's organization, and, if you chose applications when making it,
+only to those. A token limited to some scopes is active only to the applications that declare at least one of them:
+another application would otherwise see `api` alone and take it for full access. Anything else (another
+organization's client, a token without the `api` scope, a revoked or expired token) answers `{"active": false}`.
+
+### Choosing applications and scopes
+
+When you make an `api` token (or edit one), you can choose:
+
+- **Applications**: which of your organization's applications may accept it. None ticked: every application you can
+  use. The list shows the applications you have access to.
+- **Limit to these scopes**: shown once applications are ticked, with only their own scopes (each application's
+  "Scopes for your own APIs", such as `orders:read`). None ticked: the token has your full access in each of them. Tick some to let a
+  script do only those things, for example read orders but not change them. A scope never gives you more than your
+  roles allow: it only narrows.
+
+Through the account API: `POST /api/account/tokens` takes `audience` (application ids) and `app_scopes` (which need
+an `audience`), and
+`GET /api/account/tokens` lists the `apps` you can choose from, each with its `scopes`.
 
 ## Errors
 
@@ -144,6 +166,9 @@ revoked or expired token) answers `{"active": false}`.
 
 ## Replacing and revoking
 
+- **Edit**: the pencil button changes a token's name, applications and scopes; the secret, its Quisora scopes and its
+  expiry stay. Editing asks you to confirm it is you, as making a token does (`PATCH /api/account/tokens/<id>` with
+  `name`, `audience`, `app_scopes`).
 - **A new secret**: on Your account, the refresh button next to a token makes a new secret after you confirm. The old
   secret stops working at once; the name, scopes and expiry stay the same.
 - **Revoke**: delete the token on Your account. Administrators can revoke a user's tokens on the user's page or with

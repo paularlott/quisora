@@ -366,13 +366,15 @@ func (m *Module) revokeSessions(w http.ResponseWriter, r *http.Request) {
 
 // apiTokenView is a personal API token as administrators see it (never its secret).
 type apiTokenView struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Scopes   []string  `json:"scopes"`
-	Audience []string  `json:"audience"`
-	Created  time.Time `json:"created"`
-	Expires  time.Time `json:"expires,omitzero"`
-	LastUsed time.Time `json:"last_used,omitzero"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Scopes   []string `json:"scopes"`
+	Audience []string `json:"audience"`
+	// AppScopes are the application scopes the token is narrowed to; empty: its owner's full access.
+	AppScopes []string  `json:"app_scopes"`
+	Created   time.Time `json:"created"`
+	Expires   time.Time `json:"expires,omitzero"`
+	LastUsed  time.Time `json:"last_used,omitzero"`
 }
 
 // listUserTokens handles GET /users/{id}/tokens: the user's personal API tokens, newest first.
@@ -398,7 +400,11 @@ func (m *Module) listUserTokens(w http.ResponseWriter, r *http.Request) {
 		if aud == nil {
 			aud = []string{}
 		}
-		out = append(out, apiTokenView{ID: t.ID, Name: t.Name, Scopes: t.Scopes, Audience: aud, Created: t.Created,
+		as := t.AppScopes
+		if as == nil {
+			as = []string{}
+		}
+		out = append(out, apiTokenView{ID: t.ID, Name: t.Name, Scopes: t.Scopes, Audience: aud, AppScopes: as, Created: t.Created,
 			Expires: t.Expires, LastUsed: t.LastUsed})
 	}
 	writeList(w, out, total)
