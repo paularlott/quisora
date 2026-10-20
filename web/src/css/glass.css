@@ -97,7 +97,7 @@
   .dialog-panel.glass-panel { background: var(--glass-bg); }
   .app-header.glass-panel { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
   .app-header.glass-panel::after {
-    background: var(--glass-sheen), linear-gradient(var(--glass-bg-panel), var(--glass-bg-panel));
+    background: var(--glass-sheen), linear-gradient(var(--glass-bg-header), var(--glass-bg-header));
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
     backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   }
