@@ -273,7 +273,12 @@ func (m *Module) logout(w http.ResponseWriter, r *http.Request) {
 	m.s.Sessions.End(r.Context(), w, r)
 	org, _ := m.s.Svc.Orgs.Get(r.Context(), u.OrgID)
 	m.audit(r, "logout", org, u, u.Username, nil)
-	dest := orDefault(next, "/")
+	// Back to the organization's sign-in page, so signing in again needs no org picker.
+	dest := "/"
+	if org != nil {
+		dest = "/login/" + url.PathEscape(org.Name)
+	}
+	dest = orDefault(next, dest)
 	if wantsJSON {
 		web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
 		return

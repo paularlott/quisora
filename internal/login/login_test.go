@@ -669,8 +669,8 @@ func TestLogout(t *testing.T) {
 		t.Fatalf("cross-origin logout: %d", res2.StatusCode)
 	}
 
-	// fetch-style POST ends the session and answers JSON; hostile next is dropped.
-	for next, want := range map[string]string{"/bye": "/bye", "//evil.example": "/", "": "/"} {
+	// fetch-style POST ends the session and answers JSON; hostile or missing next falls back to the org's sign-in page.
+	for next, want := range map[string]string{"/bye": "/bye", "//evil.example": "/login/primary", "": "/login/primary"} {
 		b2 := e.browser(t)
 		b2.login("primary", "member", userPassword)
 		page, body := b2.get("/logout")
