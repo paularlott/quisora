@@ -85,7 +85,26 @@ func (s *Service) RedeemLink(ctx context.Context, token string, purposes ...stri
 	if err := s.Links.Update(Durable(ctx), l); err != nil {
 		return nil, nil, ErrLink
 	}
+	if l.Purpose == LinkInvite || l.Purpose == LinkReset {
+		s.revokeOtherSignInLinks(ctx, l)
+	}
 	return l, u, nil
+}
+
+// revokeOtherSignInLinks deletes the user's other unused invitation and reset links once one is used: the account
+// now has the credentials that link set, so no older link may reset them. Issuing a link already revokes earlier
+// ones, but two issued at once (or on two nodes before either replicated) can both survive that; without this,
+// the second would still open the account after its owner set it up (see mayReplaceInvite).
+func (s *Service) revokeOtherSignInLinks(ctx context.Context, used *model.LinkToken) {
+	others, _, err := s.Links.List(ctx, store.ListQuery{Scope: used.UserID})
+	if err != nil {
+		return
+	}
+	for _, o := range others {
+		if o.ID != used.ID && !o.Used && (o.Purpose == LinkInvite || o.Purpose == LinkReset) {
+			_ = s.Links.Delete(ctx, o.ID)
+		}
+	}
 }
 
 // MarkLinkSent records that the link with this URL (or token) was emailed to email: using it then proves the

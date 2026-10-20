@@ -1363,7 +1363,7 @@ func TestRevocation(t *testing.T) {
 	if h.refreshWith(cl, secret, rt).status != 200 {
 		t.Fatal("foreign revoke worked")
 	}
-	for _, junk := range []string{"garbage", "qsr_a_b", "a.b"} {
+	for _, junk := range []string{"garbage", "a.b"} {
 		if x := h.clientPost("/oauth/revoke", url.Values{"token": {junk}}, cl, secret); x.status != 200 {
 			t.Fatalf("%q: %d", junk, x.status)
 		}
@@ -1381,10 +1381,12 @@ func TestRevocation(t *testing.T) {
 	if h.introspect(cl, secret, at)["active"] != false {
 		t.Fatal("access token active after its grant was revoked")
 	}
-	// API tokens are not revocable here
+	// API tokens are not revocable here, and the answer says so rather than claiming success (RFC 7009 §2.2.1)
 	_, plain, _ := h.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(h.user, ""), service.APITokenInput{Name: "t", Scopes: []string{"api"}, Expires: 30})
-	if x := h.clientPost("/oauth/revoke", url.Values{"token": {plain}}, cl, secret); x.status != 200 {
-		t.Fatal(x.status)
+	for _, tok := range []string{plain, "qsr_a_b"} {
+		if x := h.clientPost("/oauth/revoke", url.Values{"token": {tok}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
+			t.Fatalf("API token %q: %d %v", tok[:6], x.status, x.m)
+		}
 	}
 	if h.introspect(cl, secret, plain)["active"] != true {
 		t.Fatal("API token revoked through /oauth/revoke")
@@ -2215,7 +2217,8 @@ func TestClientAuthFailureLimit(t *testing.T) {
 }
 
 // Failures that need no secret (unknown client ids, no client authentication at all) do not lock out real clients from
-// the same address: not one sending client_id, nor a private_key_jwt client leaving it out (RFC 7523 §3).
+// the same address while under the address ceiling: not one sending client_id, nor a private_key_jwt client leaving
+// it out (RFC 7523 §3).
 func TestClientAuthFailureLimitStrangers(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
@@ -2241,6 +2244,26 @@ func TestClientAuthFailureLimitStrangers(t *testing.T) {
 	}
 	if r := h.ccWithAssertion(jc, h.assertion(k, h.assertionClaims(jc, nil))); r.status != 200 {
 		t.Errorf("private_key_jwt without client_id after the burst: %d %v", r.status, r.m)
+	}
+}
+
+// Making up a new client id for every attempt does not get a fresh budget forever: past the address ceiling every
+// attempt from that address is refused, a real client's included.
+func TestClientAuthFailureLimitPerAddress(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	for i := 0; i < clientAuthFailuresPerIPMin; i++ {
+		if r := h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("made-up-%d", i)},
+			"client_secret": {"x"}}, "", ""); r.status != 401 {
+			t.Fatalf("attempt %d: %d", i, r.status)
+		}
+	}
+	r := h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"made-up-last"}, "client_secret": {"x"}}, "", "")
+	if r.status != 429 || r.str("error") != "invalid_client" {
+		t.Fatalf("past the address ceiling: %d %v", r.status, r.m)
+	}
+	if r := h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 429 {
+		t.Errorf("real client from the same address past the ceiling: %d", r.status)
 	}
 }
 

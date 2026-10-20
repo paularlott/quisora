@@ -1,6 +1,7 @@
 # Quisora, three nodes on one PostgreSQL database (mode 1: shared database, no gossip). From the repository root:
 #
 #   export QUISORA_MASTER_KEY=$(docker run --rm quisora genkey)
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 24)   # hex: it goes into the database URL unescaped
 #   docker compose -f deploy/compose.cluster.yml up -d --build postgres
 #   docker compose -f deploy/compose.cluster.yml run --rm node1 bootstrap   # once, for the whole cluster
 #   docker compose -f deploy/compose.cluster.yml up -d
@@ -28,7 +29,7 @@ x-node: &node
     QUISORA_BOOTSTRAP_ADMIN: ${QUISORA_BOOTSTRAP_ADMIN:-admin@example.com}
     QUISORA_STORAGE: postgres
     # lab only: no TLS inside the compose network (serve warns about it); use sslmode=verify-full with a real database
-    QUISORA_POSTGRES_DSN: postgres://quisora:${POSTGRES_PASSWORD:-quisora}@postgres:5432/quisora?sslmode=disable
+    QUISORA_POSTGRES_DSN: postgres://quisora:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (openssl rand -hex 24)}@postgres:5432/quisora?sslmode=disable
 
 services:
   postgres:
@@ -36,7 +37,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: quisora
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quisora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (openssl rand -hex 24)}
       POSTGRES_DB: quisora
     volumes: ["pg-data:/var/lib/postgresql/data"]
     healthcheck:

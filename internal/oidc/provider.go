@@ -65,6 +65,7 @@ type Provider struct {
 	jwksCache     atomic.Pointer[jwksSnapshot]
 	shortKeys     atomic.Bool // ShortCaches: re-read signing keys every few seconds
 	origins       atomic.Pointer[originSet]
+	shortOrigins  atomic.Bool // origins are re-read after shortTTL, not a minute (ShortCaches)
 
 	clients *ttlCache[*clientEntry]
 	users   *ttlCache[*model.User]
@@ -99,7 +100,7 @@ func New(s *web.Server) *Provider {
 	return p
 }
 
-// ShortCaches bounds the client cache like the user and organization caches (5s). Nodes that share a database
+// ShortCaches bounds the client and CORS origin caches like the user and organization caches (5s). Nodes that share a database
 // without gossip call it: they are never told about another node's changes, so a cache entry's age is the only
 // bound on how long a disabled client or a rotated secret keeps working there.
 func (p *Provider) ShortCaches() {
@@ -107,6 +108,7 @@ func (p *Provider) ShortCaches() {
 	p.clients.ttl = shortTTL
 	p.clients.mu.Unlock()
 	p.shortKeys.Store(true) // a key rotated by another node is published (and used) here within seconds
+	p.shortOrigins.Store(true)
 }
 
 // InvalidateClient evicts a cached client ("" = all).

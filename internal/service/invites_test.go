@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
@@ -161,5 +162,57 @@ func TestRemovePasswordEndsAccess(t *testing.T) {
 	}
 	if _, _, err := c.svc.CreateInvite(c.ctx, actor(c.aAdmin), c.aAdmin.ID); err == nil {
 		t.Fatal("invited self")
+	}
+}
+
+// Two sign-in links for one user can both be live: two invitations issued at once (each revoking only what it saw),
+// or an invitation and a reset link. Using one revokes the rest, so none can reset the account its owner just set up.
+func TestRedeemRevokesOtherSignInLinks(t *testing.T) {
+	e := newEnv(t)
+	u := e.user(e.primary.ID, "racer", model.RoleUser)
+
+	first, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, _, err := e.svc.Links.List(e.ctx, store.ListQuery{Scope: u.ID})
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links %d: %v", len(links), err)
+	}
+	survivor := *links[0]
+	second, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The race: the second issue's revoke missed the first invitation, which is back as it was.
+	var zero hlc.Timestamp
+	survivor.Version = zero
+	if err := e.svc.Links.Create(e.ctx, &survivor); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(first), service.LinkInvite); err != nil {
+		t.Fatalf("set-up: first invitation not live: %v", err)
+	}
+	reset, _, err := e.svc.IssueLink(e.ctx, u, service.LinkReset, "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify, _, err := e.svc.IssueLink(e.ctx, u, service.LinkVerify, "racer@example.com", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := e.svc.RedeemLink(e.ctx, tokenFrom(second), service.LinkInvite); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(first), service.LinkInvite); !errors.Is(err, service.ErrLink) {
+		t.Fatalf("the other invitation survived its sibling's use: %v", err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, reset, service.LinkReset); !errors.Is(err, service.ErrLink) {
+		t.Fatalf("the reset link survived the invitation's use: %v", err)
+	}
+	// An email verification link is not a sign-in link: it stays.
+	if _, _, err := e.svc.PeekLink(e.ctx, verify, service.LinkVerify); err != nil {
+		t.Fatalf("verification link revoked: %v", err)
 	}
 }

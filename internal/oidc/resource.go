@@ -391,7 +391,10 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	switch {
 	case service.IsAPIToken(tok):
-		// Personal API tokens belong to their owner; they are revoked from the account page, not here.
+		// Personal API tokens belong to their owner; they are revoked from the account page, not here. Say so
+		// (RFC 7009 §2.2.1) rather than answer 200, which a client would take to mean the token is dead.
+		writeOAuthError(w, oerr("unsupported_token_type", "personal API tokens are revoked from the account page"))
+		return
 	case strings.HasPrefix(tok, "ey") && strings.Count(tok, ".") == 2:
 		// A JWT cannot be recalled, but revoking one of this client's user tokens ends the grant it came from,
 		// which stops refreshing and makes introspection report it inactive.

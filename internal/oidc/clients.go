@@ -137,9 +137,16 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 // (see authenticateClient).
 const clientAuthFailuresPerMin = 30
 
+// clientAuthFailuresPerIPMin bounds failures per IP address and minute whatever client ids are sent: the per-client
+// budget alone resets for every made-up id, and each unknown id costs a store read. Ten clients' worth, so a shared
+// address is only refused when it is plainly guessing.
+const clientAuthFailuresPerIPMin = 10 * clientAuthFailuresPerMin
+
 // authenticateClient is checkClient with a ceiling on failures.
 func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
-	key := "client-auth|" + authClientID(r) + "|" + web.ClientIP(r)
+	ip := web.ClientIP(r)
+	key := "client-auth|" + authClientID(r) + "|" + ip
+	ipKey := "client-auth-ip|" + ip
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
 		desc: "too many failed client authentications; try again in a minute", retry: true}
 	// Over the limit, every attempt from this client and address is refused, the right secret included, before
@@ -147,9 +154,15 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 0, time.Minute); err != nil || n >= clientAuthFailuresPerMin {
 		return nil, limited
 	}
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute); err != nil || n >= clientAuthFailuresPerIPMin {
+		return nil, limited
+	}
 	ce, e := p.checkClient(r, allowPublic)
 	if e == nil || e.code != "invalid_client" {
 		return ce, e
+	}
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 1, time.Minute); err != nil || n > clientAuthFailuresPerIPMin {
+		return nil, limited
 	}
 	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
 	if err == nil && n == clientAuthFailuresPerMin {

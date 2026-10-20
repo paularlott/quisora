@@ -44,7 +44,11 @@ func (s *originSet) allows(origin string) bool {
 
 // publicOrigins returns the (cached) origins of every enabled public client.
 func (p *Provider) publicOrigins(r *http.Request) *originSet {
-	if s := p.origins.Load(); s != nil && time.Since(s.at) < time.Minute {
+	ttl := time.Minute
+	if p.shortOrigins.Load() {
+		ttl = shortTTL
+	}
+	if s := p.origins.Load(); s != nil && time.Since(s.at) < ttl {
 		return s
 	}
 	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}, at: time.Now()}

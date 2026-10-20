@@ -494,7 +494,7 @@ docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISOR
 - `quisora healthcheck` is the container health check (liveness, `/healthz`). Don't restart a node for being unready:
   a cluster node catching up is alive. `quisora healthcheck --ready` checks `/readyz`.
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
-  (three nodes on PostgreSQL).
+  (three nodes on PostgreSQL, a lab example: it needs `POSTGRES_PASSWORD` as well as `QUISORA_MASTER_KEY`).
 
 ## Backup and restore
 
