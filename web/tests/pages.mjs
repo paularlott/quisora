@@ -164,6 +164,11 @@ PAGES.push(
   { name: 'account-usermenu', path: '/account', as: 'user', steps: [async (p) => {
       await p.getByRole('button', { name: /Account menu/ }).click(); await p.locator('#user-menu').waitFor(); await p.waitForTimeout(450)
     }] },
+  // An error toast stays until dismissed, so the audit sees it: the toast panel's contrast budget (--glass-bg-toast).
+  { name: 'account-toast', path: '/account', as: 'user', steps: [async (p) => {
+      await p.evaluate(() => window.Alpine.store('toasts').push('Could not save your changes.', 'error'))
+      await p.locator('.toast-error').waitFor(); await p.waitForTimeout(450)
+    }] },
   // Email addresses: the list (a verified and an unverified linked address), the inline add input, the remove confirmation.
   { name: 'account-emails', path: '/account', as: 'user', steps: [emailsStep] },
   { name: 'account-password', path: '/account', as: 'user', dialog: true, steps: [async (p) => {
