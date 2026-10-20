@@ -724,6 +724,32 @@ func TestIncompatiblePeerRefused(t *testing.T) {
 	c.waitReady()
 }
 
+// A peer that has just joined is known before its metadata arrives: until it has published its compatibility it is
+// not judged (its messages are handled, nobody refuses to serve over it), which once logged a false "refusing to
+// serve ... it speaks 0" on every start.
+func TestUnpublishedCompatNotJudged(t *testing.T) {
+	md0 := gossip.NewMetadata()
+	joining := &gossip.Node{Metadata: md0}
+	if _, _, ok := publishedCompat(joining); ok || !peerCompatible(joining) {
+		t.Fatal("a peer with empty metadata was judged")
+	}
+	md0.SetInt(metaCompat, 0)
+	md0.SetInt(metaMinCompat, 0)
+	if peerCompatible(joining) {
+		t.Fatal("a published compatibility 0 was accepted")
+	}
+	c := newTCluster(t, 3, memBackend)
+	c.startAll()
+	c.waitReady()
+	md := c.nodes[2].n.gc.LocalMetadata()
+	md.Delete(metaCompat) // as when a peer's metadata has not arrived yet
+	md.Delete(metaMinCompat)
+	time.Sleep(time.Second)
+	if ok, why := c.nodes[0].n.Ready(); !ok && strings.Contains(why, "cannot work with") {
+		t.Fatalf("refused over a peer that published nothing: %s", why)
+	}
+}
+
 // The quorum is the configured size's majority and never shrinks: with two of three nodes stopped (they left), the
 // survivor is not writable, whatever it observed before.
 func TestQuorumNeverShrinks(t *testing.T) {

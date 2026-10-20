@@ -79,13 +79,21 @@ const (
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.
 func compatible(peerCompat, peerMin int) bool { return peerCompat >= minCompat && compat >= peerMin }
 
-// peerCompatible reports whether messages from sender may be handled: its published compatibility fits, or it has
-// published no metadata yet (a peer still joining).
-func peerCompatible(sender *gossip.Node) bool {
-	if sender == nil || sender.Metadata == nil {
-		return true
+// publishedCompat returns what a peer published about its build (metaCompat, metaMinCompat), and false while it
+// has published nothing yet: a peer that has just joined is known before its metadata arrives, and an empty
+// metadata set must not read as "compatibility 0".
+func publishedCompat(nd *gossip.Node) (c, cm int, ok bool) {
+	if nd == nil || nd.Metadata == nil || !nd.Metadata.Exists(metaCompat) {
+		return 0, 0, false
 	}
-	return compatible(sender.Metadata.GetInt(metaCompat), sender.Metadata.GetInt(metaMinCompat))
+	return nd.Metadata.GetInt(metaCompat), nd.Metadata.GetInt(metaMinCompat), true
+}
+
+// peerCompatible reports whether messages from sender may be handled: its published compatibility fits, or it has
+// published none yet (a peer still joining).
+func peerCompatible(sender *gossip.Node) bool {
+	c, cm, ok := publishedCompat(sender)
+	return !ok || compatible(c, cm)
 }
 
 // errIncompatible answers a request from a peer of an incompatible build.
@@ -727,7 +735,8 @@ func (n *Node) rebuildMembers() {
 			mb.ready = true // (routing to itself: its own readiness is checked where it matters)
 		} else if nd.Metadata != nil {
 			mb.ready = nd.Metadata.GetBool(metaReady)
-			if c, cm := nd.Metadata.GetInt(metaCompat), nd.Metadata.GetInt(metaMinCompat); !compatible(c, cm) && st == gossip.NodeAlive {
+			// (a peer whose metadata has not arrived yet is not judged: it is not ready either, so nothing routes to it)
+			if c, cm, known := publishedCompat(nd); known && !compatible(c, cm) && st == gossip.NodeAlive {
 				compats = fmt.Sprintf("node %s runs %s, which this build cannot work with (it speaks %d and needs at "+
 					"least %d; this build speaks %d and needs at least %d): upgrade one release at a time, every node "+
 					"before the next release (see docs/RUNNING.md, \"Upgrading\")", id, nd.ApplicationVersion, c, cm,
