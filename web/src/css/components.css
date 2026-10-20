@@ -395,6 +395,7 @@
   .toast-region { display: flex; flex-direction: column; align-items: flex-end; gap: 0.6rem; width: 100%; }
   .toast { pointer-events: auto; display: flex; align-items: flex-start; gap: 0.7rem; width: min(26rem, 100%); padding: 0.85rem 1rem;
     border-radius: 1.1rem; font-weight: 600; font-size: 0.9375rem; }
+  .toast.glass-panel { background: var(--glass-bg-toast); }
   .toast .icon { margin-top: 0.1rem; }
   .toast-success .icon { color: var(--success); }
   .toast-error .icon { color: var(--danger); }

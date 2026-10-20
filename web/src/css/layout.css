@@ -61,9 +61,10 @@
   .app-main { min-width: 0; display: flex; flex-direction: column; gap: 1.25rem; outline: none; }
   /* The footer: quiet small print at the bottom of the window when the page is shorter, after the content otherwise. */
   .app-footer { margin-top: auto; width: 100%; text-align: center; padding: 0.55rem 1rem; font-size: 0.8125rem; line-height: 1.4;
-    color: var(--fg-muted); background: var(--glass-bg); border-top: 1px solid var(--edge);
-    -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur)); }
-  /* a frosted strip along the bottom edge (text straight on the aurora could not keep AA contrast everywhere) */
+    color: var(--fg); background: var(--glass-bg-header); border-top: 1px solid var(--edge);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)); }
+  /* a thin frosted strip along the bottom edge, tinted like the header: text straight on the aurora could not keep AA
+     contrast everywhere, and --fg (not --fg-muted) is what lets the tint be this light (tokens.css) */
   .auth-wrap > .app-footer { margin-inline: -0.75rem; width: calc(100% + 1.5rem); }
   .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.5rem; }
   .page-head .page-sub { margin-top: 0.25rem; }
