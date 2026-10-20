@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test'
 import { signIn, apiCall, uniq, axe, fmt } from './helpers.mjs'
 
 const A = '/admin/orgs/acme'
-const API = '/api/v1/orgs/acme'
+const API = '/api/orgs/acme'
 
 async function freshTenant(page) {
   await signIn(page, 'admin')

@@ -57,7 +57,7 @@
       <li>On every node: the new key becomes <code>server.master_key</code>, the old one moves to <code>server.previous_master_keys</code>; reload or restart. The re-seal starts once every node seals with the new key.</li>
       <li>When this page says so, remove <code>server.previous_master_keys</code> on every node; reload or restart.</li>
     </ol>
-    <p class="muted mt-3">A single node skips step 2. The same status is <code>GET /api/v1/master-key</code>.</p>
+    <p class="muted mt-3">A single node skips step 2. The same status is <code>GET /api/master-key</code>.</p>
   </section>
 </div>
 {{end}}

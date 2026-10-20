@@ -24,7 +24,7 @@ type passkeyBeginResp struct {
 	Options   any    `json:"options"`
 }
 
-// passkeyBegin handles POST /api/login/passkey/begin: {org?, ticket?, next?} -> {challenge, options}.
+// passkeyBegin handles POST /api-internal/login/passkey/begin: {org?, ticket?, next?} -> {challenge, options}.
 //
 // With a ticket (password already verified, org requires MFA) the ceremony names the user's credentials. Without
 // one it is discoverable: no allowCredentials, so nothing about any account is revealed.
@@ -120,7 +120,7 @@ const msgNoPasskeyLogin = "Passkey sign-in is not enabled for this organization.
 
 const msgBadPasskey = "That passkey could not be verified."
 
-// passkeyFinish handles POST /api/login/passkey/finish: {challenge, credential} -> {next}.
+// passkeyFinish handles POST /api-internal/login/passkey/finish: {challenge, credential} -> {next}.
 func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return

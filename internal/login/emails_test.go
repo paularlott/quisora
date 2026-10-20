@@ -25,13 +25,13 @@ func TestAccountLinkedEmails(t *testing.T) {
 	}
 
 	// adding and removing are gone from the account page
-	for _, c := range []struct{ method, path string }{{"POST", "/api/account/emails"}, {"DELETE", "/api/account/emails/second@example.org"}} {
+	for _, c := range []struct{ method, path string }{{"POST", "/api-internal/account/emails"}, {"DELETE", "/api-internal/account/emails/second@example.org"}} {
 		if res, out := b.api(c.method, c.path, map[string]any{"address": "gh@example.org"}); res.StatusCode != 404 && res.StatusCode != 405 {
 			t.Fatalf("%s %s: %d %v", c.method, c.path, res.StatusCode, out)
 		}
 	}
 	// making one primary asks to re-authenticate first, in the shape the page turns into its dialog
-	res, out := b.api("POST", "/api/account/emails/Paul@The7thDream.com/primary", nil)
+	res, out := b.api("POST", "/api-internal/account/emails/Paul@The7thDream.com/primary", nil)
 	wantStatus(t, res, out, 403)
 	if str(out, "field") != "reauth" {
 		t.Fatalf("primary without re-authentication: %v", out)
@@ -39,7 +39,7 @@ func TestAccountLinkedEmails(t *testing.T) {
 	e.noMail(t)
 
 	// the verification link goes to that address and verifies only it
-	res, out = b.api("POST", "/api/account/emails/Paul@The7thDream.com/verify", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/Paul@The7thDream.com/verify", nil)
 	wantStatus(t, res, out, 200)
 	m := e.nextMail(t)
 	if m.To != "Paul@The7thDream.com" {
@@ -60,28 +60,28 @@ func TestAccountLinkedEmails(t *testing.T) {
 	}
 
 	// the account summary carries the list
-	res, out = b.api("GET", "/api/account", nil)
+	res, out = b.api("GET", "/api-internal/account", nil)
 	wantStatus(t, res, out, 200)
 	if got := out["user"].(map[string]any)["linked_emails"].([]any); len(got) != 2 {
 		t.Fatalf("summary: %v", out["_raw"])
 	}
 
 	// resend: unverified only, and only the user's own addresses
-	res, out = b.api("POST", "/api/account/emails/second@example.org/verify", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/second@example.org/verify", nil)
 	wantStatus(t, res, out, 200)
 	if m := e.nextMail(t); m.To != "second@example.org" {
 		t.Fatalf("resend to %q", m.To)
 	}
-	res, out = b.api("POST", "/api/account/emails/Paul@The7thDream.com/verify", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/Paul@The7thDream.com/verify", nil)
 	wantStatus(t, res, out, 409)
-	res, out = b.api("POST", "/api/account/emails/stranger@example.org/verify", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/stranger@example.org/verify", nil)
 	wantStatus(t, res, out, 404)
 
 	// make primary: verified only
 	b.markReauth()
-	res, out = b.api("POST", "/api/account/emails/second@example.org/primary", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/second@example.org/primary", nil)
 	wantStatus(t, res, out, 422)
-	res, out = b.api("POST", "/api/account/emails/Paul@The7thDream.com/primary", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/Paul@The7thDream.com/primary", nil)
 	wantStatus(t, res, out, 200)
 	if out["user"].(map[string]any)["email"] != "Paul@The7thDream.com" {
 		t.Fatalf("primary: %v", out["_raw"])
@@ -118,11 +118,11 @@ func TestAccountEmailsLocked(t *testing.T) {
 	b := e.signedIn(t, pat)
 	b.markReauth()
 
-	res, out := b.api("POST", "/api/account/emails", map[string]any{"address": "ceo@example.org"})
+	res, out := b.api("POST", "/api-internal/account/emails", map[string]any{"address": "ceo@example.org"})
 	if res.StatusCode != 404 && res.StatusCode != 405 {
 		t.Fatalf("add own address: %d %v", res.StatusCode, out)
 	}
-	res, out = b.api("PATCH", "/api/account", map[string]any{"email": "ceo@example.org"})
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"email": "ceo@example.org"})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "email" {
 		t.Fatalf("field %v", out)
@@ -136,20 +136,20 @@ func TestAccountEmailsLocked(t *testing.T) {
 	if _, err := e.Svc.AddLinkedEmail(context.Background(), service.System, pat.ID, "pat.work@example.org", false); err != nil {
 		t.Fatal(err)
 	}
-	res, out = b.api("POST", "/api/account/emails/pat.work@example.org/primary", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/pat.work@example.org/primary", nil)
 	wantStatus(t, res, out, 422)
-	res, out = b.api("POST", "/api/account/emails/pat.work@example.org/verify", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/pat.work@example.org/verify", nil)
 	wantStatus(t, res, out, 200)
 	if res, _ = e.browser(t).get(linkPath(t, e.nextMail(t))); res.StatusCode != 303 {
 		t.Fatalf("verify: %d", res.StatusCode)
 	}
-	res, out = b.api("POST", "/api/account/emails/pat.work@example.org/primary", nil)
+	res, out = b.api("POST", "/api-internal/account/emails/pat.work@example.org/primary", nil)
 	wantStatus(t, res, out, 200)
 	if out["user"].(map[string]any)["email"] != "pat.work@example.org" {
 		t.Fatalf("primary: %v", out["_raw"])
 	}
 	// removing is someone else's job, the old primary included
-	if res, out = b.api("DELETE", "/api/account/emails/"+pat.Email, nil); res.StatusCode != 404 && res.StatusCode != 405 {
+	if res, out = b.api("DELETE", "/api-internal/account/emails/"+pat.Email, nil); res.StatusCode != 404 && res.StatusCode != 405 {
 		t.Fatalf("remove own address: %d %v", res.StatusCode, out)
 	}
 }

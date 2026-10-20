@@ -35,15 +35,15 @@ func TestAccountEndpointsNeedSessionAndCSRF(t *testing.T) {
 
 	type ep struct{ method, path string }
 	all := []ep{
-		{"GET", "/api/account"}, {"PATCH", "/api/account"}, {"POST", "/api/account/email/verify"}, {"POST", "/api/account/password"},
-		{"GET", "/api/account/passkeys"}, {"PATCH", "/api/account/passkeys/x"}, {"DELETE", "/api/account/passkeys/x"},
-		{"POST", "/api/account/passkeys/register/begin"}, {"POST", "/api/account/passkeys/register/finish"},
-		{"POST", "/api/account/totp/begin"}, {"POST", "/api/account/totp/confirm"}, {"DELETE", "/api/account/totp"},
-		{"GET", "/api/account/reauth"}, {"POST", "/api/account/reauth"}, {"POST", "/api/account/reauth/passkey/begin"},
-		{"POST", "/api/account/reauth/passkey/finish"}, {"GET", "/api/account/sessions"}, {"DELETE", "/api/account/sessions/x"},
-		{"DELETE", "/api/account/sessions"}, {"GET", "/api/account/tokens"}, {"POST", "/api/account/tokens"},
-		{"DELETE", "/api/account/tokens/x"}, {"POST", "/api/account/tokens/x/regenerate"}, {"PATCH", "/api/account/tokens/x"}, {"GET", "/api/account/apps"},
-		{"DELETE", "/api/account/apps/x"},
+		{"GET", "/api-internal/account"}, {"PATCH", "/api-internal/account"}, {"POST", "/api-internal/account/email/verify"}, {"POST", "/api-internal/account/password"},
+		{"GET", "/api-internal/account/passkeys"}, {"PATCH", "/api-internal/account/passkeys/x"}, {"DELETE", "/api-internal/account/passkeys/x"},
+		{"POST", "/api-internal/account/passkeys/register/begin"}, {"POST", "/api-internal/account/passkeys/register/finish"},
+		{"POST", "/api-internal/account/totp/begin"}, {"POST", "/api-internal/account/totp/confirm"}, {"DELETE", "/api-internal/account/totp"},
+		{"GET", "/api-internal/account/reauth"}, {"POST", "/api-internal/account/reauth"}, {"POST", "/api-internal/account/reauth/passkey/begin"},
+		{"POST", "/api-internal/account/reauth/passkey/finish"}, {"GET", "/api-internal/account/sessions"}, {"DELETE", "/api-internal/account/sessions/x"},
+		{"DELETE", "/api-internal/account/sessions"}, {"GET", "/api-internal/account/tokens"}, {"POST", "/api-internal/account/tokens"},
+		{"DELETE", "/api-internal/account/tokens/x"}, {"POST", "/api-internal/account/tokens/x/regenerate"}, {"PATCH", "/api-internal/account/tokens/x"}, {"GET", "/api-internal/account/apps"},
+		{"DELETE", "/api-internal/account/apps/x"},
 	}
 	for _, p := range all {
 		res, out := anon.do(p.method, p.path, map[string]any{}, hdrs{"X-CSRF-Token": ""})
@@ -62,10 +62,10 @@ func TestAccountEndpointsNeedSessionAndCSRF(t *testing.T) {
 		}
 	}
 	// the anonymous CSRF token is not accepted for session endpoints
-	res, out := signed.do("PATCH", "/api/account", map[string]any{"given_name": "x"}, hdrs{"X-CSRF-Token": anon.csrf})
+	res, out := signed.do("PATCH", "/api-internal/account", map[string]any{"given_name": "x"}, hdrs{"X-CSRF-Token": anon.csrf})
 	wantStatus(t, res, out, 403)
 	// and the session token is not accepted on anonymous endpoints
-	res, out = anon.do("POST", "/api/login/password", map[string]any{"org": "primary", "email": "pat@example.com", "password": userPassword},
+	res, out = anon.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "pat@example.com", "password": userPassword},
 		hdrs{"X-CSRF-Token": signed.csrf})
 	wantStatus(t, res, out, 403)
 }
@@ -77,7 +77,7 @@ func TestAccountProfile(t *testing.T) {
 	other := e.user(t, org, "other", model.RoleUser)
 	b := e.signedIn(t, pat)
 
-	res, out := b.api("GET", "/api/account", nil)
+	res, out := b.api("GET", "/api-internal/account", nil)
 	wantStatus(t, res, out, 200)
 	user := out["user"].(map[string]any)
 	sec := out["security"].(map[string]any)
@@ -92,13 +92,13 @@ func TestAccountProfile(t *testing.T) {
 		}
 	}
 
-	res, out = b.api("PATCH", "/api/account", map[string]any{"given_name": "Pat", "family_name": "Q",
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"given_name": "Pat", "family_name": "Q",
 		"locale": "en-GB"})
 	wantStatus(t, res, out, 200)
 	u := out["user"].(map[string]any)
 	// job title and phone no longer exist: the strict decoder rejects them and the profile does not return them
 	for _, f := range []string{"title", "phone"} {
-		if r2, o2 := b.api("PATCH", "/api/account", map[string]any{f: "x"}); r2.StatusCode != 400 && r2.StatusCode != 422 {
+		if r2, o2 := b.api("PATCH", "/api-internal/account", map[string]any{f: "x"}); r2.StatusCode != 400 && r2.StatusCode != 422 {
 			t.Errorf("PATCH with %s: %d %v", f, r2.StatusCode, o2)
 		}
 		if _, has := u[f]; has {
@@ -116,7 +116,7 @@ func TestAccountProfile(t *testing.T) {
 	// Fields a user may not change are not even accepted.
 	for _, body := range []string{`{"role":"super_admin"}`, `{"username":"root"}`, `{"active":false}`, `{"email_verified":true}`,
 		`{"external_id":"x"}`, `{"password":"hunter2hunter2"}`, `{"attributes":{"a":"b"}}`, `{"org_id":"x"}`, `not json`} {
-		res, out = b.api("PATCH", "/api/account", body)
+		res, out = b.api("PATCH", "/api-internal/account", body)
 		if res.StatusCode != 400 {
 			t.Errorf("%s: %d %v", body, res.StatusCode, out["_raw"])
 		}
@@ -125,13 +125,13 @@ func TestAccountProfile(t *testing.T) {
 		t.Fatal("forbidden field applied")
 	}
 	// validation errors carry the field
-	res, out = b.api("PATCH", "/api/account", map[string]any{"given_name": strings.Repeat("x", 300)})
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"given_name": strings.Repeat("x", 300)})
 	wantStatus(t, res, out, 422)
 	// The address is never the user's to change (a manager's role included): refused on the email field, whatever
 	// it is changed to (a valid one, a malformed one, another user's), and nothing is stored or reserved.
 	b.markReauth()
 	for _, addr := range []string{"new@example.com", "not-an-email", other.Email} {
-		res, out = b.api("PATCH", "/api/account", map[string]any{"email": addr})
+		res, out = b.api("PATCH", "/api-internal/account", map[string]any{"email": addr})
 		wantStatus(t, res, out, 422)
 		if str(out, "field") != "email" {
 			t.Fatalf("%s: field %v", addr, out)
@@ -150,22 +150,22 @@ func TestAccountPassword(t *testing.T) {
 	other := e.signedIn(t, pat)                   // a second session of the same user
 	baseline := len(e.audits(t, "user.password")) // the fixture set the first password as the system
 
-	res, out := cur.api("POST", "/api/account/password", map[string]any{"current": "nope", "new": "a perfectly fine password"})
+	res, out := cur.api("POST", "/api-internal/account/password", map[string]any{"current": "nope", "new": "a perfectly fine password"})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "current" {
 		t.Fatalf("wrong current: %v", out)
 	}
-	res, out = cur.api("POST", "/api/account/password", map[string]any{"current": "", "new": "a perfectly fine password"})
+	res, out = cur.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "a perfectly fine password"})
 	wantStatus(t, res, out, 422)
-	res, out = cur.api("POST", "/api/account/password", map[string]any{"current": userPassword, "new": "short"})
+	res, out = cur.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": "short"})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "new" {
 		t.Fatalf("weak: %v", out)
 	}
-	res, out = cur.api("POST", "/api/account/password", map[string]any{"current": userPassword, "new": userPassword})
+	res, out = cur.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": userPassword})
 	wantStatus(t, res, out, 422)
 
-	res, out = cur.api("POST", "/api/account/password", map[string]any{"current": userPassword, "new": "a perfectly fine password"})
+	res, out = cur.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": "a perfectly fine password"})
 	wantStatus(t, res, out, 200)
 	if out["signed_out"] != float64(1) {
 		t.Fatalf("signed_out %v", out)
@@ -173,7 +173,7 @@ func TestAccountPassword(t *testing.T) {
 	if res, _ := cur.get("/account"); res.StatusCode != 200 {
 		t.Fatal("current session ended by password change")
 	}
-	if res, _ := other.api("GET", "/api/account", nil); res.StatusCode != 401 {
+	if res, _ := other.api("GET", "/api-internal/account", nil); res.StatusCode != 401 {
 		t.Fatalf("other session survived: %d", res.StatusCode)
 	}
 	res, out = e.browser(t).login("acme", "pat", userPassword)
@@ -183,9 +183,9 @@ func TestAccountPassword(t *testing.T) {
 
 	// Wrong current passwords count toward the lockout (shared with sign-in).
 	for range 3 {
-		cur.api("POST", "/api/account/password", map[string]any{"current": "wrong", "new": "x"})
+		cur.api("POST", "/api-internal/account/password", map[string]any{"current": "wrong", "new": "x"})
 	}
-	res, out = cur.api("POST", "/api/account/password", map[string]any{"current": "a perfectly fine password", "new": "another fine password"})
+	res, out = cur.api("POST", "/api-internal/account/password", map[string]any{"current": "a perfectly fine password", "new": "another fine password"})
 	wantStatus(t, res, out, 429)
 	if n := len(e.audits(t, "user.password")) - baseline; n != 1 {
 		t.Fatalf("password audit %d", n)
@@ -200,21 +200,21 @@ func TestAccountPasswordForPasswordlessUser(t *testing.T) {
 	secret := e.giveTOTP(t, u)
 	b := e.signedIn(t, u)
 
-	res, out := b.api("GET", "/api/account", nil)
+	res, out := b.api("GET", "/api-internal/account", nil)
 	if out["security"].(map[string]any)["has_password"] != false {
 		t.Fatalf("has_password: %v", out["_raw"])
 	}
 	// Passwords come only from invitations: there is no way to add a first password here, re-authenticated or not.
-	res, out = b.api("POST", "/api/account/password", map[string]any{"current": "", "new": "my first password!"})
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "my first password!"})
 	wantStatus(t, res, out, 409)
 	if !strings.Contains(str(out, "error"), "no password") {
 		t.Fatalf("message: %v", out)
 	}
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"code": totpAt(secret, time.Now())})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
-	res, out = b.api("POST", "/api/account/password", map[string]any{"current": "", "new": "my first password!"})
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "my first password!"})
 	wantStatus(t, res, out, 409)
-	res, out = b.api("GET", "/api/account", nil)
+	res, out = b.api("GET", "/api-internal/account", nil)
 	if out["security"].(map[string]any)["has_password"] != false {
 		t.Fatalf("password was set: %v", out["_raw"])
 	}
@@ -231,7 +231,7 @@ func TestAccountPasskeys(t *testing.T) {
 	b.registerPasskey("Laptop")
 	samB.registerPasskey("Sam's key")
 
-	res, out := b.api("GET", "/api/account/passkeys", nil)
+	res, out := b.api("GET", "/api-internal/account/passkeys", nil)
 	wantStatus(t, res, out, 200)
 	list := items(t, out)
 	if len(list) != 1 || list[0]["name"] != "Laptop" || out["available"] != true {
@@ -246,43 +246,43 @@ func TestAccountPasskeys(t *testing.T) {
 	sams, _ := e.Svc.Passkeys.All(context.Background(), sam.ID)
 
 	// Rename.
-	res, out = b.api("PATCH", "/api/account/passkeys/"+id, map[string]any{"name": "Work laptop"})
+	res, out = b.api("PATCH", "/api-internal/account/passkeys/"+id, map[string]any{"name": "Work laptop"})
 	wantStatus(t, res, out, 200)
 	if out["name"] != "Work laptop" {
 		t.Fatal(out)
 	}
 	for _, name := range []string{"", "   ", strings.Repeat("x", 101)} {
-		res, out = b.api("PATCH", "/api/account/passkeys/"+id, map[string]any{"name": name})
+		res, out = b.api("PATCH", "/api-internal/account/passkeys/"+id, map[string]any{"name": name})
 		wantStatus(t, res, out, 422)
 		if str(out, "field") != "name" {
 			t.Fatalf("field %v", out)
 		}
 	}
 	// Someone else's passkey is invisible: not found for rename and delete, and nothing changes.
-	res, out = b.api("PATCH", "/api/account/passkeys/"+sams[0].ID, map[string]any{"name": "pwned"})
+	res, out = b.api("PATCH", "/api-internal/account/passkeys/"+sams[0].ID, map[string]any{"name": "pwned"})
 	wantStatus(t, res, out, 404)
-	res, out = b.api("DELETE", "/api/account/passkeys/"+sams[0].ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/passkeys/"+sams[0].ID, nil)
 	wantStatus(t, res, out, 404)
-	res, out = b.api("PATCH", "/api/account/passkeys/nope", map[string]any{"name": "x"})
+	res, out = b.api("PATCH", "/api-internal/account/passkeys/nope", map[string]any{"name": "x"})
 	wantStatus(t, res, out, 404)
 	if s, _ := e.Svc.Passkeys.Get(context.Background(), sams[0].ID); s == nil || s.Name != "Sam's key" {
 		t.Fatal("another user's passkey was modified")
 	}
 
 	// The same authenticator cannot be registered twice.
-	res, begin := b.api("POST", "/api/account/passkeys/register/begin", nil)
+	res, begin := b.api("POST", "/api-internal/account/passkeys/register/begin", nil)
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	if _, _, err := b.auth.Create(opts); err == nil {
 		t.Fatal("excludeCredentials not honoured")
 	}
 	// Garbage and replay at finish.
-	res, out = b.api("POST", "/api/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x", "credential": map[string]any{}})
+	res, out = b.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x", "credential": map[string]any{}})
 	wantStatus(t, res, out, 422)
-	res, out = b.api("POST", "/api/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x", "credential": map[string]any{}})
+	res, out = b.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x", "credential": map[string]any{}})
 	wantStatus(t, res, out, 422)
 	// A challenge begun by one user cannot be finished by another.
-	res, begin = b.api("POST", "/api/account/passkeys/register/begin", nil)
+	res, begin = b.api("POST", "/api-internal/account/passkeys/register/begin", nil)
 	opts, _ = json.Marshal(begin["options"])
 	fresh := b.auth
 	_ = fresh
@@ -292,7 +292,7 @@ func TestAccountPasskeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, out = other2.api("POST", "/api/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "steal",
+	res, out = other2.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "steal",
 		"credential": json.RawMessage(credJSON)})
 	wantStatus(t, res, out, 422)
 	if l, _ := e.Svc.Passkeys.All(context.Background(), sam.ID); len(l) != 1 {
@@ -301,7 +301,7 @@ func TestAccountPasskeys(t *testing.T) {
 
 	// Delete: fine while a password exists (and after a re-authentication).
 	b.markReauth()
-	res, out = b.api("DELETE", "/api/account/passkeys/"+id, nil)
+	res, out = b.api("DELETE", "/api-internal/account/passkeys/"+id, nil)
 	wantStatus(t, res, out, 204)
 	if l, _ := e.Svc.Passkeys.All(context.Background(), pat.ID); len(l) != 0 {
 		t.Fatal("not deleted")
@@ -320,7 +320,7 @@ func TestAccountLastSignInMethodGuard(t *testing.T) {
 	b.registerPasskey("Only key")
 	list, _ := e.Svc.Passkeys.All(context.Background(), u.ID)
 	b.markReauth()
-	res, out := b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out := b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	wantStatus(t, res, out, 409)
 	// A linked upstream identity is another way in, so deleting is allowed.
 	p, err := e.Svc.CreateProvider(context.Background(), service.System, org.ID, service.ProviderInput{Type: ptr(model.ProviderGitHub),
@@ -331,9 +331,9 @@ func TestAccountLastSignInMethodGuard(t *testing.T) {
 	if err := e.Svc.Identities.Create(context.Background(), model.NewIdentity(u, p, "1", "", "admin")); err != nil {
 		t.Fatal(err)
 	}
-	res, out = b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	wantStatus(t, res, out, 204)
-	res, out = b.api("GET", "/api/account", nil)
+	res, out = b.api("GET", "/api-internal/account", nil)
 	if provs, _ := out["security"].(map[string]any)["providers"].([]any); len(provs) != 1 || provs[0] != "GH" {
 		t.Fatalf("providers: %v", out["_raw"])
 	}
@@ -346,27 +346,27 @@ func TestAccountTOTP(t *testing.T) {
 	b := e.signedIn(t, pat)
 
 	// confirm before begin
-	res, out := b.api("POST", "/api/account/totp/confirm", map[string]any{"code": "123456"})
+	res, out := b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": "123456"})
 	wantStatus(t, res, out, 409)
 	// nothing to disable yet and no reauth
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 403)
 
 	// even the first authenticator app needs a recent re-authentication
-	res, out = b.api("POST", "/api/account/totp/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/totp/begin", nil)
 	wantStatus(t, res, out, 403)
 	if str(out, "field") != "reauth" {
 		t.Fatalf("first enrolment without re-authentication: %v", out)
 	}
 	b.markReauth()
-	res, out = b.api("POST", "/api/account/totp/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/totp/begin", nil)
 	wantStatus(t, res, out, 200)
 	secret := str(out, "secret")
 	if len(secret) < 16 || !strings.HasPrefix(str(out, "uri"), "otpauth://totp/") || !strings.Contains(str(out, "uri"), "secret="+secret) ||
 		!strings.Contains(str(out, "uri"), "issuer=") || !strings.HasPrefix(str(out, "qr"), "data:image/svg+xml;base64,") {
 		t.Fatalf("begin: %v", out["_raw"])
 	}
-	res, out = b.api("POST", "/api/account/totp/confirm", map[string]any{"code": "000000"})
+	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": "000000"})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "code" {
 		t.Fatalf("field %v", out)
@@ -374,7 +374,7 @@ func TestAccountTOTP(t *testing.T) {
 	if f, _ := e.Svc.Users.Get(context.Background(), pat.ID); f.HasTOTP() {
 		t.Fatal("enabled by a wrong code")
 	}
-	res, out = b.api("POST", "/api/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now())})
+	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
 	f, _ := e.Svc.Users.Get(context.Background(), pat.ID)
 	si, _ := e.Svc.SignIns.Get(context.Background(), pat.ID)
@@ -384,53 +384,53 @@ func TestAccountTOTP(t *testing.T) {
 	}
 	// enabled: setting it up again (to add or change phones) needs a recent re-authentication first
 	e.Mod.ClearReauth(b.sessionID())
-	res, out = b.api("POST", "/api/account/totp/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/totp/begin", nil)
 	wantStatus(t, res, out, 403)
 	if str(out, "field") != "reauth" {
 		t.Fatalf("begin again without reauth: %v", out)
 	}
 	// the pending secret is gone: confirm again
-	res, out = b.api("POST", "/api/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now().Add(30*time.Second))})
+	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now().Add(30*time.Second))})
 	wantStatus(t, res, out, 409)
 
 	// Disabling needs a recent re-authentication.
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 403)
-	res, out = b.api("GET", "/api/account/reauth", nil)
+	res, out = b.api("GET", "/api-internal/account/reauth", nil)
 	if out["valid"] != false {
 		t.Fatal(out)
 	}
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": "wrong"})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": "wrong"})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "password" {
 		t.Fatal(out)
 	}
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 403)
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{})
 	wantStatus(t, res, out, 422)
 	// with the app set up, the password alone no longer re-authenticates: the code is asked for too
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "code" {
 		t.Fatalf("password alone for an account with the app: %v", out)
 	}
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now().Add(30*time.Second))})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now().Add(30*time.Second))})
 	wantStatus(t, res, out, 200)
-	res, out = b.api("GET", "/api/account/reauth", nil)
+	res, out = b.api("GET", "/api-internal/account/reauth", nil)
 	if out["valid"] != true {
 		t.Fatal(out)
 	}
 	// Set up again: a new secret replaces the old one once confirmed (scan it on every phone to use).
-	res, out = b.api("POST", "/api/account/totp/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/totp/begin", nil)
 	wantStatus(t, res, out, 200)
 	secret2 := str(out, "secret")
 	if secret2 == "" || secret2 == secret {
 		t.Fatal("set up again must issue a new secret")
 	}
-	res, out = b.api("POST", "/api/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now().Add(60*time.Second))})
+	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": totpAt(secret, time.Now().Add(60*time.Second))})
 	wantStatus(t, res, out, 422) // a code from the old secret does not confirm the new one
-	res, out = b.api("POST", "/api/account/totp/confirm", map[string]any{"code": totpAt(secret2, time.Now())})
+	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": totpAt(secret2, time.Now())})
 	wantStatus(t, res, out, 200)
 	f, _ = e.Svc.Users.Get(context.Background(), pat.ID)
 	if opened, _ := e.Svc.Sealer.OpenFor(service.TOTPBinding(f.ID), f.TOTPSecret); string(opened) != secret2 {
@@ -441,15 +441,15 @@ func TestAccountTOTP(t *testing.T) {
 	}
 	// another session of the same user does not inherit the re-authentication
 	other := e.signedIn(t, pat)
-	res, out = other.api("DELETE", "/api/account/totp", nil)
+	res, out = other.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 403)
 
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 204)
 	if f, _ := e.Svc.Users.Get(context.Background(), pat.ID); f.HasTOTP() {
 		t.Fatal("still enabled")
 	}
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 409)
 	if n := len(e.audits(t, "account.totp.enable")) + len(e.audits(t, "account.totp.disable")); n != 2 {
 		t.Fatalf("audits %d", n)
@@ -464,16 +464,16 @@ func TestAccountTOTPDisableWithPasskeyReauthAndMFAOrg(t *testing.T) {
 	b := e.signedIn(t, pat)
 
 	// reauthenticate (password and code), but the org requires a second factor and there is no passkey: refused
-	res, out := b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now())})
+	res, out := b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
-	res, out = b.api("DELETE", "/api/account/totp", nil)
+	res, out = b.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 409)
 
 	// With a passkey the TOTP can go, and the passkey itself re-authenticates.
 	b.registerPasskey("Key")
 	b2 := e.signedIn(t, pat)
 	b2.auth = b.auth
-	res, begin := b2.api("POST", "/api/account/reauth/passkey/begin", nil)
+	res, begin := b2.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	assertion, _, err := b2.auth.Get(opts)
@@ -481,18 +481,18 @@ func TestAccountTOTPDisableWithPasskeyReauthAndMFAOrg(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the assertion is bound to the session that began it
-	res, out = b.api("POST", "/api/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	res, out = b.api("POST", "/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
 	wantStatus(t, res, out, 422)
-	res, begin = b2.api("POST", "/api/account/reauth/passkey/begin", nil)
+	res, begin = b2.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
 	opts, _ = json.Marshal(begin["options"])
 	assertion, _, _ = b2.auth.Get(opts)
-	res, out = b2.api("POST", "/api/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	res, out = b2.api("POST", "/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
 	wantStatus(t, res, out, 200)
-	res, out = b2.api("DELETE", "/api/account/totp", nil)
+	res, out = b2.api("DELETE", "/api-internal/account/totp", nil)
 	wantStatus(t, res, out, 204)
 	// a user without passkeys cannot begin a passkey reauth
 	c := e.signedIn(t, e.user(t, org, "sam", model.RoleUser))
-	res, out = c.api("POST", "/api/account/reauth/passkey/begin", nil)
+	res, out = c.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
 	wantStatus(t, res, out, 422)
 }
 
@@ -506,7 +506,7 @@ func TestAccountSessions(t *testing.T) {
 	third := e.signedIn(t, pat)
 	samB := e.signedIn(t, sam)
 
-	res, out := cur.api("GET", "/api/account/sessions", nil)
+	res, out := cur.api("GET", "/api-internal/account/sessions", nil)
 	wantStatus(t, res, out, 200)
 	list := items(t, out)
 	if len(list) != 3 || list[0]["current"] != true || list[1]["current"] == true {
@@ -527,43 +527,43 @@ func TestAccountSessions(t *testing.T) {
 	for _, s := range list[1:] {
 		victim = str(s, "id")
 	}
-	res, out = cur.api("DELETE", "/api/account/sessions/"+victim, nil)
+	res, out = cur.api("DELETE", "/api-internal/account/sessions/"+victim, nil)
 	wantStatus(t, res, out, 204)
 	if left, _ := e.Svc.Sessions.All(context.Background(), pat.ID); len(left) != 2 {
 		t.Fatalf("sessions left %d", len(left))
 	}
 	// the current session cannot be revoked this way; unknown handles are 404
-	res, out = cur.api("GET", "/api/account/sessions", nil)
+	res, out = cur.api("GET", "/api-internal/account/sessions", nil)
 	curHandle := str(items(t, out)[0], "id")
-	res, out = cur.api("DELETE", "/api/account/sessions/"+curHandle, nil)
+	res, out = cur.api("DELETE", "/api-internal/account/sessions/"+curHandle, nil)
 	wantStatus(t, res, out, 409)
-	res, out = cur.api("DELETE", "/api/account/sessions/nope", nil)
+	res, out = cur.api("DELETE", "/api-internal/account/sessions/nope", nil)
 	wantStatus(t, res, out, 404)
 	// another user's sessions are not reachable
-	res, out = samB.api("GET", "/api/account/sessions", nil)
+	res, out = samB.api("GET", "/api-internal/account/sessions", nil)
 	if len(items(t, out)) != 1 {
 		t.Fatalf("sam sees %d sessions", len(items(t, out)))
 	}
-	res, out = samB.api("DELETE", "/api/account/sessions/"+curHandle, nil)
+	res, out = samB.api("DELETE", "/api-internal/account/sessions/"+curHandle, nil)
 	wantStatus(t, res, out, 404)
-	if res, _ := cur.api("GET", "/api/account", nil); res.StatusCode != 200 {
+	if res, _ := cur.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {
 		t.Fatal("pat's session ended by sam")
 	}
 
 	// revoke all others
-	res, out = cur.api("DELETE", "/api/account/sessions", nil)
+	res, out = cur.api("DELETE", "/api-internal/account/sessions", nil)
 	wantStatus(t, res, out, 200)
 	if out["revoked"] != float64(1) {
 		t.Fatalf("revoked %v", out)
 	}
-	if res, _ := cur.api("GET", "/api/account", nil); res.StatusCode != 200 {
+	if res, _ := cur.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {
 		t.Fatal("current session ended")
 	}
-	if res, _ := second.api("GET", "/api/account", nil); res.StatusCode != 401 {
+	if res, _ := second.api("GET", "/api-internal/account", nil); res.StatusCode != 401 {
 		t.Fatalf("other session alive: %d", res.StatusCode)
 	}
 	_ = third
-	if res, _ := samB.api("GET", "/api/account", nil); res.StatusCode != 200 {
+	if res, _ := samB.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {
 		t.Fatal("sam's session ended")
 	}
 }
@@ -580,21 +580,21 @@ func TestAccountTokens(t *testing.T) {
 	// console's second-factor check)
 	single := e.signedIn(t, mgr)
 	single.markReauth()
-	res, out := single.api("POST", "/api/account/tokens", map[string]any{"name": "x", "scopes": []string{"api"}})
+	res, out := single.api("POST", "/api-internal/account/tokens", map[string]any{"name": "x", "scopes": []string{"api"}})
 	wantStatus(t, res, out, 403)
 
-	res, out = b.api("GET", "/api/account/tokens", nil)
+	res, out = b.api("GET", "/api-internal/account/tokens", nil)
 	wantStatus(t, res, out, 200)
 	if sc, _ := out["scopes"].([]any); len(sc) != 1 || sc[0] != "api" {
 		t.Fatalf("user scopes %v", out["scopes"])
 	}
-	res, out = m.api("GET", "/api/account/tokens", nil)
+	res, out = m.api("GET", "/api-internal/account/tokens", nil)
 	if sc, _ := out["scopes"].([]any); len(sc) != 3 {
 		t.Fatalf("manager scopes %v", out["scopes"])
 	}
 
 	b.markReauth()
-	res, out = b.api("POST", "/api/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}, "expires_days": 30})
+	res, out = b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}, "expires_days": 30})
 	wantStatus(t, res, out, 201)
 	token := str(out, "token")
 	item := out["item"].(map[string]any)
@@ -606,7 +606,7 @@ func TestAccountTokens(t *testing.T) {
 		t.Fatalf("expiry %v", exp)
 	}
 	// the secret is shown once
-	res, out = b.api("GET", "/api/account/tokens", nil)
+	res, out = b.api("GET", "/api-internal/account/tokens", nil)
 	if strings.Contains(str(out, "_raw"), token) || strings.Contains(str(out, "_raw"), "secret") || len(items(t, out)) != 1 {
 		t.Fatalf("list: %v", out["_raw"])
 	}
@@ -622,32 +622,32 @@ func TestAccountTokens(t *testing.T) {
 		"admin as user": {"name": "x", "scopes": []string{"admin"}}, "too long": {"name": "x", "scopes": []string{"api"}, "expires_days": 100000},
 		"negative": {"name": "x", "scopes": []string{"api"}, "expires_days": -1},
 	} {
-		res, out = b.api("POST", "/api/account/tokens", body)
+		res, out = b.api("POST", "/api-internal/account/tokens", body)
 		if res.StatusCode != 422 {
 			t.Errorf("%s: %d %v", name, res.StatusCode, out["_raw"])
 		}
 	}
-	res, out = b.api("POST", "/api/account/tokens", `{"name":"x","scopes":["api"],"user_id":"someone"}`)
+	res, out = b.api("POST", "/api-internal/account/tokens", `{"name":"x","scopes":["api"],"user_id":"someone"}`)
 	wantStatus(t, res, out, 400)
 	m.markReauth()
-	res, out = m.api("POST", "/api/account/tokens", map[string]any{"name": "provisioning", "scopes": []string{"scim"}})
+	res, out = m.api("POST", "/api-internal/account/tokens", map[string]any{"name": "provisioning", "scopes": []string{"scim"}})
 	wantStatus(t, res, out, 201)
 	mgrTokenID := str(out["item"].(map[string]any), "id")
 
 	// delete: own token only, even an administrator cannot delete someone else's through the account API
 	admin := e.signedIn(t, e.Admin)
-	res, out = admin.api("DELETE", "/api/account/tokens/"+mgrTokenID, nil)
+	res, out = admin.api("DELETE", "/api-internal/account/tokens/"+mgrTokenID, nil)
 	wantStatus(t, res, out, 404)
-	res, out = b.api("DELETE", "/api/account/tokens/"+mgrTokenID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/tokens/"+mgrTokenID, nil)
 	wantStatus(t, res, out, 404)
-	res, out = b.api("DELETE", "/api/account/tokens/nope", nil)
+	res, out = b.api("DELETE", "/api-internal/account/tokens/nope", nil)
 	wantStatus(t, res, out, 404)
 	if _, err := e.Svc.APITokens.Get(context.Background(), mgrTokenID); err != nil {
 		t.Fatal("someone else's token deleted")
 	}
-	res, out = b.api("GET", "/api/account/tokens", nil)
+	res, out = b.api("GET", "/api-internal/account/tokens", nil)
 	id := str(items(t, out)[0], "id")
-	res, out = b.api("DELETE", "/api/account/tokens/"+id, nil)
+	res, out = b.api("DELETE", "/api-internal/account/tokens/"+id, nil)
 	wantStatus(t, res, out, 204)
 	if _, _, err := e.Svc.ValidateAPIToken(context.Background(), token); err == nil {
 		t.Fatal("deleted token still valid")
@@ -684,7 +684,7 @@ func TestAccountApps(t *testing.T) {
 	mk(sam, c1, []string{"openid"}, nil)
 
 	b := e.signedIn(t, pat)
-	res, out := b.api("GET", "/api/account/apps", nil)
+	res, out := b.api("GET", "/api-internal/account/apps", nil)
 	wantStatus(t, res, out, 200)
 	list := items(t, out)
 	if len(list) != 2 || list[0]["name"] != "Chat" || list[1]["name"] != "Wiki" {
@@ -706,9 +706,9 @@ func TestAccountApps(t *testing.T) {
 		}
 	}
 
-	res, out = b.api("DELETE", "/api/account/apps/"+c1.ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/apps/"+c1.ID, nil)
 	wantStatus(t, res, out, 204)
-	res, out = b.api("GET", "/api/account/apps", nil)
+	res, out = b.api("GET", "/api-internal/account/apps", nil)
 	if len(items(t, out)) != 1 {
 		t.Fatalf("after revoke: %v", out["_raw"])
 	}
@@ -716,9 +716,9 @@ func TestAccountApps(t *testing.T) {
 	if g, _ := e.Svc.Grants.All(context.Background(), sam.ID); len(g) != 1 {
 		t.Fatal("another user's grant removed")
 	}
-	res, out = b.api("DELETE", "/api/account/apps/"+c1.ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/apps/"+c1.ID, nil)
 	wantStatus(t, res, out, 404)
-	res, out = b.api("DELETE", "/api/account/apps/nope", nil)
+	res, out = b.api("DELETE", "/api-internal/account/apps/nope", nil)
 	wantStatus(t, res, out, 404)
 }
 
@@ -784,15 +784,15 @@ func TestSensitiveActionsNeedReauth(t *testing.T) {
 
 	// Without a recent re-authentication all three are refused in the shape TOTP disable uses.
 	// (an address change is never the user's own: refused at once, without asking to re-authenticate for nothing)
-	res, out := b.api("PATCH", "/api/account", map[string]any{"email": "changed@example.com"})
+	res, out := b.api("PATCH", "/api-internal/account", map[string]any{"email": "changed@example.com"})
 	expect("email change", res, out, 422)
-	res, out = b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	expect("passkey delete", res, out, 403)
-	res, out = b.api("POST", "/api/account/tokens", tok)
+	res, out = b.api("POST", "/api-internal/account/tokens", tok)
 	expect("token create", res, out, 403)
-	res, out = b.api("POST", "/api/account/passkeys/register/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/passkeys/register/begin", nil)
 	expect("passkey register begin", res, out, 403)
-	res, out = b.api("POST", "/api/account/passkeys/register/finish", map[string]any{"challenge": "x", "credential": map[string]any{}})
+	res, out = b.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{"challenge": "x", "credential": map[string]any{}})
 	expect("passkey register finish", res, out, 403)
 	if l, _ := e.Svc.Passkeys.All(context.Background(), pat.ID); len(l) != 1 {
 		t.Fatal("passkey deleted without re-authentication")
@@ -801,39 +801,39 @@ func TestSensitiveActionsNeedReauth(t *testing.T) {
 		t.Fatal("email changed by the user")
 	}
 	// Profile edits that leave the email alone (or resend the current one) need no re-authentication.
-	res, out = b.api("PATCH", "/api/account", map[string]any{"given_name": "Pat"})
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"given_name": "Pat"})
 	expect("name change", res, out, 200)
-	res, out = b.api("PATCH", "/api/account", map[string]any{"email": strings.ToUpper(pat.Email), "given_name": "x"})
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"email": strings.ToUpper(pat.Email), "given_name": "x"})
 	expect("same email", res, out, 200)
 
 	// The account's passkey is its second factor: the password alone does not re-authenticate it.
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})
 	expect("reauth with the password alone", res, out, 422)
 	if str(out, "field") != "passkey" {
 		t.Fatalf("password alone with a passkey: %v", out)
 	}
 	// After re-authenticating through the real endpoint (the passkey) all three go through.
-	res, begin := b.api("POST", "/api/account/reauth/passkey/begin", nil)
+	res, begin := b.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
 	expect("reauth begin", res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	assertion, _, err := b.auth.Get(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, out = b.api("POST", "/api/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	res, out = b.api("POST", "/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
 	expect("reauth", res, out, 200)
-	res, out = b.api("PATCH", "/api/account", map[string]any{"email": "changed@example.com"})
+	res, out = b.api("PATCH", "/api-internal/account", map[string]any{"email": "changed@example.com"})
 	expect("email change", res, out, 422) // re-authenticated or not, someone else changes the address
-	res, out = b.api("POST", "/api/account/tokens", tok)
+	res, out = b.api("POST", "/api-internal/account/tokens", tok)
 	expect("token create", res, out, 201)
-	res, out = b.api("POST", "/api/account/passkeys/register/begin", nil)
+	res, out = b.api("POST", "/api-internal/account/passkeys/register/begin", nil)
 	expect("passkey register begin", res, out, 200)
-	res, out = b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	expect("passkey delete", res, out, 204)
 
 	// Another session of the same user does not inherit it.
 	other := e.signedIn(t, pat)
-	res, out = other.api("POST", "/api/account/tokens", tok)
+	res, out = other.api("POST", "/api-internal/account/tokens", tok)
 	expect("other session", res, out, 403)
 }
 
@@ -844,9 +844,9 @@ func TestReauthCodeOnlyWithoutPassword(t *testing.T) {
 	pat := e.user(t, org, "pat", model.RoleUser)
 	secret := e.giveTOTP(t, pat)
 	b := e.signedIn(t, pat)
-	res, out := b.api("POST", "/api/account/reauth", map[string]any{"code": totpAt(secret, time.Now())})
+	res, out := b.api("POST", "/api-internal/account/reauth", map[string]any{"code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 422)
-	res, out = b.api("GET", "/api/account/reauth", nil)
+	res, out = b.api("GET", "/api-internal/account/reauth", nil)
 	if out["valid"] != false {
 		t.Fatalf("code alone re-authenticated a password account: %v", out)
 	}
@@ -860,13 +860,13 @@ func TestPasskeyDeleteKeepsRequiredSecondFactor(t *testing.T) {
 	b := e.signedIn(t, pat)
 	b.registerPasskey("Only")
 	list, _ := e.Svc.Passkeys.All(context.Background(), pat.ID)
-	res, out := b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out := b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	wantStatus(t, res, out, 409)
 	// With an authenticator app set up the same deletion is fine.
 	e.giveTOTP(t, pat)
 	b2 := e.signedIn(t, pat)
 	b2.markReauth()
-	res, out = b2.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out = b2.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	wantStatus(t, res, out, 204)
 }
 
@@ -878,10 +878,10 @@ func TestRecentSignInCountsAsReauth(t *testing.T) {
 	pat := e.user(t, org, "pat", model.RoleUser)
 	b := e.signedIn(t, pat)
 	tok := map[string]any{"name": "ci", "scopes": []string{"api"}}
-	res, out := b.api("POST", "/api/account/tokens", tok)
+	res, out := b.api("POST", "/api-internal/account/tokens", tok)
 	wantStatus(t, res, out, 403)
 	b.fresh()
-	res, out = b.api("POST", "/api/account/tokens", tok)
+	res, out = b.api("POST", "/api-internal/account/tokens", tok)
 	wantStatus(t, res, out, 201)
 }
 
@@ -894,7 +894,7 @@ func TestAccountTokenRegenerate(t *testing.T) {
 	sam := e.user(t, org, "sam", model.RoleUser)
 	b := e.signedIn(t, pat)
 	b.markReauth()
-	res, out := b.api("POST", "/api/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}, "expires_days": 30})
+	res, out := b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}, "expires_days": 30})
 	wantStatus(t, res, out, 201)
 	old := str(out, "token")
 	id := str(out["item"].(map[string]any), "id")
@@ -903,10 +903,10 @@ func TestAccountTokenRegenerate(t *testing.T) {
 	// someone else's token is not found, even with a fresh re-authentication
 	other := e.signedIn(t, sam)
 	other.markReauth()
-	res, out = other.api("POST", "/api/account/tokens/"+id+"/regenerate", nil)
+	res, out = other.api("POST", "/api-internal/account/tokens/"+id+"/regenerate", nil)
 	wantStatus(t, res, out, 404)
 
-	res, out = b.api("POST", "/api/account/tokens/"+id+"/regenerate", nil)
+	res, out = b.api("POST", "/api-internal/account/tokens/"+id+"/regenerate", nil)
 	wantStatus(t, res, out, 200)
 	fresh := str(out, "token")
 	item := out["item"].(map[string]any)
@@ -944,29 +944,29 @@ func TestAccountTokenEdit(t *testing.T) {
 	}
 	b := e.signedIn(t, pat)
 	b.markReauth()
-	res, out := b.api("GET", "/api/account/tokens", nil)
+	res, out := b.api("GET", "/api-internal/account/tokens", nil)
 	wantStatus(t, res, out, 200)
 	apps, _ := out["apps"].([]any)
 	if len(apps) != 1 || str(apps[0].(map[string]any), "id") != app.ID {
 		t.Fatalf("apps: %v", out["apps"])
 	}
-	res, out = b.api("POST", "/api/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"},
+	res, out = b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"},
 		"audience": []string{app.ID}, "app_scopes": []string{"orders:read"}})
 	wantStatus(t, res, out, 201)
 	id := str(out["item"].(map[string]any), "id")
 
-	res, out = b.api("PATCH", "/api/account/tokens/"+id, map[string]any{"app_scopes": []string{"billing:read"}})
+	res, out = b.api("PATCH", "/api-internal/account/tokens/"+id, map[string]any{"app_scopes": []string{"billing:read"}})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "app_scopes" {
 		t.Fatalf("field %v", out)
 	}
-	res, out = b.api("PATCH", "/api/account/tokens/"+id, map[string]any{"name": "ci (read/write)", "app_scopes": []string{"orders:read", "orders:write"}})
+	res, out = b.api("PATCH", "/api-internal/account/tokens/"+id, map[string]any{"name": "ci (read/write)", "app_scopes": []string{"orders:read", "orders:write"}})
 	wantStatus(t, res, out, 200)
 	if it := out["item"].(map[string]any); str(it, "name") != "ci (read/write)" || len(it["app_scopes"].([]any)) != 2 {
 		t.Fatalf("edited %v", it)
 	}
 	other := e.signedIn(t, sam)
 	other.markReauth()
-	res, out = other.api("PATCH", "/api/account/tokens/"+id, map[string]any{"name": "mine"})
+	res, out = other.api("PATCH", "/api-internal/account/tokens/"+id, map[string]any{"name": "mine"})
 	wantStatus(t, res, out, 404)
 }

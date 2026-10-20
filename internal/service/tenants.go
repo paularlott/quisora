@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -18,11 +19,17 @@ type TenantInput struct {
 	DisplayName *string               `json:"display_name"`
 	Description *string               `json:"description"`
 	Settings    *model.TenantSettings `json:"settings"`
+	// Resources are the APIs the tenant owns (resource indicators: an MCP server's URL, say), unique server-wide.
+	Resources *[]string `json:"resources"`
 }
 
 func tenantConflict(err error) error {
+	var fe *FieldError
+	if errors.As(err, &fe) {
+		return err
+	}
 	if errors.Is(err, store.ErrConflict) {
-		return &conflictErr{Invalid("name", "a tenant with this name already exists")}
+		return &conflictErr{Invalid("name", "a tenant with this name already exists, or one of its resources belongs to another tenant")}
 	}
 	return mapStore(err)
 }
@@ -67,10 +74,53 @@ func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInp
 		}
 		t.Settings = set
 	}
+	if in.Resources != nil {
+		res, err := checkResources(*in.Resources)
+		if err != nil {
+			return err
+		}
+		var seen []string
+		for _, r := range res {
+			u, _ := url.Parse(r)
+			loopback := u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
+			if (u.Scheme != "https" && !loopback) || u.RawQuery != "" || u.User != nil {
+				return Invalid("resources", r+": use an https URL without a query (http only on 127.0.0.1 or [::1])")
+			}
+			k := model.CanonicalResource(r)
+			if slices.Contains(seen, k) {
+				return Invalid("resources", r+" is listed twice (letter case and a trailing slash do not count)")
+			}
+			seen = append(seen, k)
+		}
+		for _, r := range res {
+			if other, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(r)); err == nil && other.ID != t.ID {
+				return &conflictErr{Invalid("resources", r+" belongs to another tenant (each resource has one)")}
+			}
+		}
+		t.Resources = res
+	}
 	if t.DisplayName == "" {
 		t.DisplayName = t.Name
 	}
 	return nil
+}
+
+// TenantForResources returns the tenant that owns the resources (all of them one tenant's), for a self-registered
+// application: ErrNotFound when none is named, one is no tenant's, they span tenants, or the tenant does not allow
+// self-registered applications.
+func (s *Service) TenantForResources(ctx context.Context, resources []string) (*model.Tenant, error) {
+	var t *model.Tenant
+	for _, r := range resources {
+		got, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(r))
+		if err != nil || (t != nil && got.ID != t.ID) {
+			return nil, ErrNotFound
+		}
+		t = got
+	}
+	if t == nil || !t.Settings.SelfRegistration {
+		return nil, ErrNotFound
+	}
+	return t, nil
 }
 
 // ListTenants lists an org's tenants (org admins and super admins).

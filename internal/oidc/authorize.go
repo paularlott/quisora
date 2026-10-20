@@ -130,6 +130,10 @@ type ConsentData struct {
 	Username   string
 	Tenant     string // tenant display name
 	ReturnURL  string // the application's address, offered when the request can no longer be decided (returnURL)
+	// SelfRegistered: the application registered itself (nobody in the organization set it up); RedirectHost is
+	// where it sends the result, so the user can tell a look-alike name from the real thing.
+	SelfRegistered bool
+	RedirectHost   string
 }
 
 // returnURL is the home of the web application behind a validated redirect URI: its scheme and host. It is empty for
@@ -137,7 +141,7 @@ type ConsentData struct {
 // to. The redirect URI was matched against the client's registered ones, so the link cannot point anywhere else.
 func returnURL(redirectURI string) string {
 	u, err := url.Parse(redirectURI)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || isLoopbackIP(u.Hostname()) {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host + "/"
@@ -167,12 +171,9 @@ func (p *Provider) expired(w http.ResponseWriter, r *http.Request) {
 
 func isLoopbackHost(h string) bool { return h == "127.0.0.1" || h == "::1" || h == "localhost" }
 
-// isLoopbackIP: the loopback IP literals. Only these get any-port matching; "localhost" (which a resolver may send
-// elsewhere, RFC 8252 §8.3) must match exactly when registered.
-func isLoopbackIP(h string) bool { return h == "127.0.0.1" || h == "::1" }
-
-// redirectMatches implements exact matching (RFC 6749 §3.1.2.3) plus the loopback port flexibility of RFC 8252 §7.3
-// for the loopback IP literals.
+// redirectMatches implements exact matching (RFC 6749 §3.1.2.3) plus the loopback port flexibility of RFC 8252 §7.3:
+// an http redirect URI on localhost, 127.0.0.1 or [::1] matches whatever port a native app listens on (the host, path
+// and query must be the ones registered). Desktop clients, MCP clients among them, commonly register localhost.
 func redirectMatches(registered []string, uri string) bool {
 	if uri == "" || len(uri) > 2048 {
 		return false
@@ -181,7 +182,7 @@ func redirectMatches(registered []string, uri string) bool {
 		return true
 	}
 	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "http" || u.Fragment != "" || u.User != nil || !isLoopbackIP(u.Hostname()) {
+	if err != nil || u.Scheme != "http" || u.Fragment != "" || u.User != nil || !isLoopbackHost(u.Hostname()) {
 		return false
 	}
 	for _, reg := range registered {
@@ -252,7 +253,23 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		p.message(w, r, http.StatusBadRequest, "Invalid request", "This request could not be read", "")
 		return
 	}
-	ce, err := p.client(r.Context(), q.Get("client_id"))
+	// A metadata document is read only for a resource whose tenant accepts self-registered applications: requests
+	// naming documents for anything else never make this server fetch anything.
+	if metadataURL(q.Get("client_id")) {
+		if res, err := parseResources(q["resource"]); err != nil || len(res) == 0 {
+			ce, _ := p.client(r.Context(), q.Get("client_id"))
+			if ce == nil || ce.c.SelfRegistered {
+				p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
+					"The link you followed is not valid. Return to the application and try again.")
+				return
+			}
+		} else if _, err := p.svc.TenantForResources(r.Context(), res); err != nil {
+			p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
+				"The link you followed is not valid. Return to the application and try again.")
+			return
+		}
+	}
+	ce, err := p.appClient(r.Context(), r, q.Get("client_id"))
 	if err != nil || !ce.c.Enabled {
 		p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
 			"The link you followed is not valid. Return to the application and try again.")
@@ -350,6 +367,22 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		fail("invalid_target", err.Error())
 		return
 	}
+	if c.SelfRegistered {
+		// a self-registered application is governed by the tenant that owns the resources it asks for
+		if len(res) == 0 {
+			fail("invalid_target", "a self-registered application must name the resource it wants access to (RFC 8707)")
+			return
+		}
+		inT, _, err := p.forResources(r.Context(), c, res)
+		if err != nil {
+			fail("invalid_target", "the resource does not accept self-registered applications")
+			return
+		}
+		c = inT
+		if q.Get("scope") == "" {
+			f.Scopes = slices.Clone(c.Scopes)
+		}
+	}
 	if !subset(res, c.Resources) {
 		fail("invalid_target", "the resource is not registered for this client")
 		return
@@ -397,12 +430,17 @@ func (p *Provider) handleResume(w http.ResponseWriter, r *http.Request) {
 		p.wrongBrowser(w, r)
 		return
 	}
-	ce, err := p.client(r.Context(), f.ClientID)
+	ce, err := p.appClient(r.Context(), r, f.ClientID)
 	if err != nil || !ce.c.Enabled {
 		p.expired(w, r)
 		return
 	}
-	p.proceed(w, r, id, &f, ce.c)
+	c, _, err := p.forResources(r.Context(), ce.c, f.Resources)
+	if err != nil {
+		p.expired(w, r) // the tenant no longer accepts the self-registered application
+		return
+	}
+	p.proceed(w, r, id, &f, c)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -538,6 +576,9 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	}
 	_ = p.s.Eph.Delete(ctx, nsFlow, id)
 	clearFlowCookie(w, id)
+	if c.SelfRegistered {
+		p.svc.NoteSelfRegisteredUse(ctx, c, tenant) // a metadata-document application is stored now
+	}
 	p.respond(w, r, f, url.Values{"code": {code}})
 }
 
@@ -680,11 +721,15 @@ func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, e
 	if !flowBound(r, id, &f) {
 		return nil, nil, errWrongBrowser
 	}
-	ce, err := p.client(ctx, f.ClientID)
+	ce, err := p.appClient(ctx, r, f.ClientID)
 	if err != nil || !ce.c.Enabled {
 		return nil, nil, ephemeral.ErrNotFound
 	}
-	return &f, ce.c, nil
+	c, _, err := p.forResources(ctx, ce.c, f.Resources)
+	if err != nil {
+		return nil, nil, ephemeral.ErrNotFound // the tenant no longer accepts it (or the resource moved)
+	}
+	return &f, c, nil
 }
 
 func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
@@ -718,6 +763,15 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 		data.Scopes = append(data.Scopes, ScopeInfo{Name: s, Description: d})
 	}
 	data.Resources = f.Resources
+	if c.SelfRegistered {
+		data.SelfRegistered = true
+		if u, err := url.Parse(f.RedirectURI); err == nil {
+			data.RedirectHost = u.Host
+			if u.Scheme != "http" && u.Scheme != "https" { // a private-use scheme: an app on this device
+				data.RedirectHost = u.Scheme + ":"
+			}
+		}
+	}
 	p.s.Render.Render(w, http.StatusOK, "consent", p.s.Page(w, r, "Authorize "+c.Name, "", data))
 }
 

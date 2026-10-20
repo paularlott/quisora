@@ -18,7 +18,7 @@ const MAX = 60
 let profileOptionsP = null
 // profileOptions loads the languages, time zones and user types the fields offer (cached for the page).
 export function profileOptions() {
-  if (!profileOptionsP) profileOptionsP = get('/api/account/profile-options').catch((e) => { profileOptionsP = null; throw e })
+  if (!profileOptionsP) profileOptionsP = get('/api-internal/account/profile-options').catch((e) => { profileOptionsP = null; throw e })
   return profileOptionsP
 }
 

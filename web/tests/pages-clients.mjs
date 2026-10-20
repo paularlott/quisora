@@ -4,7 +4,7 @@
 import { apiCall, uniq } from './helpers.mjs'
 
 const A = '/admin/orgs/acme'
-const API = '/api/v1/orgs/acme'
+const API = '/api/orgs/acme'
 
 async function ownTenant(p) {
   const slug = uniq('cl')

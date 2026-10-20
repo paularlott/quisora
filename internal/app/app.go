@@ -247,7 +247,7 @@ func (a *App) Close() {
 }
 
 // readyzCluster is the cluster summary /readyz reports: counts only (it is unauthenticated); the full status is
-// GET /api/v1/cluster (super admins).
+// GET /api/cluster (super admins).
 type readyzCluster struct {
 	Size        int   `json:"size,omitempty"`
 	Quorum      int   `json:"quorum,omitempty"`

@@ -141,7 +141,7 @@ func TestConsentBoundToBrowserAndParallelFlows(t *testing.T) {
 
 	consent := func(c *http.Client, csrf, flowID string, approve bool) int {
 		bb, _ := json.Marshal(map[string]any{"flow": flowID, "approve": approve})
-		req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(bb)))
+		req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(bb)))
 		req.Header.Set("X-CSRF-Token", csrf)
 		req.Header.Set("Content-Type", "application/json")
 		r, err := c.Do(req)

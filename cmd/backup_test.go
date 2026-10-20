@@ -40,7 +40,7 @@ func TestRemoteBackup(t *testing.T) {
 
 	body := full.Bytes()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/backup" || r.URL.Query().Get("plain") != "1" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.URL.Path != "/api/backup" || r.URL.Query().Get("plain") != "1" || r.Header.Get("Authorization") != "Bearer tok" {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"error":"You do not have permission to do that."}`))
 			return

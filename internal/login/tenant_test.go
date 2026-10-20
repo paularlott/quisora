@@ -42,23 +42,23 @@ func TestTenantPasswordRefused(t *testing.T) {
 	}
 
 	// calling the API directly is refused with the same failure as a wrong password
-	res, out := b.post("/api/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk"})
+	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk"})
 	wantStatus(t, res, out, 401)
 	if str(out, "error") != "The email address or password is incorrect." || b.hasSession() {
 		t.Fatalf("refusal shape: %v session=%v", out, b.hasSession())
 	}
 	// an unknown tenant is ignored (org methods)
-	res, out = b.post("/api/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "nope"})
+	res, out = b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "nope"})
 	wantStatus(t, res, out, 200)
 	// and the tenant's name resolves case-insensitively
 	b2 := e.browser(t)
-	res, out = b2.post("/api/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": " KIOSK "})
+	res, out = b2.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": " KIOSK "})
 	wantStatus(t, res, out, 401)
 	// tenants of another org do not apply
 	other := e.org(t, "other", nil)
 	e.tenant(t, other, "kiosk2", model.TenantSettings{PasskeyLogin: true, AllProviders: true})
 	b3 := e.browser(t)
-	res, out = b3.post("/api/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk2"})
+	res, out = b3.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk2"})
 	wantStatus(t, res, out, 200)
 }
 
@@ -108,7 +108,7 @@ func TestTenantRequireMFAOnly(t *testing.T) {
 	e.tenant(t, org, "secure", model.TenantSettings{PasswordLogin: true, PasskeyLogin: true, AllProviders: true, RequireMFA: true})
 
 	b := e.browser(t)
-	res, out := b.post("/api/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "secure"})
+	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "secure"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || str(out, "ticket") == "" || b.hasSession() {
 		t.Fatalf("tenant MFA: %v", out)

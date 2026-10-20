@@ -291,7 +291,7 @@ test('org methods turned off are disabled in the tenant dialog', async ({ page }
   await signIn(page, 'admin')
   await page.goto(`${A}/tenants`, { waitUntil: 'load' })
   await page.waitForSelector('tbody tr')
-  await page.route('**/api/v1/orgs/acme/settings', async (route) => {
+  await page.route('**/api/orgs/acme/settings', async (route) => {
     const res = await route.fetch()
     const j = await res.json()
     j.settings.password_login = false
@@ -402,14 +402,14 @@ test('account: Create token asks for re-authentication, keeps focus in the dialo
   // The server demands a re-authentication on the first attempt only; the re-auth call itself is stubbed (the demo
   // user's password is random), the retried token request goes through to the real server for the "after" state.
   let tokenCalls = 0
-  await page.route('**/api/account/tokens', async (route) => {
+  await page.route('**/api-internal/account/tokens', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback()
     tokenCalls++
     if (tokenCalls === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
     return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ token: 'qsr_test_secret', item: { id: 'x', name: 'ci', scopes: ['api'], expires: null, last_used: null } }) })
   })
   let reauthPosts = 0
-  await page.route('**/api/account/reauth', async (route) => {
+  await page.route('**/api-internal/account/reauth', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback()
     reauthPosts++
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, valid_for: 300 }) })
@@ -873,7 +873,7 @@ test('admin user page: your own page manages your addresses after confirming it 
     if (posts === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
     return route.fallback()
   })
-  await page.route('**/api/account/reauth', async (route) => {
+  await page.route('**/api-internal/account/reauth', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback()
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, valid_for: 300 }) })
   })
@@ -956,7 +956,7 @@ test('autocomplete fields', async ({ page }) => {
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByRole('dialog')).toBeHidden()
   const u = await page.evaluate(async () => {
-    const r = await fetch('/api/v1/orgs/acme/users?q=alan', { headers: { 'X-CSRF-Token': document.querySelector('meta[name=csrf-token]').content } })
+    const r = await fetch('/api/orgs/acme/users?q=alan', { headers: { 'X-CSRF-Token': document.querySelector('meta[name=csrf-token]').content } })
     return (await r.json()).items.find((x) => x.username === 'alan')
   })
   expect(u.zoneinfo).toBe('Asia/Tokyo')

@@ -14,7 +14,7 @@ import (
 type probe struct{}
 
 func (probe) Register(s *web.Server) {
-	s.Mux.Handle("POST /api/v1/probe", s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
+	s.Mux.Handle("POST /api/probe", s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, 200, map[string]string{"actor": web.Actor(r).Name, "version": web.APIVersion(r)})
 	}))
 	s.Bearer = func(ctx context.Context, r *http.Request, tok string) (*service.Actor, error) {
@@ -31,7 +31,7 @@ func (probe) Register(s *web.Server) {
 func TestManagementAuthAndVersion(t *testing.T) {
 	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
 	do := func(c *http.Client, hdr map[string]string) *http.Response {
-		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/v1/probe", nil)
+		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/probe", nil)
 		for k, v := range hdr {
 			req.Header.Set(k, v)
 		}

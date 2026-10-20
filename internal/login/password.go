@@ -29,7 +29,7 @@ type stepResp struct {
 	Methods []string `json:"methods,omitempty"`
 }
 
-// password handles POST /api/login/password: {org, email, password[, next]} -> {next} or {step, ticket}.
+// password handles POST /api-internal/login/password: {org, email, password[, next]} -> {next} or {step, ticket}.
 func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -197,7 +197,7 @@ type totpReq struct {
 	Code   string `json:"code"`
 }
 
-// totp handles POST /api/login/totp: {ticket, code} -> {next}.
+// totp handles POST /api-internal/login/totp: {ticket, code} -> {next}.
 func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -271,7 +271,7 @@ type forgotReq struct {
 	Email string `json:"email"`
 }
 
-// forgot handles POST /api/password/forgot. It always answers 200 so it cannot be used to find accounts.
+// forgot handles POST /api-internal/password/forgot. It always answers 200 so it cannot be used to find accounts.
 func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -318,7 +318,7 @@ func (m *Module) resettable(ctx context.Context, u *model.User) (*model.Org, boo
 	return org, true
 }
 
-// reset handles POST /api/password/reset: {token, password} for a "forgot password" link.
+// reset handles POST /api-internal/password/reset: {token, password} for a "forgot password" link.
 func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return

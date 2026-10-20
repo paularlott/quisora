@@ -23,8 +23,10 @@ import (
 )
 
 var (
-	ErrForbidden  = errors.New("forbidden")
-	ErrNotFound   = errors.New("not found")
+	ErrForbidden = errors.New("forbidden")
+	ErrNotFound  = errors.New("not found")
+	// ErrLimit: a server-wide cap is reached (self-registered applications); try again later.
+	ErrLimit      = errors.New("limit reached")
 	ErrInvalid    = errors.New("invalid")
 	ErrConflict   = errors.New("already exists")
 	ErrStale      = errors.New("changed by someone else, reload and try again")

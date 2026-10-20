@@ -21,15 +21,15 @@ func TestWriteGuard(t *testing.T) {
 		method, path string
 		refused      bool
 	}{
-		{"POST", "/api/login/password", true},
-		{"DELETE", "/api/v1/orgs/acme/users/x", true},
+		{"POST", "/api-internal/login/password", true},
+		{"DELETE", "/api/orgs/acme/users/x", true},
 		{"PATCH", "/scim/v2/Users/x", true},
 		{"GET", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
 		{"HEAD", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
 		{"GET", "/verify-email?token=x", true},
 		{"HEAD", "/verify-email?token=x", true},
 		{"HEAD", "/account", false},
-		{"GET", "/api/v1/orgs/acme/users", false},
+		{"GET", "/api/orgs/acme/users", false},
 		{"GET", "/account", false},
 		{"POST", "/oauth/token", false},
 		{"POST", "/oauth/introspect", false},

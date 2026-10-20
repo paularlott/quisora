@@ -72,7 +72,7 @@ func BenchmarkListUsersAPI(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				get(b, c, env.URL+"/api/v1/orgs/acme/users?limit=25"+q)
+				get(b, c, env.URL+"/api/orgs/acme/users?limit=25"+q)
 			}
 		})
 	}

@@ -37,45 +37,45 @@ func (m *Module) registerAccount(s *web.Server) {
 			f(w, r, acct{u: web.User(r), sess: web.Session(r), actor: web.Actor(r)})
 		}))
 	}
-	h("GET /api/account", m.getAccount)
-	h("GET /api/account/profile-options", m.profileOptions)
-	h("PATCH /api/account", m.patchAccount)
-	h("POST /api/account/email/verify", m.sendVerify)
-	h("POST /api/account/password", m.changePassword)
-	h("POST /api/account/emails/{address}/verify", m.resendEmail)
-	h("POST /api/account/emails/{address}/primary", m.primaryEmail)
+	h("GET /api-internal/account", m.getAccount)
+	h("GET /api-internal/account/profile-options", m.profileOptions)
+	h("PATCH /api-internal/account", m.patchAccount)
+	h("POST /api-internal/account/email/verify", m.sendVerify)
+	h("POST /api-internal/account/password", m.changePassword)
+	h("POST /api-internal/account/emails/{address}/verify", m.resendEmail)
+	h("POST /api-internal/account/emails/{address}/primary", m.primaryEmail)
 
-	h("GET /api/account/passkeys", m.listPasskeys)
-	h("PATCH /api/account/passkeys/{id}", m.renamePasskey)
-	h("DELETE /api/account/passkeys/{id}", m.deletePasskey)
-	h("POST /api/account/passkeys/register/begin", m.registerPasskeyBegin)
-	h("POST /api/account/passkeys/register/finish", m.registerPasskeyFinish)
+	h("GET /api-internal/account/passkeys", m.listPasskeys)
+	h("PATCH /api-internal/account/passkeys/{id}", m.renamePasskey)
+	h("DELETE /api-internal/account/passkeys/{id}", m.deletePasskey)
+	h("POST /api-internal/account/passkeys/register/begin", m.registerPasskeyBegin)
+	h("POST /api-internal/account/passkeys/register/finish", m.registerPasskeyFinish)
 
-	h("POST /api/account/totp/begin", m.totpBegin)
-	h("POST /api/account/totp/confirm", m.totpConfirm)
-	h("DELETE /api/account/totp", m.totpDisable)
+	h("POST /api-internal/account/totp/begin", m.totpBegin)
+	h("POST /api-internal/account/totp/confirm", m.totpConfirm)
+	h("DELETE /api-internal/account/totp", m.totpDisable)
 
-	h("GET /api/account/reauth", m.reauthStatus)
-	h("POST /api/account/reauth", m.reauthPassword)
-	h("POST /api/account/reauth/passkey/begin", m.reauthPasskeyBegin)
-	h("POST /api/account/reauth/passkey/finish", m.reauthPasskeyFinish)
+	h("GET /api-internal/account/reauth", m.reauthStatus)
+	h("POST /api-internal/account/reauth", m.reauthPassword)
+	h("POST /api-internal/account/reauth/passkey/begin", m.reauthPasskeyBegin)
+	h("POST /api-internal/account/reauth/passkey/finish", m.reauthPasskeyFinish)
 
-	h("GET /api/account/sessions", m.listSessions)
-	h("DELETE /api/account/sessions/{id}", m.revokeSession)
-	h("DELETE /api/account/sessions", m.revokeOtherSessions)
+	h("GET /api-internal/account/sessions", m.listSessions)
+	h("DELETE /api-internal/account/sessions/{id}", m.revokeSession)
+	h("DELETE /api-internal/account/sessions", m.revokeOtherSessions)
 
-	h("GET /api/account/tokens", m.listTokens)
-	h("POST /api/account/tokens", m.createToken)
-	h("DELETE /api/account/tokens/{id}", m.deleteToken)
-	h("POST /api/account/tokens/{id}/regenerate", m.regenerateToken)
-	h("PATCH /api/account/tokens/{id}", m.updateToken)
+	h("GET /api-internal/account/tokens", m.listTokens)
+	h("POST /api-internal/account/tokens", m.createToken)
+	h("DELETE /api-internal/account/tokens/{id}", m.deleteToken)
+	h("POST /api-internal/account/tokens/{id}/regenerate", m.regenerateToken)
+	h("PATCH /api-internal/account/tokens/{id}", m.updateToken)
 
-	h("GET /api/account/providers", m.listProviders)
-	h("POST /api/account/providers/{id}/connect", m.connectProvider)
-	h("DELETE /api/account/providers/{id}", m.disconnectProvider)
+	h("GET /api-internal/account/providers", m.listProviders)
+	h("POST /api-internal/account/providers/{id}/connect", m.connectProvider)
+	h("DELETE /api-internal/account/providers/{id}", m.disconnectProvider)
 
-	h("GET /api/account/apps", m.listApps)
-	h("DELETE /api/account/apps/{client}", m.revokeApp)
+	h("GET /api-internal/account/apps", m.listApps)
+	h("DELETE /api-internal/account/apps/{client}", m.revokeApp)
 }
 
 // accountPage handles GET /account.
@@ -199,7 +199,7 @@ type profileReq struct {
 	Phone      *string `json:"phone_number"`
 }
 
-// patchAccount handles PATCH /api/account. Only profile fields can be sent; role, username and the like are
+// patchAccount handles PATCH /api-internal/account. Only profile fields can be sent; role, username and the like are
 // rejected by the strict decoder.
 func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 	var in profileReq
@@ -228,7 +228,7 @@ func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"user": toProfile(u)})
 }
 
-// sendVerify handles POST /api/account/email/verify: mails a confirmation link for the address on file.
+// sendVerify handles POST /api-internal/account/email/verify: mails a confirmation link for the address on file.
 func (m *Module) sendVerify(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	u, err := m.fresh(ctx, a)
@@ -296,7 +296,7 @@ func (m *Module) emailError(w http.ResponseWriter, err error) {
 	web.WriteError(w, err)
 }
 
-// primaryEmail handles POST /api/account/emails/{address}/primary. Needs a recent re-authentication.
+// primaryEmail handles POST /api-internal/account/emails/{address}/primary. Needs a recent re-authentication.
 func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return
@@ -310,7 +310,7 @@ func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"user": toProfile(u)})
 }
 
-// resendEmail handles POST /api/account/emails/{address}/verify: mails the verification link again.
+// resendEmail handles POST /api-internal/account/emails/{address}/verify: mails the verification link again.
 func (m *Module) resendEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	if m.Mail == nil {
 		writeErr(w, http.StatusServiceUnavailable, "Email is not set up on this server.", "")
@@ -365,7 +365,7 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 	return true
 }
 
-// changePassword handles POST /api/account/password: {current, new}. The current session survives; every other
+// changePassword handles POST /api-internal/account/password: {current, new}. The current session survives; every other
 // session of the user (and its refresh grants) is ended.
 func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) {
 	var in changePasswordReq
@@ -473,7 +473,7 @@ type reauthReq struct {
 	Code     string `json:"code"`
 }
 
-// reauthPassword handles POST /api/account/reauth: {password, code}. Re-authentication asks for what the account
+// reauthPassword handles POST /api-internal/account/reauth: {password, code}. Re-authentication asks for what the account
 // signs in with, second factor included: the password alone only for an account without one; the password and the
 // authenticator code for an account with the app (the code alone when it has no password); an account whose second
 // factor is a passkey confirms with the passkey (reauthPasskeyBegin / Finish).
@@ -882,7 +882,7 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// totpDisable handles DELETE /api/account/totp; it needs a re-authentication within the last five minutes.
+// totpDisable handles DELETE /api-internal/account/totp; it needs a re-authentication within the last five minutes.
 func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	if !m.needReauth(w, r, a) {
@@ -1149,7 +1149,7 @@ func (m *Module) mfaRequired(ctx context.Context, u *model.User) bool {
 	return err == nil && org.Settings.RequireMFA
 }
 
-// profileOptions handles GET /api/account/profile-options: the languages, time zones and user types the
+// profileOptions handles GET /api-internal/account/profile-options: the languages, time zones and user types the
 // autocompleters offer (the account page and the admin console). The same for everyone, so cacheable.
 func (m *Module) profileOptions(w http.ResponseWriter, r *http.Request, a acct) {
 	w.Header().Set("Cache-Control", "private, max-age=86400")

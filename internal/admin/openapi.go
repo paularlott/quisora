@@ -11,7 +11,7 @@ import (
 )
 
 // The OpenAPI 3.1 description of the management API. It is written out here (not generated from the handlers) and a
-// test checks that every registered /api/v1 route is described.
+// test checks that every registered /api route is described.
 
 type opDoc struct {
 	Method, Path, Tag, Summary string
@@ -23,7 +23,7 @@ type opDoc struct {
 }
 
 const (
-	pOrg  = "/api/v1/orgs/{org}"
+	pOrg  = "/api/orgs/{org}"
 	pUser = pOrg + "/users/{id}"
 )
 
@@ -34,8 +34,8 @@ var paramDocs = map[string]string{
 }
 
 var opDocs = []opDoc{
-	{"GET", "/api/v1/orgs", "Organizations", "List organizations (non-super callers see only their own)", "", "Org", 200, true, "name,display_name,created", nil},
-	{"POST", "/api/v1/orgs", "Organizations", "Create an organization (super admin)", "OrgInput", "Org", 201, false, "", nil},
+	{"GET", "/api/orgs", "Organizations", "List organizations (non-super callers see only their own)", "", "Org", 200, true, "name,display_name,created", nil},
+	{"POST", "/api/orgs", "Organizations", "Create an organization (super admin)", "OrgInput", "Org", 201, false, "", nil},
 	{"GET", pOrg, "Organizations", "Get an organization", "", "Org", 200, false, "", nil},
 	{"PATCH", pOrg, "Organizations", "Rename or edit an organization", "OrgInput", "Org", 200, false, "", nil},
 	{"DELETE", pOrg, "Organizations", "Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers", "", "Ok", 200, false, "", []string{"cascade"}},
@@ -75,7 +75,9 @@ var opDocs = []opDoc{
 	{"GET", pOrg + "/tenants", "Tenants", "List tenants (groups of applications sharing sign-in rules); each carries its client count", "", "Tenant", 200, true, "name,display_name,created", nil},
 	{"POST", pOrg + "/tenants", "Tenants", "Create a tenant", "TenantInput", "Tenant", 201, false, "", nil},
 	{"GET", pOrg + "/tenants/{id}", "Tenants", "Get a tenant", "", "Tenant", 200, false, "", nil},
-	{"PATCH", pOrg + "/tenants/{id}", "Tenants", "Update a tenant (name, display name, description, sign-in settings)", "TenantInput", "Tenant", 200, false, "", nil},
+	{"PATCH", pOrg + "/tenants/{id}", "Tenants", "Update a tenant (name, display name, description, sign-in settings, resources)", "TenantInput", "Tenant", 200, false, "", nil},
+	{"GET", pOrg + "/tenants/{id}/self-registered", "Tenants", "The self-registered applications users of this tenant have authorized, with how many users they hold access for", "", "SelfRegisteredApp", 200, true, "", nil},
+	{"DELETE", pOrg + "/tenants/{id}/self-registered/{client}", "Tenants", "End a self-registered application's access in the organization: every user's grants to it go; it can come back only by asking users again", "", "Ok", 200, false, "", nil},
 	{"DELETE", pOrg + "/tenants/{id}", "Tenants", "Delete a tenant; 409 while it still has clients", "", "Ok", 200, false, "", nil},
 	{"GET", pOrg + "/tenants/{id}/access", "Tenant access", "List the users and groups with access to the tenant's applications (q searches name and email)", "", "Access", 200, true, "name,type,expires,created", nil},
 	{"POST", pOrg + "/tenants/{id}/access", "Tenant access", "Give a user or group access; 409 when they already have it", "AccessInput", "Access", 201, false, "", nil},
@@ -99,13 +101,13 @@ var opDocs = []opDoc{
 	{"GET", pOrg + "/settings", "Settings", "Get organization settings", "", "Settings", 200, false, "", nil},
 	{"PUT", pOrg + "/settings", "Settings", "Update organization settings", "OrgInput", "Settings", 200, false, "", nil},
 	{"GET", pOrg + "/audit", "Audit", "List audit events, newest first by default. Also: source (store, cluster or victorialogs) and, in a gossip cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)", "", "Audit", 200, true, "action,created", nil},
-	{"GET", "/api/v1/audit", "Audit", "List the audit events of every organization (super admins), newest first by default; ?org=<name> for one. Items carry org_name; source, nodes and nodes_answered as for an organization's audit log", "", "Audit", 200, true, "action,created", []string{"org"}},
+	{"GET", "/api/audit", "Audit", "List the audit events of every organization (super admins), newest first by default; ?org=<name> for one. Items carry org_name; source, nodes and nodes_answered as for an organization's audit log", "", "Audit", 200, true, "action,created", []string{"org"}},
 
-	{"GET", "/api/v1/keys", "Keys", "List signing keys, newest first, with their state (super admin)", "", "Key", 200, true, "", nil},
-	{"POST", "/api/v1/keys/rotate", "Keys", "Rotate the signing key now (super admin): a new key signs from now on; the old one stays published until the tokens it signed have expired", "", "KeyRotated", 200, false, "", nil},
-	{"GET", "/api/v1/backup", "Backup", "Download a backup of the whole store (super admin, with an API token: the backup scope): every record, secrets still sealed with the master key. It is encrypted (AES-256-GCM, the key derived from the X-Backup-Password header by argon2id; application/octet-stream) unless ?plain=1 asks for it unencrypted (a gzip stream); one or the other is required (400 otherwise). \"quisora backup --server\" downloads it with ?plain=1 over TLS and encrypts it on the operator's machine, so the password never reaches the server. A point-in-time snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise). Restore it with \"quisora restore\" or \"quisora serve --restore-from\"", "", "Backup", 200, false, "", []string{"plain", "header:X-Backup-Password"}},
-	{"GET", "/api/v1/master-key", "Keys", "Where a master key rotation stands (super admin): the keys this node and every live node use, how many stored secrets are still sealed with a previous key or open with none, and whether the previous keys can be removed now (previous_keys_removable, state, detail). Reads every sealed value: a few seconds on a large directory", "", "MasterKey", 200, false, "", nil},
-	{"GET", "/api/v1/cluster", "Cluster", "This node's cluster status (super admin): size, quorum, every node with its address, state and role, readiness, and the counts of writes a majority did not confirm, refused writes and clock skew", "", "Cluster", 200, false, "", nil},
+	{"GET", "/api/keys", "Keys", "List signing keys, newest first, with their state (super admin)", "", "Key", 200, true, "", nil},
+	{"POST", "/api/keys/rotate", "Keys", "Rotate the signing key now (super admin): a new key signs from now on; the old one stays published until the tokens it signed have expired", "", "KeyRotated", 200, false, "", nil},
+	{"GET", "/api/backup", "Backup", "Download a backup of the whole store (super admin, with an API token: the backup scope): every record, secrets still sealed with the master key. It is encrypted (AES-256-GCM, the key derived from the X-Backup-Password header by argon2id; application/octet-stream) unless ?plain=1 asks for it unencrypted (a gzip stream); one or the other is required (400 otherwise). \"quisora backup --server\" downloads it with ?plain=1 over TLS and encrypts it on the operator's machine, so the password never reaches the server. A point-in-time snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise). Restore it with \"quisora restore\" or \"quisora serve --restore-from\"", "", "Backup", 200, false, "", []string{"plain", "header:X-Backup-Password"}},
+	{"GET", "/api/master-key", "Keys", "Where a master key rotation stands (super admin): the keys this node and every live node use, how many stored secrets are still sealed with a previous key or open with none, and whether the previous keys can be removed now (previous_keys_removable, state, detail). Reads every sealed value: a few seconds on a large directory", "", "MasterKey", 200, false, "", nil},
+	{"GET", "/api/cluster", "Cluster", "This node's cluster status (super admin): size, quorum, every node with its address, state and role, readiness, and the counts of writes a majority did not confirm, refused writes and clock skew", "", "Cluster", 200, false, "", nil},
 }
 
 type obj = map[string]any
@@ -194,11 +196,13 @@ func components() obj {
 	for k, v := range userProps {
 		userCreated["properties"].(obj)[k] = v
 	}
+	tenantResources := obj{"type": "array", "items": prop("string"), "description": "the APIs the tenant owns (resource indicators, RFC 8707: an MCP server's URL, say), unique across the server; a self-registered application asking for one is governed by this tenant"}
 	tenantSettings := schema(nil, obj{"members_only": obj{"type": "boolean", "description": "only users and groups with access (see Tenant access) may sign in to the tenant's applications; otherwise everyone in the organization may"},
 		"password_login": prop("boolean"), "passkey_login": prop("boolean"),
-		"all_providers": obj{"type": "boolean", "description": "allow every enabled provider of the organization, including future ones"},
-		"providers":     obj{"type": "array", "items": prop("string"), "description": "provider ids allowed when all_providers is false"},
-		"require_mfa":   obj{"type": "boolean", "description": "in addition to the organization setting"}})
+		"all_providers":     obj{"type": "boolean", "description": "allow every enabled provider of the organization, including future ones"},
+		"providers":         obj{"type": "array", "items": prop("string"), "description": "provider ids allowed when all_providers is false"},
+		"require_mfa":       obj{"type": "boolean", "description": "in addition to the organization setting"},
+		"self_registration": obj{"type": "boolean", "description": "applications that registered themselves (RFC 7591, or a Client ID Metadata Document) may sign users in for the tenant's resources; off by default"}})
 	clientProps := meta(obj{"org_id": prop("string"), "tenant_id": obj{"type": "string", "description": "tenant of this organization; defaults to the organization's default tenant"}, "name": prop("string"), "description": prop("string"),
 		"redirect_uris": strArr(), "post_logout_redirect_uris": strArr(), "backchannel_logout_uri": prop("string"),
 		"grant_types": strArr(), "scopes": strArr(),
@@ -305,9 +309,14 @@ func components() obj {
 		"TenantSettings": tenantSettings,
 		"Tenant": schema(nil, meta(obj{"org_id": prop("string"), "name": obj{"type": "string", "description": "URL-safe, unique in the organization"},
 			"display_name": prop("string"), "description": prop("string"), "settings": ref("TenantSettings"),
-			"clients": obj{"type": "integer", "description": "number of clients in the tenant"}})),
+			"resources": tenantResources,
+			"clients":   obj{"type": "integer", "description": "number of clients in the tenant"}})),
 		"TenantInput": schema(nil, obj{"name": prop("string"), "display_name": prop("string"), "description": prop("string"),
-			"settings": ref("TenantSettings")}),
+			"settings": ref("TenantSettings"), "resources": tenantResources}),
+		"SelfRegisteredApp": schema(nil, obj{"client_id": prop("string"), "name": obj{"type": "string", "description": "the name the application gave itself"},
+			"metadata_document": obj{"type": "boolean", "description": "client_id is the URL of its Client ID Metadata Document"},
+			"redirect_uris":     strArr(), "created": dateTime(), "last_used": dateTime(),
+			"users": obj{"type": "integer", "description": "users of the organization it holds access for"}}),
 		"Access": schema(nil, meta(obj{"org_id": prop("string"), "tenant_id": prop("string"),
 			"subject_type": obj{"type": "string", "enum": []string{"user", "group"}}, "subject_id": prop("string"),
 			"name": obj{"type": "string", "description": "the user's full name or the group's name"}, "detail": obj{"type": "string", "description": "the user's email address"},
@@ -361,6 +370,8 @@ func buildSpec() []byte {
 				desc := "id"
 				if n == "org" {
 					desc = "organization URL name"
+				} else if n == "id" && strings.Contains(d.Path, "/tenants/{id}") {
+					desc = "tenant id or name"
 				}
 				params = append(params, obj{"name": n, "in": "path", "required": true, "description": desc, "schema": prop("string")})
 			}
@@ -422,10 +433,10 @@ func buildSpec() []byte {
 	doc := obj{
 		"openapi": "3.1.0",
 		"info": obj{"title": "quisora management API", "version": "1",
-			"description": "Everything an administrator can do. The path prefix /api/v1 never changes; select the API version with the Api-Version header (currently 1). Without the header the oldest supported version is served.\n\n" +
+			"description": "Everything an administrator can do. The path prefix /api never changes; select the API version with the Api-Version header (currently 1). Without the header the oldest supported version is served.\n\n" +
 				"With a browser session, managers and above must have signed in with a second factor; otherwise every call answers 403 with field \"mfa\".\n\n" +
 				"SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).\n\n" +
-				"Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api/account (the signed-in user, session only) and the live-update stream at /api/v1/events (server-sent events: a browser session, or a token with the admin scope)."},
+				"Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api-internal/account (the signed-in user, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope)."},
 		"paths": paths,
 		"components": obj{
 			"schemas": comps,
@@ -452,7 +463,7 @@ func errResp(desc string) obj {
 func http_status(n int) string { return strconv.Itoa(n) }
 
 func opID(d opDoc) string {
-	r := strings.NewReplacer("/api/v1/", "", "/", "_", "{", "", "}", "")
+	r := strings.NewReplacer("/api/", "", "/", "_", "{", "", "}", "")
 	return strings.ToLower(d.Method) + "_" + r.Replace(d.Path)
 }
 

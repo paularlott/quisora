@@ -132,7 +132,7 @@ func (s *Server) serveGate(next http.Handler) http.Handler {
 		case strings.HasPrefix(p, "/oauth/") || strings.HasPrefix(p, "/.well-known/"):
 			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable",
 				"error_description": "this server is not ready to serve; try again shortly"})
-		case strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/scim/"):
+		case APIPath(p) || strings.HasPrefix(p, "/scim/"):
 			WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server is not ready to serve. Please try again shortly."})
 		default:
 			http.Error(w, "This server is not ready to serve. Please try again shortly.", http.StatusServiceUnavailable)
@@ -170,7 +170,7 @@ func (s *Server) writeGuard(next http.Handler) http.Handler {
 			switch r.Method {
 			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 				p := r.URL.Path
-				if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/scim/") {
+				if APIPath(p) || strings.HasPrefix(p, "/scim/") {
 					w.Header().Set("Retry-After", "5")
 					WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{
 						Error: "This server cannot reach the rest of the cluster. Please try again shortly."})

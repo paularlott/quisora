@@ -24,7 +24,7 @@ type providerItem struct {
 	Email     string `json:"email,omitempty"` // the address the provider gave when it was connected
 }
 
-// listProviders handles GET /api/account/providers: the organization's enabled providers and which are connected.
+// listProviders handles GET /api-internal/account/providers: the organization's enabled providers and which are connected.
 func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	ps, err := m.s.Svc.EnabledProviders(ctx, a.u.OrgID)
@@ -46,7 +46,7 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-// connectProvider handles POST /api/account/providers/{id}/connect: answers {url}, the provider's address to send
+// connectProvider handles POST /api-internal/account/providers/{id}/connect: answers {url}, the provider's address to send
 // the browser to; the callback attaches the identity (connectFinish).
 func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
@@ -129,7 +129,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	back("connected")
 }
 
-// disconnectProvider handles DELETE /api/account/providers/{id}; it refuses to remove the last way to sign in.
+// disconnectProvider handles DELETE /api-internal/account/providers/{id}; it refuses to remove the last way to sign in.
 func (m *Module) disconnectProvider(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return

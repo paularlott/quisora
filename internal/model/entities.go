@@ -1,6 +1,7 @@
 package model
 
 import (
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -274,6 +275,9 @@ type TenantSettings struct {
 	AllProviders  bool     `msgpack:"ap" json:"all_providers"` // every enabled provider of the org, including future ones
 	Providers     []string `msgpack:"p" json:"providers"`      // provider ids, when AllProviders is false
 	RequireMFA    bool     `msgpack:"mfa" json:"require_mfa"`  // in addition to the organization's setting
+	// SelfRegistration lets applications that registered themselves (Client.SelfRegistered, AI clients of an MCP
+	// server, say) sign users in for the tenant's resources (Tenant.Resources). Off by default.
+	SelfRegistration bool `msgpack:"sr,omitempty" json:"self_registration"`
 }
 
 // DefaultTenantSettings allows every sign-in method the organization allows, for everyone in it, with a second
@@ -293,18 +297,49 @@ type Tenant struct {
 	DisplayName string         `msgpack:"dn" json:"display_name"`
 	Description string         `msgpack:"d" json:"description,omitempty"`
 	Settings    TenantSettings `msgpack:"s" json:"settings"`
+	// Resources are the APIs (resource indicators, RFC 8707: an MCP server's URL, say) the tenant owns: unique
+	// across the server. A self-registered application asking for one of them is governed by this tenant.
+	Resources []string `msgpack:"res,omitempty" json:"resources"`
 }
 
 func (t *Tenant) Kind() Kind { return KindTenant }
 func (t *Tenant) Index() Index {
+	uniq := []string{TenantNameKey(t.OrgID, t.Name)}
+	for _, r := range t.Resources {
+		uniq = append(uniq, TenantResourceKey(r))
+	}
 	return Index{
 		Scope:  t.OrgID,
-		Unique: []string{TenantNameKey(t.OrgID, t.Name)},
+		Unique: uniq,
 		Fields: map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created},
 	}
 }
 
 func TenantNameKey(orgID, name string) string { return orgID + "/n/" + Lower(name) }
+
+// TenantResourceKey is the unique value claiming a resource for one tenant (server-wide): its canonical form, so
+// "https://MCP.example.com/mcp/" cannot be claimed by another tenant than "https://mcp.example.com/mcp".
+func TenantResourceKey(resource string) string { return "res/" + CanonicalResource(resource) }
+
+// CanonicalResource is a resource indicator compared loosely: scheme and host lower case, no default port, no
+// trailing slash on the path (the MCP authorization spec's canonical server URI). Not a URI: s itself.
+func CanonicalResource(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return s
+	}
+	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	if (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80") {
+		u.Host = u.Hostname()
+	}
+	if len(u.Path) > 1 {
+		u.Path = strings.TrimRight(u.Path, "/")
+	} else {
+		u.Path = ""
+	}
+	u.RawPath = ""
+	return u.String()
+}
 
 // Access subject types.
 const (
@@ -390,6 +425,25 @@ type Client struct {
 	// PKCEOptional lets a confidential client make authorization requests without PKCE (unset: PKCE required, as
 	// OAuth 2.1 does; public clients always need it). The management API shows it as require_pkce.
 	PKCEOptional bool `msgpack:"po" json:"-"`
+
+	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
+	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to
+	// no organization (OrgID and TenantID empty): each authorization request names resources, and the tenant that
+	// owns them (Tenant.Resources), if it allows self-registered apps, decides who may sign in and how. Always a
+	// public client with PKCE; consent is always asked.
+	SelfRegistered bool `msgpack:"sr,omitempty" json:"self_registered,omitempty"`
+	// MetadataFetched is when a metadata-document client's document was last read (zero for RFC 7591 ones).
+	MetadataFetched time.Time `msgpack:"mf,omitempty" json:"metadata_fetched,omitzero"`
+	// LastUsed is when a self-registered app was last given an authorization code; one never used is removed a day
+	// after it registered.
+	LastUsed time.Time `msgpack:"lu,omitempty" json:"last_used,omitzero"`
+	// UsedIn lists the tenants a self-registered app has been authorized in (for their administrators' lists).
+	UsedIn []string `msgpack:"ui,omitempty" json:"-"`
+}
+
+// IsMetadataClient reports whether the client's id is the URL of its Client ID Metadata Document.
+func (c *Client) IsMetadataClient() bool {
+	return c.SelfRegistered && strings.HasPrefix(c.ID, "https://")
 }
 
 // RequirePKCE reports whether authorization requests of the client must use PKCE (S256).
@@ -400,7 +454,7 @@ func (c *Client) Index() Index {
 	return Index{
 		Scope: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
-			"created": c.Created},
+			"created": c.Created, "self_registered": c.SelfRegistered},
 	}
 }
 

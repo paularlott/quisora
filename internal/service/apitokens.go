@@ -16,7 +16,7 @@ import (
 const (
 	ScopeSCIM  = "scim"  // SCIM 2.0 API (owner must be manager+; groups need admin)
 	ScopeAdmin = "admin" // admin JSON API
-	// ScopeBackup downloads backups of the whole store (GET /api/v1/backup): super admins only, and such a token
+	// ScopeBackup downloads backups of the whole store (GET /api/backup): super admins only, and such a token
 	// always expires within BackupTokenMaxDays — a backup holds every credential (sealed) of every organization.
 	ScopeBackup = "backup"
 	ScopeAPI    = "api" // for the user's own applications: validated by them through introspection

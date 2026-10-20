@@ -11,7 +11,8 @@
     <div>
       <p class="eyebrow">{{.Org.DisplayName}} · Tenant</p>
       <h1 class="page-title">Tenant: <span x-text="tenantTitle">{{.Data.TenantDisplay}}</span></h1>
-      <p class="page-sub"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span></p>
+      <p class="page-sub"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span>
+        · ID <span class="copy-id"><code class="mono" id="tenant-id">{{.Data.TenantID}}</code><button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyFrom" data-source="tenant-id" data-what="tenant ID" aria-label="Copy tenant ID" @click="copy"><span x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button></span></p>
     </div>
   </div>
 
@@ -77,6 +78,28 @@
       {{template "skeleton"}}
       {{template "empty" (dict "icon" "app" "title" "No clients in this tenant yet")}}
       {{template "pager"}}
+    </section>
+
+    <section class="glass-card" aria-labelledby="selfreg-h" x-data="tenantSelfReg" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/self-registered" x-show="tenant.settings.self_registration || hasItems">
+      <h2 class="section-title mb-1" id="selfreg-h" tabindex="-1">Self-registered apps</h2>
+      <p class="muted mb-4">Apps that registered themselves and that users of this tenant allowed, for the resources under Sign-in rules. Revoking one ends every user's access to it.</p>
+      <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+      <p class="muted" x-show="isEmpty" x-cloak>No self-registered app has been allowed yet.</p>
+      <div class="table-wrap" role="region" aria-label="Self-registered apps of this tenant" tabindex="0" x-show="hasItems" x-cloak>
+        <table class="table">
+          <caption class="sr-only">Self-registered apps of this tenant</caption>
+          <thead><tr><th scope="col">App</th><th scope="col">Sends sign-ins to</th><th scope="col">Users</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            <template x-for="row in items" :key="row.client_id"><tr>
+              <th scope="row" class="cell-title"><span x-text="row.name"></span><span class="cell-sub" x-text="row.kindText"></span></th>
+              <td><code class="mono" x-text="row.hostText"></code></td>
+              <td x-text="row.usersText"></td>
+              <td class="whitespace-nowrap" x-text="row.lastText"></td>
+              <td class="actions"><button type="button" class="btn btn-secondary btn-sm" :data-id="row.client_id" @click="revoke">Revoke<span class="sr-only" x-text="' ' + row.name"></span></button></td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
     </section>
   </div></template>
 

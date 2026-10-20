@@ -39,7 +39,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("wrong token: %d", code)
 	}
 	// a failed sign-in shows up in the audit counter
-	_, _ = hc.Post(base+"/api/login/password", "application/json", strings.NewReader(`{}`))
+	_, _ = hc.Post(base+"/api-internal/login/password", "application/json", strings.NewReader(`{}`))
 	code, body := get("scrape-secret")
 	if code != http.StatusOK {
 		t.Fatalf("with the token: %d", code)

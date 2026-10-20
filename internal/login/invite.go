@@ -42,7 +42,7 @@ type inviteBeginReq struct {
 	Token string `json:"token"`
 }
 
-// inviteBegin handles POST /api/invite/passkey/begin: {token} -> {challenge, options}.
+// inviteBegin handles POST /api-internal/invite/passkey/begin: {token} -> {challenge, options}.
 func (m *Module) inviteBegin(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return
@@ -78,7 +78,7 @@ type inviteCompleteReq struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// inviteComplete handles POST /api/invite/complete: {token, password?, challenge?, credential?, name?} using the
+// inviteComplete handles POST /api-internal/invite/complete: {token, password?, challenge?, credential?, name?} using the
 // link up. The password is set as the system (every older session ends), the passkey is stored, then the user is
 // signed in: straight away for a passkey, through the usual next step (second factor, MFA enrolment) after a
 // password.

@@ -27,7 +27,7 @@ those copies are the applications' responsibility.
 **Access.** An administrator of the user's organization has it all:
 
 - the user's record, its sessions, applications, tokens and connected providers (the console's user page, or
-  `GET /api/v1/orgs/{org}/users/{id}` and the `/sessions`, `/apps`, `/tokens` and `/providers` sub-resources);
+  `GET /api/orgs/{org}/users/{id}` and the `/sessions`, `/apps`, `/tokens` and `/providers` sub-resources);
 - the audit events about the user (search by username, or by id in VictoriaLogs).
 
 There is no one-click export yet: gather these into the answer.
@@ -35,7 +35,7 @@ There is no one-click export yet: gather these into the answer.
 **Correction.** Administrators edit every field; users edit their own profile on the account page (name, locale, time
 zone, phone, addresses).
 
-**Erasure.** Deleting the user (`DELETE /api/v1/orgs/{org}/users/{id}`) removes the user record and everything that
+**Erasure.** Deleting the user (`DELETE /api/orgs/{org}/users/{id}`) removes the user record and everything that
 belongs to it: sessions and refresh grants (applications are told through back-channel logout), passkeys, connected
 providers, API tokens, group memberships, sign-in records and access entries, and clears them as manager of others.
 

@@ -11,7 +11,7 @@ expected and why, and what was fixed because of the runs are in [docs/conformanc
 | `suite.patch` | One local change to the suite: it listens on port 8453 instead of 8443 (so it does not collide with `task run-server`). The tests themselves are unmodified; the seeded clients have Require PKCE turned off because the suite's OIDC client sends no PKCE. |
 | `node.sh` | Starts, stops and seeds the node under test (`https://host.docker.internal:8090`) and the fake provider. State goes in `.run/` (ignored). |
 | `run.sh`, `runall.sh` | Run one plan, or the four certification plans (config, basic, RP-initiated logout, back-channel logout). |
-| `rotate-keys.py` | Runs `oidcc-server-rotate-keys` with a real rotation between the module's set-up and start (the runner cannot): it signs in as the seeded super admin (password, then TOTP) and calls `POST /api/v1/keys/rotate` with that session. |
+| `rotate-keys.py` | Runs `oidcc-server-rotate-keys` with a real rotation between the module's set-up and start (the runner cannot): it signs in as the seeded super admin (password, then TOTP) and calls `POST /api/keys/rotate` with that session. |
 | `summ.py` | Each module's result from a run log, with the failure and warning messages, through the suite's API. |
 
 Development machines only: the node listens on all interfaces with a self-signed certificate, the fake provider

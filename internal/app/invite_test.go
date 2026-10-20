@@ -70,7 +70,7 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 		return doJSON(t, hc, "POST", base+p, map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf[1]}, bytes.NewReader(b))
 	}
 	tok := m[1][strings.Index(m[1], "token=")+6:]
-	code, out := post("/api/invite/complete", map[string]any{"token": tok, "password": "bootstrap admin password"})
+	code, out := post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "bootstrap admin password"})
 	if code != 200 || out["step"] != "enrol" || out["ticket"] == nil {
 		t.Fatalf("expected the enrolment step: %d %v", code, out)
 	}
@@ -78,11 +78,11 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 		t.Fatal("session before the second factor")
 	}
 	ticket := out["ticket"]
-	code, out = post("/api/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	code, out = post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
 	if code != 200 {
 		t.Fatalf("totp begin %d %v", code, out)
 	}
-	code, out = post("/api/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpNow(out["secret"].(string))})
+	code, out = post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpNow(out["secret"].(string))})
 	if code != 200 || out["next"] != "/account" {
 		t.Fatalf("totp confirm %d %v", code, out)
 	}
@@ -92,7 +92,7 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 	}
 	resp.Body.Close()
 	// The link is single use.
-	code, _ = post("/api/invite/complete", map[string]any{"token": tok, "password": "another admin password"})
+	code, _ = post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "another admin password"})
 	if code != 410 {
 		t.Fatalf("link reused: %d", code)
 	}

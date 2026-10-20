@@ -1,6 +1,7 @@
 {{template "auth" .}}{{define "content"}}
 <div x-data="oauthConsent" data-flow="{{.Data.Flow}}" class="stack">
   <h1 class="page-title">Authorize {{.Data.ClientName}}</h1>
+  {{if .Data.SelfRegistered}}<div class="alert alert-warning" role="note">{{template "icon" "alert"}}<span><strong>Not verified by your organization.</strong> This application registered itself; its name is what it calls itself. It will receive the result at <strong class="mono">{{.Data.RedirectHost}}</strong>. Allow it only if you started this from an application you trust.</span></div>{{end}}
   <div>
     <p>Signed in as <strong>{{.Data.Username}}</strong>. <strong>{{.Data.ClientName}}</strong> is asking to:</p>
     {{with .Data.Tenant}}<p class="help">Tenant: {{.}}</p>{{end}}

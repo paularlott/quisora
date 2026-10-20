@@ -32,7 +32,14 @@ func (m *Module) tenantView(ctx context.Context, a *service.Actor, t *model.Tena
 }
 
 func (m *Module) tenantFor(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor) (*model.Tenant, bool) {
-	t, err := m.s.Svc.GetTenant(r.Context(), a, r.PathValue("id"))
+	// {id} is the tenant's id or its name (the name the console shows and puts in its address)
+	ref := r.PathValue("id")
+	t, err := m.s.Svc.GetTenant(r.Context(), a, ref)
+	if err != nil {
+		if byName, nerr := m.s.Svc.Tenants.GetByUnique(r.Context(), model.TenantNameKey(org.ID, ref)); nerr == nil {
+			t, err = m.s.Svc.GetTenant(r.Context(), a, byName.ID)
+		}
+	}
 	if err != nil || t.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false
@@ -200,6 +207,33 @@ func (m *Module) removeAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := m.s.Svc.RemoveAccess(r.Context(), a, t.ID, r.PathValue("aid")); err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	ok(w)
+}
+
+// listSelfRegistered handles GET /tenants/{id}/self-registered: the self-registered applications authorized in it.
+func (m *Module) listSelfRegistered(w http.ResponseWriter, r *http.Request) {
+	t, a, found := m.accessTenant(w, r)
+	if !found {
+		return
+	}
+	items, err := m.s.Svc.SelfRegisteredApps(r.Context(), a, t.ID)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	writeList(w, items, len(items))
+}
+
+// revokeSelfRegistered handles DELETE /tenants/{id}/self-registered/{client}.
+func (m *Module) revokeSelfRegistered(w http.ResponseWriter, r *http.Request) {
+	t, a, found := m.accessTenant(w, r)
+	if !found {
+		return
+	}
+	if err := m.s.Svc.RevokeSelfRegisteredApp(r.Context(), a, t.ID, r.PathValue("client")); err != nil {
 		web.WriteError(w, err)
 		return
 	}

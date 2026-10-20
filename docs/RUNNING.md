@@ -56,7 +56,7 @@ it; the previous key stays published until the tokens it signed have expired, th
 Super admins see the keys under **Signing keys** in the primary organization's admin pages: each key's state
 (signing, next, previous) and when it starts signing, stops and is removed. **Rotate now** makes a key that signs at
 once (when a key may have been exposed); tokens signed before keep working until they expire. The same is
-`GET /api/v1/keys` and `POST /api/v1/keys/rotate`.
+`GET /api/keys` and `POST /api/keys/rotate`.
 
 ## Sessions, tokens and sensitive changes
 
@@ -139,7 +139,7 @@ docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kil
 ### Is it done? When can the old key go?
 
 Super admins see **Master key rotation** at the bottom of the admin menu while previous keys are configured. The
-same status is `GET /api/v1/master-key` (super admin). It shows:
+same status is `GET /api/master-key` (super admin). It shows:
 
 - the key every node seals with, and the previous keys every node holds;
 - how many stored secrets are still sealed with a previous key, how many open with no configured key, and how many
@@ -380,7 +380,7 @@ previous_keys = ["<old>"]     # rounds 1 and 2 only
 ```
 
 - The log says `cluster keys reloaded` (with the key ids: 8 characters derived from each key, revealing nothing) or
-  `cluster keys not reloaded` with the reason. The cluster page (and `GET /api/v1/cluster`) lists each node's key ids
+  `cluster keys not reloaded` with the reason. The cluster page (and `GET /api/cluster`) lists each node's key ids
   under `cluster_keys`, the one that encrypts first.
 - A reload is refused when the new keys do not include the key in use: a typo cannot cut a node off. Keys given on the
   command line cannot be reloaded.
@@ -400,7 +400,7 @@ pages read it from one of two places:
 | Gossip cluster            | Each node keeps its own; a page asks every node and merges, and says if a node did not answer | Every node sends; any node reads              |
 
 Admins see their own organization's events. Super admins also see every organization (`/admin/audit`,
-`GET /api/v1/audit?org=<name>`).
+`GET /api/audit?org=<name>`).
 
 **Production, and any deployment that needs SOC 2, must use VictoriaLogs.** The database audit trail keeps events for
 days, not the year or more an audit period needs; in a gossip cluster each node holds only its own slice, so a lost
@@ -540,7 +540,7 @@ QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quiso
 - `--plain` writes it unencrypted (secrets inside stay sealed with the master key).
 - `--server` downloads the backup unencrypted over TLS and encrypts it on your machine: the password never reaches the
   server.
-- `GET /api/v1/backup` needs either the password in the `X-Backup-Password` header (encrypted) or `?plain=1`
+- `GET /api/backup` needs either the password in the `X-Backup-Password` header (encrypted) or `?plain=1`
   (unencrypted); without one of them it answers 400.
 - `quisora backup quisora.bak` without `--server` reads the configured store directly. On BadgerDB and SQLite, stop the node
   first.
@@ -601,7 +601,7 @@ Until the first release, formats change in place. From then on:
 - `/healthz`: liveness.
 - `/readyz`: readiness, cluster-aware. Route load balancers on it. It reports size, quorum and counts of unconfirmed
   writes, refusals and clock skew.
-- `GET /api/v1/cluster` (super admins) and the console's settings page: the node's cluster status.
+- `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
 
 ### Metrics

@@ -126,9 +126,9 @@ function passkeyMixin() {
       this.conditional = new AbortController()
       const signal = this.conditional.signal
       try {
-        const begin = await anon('/api/login/passkey/begin', extra)
+        const begin = await anon('/api-internal/login/passkey/begin', extra)
         const credential = await getAssertion(begin.options, { conditional: true, signal })
-        const res = await anon('/api/login/passkey/finish', { challenge: begin.challenge, credential })
+        const res = await anon('/api-internal/login/passkey/finish', { challenge: begin.challenge, credential })
         this.afterPasskey(res)
       } catch (e) {
         if (!(e && e.name === 'AbortError')) { /* autofill is best effort: stay quiet */ }
@@ -143,9 +143,9 @@ function passkeyMixin() {
     async passkeyLogin(extra) {
       this.stopConditional()
       const res = await this.run(async () => {
-        const begin = await anon('/api/login/passkey/begin', extra)
+        const begin = await anon('/api-internal/login/passkey/begin', extra)
         const credential = await getAssertion(begin.options)
-        return anon('/api/login/passkey/finish', { challenge: begin.challenge, credential })
+        return anon('/api-internal/login/passkey/finish', { challenge: begin.challenge, credential })
       })
       if (res) this.afterPasskey(res)
     },
@@ -207,14 +207,14 @@ function stepsMixin() {
     },
 
     async submitTotp() {
-      const res = await this.call('', () => anon('/api/login/totp', { ticket: this.ticket, code: this.form.code }))
+      const res = await this.call('', () => anon('/api-internal/login/totp', { ticket: this.ticket, code: this.form.code }))
       if (res) this.handle(res)
     },
     confirmWithPasskey() { return this.passkeyLogin({ ticket: this.ticket }) },
 
     // ---- MFA enrolment
     async startTotpEnrol() {
-      const res = await this.call('', () => anon('/api/login/enrol/totp/begin', { ticket: this.ticket }))
+      const res = await this.call('', () => anon('/api-internal/login/enrol/totp/begin', { ticket: this.ticket }))
       if (!res) return
       this.qr = res.qr
       this.secret = res.secret
@@ -223,14 +223,14 @@ function stepsMixin() {
       this.focusFirst()
     },
     async confirmTotpEnrol() {
-      const res = await this.call('e', () => anon('/api/login/enrol/totp/confirm', { ticket: this.ticket, code: this.form.ecode }))
+      const res = await this.call('e', () => anon('/api-internal/login/enrol/totp/confirm', { ticket: this.ticket, code: this.form.ecode }))
       if (res) this.handle(res)
     },
     async enrolPasskey() {
       const res = await this.run(async () => {
-        const begin = await anon('/api/login/enrol/passkey/begin', { ticket: this.ticket })
+        const begin = await anon('/api-internal/login/enrol/passkey/begin', { ticket: this.ticket })
         const credential = await createCredential(begin.options)
-        return anon('/api/login/enrol/passkey/finish', { ticket: this.ticket, challenge: begin.challenge, name: 'Passkey', credential })
+        return anon('/api-internal/login/enrol/passkey/finish', { ticket: this.ticket, challenge: begin.challenge, name: 'Passkey', credential })
       })
       if (res) this.handle(res)
     },
@@ -306,7 +306,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Enter your password.', field: 'password' }))
         return
       }
-      const res = await this.call('', () => anon('/api/login/password', { org: this.org, email: f.email.trim(), password: f.password, next: this.next, tenant: this.tenant }))
+      const res = await this.call('', () => anon('/api-internal/login/password', { org: this.org, email: f.email.trim(), password: f.password, next: this.next, tenant: this.tenant }))
       if (res) { this.form.password = ''; this.handle(res) }
     },
     signInWithPasskey() { return this.passkeyLogin({ org: this.org, next: this.next, tenant: this.tenant }) },
@@ -326,7 +326,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Enter your email address.', field: 'fg_email' }))
         return
       }
-      const res = await this.call('fg_', () => anon('/api/password/forgot', { org: this.org, email: this.form.fg_email.trim() }))
+      const res = await this.call('fg_', () => anon('/api-internal/password/forgot', { org: this.org, email: this.form.fg_email.trim() }))
       if (res) { this.forgotSent = true; announce('If an account matches, a reset link is on its way.') }
     },
   }))
@@ -347,7 +347,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'The two passwords do not match.', field: 'confirm' }))
         return
       }
-      const res = await this.run(() => anon('/api/password/reset', { token: this.token, password: f.password }))
+      const res = await this.run(() => anon('/api-internal/password/reset', { token: this.token, password: f.password }))
       if (!res) return
       this.nextUrl = localPath(res.next) ? res.next : '/'
       this.done = true
@@ -387,7 +387,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'The two passwords do not match.', field: 'confirm' }))
         return
       }
-      const res = await this.call('', () => anon('/api/invite/complete', { token: this.token, password: f.password }))
+      const res = await this.call('', () => anon('/api-internal/invite/complete', { token: this.token, password: f.password }))
       if (res) { this.form.password = this.form.confirm = ''; this.handle(res) }
     },
     async createPasskey() {
@@ -396,11 +396,11 @@ export default function (Alpine) {
         if ((f.password || f.confirm) && f.password !== f.confirm) {
           throw new ApiError(422, { error: 'The two passwords do not match.', field: 'confirm' })
         }
-        const begin = await anon('/api/invite/passkey/begin', { token: this.token })
+        const begin = await anon('/api-internal/invite/passkey/begin', { token: this.token })
         const credential = await createCredential(begin.options)
         const body = { token: this.token, challenge: begin.challenge, name: 'Passkey', credential }
         if (this.passwordOn && f.password) body.password = f.password
-        return anon('/api/invite/complete', body)
+        return anon('/api-internal/invite/complete', body)
       })
       if (res) { this.form.password = this.form.confirm = ''; this.handle(res) }
     },

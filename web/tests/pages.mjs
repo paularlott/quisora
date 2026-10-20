@@ -9,7 +9,7 @@ const userStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Al
 
 // Reload the account page with the security summary altered (the demo user has a password and no Authenticator App).
 export const accountStub = (security) => async (p) => {
-  await p.route('**/api/account', async (route) => {
+  await p.route('**/api-internal/account', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback()
     const res = await route.fetch()
     const body = await res.json()
@@ -102,11 +102,11 @@ export const PAGES = [
   // An edit dialog whose record another administrator changed: the non-modal notice inside the dialog.
   { name: 'users-edit-notice', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
       const id = uniq('notice')
-      const u = await apiCall(p, 'POST', '/api/v1/orgs/acme/users', { username: id, email: id + '@acme.example', given_name: 'Notice', family_name: id })
+      const u = await apiCall(p, 'POST', '/api/orgs/acme/users', { username: id, email: id + '@acme.example', given_name: 'Notice', family_name: id })
       await p.getByRole('searchbox', { name: 'Search users' }).fill(id)
       await p.getByRole('button', { name: 'Edit Notice ' + id }).click()
       await p.waitForTimeout(450)
-      await apiCall(p, 'PATCH', `/api/v1/orgs/acme/users/${u.id}`, { family_name: 'Renamed ' + id })
+      await apiCall(p, 'PATCH', `/api/orgs/acme/users/${u.id}`, { family_name: 'Renamed ' + id })
       await p.locator('.edit-notice .alert').waitFor({ timeout: 4000 })
       await p.waitForTimeout(300)
     }] },

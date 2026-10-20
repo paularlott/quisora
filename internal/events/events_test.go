@@ -26,7 +26,7 @@ func TestHubScoping(t *testing.T) {
 	}
 	h.OrgOfUser = func(id string) string { return map[string]string{"u1": "org-a"}[id] }
 	h.Publish(&store.Record{Kind: model.KindUser, ID: "u1", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindLink, ID: "l1", Scope: "u1"})   // not streamed
+	h.Publish(&store.Record{Kind: model.KindLink, ID: "l1", Scope: "u1"})    // not streamed
 	h.Publish(&store.Record{Kind: model.KindSession, ID: "s1", Scope: "u1"}) // a user's own record: their org only
 	h.Publish(&store.Record{Kind: model.KindUser, ID: "u2", Deleted: true})  // scope unknown
 	h.Publish(&store.Record{Kind: model.KindOrg, ID: "org-b", Scope: ""})    // org record

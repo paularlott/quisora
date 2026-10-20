@@ -190,7 +190,7 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 	// 3. password sign-in on node 0
 	body, _ := json.Marshal(map[string]string{"org": "acme", "email": "jane@acme.test", "password": "correct horse battery",
 		"next": lu.Query().Get("next"), "tenant": lu.Query().Get("tenant")})
-	code, out := doJSON(t, hc, "POST", nextNode()+"/api/login/password", map[string]string{"Content-Type": "application/json",
+	code, out := doJSON(t, hc, "POST", nextNode()+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
 		"X-CSRF-Token": string(m[1]), "Origin": publicURL}, strings.NewReader(string(body)))
 	if code != 200 || out["next"] == nil {
 		t.Fatalf("password sign-in: %d %v", code, out)

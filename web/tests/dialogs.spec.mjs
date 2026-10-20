@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 import { signIn, apiCall, uniq, axe, fmt } from './helpers.mjs'
 
 const A = '/admin/orgs/acme'
-const API = '/api/v1/orgs/acme'
+const API = '/api/orgs/acme'
 
 // A click on the backdrop, well outside the dialog panel.
 async function clickOutside(page) { await page.mouse.click(8, 8) }
@@ -252,17 +252,17 @@ test('providers: each type shows its own fields; Microsoft takes a directory and
 test('account: sign-in providers can be connected (after confirming it is you) and disconnected', async ({ page }) => {
   await signIn(page, 'user')
   let connected = false
-  await page.route('**/api/account/providers', (route) => route.request().method() === 'GET'
+  await page.route('**/api-internal/account/providers', (route) => route.request().method() === 'GET'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [
       { id: 'p1', name: 'Acme SSO', type: 'oidc', connected, email: connected ? 'alan@acme.example' : '' }] }) })
     : route.fallback())
   let begins = 0
-  await page.route('**/api/account/providers/p1/connect', (route) => {
+  await page.route('**/api-internal/account/providers/p1/connect', (route) => {
     begins++
     if (begins === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/account?provider=connected#providers' }) })
   })
-  await page.route('**/api/account/reauth', (route) => route.request().method() === 'POST'
+  await page.route('**/api-internal/account/reauth', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
   await page.goto('/account', { waitUntil: 'load' })
   await expect(page.locator('#providers')).toContainText('Acme SSO')

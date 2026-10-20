@@ -40,7 +40,7 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 		}
 		if st.Stale > 0 || st.LegacyGrants > 0 {
 			return fmt.Errorf("%d secrets and %d refresh grants still need %v (state %s): keep it in "+
-				"server.previous_master_keys until GET /api/v1/master-key says complete", st.Stale, st.LegacyGrants,
+				"server.previous_master_keys until GET /api/master-key says complete", st.Stale, st.LegacyGrants,
 				dropped, st.State)
 		}
 	}

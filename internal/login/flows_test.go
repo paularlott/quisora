@@ -45,22 +45,22 @@ func TestRequireMFAEnrolTOTP(t *testing.T) {
 		t.Fatalf("account reachable without enrolment: %d", res.StatusCode)
 	}
 	// confirm before begin
-	res, out = b.post("/api/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": "123456"})
+	res, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": "123456"})
 	wantStatus(t, res, out, 409)
 
-	res, out = b.post("/api/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	res, out = b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
 	wantStatus(t, res, out, 200)
 	secret := str(out, "secret")
 	if secret == "" || !strings.HasPrefix(str(out, "uri"), "otpauth://totp/") || !strings.Contains(str(out, "uri"), secret) ||
 		!strings.HasPrefix(str(out, "qr"), "data:image/svg+xml;base64,") {
 		t.Fatalf("begin response %v", out)
 	}
-	res, out = b.post("/api/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": "000000"})
+	res, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": "000000"})
 	wantStatus(t, res, out, 401)
 	if b.hasSession() {
 		t.Fatal("session before enrolment")
 	}
-	res, out = b.post("/api/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	res, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
 	if !b.hasSession() {
 		t.Fatalf("no session after enrolment: %v", out)
@@ -76,7 +76,7 @@ func TestRequireMFAEnrolTOTP(t *testing.T) {
 		t.Fatal("stored secret differs or is not sealed")
 	}
 	// the ticket is spent
-	res, out = b.post("/api/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	res, out = b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
 	wantStatus(t, res, out, 401)
 	// next sign-in asks for the code
 	_, out = e.browser(t).login("acme", "pat", userPassword)
@@ -93,7 +93,7 @@ func TestRequireMFAEnrolPasskeyThenUseIt(t *testing.T) {
 	b := e.browser(t)
 	_, out := b.login("acme", "pat", userPassword)
 	ticket := str(out, "ticket")
-	res, begin := b.post("/api/login/enrol/passkey/begin", map[string]any{"ticket": ticket})
+	res, begin := b.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": ticket})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	cred, _, err := b.auth.Create(opts)
@@ -101,10 +101,10 @@ func TestRequireMFAEnrolPasskeyThenUseIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	// wrong ticket
-	res, out = b.post("/api/login/enrol/passkey/finish", map[string]any{"ticket": "n1.nope", "challenge": begin["challenge"],
+	res, out = b.post("/api-internal/login/enrol/passkey/finish", map[string]any{"ticket": "n1.nope", "challenge": begin["challenge"],
 		"credential": json.RawMessage(cred)})
 	wantStatus(t, res, out, 401)
-	res, out = b.post("/api/login/enrol/passkey/finish", map[string]any{"ticket": ticket, "challenge": begin["challenge"], "name": "Key",
+	res, out = b.post("/api-internal/login/enrol/passkey/finish", map[string]any{"ticket": ticket, "challenge": begin["challenge"], "name": "Key",
 		"credential": json.RawMessage(cred)})
 	wantStatus(t, res, out, 200)
 	if !b.hasSession() {
@@ -122,14 +122,14 @@ func TestRequireMFAEnrolPasskeyThenUseIt(t *testing.T) {
 		t.Fatalf("expected passkey step: %v", out)
 	}
 	tk := str(out, "ticket")
-	res, begin = b2.post("/api/login/passkey/begin", map[string]any{"ticket": tk})
+	res, begin = b2.post("/api-internal/login/passkey/begin", map[string]any{"ticket": tk})
 	wantStatus(t, res, begin, 200)
 	if !strings.Contains(str(begin, "_raw"), "allowCredentials") || strings.Contains(str(begin, "_raw"), `"allowCredentials":[]`) {
 		t.Fatalf("known-user ceremony should list the user's credentials: %s", begin["_raw"])
 	}
 	opts, _ = json.Marshal(begin["options"])
 	assertion, _, _ := b2.auth.Get(opts)
-	res, out = b2.post("/api/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	res, out = b2.post("/api-internal/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
 	wantStatus(t, res, out, 200)
 	found := false
 	for _, s := range sessionsOf(t, e, pat) {
@@ -143,11 +143,11 @@ func TestRequireMFAEnrolPasskeyThenUseIt(t *testing.T) {
 	// a passkey ticket cannot be used for enrolment or the TOTP step
 	_, out = e.browser(t).login("acme", "pat", userPassword)
 	b3 := e.browser(t)
-	for _, p := range []string{"/api/login/enrol/totp/begin", "/api/login/enrol/passkey/begin"} {
+	for _, p := range []string{"/api-internal/login/enrol/totp/begin", "/api-internal/login/enrol/passkey/begin"} {
 		res, o := b3.post(p, map[string]any{"ticket": str(out, "ticket")})
 		wantStatus(t, res, o, 401)
 	}
-	res, o := b3.post("/api/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": "123456"})
+	res, o := b3.post("/api-internal/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": "123456"})
 	wantStatus(t, res, o, 401)
 
 	// A passkey sign-in on its own satisfies the requirement.
@@ -188,7 +188,7 @@ func TestForgotAndReset(t *testing.T) {
 	var bodies []string
 	for _, tr := range []map[string]any{{"org": "acme", "email": "ghost@example.com"}, {"org": "nope", "email": "pat@example.com"}, {"org": "acme", "email": "gone@example.com"},
 		{"org": "acme", "email": "pat@example.com"}} {
-		res, out := b.post("/api/password/forgot", tr)
+		res, out := b.post("/api-internal/password/forgot", tr)
 		wantStatus(t, res, out, 200)
 		bodies = append(bodies, str(out, "_raw"))
 	}
@@ -221,7 +221,7 @@ func TestForgotAndReset(t *testing.T) {
 	tok := strings.TrimPrefix(link, "/reset?token=")
 
 	// A weak password does not burn the link.
-	res2, out := b.post("/api/password/reset", map[string]any{"token": tok, "password": "short"})
+	res2, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "short"})
 	wantStatus(t, res2, out, 422)
 	if str(out, "field") != "password" {
 		t.Fatalf("weak password: %v", out)
@@ -229,13 +229,13 @@ func TestForgotAndReset(t *testing.T) {
 	if res, _ := b.get(link); res.StatusCode != 200 {
 		t.Fatal("weak password burnt the link")
 	}
-	res2, out = b.post("/api/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
+	res2, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
 	wantStatus(t, res2, out, 200)
 	if str(out, "next") != "/login/acme" {
 		t.Fatalf("reset response %v", out)
 	}
 	// single use
-	res2, out = b.post("/api/password/reset", map[string]any{"token": tok, "password": "another new password"})
+	res2, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "another new password"})
 	wantStatus(t, res2, out, http.StatusGone)
 	if res, _ := b.get(link); res.StatusCode != http.StatusGone {
 		t.Fatal("link still valid after use")
@@ -266,7 +266,7 @@ func TestResetClearsLockout(t *testing.T) {
 		t.Fatal(err)
 	}
 	tok := strings.TrimPrefix(linkPath(t, e.nextMail(t)), "/reset?token=")
-	res, out = b.post("/api/password/reset", map[string]any{"token": tok, "password": "yet another password"})
+	res, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "yet another password"})
 	wantStatus(t, res, out, 200)
 	res, out = b.login("acme", "pat", "yet another password")
 	wantStatus(t, res, out, 200)
@@ -278,7 +278,7 @@ func TestForgotThrottleAndDisabledPassword(t *testing.T) {
 	e.user(t, org, "pat", model.RoleUser)
 	b := e.browser(t)
 	for range 8 {
-		res, out := b.post("/api/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
+		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
 		wantStatus(t, res, out, 200)
 	}
 	n := 0
@@ -297,7 +297,7 @@ func TestForgotThrottleAndDisabledPassword(t *testing.T) {
 	// org without password sign-in: nothing is mailed
 	org2 := e.org(t, "nopw", func(s *model.OrgSettings) { s.PasswordLogin = false })
 	e.user(t, org2, "sam", model.RoleUser) // has a password, but the org does not allow password sign-in
-	res, out := b.post("/api/password/forgot", map[string]any{"org": "nopw", "email": "sam@example.com"})
+	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "nopw", "email": "sam@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
 	// the "forgot" form does not appear on that org's page, and appears for others
@@ -312,7 +312,7 @@ func TestEmailVerification(t *testing.T) {
 	org := e.org(t, "acme", nil)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	signed := e.signedIn(t, pat)
-	res, out := signed.post("/api/account/email/verify", nil)
+	res, out := signed.post("/api-internal/account/email/verify", nil)
 	wantStatus(t, res, out, 200)
 	link := linkPath(t, e.nextMail(t))
 	if !strings.HasPrefix(link, "/verify-email?token=") {
@@ -331,7 +331,7 @@ func TestEmailVerification(t *testing.T) {
 	if res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("reused link: %q", res.Header.Get("Location"))
 	}
-	res, out = signed.post("/api/account/email/verify", nil)
+	res, out = signed.post("/api-internal/account/email/verify", nil)
 	wantStatus(t, res, out, 409)
 
 	// A token for an address the user has since changed is refused.
@@ -340,7 +340,7 @@ func TestEmailVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	signed2 := e.signedIn(t, pat)
-	signed2.post("/api/account/email/verify", nil)
+	signed2.post("/api-internal/account/email/verify", nil)
 	link2 := linkPath(t, e.nextMail(t))
 	third := "third@example.com"
 	e.Svc.UpdateUser(context.Background(), service.System, pat.ID, service.UserInput{Email: &third})
@@ -354,10 +354,10 @@ func TestNoMailerDisablesLinks(t *testing.T) {
 	e := newEnv(t, nil)
 	e.Mod.Mail = nil // as when no mailer is wired in
 	b := e.browser(t)
-	res, out := b.post("/api/password/forgot", map[string]any{"org": "primary", "email": "admin@example.com"})
+	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "primary", "email": "admin@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
-	res, out = b.post("/api/password/reset", map[string]any{"token": "x", "password": "a long enough password"})
+	res, out = b.post("/api-internal/password/reset", map[string]any{"token": "x", "password": "a long enough password"})
 	wantStatus(t, res, out, 410) // links are durable service records: they resolve with or without a mailer
 	if res, _ := b.get("/reset?token=x"); res.StatusCode != http.StatusGone {
 		t.Fatalf("reset page: %d", res.StatusCode)
@@ -388,7 +388,7 @@ func TestUnusablePasskeyIsNoSecondFactor(t *testing.T) {
 	}
 	// and the account page says why
 	s := e.signedIn(t, pat)
-	res, out = s.api("GET", "/api/account/passkeys", nil)
+	res, out = s.api("GET", "/api-internal/account/passkeys", nil)
 	wantStatus(t, res, out, 200)
 	if l := items(t, out); len(l) != 1 || l[0]["problem"] != "unverified" {
 		t.Fatalf("problem not reported: %v", out["_raw"])
@@ -408,7 +408,7 @@ func TestPasskeyLimit(t *testing.T) {
 	}
 	b := e.signedIn(t, pat)
 	b.markReauth()
-	res, out := b.api("POST", "/api/account/passkeys/register/begin", nil)
+	res, out := b.api("POST", "/api-internal/account/passkeys/register/begin", nil)
 	wantStatus(t, res, out, 409)
 }
 

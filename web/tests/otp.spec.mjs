@@ -59,14 +59,14 @@ test('Authenticator App on: "Set up again…" (add or change phones) asks to re-
   await accountStub({ totp: true })(page)
   // the server asks for a re-authentication first; the stubbed reauth then lets the begin through
   let begins = 0
-  await page.route('**/api/account/totp/begin', (route) => {
+  await page.route('**/api-internal/account/totp/begin', (route) => {
     begins++
     if (begins === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', qr: 'data:image/svg+xml;base64,PHN2Zy8+', uri: 'otpauth://totp/x' }) })
   })
-  await page.route('**/api/account/reauth', (route) => route.request().method() === 'POST'
+  await page.route('**/api-internal/account/reauth', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
-  await page.route('**/api/account/totp/confirm', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }))
+  await page.route('**/api-internal/account/totp/confirm', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }))
   await expect(page.getByRole('button', { name: /Remove… Authenticator App/ })).toBeVisible()
   await page.getByRole('button', { name: /Set up again… Authenticator App/ }).click()
   const reauth = page.getByRole('dialog', { name: 'Confirm it is you' })

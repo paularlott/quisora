@@ -1,4 +1,4 @@
-// Live updates: ONE EventSource per page to /api/v1/events, shared by every component on the page.
+// Live updates: ONE EventSource per page to /api/events, shared by every component on the page.
 // Components subscribe to the record kinds they show; the stream says only "something of this kind changed", and
 // they refetch through the normal API. Accessibility rules enforced here:
 //   - nothing in this module moves focus;
@@ -29,7 +29,7 @@ export function useStream(path) { streamPath = path }
 function streamUrl() {
   if (streamPath) return streamPath
   const m = document.querySelector('meta[name="live-org"]')
-  return '/api/v1/events' + (m && m.content ? '?org=' + encodeURIComponent(m.content) : '')
+  return '/api/events' + (m && m.content ? '?org=' + encodeURIComponent(m.content) : '')
 }
 
 function emit(ev) {

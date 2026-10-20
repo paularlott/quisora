@@ -88,7 +88,7 @@ func (m *Module) rotateKeys(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"rotated": true})
 }
 
-// clusterStatus reports this node's cluster status (GET /api/v1/cluster). Super admins only.
+// clusterStatus reports this node's cluster status (GET /api/cluster). Super admins only.
 func (m *Module) clusterStatus(w http.ResponseWriter, r *http.Request) {
 	if !web.Actor(r).IsSuper() {
 		web.WriteError(w, service.ErrForbidden)

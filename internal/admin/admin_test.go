@@ -194,8 +194,8 @@ func wantField(t *testing.T, r resp, status int, field string) {
 }
 
 const (
-	A  = "/api/v1/orgs/acme"
-	G  = "/api/v1/orgs/globex"
+	A  = "/api/orgs/acme"
+	G  = "/api/orgs/globex"
 	AU = A + "/users"
 )
 
@@ -205,7 +205,7 @@ func TestOrgs(t *testing.T) {
 	w := newWorld(t)
 	su := w.as("super")
 
-	r := su.get("/api/v1/orgs")
+	r := su.get("/api/orgs")
 	want(t, r, 200)
 	if r.total() != 3 || len(r.items()) != 3 { // primary, acme, globex
 		t.Fatalf("list: %s", r.Raw)
@@ -219,64 +219,64 @@ func TestOrgs(t *testing.T) {
 	}
 
 	// search, sort, pagination
-	r = su.get("/api/v1/orgs?q=glob")
+	r = su.get("/api/orgs?q=glob")
 	if r.total() != 1 || r.items()[0].(map[string]any)["name"] != "globex" {
 		t.Fatalf("search: %s", r.Raw)
 	}
-	r = su.get("/api/v1/orgs?sort=name&desc=1")
+	r = su.get("/api/orgs?sort=name&desc=1")
 	if r.items()[0].(map[string]any)["name"] != "primary" {
 		t.Fatalf("sort desc: %s", r.Raw)
 	}
-	r = su.get("/api/v1/orgs?sort=name&limit=2&offset=2")
+	r = su.get("/api/orgs?sort=name&limit=2&offset=2")
 	if r.total() != 3 || len(r.items()) != 1 {
 		t.Fatalf("page: %s", r.Raw)
 	}
-	wantField(t, su.get("/api/v1/orgs?sort=password"), 422, "")
+	wantField(t, su.get("/api/orgs?sort=password"), 422, "")
 
 	// create
-	r = su.post("/api/v1/orgs", map[string]any{"name": "initech", "display_name": "Initech"})
+	r = su.post("/api/orgs", map[string]any{"name": "initech", "display_name": "Initech"})
 	want(t, r, 201)
-	wantField(t, su.post("/api/v1/orgs", map[string]any{"name": "Bad Name"}), 422, "name")
-	wantField(t, su.post("/api/v1/orgs", map[string]any{"name": "admin"}), 422, "name") // reserved
-	want(t, su.post("/api/v1/orgs", map[string]any{"name": "initech"}), 409)
-	want(t, su.post("/api/v1/orgs", map[string]any{"name": "x1", "bogus": 1}), 400)
+	wantField(t, su.post("/api/orgs", map[string]any{"name": "Bad Name"}), 422, "name")
+	wantField(t, su.post("/api/orgs", map[string]any{"name": "admin"}), 422, "name") // reserved
+	want(t, su.post("/api/orgs", map[string]any{"name": "initech"}), 409)
+	want(t, su.post("/api/orgs", map[string]any{"name": "x1", "bogus": 1}), 400)
 
 	// read + update
-	want(t, su.get("/api/v1/orgs/initech"), 200)
-	r = su.patch("/api/v1/orgs/initech", map[string]any{"display_name": "Initech Ltd"})
+	want(t, su.get("/api/orgs/initech"), 200)
+	r = su.patch("/api/orgs/initech", map[string]any{"display_name": "Initech Ltd"})
 	want(t, r, 200)
 	if r.str("display_name") != "Initech Ltd" {
 		t.Fatal(string(r.Raw))
 	}
-	want(t, su.get("/api/v1/orgs/nope"), 404)
+	want(t, su.get("/api/orgs/nope"), 404)
 
 	// delete: refuses a non-empty org without cascade, primary is protected
-	want(t, su.delete("/api/v1/orgs/globex"), 409)
-	want(t, su.delete("/api/v1/orgs/primary"), 409)
-	want(t, su.delete("/api/v1/orgs/globex?cascade=1"), 200)
-	want(t, su.get("/api/v1/orgs/globex"), 404)
-	want(t, su.delete("/api/v1/orgs/initech"), 200)
+	want(t, su.delete("/api/orgs/globex"), 409)
+	want(t, su.delete("/api/orgs/primary"), 409)
+	want(t, su.delete("/api/orgs/globex?cascade=1"), 200)
+	want(t, su.get("/api/orgs/globex"), 404)
+	want(t, su.delete("/api/orgs/initech"), 200)
 
 	// permissions
 	ad := w.as("admin")
-	r = ad.get("/api/v1/orgs")
+	r = ad.get("/api/orgs")
 	if r.total() != 1 || r.items()[0].(map[string]any)["name"] != "acme" {
 		t.Fatalf("admin sees %s", r.Raw)
 	}
 	if r.items()[0].(map[string]any)["users"] != nil {
 		t.Error("user counts are for super admins only")
 	}
-	want(t, ad.post("/api/v1/orgs", map[string]any{"name": "mine"}), 403)
-	want(t, ad.delete("/api/v1/orgs/acme"), 403)
-	want(t, ad.get("/api/v1/orgs/primary"), 404)
-	want(t, ad.patch("/api/v1/orgs/acme", map[string]any{"display_name": "Acme Inc"}), 200)
-	want(t, w.as("manager").patch("/api/v1/orgs/acme", map[string]any{"display_name": "x"}), 403)
+	want(t, ad.post("/api/orgs", map[string]any{"name": "mine"}), 403)
+	want(t, ad.delete("/api/orgs/acme"), 403)
+	want(t, ad.get("/api/orgs/primary"), 404)
+	want(t, ad.patch("/api/orgs/acme", map[string]any{"display_name": "Acme Inc"}), 200)
+	want(t, w.as("manager").patch("/api/orgs/acme", map[string]any{"display_name": "x"}), 403)
 }
 
 func TestAuthAndCSRF(t *testing.T) {
 	w := newWorld(t)
-	want(t, w.anon().get("/api/v1/orgs"), 401)
-	want(t, w.anon().post("/api/v1/orgs", map[string]any{"name": "x"}), 401)
+	want(t, w.anon().get("/api/orgs"), 401)
+	want(t, w.anon().post("/api/orgs", map[string]any{"name": "x"}), 401)
 
 	ad := w.as("admin")
 	c := &caller{w: w, c: ad.c} // session cookie without CSRF header
@@ -461,11 +461,11 @@ func TestUserRolePermissions(t *testing.T) {
 	for _, p := range []string{AU, A + "/groups", A + "/settings"} {
 		want(t, ot.get(p), 404)
 	}
-	want(t, ot.get("/api/v1/keys"), 403)
+	want(t, ot.get("/api/keys"), 403)
 
 	// only super admins grant super_admin, and only in the primary org
 	su := w.as("super")
-	want(t, su.post("/api/v1/orgs/primary/users", map[string]any{"given_name": "T", "username": "boss", "email": "boss@x.example", "role": "super_admin"}), 201)
+	want(t, su.post("/api/orgs/primary/users", map[string]any{"given_name": "T", "username": "boss", "email": "boss@x.example", "role": "super_admin"}), 201)
 	want(t, su.post(AU, map[string]any{"given_name": "T", "username": "boss", "email": "boss@x.example", "role": "super_admin"}), 403)
 	want(t, w.as("admin").post(AU, map[string]any{"given_name": "T", "username": "boss2", "email": "boss2@x.example", "role": "super_admin"}), 403)
 }
@@ -480,7 +480,7 @@ func TestPasswordAndSessions(t *testing.T) {
 
 	// removing a password: 204, has_password turns false, sessions end, idempotent
 	victim := w.as("user")
-	want(t, victim.get("/api/v1/orgs"), 200)
+	want(t, victim.get("/api/orgs"), 200)
 	want(t, ad.delete(AU+"/"+id+"/password"), 204)
 	u, _ := w.env.Svc.Users.Get(context.Background(), id)
 	if u.PasswordHash != "" {
@@ -490,15 +490,15 @@ func TestPasswordAndSessions(t *testing.T) {
 		t.Fatalf("has_password: %s", r.Raw)
 	}
 	w.env.Server.Sessions.Evict("", id)
-	want(t, victim.get("/api/v1/orgs"), 401)
+	want(t, victim.get("/api/orgs"), 401)
 	want(t, ad.delete(AU+"/"+id+"/password"), 204)
 
 	// revoking sessions signs the user out (the next API call is 401)
 	victim = w.as("user")
-	want(t, victim.get("/api/v1/orgs"), 200)
+	want(t, victim.get("/api/orgs"), 200)
 	want(t, ad.delete(AU+"/"+id+"/sessions"), 200)
 	w.env.Server.Sessions.Evict("", id)
-	want(t, victim.get("/api/v1/orgs"), 401)
+	want(t, victim.get("/api/orgs"), 401)
 	want(t, ad.delete(AU+"/nope/sessions"), 404)
 }
 
@@ -838,8 +838,8 @@ func TestSettings(t *testing.T) {
 	wantField(t, ad.put(A+"/settings", map[string]any{"name": "Not Valid"}), 422, "name")
 	r = ad.put(A+"/settings", map[string]any{"name": "acme2", "display_name": "Acme Two"})
 	want(t, r, 200)
-	want(t, ad.get("/api/v1/orgs/acme/settings"), 404) // renamed: the URL name changed
-	want(t, ad.get("/api/v1/orgs/acme2/settings"), 200)
+	want(t, ad.get("/api/orgs/acme/settings"), 404) // renamed: the URL name changed
+	want(t, ad.get("/api/orgs/acme2/settings"), 200)
 }
 
 func TestAudit(t *testing.T) {
@@ -887,7 +887,7 @@ func TestKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r := su.get("/api/v1/keys")
+	r := su.get("/api/keys")
 	want(t, r, 200)
 	states := map[string]string{}
 	for _, it := range r.items() {
@@ -903,18 +903,18 @@ func TestKeys(t *testing.T) {
 	if first := r.items()[0].(map[string]any)["id"]; first != "k-next" {
 		t.Fatalf("not newest first: %v", first)
 	}
-	want(t, su.post("/api/v1/keys/rotate", nil), 501)
-	want(t, w.as("admin").get("/api/v1/keys"), 403)
-	want(t, w.as("admin").post("/api/v1/keys/rotate", nil), 403)
+	want(t, su.post("/api/keys/rotate", nil), 501)
+	want(t, w.as("admin").get("/api/keys"), 403)
+	want(t, w.as("admin").post("/api/keys/rotate", nil), 403)
 }
 
-// GET /api/v1/backup streams a complete backup of the live store; super admins only. It is encrypted with the
+// GET /api/backup streams a complete backup of the live store; super admins only. It is encrypted with the
 // password in X-Backup-Password, or unencrypted with ?plain=1; one or the other must be asked for.
 func TestBackupDownload(t *testing.T) {
 	w := newWorld(t)
-	want(t, w.as("super").get("/api/v1/backup"), 400)
-	want(t, w.as("super").do("GET", "/api/v1/backup", nil, "X-Backup-Password", "short"), 400)
-	enc := w.as("super").do("GET", "/api/v1/backup", nil, "X-Backup-Password", "correct horse battery")
+	want(t, w.as("super").get("/api/backup"), 400)
+	want(t, w.as("super").do("GET", "/api/backup", nil, "X-Backup-Password", "short"), 400)
+	enc := w.as("super").do("GET", "/api/backup", nil, "X-Backup-Password", "correct horse battery")
 	want(t, enc, 200)
 	if !backup.PasswordProtected(enc.Raw) || enc.Header.Get("Content-Type") != "application/octet-stream" {
 		t.Fatalf("encrypted download: %v", enc.Header)
@@ -922,7 +922,7 @@ func TestBackupDownload(t *testing.T) {
 	if _, err := backup.Verify(bytes.NewReader(enc.Raw), w.env.Svc.Sealer, "correct horse battery"); err != nil {
 		t.Fatal(err)
 	}
-	r := w.as("super").get("/api/v1/backup?plain=1")
+	r := w.as("super").get("/api/backup?plain=1")
 	want(t, r, 200)
 	if r.Header.Get("Content-Type") != "application/gzip" || !strings.Contains(r.Header.Get("Content-Disposition"), "attachment") {
 		t.Fatalf("headers %v", r.Header)
@@ -934,10 +934,10 @@ func TestBackupDownload(t *testing.T) {
 	if n, _ := w.env.Svc.Users.Count(context.Background(), ""); stats[model.KindUser] != n {
 		t.Fatalf("backup has %d users, the store %d", stats[model.KindUser], n)
 	}
-	want(t, w.as("admin").get("/api/v1/backup"), 403)
+	want(t, w.as("admin").get("/api/backup"), 403)
 	// a token needs the backup scope (admin is not enough); only super admins get it, and it expires within 30 days
-	want(t, w.withBearer("super", "admin").get("/api/v1/backup"), 403)
-	want(t, w.withBearer("super", "api").get("/api/v1/backup"), 403)
+	want(t, w.withBearer("super", "admin").get("/api/backup"), 403)
+	want(t, w.withBearer("super", "api").get("/api/backup"), 403)
 	_, tok, err := w.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(w.env.Admin, ""),
 		service.APITokenInput{Name: "b", Scopes: []string{"backup"}, Expires: 7})
 	if err != nil {
@@ -945,7 +945,7 @@ func TestBackupDownload(t *testing.T) {
 	}
 	c := w.withBearer("super", "api")
 	c.bearer = tok
-	want(t, c.get("/api/v1/backup?plain=1"), 200)
+	want(t, c.get("/api/backup?plain=1"), 200)
 	for name, in := range map[string]service.APITokenInput{
 		"no expiry": {Name: "b", Scopes: []string{"backup"}},
 		"too long":  {Name: "b", Scopes: []string{"backup"}, Expires: 31},
@@ -960,7 +960,7 @@ func TestBackupDownload(t *testing.T) {
 	}
 	// a node that is not ready (catching up, cut off) refuses rather than back up a partial store
 	w.env.Server.Health = notReady{}
-	want(t, w.as("super").get("/api/v1/backup?plain=1"), 503)
+	want(t, w.as("super").get("/api/backup?plain=1"), 503)
 	w.env.Server.Health = nil
 	if n := len(auditActions(t, w, "backup.download")); n < 2 {
 		t.Fatalf("backup downloads audited: %d", n)
@@ -992,31 +992,31 @@ func TestBearerAndVersioning(t *testing.T) {
 	want(t, mt.post(AU, map[string]any{"given_name": "T", "username": "viabearer", "email": "viabearer@x.example"}), 201)
 	want(t, mt.post(AU, map[string]any{"given_name": "T", "username": "viabearer2", "email": "viabearer2@x.example", "role": "admin"}), 403)
 	want(t, mt.get(A+"/clients"), 403)
-	want(t, mt.get("/api/v1/orgs/globex/users"), 404)
-	want(t, mt.get("/api/v1/keys"), 403)
+	want(t, mt.get("/api/orgs/globex/users"), 404)
+	want(t, mt.get("/api/keys"), 403)
 
 	// admin token: no CSRF needed, can administer its org but not create orgs
 	at := w.withBearer("admin", service.ScopeAdmin)
 	want(t, at.post(A+"/groups", map[string]any{"display_name": "viatoken"}), 201)
-	want(t, at.post("/api/v1/orgs", map[string]any{"name": "nope"}), 403)
-	want(t, at.get("/api/v1/orgs/primary"), 404)
+	want(t, at.post("/api/orgs", map[string]any{"name": "nope"}), 403)
+	want(t, at.get("/api/orgs/primary"), 404)
 
 	// super admin token
 	st := w.withBearer("super", service.ScopeAdmin)
-	want(t, st.post("/api/v1/orgs", map[string]any{"name": "viabearer"}), 201)
-	want(t, st.get("/api/v1/keys"), 200)
-	want(t, st.get("/api/v1/orgs/globex/users"), 200)
+	want(t, st.post("/api/orgs", map[string]any{"name": "viabearer"}), 201)
+	want(t, st.get("/api/keys"), 200)
+	want(t, st.get("/api/orgs/globex/users"), 200)
 
 	// wrong scope, bad token, missing token
 	api := w.withBearer("super", service.ScopeAPI)
-	want(t, api.get("/api/v1/orgs"), 403)
+	want(t, api.get("/api/orgs"), 403)
 	bad := &caller{w: w, c: detach(w.env.Client()), bearer: "qsr_nope_nope"}
-	want(t, bad.get("/api/v1/orgs"), 401)
-	want(t, w.anon().get("/api/v1/orgs"), 401)
+	want(t, bad.get("/api/orgs"), 401)
+	want(t, w.anon().get("/api/orgs"), 401)
 
 	// version negotiation
-	want(t, st.do("GET", "/api/v1/orgs", nil, "Api-Version", "1"), 200)
-	r = st.do("GET", "/api/v1/orgs", nil, "Api-Version", "2")
+	want(t, st.do("GET", "/api/orgs", nil, "Api-Version", "1"), 200)
+	r = st.do("GET", "/api/orgs", nil, "Api-Version", "2")
 	wantField(t, r, 400, "")
 	if r.Header.Get("Api-Version") != "1" {
 		t.Error("an unsupported version is answered with the latest supported one")
@@ -1050,7 +1050,7 @@ func TestPages(t *testing.T) {
 	} {
 		body := html(ad, p.path, 200)
 		for _, s := range []string{`x-data="` + p.comp + `"`, `<meta name="csrf-token" content="`, `aria-label="Primary"`, `class="skip-link"`,
-			`<h1 `, `/api/v1/orgs/acme`, `theme-boot-`, `lang="en"`} {
+			`<h1 `, `/api/orgs/acme`, `theme-boot-`, `lang="en"`} {
 			if !strings.Contains(body, s) {
 				t.Errorf("%s missing %q", p.path, s)
 			}
@@ -1067,7 +1067,7 @@ func TestPages(t *testing.T) {
 		t.Error("aria-current")
 	}
 	// super admin administering another org: the nav shows that org
-	if b := html(su, "/admin/orgs/globex/users", 200); !strings.Contains(b, "Globex") || !strings.Contains(b, `/api/v1/orgs/globex`) {
+	if b := html(su, "/admin/orgs/globex/users", 200); !strings.Contains(b, "Globex") || !strings.Contains(b, `/api/orgs/globex`) {
 		t.Error("super admin on another org")
 	}
 
@@ -1168,16 +1168,16 @@ func TestTenantPage(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, string(b), res.Header.Get("Location")
 	}
-	st := ad.post("/api/v1/orgs/acme/tenants", map[string]any{"name": "staff", "display_name": "Staff tools"})
+	st := ad.post("/api/orgs/acme/tenants", map[string]any{"name": "staff", "display_name": "Staff tools"})
 	want(t, st, 201)
-	want(t, su.post("/api/v1/orgs/globex/tenants", map[string]any{"name": "theirs", "display_name": "Theirs"}), 201)
+	want(t, su.post("/api/orgs/globex/tenants", map[string]any{"name": "theirs", "display_name": "Theirs"}), 201)
 
 	code, body, _ := get(ad, "/admin/orgs/acme/tenants/staff")
 	if code != 200 {
 		t.Fatalf("tenant page: %d", code)
 	}
 	for _, s := range []string{`x-data="adminTenant"`, `aria-label="Breadcrumb"`, `aria-current="page"`, "Tenant: Staff tools", `data-tenant="` + st.str("id") + `"`,
-		`/api/v1/orgs/acme`, `href="/admin/orgs/acme/tenants"`} {
+		`/api/orgs/acme`, `href="/admin/orgs/acme/tenants"`} {
 		if !strings.Contains(body, s) {
 			t.Errorf("tenant page missing %q", s)
 		}
@@ -1223,7 +1223,7 @@ func TestTenantPage(t *testing.T) {
 func TestClientScopeAndGets(t *testing.T) {
 	w := newWorld(t)
 	ad, su := w.as("admin"), w.as("super")
-	A, G := "/api/v1/orgs/acme", "/api/v1/orgs/globex"
+	A, G := "/api/orgs/acme", "/api/orgs/globex"
 	ta := ad.post(A+"/tenants", map[string]any{"name": "a1", "display_name": "A1"})
 	tb := ad.post(A+"/tenants", map[string]any{"name": "a2", "display_name": "A2"})
 	tg := su.post(G+"/tenants", map[string]any{"name": "g1", "display_name": "G1"})
@@ -1579,7 +1579,7 @@ func TestRemovedUserFieldsRejected(t *testing.T) {
 func TestClientListFieldsRoundTrip(t *testing.T) {
 	w := newWorld(t)
 	ad := w.as("admin")
-	A := "/api/v1/orgs/acme"
+	A := "/api/orgs/acme"
 	body := map[string]any{"name": "Lists", "redirect_uris": []string{"https://a.example/cb", " ", "com.example.app:/callback", "https://a.example/cb2"},
 		"post_logout_redirect_uris": []string{"https://a.example/bye", "https://a.example/bye2"},
 		"backchannel_logout_uri":    "https://a.example/logout",
@@ -1760,9 +1760,9 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 	settings.SessionIdle = 600
 	victim := w.users["manager"].ID
 	for name, call := range map[string]func(c *caller) resp{
-		"delete an organization":        func(c *caller) resp { return c.delete("/api/v1/orgs/globex?cascade=1") },
-		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/v1/keys/rotate", nil) },
-		"primary org sign-in settings":  func(c *caller) resp { return c.patch("/api/v1/orgs/primary", map[string]any{"settings": settings}) },
+		"delete an organization":        func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
+		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
+		"primary org sign-in settings":  func(c *caller) resp { return c.patch("/api/orgs/primary", map[string]any{"settings": settings}) },
 		"make someone an administrator": func(c *caller) resp { return c.patch(AU+"/"+victim, map[string]any{"role": "admin"}) },
 		"create an administrator": func(c *caller) resp {
 			return c.post(AU, map[string]any{"username": "boss", "email": "boss@x.example", "given_name": "B", "role": "admin"})
@@ -1783,5 +1783,27 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 	}
 	// ordinary changes need none
 	fresh = false
-	want(t, su.patch("/api/v1/orgs/acme", map[string]any{"display_name": "Acme Ltd"}), 200)
+	want(t, su.patch("/api/orgs/acme", map[string]any{"display_name": "Acme Ltd"}), 200)
+}
+
+// A tenant is addressed by its id or by its name (the console shows and links by name); another organization's
+// tenant name never resolves.
+func TestTenantByName(t *testing.T) {
+	w := newWorld(t)
+	ad := w.as("admin")
+	T := A + "/tenants"
+	r := ad.post(T, map[string]any{"name": "mcp", "display_name": "MCP", "resources": []string{"https://mcp.example.com/mcp"},
+		"settings": map[string]any{"password_login": true, "passkey_login": true, "all_providers": true, "self_registration": true}})
+	want(t, r, 201)
+	id := r.str("id")
+	byName := ad.get(T + "/mcp")
+	want(t, byName, 200)
+	if byName.str("id") != id {
+		t.Fatalf("by name: %s", byName.Raw)
+	}
+	want(t, ad.patch(T+"/mcp", map[string]any{"display_name": "MCP servers"}), 200)
+	want(t, ad.get(T+"/mcp/self-registered"), 200)
+	want(t, ad.get(T+"/no-such-tenant"), 404)
+	want(t, w.as("other").get(G+"/tenants/mcp"), 404) // globex has no tenant named mcp
+	want(t, w.as("other").get(A+"/tenants/mcp"), 404) // and acme's is not theirs
 }

@@ -49,19 +49,19 @@ VictoriaLogs) by target, actor, action or `request_id`.
 **An administrator's account may be compromised.**
 1. Disable the account (it ends every session and refresh grant at once), or remove its password and send a new
    invitation.
-2. Revoke its API tokens (`DELETE /api/v1/orgs/{org}/users/{id}/tokens/{token}`).
+2. Revoke its API tokens (`DELETE /api/orgs/{org}/users/{id}/tokens/{token}`).
 3. Review what it did: the audit log with that actor. Look for new administrators, new clients or providers, changed
    organization settings, invitations, and backups downloaded.
 4. If it was a super admin, also consider the steps for the master key and the signing keys below.
 
-**A user's account may be compromised.** Revoke its sessions (`DELETE /api/v1/orgs/{org}/users/{id}/sessions`), remove
+**A user's account may be compromised.** Revoke its sessions (`DELETE /api/orgs/{org}/users/{id}/sessions`), remove
 its password and send a new invitation (it resets the second factor too), and review the applications it consented
 to (`oauth.consent`, `oauth.grant`).
 
-**A client secret leaked.** Rotate it (`POST /api/v1/orgs/{org}/clients/{id}/secret`); the old one stops working at
+**A client secret leaked.** Rotate it (`POST /api/orgs/{org}/clients/{id}/secret`); the old one stops working at
 once. Revoke the client's grants by disabling the client if tokens may have been issued with it.
 
-**Signing keys may be exposed.** Rotate now (the console's Signing keys page, or `POST /api/v1/keys/rotate`). The new
+**Signing keys may be exposed.** Rotate now (the console's Signing keys page, or `POST /api/keys/rotate`). The new
 key signs at once; tokens signed with the old one keep working until they expire (`tokens.access_ttl`, 10 minutes by
 default).
 

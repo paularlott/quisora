@@ -253,7 +253,7 @@ func (b *browser) login(org, who, password string) (*http.Response, map[string]a
 	if who != "" && !strings.Contains(who, "@") {
 		who += "@example.com"
 	}
-	return b.post("/api/login/password", map[string]any{"org": org, "email": who, "password": password})
+	return b.post("/api-internal/login/password", map[string]any{"org": org, "email": who, "password": password})
 }
 
 // signedIn returns a browser holding a session for u (created directly) and its CSRF token.

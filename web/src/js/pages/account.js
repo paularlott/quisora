@@ -1,5 +1,5 @@
 // Account page: profile, password, passkeys, Authenticator App, sessions, API tokens, connected apps. Every form
-// submits through /api/account (session + CSRF); errors appear inline next to the field and are announced.
+// submits through /api-internal/account (session + CSRF); errors appear inline next to the field and are announced.
 import { ApiError, get, post, patch, del } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { subscribe, liveRunner, useStream } from '../lib/live.js'
@@ -50,7 +50,7 @@ export async function withReauth(Alpine, fn, opener, vm) {
 // one of kinds changes. The page's stream is the signed-in user's own: an administrator adding an address, a sign-in
 // on another device, a verification link followed in another tab.
 function liveSelf(kinds, fn) {
-  useStream('/api/account/events')
+  useStream('/api-internal/account/events')
   const run = liveRunner(fn)
   subscribe(kinds, () => run.trigger())
 }
@@ -64,7 +64,7 @@ function accountStore(Alpine) {
     _p: null,
     load(force = false) {
       if (this._p && !force) return this._p
-      this._p = get('/api/account').then((r) => {
+      this._p = get('/api-internal/account').then((r) => {
         this.user = r.user; this.org = r.org; this.security = r.security; this.loaded = true
         return r
       }).catch((e) => { this._p = null; throw e })
@@ -107,7 +107,7 @@ export default function (Alpine) {
     // ensure resolves true at once when the session was re-authenticated recently.
     async ensure(opener) {
       const o = opener || document.activeElement
-      try { if ((await get('/api/account/reauth')).valid) return true } catch { /* ask below */ }
+      try { if ((await get('/api-internal/account/reauth')).valid) return true } catch { /* ask below */ }
       return this.ask(o)
     },
   })
@@ -146,14 +146,14 @@ export default function (Alpine) {
       const body = {}
       if (this.askPassword) body.password = this.form.ra_password
       if (this.askCode) body.code = this.form.ra_code
-      const res = await this.runIn('ra_', () => post('/api/account/reauth', body))
+      const res = await this.runIn('ra_', () => post('/api-internal/account/reauth', body))
       if (res) this.done()
     },
     async reauthPasskey() {
       const res = await this.runIn('ra_', async () => {
-        const begin = await post('/api/account/reauth/passkey/begin')
+        const begin = await post('/api-internal/account/reauth/passkey/begin')
         const credential = await getAssertion(begin.options)
-        return post('/api/account/reauth/passkey/finish', { challenge: begin.challenge, credential })
+        return post('/api-internal/account/reauth/passkey/finish', { challenge: begin.challenge, credential })
       })
       if (res) this.done()
     },
@@ -204,7 +204,7 @@ export default function (Alpine) {
       const opener = document.activeElement
       const body = { ...this.form }
       delete body.email // shown, never changed here
-      const res = await this.runIn('', () => withReauth(Alpine, () => patch('/api/account', body), opener, this))
+      const res = await this.runIn('', () => withReauth(Alpine, () => patch('/api-internal/account', body), opener, this))
       if (!res) return
       toast('Profile saved.')
       const r = await Alpine.store('account').reload()
@@ -213,7 +213,7 @@ export default function (Alpine) {
     async sendVerification() {
       if (this.verifyBusy) return
       this.verifyBusy = true
-      try { await post('/api/account/email/verify'); toast('Verification email sent.') } catch (e) { toast(e.message, 'error') } finally { this.verifyBusy = false }
+      try { await post('/api-internal/account/email/verify'); toast('Verification email sent.') } catch (e) { toast(e.message, 'error') } finally { this.verifyBusy = false }
     },
   }))
 
@@ -223,7 +223,7 @@ export default function (Alpine) {
   Alpine.data('accountEmails', () => mix(formMixin(), scoped(), emailsMixin({
     self: true, canResend: true, manage: false,
     load: async () => (await Alpine.store('account').load()).user,
-    url: (s) => '/api/account/emails' + s,
+    url: (s) => '/api-internal/account/emails' + s,
     guard: (fn, opener, vm) => withReauth(Alpine, fn, opener, vm),
     changed: () => { Alpine.store('account').reload(); window.dispatchEvent(new CustomEvent('account-emails-changed')) },
   }), {
@@ -260,7 +260,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'The two passwords do not match.', field: 'pw_confirm' }))
         return
       }
-      const res = await this.runIn('pw_', () => post('/api/account/password', { current: f.pw_current, new: f.pw_new }))
+      const res = await this.runIn('pw_', () => post('/api-internal/account/password', { current: f.pw_current, new: f.pw_new }))
       if (!res) return
       this.closeDlg('password-dialog')
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })
@@ -279,7 +279,7 @@ export default function (Alpine) {
     },
     async load() {
       try {
-        const r = await get('/api/account/passkeys')
+        const r = await get('/api-internal/account/passkeys')
         this.available = r.available
         this.items = r.items.map((p) => ({ ...p, createdText: fmtDate(p.created), lastText: relTime(p.last_used, 'Never used'),
           kind: p.backup_eligible ? (p.backup_state ? 'Synced passkey' : 'Passkey (can be synced)') : 'Device-bound passkey',
@@ -313,9 +313,9 @@ export default function (Alpine) {
       const name = (this.form.pk_name || '').trim()
       const opener = document.activeElement
       const res = await this.runIn('pk_', () => withReauth(Alpine, async () => {
-        const begin = await post('/api/account/passkeys/register/begin')
+        const begin = await post('/api-internal/account/passkeys/register/begin')
         const credential = await createCredential(begin.options)
-        return post('/api/account/passkeys/register/finish', { challenge: begin.challenge, name, credential })
+        return post('/api-internal/account/passkeys/register/finish', { challenge: begin.challenge, name, credential })
       }, opener, this))
       if (!res) return
       this.closeDlg('add-passkey-dialog')
@@ -331,7 +331,7 @@ export default function (Alpine) {
       this.openDlg('rename-passkey-dialog', ev.currentTarget)
     },
     async rename() {
-      const res = await this.runIn('rn_', () => patch('/api/account/passkeys/' + enc(this.renaming.id), { name: (this.form.rn_name || '').trim() }))
+      const res = await this.runIn('rn_', () => patch('/api-internal/account/passkeys/' + enc(this.renaming.id), { name: (this.form.rn_name || '').trim() }))
       if (!res) return
       this.closeDlg('rename-passkey-dialog')
       toast('Passkey renamed.')
@@ -345,7 +345,7 @@ export default function (Alpine) {
         detail: 'You will no longer be able to sign in with it. Remove it from your device or password manager too.', confirmLabel: 'Delete passkey' })
       if (!ok) return
       try {
-        await withReauth(Alpine, () => del('/api/account/passkeys/' + enc(p.id)), opener)
+        await withReauth(Alpine, () => del('/api-internal/account/passkeys/' + enc(p.id)), opener)
         toast('Passkey deleted.')
         await this.load()
         Alpine.store('account').reload()
@@ -383,7 +383,7 @@ export default function (Alpine) {
     beginAgain(ev) { return this.start(ev.currentTarget, true) },
     async start(opener, replacing) {
       this.replacing = replacing
-      const res = await this.runIn('totp_', () => withReauth(Alpine, () => post('/api/account/totp/begin'), opener, this))
+      const res = await this.runIn('totp_', () => withReauth(Alpine, () => post('/api-internal/account/totp/begin'), opener, this))
       if (!res) return
       this.qr = res.qr
       this.secret = res.secret
@@ -391,7 +391,7 @@ export default function (Alpine) {
       this.openDlg('totp-dialog', opener)
     },
     async confirm() {
-      const res = await this.runIn('totp_', () => post('/api/account/totp/confirm', { code: this.form.totp_code }))
+      const res = await this.runIn('totp_', () => post('/api-internal/account/totp/confirm', { code: this.form.totp_code }))
       if (!res) return
       this.closeDlg('totp-dialog')
       this.secret = this.qr = ''
@@ -409,7 +409,7 @@ export default function (Alpine) {
       // the confirm dialog's own focus return runs on close; give reauth the row button as its opener
       if (!(await Alpine.store('reauth').ensure(opener))) return
       try {
-        await del('/api/account/totp')
+        await del('/api-internal/account/totp')
         toast('Authenticator App removed.')
         await Alpine.store('account').reload()
         await this.refresh()
@@ -423,7 +423,7 @@ export default function (Alpine) {
     init() { liveSelf(['session'], () => this.load()); return this.load() },
     async load() {
       try {
-        const r = await get('/api/account/sessions')
+        const r = await get('/api-internal/account/sessions')
         this.items = r.items.map((s) => ({ ...s, agent: describeAgent(s.user_agent), lastText: s.current ? 'Now' : relTime(s.last_seen),
           createdText: fmtDateTime(s.created), notCurrent: !s.current, revokeLabel: 'Sign out ' + describeAgent(s.user_agent) + ' at ' + s.ip,
           methods: (s.amr || []).join(', ') }))
@@ -439,14 +439,14 @@ export default function (Alpine) {
       const ok = await Alpine.store('confirm').ask({ title: 'Sign out session', message: `Sign out ${s.agent} (${s.ip})?`,
         detail: 'That device will have to sign in again.', confirmLabel: 'Sign out' })
       if (!ok) return
-      try { await del('/api/account/sessions/' + enc(s.id)); toast('Session signed out.'); await this.load() } catch (e) { toast(e.message, 'error') }
+      try { await del('/api-internal/account/sessions/' + enc(s.id)); toast('Session signed out.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },
     async revokeOthers() {
       const ok = await Alpine.store('confirm').ask({ title: 'Sign out other sessions', message: 'Sign out everywhere else?',
         detail: 'Every other browser and device will have to sign in again. This session stays signed in.', confirmLabel: 'Sign out others' })
       if (!ok) return
       try {
-        const r = await del('/api/account/sessions')
+        const r = await del('/api-internal/account/sessions')
         toast('Other sessions signed out.')
         await this.load()
         announce(`${r && r.revoked || 0} sessions signed out.`)
@@ -461,7 +461,7 @@ export default function (Alpine) {
     init() { liveSelf(['apitoken'], () => this.load()); return this.load() },
     async load() {
       try {
-        const r = await get('/api/account/tokens')
+        const r = await get('/api-internal/account/tokens')
         this.scopes = r.scopes
         this.maxDays = r.max_days
         this.scopeChoices = r.scopes.map((s) => ({ value: s, label: SCOPE_TEXT[s] || s }))
@@ -524,7 +524,7 @@ export default function (Alpine) {
       const t = this.editingToken
       const opener = document.activeElement
       const body = { name: (f.tk_name || '').trim(), audience: this.forApps ? f.tk_audience : [], app_scopes: this.tokenScopesPicked() }
-      const res = await this.runIn('tk_', () => withReauth(Alpine, () => patch('/api/account/tokens/' + enc(t.id), body), opener, this))
+      const res = await this.runIn('tk_', () => withReauth(Alpine, () => patch('/api-internal/account/tokens/' + enc(t.id), body), opener, this))
       if (!res) return
       this.closeDlg('token-dialog')
       toast('Token saved.')
@@ -534,7 +534,7 @@ export default function (Alpine) {
       const f = this.form
       const days = String(f.tk_expires_days || '').trim()
       const opener = document.activeElement
-      const res = await this.runIn('tk_', () => withReauth(Alpine, () => post('/api/account/tokens', { name: (f.tk_name || '').trim(),
+      const res = await this.runIn('tk_', () => withReauth(Alpine, () => post('/api-internal/account/tokens', { name: (f.tk_name || '').trim(),
         scopes: f.tk_scopes, expires_days: days === '' ? 0 : Number(days), audience: this.forApps ? f.tk_audience : [],
         app_scopes: this.tokenScopesPicked() }), opener, this))
       if (!res) return
@@ -556,7 +556,7 @@ export default function (Alpine) {
         confirmLabel: 'Make new secret', danger: true })
       if (!ok) return
       try {
-        const res = await withReauth(Alpine, () => post('/api/account/tokens/' + enc(t.id) + '/regenerate', {}), opener)
+        const res = await withReauth(Alpine, () => post('/api-internal/account/tokens/' + enc(t.id) + '/regenerate', {}), opener)
         if (!res) return
         this.created = res.token
         this.createdName = res.item.name
@@ -571,7 +571,7 @@ export default function (Alpine) {
       const ok = await Alpine.store('confirm').ask({ title: 'Delete API token', message: `Delete the token “${t.name}”?`,
         detail: 'Anything using it will stop working immediately.', confirmLabel: 'Delete token' })
       if (!ok) return
-      try { await del('/api/account/tokens/' + enc(t.id)); toast('Token deleted.'); await this.load() } catch (e) { toast(e.message, 'error') }
+      try { await del('/api-internal/account/tokens/' + enc(t.id)); toast('Token deleted.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },
     afterClose(id) { if (id === 'token-secret-dialog') { this.created = ''; this.regenerated = false } },
   }))
@@ -595,7 +595,7 @@ export default function (Alpine) {
     },
     async load() {
       try {
-        const r = await get('/api/account/providers')
+        const r = await get('/api-internal/account/providers')
         this.items = r.items.map((p) => ({ ...p, canConnect: !p.connected, badgeText: p.connected ? 'Connected' : 'Not connected',
           badgeClass: p.connected ? 'badge badge-success' : 'badge badge-plain', forName: ' ' + p.name }))
         this.loadError = ''
@@ -608,7 +608,7 @@ export default function (Alpine) {
       const id = opener.dataset.id
       this.busy = true
       try {
-        const r = await withReauth(Alpine, () => post('/api/account/providers/' + enc(id) + '/connect'), opener, this)
+        const r = await withReauth(Alpine, () => post('/api-internal/account/providers/' + enc(id) + '/connect'), opener, this)
         if (r && r.url) { window.location.assign(r.url); return }
       } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
       this.busy = false
@@ -621,7 +621,7 @@ export default function (Alpine) {
         detail: 'You will no longer be able to sign in with it until you connect it again.', confirmLabel: 'Disconnect' })
       if (!ok) return
       try {
-        await withReauth(Alpine, () => del('/api/account/providers/' + enc(p.id)), opener, this)
+        await withReauth(Alpine, () => del('/api-internal/account/providers/' + enc(p.id)), opener, this)
         toast(p.name + ' disconnected.')
         await this.load()
       } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
@@ -633,7 +633,7 @@ export default function (Alpine) {
     init() { liveSelf(['grant'], () => this.load()); return this.load() },
     async load() {
       try {
-        const r = await get('/api/account/apps')
+        const r = await get('/api-internal/account/apps')
         this.items = r.items.map((a) => ({ ...a, id: a.client_id, scopesText: a.scopes.join(', ') || '—', sinceText: fmtDate(a.since),
           lastText: relTime(a.last_used), revokeLabel: 'Remove access for ' + a.name }))
         this.loadError = ''
@@ -648,7 +648,7 @@ export default function (Alpine) {
       const ok = await Alpine.store('confirm').ask({ title: 'Remove access', message: `Remove access for ${a.name}?`,
         detail: 'It will no longer be able to refresh its access to your account. You may be asked to approve it again next time.', confirmLabel: 'Remove access' })
       if (!ok) return
-      try { await del('/api/account/apps/' + enc(a.id)); toast('Access removed.'); await this.load() } catch (e) { toast(e.message, 'error') }
+      try { await del('/api-internal/account/apps/' + enc(a.id)); toast('Access removed.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },
   }))
 }

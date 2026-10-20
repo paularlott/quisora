@@ -1,4 +1,4 @@
-// fetch wrapper for the management API (/api/v1): JSON in and out, CSRF header, Api-Version header, error mapping.
+// fetch wrapper for the management API (/api): JSON in and out, CSRF header, Api-Version header, error mapping.
 export const API_VERSION = '1'
 
 export class ApiError extends Error {
@@ -26,7 +26,7 @@ export function qs(params) {
 
 export async function api(method, url, body, { signal } = {}) {
   const headers = { Accept: 'application/json', 'X-CSRF-Token': csrf() }
-  if (url.startsWith('/api/v1')) headers['Api-Version'] = API_VERSION
+  if (url.startsWith('/api/')) headers['Api-Version'] = API_VERSION
   const init = { method, headers, credentials: 'same-origin', signal }
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'

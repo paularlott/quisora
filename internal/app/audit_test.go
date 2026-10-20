@@ -12,7 +12,7 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// The audit API: an organization's administrator reads that organization only; GET /api/v1/audit (every
+// The audit API: an organization's administrator reads that organization only; GET /api/audit (every
 // organization) is for super admins. With VictoriaLogs configured the events go there, not to the database, and
 // the same endpoints read them back (QUISORA_TEST_VICTORIALOGS=http://host:9428 for that part).
 func TestAuditAPI(t *testing.T) {
@@ -62,7 +62,7 @@ func auditAPI(t *testing.T, vl string) {
 	code := 0
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) { // VictoriaLogs makes rows searchable within a second or so
-		code, out = doJSON(t, hc, "GET", base+"/api/v1/orgs/"+name+"/audit?q=user.create", bossHdr, nil)
+		code, out = doJSON(t, hc, "GET", base+"/api/orgs/"+name+"/audit?q=user.create", bossHdr, nil)
 		if code == 200 && out["total"].(float64) >= 1 {
 			break
 		}
@@ -80,15 +80,15 @@ func auditAPI(t *testing.T, vl string) {
 			t.Fatalf("another organization's event: %v", it)
 		}
 	}
-	if code, _ := doJSON(t, hc, "GET", base+"/api/v1/orgs/primary/audit", bossHdr, nil); code != 404 {
+	if code, _ := doJSON(t, hc, "GET", base+"/api/orgs/primary/audit", bossHdr, nil); code != 404 {
 		t.Fatalf("an org admin read another organization's audit log: %d", code)
 	}
-	if code, _ := doJSON(t, hc, "GET", base+"/api/v1/audit", bossHdr, nil); code != 403 {
+	if code, _ := doJSON(t, hc, "GET", base+"/api/audit", bossHdr, nil); code != 403 {
 		t.Fatalf("an org admin read every organization's audit log: %d", code)
 	}
 	found := false
 	for deadline := time.Now().Add(10 * time.Second); !found && time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
-		code, out = doJSON(t, hc, "GET", base+"/api/v1/audit?q=user.create&limit=100", superHdr, nil)
+		code, out = doJSON(t, hc, "GET", base+"/api/audit?q=user.create&limit=100", superHdr, nil)
 		for _, it := range out["items"].([]any) {
 			m := it.(map[string]any)
 			found = found || (m["org_id"] == org.ID && m["org_name"] == name)
@@ -97,7 +97,7 @@ func auditAPI(t *testing.T, vl string) {
 	if code != 200 || !found {
 		t.Fatalf("super admin, every organization: %d %v", code, out)
 	}
-	if code, out = doJSON(t, hc, "GET", base+"/api/v1/audit?org="+name, superHdr, nil); code != 200 || out["total"].(float64) < 1 {
+	if code, out = doJSON(t, hc, "GET", base+"/api/audit?org="+name, superHdr, nil); code != 200 || out["total"].(float64) < 1 {
 		t.Fatalf("super admin, one organization: %d %v", code, out)
 	}
 	if vl != "" {

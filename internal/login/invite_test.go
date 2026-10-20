@@ -38,7 +38,7 @@ func tokenOf(link string) string { return link[strings.Index(link, "token=")+len
 // invitePasskey runs the passkey ceremony of an invitation and returns the completion request body.
 func (b *browser) invitePasskeyBody(token string, extra map[string]any) (map[string]any, int, map[string]any) {
 	b.t.Helper()
-	res, begin := b.post("/api/invite/passkey/begin", map[string]any{"token": token})
+	res, begin := b.post("/api-internal/invite/passkey/begin", map[string]any{"token": token})
 	if res.StatusCode != 200 {
 		return nil, res.StatusCode, begin
 	}
@@ -75,24 +75,24 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 		t.Fatalf("invite token on reset page: %d", res.StatusCode)
 	}
 	tok := tokenOf(link)
-	res2, out := b.post("/api/password/reset", map[string]any{"token": tok, "password": "my first password"})
+	res2, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res2, out, 410)
 	if res, _ := b.get(strings.Replace(link, "/invite", "/verify-email", 1)); res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("invite token verified an address: %q", res.Header.Get("Location"))
 	}
 
 	// Policy errors do not burn the link.
-	res2, out = b.post("/api/invite/complete", map[string]any{"token": tok, "password": "short"})
+	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "short"})
 	wantStatus(t, res2, out, 422)
 	if str(out, "field") != "password" {
 		t.Fatalf("field %v", out)
 	}
-	res2, out = b.post("/api/invite/complete", map[string]any{"token": tok})
+	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok})
 	wantStatus(t, res2, out, 422)
-	res2, out = b.post("/api/invite/complete", map[string]any{"token": "nope", "password": "my first password"})
+	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": "nope", "password": "my first password"})
 	wantStatus(t, res2, out, 410)
 
-	res2, out = b.post("/api/invite/complete", map[string]any{"token": tok, "password": "my first password"})
+	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res2, out, 200)
 	if str(out, "next") != "/account" || !b.hasSession() {
 		t.Fatalf("not signed in: %v", out)
@@ -113,7 +113,7 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 	if res, _ := e.browser(t).get(link); res.StatusCode != http.StatusGone {
 		t.Fatalf("used link still valid: %d", res.StatusCode)
 	}
-	res2, out = e.browser(t).post("/api/invite/complete", map[string]any{"token": tok, "password": "another password!"})
+	res2, out = e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "another password!"})
 	wantStatus(t, res2, out, 410)
 	res2, out = e.browser(t).login("acme", "newbie", "my first password")
 	wantStatus(t, res2, out, 200)
@@ -135,11 +135,11 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 		t.Fatalf("begin: %d %v", st, out)
 	}
 	delete(body, "credential")
-	res, out := b.post("/api/invite/complete", body)
+	res, out := b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 422) // no password and no credential
 
 	body, _, _ = b.invitePasskeyBody(tok, nil)
-	res, out = b.post("/api/invite/complete", body)
+	res, out = b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 200)
 	if str(out, "next") != "/account" || !b.hasSession() {
 		t.Fatalf("not signed in: %v", out)
@@ -157,7 +157,7 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 		t.Fatal("a password appeared")
 	}
 	// Single use, and the passkey now signs in at the org page.
-	res, out = e.browser(t).post("/api/invite/passkey/begin", map[string]any{"token": tok})
+	res, out = e.browser(t).post("/api-internal/invite/passkey/begin", map[string]any{"token": tok})
 	wantStatus(t, res, out, 410)
 	b2 := e.browser(t)
 	b2.auth = b.auth
@@ -178,7 +178,7 @@ func TestInviteBothPasswordAndPasskey(t *testing.T) {
 	if st != 200 {
 		t.Fatal(out)
 	}
-	res, out := b.post("/api/invite/complete", body)
+	res, out := b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 200)
 	fresh, _ := e.Svc.Users.Get(context.Background(), u.ID)
 	list, _ := e.Svc.Passkeys.All(context.Background(), u.ID)
@@ -195,7 +195,7 @@ func TestInviteBadPasswordKeepsPasskeyCeremonyOutOfIt(t *testing.T) {
 	u, link := e.invitee(t, org, "newbie")
 	b := e.browser(t)
 	body, _, _ := b.invitePasskeyBody(tokenOf(link), map[string]any{"password": "short"})
-	res, out := b.post("/api/invite/complete", body)
+	res, out := b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 422)
 	if list, _ := e.Svc.Passkeys.All(context.Background(), u.ID); len(list) != 0 {
 		t.Fatal("a rejected sign-up stored a passkey")
@@ -215,7 +215,7 @@ func TestInviteOrgWithoutPasswords(t *testing.T) {
 		!strings.Contains(body, "Create a passkey") {
 		t.Fatalf("passkey-only page %d: %.600s", res.StatusCode, body)
 	}
-	res2, out := b.post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "a long enough password"})
+	res2, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a long enough password"})
 	wantStatus(t, res2, out, 403)
 	if fresh, _ := e.Svc.Users.Get(context.Background(), u.ID); fresh.PasswordHash != "" {
 		t.Fatal("password stored in an org without passwords")
@@ -231,9 +231,9 @@ func TestInviteOrgWithoutPasswords(t *testing.T) {
 		!strings.Contains(body, `href="/login/sso"`) || !strings.Contains(body, "sign-in providers") {
 		t.Fatalf("providers-only page %d: %.800s", res.StatusCode, body)
 	}
-	res2, out = b.post("/api/invite/complete", map[string]any{"token": tokenOf(link2), "password": "a long enough password"})
+	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link2), "password": "a long enough password"})
 	wantStatus(t, res2, out, 403)
-	res2, out = b.post("/api/invite/passkey/begin", map[string]any{"token": tokenOf(link2)})
+	res2, out = b.post("/api-internal/invite/passkey/begin", map[string]any{"token": tokenOf(link2)})
 	wantStatus(t, res2, out, 403)
 }
 
@@ -242,7 +242,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 	org := e.org(t, "mfa", func(s *model.OrgSettings) { s.RequireMFA = true })
 	u, link := e.invitee(t, org, "newbie")
 	b := e.browser(t)
-	res, out := b.post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 	wantStatus(t, res, out, 200)
 	ticket := str(out, "ticket")
 	if str(out, "step") != "enrol" || ticket == "" || b.hasSession() {
@@ -251,10 +251,10 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 	if res, _ := b.get("/account"); res.StatusCode == 200 {
 		t.Fatal("account reachable before enrolment")
 	}
-	res, out = b.post("/api/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	res, out = b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
 	wantStatus(t, res, out, 200)
 	secret := str(out, "secret")
-	res, out = b.post("/api/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	res, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
 	if !b.hasSession() || str(out, "next") != "/account" {
 		t.Fatalf("no session after enrolment: %v", out)
@@ -272,7 +272,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 	_, link2 := e.invitee(t, org, "keyuser")
 	b2 := e.browser(t)
 	body, _, _ := b2.invitePasskeyBody(tokenOf(link2), nil)
-	res, out = b2.post("/api/invite/complete", body)
+	res, out = b2.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 200)
 	if !b2.hasSession() || str(out, "step") != "" {
 		t.Fatalf("passkey sign-up: %v", out)
@@ -295,12 +295,12 @@ func TestInviteResetsTheAccount(t *testing.T) {
 	}
 	link := e.invite(t, pat)
 	b := e.browser(t)
-	res, out := b.post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
+	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
 	if !b.hasSession() || str(out, "step") != "" {
 		t.Fatalf("after the invitation: %v", out)
 	}
-	if res, _ := old.api("GET", "/api/account", nil); res.StatusCode != 401 {
+	if res, _ := old.api("GET", "/api-internal/account", nil); res.StatusCode != 401 {
 		t.Errorf("the old session survived: %d", res.StatusCode)
 	}
 	fresh, _ := e.Svc.Users.Get(ctx, pat.ID)
@@ -324,7 +324,7 @@ func TestInviteResetsTheAccount(t *testing.T) {
 	e.giveTOTP(t, kim)
 	link = e.invite(t, kim)
 	b = e.browser(t)
-	res, out = b.post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "another new password"})
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "another new password"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || b.hasSession() {
 		t.Fatalf("MFA org after reset: %v", out)
@@ -352,7 +352,7 @@ func TestRemovedPasswordAndReinvite(t *testing.T) {
 	}
 	// Forgot-password sends nothing to an account without a password: it needs a new invitation.
 	b := e.browser(t)
-	res, out = b.post("/api/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
+	res, out = b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
 	// ... and a reset link that was issued before the removal no longer works.
@@ -360,12 +360,12 @@ func TestRemovedPasswordAndReinvite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, out = b.post("/api/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
+	res, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
 	wantStatus(t, res, out, 410)
 
 	// The new invitation lets the existing account choose a new password.
 	link := e.invite(t, pat)
-	res, out = b.post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
 	res, out = e.browser(t).login("acme", "pat", "a brand new password")
 	wantStatus(t, res, out, 200)
@@ -391,9 +391,9 @@ func TestInviteClearsLockoutAndRevokesOlderLink(t *testing.T) {
 	if res, _ := b.get(second); res.StatusCode != 200 {
 		t.Fatalf("newest invitation: %d", res.StatusCode)
 	}
-	res, out = b.post("/api/invite/complete", map[string]any{"token": tokenOf(first), "password": "a brand new password"})
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(first), "password": "a brand new password"})
 	wantStatus(t, res, out, 410)
-	res, out = b.post("/api/invite/complete", map[string]any{"token": tokenOf(second), "password": "a brand new password"})
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(second), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
 	res, out = e.browser(t).login("acme", "pat", "a brand new password")
 	wantStatus(t, res, out, 200)
@@ -411,7 +411,7 @@ func TestInviteExpiredAndInactive(t *testing.T) {
 	if res, _ := b.get("/invite?token=" + tok); res.StatusCode != http.StatusGone {
 		t.Fatalf("expired page: %d", res.StatusCode)
 	}
-	res, out := b.post("/api/invite/complete", map[string]any{"token": tok, "password": "a long enough password"})
+	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "a long enough password"})
 	wantStatus(t, res, out, 410)
 	// A disabled account's invitation stops working.
 	tok2, _, _ := e.Svc.IssueLink(context.Background(), u, service.LinkInvite, "", time.Hour)
@@ -419,7 +419,7 @@ func TestInviteExpiredAndInactive(t *testing.T) {
 	if _, err := e.Svc.UpdateUser(context.Background(), service.System, u.ID, service.UserInput{Active: &off}); err != nil {
 		t.Fatal(err)
 	}
-	res, out = b.post("/api/invite/complete", map[string]any{"token": tok2, "password": "a long enough password"})
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok2, "password": "a long enough password"})
 	wantStatus(t, res, out, 410)
 }
 
@@ -435,7 +435,7 @@ func TestInviteMailLinkWorksThroughTheModule(t *testing.T) {
 	if !strings.HasPrefix(link, "/invite?token=") || !strings.Contains(m.Text, "invited") || !strings.Contains(m.Text, "7 days") {
 		t.Fatalf("mail %s", m.Text)
 	}
-	res, out := e.browser(t).post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+	res, out := e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 	wantStatus(t, res, out, 200)
 }
 
@@ -465,7 +465,7 @@ func TestEmailedInvitationVerifiesAddress(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		res, out := e.browser(t).post("/api/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+		res, out := e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 		wantStatus(t, res, out, 200)
 		if f, _ := e.Svc.Users.Get(ctx, u.ID); f.EmailVerified == change {
 			t.Fatalf("address changed=%v: verified=%v", change, f.EmailVerified)

@@ -10,7 +10,7 @@ const item = { id: 'tok-1', name: 'Reports', scopes: ['api'], audience: ['app-or
 
 test('API token: applications and scopes, on create and edit', async ({ page }) => {
   await signIn(page, 'user')
-  await page.route('**/api/account/tokens', (route) => {
+  await page.route('**/api-internal/account/tokens', (route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [item], total: 1, scopes: ['api'], max_days: 0, apps }) })
     }
@@ -19,7 +19,7 @@ test('API token: applications and scopes, on create and edit', async ({ page }) 
   })
   let created = null
   let patched = null
-  await page.route('**/api/account/tokens/tok-1', (route) => {
+  await page.route('**/api-internal/account/tokens/tok-1', (route) => {
     if (route.request().method() !== 'PATCH') return route.fallback()
     patched = route.request().postDataJSON()
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ item }) })

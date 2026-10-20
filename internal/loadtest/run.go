@@ -171,7 +171,7 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 			}
 			body := `{"org":"` + org + `","email":"` + UserEmail(org, first+rng.Intn(n)) + `","password":"` +
 				d.Password + `","next":""}`
-			req, _ := http.NewRequest(http.MethodPost, base+"/api/login/password", strings.NewReader(body))
+			req, _ := http.NewRequest(http.MethodPost, base+"/api-internal/login/password", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			tok := csrfToken(rng)
 			req.Header.Set("X-CSRF-Token", tok)
@@ -199,7 +199,7 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 		hdr := []string{"Authorization", "Bearer " + d.APIToken, "Api-Version", "1"}
 		return func(rng *rand.Rand, base string) *request {
 			off := 50 * rng.Intn(max(d.Users/50, 1))
-			return get(base, fmt.Sprintf("/api/v1/orgs/%s/users?limit=50&offset=%d&sort=username", orgName(rng), off), hdr...)
+			return get(base, fmt.Sprintf("/api/orgs/%s/users?limit=50&offset=%d&sort=username", orgName(rng), off), hdr...)
 		}, nil
 	}
 	return nil, fmt.Errorf("unknown scenario %q", sc)

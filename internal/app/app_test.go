@@ -168,7 +168,7 @@ func testIntegration(t *testing.T, backend string) {
 		t.Fatal(err)
 	}
 	hdr := map[string]string{"Authorization": "Bearer " + apiTok, "Api-Version": "1"}
-	code, orgs := doJSON(t, hc, "GET", base+"/api/v1/orgs", hdr, nil)
+	code, orgs := doJSON(t, hc, "GET", base+"/api/orgs", hdr, nil)
 	if code == 404 {
 		t.Skip("management API not registered yet")
 	}
@@ -246,7 +246,7 @@ func TestBrowserSignInFlow(t *testing.T) {
 	next := lu.Query().Get("next")
 	// 3. Password sign-in through the JSON endpoint.
 	body, _ := json.Marshal(map[string]string{"org": "acme", "email": "jane@acme.test", "password": "correct horse battery", "next": next, "tenant": lu.Query().Get("tenant")})
-	code, out := doJSON(t, hc, "POST", base+"/api/login/password", map[string]string{"Content-Type": "application/json",
+	code, out := doJSON(t, hc, "POST", base+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
 		"X-CSRF-Token": string(m[1]), "Origin": base}, strings.NewReader(string(body)))
 	if code != 200 || out["next"] == nil {
 		t.Fatalf("password sign-in %d %v", code, out)
@@ -383,7 +383,7 @@ func TestTenantSignInEnforcement(t *testing.T) {
 	pw := func(tenant string) (int, map[string]any) {
 		b, _ := json.Marshal(map[string]string{"org": "acme", "email": "jane@acme.test", "password": "correct horse battery",
 			"next": u.Query().Get("next"), "tenant": tenant})
-		return doJSON(t, hc, "POST", base+"/api/login/password", hdr, strings.NewReader(string(b)))
+		return doJSON(t, hc, "POST", base+"/api-internal/login/password", hdr, strings.NewReader(string(b)))
 	}
 	if code, out := pw("kiosk"); code != 401 {
 		t.Fatalf("password for the passkey-only tenant: %d %v", code, out)
@@ -414,7 +414,7 @@ func TestLiveEvents(t *testing.T) {
 	}
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(rctx, http.MethodGet, base+"/api/v1/events", nil)
+	req, _ := http.NewRequestWithContext(rctx, http.MethodGet, base+"/api/events", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := hc.Do(req)
 	if err != nil || resp.StatusCode != 200 {

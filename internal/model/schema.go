@@ -86,6 +86,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "tenant_id", Type: FieldString},
 		{Name: "auth_method", Type: FieldString, Sort: true},
 		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "self_registered", Type: FieldBool},
 	}},
 	KindProvider: {KindProvider, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},

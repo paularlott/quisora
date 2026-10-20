@@ -7,11 +7,11 @@ const item = { id: 'tok-1', name: 'Deploy script', scopes: ['api'], audience: []
 
 test('API token: make a new secret', async ({ page }) => {
   await signIn(page, 'user')
-  await page.route('**/api/account/tokens', (route) => route.request().method() === 'GET'
+  await page.route('**/api-internal/account/tokens', (route) => route.request().method() === 'GET'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [item], total: 1, scopes: ['api'], max_days: 0 }) })
     : route.fallback())
   let calls = 0
-  await page.route('**/api/account/tokens/tok-1/regenerate', (route) => {
+  await page.route('**/api-internal/account/tokens/tok-1/regenerate', (route) => {
     calls++
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ token: 'qsr_tok-1_newsecret', item: { ...item, last_used: '0001-01-01T00:00:00Z' } }) })
   })

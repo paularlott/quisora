@@ -10,8 +10,8 @@ const providersOnly = async (page) => {
       return r.json()
     }
     const name = 'sso' + Date.now() + Math.floor(Math.random() * 1000)
-    await call('POST', '/api/v1/orgs', { name, display_name: 'SSO Only Ltd', settings: { password_login: false, passkey_login: false } })
-    const u = await call('POST', `/api/v1/orgs/${name}/users`, { username: 'sam', email: 'sam@sso.example', given_name: 'Sam', family_name: 'Provider', invite: {} })
+    await call('POST', '/api/orgs', { name, display_name: 'SSO Only Ltd', settings: { password_login: false, passkey_login: false } })
+    const u = await call('POST', `/api/orgs/${name}/users`, { username: 'sam', email: 'sam@sso.example', given_name: 'Sam', family_name: 'Provider', invite: {} })
     return u.invite.url
   })
   await page.goto(url, { waitUntil: 'load' })

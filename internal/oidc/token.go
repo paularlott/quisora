@@ -175,6 +175,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	} else if !subset(res, cd.Resources) {
 		return nil, oerr("invalid_target", "resource was not part of the authorization request")
 	}
+	if c, _, err = p.forResources(ctx, c, cd.Resources); err != nil {
+		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
+	}
 	u, err := p.user(ctx, cd.UserID)
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != cd.OrgID {
 		return nil, oerr("invalid_grant", "the user is no longer active")
@@ -364,6 +367,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	ok, legacy := p.authentic(pr, g)
 	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok || !p.grantLive(ctx, g) {
 		return nil, invalid
+	}
+	if c, _, err = p.forResources(ctx, c, g.Resources); err != nil {
+		return nil, invalid // a self-registered application whose resource no longer accepts it
 	}
 	if legacy != nil {
 		// A grant from before grants had their own key: the key its tokens are made from becomes its own (the

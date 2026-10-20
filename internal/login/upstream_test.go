@@ -381,7 +381,7 @@ func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 	if _, other := u.browser(t).get(loc); strings.Contains(other, "data-ticket") {
 		t.Fatal("step shown without its cookie")
 	}
-	res2, out := b2.post("/api/login/totp", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	res2, out := b2.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res2, out, 200)
 	if str(out, "next") != "/x" || !b2.hasSession() {
 		t.Fatalf("after the code: %v", out)
@@ -420,10 +420,10 @@ func TestConnectProviderToAccount(t *testing.T) {
 		t.Fatal("an admin was signed in through an unconnected provider")
 	}
 	// connecting needs a recent re-authentication
-	res, out := b.post("/api/account/providers/"+p.ID+"/connect", nil)
+	res, out := b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
 	wantStatus(t, res, out, 403)
 	b.markReauth()
-	res, out = b.post("/api/account/providers/"+p.ID+"/connect", nil)
+	res, out = b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
 	wantStatus(t, res, out, 200)
 	code := u.oidc.Authorize(str(out, "url"), claims("ada-sub", "ada@elsewhere.example"))
 	lu, _ := url.Parse(str(out, "url"))
@@ -431,7 +431,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?provider=connected#providers" {
 		t.Fatalf("connect callback: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	res, out = b.api("GET", "/api/account/providers", nil)
+	res, out = b.api("GET", "/api-internal/account/providers", nil)
 	if it := items(t, out); len(it) != 1 || it[0]["connected"] != true {
 		t.Fatalf("providers: %v", out["_raw"])
 	}
@@ -448,7 +448,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 	bob := u.user(t, u.org, "bob", model.RoleUser)
 	bb := u.signedIn(t, bob)
 	bb.markReauth()
-	_, out = bb.post("/api/account/providers/"+p.ID+"/connect", nil)
+	_, out = bb.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
 	code = u.oidc.Authorize(str(out, "url"), claims("ada-sub", "bob@corp.example"))
 	lu, _ = url.Parse(str(out, "url"))
 	res, _ = bb.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=" + url.QueryEscape(code))
@@ -458,7 +458,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 
 	// disconnect: needs reauth; refused when it is the last way in
 	b.markReauth() // (Ada has a password: the test helper sets one)
-	res, out = b.api("DELETE", "/api/account/providers/"+p.ID, nil)
+	res, out = b.api("DELETE", "/api-internal/account/providers/"+p.ID, nil)
 	wantStatus(t, res, out, 204)
 	solo := u.user(t, u.org, "solo", model.RoleUser)
 	fresh, _ := u.Svc.Users.Get(context.Background(), solo.ID)
@@ -467,7 +467,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 	_ = u.Svc.Identities.Create(context.Background(), model.NewIdentity(solo, p, "solo-sub", "", "admin"))
 	sb := u.signedIn(t, solo)
 	sb.markReauth()
-	res, out = sb.api("DELETE", "/api/account/providers/"+p.ID, nil)
+	res, out = sb.api("DELETE", "/api-internal/account/providers/"+p.ID, nil)
 	wantStatus(t, res, out, 409)
 }
 
@@ -529,7 +529,7 @@ func TestConnectNeedsOwnSecondFactor(t *testing.T) {
 		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	sessionCSRF(t, b)
-	res, out := b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	res, out := b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
 	wantStatus(t, res, out, 200)
 
 	// with an authenticator, the trusted provider's sign-in no longer is
@@ -539,20 +539,20 @@ func TestConnectNeedsOwnSecondFactor(t *testing.T) {
 		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	sessionCSRF(t, b)
-	res, out = b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	res, out = b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
 	wantStatus(t, res, out, 403)
 	if str(out, "field") != "reauth" {
 		t.Fatalf("refusal: %v", out["_raw"])
 	}
 	// nor does it let that sign-in add another way in that skips the code (a passkey), or replace the code
-	for _, path := range []string{"/api/account/passkeys/register/begin", "/api/account/totp/begin"} {
+	for _, path := range []string{"/api-internal/account/passkeys/register/begin", "/api-internal/account/totp/begin"} {
 		res, out = b.post(path, map[string]any{})
 		if res.StatusCode != 403 || str(out, "field") != "reauth" {
 			t.Fatalf("%s after a trusted provider sign-in: %d %v", path, res.StatusCode, out["_raw"])
 		}
 	}
 	b.markReauth()
-	res, out = b.post("/api/account/providers/"+other.ID+"/connect", nil)
+	res, out = b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
 	wantStatus(t, res, out, 200)
 }
 

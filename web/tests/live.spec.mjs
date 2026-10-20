@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test'
 import { signIn, apiCall, uniq, axe, fmt, setTheme } from './helpers.mjs'
 
 const A = '/admin/orgs/acme'
-const API = '/api/v1/orgs/acme'
+const API = '/api/orgs/acme'
 
 // Two admin sessions, each on its own page. `a` shows `path`; `b` sits on a page that can call the API.
 async function twoAdmins(browser, baseURL, path, theme) {
@@ -255,10 +255,10 @@ test('super admin: the organizations list follows new organizations', async ({ b
   await signIn(b, 'super')
   await b.goto('/admin/orgs')
   const slug = uniq('lo')
-  await apiCall(b, 'POST', '/api/v1/orgs', { name: slug, display_name: 'Live Org ' + slug })
+  await apiCall(b, 'POST', '/api/orgs', { name: slug, display_name: 'Live Org ' + slug })
   await a.getByRole('searchbox', { name: 'Search organizations' }).fill(slug)
   await expect(a.getByRole('link', { name: 'Live Org ' + slug })).toBeVisible({ timeout: 3500 })
-  await apiCall(b, 'DELETE', `/api/v1/orgs/${slug}`)
+  await apiCall(b, 'DELETE', `/api/orgs/${slug}`)
   await expect(a.getByRole('link', { name: 'Live Org ' + slug })).toHaveCount(0, { timeout: 3500 })
   await ctx.close(); await ctx2.close()
 })
@@ -272,7 +272,7 @@ test('user page cards: sessions follow sign-ins and sign-outs elsewhere', async 
     const up = await uctx.newPage()
     await signIn(up, 'user')
     await up.goto('/account')
-    const me = await apiCall(up, 'GET', '/api/account')
+    const me = await apiCall(up, 'GET', '/api-internal/account')
     const id = me.id || me.user_id || (me.user && me.user.id)
     expect(id, JSON.stringify(me).slice(0, 200)).toBeTruthy()
     await a.goto(`${A}/users/${id}`)
@@ -303,7 +303,7 @@ test('account page: addresses an administrator adds and removes appear and go', 
     const up = await uctx.newPage()
     await signIn(up, 'user')
     await up.goto('/account')
-    const me = await apiCall(up, 'GET', '/api/account')
+    const me = await apiCall(up, 'GET', '/api-internal/account')
     const id = me.user.id
     const list = up.getByRole('list', { name: 'Email addresses' })
     await expect(list).toBeVisible()

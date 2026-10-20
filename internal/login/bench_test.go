@@ -37,7 +37,7 @@ func BenchmarkPasswordLogin(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if rec := e.benchPost("/api/login/password", body); rec.Code != 200 {
+		if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 200 {
 			b.Fatalf("%d %s", rec.Code, rec.Body)
 		}
 	}
@@ -50,7 +50,7 @@ func BenchmarkPasswordLoginParallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if rec := e.benchPost("/api/login/password", body); rec.Code != 200 {
+			if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 200 {
 				b.Fatalf("%d %s", rec.Code, rec.Body)
 			}
 		}
@@ -65,7 +65,7 @@ func BenchmarkPasswordLoginUnknownUser(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if rec := e.benchPost("/api/login/password", body); rec.Code != 401 {
+		if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 401 {
 			b.Fatalf("%d", rec.Code)
 		}
 	}
@@ -82,7 +82,7 @@ func BenchmarkPasskeyLoginHTTP(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		b.StopTimer()
-		rec := e.benchPost("/api/login/passkey/begin", `{"org":"primary"}`)
+		rec := e.benchPost("/api-internal/login/passkey/begin", `{"org":"primary"}`)
 		var begin struct {
 			Challenge string          `json:"challenge"`
 			Options   json.RawMessage `json:"options"`
@@ -96,7 +96,7 @@ func BenchmarkPasskeyLoginHTTP(b *testing.B) {
 		}
 		body, _ := json.Marshal(map[string]any{"challenge": begin.Challenge, "credential": json.RawMessage(cred)})
 		b.StartTimer()
-		if rec := e.benchPost("/api/login/passkey/finish", string(body)); rec.Code != 200 {
+		if rec := e.benchPost("/api-internal/login/passkey/finish", string(body)); rec.Code != 200 {
 			b.Fatalf("%d %s", rec.Code, rec.Body)
 		}
 	}

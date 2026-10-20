@@ -101,7 +101,7 @@ func TestResourceIndicatorsAllowList(t *testing.T) {
 	}
 	approve := func(flow string) string {
 		b, _ := json.Marshal(map[string]any{"flow": flow, "approve": true})
-		req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(b)))
+		req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 		req.Header.Set("X-CSRF-Token", csrf)
 		req.Header.Set("Content-Type", "application/json")
 		r, err := c.Do(req)

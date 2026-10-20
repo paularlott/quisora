@@ -15,14 +15,14 @@ import (
 func (b *browser) registerPasskey(name string) *virtualauth.Credential {
 	b.t.Helper()
 	b.markReauth() // registering a passkey needs a recent re-authentication
-	res, out := b.post("/api/account/passkeys/register/begin", nil)
+	res, out := b.post("/api-internal/account/passkeys/register/begin", nil)
 	wantStatus(b.t, res, out, 200)
 	opts, _ := json.Marshal(out["options"])
 	cred, c, err := b.auth.Create(opts)
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	res, out = b.post("/api/account/passkeys/register/finish", map[string]any{"challenge": out["challenge"], "name": name,
+	res, out = b.post("/api-internal/account/passkeys/register/finish", map[string]any{"challenge": out["challenge"], "name": name,
 		"credential": json.RawMessage(cred)})
 	wantStatus(b.t, res, out, 201)
 	return c
@@ -31,7 +31,7 @@ func (b *browser) registerPasskey(name string) *virtualauth.Credential {
 // passkeyLogin runs begin+finish on an anonymous browser and returns the finish response.
 func (b *browser) passkeyLogin(begin map[string]any) (int, map[string]any) {
 	b.t.Helper()
-	res, out := b.post("/api/login/passkey/begin", begin)
+	res, out := b.post("/api-internal/login/passkey/begin", begin)
 	if res.StatusCode != 200 {
 		return res.StatusCode, out
 	}
@@ -40,7 +40,7 @@ func (b *browser) passkeyLogin(begin map[string]any) (int, map[string]any) {
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	res, out2 := b.post("/api/login/passkey/finish", map[string]any{"challenge": out["challenge"], "credential": json.RawMessage(cred)})
+	res, out2 := b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": out["challenge"], "credential": json.RawMessage(cred)})
 	return res.StatusCode, out2
 }
 
@@ -95,7 +95,7 @@ func TestPasskeyRegisterAndLogin(t *testing.T) {
 		t.Fatalf("hostile next: %d %v", status, out)
 	}
 	// The discoverable options never list credentials.
-	res, o := b3.post("/api/login/passkey/begin", map[string]any{})
+	res, o := b3.post("/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, o, 200)
 	if strings.Contains(str(o, "_raw"), "allowCredentials") && !strings.Contains(str(o, "_raw"), `"allowCredentials":null`) {
 		if !strings.Contains(str(o, "_raw"), `"allowCredentials":[]`) {
@@ -114,7 +114,7 @@ func TestPasskeyLoginFailures(t *testing.T) {
 
 	// A stranger's authenticator holding a credential the server never registered.
 	b := e.browser(t)
-	_, ropts := signed.post("/api/account/passkeys/register/begin", nil)
+	_, ropts := signed.post("/api-internal/account/passkeys/register/begin", nil)
 	stranger := virtualauth.New(e.Cfg.Server.PublicURL)
 	raw, _ := json.Marshal(ropts["options"])
 	if _, _, err := stranger.Create(raw); err != nil {
@@ -132,14 +132,14 @@ func TestPasskeyLoginFailures(t *testing.T) {
 	// Replayed challenge.
 	b = e.browser(t)
 	b.auth = signed.auth
-	res, begin := b.post("/api/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin := b.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	assertion, _, _ := b.auth.Get(opts)
 	body := map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)}
-	res, out = b.post("/api/login/passkey/finish", body)
+	res, out = b.post("/api-internal/login/passkey/finish", body)
 	wantStatus(t, res, out, 200)
-	res, out = e.browser(t).post("/api/login/passkey/finish", body)
+	res, out = e.browser(t).post("/api-internal/login/passkey/finish", body)
 	wantStatus(t, res, out, 401)
 
 	// Organization mismatch: the passkey belongs to acme.
@@ -151,7 +151,7 @@ func TestPasskeyLoginFailures(t *testing.T) {
 	}
 	_ = other
 	// Unknown organization at begin.
-	res, out = b.post("/api/login/passkey/begin", map[string]any{"org": "nope"})
+	res, out = b.post("/api-internal/login/passkey/begin", map[string]any{"org": "nope"})
 	wantStatus(t, res, out, 403)
 
 	// Org that disabled passkeys: begin is refused; a landing-page ceremony is refused at finish.
@@ -176,14 +176,14 @@ func TestPasskeyLoginFailures(t *testing.T) {
 			t.Fatalf("normal login %d %v", status, out)
 		}
 	}
-	res, begin = b.post("/api/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin = b.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
 	opts, _ = json.Marshal(begin["options"])
 	stale, err := signed.auth.GetWith(opts, cred, 1, e.Cfg.Server.PublicURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b2 := e.browser(t)
-	res, out = b2.post("/api/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(stale)})
+	res, out = b2.post("/api-internal/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(stale)})
 	wantStatus(t, res, out, 401)
 	if b2.hasSession() {
 		t.Fatal("cloned credential signed in")
@@ -193,9 +193,9 @@ func TestPasskeyLoginFailures(t *testing.T) {
 	}
 
 	// Garbage never signs in.
-	res, out = b.post("/api/login/passkey/finish", map[string]any{"challenge": "n1.x", "credential": map[string]any{}})
+	res, out = b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": "n1.x", "credential": map[string]any{}})
 	wantStatus(t, res, out, 401)
-	res, out = b.post("/api/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": "junk"})
+	res, out = b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": "junk"})
 	if res.StatusCode != 401 && res.StatusCode != 400 {
 		t.Fatalf("junk credential: %d", res.StatusCode)
 	}
@@ -204,7 +204,7 @@ func TestPasskeyLoginFailures(t *testing.T) {
 func TestPasskeysDisabledOnIPHost(t *testing.T) {
 	e := newEnvWith(t, nil, true)
 	b := e.browser(t)
-	res, out := b.post("/api/login/passkey/begin", map[string]any{})
+	res, out := b.post("/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, out, 503)
 	_, body := b.get("/")
 	if strings.Contains(body, `data-passkeys="1"`) {
@@ -235,11 +235,11 @@ func TestPasskeyCeremoniesArePurposeBound(t *testing.T) {
 	}
 
 	// reauth ceremony -> anonymous sign-in finish
-	res, begin := signed.post("/api/account/reauth/passkey/begin", nil)
+	res, begin := signed.post("/api-internal/account/reauth/passkey/begin", nil)
 	wantStatus(t, res, begin, 200)
 	ch, cred := assert(signed, begin)
 	anon := e.browser(t)
-	res, out := anon.post("/api/login/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
+	res, out := anon.post("/api-internal/login/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
 	wantStatus(t, res, out, 401)
 	if anon.hasSession() {
 		t.Fatal("a reauth ceremony created a session")
@@ -247,33 +247,33 @@ func TestPasskeyCeremoniesArePurposeBound(t *testing.T) {
 
 	// sign-in ceremony -> reauth finish
 	anon.auth = signed.auth
-	res, begin = anon.post("/api/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin = anon.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
 	wantStatus(t, res, begin, 200)
 	ch, cred = assert(anon, begin)
-	res, out = signed.post("/api/account/reauth/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
+	res, out = signed.post("/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
 	wantStatus(t, res, out, 422)
-	res, out = signed.api("GET", "/api/account/reauth", nil)
+	res, out = signed.api("GET", "/api-internal/account/reauth", nil)
 	if out["valid"] == true {
 		t.Fatal("a sign-in ceremony re-authenticated the session")
 	}
 
 	// the matching purposes work
-	res, begin = signed.post("/api/account/reauth/passkey/begin", nil)
+	res, begin = signed.post("/api-internal/account/reauth/passkey/begin", nil)
 	ch, cred = assert(signed, begin)
-	res, out = signed.post("/api/account/reauth/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
+	res, out = signed.post("/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
 	wantStatus(t, res, out, 200)
 	signed.markReauth()
 
 	// registration ceremonies: sign-in-time enrolment cannot finish at the account endpoint
 	tid, _ := e.Mod.PutEnrolTicket(pat.ID)
-	res, begin = e.browser(t).post("/api/login/enrol/passkey/begin", map[string]any{"ticket": tid})
+	res, begin = e.browser(t).post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": tid})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	regCred, _, err := virtualauth.New(e.Cfg.Server.PublicURL).Create(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, out = signed.post("/api/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x",
+	res, out = signed.post("/api-internal/account/passkeys/register/finish", map[string]any{"challenge": begin["challenge"], "name": "x",
 		"credential": json.RawMessage(regCred)})
 	wantStatus(t, res, out, 422)
 	if l, _ := e.Svc.Passkeys.All(context.Background(), pat.ID); len(l) != 1 {
@@ -293,20 +293,20 @@ func TestDeletingPasskeyEndsItsSessions(t *testing.T) {
 	if st, out := other.passkeyLogin(map[string]any{"org": "acme"}); st != 200 {
 		t.Fatalf("passkey sign-in: %d %v", st, out)
 	}
-	if res, _ := other.api("GET", "/api/account", nil); res.StatusCode != 200 {
+	if res, _ := other.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {
 		t.Fatalf("not signed in: %d", res.StatusCode)
 	}
 	// a session signed in another way is not touched
 	pwd := e.signedIn(t, pat)
 	list, _ := e.Svc.Passkeys.All(context.Background(), pat.ID)
 	b.markReauth()
-	res, out := b.api("DELETE", "/api/account/passkeys/"+list[0].ID, nil)
+	res, out := b.api("DELETE", "/api-internal/account/passkeys/"+list[0].ID, nil)
 	wantStatus(t, res, out, 204)
-	if res, _ := other.api("GET", "/api/account", nil); res.StatusCode != 401 {
+	if res, _ := other.api("GET", "/api-internal/account", nil); res.StatusCode != 401 {
 		t.Errorf("the passkey's session survived: %d", res.StatusCode)
 	}
 	for name, br := range map[string]*browser{"deleting": b, "password": pwd} {
-		if res, _ := br.api("GET", "/api/account", nil); res.StatusCode != 200 {
+		if res, _ := br.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {
 			t.Errorf("%s session ended: %d", name, res.StatusCode)
 		}
 	}

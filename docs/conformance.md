@@ -28,7 +28,7 @@ and client assertion modules to the basic plan's:
 The same three expected warnings as the basic plan. One module of these plans, `oidcc-server-rotate-keys`, compares
 the JWKS before and after a rotation that the tester triggers between the module's set-up and its start;
 `run-test-plan.py` starts it at once, so it always fails unattended. `conformance/rotate-keys.py` runs it properly
-(it rotates through `POST /api/v1/keys/rotate` in between) and it passes; the run found that the endpoint did not
+(it rotates through `POST /api/keys/rotate` in between) and it passes; the run found that the endpoint did not
 actually rotate (fixed below).
 
 ## Changes since these runs
@@ -96,7 +96,7 @@ text before each screenshot.
   screen, and kept across refreshes.
 - The phone scope (`phone_number`, `phone_number_verified`) was added, so `oidcc-scope-phone` runs and passes.
 
-- `POST /api/v1/keys/rotate` returned success but rotated nothing unless a scheduled rotation was due. It now
+- `POST /api/keys/rotate` returned success but rotated nothing unless a scheduled rotation was due. It now
   creates a key that signs at once; the previous keys stay published until their tokens expire.
 - The ID token named the organization, tenant and Quisora role (`org`, `org_name`, `tenant`, `tenant_name`, `role`)
   whatever the scopes. They now need the `org` scope, as at userinfo; access tokens still always carry them.

@@ -61,7 +61,7 @@ func TestGossipMasterKeyRotation(t *testing.T) {
 }
 
 // testGossipMasterKeyRotation changes the nodes' keys by restarting them, or (reload) by reloading them in place as
-// SIGHUP does; the status (RotationStatus, GET /api/v1/master-key) says where the rotation stands at each step.
+// SIGHUP does; the status (RotationStatus, GET /api/master-key) says where the rotation stands at each step.
 func testGossipMasterKeyRotation(t *testing.T, reload bool) {
 	saved := housekeepingEvery
 	housekeepingEvery = time.Second

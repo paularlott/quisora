@@ -197,7 +197,7 @@ func (p *Provider) Register(s *web.Server) {
 	m.HandleFunc("POST /oauth/authorize", p.handleAuthorize)
 	m.HandleFunc("GET /oauth/authorize/resume", p.handleResume)
 	m.Handle("GET /oauth/consent", s.RequirePage(p.handleConsentPage))
-	m.Handle("POST /api/oauth/consent", s.RequireAPI(p.handleConsent))
+	m.Handle("POST /api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
 
 	m.HandleFunc("POST /oauth/token", p.handleToken)
 	m.HandleFunc("OPTIONS /oauth/token", p.handleCORSPreflight)
@@ -207,6 +207,7 @@ func (p *Provider) Register(s *web.Server) {
 	m.HandleFunc("POST /oauth/userinfo", p.handleUserinfo)
 	m.HandleFunc("POST /oauth/introspect", p.handleIntrospect)
 	m.HandleFunc("POST /oauth/revoke", p.handleRevoke)
+	m.HandleFunc("POST /oauth/register", p.handleRegister)
 
 	m.HandleFunc("GET /oauth/logout", p.handleLogout)
 	m.HandleFunc("POST /oauth/logout", p.handleLogout)
@@ -336,6 +337,7 @@ func (p *Provider) buildDiscovery() []byte {
 		"userinfo_endpoint":                     iss + "/oauth/userinfo",
 		"jwks_uri":                              iss + "/oauth/jwks",
 		"introspection_endpoint":                iss + "/oauth/introspect",
+		"registration_endpoint":                 iss + "/oauth/register",
 		"revocation_endpoint":                   iss + "/oauth/revoke",
 		"end_session_endpoint":                  iss + "/oauth/logout",
 		"response_types_supported":              []string{"code"},
@@ -353,7 +355,9 @@ func (p *Provider) buildDiscovery() []byte {
 			model.AuthMethodNone},
 		"revocation_endpoint_auth_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
 		"code_challenge_methods_supported":                      []string{"S256"},
-		"scopes_supported":                                      []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"},
+		// a client_id may be the https URL of the client's metadata document (MCP's Client ID Metadata Documents)
+		"client_id_metadata_document_supported": true,
+		"scopes_supported":                      []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"},
 		"claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "sid", "org",
 			"org_name", "tenant", "tenant_name", "role", "email", "email_verified", "name", "preferred_username", "given_name", "family_name",
 			"locale", "zoneinfo", "updated_at", "phone_number", "phone_number_verified", "groups", "tags", "roles", "enterprise"},

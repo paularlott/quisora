@@ -91,14 +91,14 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/master-key", m.pageMasterKey)
 }
 
-// pageMasterKey shows where a master key rotation stands (GET /api/v1/master-key): super admins only. The menu links
+// pageMasterKey shows where a master key rotation stands (GET /api/master-key): super admins only. The menu links
 // to it while previous master keys are configured.
 func (m *Module) pageMasterKey(w http.ResponseWriter, r *http.Request) {
 	if !web.Actor(r).IsSuper() {
 		m.errorPage(w, r, http.StatusNotFound)
 		return
 	}
-	p := m.s.Page(w, r, "Master key rotation", "master-key", &View{API: "/api/v1"})
+	p := m.s.Page(w, r, "Master key rotation", "master-key", &View{API: "/api"})
 	m.s.Render.Render(w, http.StatusOK, "admin-master-key", p)
 }
 
@@ -113,7 +113,7 @@ func (m *Module) pageCluster(w http.ResponseWriter, r *http.Request) {
 		m.errorPage(w, r, http.StatusNotFound)
 		return
 	}
-	v.API = "/api/v1"
+	v.API = "/api"
 	m.renderOrgPage(w, r, org, "admin-cluster", "Cluster", "cluster", v)
 }
 
@@ -128,7 +128,7 @@ func (m *Module) pageKeys(w http.ResponseWriter, r *http.Request) {
 		m.errorPage(w, r, http.StatusNotFound)
 		return
 	}
-	v.API, v.KeyRotationDays = "/api/v1", m.s.Cfg.Tokens.KeyRotationDays
+	v.API, v.KeyRotationDays = "/api", m.s.Cfg.Tokens.KeyRotationDays
 	m.renderOrgPage(w, r, org, "admin-keys", "Signing keys", "keys", v)
 }
 
@@ -138,7 +138,7 @@ func (m *Module) pageAllAudit(w http.ResponseWriter, r *http.Request) {
 		m.errorPage(w, r, http.StatusForbidden)
 		return
 	}
-	p := m.s.Page(w, r, "Audit log", "audit-all", &View{API: "/api/v1", Base: "/admin/orgs", AllOrgs: true})
+	p := m.s.Page(w, r, "Audit log", "audit-all", &View{API: "/api", Base: "/admin/orgs", AllOrgs: true})
 	m.s.Render.Render(w, http.StatusOK, "admin-audit", p)
 }
 
@@ -172,7 +172,7 @@ func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {
 		m.errorPage(w, r, http.StatusForbidden)
 		return
 	}
-	p := m.s.Page(w, r, "Organizations", "orgs", &View{API: "/api/v1/orgs", Base: "/admin/orgs"})
+	p := m.s.Page(w, r, "Organizations", "orgs", &View{API: "/api/orgs", Base: "/admin/orgs"})
 	m.s.Render.Render(w, http.StatusOK, "admin-orgs", p)
 }
 
@@ -209,7 +209,7 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 		return nil, nil, false
 	}
 	esc := url.PathEscape(org.Name)
-	v := &View{API: "/api/v1/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
+	v := &View{API: "/api/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
 		IsPrimary: org.Primary, CanSCIM: a.IsSuper(),
 		Roles: assignableRoles(a, org)}
 	return org, v, true
@@ -271,11 +271,11 @@ type landingHelp struct {
 	NotFound bool
 }
 
-// NotFound returns the handler for unknown routes: JSON for /api/, the styled 404 page otherwise. Mount it on the
+// NotFound returns the handler for unknown routes: JSON for /api/ and /api-internal/, the styled 404 page otherwise. Mount it on the
 // catch-all pattern "/" (it is more general than every real route, so it only sees unmatched requests).
 func NotFound(s *web.Server) http.Handler {
 	return s.WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(r.URL.Path) >= 5 && r.URL.Path[:5] == "/api/" {
+		if web.APIPath(r.URL.Path) {
 			web.WriteJSON(w, http.StatusNotFound, web.ErrorBody{Error: "Not found."})
 			return
 		}

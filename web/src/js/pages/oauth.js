@@ -20,7 +20,7 @@ export default function (Alpine) {
       this.busy = true
       this.error = ''
       try {
-        const res = await post('/api/oauth/consent', { flow: this.flow, approve })
+        const res = await post('/api-internal/oauth/consent', { flow: this.flow, approve })
         window.location.assign(res.redirect)
       } catch (e) {
         this.error = message(e)

@@ -50,7 +50,7 @@ func TestBearerSchemeCaseInsensitive(t *testing.T) {
 	tok := st.bearer
 	st.bearer = ""
 	for _, scheme := range []string{"Bearer", "bearer", "BEARER"} {
-		want(t, st.do("GET", "/api/v1/orgs", nil, "Authorization", scheme+" "+tok), 200)
+		want(t, st.do("GET", "/api/orgs", nil, "Authorization", scheme+" "+tok), 200)
 	}
 }
 
@@ -78,17 +78,17 @@ func TestOpenAPIDetails(t *testing.T) {
 	if err := json.Unmarshal(r.Raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if b := doc.Paths["/api/v1/backup"]["get"]; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
+	if b := doc.Paths["/api/backup"]["get"]; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
 		t.Errorf("backup security: %+v", b.Security)
 	}
 	in := map[string]string{}
-	for _, p := range doc.Paths["/api/v1/backup"]["get"].Parameters {
+	for _, p := range doc.Paths["/api/backup"]["get"].Parameters {
 		in[p.Name] = p.In
 	}
 	if in["plain"] != "query" || in["X-Backup-Password"] != "header" {
 		t.Errorf("backup parameters: %v", in)
 	}
-	if _, ok := doc.Paths["/api/v1/orgs/{org}/users"]["post"].Responses["503"]; !ok {
+	if _, ok := doc.Paths["/api/orgs/{org}/users"]["post"].Responses["503"]; !ok {
 		t.Error("no 503 response")
 	}
 	if p := doc.Comps.Schemas["Member"].Properties; p["name"] == nil || p["display_name"] != nil {
@@ -97,7 +97,7 @@ func TestOpenAPIDetails(t *testing.T) {
 	if !strings.Contains(string(r.Raw), `"#/components/schemas/KeyRotated"`) || doc.Comps.Schemas["KeyRotated"].Properties["rotated"] == nil {
 		t.Error("rotate response schema")
 	}
-	rot := w.as("super").post("/api/v1/keys/rotate", nil)
+	rot := w.as("super").post("/api/keys/rotate", nil)
 	if rot.Status == 200 && rot.JSON["rotated"] != true {
 		t.Errorf("rotate response: %s", rot.Raw)
 	}

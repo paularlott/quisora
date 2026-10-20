@@ -153,7 +153,12 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	var app *service.AppAccess
 	if ce, err := p.client(r.Context(), cl.ClientID); err == nil {
-		if app, err = p.appAccess(r.Context(), ce.c, nil, u); err == nil && !app.Allowed {
+		c, _, ferr := p.forResources(r.Context(), ce.c, slices.DeleteFunc(slices.Clone([]string(cl.Aud)), func(a string) bool { return a == cl.ClientID }))
+		if ferr != nil {
+			bearerError(w, http.StatusUnauthorized, "invalid_token") // the resource no longer accepts the application
+			return
+		}
+		if app, err = p.appAccess(r.Context(), c, nil, u); err == nil && !app.Allowed {
 			bearerError(w, http.StatusUnauthorized, "invalid_token") // access taken away since the token was issued
 			return
 		}
@@ -295,6 +300,14 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	// ids: a resource server that introspects tokens issued to other clients needs introspect_org.
 	if !slices.Contains(cl.Aud, caller.ID) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
 		return inactive
+	}
+	// A self-registered application's token is active only while its resource still accepts it: the tenant's
+	// switch turned off (or the resource removed) ends it here at once, not when it expires.
+	if ce, err := p.client(ctx, cl.ClientID); err == nil && ce.c.SelfRegistered {
+		res := slices.DeleteFunc(slices.Clone([]string(cl.Aud)), func(a string) bool { return a == cl.ClientID })
+		if _, _, err := p.forResources(ctx, ce.c, res); err != nil {
+			return inactive
+		}
 	}
 	o := newObj(512)
 	o.boolean("active", true)

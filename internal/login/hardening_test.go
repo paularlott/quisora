@@ -59,33 +59,33 @@ func TestReauthRequiresSecondFactor(t *testing.T) {
 	org := e.org(t, "acme", nil)
 
 	plain := e.signedIn(t, e.user(t, org, "plain", model.RoleUser))
-	res, out := plain.api("POST", "/api/account/reauth", map[string]any{"password": userPassword})
+	res, out := plain.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})
 	wantStatus(t, res, out, 200)
 
 	totpUser := e.user(t, org, "coder", model.RoleUser)
 	secret := e.giveTOTP(t, totpUser)
 	b := e.signedIn(t, totpUser)
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "code" {
 		t.Fatalf("password alone with the app: %v", out)
 	}
-	if _, v := b.api("GET", "/api/account/reauth", nil); v["valid"] != false {
+	if _, v := b.api("GET", "/api-internal/account/reauth", nil); v["valid"] != false {
 		t.Fatalf("re-authenticated by the password alone: %v", v)
 	}
-	res, out = b.api("POST", "/api/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now())})
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
 
 	keyUser := e.user(t, org, "keyed", model.RoleUser)
 	k := e.signedIn(t, keyUser)
 	k.registerPasskey("Key")
 	k2 := e.signedIn(t, keyUser)
-	res, out = k2.api("POST", "/api/account/reauth", map[string]any{"password": userPassword})
+	res, out = k2.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})
 	wantStatus(t, res, out, 422)
 	if str(out, "field") != "passkey" {
 		t.Fatalf("password alone with a passkey: %v", out)
 	}
-	if _, v := k2.api("GET", "/api/account/reauth", nil); v["valid"] != false {
+	if _, v := k2.api("GET", "/api-internal/account/reauth", nil); v["valid"] != false {
 		t.Fatalf("re-authenticated by the password alone: %v", v)
 	}
 }
@@ -110,7 +110,7 @@ func TestSameUserSignInUpgradesSession(t *testing.T) {
 	}
 
 	time.Sleep(10 * time.Millisecond)
-	res, out = b.do("POST", "/api/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out = b.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
 		"password": userPassword, "next": "/account"}, nil)
 	wantStatus(t, res, out, 200)
 	if b.sessionID() != sid {
@@ -138,7 +138,7 @@ func TestSameUserSignInUpgradesSession(t *testing.T) {
 
 	// Another user signing in on this browser: the old session and its grants end.
 	e.user(t, mustPrimary(t, e), "someone", model.RoleUser)
-	res, out = b.do("POST", "/api/login/password", map[string]any{"org": "primary", "email": "someone@example.com",
+	res, out = b.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "someone@example.com",
 		"password": userPassword, "next": "/account"}, nil)
 	wantStatus(t, res, out, 200)
 	if b.sessionID() == sid {

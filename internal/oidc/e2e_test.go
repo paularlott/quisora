@@ -699,7 +699,7 @@ func TestConsentFlow(t *testing.T) {
 	}
 	prompt := func(approve bool) string {
 		b, _ := json.Marshal(map[string]any{"flow": flowID, "approve": approve})
-		req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(b)))
+		req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 		req.Header.Set("X-CSRF-Token", csrf)
 		req.Header.Set("Content-Type", "application/json")
 		r, err := c.Do(req)
@@ -714,7 +714,7 @@ func TestConsentFlow(t *testing.T) {
 		return out["redirect"]
 	}
 	// CSRF is enforced
-	req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(`{"flow":"x","approve":true}`))
+	req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(`{"flow":"x","approve":true}`))
 	if r, _ := c.Do(req); r.StatusCode != 403 {
 		t.Fatalf("no CSRF accepted: %d", r.StatusCode)
 	}
@@ -1789,7 +1789,7 @@ func (h *harness) publicLogin(cl *model.Client, extra url.Values) (tokResp, stri
 	}
 	flow := u.Query().Get("flow")
 	b, _ := json.Marshal(map[string]any{"flow": flow, "approve": true})
-	req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(b)))
+	req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.Do(req)
@@ -1914,7 +1914,7 @@ func TestPublicClientVerifier(t *testing.T) {
 		v, ch := pkce()
 		u := h.authorize(c, authzQuery(cl, ch, nil))
 		b, _ := json.Marshal(map[string]any{"flow": u.Query().Get("flow"), "approve": true})
-		req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(b)))
+		req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 		req.Header.Set("X-CSRF-Token", csrf)
 		req.Header.Set("Content-Type", "application/json")
 		resp, _ := c.Do(req)
@@ -2124,18 +2124,23 @@ func regexpValue(page, name string) string {
 	return rest[:strings.IndexByte(rest, '"')]
 }
 
-// "localhost" is not a loopback IP literal: a registered http://localhost address matches exactly, with no port
-// flexibility (RFC 8252 §8.3); the IP literals keep it.
-func TestLocalhostRedirectExact(t *testing.T) {
+// An http redirect URI on the loopback interface (localhost, 127.0.0.1, [::1]) matches any port (RFC 8252 §7.3), with
+// the host, path and query registered; any other address matches exactly.
+func TestLoopbackRedirectPorts(t *testing.T) {
 	if !redirectMatches([]string{"http://[::1]/cb"}, "http://[::1]:4100/cb") {
 		t.Error("::1 lost port flexibility")
 	}
 	reg := []string{"http://localhost:8080/cb"}
-	if !redirectMatches(reg, "http://localhost:8080/cb") {
-		t.Error("exact localhost refused")
+	if !redirectMatches(reg, "http://localhost:8080/cb") || !redirectMatches(reg, "http://localhost:9999/cb") ||
+		!redirectMatches([]string{"http://localhost/cb"}, "http://localhost:4100/cb") {
+		t.Error("localhost refused on another port")
 	}
-	if redirectMatches(reg, "http://localhost:9999/cb") || redirectMatches([]string{"http://localhost/cb"}, "http://localhost:4100/cb") {
-		t.Error("localhost got port flexibility")
+	if redirectMatches(reg, "http://127.0.0.1:8080/cb") || redirectMatches(reg, "http://localhost:8080/other") ||
+		redirectMatches(reg, "https://localhost:8080/cb") || redirectMatches([]string{"http://app.example/cb"}, "http://app.example:81/cb") {
+		t.Error("loopback matching went beyond the port")
+	}
+	if !redirectMatches([]string{"com.example.app:/cb"}, "com.example.app:/cb") || redirectMatches([]string{"com.example.app:/cb"}, "com.example.app:/other") {
+		t.Error("a private-use scheme must match exactly")
 	}
 }
 
@@ -2797,7 +2802,7 @@ func TestOAuthAuditEvents(t *testing.T) {
 	_, ch := pkce()
 	u := h.authorize(c, authzQuery(third, ch, nil))
 	b, _ := json.Marshal(map[string]any{"flow": u.Query().Get("flow"), "approve": true})
-	req, _ := http.NewRequest("POST", h.env.URL+"/api/oauth/consent", strings.NewReader(string(b)))
+	req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Content-Type", "application/json")
 	if r, err := c.Do(req); err != nil || r.StatusCode != 200 {

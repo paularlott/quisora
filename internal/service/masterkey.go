@@ -80,7 +80,7 @@ func (s *Service) MasterKeyAgreed(ctx context.Context) (bool, map[string]string,
 	return len(others) == 0, others, nil
 }
 
-// MasterKeyStatus is where a master key rotation stands, as any node sees it (GET /api/v1/master-key).
+// MasterKeyStatus is where a master key rotation stands, as any node sees it (GET /api/master-key).
 type MasterKeyStatus struct {
 	Active   string   `json:"active_key"`    // the key this node seals with
 	Previous []string `json:"previous_keys"` // this node's server.previous_master_keys

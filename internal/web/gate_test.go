@@ -39,9 +39,9 @@ func TestServeGate(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ method, path string }{
-		{"GET", "/api/v1/orgs/acme/users"}, {"GET", "/scim/v2/Users"}, {"GET", "/oauth/authorize?client_id=x"},
+		{"GET", "/api/orgs/acme/users"}, {"GET", "/scim/v2/Users"}, {"GET", "/oauth/authorize?client_id=x"},
 		{"GET", "/oauth/jwks"}, {"GET", "/.well-known/openid-configuration"}, {"GET", "/admin"}, {"GET", "/account"},
-		{"POST", "/oauth/token"}, {"GET", "/oauth/userinfo"}, {"POST", "/api/login/password"},
+		{"POST", "/oauth/token"}, {"GET", "/oauth/userinfo"}, {"POST", "/api-internal/login/password"},
 	} {
 		rec := do(c.method, c.path)
 		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
@@ -58,7 +58,7 @@ func TestServeGate(t *testing.T) {
 		t.Errorf("within the grace, jwks: %d", c)
 	}
 	h.ready = true
-	if c := do("GET", "/api/v1/orgs/acme/users").Code; c != 299 {
+	if c := do("GET", "/api/orgs/acme/users").Code; c != 299 {
 		t.Errorf("ready: %d", c)
 	}
 }
@@ -91,7 +91,7 @@ func TestShedExemptions(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/orgs", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/orgs", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("an ordinary request at the limit: %d", rec.Code)
 	}

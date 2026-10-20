@@ -10,7 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/scim"
 )
 
-// Every registered /api/v1 route must be described in the OpenAPI document, and the document must not describe
+// Every registered /api route must be described in the OpenAPI document, and the document must not describe
 // routes that do not exist.
 func TestOpenAPIMatchesRoutes(t *testing.T) {
 	w := newWorld(t)
@@ -47,8 +47,8 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 
 	registered := map[string]bool{}
 	for _, rt := range w.mod.Routes() {
-		if !strings.HasPrefix(rt.Path, "/api/v1/") {
-			t.Errorf("route outside /api/v1: %s", rt.Path)
+		if !strings.HasPrefix(rt.Path, "/api/") {
+			t.Errorf("route outside /api: %s", rt.Path)
 		}
 		key := rt.Method + " " + rt.Path
 		registered[key] = true
@@ -121,7 +121,7 @@ func TestOpenAPITags(t *testing.T) {
 		}
 	}
 	found := false
-	for _, p := range doc.Paths["/api/v1/orgs/{org}/users"]["get"].Parameters {
+	for _, p := range doc.Paths["/api/orgs/{org}/users"]["get"].Parameters {
 		if p.Name == "tag" && p.In == "query" {
 			found = true
 		}

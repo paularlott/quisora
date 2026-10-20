@@ -69,18 +69,18 @@ func (m *Module) Register(s *web.Server) {
 // Route is one management API operation.
 type Route struct {
 	Method  string
-	Path    string // OpenAPI-style template, e.g. /api/v1/orgs/{org}
+	Path    string // OpenAPI-style template, e.g. /api/orgs/{org}
 	Handler http.HandlerFunc
 }
 
-// Routes lists every /api/v1 operation this module serves. The OpenAPI document must describe each one (tested).
+// Routes lists every /api operation this module serves. The OpenAPI document must describe each one (tested).
 func (m *Module) Routes() []Route { return m.routes() }
 
 func (m *Module) routes() []Route {
-	const o = "/api/v1/orgs/{org}"
+	const o = "/api/orgs/{org}"
 	return []Route{
-		{"GET", "/api/v1/orgs", m.listOrgs},
-		{"POST", "/api/v1/orgs", m.createOrg},
+		{"GET", "/api/orgs", m.listOrgs},
+		{"POST", "/api/orgs", m.createOrg},
 		{"GET", o, m.getOrg},
 		{"PATCH", o, m.updateOrg},
 		{"DELETE", o, m.deleteOrg},
@@ -122,6 +122,8 @@ func (m *Module) routes() []Route {
 		{"GET", o + "/tenants/{id}", m.getTenant},
 		{"PATCH", o + "/tenants/{id}", m.updateTenant},
 		{"DELETE", o + "/tenants/{id}", m.deleteTenant},
+		{"GET", o + "/tenants/{id}/self-registered", m.listSelfRegistered},
+		{"DELETE", o + "/tenants/{id}/self-registered/{client}", m.revokeSelfRegistered},
 		{"GET", o + "/tenants/{id}/access", m.listAccess},
 		{"POST", o + "/tenants/{id}/access", m.addAccess},
 		{"GET", o + "/tenants/{id}/access/{aid}", m.getAccess},
@@ -145,12 +147,12 @@ func (m *Module) routes() []Route {
 		{"PUT", o + "/settings", m.putSettings},
 		{"GET", o + "/audit", m.listAudit},
 
-		{"GET", "/api/v1/audit", m.listAllAudit},
-		{"GET", "/api/v1/keys", m.listKeys},
-		{"POST", "/api/v1/keys/rotate", m.rotateKeys},
-		{"GET", "/api/v1/backup", m.downloadBackup},
-		{"GET", "/api/v1/master-key", m.masterKeyStatus},
-		{"GET", "/api/v1/cluster", m.clusterStatus},
+		{"GET", "/api/audit", m.listAllAudit},
+		{"GET", "/api/keys", m.listKeys},
+		{"POST", "/api/keys/rotate", m.rotateKeys},
+		{"GET", "/api/backup", m.downloadBackup},
+		{"GET", "/api/master-key", m.masterKeyStatus},
+		{"GET", "/api/cluster", m.clusterStatus},
 	}
 }
 

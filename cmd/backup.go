@@ -108,7 +108,7 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 	}
 }
 
-// remoteBackup downloads GET <server>/api/v1/backup?plain=1 (over TLS) into w, checking the stream (backup.Verify)
+// remoteBackup downloads GET <server>/api/backup?plain=1 (over TLS) into w, checking the stream (backup.Verify)
 // as it arrives (an incomplete or damaged download is an error), and encrypts it here with password unless that is
 // "": the password never reaches the server.
 func remoteBackup(ctx context.Context, server, token, caFile string, insecure bool, password string, w io.Writer) (_ backup.Stats, err error) {
@@ -125,7 +125,7 @@ func remoteBackup(ctx context.Context, server, token, caFile string, insecure bo
 	}
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{RootCAs: roots, InsecureSkipVerify: insecure}}}
-	target := u.String() + "/api/v1/backup?plain=1"
+	target := u.String() + "/api/backup?plain=1"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err

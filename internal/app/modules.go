@@ -78,7 +78,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	// rotation rolled out node by node is finished first. Passes run every minute while there is work and every ten
 	// otherwise, for as long as previous keys are configured (a node could still seal with one); without them, until
 	// one finds nothing left. Once nothing needs the previous keys, the leader says every hour that they must be removed.
-	var lastLeaverRun, lastReseal, lastRemind time.Time
+	var lastLeaverRun, lastReseal, lastRemind, lastSelfReg time.Time
 	var resealEvery time.Duration
 	var resealed bool
 	var lastResult service.ResealResult
@@ -141,6 +141,13 @@ func modules(ctx context.Context, a *App) []web.Module {
 			a.Log.Error("user end dates", "error", err)
 		} else if n > 0 {
 			a.Log.Info("users past their end date disabled", "count", n)
+		}
+		// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
+		if time.Since(lastSelfReg) >= time.Hour {
+			lastSelfReg = time.Now()
+			if n := a.Svc.PurgeSelfRegistered(ctx, time.Now()); n > 0 {
+				a.Log.Info("removed unused self-registered applications", "count", n)
+			}
 		}
 		if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 && time.Since(lastLeaverRun) >= min(every, 5*time.Minute) {
 			lastLeaverRun = time.Now()

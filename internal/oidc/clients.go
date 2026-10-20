@@ -56,7 +56,7 @@ func parseKeys(jwks []JWK) []pubKey {
 
 // client returns the (cached) client record.
 func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) {
-	if len(id) == 0 || len(id) > 128 {
+	if len(id) == 0 || len(id) > service.MaxMetadataURL {
 		return nil, store.ErrNotFound
 	}
 	if e, ok := p.clients.get(id); ok {

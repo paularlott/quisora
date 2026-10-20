@@ -1,5 +1,5 @@
 // Admin pages: organizations, users, groups, clients, providers, settings, audit. Every list is server-side
-// (search, sort, paging); every form submits through the management API (/api/v1) and shows errors inline.
+// (search, sort, paging); every form submits through the management API (/api) and shows errors inline.
 import { get, post, put, patch, del, qs, ApiError } from '../lib/api.js'
 import { tableMixin } from '../lib/table.js'
 import { formMixin, lines } from '../lib/form.js'
@@ -245,7 +245,7 @@ function tenantDialogMixin(Alpine) {
   return {
     editingTenant: null, apiBase: '', providers: [], orgPassword: true, orgPasskey: true, orgMFA: false, _form: 'tenant',
     errorKey(f) {
-      if (this._form === 'tenant' && (f === 'name' || f === 'description')) return 'tenant_' + f
+      if (this._form === 'tenant' && (f === 'name' || f === 'description' || f === 'resources')) return 'tenant_' + f
       if (this._form === 'client' && f === 'scopes') return 'custom_scopes' // shown on the scopes chip field
       return f
     },
@@ -270,7 +270,8 @@ function tenantDialogMixin(Alpine) {
     tenantToForm(t) {
       const s = t.settings
       return { tenant_name: t.name, display_name: t.display_name, tenant_description: t.description || '', who: s.members_only ? 'members' : 'everyone', password_login: !!s.password_login, passkey_login: !!s.passkey_login,
-        all_providers: s.all_providers !== false, providers: [...(s.providers || [])], require_mfa: !!s.require_mfa }
+        all_providers: s.all_providers !== false, providers: [...(s.providers || [])], require_mfa: !!s.require_mfa,
+        self_registration: !!s.self_registration, tenant_resources: listRows(t.resources || [], 'Resource', true) }
     },
     openCreateTenant(opener) {
       this._form = 'tenant'
@@ -290,7 +291,8 @@ function tenantDialogMixin(Alpine) {
     async submitTenant() {
       const f = this.form
       const body = { display_name: f.display_name, description: f.tenant_description, settings: { members_only: f.who === 'members', password_login: f.password_login, passkey_login: f.passkey_login,
-        all_providers: f.all_providers, providers: f.all_providers ? [] : f.providers, require_mfa: f.require_mfa } }
+        all_providers: f.all_providers, providers: f.all_providers ? [] : f.providers, require_mfa: f.require_mfa,
+        self_registration: f.self_registration }, resources: listValues(f.tenant_resources) }
       if (!this.editingTenant || f.tenant_name !== this.editingTenant.name) body.name = f.tenant_name
       const edit = this.editingTenant
       const res = await this.run(() => edit ? patch(`${this.apiBase}/tenants/${enc(edit.id)}`, body) : post(`${this.apiBase}/tenants`, body))
@@ -642,12 +644,12 @@ export default function (Alpine) {
       this.editing = o
       this.resetForm({ name: o.name, display_name: o.display_name })
       this.openDlg('org-dialog', ev.currentTarget)
-      this.watchEdit({ kinds: ['org'], record: o, fetchOne: () => getOrNull(`/api/v1/orgs/${enc(o.name)}`) })
+      this.watchEdit({ kinds: ['org'], record: o, fetchOne: () => getOrNull(`/api/orgs/${enc(o.name)}`) })
     },
     async submit() {
       const body = { name: this.form.name.trim(), display_name: this.form.display_name.trim() }
       if (!body.display_name) delete body.display_name
-      const res = await this.run(() => this.editing ? patch(`/api/v1/orgs/${enc(this.editing.name)}`, body) : post('/api/v1/orgs', body))
+      const res = await this.run(() => this.editing ? patch(`/api/orgs/${enc(this.editing.name)}`, body) : post('/api/orgs', body))
       if (!res) return
       this.closeDlg('org-dialog')
       toast(this.editing ? 'Organization saved.' : 'Organization created.')
@@ -661,7 +663,7 @@ export default function (Alpine) {
         confirmLabel: 'Delete organization', requireText: o.name })
       if (!yes) return
       try {
-        await withReauth(Alpine, () => del(`/api/v1/orgs/${enc(o.name)}${qs({ cascade: o.users > 0 })}`), ev.target)
+        await withReauth(Alpine, () => del(`/api/orgs/${enc(o.name)}${qs({ cascade: o.users > 0 })}`), ev.target)
         toast(`Organization “${o.display_name}” deleted.`)
         this.load()
       } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
@@ -927,7 +929,7 @@ export default function (Alpine) {
 
 
   // ---- Tenants list -----------------------------------------------------------------------------------------------
-  Alpine.data('adminTenants', () => mix(tableMixin(), formMixin(), dialogMixin(), tenantDialogMixin(Alpine), {
+  Alpine.data('adminTenants', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tenantDialogMixin(Alpine), {
     pageBase: '',
     async init() {
       const d = this.$el.dataset
@@ -954,6 +956,42 @@ export default function (Alpine) {
   }))
 
   // ---- One tenant: its sign-in rules and its clients ---------------------------------------------------------------
+  // The self-registered apps card of the tenant page: the apps users of this tenant authorized, each revocable.
+  Alpine.data('tenantSelfReg', () => ({
+    items: [], loading: true, loadError: '', url: '',
+    init() {
+      this.url = this.$el.dataset.api // read once: in a click handler $el is the button
+      const live = liveRunner(() => this.load())
+      subscribe(['client', 'grant', 'tenant'], () => live.trigger())
+      return this.load()
+    },
+    async load() {
+      try {
+        const r = await get(this.url)
+        this.items = r.items.map((a) => ({ ...a, kindText: a.metadata_document ? 'Metadata document' : 'Registered itself',
+          hostText: [...new Set((a.redirect_uris || []).map((u) => { try { return new URL(u).host } catch { return u } }))].join(', '),
+          usersText: a.users === 1 ? '1 user' : a.users + ' users', lastText: relTime(a.last_used, 'Never'), revokeLabel: 'Revoke ' + a.name }))
+        this.loadError = ''
+      } catch (e) { this.loadError = e.message } finally { this.loading = false }
+    },
+    get hasItems() { return this.items.length > 0 },
+    get isEmpty() { return !this.loading && this.items.length === 0 && this.loadError === '' },
+    get hasLoadError() { return this.loadError !== '' },
+    async revoke(ev) {
+      const opener = ev.currentTarget
+      const a = this.items.find((i) => i.client_id === opener.dataset.id)
+      if (!a) return
+      const yes = await confirmAction(Alpine, { title: 'Revoke app?', message: `Revoke ${a.name} for everyone in this organization?`,
+        detail: 'Every user\u2019s access to it ends now. It can come back only by asking each user again.', confirmLabel: 'Revoke', danger: true })
+      if (!yes) return
+      try {
+        await del(this.url + '/' + enc(a.client_id))
+        toast(`${a.name} revoked.`)
+        await this.load()
+      } catch (e) { toast(e.message, 'error') }
+    },
+  }))
+
   Alpine.data('adminTenant', () => mix(tableMixin(), formMixin(), dialogMixin(), tenantDialogMixin(Alpine), clientDialogMixin(Alpine), {
     tenant: null, tenantId: '', pageBase: '', gone: false, tenantError: '', _tsig: '', _tlive: null, titleText: '',
     async init() {
@@ -1026,6 +1064,8 @@ export default function (Alpine) {
         this.orgMFA ? { label: 'Second factor', text: 'Required', cls: 'badge badge-info', note: 'The organization requires one for every sign-in.' }
           : { label: 'Second factor', text: s.require_mfa ? 'Required' : 'Not required', cls: s.require_mfa ? 'badge badge-info' : 'badge badge-plain',
             note: s.require_mfa ? 'Every sign-in to this tenant\u2019s applications needs one, unless the provider used counts as one.' : '' },
+        { label: 'Self-registered apps', text: s.self_registration ? 'Allowed' : 'Not allowed', cls: s.self_registration ? 'badge badge-warning' : 'badge badge-plain',
+          note: (this.tenant.resources || []).length ? 'For ' + this.tenant.resources.join(', ') : s.self_registration ? 'No resources listed yet: none can sign in.' : '' },
       ]
     },
     // tenant dialog
@@ -1334,7 +1374,7 @@ export default function (Alpine) {
     },
   }))
 
-  // ---- Master key rotation (super admins): GET /api/v1/master-key, polled --------------------------------------------
+  // ---- Master key rotation (super admins): GET /api/master-key, polled --------------------------------------------
   const MASTER_KEY_POLL_MS = 30000 // the status reads every sealed value: not too often
   const MASTER_KEY_STATE = {
     none: { title: 'No rotation in progress.', cls: 'alert alert-success' },

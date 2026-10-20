@@ -7,7 +7,7 @@ test('email first, then the password', async ({ page }) => {
   await signIn(page, 'none')
   let calls = 0
   let sent = null
-  await page.route('**/api/login/password', (route) => {
+  await page.route('**/api-internal/login/password', (route) => {
     calls++
     sent = route.request().postDataJSON()
     return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Wrong email address or password.' }) })

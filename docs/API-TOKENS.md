@@ -12,9 +12,9 @@ is made, so if you are demoted or your account is disabled, the token loses that
 
 | Scope | Who can choose it | What the token is accepted by |
 | --- | --- | --- |
-| `admin` | managers and up | The management API, `/api/v1/…` (what the admin console uses), including the live event stream `/api/v1/events` |
+| `admin` | managers and up | The management API, `/api/…` (what the admin console uses), including the live event stream `/api/events` |
 | `scim` | managers and up | The SCIM 2.0 API, `/scim/v2/…`, for provisioning tools |
-| `backup` | super admins | `GET /api/v1/backup` only; such a token expires within 30 days |
+| `backup` | super admins | `GET /api/backup` only; such a token expires within 30 days |
 | `api` | everyone | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
 
 A token with the `api` scope cannot also have `admin`, `scim` or `backup`: applications that see an `api` token
@@ -25,7 +25,7 @@ Send the token as a bearer token on every request:
 ```bash
 export QUISORA=https://id.example.com
 export TOKEN=qsr_…
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users?limit=10"
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users?limit=10"
 ```
 
 ## The management API (`admin`)
@@ -37,26 +37,26 @@ version 1.
 
 ```bash
 # find a user
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users?q=alan"
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users?q=alan"
 
 # create one, then send them an invitation link to set up their sign-in
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"username":"grace","email":"grace@acme.example","given_name":"Grace","family_name":"Hopper","role":"user"}' \
-  "$QUISORA/api/v1/orgs/acme/users"
-curl -X POST -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/invite"
+  "$QUISORA/api/orgs/acme/users"
+curl -X POST -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<user id>/invite"
 
 # read back what the console edits: scopes, tags and groups are JSON arrays
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/clients/<client id>"     # "scopes": ["openid", "orders:read"]
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/providers/<provider id>" # "scopes": ["openid", "profile", "email"]
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>"         # "tags": [...], "groups": [{"id", "display_name"}]
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/groups/<group id>"       # "tags": [...]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/clients/<client id>"     # "scopes": ["openid", "orders:read"]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/providers/<provider id>" # "scopes": ["openid", "profile", "email"]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<user id>"         # "tags": [...], "groups": [{"id", "display_name"}]
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/groups/<group id>"       # "tags": [...]
 
 # sign a user out everywhere
-curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/sessions"
+curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<user id>/sessions"
 
 # follow changes in your organization as they happen (server-sent events; -N turns off curl's buffering);
 # a super admin can add ?org=<name> to watch another organization
-curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/events"
+curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 ```
 
 ## SCIM (`scim`)
@@ -126,10 +126,10 @@ Roles are given per tenant, to a user or to a group, on the tenant's **Access** 
 back with the management API; each entry is one user or one group, with its own `roles` and `tags`:
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenant id>/access"
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/tenants/<tenant name or id>/access"
 #   {"items": [{"subject_type": "group", "subject_id": "<group id>", "name": "Finance", "roles": ["approver"],
 #               "tags": ["region:eu"], "all_clients": true, ...}], "total": 1}
-curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/tenants/<tenant id>/access/<tenant id>:<user or group id>"
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/tenants/<tenant name or id>/access/<tenant id>:<user or group id>"
 ```
 
 Applications receive them as `roles`: the union of the user's own entry and their groups' entries that cover that
@@ -152,9 +152,9 @@ When you make an `api` token (or edit one), you can choose:
   script do only those things, for example read orders but not change them. A scope never gives you more than your
   roles allow: it only narrows.
 
-Through the account API: `POST /api/account/tokens` takes `audience` (application ids) and `app_scopes` (which need
-an `audience`), and
-`GET /api/account/tokens` lists the `apps` you can choose from, each with its `scopes`.
+Through the account page's own API (under `/api-internal/`: the console's, for a browser session, not versioned):
+`POST /api-internal/account/tokens` takes `audience` (application ids) and `app_scopes` (which need an `audience`),
+and `GET /api-internal/account/tokens` lists the `apps` you can choose from, each with its `scopes`.
 
 ## Errors
 
@@ -167,12 +167,12 @@ an `audience`), and
 ## Replacing and revoking
 
 - **Edit**: the pencil button changes a token's name, applications and scopes; the secret, its Quisora scopes and its
-  expiry stay. Editing asks you to confirm it is you, as making a token does (`PATCH /api/account/tokens/<id>` with
+  expiry stay. Editing asks you to confirm it is you, as making a token does (`PATCH /api-internal/account/tokens/<id>` with
   `name`, `audience`, `app_scopes`).
 - **A new secret**: on Your account, the refresh button next to a token makes a new secret after you confirm. The old
   secret stops working at once; the name, scopes and expiry stay the same.
 - **Revoke**: delete the token on Your account. Administrators can revoke a user's tokens on the user's page or with
-  `DELETE /api/v1/orgs/{org}/users/{id}/tokens/{token}`.
+  `DELETE /api/orgs/{org}/users/{id}/tokens/{token}`.
 - The OAuth revocation endpoint (`/oauth/revoke`) does not revoke personal API tokens: it answers
   `unsupported_token_type`.
 - How long tokens may last is set by `tokens.api_token_max_days` ([RUNNING.md](RUNNING.md)).

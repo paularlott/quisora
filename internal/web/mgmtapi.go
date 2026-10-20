@@ -34,7 +34,7 @@ const ctxAPIVersion ctxKey = 100
 // OAuth access tokens.
 type BearerFunc func(ctx context.Context, r *http.Request, token string) (*service.Actor, error)
 
-// RequireManagement guards the management API (/api/v1/...): either a browser session (with the CSRF header on
+// RequireManagement guards the management API (/api/...): either a browser session (with the CSRF header on
 // unsafe methods) or "Authorization: Bearer <token>" whose actor holds the admin scope. It also negotiates the API
 // version. Handlers must use Actor(r) — User(r) is nil for bearer requests.
 func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
@@ -64,7 +64,7 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				return
 			}
 			// The backup download takes its own scope (and only that one does: admin is not enough for it).
-			backup := r.URL.Path == "/api/v1/backup"
+			backup := r.URL.Path == "/api/backup"
 			if backup && !a.HasScope(service.ScopeBackup) || !backup && !a.HasScope(service.ScopeAdmin) {
 				scope := service.ScopeAdmin
 				if backup {

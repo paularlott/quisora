@@ -212,8 +212,8 @@ func (h *Hub) Count() int {
 	return len(h.subs)
 }
 
-// Module serves GET /api/v1/events?org=<org name> (administrators: their organization's changes) and
-// GET /api/account/events (any signed-in user: changes to their own records, for the account page).
+// Module serves GET /api/events?org=<org name> (administrators: their organization's changes) and
+// GET /api-internal/account/events (any signed-in user: changes to their own records, for the account page).
 type Module struct {
 	Hub *Hub
 	s   *web.Server

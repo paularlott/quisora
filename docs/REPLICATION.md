@@ -301,7 +301,7 @@ Versions come from the writers' clocks; keep every node's clock synchronised (NT
 
 `/readyz` (unauthenticated) reports, ready or not, `{"status": "ready" | "unavailable", "cluster": {"size", "quorum",
 "alive", "unconfirmed", "refused", "clock_skewed", "skew_refused"}}` — counts only; the reason for not being ready
-stays in the log. `GET /api/v1/cluster` (super administrators) returns the full status (node id, members, leader,
+stays in the log. `GET /api/cluster` (super administrators) returns the full status (node id, members, leader,
 ready, writable, catching up, sync point, forced start), and the console's organization settings page shows it to
 super administrators. The Docker `HEALTHCHECK` (`quisora healthcheck`) is a **liveness** probe (`/healthz`): a node that
 is catching up or cut off is alive and must not be restarted for it. Point load balancers at `/readyz`
@@ -368,7 +368,7 @@ cannot form or join a wrong quorum.
 
 ## Backups
 
-`quisora backup` and `GET /api/v1/backup` write every live record with its version, generation and origin. Where the
+`quisora backup` and `GET /api/backup` write every live record with its version, generation and origin. Where the
 backend offers a point-in-time view — BadgerDB (one read transaction), SQLite, PostgreSQL, MySQL and MariaDB (one
 read-only repeatable-read transaction) — the backup is a **consistent snapshot**; on Valkey it pages through the live
 store. `--encrypt` (`?encrypt=1`) encrypts the whole file with AES-256-GCM under a key derived from the master key, in

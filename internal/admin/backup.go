@@ -18,7 +18,7 @@ var backupRunning atomic.Bool
 // backupPasswordHeader carries the password a downloaded backup is encrypted with.
 const backupPasswordHeader = "X-Backup-Password"
 
-// downloadBackup streams a backup of the whole store (GET /api/v1/backup; super admins only). It is encrypted with
+// downloadBackup streams a backup of the whole store (GET /api/backup; super admins only). It is encrypted with
 // the password in the X-Backup-Password header, or unencrypted with ?plain=1 (quisora backup --server downloads it so
 // over TLS and encrypts it itself, so the password never leaves the operator's machine); one or the other must be
 // given. It reads a point-in-time view of the store where the backend has one (otherwise the live store page by

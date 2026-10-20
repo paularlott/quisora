@@ -173,7 +173,7 @@ func TestNextParameterIsLocalOnly(t *testing.T) {
 	}
 	for next, want := range cases {
 		b := e.browser(t)
-		res, out := b.post("/api/login/password", map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword, "next": next})
+		res, out := b.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword, "next": next})
 		wantStatus(t, res, out, 200)
 		if str(out, "next") != want {
 			t.Errorf("next %q -> %q, want %q", next, str(out, "next"), want)
@@ -221,7 +221,7 @@ func TestGenericFailures(t *testing.T) {
 	b := e.browser(t)
 	res, out := b.login("acme", "", "")
 	wantStatus(t, res, out, 422)
-	res, out = b.post("/api/login/password", `{"org":"acme","email":"pat@example.com","password":"x","extra":1}`)
+	res, out = b.post("/api-internal/login/password", `{"org":"acme","email":"pat@example.com","password":"x","extra":1}`)
 	wantStatus(t, res, out, 400)
 
 	// Failures are audited with a reason, never the password.
@@ -288,14 +288,14 @@ func TestCSRF(t *testing.T) {
 		if h["X-CSRF-Token"] == " " {
 			h = hdrs{"X-CSRF-Token": ""}
 		}
-		res, out := b.do(http.MethodPost, "/api/login/password", body, h)
+		res, out := b.do(http.MethodPost, "/api-internal/login/password", body, h)
 		if res.StatusCode != 403 || b.hasSession() {
 			t.Fatalf("%s: status %d session=%v %v", name, res.StatusCode, b.hasSession(), out["_raw"])
 		}
 	}
 	// a browser with the right header but without the cookie fails too
 	other := e.client()
-	req, _ := http.NewRequest("POST", e.URL+"/api/login/password", strings.NewReader(`{"org":"primary","email":"admin@example.com","password":"x"}`))
+	req, _ := http.NewRequest("POST", e.URL+"/api-internal/login/password", strings.NewReader(`{"org":"primary","email":"admin@example.com","password":"x"}`))
 	req.Header.Set("X-CSRF-Token", b.csrf)
 	res, err := other.Do(req)
 	if err != nil {
@@ -306,16 +306,16 @@ func TestCSRF(t *testing.T) {
 		t.Fatalf("token without cookie: %d", res.StatusCode)
 	}
 	// every anonymous endpoint checks it
-	for _, p := range []string{"/api/login/password", "/api/login/totp", "/api/login/passkey/begin", "/api/login/passkey/finish",
-		"/api/login/enrol/totp/begin", "/api/login/enrol/totp/confirm", "/api/login/enrol/passkey/begin",
-		"/api/login/enrol/passkey/finish", "/api/password/forgot", "/api/password/reset"} {
+	for _, p := range []string{"/api-internal/login/password", "/api-internal/login/totp", "/api-internal/login/passkey/begin", "/api-internal/login/passkey/finish",
+		"/api-internal/login/enrol/totp/begin", "/api-internal/login/enrol/totp/confirm", "/api-internal/login/enrol/passkey/begin",
+		"/api-internal/login/enrol/passkey/finish", "/api-internal/password/forgot", "/api-internal/password/reset"} {
 		res, out := b.do(http.MethodPost, p, map[string]any{}, hdrs{"X-CSRF-Token": ""})
 		if res.StatusCode != 403 {
 			t.Fatalf("%s without token: %d %v", p, res.StatusCode, out["_raw"])
 		}
 	}
 	// the right token works
-	res2, out := b.post("/api/login/password", body)
+	res2, out := b.post("/api-internal/login/password", body)
 	wantStatus(t, res2, out, 200)
 }
 
@@ -520,17 +520,17 @@ func TestTOTPStep(t *testing.T) {
 	ticket := str(out, "ticket")
 
 	// wrong code
-	res, out = b.post("/api/login/totp", map[string]any{"ticket": ticket, "code": "000000"})
+	res, out = b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": "000000"})
 	wantStatus(t, res, out, 401)
 	if str(out, "field") != "code" || b.hasSession() {
 		t.Fatalf("wrong code: %v", out)
 	}
 	// unknown ticket
-	res, out = b.post("/api/login/totp", map[string]any{"ticket": "n1.unknown", "code": totpAt(secret, time.Now())})
+	res, out = b.post("/api-internal/login/totp", map[string]any{"ticket": "n1.unknown", "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 401)
 
 	code := totpAt(secret, time.Now())
-	res, out = b.post("/api/login/totp", map[string]any{"ticket": ticket, "code": code})
+	res, out = b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": code})
 	wantStatus(t, res, out, 200)
 	if str(out, "next") != "/account" || !b.hasSession() {
 		t.Fatalf("totp success: %v", out)
@@ -540,19 +540,19 @@ func TestTOTPStep(t *testing.T) {
 		t.Fatalf("amr %+v", sess)
 	}
 	// the ticket is single use
-	res, out = b.post("/api/login/totp", map[string]any{"ticket": ticket, "code": code})
+	res, out = b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": code})
 	wantStatus(t, res, out, 401)
 
 	// The same code cannot be used again on a fresh sign-in (replay protection)...
 	b2 := e.browser(t)
 	_, out = b2.login("primary", "pat", userPassword)
-	res, out2 := b2.post("/api/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": code})
+	res, out2 := b2.post("/api-internal/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": code})
 	wantStatus(t, res, out2, 401)
 	if b2.hasSession() {
 		t.Fatal("replayed code created a session")
 	}
 	// ...while the next time step still works.
-	res, out2 = b2.post("/api/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": totpAt(secret, time.Now().Add(30*time.Second))})
+	res, out2 = b2.post("/api-internal/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": totpAt(secret, time.Now().Add(30*time.Second))})
 	wantStatus(t, res, out2, 200)
 	if si, _ := e.Svc.SignIns.Get(context.Background(), u.ID); si == nil || si.TOTPLastStep == 0 {
 		t.Fatal("TOTPLastStep not stored")
@@ -568,12 +568,12 @@ func TestTOTPTicketAttemptsAndLockout(t *testing.T) {
 	ticket := str(out, "ticket")
 	// five wrong codes burn the ticket; the right code no longer works with it
 	for range 5 {
-		res, _ := b.post("/api/login/totp", map[string]any{"ticket": ticket, "code": "111111"})
+		res, _ := b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": "111111"})
 		if res.StatusCode != 401 {
 			t.Fatalf("status %d", res.StatusCode)
 		}
 	}
-	res, out := b.post("/api/login/totp", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	res, out := b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 401)
 	if b.hasSession() {
 		t.Fatal("ticket survived too many attempts")
@@ -586,7 +586,7 @@ func TestTOTPTicketAttemptsAndLockout(t *testing.T) {
 	_, o := b2.login("primary", "pat", userPassword)
 	tk := str(o, "ticket")
 	for range 3 {
-		b2.post("/api/login/totp", map[string]any{"ticket": tk, "code": "222222"})
+		b2.post("/api-internal/login/totp", map[string]any{"ticket": tk, "code": "222222"})
 	}
 	res, out = b2.login("primary", "pat", userPassword)
 	wantStatus(t, res, out, 429)
@@ -752,12 +752,12 @@ func TestRateLimitOrgNormalisation(t *testing.T) {
 		variants := []string{"acme", "acme ", " acme", "ACME", "Acme", "\tacme\n"}
 		b := run(t, func(i int) string { return variants[i%len(variants)] })
 		// The forgot-password form shares the buckets too.
-		res, out := b.post("/api/password/forgot", map[string]any{"org": " ACME ", "email": "pat@example.com"})
+		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": " ACME ", "email": "pat@example.com"})
 		wantStatus(t, res, out, 429)
 	})
 	t.Run("random unknown org names", func(t *testing.T) {
 		b := run(t, func(i int) string { return fmt.Sprintf("no-such-org-%d", i) })
-		res, out := b.post("/api/password/forgot", map[string]any{"org": "yet-another", "email": "pat@example.com"})
+		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "yet-another", "email": "pat@example.com"})
 		wantStatus(t, res, out, 429)
 	})
 }
@@ -800,7 +800,7 @@ func TestUsernameCannotSignIn(t *testing.T) {
 	}
 	post := func(who string) (*http.Response, map[string]any, bool) {
 		b := e.browser(t)
-		res, out := b.post("/api/login/password", map[string]any{"org": "acme", "email": who, "password": userPassword})
+		res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": who, "password": userPassword})
 		return res, out, b.hasSession()
 	}
 	res, unknown, _ := post("nobody-at-all")
@@ -814,7 +814,7 @@ func TestUsernameCannotSignIn(t *testing.T) {
 	}
 	// The old JSON field is gone: "login" is an unknown field.
 	b := e.browser(t)
-	res, out := b.post("/api/login/password", map[string]any{"org": "acme", "login": name, "password": userPassword})
+	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "login": name, "password": userPassword})
 	wantStatus(t, res, out, 400)
 	// Email addresses are case-insensitive.
 	for _, who := range []string{"Pat.Smith@Example.com", "pat.smith@example.com", "PAT.SMITH@EXAMPLE.COM", "  pat.smith@example.com "} {
@@ -850,14 +850,14 @@ func TestPasswordSignInStepUp(t *testing.T) {
 	e := newEnv(t, nil)
 	e.member(t)
 	b := e.browser(t)
-	res, out := b.post("/api/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out := b.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
 		"password": userPassword, "next": "/step-up"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || b.hasSession() {
 		t.Fatalf("step-up sign-in: %v session=%v", out, b.hasSession())
 	}
 	b2 := e.browser(t)
-	res, out = b2.post("/api/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out = b2.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
 		"password": userPassword, "next": "/x"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "" || !b2.hasSession() {

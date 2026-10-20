@@ -175,11 +175,17 @@ func unshed(p string) bool {
 	return false
 }
 
+// APIPath reports whether p is under the management API (/api/) or the console's own (/api-internal/): such
+// requests get their errors as JSON.
+func APIPath(p string) bool {
+	return strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/api-internal/")
+}
+
 // EventsPath is the Server-Sent Events stream of the management API.
-const EventsPath = "/api/v1/events"
+const EventsPath = "/api/events"
 
 // AccountEventsPath is the account page's live-update stream (the signed-in user's own changes).
-const AccountEventsPath = "/api/account/events"
+const AccountEventsPath = "/api-internal/account/events"
 
 // Session returns the request's session (set by WithSession / RequireUser).
 func Session(r *http.Request) *model.Session {
