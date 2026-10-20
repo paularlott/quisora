@@ -154,6 +154,25 @@
     </section>
   </div>
 
+  <!-- Sign-in providers ------------------------------------------------------------------------------------ -->
+  <section class="glass-card" id="providers" aria-labelledby="providers-h" x-data="accountProviders" x-show="hasProviders" x-cloak>
+    <h2 class="section-title mb-1" id="providers-h" tabindex="-1">Sign-in providers</h2>
+    <p class="muted mb-4">Sign in with an account you already have elsewhere. Connecting or disconnecting one asks you to confirm it is you.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <ul class="setting-list" aria-label="Sign-in providers">
+      <template x-for="row in items" :key="row.id"><li class="setting-row">
+        <div class="setting-text">
+          <p class="setting-title"><span x-text="row.name"></span> <span :class="row.badgeClass" x-text="row.badgeText"></span></p>
+          <p class="cell-sub" x-show="row.email" x-text="row.email"></p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="btn btn-secondary btn-sm" x-show="row.canConnect" :data-id="row.id" :disabled="busy" @click="connect">Connect<span class="sr-only" x-text="row.forName"></span></button>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="row.connected" :data-id="row.id" :disabled="busy" @click="disconnect">Disconnect<span class="sr-only" x-text="row.forName"></span></button>
+        </div>
+      </li></template>
+    </ul>
+  </section>
+
   <!-- Sessions --------------------------------------------------------------------------------------------- -->
   <section class="glass-card" id="sessions" aria-labelledby="sessions-h" x-data="accountSessions">
     <div class="card-head">
@@ -175,6 +194,29 @@
             <td x-text="row.methods"></td>
             <td x-text="row.lastText"></td>
             <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.notCurrent" :aria-label="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "logout"}}</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Connected apps --------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="apps" aria-labelledby="apps-h" x-data="accountApps">
+    <h2 class="section-title mb-1" id="apps-h" tabindex="-1">Connected apps</h2>
+    <p class="muted mb-4">Applications you have allowed to sign you in. Removing access ends their refresh tokens.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <p class="muted" x-show="isEmpty" x-cloak>No applications are connected to your account.</p>
+    <div class="table-wrap" role="region" aria-label="Connected apps" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Connected apps</caption>
+        <thead><tr><th scope="col">Application</th><th scope="col">Access</th><th scope="col">Connected</th><th scope="col">Last active</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row" class="cell-title" x-text="row.name"></th>
+            <td x-text="row.scopesText"></td>
+            <td x-text="row.sinceText"></td>
+            <td x-text="row.lastText"></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
           </tr></template>
         </tbody>
       </table>
@@ -231,47 +273,6 @@
     </div>
     <div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">Done</button></div>
     {{template "dialog-end"}}
-  </section>
-
-  <!-- Connected apps --------------------------------------------------------------------------------------- -->
-  <section class="glass-card" id="providers" aria-labelledby="providers-h" x-data="accountProviders" x-show="hasProviders" x-cloak>
-    <h2 class="section-title mb-1" id="providers-h" tabindex="-1">Sign-in providers</h2>
-    <p class="muted mb-4">Sign in with an account you already have elsewhere. Connecting or disconnecting one asks you to confirm it is you.</p>
-    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
-    <ul class="setting-list" aria-label="Sign-in providers">
-      <template x-for="row in items" :key="row.id"><li class="setting-row">
-        <div class="setting-text">
-          <p class="setting-title"><span x-text="row.name"></span> <span :class="row.badgeClass" x-text="row.badgeText"></span></p>
-          <p class="cell-sub" x-show="row.email" x-text="row.email"></p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button type="button" class="btn btn-secondary btn-sm" x-show="row.canConnect" :data-id="row.id" :disabled="busy" @click="connect">Connect<span class="sr-only" x-text="row.forName"></span></button>
-          <button type="button" class="btn btn-secondary btn-sm" x-show="row.connected" :data-id="row.id" :disabled="busy" @click="disconnect">Disconnect<span class="sr-only" x-text="row.forName"></span></button>
-        </div>
-      </li></template>
-    </ul>
-  </section>
-
-  <section class="glass-card" id="apps" aria-labelledby="apps-h" x-data="accountApps">
-    <h2 class="section-title mb-1" id="apps-h" tabindex="-1">Connected apps</h2>
-    <p class="muted mb-4">Applications you have allowed to sign you in. Removing access ends their refresh tokens.</p>
-    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
-    <p class="muted" x-show="isEmpty" x-cloak>No applications are connected to your account.</p>
-    <div class="table-wrap" role="region" aria-label="Connected apps" tabindex="0" x-show="hasItems" x-cloak>
-      <table class="table">
-        <caption class="sr-only">Connected apps</caption>
-        <thead><tr><th scope="col">Application</th><th scope="col">Access</th><th scope="col">Connected</th><th scope="col">Last active</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-        <tbody>
-          <template x-for="row in items" :key="row.id"><tr>
-            <th scope="row" class="cell-title" x-text="row.name"></th>
-            <td x-text="row.scopesText"></td>
-            <td x-text="row.sinceText"></td>
-            <td x-text="row.lastText"></td>
-            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
-          </tr></template>
-        </tbody>
-      </table>
-    </div>
   </section>
 
 </div>

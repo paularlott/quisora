@@ -656,6 +656,72 @@ func (m *Module) disconnectUserProvider(w http.ResponseWriter, r *http.Request) 
 	ok(w)
 }
 
+// passkeyItem is one of a user's passkeys as the management API shows it (never the credential or its public key).
+type passkeyItem struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Created        time.Time `json:"created"`
+	LastUsed       time.Time `json:"last_used"`
+	Transports     []string  `json:"transports"`
+	BackupEligible bool      `json:"backup_eligible"`
+	BackupState    bool      `json:"backup_state"`
+	// Problem says why it cannot sign in: "disabled" (signs of a cloned authenticator) or "unverified" (registered
+	// without user verification, which every sign-in now requires). Empty when it works.
+	Problem string `json:"problem,omitempty"`
+}
+
+// listUserPasskeys handles GET /users/{id}/passkeys: the user's passkeys, oldest first.
+func (m *Module) listUserPasskeys(w http.ResponseWriter, r *http.Request) {
+	u, a, found := m.connectionsUser(w, r)
+	if !found {
+		return
+	}
+	ctx := r.Context()
+	if a.UserID == u.ID {
+		ctx = service.SelfService(ctx)
+	}
+	list, err := m.s.Svc.UserPasskeys(ctx, a, u.ID)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	items := make([]passkeyItem, 0, len(list))
+	for _, p := range list {
+		tr := p.Transports
+		if tr == nil {
+			tr = []string{}
+		}
+		problem := ""
+		switch {
+		case p.Disabled:
+			problem = "disabled"
+		case !p.UserVerified:
+			problem = "unverified"
+		}
+		items = append(items, passkeyItem{ID: p.ID, Name: p.Name, Created: p.Created, LastUsed: p.LastUsed, Transports: tr,
+			BackupEligible: p.BackupEligible, BackupState: p.BackupState, Problem: problem})
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+// removeUserPasskey handles DELETE /users/{id}/passkeys/{passkey}: removes one passkey (a lost or replaced device) and
+// ends the sessions that signed in with it.
+func (m *Module) removeUserPasskey(w http.ResponseWriter, r *http.Request) {
+	u, a, found := m.connectionsUser(w, r)
+	if !found {
+		return
+	}
+	ctx, proceed := m.selfCtx(w, r, a, u, true)
+	if !proceed {
+		return
+	}
+	if _, err := m.s.Svc.RemovePasskey(ctx, a, u.ID, r.PathValue("passkey")); err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	ok(w)
+}
+
 // sessionItem is one signed-in session of a user, by its handle (web.SessionHandle; never its id).
 type sessionItem struct {
 	ID        string    `json:"id"`

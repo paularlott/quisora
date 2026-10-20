@@ -102,7 +102,9 @@
   @media (min-width: 40rem) { .auth-card { padding: 2.25rem 2.25rem; } }
   .auth-logo { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; text-align: center; margin-bottom: 1.5rem; }
   .auth-logo img { height: 3rem; width: auto; max-width: 12rem; border-radius: 0.75rem; }
-  .auth-top { position: fixed; top: 0.75rem; right: max(var(--page-gutter), calc(50% - var(--page-max) / 2 + var(--page-gutter))); z-index: 20; }
+  /* flex: the switch is an inline button, which in a plain block sits on a text line and leaves the line's descender
+     space as a strip under it inside the glass ring */
+  .auth-top { display: flex; position: fixed; top: 0.75rem; right: max(var(--page-gutter), calc(50% - var(--page-max) / 2 + var(--page-gutter))); z-index: 20; }
   .stack { display: flex; flex-direction: column; gap: 1rem; }
   .stack-lg { display: flex; flex-direction: column; gap: var(--panel-gap); }
 }

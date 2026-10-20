@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -190,4 +191,51 @@ func (s *Service) DisconnectProvider(ctx context.Context, a *Actor, userID, prov
 	}
 	s.Audit(ctx, a, u.OrgID, "user.provider.disconnect", u.Username, map[string]string{"provider": name})
 	return n, nil
+}
+
+// UserPasskeys returns the user's passkeys, oldest first, for whoever may manage their connections.
+func (s *Service) UserPasskeys(ctx context.Context, a *Actor, userID string) ([]*model.Passkey, error) {
+	u, err := s.Users.Get(ctx, userID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if err := s.manageConnections(ctx, a, u); err != nil {
+		return nil, err
+	}
+	list, err := s.Passkeys.All(ctx, userID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	slices.SortFunc(list, func(x, y *model.Passkey) int { return x.Created.Compare(y.Created) })
+	return list, nil
+}
+
+// RemovePasskey deletes one of the user's passkeys (a lost or replaced device, a suspected copy) and ends the
+// sessions that signed in with it, with their refresh grants (applications are told by back-channel logout). It
+// returns how many sessions ended. Your own last way to sign in stays, as for DisconnectProvider.
+func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID string) (int, error) {
+	u, err := s.Users.Get(ctx, userID)
+	if err != nil {
+		return 0, mapStore(err)
+	}
+	if err := s.manageConnections(ctx, a, u); err != nil {
+		return 0, err
+	}
+	p, err := s.Passkeys.Get(ctx, passkeyID)
+	if err != nil || p.UserID != u.ID {
+		return 0, ErrNotFound
+	}
+	if a != nil && a != System && a.UserID == u.ID && p.Usable() && u.PasswordHash == "" {
+		others, _ := s.UsablePasskeys(ctx, u.ID, p.ID)
+		if ids, _ := s.Identities.Count(ctx, u.ID); others == 0 && ids == 0 {
+			return 0, &conflictErr{Invalid("passkey", "is your only way to sign in; set a password first, or ask another administrator")}
+		}
+	}
+	if err := s.Passkeys.Delete(Durable(ctx), p.ID); err != nil {
+		return 0, mapStore(err)
+	}
+	ended := s.EndPasskeySessions(ctx, u.ID, p.ID)
+	s.Audit(ctx, a, u.OrgID, "user.passkey.remove", u.Username, map[string]string{"name": p.Name,
+		"sessions_ended": strconv.Itoa(ended)})
+	return ended, nil
 }

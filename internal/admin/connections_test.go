@@ -2,7 +2,9 @@ package admin_test
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -116,4 +118,61 @@ func TestUserSessionsAPI(t *testing.T) {
 		t.Fatalf("no current session: %s", r.Raw)
 	}
 	want(t, me.delete(AU+"/"+w.users["admin"].ID+"/sessions/"+cur), 409)
+}
+
+// Passkeys on the admin user page: whoever manages a user sees them (never the credential) and can remove one, which
+// ends the sessions that signed in with it. Your own last way to sign in cannot be removed here.
+func TestUserPasskeysAPI(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	u := w.users["user"]
+	pk := &model.Passkey{UserID: u.ID, OrgID: u.OrgID, Name: "Laptop", CredentialID: []byte("cred-1"), PublicKey: []byte("pk"), UserVerified: true}
+	if err := w.env.Svc.Passkeys.Create(ctx, pk); err != nil {
+		t.Fatal(err)
+	}
+	other := &model.Passkey{UserID: w.users["admin"].ID, OrgID: u.OrgID, Name: "Admin key", CredentialID: []byte("cred-2"), PublicKey: []byte("pk"), UserVerified: true}
+	if err := w.env.Svc.Passkeys.Create(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	signedIn := &model.Session{UserID: u.ID, OrgID: u.OrgID, Passkey: pk.ID, AuthTime: time.Now(), Expires: time.Now().Add(time.Hour)}
+	if err := w.env.Svc.Sessions.Create(ctx, signedIn); err != nil {
+		t.Fatal(err)
+	}
+	U := AU + "/" + u.ID + "/passkeys"
+	mg := w.as("manager")
+
+	r := mg.get(U)
+	want(t, r, 200)
+	if it := first(r); r.total() != 1 || it["name"] != "Laptop" || it["id"] != pk.ID || it["problem"] != nil {
+		t.Fatalf("passkeys: %s", r.Raw)
+	}
+	if strings.Contains(string(r.Raw), "public_key") || strings.Contains(string(r.Raw), "credential") {
+		t.Fatalf("credential material listed: %s", r.Raw)
+	}
+	want(t, w.as("other").get(U), 404)
+	want(t, mg.get(AU+"/"+w.users["admin"].ID+"/passkeys"), 403)
+	want(t, mg.delete(U+"/"+other.ID), 404) // another user's passkey, through this user
+
+	want(t, mg.delete(U+"/"+pk.ID), 200)
+	if _, err := w.env.Svc.Passkeys.Get(ctx, pk.ID); err == nil {
+		t.Fatal("passkey survived removal")
+	}
+	if _, err := w.env.Svc.Sessions.Get(ctx, signedIn.ID); err == nil {
+		t.Fatal("the session signed in with the passkey survived its removal")
+	}
+	want(t, mg.delete(U+"/"+pk.ID), 404)
+	if len(auditActions(t, w, "user.passkey.remove")) == 0 {
+		t.Error("no audit entry")
+	}
+
+	// your own last way to sign in stays (someone else can remove it, and send you an invitation)
+	me := w.users["admin"]
+	me.PasswordHash = ""
+	if err := w.env.Svc.Users.Update(ctx, me); err != nil {
+		t.Fatal(err)
+	}
+	want(t, w.as("admin").delete(AU+"/"+me.ID+"/passkeys/"+other.ID), 409)
+	if _, err := w.env.Svc.Passkeys.Get(ctx, other.ID); err != nil {
+		t.Fatal("own last passkey removed")
+	}
 }

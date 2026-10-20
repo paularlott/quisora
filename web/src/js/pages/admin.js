@@ -542,6 +542,36 @@ function userConnectionsComponents(Alpine) {
     },
   }))
 
+  Alpine.data('adminUserPasskeys', () => mix(listState(), {
+    init() { return this.load() },
+    async load() {
+      try {
+        const r = await get(base(this.$el, '/passkeys'))
+        this.items = r.items.map((p) => ({ ...p,
+          kind: p.backup_eligible ? (p.backup_state ? 'Synced passkey' : 'Passkey (can be synced)') : 'Device-bound passkey',
+          problemText: p.problem === 'disabled' ? 'Disabled' : p.problem === 'unverified' ? 'Cannot sign in' : '',
+          detail: `Added ${fmtDate(p.created)}, ${isSet(p.last_used) ? 'last used ' + fmtDate(p.last_used) : 'never used'}`,
+          forName: ' ' + p.name }))
+        this.loadError = ''
+      } catch (e) { this.loadError = e.message } finally { this.loading = false }
+    },
+    async remove(ev) {
+      const opener = ev.currentTarget
+      const p = this.items.find((i) => i.id === opener.dataset.id)
+      if (!p) return
+      const yes = await confirmAction(Alpine, { title: 'Remove passkey?', message: `Remove the passkey "${p.name}" from this user?`,
+        detail: 'It can no longer sign them in, and the sessions that signed in with it end. If it was their only way to sign in, send them a new invitation link.', confirmLabel: 'Remove', danger: true })
+      if (!yes) return
+      try {
+        await withReauth(Alpine, () => del(base(this.$el, '/passkeys/' + enc(p.id))), opener)
+        toast(`Passkey "${p.name}" removed.`)
+        await this.load()
+        window.dispatchEvent(new CustomEvent('user-signin-changed'))
+        focusHeading('passkeys-h')
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+    },
+  }))
+
   Alpine.data('adminUserProviders', () => mix(listState(), {
     init() { return this.load() },
     async load() {

@@ -20,6 +20,15 @@ test('email first, then the password', async ({ page }) => {
   await expect(email).toHaveAttribute('autocomplete', 'username webauthn')
   await expect(page.locator('#f-password')).toBeHidden()
   await expect(page.getByRole('link', { name: /^Continue with / }).first()).toBeVisible()
+  // the passkey is the last of the one-step sign-ins, above the email form
+  const oneStep = page.locator('.provider-list').locator('a, button')
+  await expect(oneStep.last()).toHaveText(/Sign in with a passkey/)
+  expect(await oneStep.count()).toBeGreaterThan(1)
+  const below = await page.evaluate(() => {
+    const pk = [...document.querySelectorAll('button')].find((b) => /Sign in with a passkey/.test(b.textContent))
+    return !!(pk.compareDocumentPosition(document.getElementById('f-email')) & Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+  expect(below, 'email field after the passkey button').toBe(true)
 
   // an empty or malformed address stays on the email step, with the error at the field
   await page.getByRole('button', { name: 'Continue' }).click()
@@ -39,6 +48,7 @@ test('email first, then the password', async ({ page }) => {
   await expect(page.locator('.account-chip')).toContainText('someone@acme.example')
   await expect(email).toBeHidden()
   await expect(page.getByRole('link', { name: /^Continue with / }).first()).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toBeHidden()
   expect(calls).toBe(0)
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)

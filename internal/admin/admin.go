@@ -102,6 +102,8 @@ func (m *Module) routes() []Route {
 		{"GET", o + "/users/{id}/sessions", m.listUserSessions},
 		{"DELETE", o + "/users/{id}/sessions/{session}", m.revokeUserSession},
 		{"DELETE", o + "/users/{id}/providers/{provider}", m.disconnectUserProvider},
+		{"GET", o + "/users/{id}/passkeys", m.listUserPasskeys},
+		{"DELETE", o + "/users/{id}/passkeys/{passkey}", m.removeUserPasskey},
 		{"DELETE", o + "/users/{id}/sessions", m.revokeSessions},
 		{"GET", o + "/users/{id}/tokens", m.listUserTokens},
 		{"DELETE", o + "/users/{id}/tokens/{token}", m.revokeUserToken},

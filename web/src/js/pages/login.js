@@ -263,7 +263,7 @@ export default function (Alpine) {
     get isEmail() { return this.step === 'email' },
     get emailInitial() { return (this.form.email || '?').charAt(0).toUpperCase() },
     get isPassword() { return this.step === 'password' && !this.forgotOpen },
-    get passkeyChoice() { return this.isEmail && this.showPasskey }, // the passkey button below the email form
+    get passkeyChoice() { return this.isEmail && this.showPasskey }, // the passkey button, last of the one-step sign-ins
     get isForgot() { return this.step === 'password' && this.forgotOpen },
     get submitLabel() { return this.busy ? 'Signing in…' : 'Sign in' },
     get forgotNotSent() { return !this.forgotSent },

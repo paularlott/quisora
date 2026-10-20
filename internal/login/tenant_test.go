@@ -73,7 +73,7 @@ func TestTenantPasskeyRestricted(t *testing.T) {
 
 	b := e.browser(t)
 	b.auth = signed.auth
-	if _, page := b.get("/login/acme?tenant=pwonly"); strings.Contains(page, `data-passkey="1"`) {
+	if _, page := b.get("/login/acme?tenant=pwonly"); strings.Contains(page, `data-passkey="1"`) || strings.Contains(page, "Sign in with a passkey") {
 		t.Fatal("password-only tenant page offers passkeys")
 	}
 	if _, page := b.get("/login/acme?tenant=pkonly"); !strings.Contains(page, `data-passkey="1"`) {
