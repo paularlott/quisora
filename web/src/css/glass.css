@@ -92,9 +92,8 @@
   /* A surface with a backdrop filter is a "backdrop root": glass inside it (the header's user menu) can blur only what
      is inside its bounds, so where the menu hangs below the header the page showed through unblurred. The header keeps
      its tint and blur on its sheen layer instead, behind its content, and is no backdrop root itself. */
-  /* Dialogs sit over a darkening scrim: the panel tint keeps light-theme muted text at ~4.5:1 there, too close, so they
-     get the card glass (tokens.css budget). */
-  .dialog-panel.glass-panel { background: var(--glass-bg); }
+  /* Dialogs sit over a darkening scrim: their own tint, budgeted against it (tokens.css). */
+  .dialog-panel.glass-panel { background: var(--glass-bg-dialog); }
   .app-header.glass-panel { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
   .app-header.glass-panel::after {
     background: var(--glass-sheen), linear-gradient(var(--glass-bg-header), var(--glass-bg-header));
