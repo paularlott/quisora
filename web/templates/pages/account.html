@@ -244,7 +244,7 @@
             <td x-text="row.scopesText"></td>
             <td x-text="row.expiresText"></td>
             <td x-text="row.lastText"></td>
-            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.regenLabel" :title="row.regenLabel" :data-id="row.id" @click="regenerate">{{template "icon" "refresh"}}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button></td>
           </tr></template>
         </tbody>
       </table>
@@ -268,6 +268,7 @@
     {{template "dialog-start" (dict "id" "token-secret-dialog" "title" "Your new token" "size" "sm")}}
     <div class="dialog-body">
       <div class="alert alert-warning">{{template "icon" "alert"}}<span>This is the only time the token is shown. Copy it now and keep it somewhere safe.</span></div>
+      <p x-show="regenerated" x-cloak>The old secret of <strong x-text="createdName"></strong> no longer works: put this one wherever that token was used.</p>
       <div class="code-box" x-data="copyFrom"><code id="new-token" x-text="created"></code>
         <button type="button" class="btn btn-secondary btn-sm" data-source="new-token" data-what="token" @click="copy" data-autofocus><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
     </div>

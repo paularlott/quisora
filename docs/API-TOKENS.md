@@ -1,0 +1,116 @@
+# Personal API tokens
+
+A personal API token lets a script or a tool call Quisora as you, without a browser. You make tokens on **Your
+account → API tokens → New token**, choose what each one may do (its scopes) and, optionally, when it expires: left
+empty, it never expires (unless the server sets a maximum lifetime, which it then gets). The token is shown once,
+in the form `qsr_<id>_<secret>`: copy it then. Quisora keeps only a hash of the secret.
+
+A token never has more access than you have: every call is checked against your role and organization at the time it
+is made, so if you are demoted or your account is disabled, the token loses that access too.
+
+## Scopes and endpoints
+
+| Scope | Who can choose it | What the token is accepted by |
+| --- | --- | --- |
+| `admin` | managers and up | The management API, `/api/v1/…` (what the admin console uses), including the live event stream `/api/v1/events` |
+| `scim` | managers and up | The SCIM 2.0 API, `/scim/v2/…`, for provisioning tools |
+| `backup` | super admins | `GET /api/v1/backup` only; such a token expires within 30 days |
+| `api` | everyone | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
+
+A token with the `api` scope cannot also have `admin`, `scim` or `backup`: applications that see an `api` token
+must never be able to administer Quisora with it. Make a separate token for each purpose.
+
+Send the token as a bearer token on every request:
+
+```bash
+export QUISORA=https://id.example.com
+export TOKEN=qsr_…
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users?limit=10"
+```
+
+## The management API (`admin`)
+
+Organizations are named in the path (`acme` below). Lists answer `{"items": [...], "total": n}` and take
+`?q=` (search), `sort=`, `desc=1`, `offset=` and `limit=` (at most 100). The full reference is the OpenAPI document
+at `/api/openapi.json` (SCIM is in it too). An `Api-Version: 1` header pins the version; without it you get
+version 1.
+
+```bash
+# find a user
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users?q=alan"
+
+# create one, then send them an invitation link to set up their sign-in
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"username":"grace","email":"grace@acme.example","given_name":"Grace","family_name":"Hopper","role":"user"}' \
+  "$QUISORA/api/v1/orgs/acme/users"
+curl -X POST -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/invite"
+
+# sign a user out everywhere
+curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/orgs/acme/users/<user id>/sessions"
+
+# follow changes in your organization as they happen (server-sent events; -N turns off curl's buffering);
+# a super admin can add ?org=<name> to watch another organization
+curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/v1/events"
+```
+
+## SCIM (`scim`)
+
+The token provisions users and groups in its owner's organization (a super admin's, in any organization). Groups need
+an administrator's token. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
+in the OpenAPI document under the SCIM tag, and the server describes itself at `/scim/v2/<org>/ServiceProviderConfig`
+and `/scim/v2/<org>/Schemas`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?count=10"
+curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?filter=userName%20eq%20%22alan%22"
+```
+
+A provisioning service that supports OAuth can use a client instead: a confidential client with SCIM provisioning
+turned on gets short-lived tokens with the client credentials grant, and no person's token is involved.
+
+## Backups (`backup`)
+
+```bash
+QUISORA_ADMIN_TOKEN=$TOKEN quisora backup --server "$QUISORA" quisora.bak
+```
+
+See [RUNNING.md](RUNNING.md#backup-and-restore) for the backup format, encryption and restore.
+
+## Your own applications (`api`)
+
+An `api` token is for your own scripts calling **your applications**, not Quisora. The application checks each token
+it receives with Quisora's introspection endpoint, authenticating as its own confidential client (RFC 7662). Clients
+use `client_secret_post` unless they were set up otherwise, so the credentials go in the form:
+
+```bash
+curl -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" -d "token=$TOKEN" "$QUISORA/oauth/introspect"
+```
+
+A client set to `client_secret_basic` sends them as HTTP Basic instead (`curl -u "$CLIENT_ID:$CLIENT_SECRET" …`).
+
+```json
+{"active": true, "token_type": "Bearer", "token_kind": "api_token", "sub": "<user id>", "username": "alan",
+ "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "iat": 1760000000, "exp": 1790000000}
+```
+
+The token is active only to clients of the owner's organization, and, if you gave the token an audience when making
+it, only to those applications. Anything else (another organization's client, a token without the `api` scope, a
+revoked or expired token) answers `{"active": false}`.
+
+## Errors
+
+| Answer | Meaning |
+| --- | --- |
+| `401` with `WWW-Authenticate: Bearer error="invalid_token"` | The token is wrong, revoked or expired, or its owner is disabled |
+| `403` with `error="insufficient_scope", scope="admin"` | The token is valid but lacks the scope this endpoint needs |
+| `403` or `404` from an endpoint | Your role or organization does not allow that call (the same answer the console gets) |
+
+## Replacing and revoking
+
+- **A new secret**: on Your account, the refresh button next to a token makes a new secret after you confirm. The old
+  secret stops working at once; the name, scopes and expiry stay the same.
+- **Revoke**: delete the token on Your account. Administrators can revoke a user's tokens on the user's page or with
+  `DELETE /api/v1/orgs/{org}/users/{id}/tokens/{token}`.
+- The OAuth revocation endpoint (`/oauth/revoke`) does not revoke personal API tokens: it answers
+  `unsupported_token_type`.
+- How long tokens may last is set by `tokens.api_token_max_days` ([RUNNING.md](RUNNING.md)).

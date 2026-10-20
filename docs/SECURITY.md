@@ -37,7 +37,8 @@ Before production:
 6. **Monitoring**: `metrics.token` set and the [suggested alerts](RUNNING.md#metrics) in place.
 7. **Backups**: on a schedule, encrypted (the default), the password kept apart from them; a restore tested regularly.
 8. **People**: as few super admins as possible; every administrator with a passkey or authenticator app; API tokens
-   with short lifetimes (`tokens.api_token_max_days`); access reviewed periodically from the user lists.
+   with short lifetimes (set `tokens.api_token_max_days`: there is no limit by default); access reviewed
+   periodically from the user lists.
 9. **Mail**: `mail.tls` `starttls` or `tls`.
 
 ## Incident response

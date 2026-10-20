@@ -99,8 +99,11 @@ a super admin.
 token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
 sign-in through a provider trusted as a second factor does not count when the account has one of its own.
 
-**Personal API tokens** last at most `tokens.api_token_max_days` (365 by default); with 0, a token may be made that
-never expires. A lifetime given explicitly is at most 10 years.
+**Personal API tokens** never expire unless their owner gives a lifetime when making one (at most 10 years). Set
+`tokens.api_token_max_days` to require one: tokens then last at most that many days, and a token made without a
+lifetime gets the maximum. Tokens with the backup scope always expire within 30 days. Its owner can give a token a new secret from the
+account page (after confirming): the old secret stops working at once, and the name, access and expiry stay the same,
+so a new secret never extends a token's life.
 
 ## Rotating the master key
 

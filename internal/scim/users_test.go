@@ -187,9 +187,9 @@ func TestClientCredentialsVerifier(t *testing.T) {
 	if r := e.do("GET", "/scim/v2/acme/Users", "jwt-bogus", nil); r.Status != 401 {
 		t.Errorf("rejected bearer: %d", r.Status)
 	}
-	// Shorthand without the org segment uses the caller's org.
-	if r := e.do("GET", "/scim/v2/Users?filter="+qs(`userName eq "from-entra"`), "jwt-for-entra", nil); r.Status != 200 || r.total() != 1 {
-		t.Errorf("shorthand: %d %s", r.Status, r.Raw)
+	// One form only: without the organization in the path there is no Users resource.
+	if r := e.do("GET", "/scim/v2/Users?filter="+qs(`userName eq "from-entra"`), "jwt-for-entra", nil); r.Status != 404 {
+		t.Errorf("org-less path: %d %s", r.Status, r.Raw)
 	}
 }
 

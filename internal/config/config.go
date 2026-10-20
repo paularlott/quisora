@@ -143,7 +143,7 @@ type Tokens struct {
 	RefreshTTL      int    `toml:"refresh_ttl" flag:"refresh-ttl" usage:"Refresh token lifetime, seconds"`
 	CodeTTL         int    `toml:"code_ttl" flag:"code-ttl" usage:"Authorization code lifetime, seconds"`
 	KeyRotationDays int    `toml:"key_rotation_days" flag:"key-rotation-days" usage:"Rotate the signing key this often, days (0 = by hand)"`
-	APITokenMaxDays int    `toml:"api_token_max_days" flag:"api-token-max-days" usage:"Longest personal API token lifetime, days (default 365; 0 = may never expire)"`
+	APITokenMaxDays int    `toml:"api_token_max_days" flag:"api-token-max-days" usage:"Longest personal API token lifetime, days (default 0: no limit, a token may never expire)"`
 }
 
 type Session struct {
@@ -208,7 +208,7 @@ func Default() *Config {
 		UI:      UI{SiteName: "Quisora", DefaultTheme: "system"},
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
 		Tokens: Tokens{SigningAlg: "ES256", AccessTTL: 600, IDTokenTTL: 600, RefreshTTL: 30 * 86400, CodeTTL: 60,
-			KeyRotationDays: 30, APITokenMaxDays: 365},
+			KeyRotationDays: 30, APITokenMaxDays: 0},
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},

@@ -273,3 +273,40 @@ func TestAPITokenLastUsed(t *testing.T) {
 		t.Error("a use within the interval wrote again")
 	}
 }
+
+// A new secret keeps the token (name, scopes, expiry) and stops the old secret; only the owner may ask for one, and
+// only for scopes their role still allows.
+func TestAPITokenRegenerate(t *testing.T) {
+	c := newCast(t)
+	tok, old, err := c.svc.CreateAPIToken(c.ctx, actor(c.aManager), service.APITokenInput{Name: "sync", Scopes: []string{"scim"}, Expires: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.svc.RegenerateAPIToken(c.ctx, actor(c.aAdmin), tok.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("another user (an admin) regenerated it: %v", err)
+	}
+	_, u, _ := c.svc.ValidateAPIToken(c.ctx, old)
+	if _, _, err := c.svc.RegenerateAPIToken(c.ctx, service.ActorForToken(tok, u, ""), tok.ID); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("a token regenerated itself: %v", err)
+	}
+	got, fresh, err := c.svc.RegenerateAPIToken(c.ctx, actor(c.aManager), tok.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == old || got.ID != tok.ID || got.Name != "sync" || !got.Expires.Equal(tok.Expires) || got.Scopes[0] != "scim" {
+		t.Fatalf("regenerated %+v", got)
+	}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, old); err == nil {
+		t.Fatal("old secret still works")
+	}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, fresh); err != nil {
+		t.Fatalf("new secret: %v", err)
+	}
+	// demoted since: no new secret for a scope the role no longer allows
+	m := *c.aManager
+	m.Role = model.RoleUser
+	var fe *service.FieldError
+	if _, _, err := c.svc.RegenerateAPIToken(c.ctx, actor(&m), tok.ID); !errors.As(err, &fe) || fe.Field != "scopes" {
+		t.Fatalf("demoted owner: %v", err)
+	}
+}

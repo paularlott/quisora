@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/scim"
 	"net/http"
 	"strconv"
 	"strings"
@@ -416,12 +417,14 @@ func buildSpec() []byte {
 		}
 		item[strings.ToLower(d.Method)] = op
 	}
+	scimPaths(paths, comps)
 	doc := obj{
 		"openapi": "3.1.0",
 		"info": obj{"title": "quisora management API", "version": "1",
 			"description": "Everything an administrator can do. The path prefix /api/v1 never changes; select the API version with the Api-Version header (currently 1). Without the header the oldest supported version is served.\n\n" +
 				"With a browser session, managers and above must have signed in with a second factor; otherwise every call answers 403 with field \"mfa\".\n\n" +
-				"Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), SCIM 2.0 under /scim/v2 (provisioning clients), the account page's own API under /api/account (the signed-in user, session only) and the live-update stream at /api/v1/events (server-sent events, session only)."},
+				"SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).\n\n" +
+				"Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api/account (the signed-in user, session only) and the live-update stream at /api/v1/events (server-sent events: a browser session, or a token with the admin scope)."},
 		"paths": paths,
 		"components": obj{
 			"schemas": comps,
@@ -431,7 +434,9 @@ func buildSpec() []byte {
 				"session": obj{"type": "apiKey", "in": "cookie", "name": "__Host-quisora_session",
 					"description": "Browser session. Unsafe methods must also send the X-CSRF-Token header (from the page's csrf-token meta tag)."},
 				"bearer": obj{"type": "http", "scheme": "bearer", "bearerFormat": "qsr_<id>_<secret>",
-					"description": "Personal API token with the admin scope (the backup download: the backup scope). The owning user's role still limits every call."},
+					"description": "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope). The owning user's role still limits every call."},
+				"scimClient": obj{"type": "oauth2", "description": "A confidential client with SCIM provisioning turned on; it acts as an administrator of its own organization (never granting administrator roles).",
+					"flows": obj{"clientCredentials": obj{"tokenUrl": "/oauth/token", "scopes": obj{"scim": "SCIM provisioning"}}}},
 			},
 		},
 	}
@@ -455,4 +460,102 @@ func serveOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	_, _ = w.Write(specJSON)
+}
+
+// scimPaths adds the SCIM 2.0 operations (scim.Routes) to the document: their bodies are SCIM resources
+// (application/scim+json), described loosely here; the server's own /Schemas endpoint has every attribute.
+func scimPaths(paths obj, comps obj) {
+	const scimJSON = "application/scim+json"
+	res := func(urn, desc string, props obj) obj {
+		o := schema(nil, props)
+		o["description"] = desc + " Every attribute: the server's Schemas endpoint, " + urn + "."
+		o["additionalProperties"] = true
+		return o
+	}
+	comps["ScimUser"] = res("urn:ietf:params:scim:schemas:core:2.0:User", "A SCIM User (RFC 7643 §4.1) with Quisora's extension.",
+		obj{"schemas": strArr(), "id": prop("string"), "externalId": prop("string"), "userName": prop("string"),
+			"name":        obj{"type": "object", "properties": obj{"givenName": prop("string"), "familyName": prop("string")}},
+			"displayName": prop("string"), "active": prop("boolean"),
+			"emails": obj{"type": "array", "items": obj{"type": "object", "properties": obj{"value": prop("string"), "primary": prop("boolean"), "type": prop("string")}}},
+			"groups": obj{"type": "array", "items": obj{"type": "object"}}, "meta": obj{"type": "object"}})
+	comps["ScimGroup"] = res("urn:ietf:params:scim:schemas:core:2.0:Group", "A SCIM Group (RFC 7643 §4.2).",
+		obj{"schemas": strArr(), "id": prop("string"), "externalId": prop("string"), "displayName": prop("string"),
+			"members": obj{"type": "array", "items": obj{"type": "object", "properties": obj{"value": prop("string"), "display": prop("string")}}},
+			"meta":    obj{"type": "object"}})
+	comps["ScimOrganization"] = res("urn:paularlott:quisora:scim:schemas:2.0:Organization", "A Quisora organization as a SCIM resource (super admins).",
+		obj{"schemas": strArr(), "id": prop("string"), "name": prop("string"), "displayName": prop("string"), "meta": obj{"type": "object"}})
+	comps["ScimDiscovery"] = obj{"type": "object", "additionalProperties": true,
+		"description": "ServiceProviderConfig, or a ListResponse of ResourceTypes or Schemas (RFC 7644 §4)."}
+	comps["ScimListResponse"] = schema([]string{"schemas", "totalResults", "Resources"}, obj{"schemas": strArr(),
+		"totalResults": prop("integer"), "startIndex": prop("integer"), "itemsPerPage": prop("integer"),
+		"Resources": obj{"type": "array", "items": obj{"type": "object"}}})
+	comps["ScimPatchOp"] = schema([]string{"schemas", "Operations"}, obj{"schemas": strArr(),
+		"Operations": obj{"type": "array", "items": schema([]string{"op"}, obj{
+			"op": obj{"type": "string", "enum": []string{"add", "remove", "replace"}}, "path": prop("string"), "value": obj{}})}})
+	comps["ScimError"] = schema([]string{"schemas", "status"}, obj{"schemas": strArr(), "status": prop("string"),
+		"scimType": prop("string"), "detail": prop("string")})
+	scimErr := func(desc string) obj {
+		return obj{"description": desc, "content": obj{scimJSON: obj{"schema": ref("ScimError")}}}
+	}
+	for _, rt := range scim.Routes {
+		item, _ := paths[rt.Path].(obj)
+		if item == nil {
+			item = obj{}
+			paths[rt.Path] = item
+		}
+		var params []any
+		for _, seg := range strings.Split(rt.Path, "/") {
+			if strings.HasPrefix(seg, "{") {
+				n := strings.Trim(seg, "{}")
+				desc := "resource id"
+				if n == "org" {
+					desc = "organization URL name"
+				}
+				params = append(params, obj{"name": n, "in": "path", "required": true, "description": desc, "schema": prop("string")})
+			}
+		}
+		schemaName := "Scim" + rt.Resource
+		list := rt.Method == "GET" && !strings.HasSuffix(rt.Path, "{id}") && !rt.Public
+		if list {
+			for _, q := range []struct{ n, t, d string }{{"filter", "string", `SCIM filter, for example userName eq "alan"`},
+				{"sortBy", "string", "attribute to sort by"}, {"sortOrder", "string", "ascending or descending"},
+				{"startIndex", "integer", "1-based index of the first result"}, {"count", "integer", "page size"},
+				{"attributes", "string", "attributes to return, comma separated"}, {"excludedAttributes", "string", "attributes to leave out"}} {
+				params = append(params, obj{"name": q.n, "in": "query", "description": q.d, "schema": prop(q.t)})
+			}
+		}
+		respSchema := ref(schemaName)
+		switch {
+		case rt.Public:
+			respSchema = ref("ScimDiscovery")
+		case list:
+			respSchema = ref("ScimListResponse")
+		}
+		status, success := "200", obj{"description": "Success", "content": obj{scimJSON: obj{"schema": respSchema}}}
+		switch rt.Method {
+		case "POST":
+			status = "201"
+		case "DELETE":
+			status, success = "204", obj{"description": "Deleted"}
+		}
+		op := obj{"tags": []string{"SCIM"}, "summary": rt.Summary,
+			"operationId": strings.ToLower(rt.Method) + "_" + strings.NewReplacer("/scim/v2/", "scim_", "/", "_", "{", "", "}", "").Replace(rt.Path),
+			"parameters":  params, "responses": obj{status: success}}
+		if rt.Public {
+			op["security"] = []obj{}
+		} else {
+			op["security"] = []obj{{"bearer": []string{"scim"}}, {"scimClient": []string{"scim"}}}
+			r := op["responses"].(obj)
+			r["400"], r["401"], r["403"], r["404"], r["409"] = scimErr("Invalid request (scimType says which)"),
+				scimErr("No token, or an invalid one"), scimErr("Not permitted, or the token lacks the scim scope"),
+				scimErr("No such organization or resource"), scimErr("Conflict (uniqueness, or a stale ETag)")
+		}
+		switch rt.Method {
+		case "POST", "PUT":
+			op["requestBody"] = obj{"required": true, "content": obj{scimJSON: obj{"schema": ref(schemaName)}}}
+		case "PATCH":
+			op["requestBody"] = obj{"required": true, "content": obj{scimJSON: obj{"schema": ref("ScimPatchOp")}}}
+		}
+		item[strings.ToLower(rt.Method)] = op
+	}
 }

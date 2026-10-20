@@ -77,7 +77,8 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 
 Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.md](docs/RUNNING.md). Replication rules
 and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it securely (threat model, hardening checklist, incident
-response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md).
+response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md). Scripts and tools with personal API tokens:
+[docs/API-TOKENS.md](docs/API-TOKENS.md).
 Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Audit log and VictoriaLogs

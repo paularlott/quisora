@@ -42,7 +42,8 @@ func TestAccountEndpointsNeedSessionAndCSRF(t *testing.T) {
 		{"GET", "/api/account/reauth"}, {"POST", "/api/account/reauth"}, {"POST", "/api/account/reauth/passkey/begin"},
 		{"POST", "/api/account/reauth/passkey/finish"}, {"GET", "/api/account/sessions"}, {"DELETE", "/api/account/sessions/x"},
 		{"DELETE", "/api/account/sessions"}, {"GET", "/api/account/tokens"}, {"POST", "/api/account/tokens"},
-		{"DELETE", "/api/account/tokens/x"}, {"GET", "/api/account/apps"}, {"DELETE", "/api/account/apps/x"},
+		{"DELETE", "/api/account/tokens/x"}, {"POST", "/api/account/tokens/x/regenerate"}, {"GET", "/api/account/apps"},
+		{"DELETE", "/api/account/apps/x"},
 	}
 	for _, p := range all {
 		res, out := anon.do(p.method, p.path, map[string]any{}, hdrs{"X-CSRF-Token": ""})
@@ -882,4 +883,49 @@ func TestRecentSignInCountsAsReauth(t *testing.T) {
 	b.fresh()
 	res, out = b.api("POST", "/api/account/tokens", tok)
 	wantStatus(t, res, out, 201)
+}
+
+// A token's secret can be replaced: the new one works at once and the old one stops; the name, access and expiry stay.
+// The same conditions as making a token (a recent re-authentication), and only for your own tokens.
+func TestAccountTokenRegenerate(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	sam := e.user(t, org, "sam", model.RoleUser)
+	b := e.signedIn(t, pat)
+	b.markReauth()
+	res, out := b.api("POST", "/api/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}, "expires_days": 30})
+	wantStatus(t, res, out, 201)
+	old := str(out, "token")
+	id := str(out["item"].(map[string]any), "id")
+	exp := str(out["item"].(map[string]any), "expires")
+
+	// someone else's token is not found, even with a fresh re-authentication
+	other := e.signedIn(t, sam)
+	other.markReauth()
+	res, out = other.api("POST", "/api/account/tokens/"+id+"/regenerate", nil)
+	wantStatus(t, res, out, 404)
+
+	res, out = b.api("POST", "/api/account/tokens/"+id+"/regenerate", nil)
+	wantStatus(t, res, out, 200)
+	fresh := str(out, "token")
+	item := out["item"].(map[string]any)
+	if fresh == old || !strings.HasPrefix(fresh, "qsr_"+id+"_") || str(item, "name") != "ci" || !sameSecond(str(item, "expires"), exp) {
+		t.Fatalf("regenerated: %q %v", fresh, item)
+	}
+	if _, _, err := e.Svc.ValidateAPIToken(context.Background(), old); err == nil {
+		t.Fatal("the old secret still works")
+	}
+	if _, _, err := e.Svc.ValidateAPIToken(context.Background(), fresh); err != nil {
+		t.Fatalf("the new secret: %v", err)
+	}
+	if len(e.audits(t, "apitoken.regenerate")) == 0 {
+		t.Error("no audit entry")
+	}
+}
+
+func sameSecond(a, b string) bool {
+	ta, errA := time.Parse(time.RFC3339Nano, a)
+	tb, errB := time.Parse(time.RFC3339Nano, b)
+	return errA == nil && errB == nil && ta.Truncate(time.Second).Equal(tb.Truncate(time.Second))
 }

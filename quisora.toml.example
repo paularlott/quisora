@@ -82,7 +82,7 @@ id_token_ttl = 600
 refresh_ttl = 2592000                     # 30 days
 code_ttl = 60
 key_rotation_days = 30
-api_token_max_days = 365                  # longest personal API token lifetime, days; 0 = tokens may never expire
+api_token_max_days = 0                    # longest personal API token lifetime, days; 0 (default) = no limit, tokens may never expire
 
 [session]
 ttl = 604800                              # 7 days from sign-in; also the most an organization may set

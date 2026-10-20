@@ -67,6 +67,7 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("GET /api/account/tokens", m.listTokens)
 	h("POST /api/account/tokens", m.createToken)
 	h("DELETE /api/account/tokens/{id}", m.deleteToken)
+	h("POST /api/account/tokens/{id}/regenerate", m.regenerateToken)
 
 	h("GET /api/account/providers", m.listProviders)
 	h("POST /api/account/providers/{id}/connect", m.connectProvider)
@@ -1046,6 +1047,24 @@ func (m *Module) createToken(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	web.WriteJSON(w, http.StatusCreated, map[string]any{"token": plain, "item": toTokenItem(t)})
+}
+
+// regenerateToken gives one of the user's tokens a new secret (shown once); the old one stops working. The same
+// conditions as making a token: a recent re-authentication, and a second factor for managers and up.
+func (m *Module) regenerateToken(w http.ResponseWriter, r *http.Request, a acct) {
+	if !m.needReauth(w, r, a) {
+		return
+	}
+	if a.u.Role.Privileged() && !model.MFA(a.sess.AMR) {
+		writeErr(w, http.StatusForbidden, "Sign in again with your second factor to make a new token secret.", "mfa")
+		return
+	}
+	t, plain, err := m.s.Svc.RegenerateAPIToken(r.Context(), a.actor, r.PathValue("id"))
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"token": plain, "item": toTokenItem(t)})
 }
 
 func (m *Module) deleteToken(w http.ResponseWriter, r *http.Request, a acct) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/paularlott/quisora/internal/admin"
+	"github.com/paularlott/quisora/internal/scim"
 )
 
 // Every registered /api/v1 route must be described in the OpenAPI document, and the document must not describe
@@ -58,6 +59,13 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 		}
 		if _, ok := ops[strings.ToLower(rt.Method)]; !ok {
 			t.Errorf("route %s: method missing from the OpenAPI document", key)
+		}
+	}
+	// SCIM is described from scim.Routes, which the scim package tests against its handler.
+	for _, rt := range scim.Routes {
+		registered[rt.Method+" "+rt.Path] = true
+		if _, ok := doc.Paths[rt.Path][strings.ToLower(rt.Method)]; !ok {
+			t.Errorf("SCIM route %s %s is missing from the OpenAPI document", rt.Method, rt.Path)
 		}
 	}
 	var extra []string

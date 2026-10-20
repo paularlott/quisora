@@ -217,19 +217,10 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	rq.actor = actor
 
-	switch segs[0] {
-	case "Organizations":
+	// Users and Groups live under their organization only (/scim/v2/{org}/Users, as every location this API
+	// returns says): one base URL per organization for a provisioning client, never a second spelling of it.
+	if segs[0] == "Organizations" {
 		rq.organizations(segs[1:])
-		return
-	case "Users", "Groups":
-		// Shorthand for the caller's own organization.
-		org, err := m.srv.Svc.GetOrg(rq.ctx, nil, actor.OrgID)
-		if err != nil {
-			writeError(w, notFound("Organization"))
-			return
-		}
-		rq.org = org
-		rq.resource(segs)
 		return
 	}
 	org, err := m.srv.Svc.OrgByName(rq.ctx, segs[0])

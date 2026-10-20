@@ -427,7 +427,7 @@ export default function (Alpine) {
 
   // ---- API tokens --------------------------------------------------------------------------------------------
   Alpine.data('accountTokens', () => mix(formMixin(), dialogMixin(), scoped(), {
-    items: [], loading: true, loadError: '', scopes: [], maxDays: 0, created: '', scopeChoices: [],
+    items: [], loading: true, loadError: '', scopes: [], maxDays: 0, created: '', createdName: '', regenerated: false, scopeChoices: [],
     init() { return this.load() },
     async load() {
       try {
@@ -436,7 +436,7 @@ export default function (Alpine) {
         this.maxDays = r.max_days
         this.scopeChoices = r.scopes.map((s) => ({ value: s, label: SCOPE_TEXT[s] || s }))
         this.items = r.items.map((t) => ({ ...t, scopesText: t.scopes.join(', '), expiresText: isSet(t.expires) ? fmtDate(t.expires) : 'Never',
-          lastText: relTime(t.last_used, 'Never used'), deleteLabel: 'Delete token ' + t.name }))
+          lastText: relTime(t.last_used, 'Never used'), deleteLabel: 'Delete token ' + t.name, regenLabel: 'New secret for token ' + t.name }))
         this.loadError = ''
       } catch (e) { this.loadError = e.message } finally { this.loading = false }
     },
@@ -458,8 +458,30 @@ export default function (Alpine) {
       if (!res) return
       this.closeDlg('token-dialog')
       this.created = res.token
+      this.createdName = res.item.name
+      this.regenerated = false
       await this.load()
       this.openDlg('token-secret-dialog')
+    },
+    // regenerate gives a token a new secret, after a confirmation: the old one stops working at once, so a stray
+    // click must not break whatever uses it.
+    async regenerate(ev) {
+      const opener = ev.currentTarget
+      const t = this.items.find((i) => i.id === opener.dataset.id)
+      if (!t) return
+      const ok = await Alpine.store('confirm').ask({ title: 'Make a new secret?', message: `Make a new secret for the token “${t.name}”?`,
+        detail: 'The current secret stops working immediately: anything using it fails until you give it the new one. The name, access and expiry stay the same.',
+        confirmLabel: 'Make new secret', danger: true })
+      if (!ok) return
+      try {
+        const res = await withReauth(Alpine, () => post('/api/account/tokens/' + enc(t.id) + '/regenerate', {}), opener)
+        if (!res) return
+        this.created = res.token
+        this.createdName = res.item.name
+        this.regenerated = true
+        await this.load()
+        this.openDlg('token-secret-dialog', opener)
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
     async remove(ev) {
       const t = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
@@ -469,7 +491,7 @@ export default function (Alpine) {
       if (!ok) return
       try { await del('/api/account/tokens/' + enc(t.id)); toast('Token deleted.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },
-    afterClose(id) { if (id === 'token-secret-dialog') this.created = '' },
+    afterClose(id) { if (id === 'token-secret-dialog') { this.created = ''; this.regenerated = false } },
   }))
 
   // ---- Connected apps ----------------------------------------------------------------------------------------

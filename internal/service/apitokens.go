@@ -138,6 +138,34 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	return t, plain, nil
 }
 
+// RegenerateAPIToken gives one of the actor's own tokens a new secret and returns the new plaintext once. Everything
+// else stays (name, scopes, audience, expiry: a new secret never extends a token's life), and the old secret stops
+// working at once. Only the owner: a secret is never shown to anyone else, an administrator included.
+func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (*model.APIToken, string, error) {
+	if a.UserID == "" || a.Scoped() {
+		return nil, "", ErrForbidden // tokens cannot mint tokens
+	}
+	t, err := s.APITokens.Get(ctx, id)
+	if err != nil || t.UserID != a.UserID {
+		return nil, "", ErrNotFound
+	}
+	// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
+	for _, sc := range t.Scopes {
+		if (sc == ScopeSCIM || sc == ScopeAdmin) && a.Role.Rank() < model.RoleManager.Rank() ||
+			sc == ScopeBackup && !a.IsSuper() {
+			return nil, "", Invalid("scopes", "your role can no longer use the "+sc+" scope: revoke this token instead")
+		}
+	}
+	secret := secure.RandomToken(32)
+	t.SecretHash = secure.HashSecret(secret)
+	t.LastUsed = time.Time{} // the new secret has not been used
+	if err := s.APITokens.Update(Durable(ctx), t); err != nil {
+		return nil, "", mapStore(err)
+	}
+	s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
+	return t, apiTokenPrefix + t.ID + "_" + secret, nil
+}
+
 // tokenAudience validates the audience of a new token: clients of the owner's organization, for an api token only.
 func (s *Service) tokenAudience(ctx context.Context, orgID string, in APITokenInput) ([]string, error) {
 	var out []string
