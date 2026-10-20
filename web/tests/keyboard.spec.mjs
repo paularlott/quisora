@@ -350,12 +350,13 @@ for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/provide
     await page.waitForTimeout(500)
     const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
     expect(over).toBeLessThanOrEqual(0)
-    // the navigation is behind a disclosure button on small screens
+    // the navigation is a drawer behind a menu button on small screens (nav-drawer.spec.mjs)
     const toggle = page.getByRole('button', { name: 'Open navigation menu' })
     await expect(toggle).toBeVisible()
     await toggle.click()
     await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Close navigation menu' })).toHaveAttribute('aria-expanded', 'true')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByRole('button', { name: 'Close navigation menu' })).toBeFocused()
   })
 }
 

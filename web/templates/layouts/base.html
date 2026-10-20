@@ -17,12 +17,12 @@
 <script type="module" src="{{asset "main.js"}}"></script>
 {{block "head" .}}{{end}}
 </head>
-<body x-data="shell" @keydown.escape.window="escUser">
+<body x-data="shell" @keydown.escape.window="onEscape">
 <a class="skip-link" href="#main">Skip to main content</a>
 <div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
 
 <header class="app-header glass-panel">
-  {{if .User}}<button type="button" class="btn btn-ghost btn-icon md:hidden" aria-controls="primary-nav" :aria-expanded="navExpanded" :aria-label="navLabel" aria-label="Open navigation menu" aria-expanded="false" @click="toggleNav">{{template "icon" "menu"}}</button>{{end}}
+  {{if .User}}<button type="button" class="btn btn-ghost btn-icon md:hidden" x-ref="navToggle" aria-controls="primary-nav" :aria-expanded="navExpanded" aria-label="Open navigation menu" aria-expanded="false" @click="openNav">{{template "icon" "menu"}}</button>{{end}}
   <a class="brand" href="{{if .User}}/account{{else}}/{{end}}">
     <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="32" height="32">
     <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="32" height="32">
@@ -59,7 +59,13 @@
 
 <div class="app-body{{if not .User}} no-nav{{end}}">
   {{if .User}}
-  <nav id="primary-nav" class="app-nav glass" aria-label="Primary" :data-open="navAttr" data-open="false">
+  {{/* Small screens: the navigation is a drawer over the page (layout.css, shell.js); this scrim closes it. */}}
+  <div class="nav-scrim" aria-hidden="true" :data-open="navAttr" data-open="false" x-ref="navScrim" @click="closeNav"></div>
+  <nav id="primary-nav" class="app-nav glass" aria-label="Primary" :data-open="navAttr" data-open="false" x-ref="nav" @keydown.tab="trapNav">
+    <div class="nav-drawer-head">
+      <button type="button" class="btn btn-ghost btn-icon" x-ref="navClose" aria-label="Close navigation menu" @click="closeNav">{{template "icon" "x"}}</button>
+    </div>
+    <div class="nav-scroll">
     <div class="nav-group">
       <span class="eyebrow nav-heading">Account</span>
       <a class="nav-link" href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
@@ -96,6 +102,7 @@
       <a class="nav-link" href="/admin/system"{{if eq .Nav "system"}} aria-current="page"{{end}}>{{template "icon" "network"}} System overview</a>
     </div>
     {{end}}
+    </div>
   </nav>
   {{end}}
   <main id="main" class="app-main" tabindex="-1">

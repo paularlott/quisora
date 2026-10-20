@@ -41,7 +41,32 @@
   .app-body.no-nav { grid-template-columns: minmax(0, 1fr); }
   .app-nav { padding: 0.75rem; }
   @media (min-width: 48rem) and (min-height: 40rem) { .app-nav { position: sticky; top: calc(var(--header-gap) + var(--header-h) + var(--panel-gap)); } }
-  @media (max-width: 47.99rem) { html.js .app-nav:not([data-open="true"]) { display: none; } }
+  .nav-drawer-head, .nav-scrim { display: none; }
+  /* Small screens (with JavaScript): the navigation is a drawer that slides in from the left over a scrim, like a
+     dialog (same scrim and glass, so the same contrast budget: tokens.css). shell.js opens and closes it, makes the
+     rest of the page inert, and follows a swipe to the left (--nav-drag, --nav-drag-ratio). The rim and sheen layers
+     stay still; .nav-scroll scrolls. Without JavaScript the navigation stays in the page, above the content. */
+  @media (max-width: 47.99rem) {
+    html.js .app-nav { position: fixed; inset: 0 auto 0 0; z-index: 50; width: min(20rem, calc(100vw - 3.5rem));
+      display: flex; flex-direction: column; overflow: hidden; border-radius: 0 1.75rem 1.75rem 0;
+      padding: max(0.5rem, env(safe-area-inset-top)) 0.75rem 0 max(0.75rem, env(safe-area-inset-left));
+      background: var(--glass-bg-dialog); touch-action: pan-y; transform: translateX(-105%); visibility: hidden;
+      transition: transform 0.28s cubic-bezier(.2, .8, .2, 1), visibility 0s linear 0.28s; }
+    html.js .app-nav[data-open="true"] { transform: translateX(var(--nav-drag, 0px)); visibility: visible;
+      transition: transform 0.28s cubic-bezier(.2, .8, .2, 1), visibility 0s; }
+    html.js .nav-drawer-head { display: flex; justify-content: flex-end; margin-bottom: 0.25rem; }
+    /* pan-y here too: touch-action counts only up to the nearest scroll container, which this is */
+    html.js .nav-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
+      padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+    html.js .nav-scrim { display: block; position: fixed; inset: 0; z-index: 45; background: var(--scrim);
+      -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
+      opacity: 0; visibility: hidden; touch-action: none; transition: opacity 0.28s, visibility 0s linear 0.28s; }
+    html.js .nav-scrim[data-open="true"] { opacity: calc(1 - var(--nav-drag-ratio, 0)); visibility: visible;
+      transition: opacity 0.28s, visibility 0s; }
+    html.js :is(.app-nav, .nav-scrim).is-dragging { transition: none; }
+    html.nav-locked { overflow: hidden; }
+  }
+  @media (prefers-reduced-motion: reduce) { .app-nav, .nav-scrim { transition: none !important; } }
   .nav-group { display: flex; flex-direction: column; gap: 0.2rem; }
   .nav-group + .nav-group { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--edge); }
   .nav-heading { padding: 0 0.75rem; margin-bottom: 0.2rem; }

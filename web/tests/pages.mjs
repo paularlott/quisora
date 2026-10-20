@@ -30,6 +30,8 @@ const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { nam
 
 export const PAGES = [
   { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
+  // the navigation drawer, open over the users list on a phone-sized screen (super admin: every navigation group)
+  { name: 'nav-drawer', path: `${A}/users`, as: 'super', steps: [async (p) => { await p.setViewportSize({ width: 390, height: 780 }); await p.reload({ waitUntil: 'load' }) }, waitRows, open('Open navigation menu')] },
   { name: 'orgs-edit', path: '/admin/orgs', as: 'super', dialog: true, steps: [waitRows, open('Edit Acme Corporation')] },
   // Master key rotation status (with the demo's -rotation flag, a rotation halfway through).
   { name: 'master-key', path: '/admin/system/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },

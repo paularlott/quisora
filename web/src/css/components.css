@@ -12,6 +12,7 @@
     position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
     min-height: 2.75rem; padding: 0.5rem 1.15rem; border-radius: 999px; border: 1.5px solid transparent;
     font: inherit; font-size: 0.9375rem; font-weight: 600; line-height: 1.2; text-align: center; text-decoration: none;
+    overflow-wrap: break-word; /* not the body's anywhere: a label wraps between words, never inside one ("Previ-ous") */
     color: var(--fg); background: transparent; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
     transition: transform 0.18s cubic-bezier(.2, .8, .2, 1), filter 0.18s, background-color 0.18s, box-shadow 0.18s;
   }
@@ -274,7 +275,11 @@
 
   .table-wrap { overflow-x: auto; border-radius: 1rem; -webkit-overflow-scrolling: touch; }
   .table-wrap:focus-visible { outline-offset: -3px; }
-  .table { width: 100%; min-width: 38rem; border-collapse: separate; border-spacing: 0; font-size: 0.9375rem; }
+  /* break-word, not the body's anywhere: with anywhere a column may shrink to one character, and the auto-width table
+     squeezes its text column (users: name and email) down to a letter per line on a phone. With break-word a column
+     keeps its longest word, and .table-wrap scrolls the table sideways instead. */
+  .table { width: 100%; min-width: 38rem; border-collapse: separate; border-spacing: 0; font-size: 0.9375rem;
+    overflow-wrap: break-word; }
   .table caption { text-align: left; }
   .table th { text-align: left; font-weight: 700; padding: 0.4rem 1rem; white-space: nowrap; }
   .table thead th {
@@ -307,7 +312,7 @@
   th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--fg); }
 
   .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; padding-top: 1rem; font-size: 0.875rem; }
-  .pager-group { display: flex; align-items: center; gap: 0.5rem; }
+  .pager-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
   .pager .select { width: auto; min-height: 2.25rem; padding-block: 0.25rem; }
 
   .skeleton-row { display: grid; grid-template-columns: 2fr 1.5fr 1fr 1fr; gap: 1.25rem; padding: 1rem; border-top: 1px solid var(--edge); }
