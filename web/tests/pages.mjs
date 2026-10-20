@@ -30,6 +30,7 @@ const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { nam
 
 export const PAGES = [
   { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
+  { name: 'orgs-edit', path: '/admin/orgs', as: 'super', dialog: true, steps: [waitRows, open('Edit Acme Corporation')] },
   // Master key rotation status (with the demo's -rotation flag, a rotation halfway through).
   { name: 'master-key', path: '/admin/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
@@ -144,7 +145,6 @@ export const PAGES = [
     }] },
   { name: 'providers', path: `${A}/providers`, as: 'admin', steps: [waitRows] },
   { name: 'providers-new', path: `${A}/providers`, as: 'admin', steps: [waitRows, open('New provider')], dialog: true },
-  { name: 'settings', path: `${A}/settings`, as: 'admin', steps: [async (p) => { await p.waitForSelector('#f-display_name') }] },
   { name: 'audit', path: `${A}/audit`, as: 'admin', steps: [waitRows] },
   { name: 'audit-org-super', path: `${A}/audit`, as: 'super', steps: [waitRows] },
   { name: 'audit-all', path: '/admin/audit', as: 'super', steps: [waitRows] },

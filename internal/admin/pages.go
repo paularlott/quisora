@@ -41,6 +41,10 @@ type View struct {
 	// AllOrgs: the audit page of every organization (super admins).
 	AllOrgs bool
 
+	// Organizations page: the server's session defaults (seconds), shown next to an organization's overrides.
+	DefaultSessionTTL  int
+	DefaultSessionIdle int
+
 	// KeyRotationDays: the signing keys page (tokens.key_rotation_days; 0 = by hand only).
 	KeyRotationDays int
 }
@@ -83,7 +87,6 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/orgs/{org}/tenants/{tenant}", m.pageTenant)
 	page("GET /admin/orgs/{org}/clients", m.pageClientsMoved)
 	page("GET /admin/orgs/{org}/providers", m.orgPage("admin-providers", "Providers", "providers", true, nil))
-	page("GET /admin/orgs/{org}/settings", m.orgPage("admin-settings", "Settings", "settings", true, nil))
 	page("GET /admin/orgs/{org}/audit", m.orgPage("admin-audit", "Audit log", "audit", true, nil))
 	page("GET /admin/audit", m.pageAllAudit)
 	page("GET /admin/orgs/{org}/keys", m.pageKeys)
@@ -172,7 +175,8 @@ func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {
 		m.errorPage(w, r, http.StatusForbidden)
 		return
 	}
-	p := m.s.Page(w, r, "Organizations", "orgs", &View{API: "/api/orgs", Base: "/admin/orgs"})
+	p := m.s.Page(w, r, "Organizations", "orgs", &View{API: "/api/orgs", Base: "/admin/orgs",
+		DefaultSessionTTL: m.s.Cfg.Session.TTL, DefaultSessionIdle: m.s.Cfg.Session.Idle})
 	m.s.Render.Render(w, http.StatusOK, "admin-orgs", p)
 }
 

@@ -143,8 +143,6 @@ func (m *Module) routes() []Route {
 		{"PATCH", o + "/providers/{id}", m.updateProvider},
 		{"DELETE", o + "/providers/{id}", m.deleteProvider},
 
-		{"GET", o + "/settings", m.getSettings},
-		{"PUT", o + "/settings", m.putSettings},
 		{"GET", o + "/audit", m.listAudit},
 
 		{"GET", "/api/audit", m.listAllAudit},

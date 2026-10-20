@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
+<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">Administration</p>
@@ -43,12 +43,44 @@
     {{template "pager"}}
   </section>
 
-  {{template "dialog-start" (dict "id" "org-dialog" "title" "Organization" "titleBind" "dialogTitle" "size" "sm")}}
+  {{template "dialog-start" (dict "id" "org-dialog" "title" "Organization" "titleBind" "dialogTitle")}}
   <form @submit.prevent="submit" novalidate>
     <div class="dialog-body">
       {{template "edit-notice"}}
-      {{template "field" (dict "name" "display_name" "label" "Display name" "autofocus" true "autocomplete" "off" "help" "Shown to people on the sign-in page.")}}
-      {{template "field" (dict "name" "name" "label" "URL name" "required" true "autocomplete" "off" "help" "Lowercase letters, digits and hyphens. Used in the sign-in address, e.g. /login/acme.")}}
+      <div class="field-row">
+        {{template "field" (dict "name" "display_name" "label" "Display name" "autofocus" true "autocomplete" "off" "help" "Shown to people on the sign-in page.")}}
+        {{template "field" (dict "name" "name" "label" "URL name" "required" true "autocomplete" "off" "help" "Lowercase letters, digits and hyphens. Used in the sign-in address, e.g. /login/acme. Changing it breaks bookmarked sign-in links.")}}
+      </div>
+
+      <fieldset class="fieldset" aria-describedby="h-org-methods">
+        <legend>Sign-in methods</legend>
+        <p class="help" id="h-org-methods">These apply to the whole organization. Tenants can narrow them for their applications, but never switch on a method that is off here.</p>
+        <div class="field-row">
+          {{template "check-field" (dict "name" "password_login" "label" "Password" "switch" true "help" "Users sign in with their email address and a password.")}}
+          {{template "check-field" (dict "name" "password_reset" "label" "Allow password reset" "switch" true "disabled" "resetOff" "help" "Users who forget their password can have a reset link emailed to them.")}}
+        </div>
+        {{template "check-field" (dict "name" "passkey_login" "label" "Passkeys" "switch" true "help" "Users sign in with a passkey: fingerprint, face, or a security key.")}}
+        <div class="alert alert-warning" x-show="noMethod" x-cloak>{{template "icon" "alert"}}<span>With both switched off, users can only sign in through an upstream provider.</span></div>
+        {{template "check-field" (dict "name" "require_mfa" "label" "Require a second factor" "switch" true "help" "Password sign-ins must also enter a one-time code from an Authenticator App.")}}
+      </fieldset>
+
+      <fieldset class="fieldset">
+        <legend>Sessions</legend>
+        <div class="field-row">
+          <div class="field">
+            <label class="label" for="f-session_ttl">Session lifetime (hours)</label>
+            <input class="input" id="f-session_ttl" name="session_ttl" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_ttl" :aria-invalid="invalid.session_ttl" aria-describedby="e-session_ttl h-session_ttl">
+            <p class="help" id="h-session_ttl" x-text="ttlHelp"></p>
+            <p class="field-error" id="e-session_ttl" x-text="errors.session_ttl"></p>
+          </div>
+          <div class="field">
+            <label class="label" for="f-session_idle">Idle timeout (minutes)</label>
+            <input class="input" id="f-session_idle" name="session_idle" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_idle" :aria-invalid="invalid.session_idle" aria-describedby="e-session_idle h-session_idle">
+            <p class="help" id="h-session_idle" x-text="idleHelp"></p>
+            <p class="field-error" id="e-session_idle" x-text="errors.session_idle"></p>
+          </div>
+        </div>
+      </fieldset>
     </div>
     {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}
   </form>

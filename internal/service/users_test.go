@@ -462,7 +462,7 @@ func TestStaleSurfacesFromService(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{DisplayName: ptr("n" + itoa(i))})
+			_, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{DisplayName: ptr("n" + itoa(i))})
 			record(err)
 		}()
 	}

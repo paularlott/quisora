@@ -251,7 +251,7 @@ function tenantDialogMixin(Alpine) {
     },
     async loadOrgInfo() {
       try {
-        const [org, provs] = await Promise.all([get(`${this.apiBase}/settings`), get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`)])
+        const [org, provs] = await Promise.all([get(this.apiBase), get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`)])
         this.orgPassword = org.settings.password_login
         this.orgReset = !!org.settings.password_reset
         this.orgPasskey = org.settings.passkey_login
@@ -627,8 +627,12 @@ export default function (Alpine) {
   accessComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
   Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), {
-    editing: null, base: '',
-    init() { this.base = this.$el.dataset.base; this.initTable() },
+    editing: null, base: '', defaults: { ttl: 0, idle: 0 },
+    init() {
+      this.base = this.$el.dataset.base
+      this.defaults = { ttl: Math.round(Number(this.$el.dataset.ttl) / 3600), idle: Math.round(Number(this.$el.dataset.idle) / 60) }
+      this.initTable()
+    },
     transform(o) {
       return { ...o, usersText: o.users === undefined ? '—' : String(o.users), createdText: fmtDate(o.created),
         href: `${this.base}/${enc(o.name)}/users`, editLabel: 'Edit ' + o.display_name, deleteLabel: 'Delete ' + o.display_name,
@@ -637,25 +641,48 @@ export default function (Alpine) {
     get isEdit() { return this.editing !== null },
     get dialogTitle() { return this.editing ? 'Edit organization' : 'New organization' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create organization' },
+    get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + ' h).' },
+    get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
+    get noMethod() { return !this.form.password_login && !this.form.passkey_login },
+    get resetOff() { return !this.form.password_login },
+    orgToForm(o) {
+      const s = o.settings
+      return { name: o.name, display_name: o.display_name, password_login: !!s.password_login, password_reset: !!s.password_reset,
+        passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa,
+        session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' }
+    },
     openCreate(ev) {
       this.editing = null
-      this.resetForm({ name: '', display_name: '' })
+      this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false } }))
       this.openDlg('org-dialog', ev.currentTarget)
     },
     edit(ev) {
       const o = this.rowFromEvent(ev)
       this.editing = o
-      this.resetForm({ name: o.name, display_name: o.display_name })
+      this.resetForm(this.orgToForm(o))
       this.openDlg('org-dialog', ev.currentTarget)
       this.watchEdit({ kinds: ['org'], record: o, fetchOne: () => getOrNull(`/api/orgs/${enc(o.name)}`) })
     },
     async submit() {
-      const body = { name: this.form.name.trim(), display_name: this.form.display_name.trim() }
-      if (!body.display_name) delete body.display_name
-      const res = await this.run(() => this.editing ? patch(`/api/orgs/${enc(this.editing.name)}`, body) : post('/api/orgs', body))
+      const f = this.form
+      const num = (v, mult, field) => {
+        if (String(v).trim() === '') return 0
+        const n = Number(v)
+        if (!Number.isFinite(n) || n < 0) throw Object.assign(new Error('Enter a whole number, or leave blank.'), { field, status: 422 })
+        return Math.round(n * mult)
+      }
+      const edit = this.editing
+      const res = await this.run(() => {
+        const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
+          session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
+        const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
+        if (!body.display_name) delete body.display_name
+        // the primary organization's sign-in settings need a recent re-authentication (the server asks)
+        return edit ? withReauth(Alpine, () => patch(`/api/orgs/${enc(edit.name)}`, body), null, this) : post('/api/orgs', body)
+      })
       if (!res) return
       this.closeDlg('org-dialog')
-      toast(this.editing ? 'Organization saved.' : 'Organization created.')
+      toast(edit ? 'Organization saved.' : 'Organization created.')
       this.load()
     },
     async remove(ev) {
@@ -1014,7 +1041,7 @@ export default function (Alpine) {
     async refreshTenant(quiet) {
       try {
         const [t, org, provs, tenants] = await Promise.all([
-          getOrNull(`${this.apiBase}/tenants/${enc(this.tenantId)}`), get(`${this.apiBase}/settings`),
+          getOrNull(`${this.apiBase}/tenants/${enc(this.tenantId)}`), get(this.apiBase),
           get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`), get(`${this.apiBase}/tenants${qs({ sort: 'name', limit: 100 })}`)])
         if (t === null) {
           if (!this.gone) { this.gone = true; this.tenant = null; announce('This tenant was deleted by someone else.', 'assertive') }
@@ -1178,72 +1205,6 @@ export default function (Alpine) {
         detail: 'Users who sign in only through it will no longer be able to. This cannot be undone.', confirmLabel: 'Delete provider' })
       if (!yes) return
       try { await del(`${this.apiBase}/providers/${enc(p.id)}`); toast(`Provider “${p.name}” deleted.`); this.load() } catch (e) { toast(e.message, 'error') }
-    },
-  }))
-
-  // ---- Settings ---------------------------------------------------------------------------------------------------
-  Alpine.data('adminSettings', () => mix(formMixin(), {
-    apiBase: '', base: '', loading: true, loadError: '', org: null, defaults: { ttl: 0, idle: 0 }, saved: false,
-    otherChanged: false, _latest: null, _pristine: '', _sig: '', _lr: null,
-    async init() {
-      this.apiBase = this.$el.dataset.base
-      this.base = this.$el.dataset.page
-      this._lr = liveRunner(() => this.refreshSettings())
-      subscribe(['org'], () => this._lr.trigger())
-      try { this.apply(await get(`${this.apiBase}/settings`)) } catch (e) { this.loadError = e.message }
-      this.loading = false
-    },
-    // Live refresh. Edits in progress are never overwritten: a notice offers the latest version instead.
-    async refreshSettings() {
-      try {
-        const o = await get(`${this.apiBase}/settings`)
-        const sig = JSON.stringify(o)
-        if (sig === this._sig) return
-        if (JSON.stringify(this.form) !== this._pristine) { this._latest = o; this.otherChanged = true; return }
-        this.apply(o)
-        announceUpdate('Settings updated')
-      } catch { /* offline */ }
-    },
-    get hasOtherChange() { return this.otherChanged },
-    get otherChangeText() { return CHANGED_TEXT },
-    loadLatest() { if (this._latest) this.apply(this._latest) },
-    apply(o) {
-      this._sig = JSON.stringify(o)
-      this.otherChanged = false
-      this._latest = null
-      this.org = o
-      const s = o.settings
-      this.defaults = { ttl: Math.round(o.default_session_ttl / 3600), idle: Math.round(o.default_session_idle / 60) }
-      this.resetForm({ name: o.name, display_name: o.display_name, password_login: s.password_login, password_reset: !!s.password_reset, passkey_login: s.passkey_login,
-        require_mfa: s.require_mfa, session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' })
-      this._pristine = JSON.stringify(this.form)
-    },
-    get showForm() { return this.org !== null },
-    get hasLoadError() { return this.loadError !== '' },
-    get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + ' h).' },
-    get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
-    get saveLabel() { return this.busy ? 'Saving…' : 'Save settings' },
-    get noMethod() { return !this.form.password_login && !this.form.passkey_login },
-    get resetOff() { return !this.form.password_login },
-    async submit() {
-      const f = this.form
-      const num = (v, mult, field) => {
-        if (String(v).trim() === '') return 0
-        const n = Number(v)
-        if (!Number.isFinite(n) || n < 0) throw Object.assign(new Error('Enter a whole number, or leave blank.'), { field, status: 422 })
-        return Math.round(n * mult)
-      }
-      const res = await this.run(async () => {
-        const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
-          session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
-        // the primary organization's sign-in settings need a recent re-authentication (the server asks)
-        return withReauth(Alpine, () => put(`${this.apiBase}/settings`, { name: f.name.trim(), display_name: f.display_name.trim(), settings }), null, this)
-      })
-      if (!res) return
-      toast('Settings saved.')
-      if (res.name !== this.org.name) { window.location.assign(`/admin/orgs/${enc(res.name)}/settings`); return }
-      this.apply(res)
-      try { this._sig = JSON.stringify(await get(`${this.apiBase}/settings`)) } catch { /* the live refresh will catch up */ }
     },
   }))
 

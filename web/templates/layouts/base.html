@@ -82,7 +82,6 @@
       <a class="nav-link" href="/admin/orgs/{{.Name}}/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>{{template "icon" "shield"}} Groups</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
-      <a class="nav-link" href="/admin/orgs/{{.Name}}/settings"{{if eq $.Nav "settings"}} aria-current="page"{{end}}>{{template "icon" "sliders"}} Settings</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
       {{if and $.IsSuper .Primary}}<a class="nav-link" href="/admin/orgs/{{.Name}}/keys"{{if eq $.Nav "keys"}} aria-current="page"{{end}}>{{template "icon" "key"}} Signing keys</a>{{end}}
       {{if and $.IsSuper .Primary $.Site.Clustered}}<a class="nav-link" href="/admin/orgs/{{.Name}}/cluster"{{if eq $.Nav "cluster"}} aria-current="page"{{end}}>{{template "icon" "network"}} Cluster</a>{{end}}

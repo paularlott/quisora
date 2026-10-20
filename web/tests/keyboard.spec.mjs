@@ -291,7 +291,7 @@ test('org methods turned off are disabled in the tenant dialog', async ({ page }
   await signIn(page, 'admin')
   await page.goto(`${A}/tenants`, { waitUntil: 'load' })
   await page.waitForSelector('tbody tr')
-  await page.route('**/api/orgs/acme/settings', async (route) => {
+  await page.route('**/api/orgs/acme', async (route) => {
     const res = await route.fetch()
     const j = await res.json()
     j.settings.password_login = false
@@ -342,7 +342,7 @@ test('401 from the API redirects to sign-in', async ({ page, context }) => {
   await page.waitForURL(/\/\?next=/)
 })
 
-for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/providers', '/settings', '/audit']) {
+for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/providers', '/audit']) {
   test(`reflows at 320px without horizontal page scroll: ${path}`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 })
     await signIn(page, 'admin')

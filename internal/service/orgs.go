@@ -243,9 +243,9 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 	return o, nil
 }
 
-// UpdateOrg changes name, display name or settings (super admins, or admins of the org).
+// UpdateOrg changes name, display name or settings (super admins only).
 func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInput) (*model.Org, error) {
-	if !s.canAdminOrg(a, id) {
+	if !a.IsSuper() {
 		return nil, ErrForbidden
 	}
 	o, err := s.Orgs.Get(ctx, id)
@@ -269,11 +269,6 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 	if in.Settings != nil {
 		if err := s.validOrgSettings(*in.Settings, &o.Settings); err != nil {
 			return nil, err
-		}
-		// The primary organization's sign-in policy is the super admins' own (they are members of it): only they
-		// change it, not its administrators.
-		if o.Primary && *in.Settings != o.Settings && !a.IsSuper() {
-			return nil, ErrForbidden
 		}
 		o.Settings = *in.Settings
 	}

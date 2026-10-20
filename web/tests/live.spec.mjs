@@ -8,12 +8,12 @@ const A = '/admin/orgs/acme'
 const API = '/api/orgs/acme'
 
 // Two admin sessions, each on its own page. `a` shows `path`; `b` sits on a page that can call the API.
-async function twoAdmins(browser, baseURL, path, theme) {
+async function twoAdmins(browser, baseURL, path, theme, as = 'admin') {
   const mk = async () => {
     const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 }, baseURL })
     const page = await ctx.newPage()
     if (theme) await setTheme(page, theme)
-    await signIn(page, 'admin')
+    await signIn(page, as)
     return { ctx, page }
   }
   const [a, b] = await Promise.all([mk(), mk()])
@@ -216,7 +216,7 @@ test('audit log and groups follow other admins', async ({ browser, baseURL }) =>
   } finally { await close() }
 })
 
-test('user page and settings page refetch; settings keeps unsaved edits', async ({ browser, baseURL }) => {
+test('user page refetches', async ({ browser, baseURL }) => {
   const name = uniq('zzdet')
   const { a, b, close } = await twoAdmins(browser, baseURL, `${A}/audit`)
   try {
@@ -227,21 +227,25 @@ test('user page and settings page refetch; settings keeps unsaved edits', async 
     await expect(a.getByRole('heading', { level: 1 })).toHaveText('Detail Two', { timeout: 3500 })
     await apiCall(b, 'DELETE', `${API}/users/${u.id}`)
     await expect(a.locator('.alert', { hasText: 'This user was deleted by someone else' })).toBeVisible({ timeout: 3500 })
-
-    // settings: a clean form follows; an edited form keeps its edits and offers the latest version
-    await a.goto(`${A}/settings`)
-    await a.waitForSelector('#f-display_name')
-    const before = await a.locator('#f-display_name').inputValue()
-    await apiCall(b, 'PUT', `${API}/settings`, { display_name: before + ' 2' })
-    await expect(a.locator('#f-display_name')).toHaveValue(before + ' 2', { timeout: 3500 })
-    await a.locator('#f-display_name').fill('Mine, unsaved')
-    await a.locator('#f-display_name').blur()
-    await apiCall(b, 'PUT', `${API}/settings`, { display_name: before })
-    await expect(a.getByText('changed by someone else')).toBeVisible({ timeout: 3500 })
-    await expect(a.locator('#f-display_name')).toHaveValue('Mine, unsaved')
-    await a.getByRole('button', { name: /load the latest/ }).click()
-    await expect(a.locator('#f-display_name')).toHaveValue(before)
   } finally { await close() }
+})
+
+test('organization dialog: a change by someone else shows a notice and keeps unsaved edits', async ({ browser, baseURL }) => {
+  const { a, b, close } = await twoAdmins(browser, baseURL, '/admin/orgs', undefined, 'super')
+  try {
+    await a.waitForSelector('tbody tr')
+    await a.getByRole('button', { name: 'Edit Acme Corporation' }).click()
+    const dlg = a.getByRole('dialog', { name: 'Edit organization' })
+    await expect(dlg).toBeVisible()
+    await a.locator('#f-session_idle').fill('45')
+    await apiCall(b, 'PATCH', API, { display_name: 'Acme Corporation 2' })
+    await expect(dlg.locator('.edit-notice')).toContainText('changed by someone else', { timeout: 3500 })
+    await expect(a.locator('#f-session_idle')).toHaveValue('45')
+    await expect(a.locator('#f-display_name')).toHaveValue('Acme Corporation')
+  } finally {
+    await apiCall(b, 'PATCH', API, { display_name: 'Acme Corporation' })
+    await close()
+  }
 })
 
 test('super admin: the organizations list follows new organizations', async ({ browser, baseURL }) => {

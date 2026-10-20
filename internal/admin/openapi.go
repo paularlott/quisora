@@ -37,7 +37,7 @@ var opDocs = []opDoc{
 	{"GET", "/api/orgs", "Organizations", "List organizations (non-super callers see only their own)", "", "Org", 200, true, "name,display_name,created", nil},
 	{"POST", "/api/orgs", "Organizations", "Create an organization (super admin)", "OrgInput", "Org", 201, false, "", nil},
 	{"GET", pOrg, "Organizations", "Get an organization", "", "Org", 200, false, "", nil},
-	{"PATCH", pOrg, "Organizations", "Rename or edit an organization", "OrgInput", "Org", 200, false, "", nil},
+	{"PATCH", pOrg, "Organizations", "Rename an organization or change its sign-in and session settings (super admin)", "OrgInput", "Org", 200, false, "", nil},
 	{"DELETE", pOrg, "Organizations", "Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers", "", "Ok", 200, false, "", []string{"cascade"}},
 
 	{"GET", pOrg + "/users", "Users", "List users; ?tag=<tag> keeps only users carrying exactly that tag; q also matches tags", "", "User", 200, true, "username,email,name,role,active,created,last_login", []string{"role", "active", "tag"}},
@@ -98,8 +98,6 @@ var opDocs = []opDoc{
 	{"PATCH", pOrg + "/providers/{id}", "Providers", "Update a provider (omit client_secret to keep it)", "ProviderInput", "Provider", 200, false, "", nil},
 	{"DELETE", pOrg + "/providers/{id}", "Providers", "Delete a provider", "", "Ok", 200, false, "", nil},
 
-	{"GET", pOrg + "/settings", "Settings", "Get organization settings", "", "Settings", 200, false, "", nil},
-	{"PUT", pOrg + "/settings", "Settings", "Update organization settings", "OrgInput", "Settings", 200, false, "", nil},
 	{"GET", pOrg + "/audit", "Audit", "List audit events, newest first by default. Also: source (store, cluster or victorialogs) and, in a gossip cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)", "", "Audit", 200, true, "action,created", nil},
 	{"GET", "/api/audit", "Audit", "List the audit events of every organization (super admins), newest first by default; ?org=<name> for one. Items carry org_name; source, nodes and nodes_answered as for an organization's audit log", "", "Audit", 200, true, "action,created", []string{"org"}},
 
@@ -284,11 +282,6 @@ func components() obj {
 		"OrgSettings": orgSettings,
 		"Org":         schema(nil, orgProps),
 		"OrgInput":    schema(nil, obj{"name": prop("string"), "display_name": prop("string"), "settings": ref("OrgSettings")}),
-		"Settings": schema(nil, func() obj {
-			p := meta(obj{"name": prop("string"), "display_name": prop("string"), "primary": prop("boolean"),
-				"settings": ref("OrgSettings"), "default_session_ttl": prop("integer"), "default_session_idle": prop("integer")})
-			return p
-		}()),
 		"User":          schema(nil, userProps),
 		"UserInput":     schema(nil, userIn),
 		"UserCreate":    userCreate,

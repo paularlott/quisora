@@ -8,50 +8,6 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-type settingsView struct {
-	*model.Org
-	// Server defaults shown next to the session lifetime overrides (seconds).
-	DefaultSessionTTL  int `json:"default_session_ttl"`
-	DefaultSessionIdle int `json:"default_session_idle"`
-}
-
-func (m *Module) settingsView(o *model.Org) settingsView {
-	return settingsView{Org: o, DefaultSessionTTL: m.s.Cfg.Session.TTL, DefaultSessionIdle: m.s.Cfg.Session.Idle}
-}
-
-func (m *Module) getSettings(w http.ResponseWriter, r *http.Request) {
-	org, a, found := m.orgFor(w, r)
-	if !found {
-		return
-	}
-	if !m.s.Svc.CanAdminOrg(a, org.ID) {
-		web.WriteError(w, service.ErrForbidden)
-		return
-	}
-	web.WriteJSON(w, http.StatusOK, m.settingsView(org))
-}
-
-func (m *Module) putSettings(w http.ResponseWriter, r *http.Request) {
-	org, a, found := m.orgFor(w, r)
-	if !found {
-		return
-	}
-	var in service.OrgInput
-	if !web.DecodeJSON(w, r, &in) {
-		return
-	}
-	// The primary organization's sign-in policy covers the super admins themselves.
-	if org.Primary && in.Settings != nil && *in.Settings != org.Settings && a.IsSuper() && !m.stepUp(w, r) {
-		return
-	}
-	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, org.ID, in)
-	if err != nil {
-		web.WriteError(w, err)
-		return
-	}
-	web.WriteJSON(w, http.StatusOK, m.settingsView(upd))
-}
-
 // auditItem is one audit event in a listing; OrgName is filled in the listing of every organization.
 type auditItem struct {
 	*model.Audit

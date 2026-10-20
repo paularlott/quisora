@@ -51,7 +51,7 @@ func TestAuditRecordsChanges(t *testing.T) {
 	o, _ := c.svc.Orgs.Get(c.ctx, c.a.ID)
 	st := o.Settings
 	st.RequireMFA = !st.RequireMFA
-	if _, err := c.svc.UpdateOrg(c.ctx, admin, c.a.ID, service.OrgInput{Settings: &st}); err != nil {
+	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.super, "192.0.2.1"), c.a.ID, service.OrgInput{Settings: &st}); err != nil {
 		t.Fatal(err)
 	}
 	if d := lastAudit(t, c, "org.update").Detail; d["changed.settings.require_mfa"] == "" {
@@ -80,31 +80,29 @@ func TestAuditRequestAndCommandFields(t *testing.T) {
 	}
 }
 
-// An organization's session lifetimes stay within the server's; the primary organization's sign-in settings are
-// changed by super admins only (its admins may still rename it).
+// An organization's session lifetimes stay within the server's; organizations, the primary one included, are
+// changed by super admins only, never by their own administrators.
 func TestOrgSessionSettingsAndPrimary(t *testing.T) {
 	c := newCast(t)
-	aAdmin := service.ActorForUser(c.aAdmin, "")
+	super := service.ActorForUser(c.super, "")
 	too := model.OrgSettings{PasswordLogin: true, SessionTTL: c.svc.Cfg.Session.TTL + 1}
-	if _, err := c.svc.UpdateOrg(c.ctx, aAdmin, c.a.ID, service.OrgInput{Settings: &too}); err == nil {
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.a.ID, service.OrgInput{Settings: &too}); err == nil {
 		t.Fatal("a session lifetime above the server's was accepted")
 	}
 	ok := model.OrgSettings{PasswordLogin: true, SessionTTL: 3600}
-	if _, err := c.svc.UpdateOrg(c.ctx, aAdmin, c.a.ID, service.OrgInput{Settings: &ok}); err != nil {
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.a.ID, service.OrgInput{Settings: &ok}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.aAdmin, ""), c.a.ID, service.OrgInput{DisplayName: ptr("Mine")}); err == nil {
+		t.Fatal("an organization's admin changed it")
+	}
 
-	pAdmin := service.ActorForUser(c.pAdmin, "")
 	st := c.primary.Settings
 	st.RequireMFA = !st.RequireMFA
-	if _, err := c.svc.UpdateOrg(c.ctx, pAdmin, c.primary.ID, service.OrgInput{Settings: &st}); err == nil {
+	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.pAdmin, ""), c.primary.ID, service.OrgInput{Settings: &st}); err == nil {
 		t.Fatal("a primary-org admin changed its sign-in settings")
 	}
-	same := c.primary.Settings
-	if _, err := c.svc.UpdateOrg(c.ctx, pAdmin, c.primary.ID, service.OrgInput{DisplayName: ptr("Main"), Settings: &same}); err != nil {
-		t.Fatalf("a primary-org admin renaming it: %v", err)
-	}
-	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.super, ""), c.primary.ID, service.OrgInput{Settings: &st}); err != nil {
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.primary.ID, service.OrgInput{Settings: &st}); err != nil {
 		t.Fatalf("a super admin: %v", err)
 	}
 }

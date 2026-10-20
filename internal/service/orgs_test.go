@@ -49,20 +49,20 @@ func TestOrgValidation(t *testing.T) {
 		t.Errorf("duplicate org should be a name field error: %v", err)
 	}
 	// Rename into an existing name / invalid / update validation.
-	_, err = c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{Name: ptr("org-b")})
+	_, err = c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{Name: ptr("org-b")})
 	if !errors.Is(err, service.ErrConflict) || !errors.As(err, &fe) || fe.Field != "name" {
 		t.Errorf("rename clash: %v", err)
 	}
-	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{Name: ptr("scim")}); !errors.Is(err, service.ErrInvalid) {
+	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{Name: ptr("scim")}); !errors.Is(err, service.ErrInvalid) {
 		t.Errorf("reserved rename: %v", err)
 	}
-	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{DisplayName: ptr("  ")}); !errors.Is(err, service.ErrInvalid) {
+	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{DisplayName: ptr("  ")}); !errors.Is(err, service.ErrInvalid) {
 		t.Errorf("blank display: %v", err)
 	}
-	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{Settings: &model.OrgSettings{SessionTTL: -1}}); !errors.Is(err, service.ErrInvalid) {
+	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{Settings: &model.OrgSettings{SessionTTL: -1}}); !errors.Is(err, service.ErrInvalid) {
 		t.Errorf("negative ttl: %v", err)
 	}
-	got, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{Name: ptr("renamed-a"), Settings: &model.OrgSettings{RequireMFA: true, SessionTTL: 60}})
+	got, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{Name: ptr("renamed-a"), Settings: &model.OrgSettings{RequireMFA: true, SessionTTL: 60}})
 	if err != nil || got.Name != "renamed-a" || !got.Settings.RequireMFA {
 		t.Errorf("update: %v %+v", err, got)
 	}

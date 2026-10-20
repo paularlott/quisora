@@ -269,7 +269,7 @@ func TestOrgs(t *testing.T) {
 	want(t, ad.post("/api/orgs", map[string]any{"name": "mine"}), 403)
 	want(t, ad.delete("/api/orgs/acme"), 403)
 	want(t, ad.get("/api/orgs/primary"), 404)
-	want(t, ad.patch("/api/orgs/acme", map[string]any{"display_name": "Acme Inc"}), 200)
+	want(t, ad.patch("/api/orgs/acme", map[string]any{"display_name": "Acme Inc"}), 403) // super admins only
 	want(t, w.as("manager").patch("/api/orgs/acme", map[string]any{"display_name": "x"}), 403)
 }
 
@@ -447,18 +447,17 @@ func TestUserRolePermissions(t *testing.T) {
 	want(t, mg.post(A+"/groups", map[string]any{"display_name": "g"}), 403)
 	want(t, mg.get(A+"/clients"), 403)
 	want(t, mg.get(A+"/providers"), 403)
-	want(t, mg.get(A+"/settings"), 403)
 	want(t, mg.get(A+"/audit"), 403)
 
 	us := w.as("user")
-	for _, p := range []string{AU, A + "/groups", A + "/clients", A + "/providers", A + "/settings", A + "/audit"} {
+	for _, p := range []string{AU, A + "/groups", A + "/clients", A + "/providers", A + "/audit"} {
 		want(t, us.get(p), 403)
 	}
 	want(t, us.post(AU, map[string]any{"given_name": "T", "username": "z", "email": "z@x.example"}), 403)
 
 	// another organization's admin cannot reach acme at all
 	ot := w.as("other")
-	for _, p := range []string{AU, A + "/groups", A + "/settings"} {
+	for _, p := range []string{AU, A + "/groups", A} {
 		want(t, ot.get(p), 404)
 	}
 	want(t, ot.get("/api/keys"), 403)
@@ -821,25 +820,27 @@ func TestProviders(t *testing.T) {
 
 func TestSettings(t *testing.T) {
 	w := newWorld(t)
-	ad := w.as("admin")
-	r := ad.get(A + "/settings")
+	su, ad := w.as("super"), w.as("admin")
+	// the organization's own administrators read its settings (the tenant pages show them) but do not change them
+	r := ad.get(A)
 	want(t, r, 200)
-	if r.JSON["default_session_ttl"] == nil {
-		t.Fatalf("defaults missing: %s", r.Raw)
+	if r.JSON["settings"] == nil {
+		t.Fatalf("settings missing: %s", r.Raw)
 	}
-	r = ad.put(A+"/settings", map[string]any{"settings": map[string]any{"password_login": true, "passkey_login": false, "require_mfa": true,
-		"session_ttl": 3600, "session_idle": 600}})
+	want(t, ad.patch(A, map[string]any{"settings": map[string]any{"password_login": true}}), 403)
+	r = su.patch(A, map[string]any{"settings": map[string]any{"password_login": true, "password_reset": true, "passkey_login": false,
+		"require_mfa": true, "session_ttl": 3600, "session_idle": 600}})
 	want(t, r, 200)
 	o, _ := w.env.Svc.Orgs.Get(context.Background(), w.acme.ID)
-	if !o.Settings.RequireMFA || o.Settings.PasskeyLogin || o.Settings.SessionTTL != 3600 {
+	if !o.Settings.RequireMFA || o.Settings.PasskeyLogin || !o.Settings.PasswordReset || o.Settings.SessionTTL != 3600 {
 		t.Fatalf("not saved: %+v", o.Settings)
 	}
-	want(t, ad.put(A+"/settings", map[string]any{"settings": map[string]any{"session_ttl": -1}}), 422)
-	wantField(t, ad.put(A+"/settings", map[string]any{"name": "Not Valid"}), 422, "name")
-	r = ad.put(A+"/settings", map[string]any{"name": "acme2", "display_name": "Acme Two"})
+	want(t, su.patch(A, map[string]any{"settings": map[string]any{"session_ttl": -1}}), 422)
+	wantField(t, su.patch(A, map[string]any{"name": "Not Valid"}), 422, "name")
+	r = su.patch(A, map[string]any{"name": "acme2", "display_name": "Acme Two"})
 	want(t, r, 200)
-	want(t, ad.get("/api/orgs/acme/settings"), 404) // renamed: the URL name changed
-	want(t, ad.get("/api/orgs/acme2/settings"), 200)
+	want(t, su.get("/api/orgs/acme"), 404) // renamed: the URL name changed
+	want(t, su.get("/api/orgs/acme2"), 200)
 }
 
 func TestAudit(t *testing.T) {
@@ -1045,7 +1046,7 @@ func TestPages(t *testing.T) {
 	}
 	for _, p := range []struct{ path, comp string }{
 		{"/admin/orgs/acme/users", "adminUsers"}, {"/admin/orgs/acme/groups", "adminGroups"},
-		{"/admin/orgs/acme/tenants", "adminTenants"}, {"/admin/orgs/acme/providers", "adminProviders"}, {"/admin/orgs/acme/settings", "adminSettings"}, {"/admin/orgs/acme/audit", "adminAudit"},
+		{"/admin/orgs/acme/tenants", "adminTenants"}, {"/admin/orgs/acme/providers", "adminProviders"}, {"/admin/orgs/acme/audit", "adminAudit"},
 		{"/admin/orgs/acme/users/" + w.users["user"].ID, "adminUser"},
 	} {
 		body := html(ad, p.path, 200)
@@ -1100,9 +1101,7 @@ func TestPages(t *testing.T) {
 	if b := html(ad, "/admin/orgs/acme/users", 200); strings.Contains(b, "/cluster") {
 		t.Error("cluster link for an organization admin")
 	}
-	if b := html(su, "/admin/orgs/primary/settings", 200); strings.Contains(b, "Accepts changes") {
-		t.Error("the cluster block is still on the settings page")
-	}
+	html(su, "/admin/orgs/primary/settings", 404) // organization settings are edited from the organizations list
 	w.env.Server.Site.Clustered = false
 
 	// permissions

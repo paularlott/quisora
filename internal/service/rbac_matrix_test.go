@@ -248,7 +248,7 @@ func TestMatrixOrgs(t *testing.T) {
 		}{{c.primary, ac.u.OrgID == c.primary.ID, "primary"}, {c.a, ac.u.OrgID == c.a.ID, "a"}, {c.b, ac.u.OrgID == c.b.ID, "b"}} {
 			_, err := c.svc.UpdateOrg(c.ctx, actor(ac.u), tgt.org.ID, service.OrgInput{DisplayName: ptr("Renamed " + tgt.name)})
 			w := "forbidden"
-			if ac.name == "super" || (tgt.own && ac.u.Role == model.RoleAdmin) {
+			if ac.name == "super" {
 				w = "ok"
 			}
 			c.check(t, "update org "+tgt.name+" as "+ac.name, err, w)
