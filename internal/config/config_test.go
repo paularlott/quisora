@@ -125,6 +125,50 @@ func TestLogo(t *testing.T) {
 	}
 }
 
+// ui.skin is a built-in skin's name or the path of a folder holding skin.css (named like a skin); a relative path is
+// made absolute against the working directory.
+func TestSkinSetting(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	good, bare := filepath.Join(root, "acme"), filepath.Join(root, "empty")
+	for _, d := range []string{good, bare, filepath.Join(root, "Bad_Name")} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{good, filepath.Join(root, "Bad_Name")} {
+		if err := os.WriteFile(filepath.Join(d, "skin.css"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for v, want := range map[string]string{
+		"":                              "",
+		"corporate":                     "corporate",
+		good:                            good,
+		"./acme":                        good,
+		"./acme/":                       good,
+		"empty/../acme":                 good,
+		"Corporate":                     "error",
+		"acme_1":                        "error",
+		"./corporate":                   "error",
+		"../acme":                       "error",
+		bare:                            "error",
+		filepath.Join(root, "Bad_Name"): "error",
+		filepath.Join(root, "missing"):  "error",
+	} {
+		c := Default()
+		c.UI.Skin = v
+		err := c.Validate()
+		got := c.UI.Skin
+		if err != nil {
+			got = "error"
+		}
+		if got != want {
+			t.Errorf("skin %q: got %q (err %v), want %q", v, got, err, want)
+		}
+	}
+}
+
 // A reload (SIGHUP) reads the master keys from the config file and the environment, as at start-up, and nothing else.
 func TestLoadMasterKeys(t *testing.T) {
 	k0 := base64.StdEncoding.EncodeToString(make([]byte, 32))

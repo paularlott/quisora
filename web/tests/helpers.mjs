@@ -4,7 +4,9 @@ export const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'
 
 // Worst-case backdrops under the glass: the darkest aurora colour in the light theme (dark text suffers) and the
 // brightest in the dark theme (light text suffers), plus a darker light-theme case for the dialog scrim.
-export const WORST = {
+// The darkest / lightest aurora colours text may sit over (tokens.css). A skin (SKIN) draws its own backdrop, so its
+// worst case is its own canvas.
+export const WORST = process.env.SKIN ? { light: ['var(--page-bg)'], dark: ['var(--page-bg)'] } : {
   light: ['#6366f1', '#2f3380'],
   dark: ['#be185d', '#0e7490'],
 }

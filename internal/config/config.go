@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,7 +70,8 @@ type UI struct {
 	DefaultTheme string `toml:"default_theme" flag:"default-theme" usage:"Default theme: light, dark or system"`
 	LogoLight    string `toml:"logo_light" flag:"logo-light" usage:"Logo absolute file path or https URL (default: built-in)"`
 	LogoDark     string `toml:"logo_dark" flag:"logo-dark" usage:"Dark-theme logo (default: logo-light)"`
-	Footer       string `toml:"footer" flag:"footer" usage:"Footer line"`
+	Skin         string `toml:"skin" flag:"skin" usage:"Look of the UI: a built-in skin (corporate or modern) or the path of a skin folder, such as ./acme (default: the built-in look)"`
+	Footer       string `toml:"footer" flag:"footer" usage:"Footer line; may hold links (<a href>) and <strong>, <em>, <small>, <span>, <br>"`
 }
 
 type Storage struct {
@@ -476,6 +478,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
+	if skin, err := skinPath(c.UI.Skin); err != nil {
+		errs = append(errs, err)
+	} else {
+		c.UI.Skin = skin
+	}
 	switch c.Tokens.SigningAlg {
 	case "ES256", "EdDSA":
 	default:
@@ -634,6 +641,39 @@ func logoError(name, v string) error {
 		return fmt.Errorf("%s %q is not a regular file", name, v)
 	}
 	return nil
+}
+
+// skinName is a built-in skin's name, also the folder name of a skin loaded from disk (data-skin on <html>).
+var skinName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// skinPath checks ui.skin and returns it with a folder made absolute: empty (the built-in look), a built-in skin's name
+// (web.LoadSkin knows which exist), or the path of a folder holding skin.css whose name is a valid skin name. A path
+// is anything with a separator in it ("./acme", "/etc/quisora/acme") or "." / "..", relative to the working directory
+// at start-up; a bare name ("acme") is always a built-in skin.
+func skinPath(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	if !strings.ContainsRune(v, '/') && !strings.ContainsRune(v, filepath.Separator) && v != "." && v != ".." {
+		if !skinName.MatchString(v) {
+			return "", fmt.Errorf("ui.skin %q must be a built-in skin's name or the path of a skin folder (such as ./%s)", v, v)
+		}
+		return v, nil
+	}
+	dir, err := filepath.Abs(v)
+	if err != nil {
+		return "", fmt.Errorf("ui.skin: %w", err)
+	}
+	if !skinName.MatchString(filepath.Base(dir)) {
+		return "", fmt.Errorf("ui.skin: the folder name %q must be lowercase letters, digits and dashes (it is the skin's name)",
+			filepath.Base(dir))
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "skin.css")); err != nil {
+		return "", fmt.Errorf("ui.skin: %w", err)
+	} else if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("ui.skin: %s is not a regular file", filepath.Join(dir, "skin.css"))
+	}
+	return dir, nil
 }
 
 // LocalStoragereports whether the backend lives on this node only (so cluster data replication is needed).

@@ -20,7 +20,12 @@
      dark   0.25 #0e122a over #be185d / #0e7490 -> --fg 7.8:1 / 6.9:1
    The header (--glass-bg-header) holds only large, bold --fg text and controls (3:1), so it is thinner still:
      light  0.25 white over #6366f1   -> --fg 6.4:1     (no tint at all: 4.2:1, below AA)
-     dark   0.25 #0e122a over #be185d -> --fg 7.8:1, --fg-muted 4.8:1 */
+     dark   0.25 #0e122a over #be185d -> --fg 7.8:1, --fg-muted 4.8:1
+
+   SKINS (ui.skin, web/skins/README.md) load a stylesheet after this one that sets these same properties under
+   :root[data-skin="<name>"]. Every colour and surface treatment the components use is a token here so a skin never
+   has to restyle a component. The reduced-transparency and more-contrast overrides below are !important so they still
+   apply under a skin (all but --aurora-opacity: a skin without the aurora keeps it at 0). */
 
 @theme inline {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue",
@@ -36,6 +41,15 @@
 
   --radius-glass: 1.5rem;
   --radius-ctl: 0.875rem;
+  --radius-btn: 999px;
+  --radius-pill: 999px;    /* search fields, breadcrumbs, bare section headings */
+  --radius-header: 1.6rem;
+  --radius-panel: 1.4rem;  /* menus */
+  --radius-dialog: 1.75rem; /* dialogs, the navigation drawer */
+  --radius-auth: 2rem;     /* the sign-in card */
+  --radius-inner: 1rem;    /* wells, alerts, disclosures, tables, suggestion lists, navigation links */
+  --radius-item: 0.875rem; /* menu items, suggestions, icon buttons in the header */
+  --radius-toast: 1.1rem;
 
   --animate-drift-a: drift-a 34s ease-in-out infinite alternate;
   --animate-drift-b: drift-b 42s ease-in-out infinite alternate;
@@ -102,6 +116,31 @@
   --b-info-bg: #dbeafe;    --b-info-fg: #1e3a8a;
   --b-neutral-bg: #e2e8f0; --b-neutral-fg: #1e293b;
   --b-accent-bg: #ede9fe;  --b-accent-fg: #4c1d95;
+  --live-paused-bg: #fef3c7; --live-paused-fg: #92400e;
+
+  /* Surface treatments, the same in both themes: the bevels, glows and sheens of the glass look. */
+  --danger-solid-2: #9f1239;
+  --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -3px 8px rgba(0, 0, 0, 0.2),
+    0 8px 20px -6px color-mix(in srgb, var(--accent-solid) 70%, transparent);
+  --btn-danger-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 8px rgba(0, 0, 0, 0.2),
+    0 8px 20px -6px rgba(185, 28, 28, 0.55);
+  --btn-secondary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.15);
+  --btn-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0)); /* faint: white text keeps 4.5:1 */
+  --ctl-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --track-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.2), inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  --thumb-bg: radial-gradient(circle at 30% 22%, #fff 0%, #f4f6ff 50%, #d3daf5 100%);
+  --thumb-bg-active: radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.55));
+  --thumb-fg: #0b1220;
+  --thumb-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.9), 0 3px 8px rgba(15, 23, 60, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --toggle-on-bg: linear-gradient(135deg, #312e81, #4c1d95); /* the theme toggle in its dark position */
+  --toggle-on-border: #a5b4fc;
+  --avatar-bg: linear-gradient(135deg, #4338ca, #7c3aed);
+  --avatar-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 4px 12px -4px rgba(67, 56, 202, 0.6);
+  --empty-icon-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 0 1px var(--edge), 0 12px 24px -12px rgba(67, 56, 202, 0.5);
+  --nav-current-bg: linear-gradient(135deg, var(--accent-solid), var(--accent-solid-2));
+  --nav-current-fg: var(--on-accent);
+  --nav-current-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 8px 18px -8px color-mix(in srgb, var(--accent-solid) 80%, transparent);
+  --nav-current-mark: rgba(255, 255, 255, 0.85);
 }
 
 :root[data-theme="dark"] {
@@ -161,6 +200,7 @@
   --b-info-bg: rgba(96, 165, 250, 0.2);    --b-info-fg: #bfdbfe;
   --b-neutral-bg: rgba(148, 163, 184, 0.2); --b-neutral-fg: #e2e8f0;
   --b-accent-bg: rgba(167, 139, 250, 0.22); --b-accent-fg: #ddd6fe;
+  --live-paused-bg: rgba(146, 64, 14, 0.45); --live-paused-fg: #fde68a;
 }
 
 /* No JavaScript / before theme-boot: follow the OS. */
@@ -178,39 +218,40 @@
     --b-danger-fg: #fecaca; --b-warn-bg: rgba(251, 191, 36, 0.18); --b-warn-fg: #fde68a;
     --b-info-bg: rgba(96, 165, 250, 0.2); --b-info-fg: #bfdbfe; --b-neutral-bg: rgba(148, 163, 184, 0.2);
     --b-neutral-fg: #e2e8f0; --b-accent-bg: rgba(167, 139, 250, 0.22); --b-accent-fg: #ddd6fe;
+    --live-paused-bg: rgba(146, 64, 14, 0.45); --live-paused-fg: #fde68a;
   }
 }
 
 /* Users who asked for less transparency or more contrast get opaque surfaces and stronger edges. */
 @media (prefers-reduced-transparency: reduce) {
   :root, :root[data-theme] {
-    --glass-bg: var(--glass-solid);
-    --glass-bg-strong: var(--glass-solid);
-    --glass-bg-panel: var(--glass-solid);
-    --glass-bg-header: var(--glass-solid);
-    --glass-bg-footer: var(--glass-solid);
-    --glass-bg-toast: var(--glass-solid);
-    --glass-bg-dialog: var(--glass-solid);
-    --glass-blur: 0px;
-    --glass-sat: 1;
+    --glass-bg: var(--glass-solid) !important;
+    --glass-bg-strong: var(--glass-solid) !important;
+    --glass-bg-panel: var(--glass-solid) !important;
+    --glass-bg-header: var(--glass-solid) !important;
+    --glass-bg-footer: var(--glass-solid) !important;
+    --glass-bg-toast: var(--glass-solid) !important;
+    --glass-bg-dialog: var(--glass-solid) !important;
+    --glass-blur: 0px !important;
+    --glass-sat: 1 !important;
     --aurora-opacity: 0.35;
   }
 }
 @media (prefers-contrast: more) {
   :root, :root[data-theme] {
-    --glass-bg: var(--glass-solid);
-    --glass-bg-strong: var(--glass-solid);
-    --glass-bg-panel: var(--glass-solid);
-    --glass-bg-header: var(--glass-solid);
-    --glass-bg-footer: var(--glass-solid);
-    --glass-bg-toast: var(--glass-solid);
-    --glass-bg-dialog: var(--glass-solid);
-    --glass-blur: 0px;
-    --glass-sat: 1;
+    --glass-bg: var(--glass-solid) !important;
+    --glass-bg-strong: var(--glass-solid) !important;
+    --glass-bg-panel: var(--glass-solid) !important;
+    --glass-bg-header: var(--glass-solid) !important;
+    --glass-bg-footer: var(--glass-solid) !important;
+    --glass-bg-toast: var(--glass-solid) !important;
+    --glass-bg-dialog: var(--glass-solid) !important;
+    --glass-blur: 0px !important;
+    --glass-sat: 1 !important;
     --aurora-opacity: 0.25;
-    --fg-muted: var(--fg);
-    --edge: currentColor;
-    --ctl-border: var(--fg);
+    --fg-muted: var(--fg) !important;
+    --edge: currentColor !important;
+    --ctl-border: var(--fg) !important;
   }
 }
 

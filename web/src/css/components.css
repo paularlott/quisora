@@ -10,7 +10,7 @@
   /* ---- Buttons ---------------------------------------------------------------------------------------------- */
   .btn {
     position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
-    min-height: 2.75rem; padding: 0.5rem 1.15rem; border-radius: 999px; border: 1.5px solid transparent;
+    min-height: 2.75rem; padding: 0.5rem 1.15rem; border-radius: var(--radius-btn); border: 1.5px solid transparent;
     font: inherit; font-size: 0.9375rem; font-weight: 600; line-height: 1.2; text-align: center; text-decoration: none;
     overflow-wrap: break-word; /* not the body's anywhere: a label wraps between words, never inside one ("Previ-ous") */
     color: var(--fg); background: transparent; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
@@ -23,25 +23,22 @@
   .btn-sm { min-height: 2.25rem; padding: 0.25rem 0.85rem; font-size: 0.875rem; }
 
   .btn-primary, .btn-danger {
-    color: var(--on-accent);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -3px 8px rgba(0, 0, 0, 0.2),
-      0 8px 20px -6px color-mix(in srgb, var(--accent-solid) 70%, transparent);
+    color: var(--on-accent); box-shadow: var(--btn-shadow);
   }
   .btn-primary { background: linear-gradient(135deg, var(--accent-solid), var(--accent-solid-2)); }
   .btn-danger {
-    background: linear-gradient(135deg, var(--danger-solid), #9f1239);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 8px rgba(0, 0, 0, 0.2), 0 8px 20px -6px rgba(185, 28, 28, 0.55);
+    background: linear-gradient(135deg, var(--danger-solid), var(--danger-solid-2)); box-shadow: var(--btn-danger-shadow);
   }
   /* specular highlight along the top edge: kept faint so white text stays >= 4.5:1 */
   .btn-primary::before, .btn-danger::before {
     content: ""; position: absolute; inset: 1px 1px 50% 1px; border-radius: 999px 999px 40% 40% / 999px 999px 30% 30%;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0)); pointer-events: none; z-index: -1;
+    background: var(--btn-sheen); pointer-events: none; z-index: -1;
   }
   .btn-primary:hover, .btn-danger:hover { filter: brightness(1.1) saturate(1.05); }
 
   .btn-secondary {
     background: var(--ctl-bg); border-color: var(--ctl-border);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.15);
+    box-shadow: var(--btn-secondary-shadow);
   }
   .btn-secondary:hover { background: color-mix(in srgb, var(--ctl-bg) 80%, var(--accent-solid) 14%); }
   .btn-ghost { color: var(--fg); }
@@ -69,7 +66,7 @@
   .input, .select, .textarea {
     width: 100%; min-height: 2.75rem; padding: 0.6rem 0.9rem; border-radius: var(--radius-ctl);
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); color: var(--fg); font: inherit; line-height: 1.4;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    box-shadow: var(--ctl-shadow);
     transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
   }
   .textarea { min-height: 5.5rem; resize: vertical; }
@@ -91,9 +88,9 @@
   fieldset.fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.65rem; }
   fieldset.fieldset > legend { font-size: 0.875rem; font-weight: 650; padding: 0; margin-bottom: 0.4rem; }
   /* A collapsible section of a form (<details class="disclosure">): the summary is a full-width button-like row. */
-  details.disclosure { border: 1px solid var(--edge); border-radius: 1rem; padding: 0 1rem; }
+  details.disclosure { border: 1px solid var(--edge); border-radius: var(--radius-inner); padding: 0 1rem; }
   details.disclosure > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;
-    min-height: 2.75rem; font-size: 0.9375rem; font-weight: 650; border-radius: calc(1rem - 1px); margin: 0 -1rem; padding: 0 1rem; }
+    min-height: 2.75rem; font-size: 0.9375rem; font-weight: 650; border-radius: calc(var(--radius-inner) - 1px); margin: 0 -1rem; padding: 0 1rem; }
   details.disclosure[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0.5rem; }
   details.disclosure > summary::-webkit-details-marker { display: none; }
   details.disclosure > summary::before { content: ""; width: 0.5rem; height: 0.5rem; border-right: 2px solid currentColor;
@@ -134,7 +131,7 @@
   .checkbox {
     appearance: none; -webkit-appearance: none; flex: none; width: 1.5rem; height: 1.5rem; margin-top: 0.1rem; border-radius: 0.45rem;
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); display: inline-grid; place-content: center; cursor: pointer;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1); transition: background-color 0.15s, border-color 0.15s;
+    box-shadow: var(--ctl-shadow); transition: background-color 0.15s, border-color 0.15s;
   }
   .checkbox::after {
     content: ""; width: 0.8rem; height: 0.45rem; border: 2.5px solid var(--on-accent); border-top: 0; border-right: 0;
@@ -147,7 +144,7 @@
   .radio {
     appearance: none; -webkit-appearance: none; flex: none; width: 1.5rem; height: 1.5rem; margin-top: 0.1rem; border-radius: 50%;
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); display: inline-grid; place-content: center; cursor: pointer;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--ctl-shadow);
   }
   .radio::after { content: ""; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--on-accent); transform: scale(0); transition: transform 0.15s cubic-bezier(.2, 1.4, .4, 1); }
   .radio:checked { background: linear-gradient(135deg, var(--accent-solid), var(--accent-solid-2)); border-color: var(--accent-solid); }
@@ -157,13 +154,12 @@
   .switch {
     appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 3.25rem; height: 1.85rem; margin-top: 0.05rem;
     border-radius: 999px; border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); cursor: pointer;
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.18); transition: background 0.25s, border-color 0.25s;
+    box-shadow: var(--track-shadow); transition: background 0.25s, border-color 0.25s;
   }
   .switch::before {
     content: ""; position: absolute; top: 50%; left: 0.2rem; width: 1.9rem; height: 1.9rem; margin-top: -0.95rem;
     transform: scale(0.78) translateX(0); border-radius: 999px; transform-origin: 40% 50%;
-    background: radial-gradient(circle at 30% 25%, #fff 0%, #f1f5ff 45%, #d6dcf5 100%);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9) inset, 0 3px 8px rgba(15, 23, 60, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+    background: var(--thumb-bg); box-shadow: var(--thumb-shadow);
     transition: transform 0.3s cubic-bezier(.3, 1.5, .5, 1), width 0.2s;
   }
   .switch:checked { background: linear-gradient(135deg, var(--accent-solid), var(--accent-solid-2)); border-color: var(--accent-solid); }
@@ -175,19 +171,17 @@
   .glass-switch {
     position: relative; flex: none; width: 4rem; height: 2.375rem; padding: 0; border-radius: 999px; cursor: pointer;
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg);
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.2), inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+    box-shadow: var(--track-shadow);
     transition: background 0.3s;
   }
-  .glass-switch[aria-checked="true"] { background: linear-gradient(135deg, #312e81, #4c1d95); border-color: #a5b4fc; }
+  .glass-switch[aria-checked="true"] { background: var(--toggle-on-bg); border-color: var(--toggle-on-border); }
   .glass-switch-thumb {
     position: absolute; top: 50%; left: 0.2rem; display: grid; place-items: center; width: 1.8rem; height: 1.8rem; margin-top: -0.9rem;
-    border-radius: 999px; color: #0b1220;
-    background: radial-gradient(circle at 30% 22%, #fff 0%, #f4f6ff 50%, #d3daf5 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.9), 0 3px 8px rgba(15, 23, 60, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+    border-radius: 999px; color: var(--thumb-fg); background: var(--thumb-bg); box-shadow: var(--thumb-shadow);
     transition: transform 0.35s cubic-bezier(.3, 1.5, .5, 1), width 0.2s, background 0.2s;
   }
   .glass-switch[aria-checked="true"] .glass-switch-thumb { transform: translateX(1.6rem); }
-  .glass-switch:active .glass-switch-thumb { width: 2.4rem; background: radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.55)); }
+  .glass-switch:active .glass-switch-thumb { width: 2.4rem; background: var(--thumb-bg-active); }
   .glass-switch[aria-checked="true"]:active .glass-switch-thumb { transform: translateX(1rem); }
   .glass-switch .icon { width: 1.05rem; height: 1.05rem; position: absolute; transition: opacity 0.2s, transform 0.35s; }
   .glass-switch .i-moon { opacity: 0; transform: rotate(-60deg) scale(0.5); }
@@ -219,7 +213,7 @@
   .tag-field {
     display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; min-height: 2.75rem; padding: 0.35rem 0.6rem; border-radius: var(--radius-ctl);
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); cursor: text;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    box-shadow: var(--ctl-shadow);
   }
   .tag-field:hover { border-color: var(--fg); }
   .tag-field:focus-within { outline: 3px solid var(--focus); outline-offset: 3px; }
@@ -239,7 +233,7 @@
   .tag-input:focus-visible { outline: none; }
 
   .alert {
-    display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.85rem 1rem; border-radius: 1rem;
+    display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.85rem 1rem; border-radius: var(--radius-inner);
     background: var(--b-info-bg); color: var(--b-info-fg); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent);
     font-size: 0.9375rem; font-weight: 500;
   }
@@ -257,11 +251,11 @@
   /* Search-as-you-type combobox (e.g. Add access): the results list floats over what follows the field. */
   .picker { position: relative; }
   .picker .search { max-width: none; } /* the field and its results list share one width */
-  .picker-list, .picker-none { position: absolute; z-index: 20; top: calc(100% + 0.35rem); left: 0; right: 0; margin: 0; border-radius: 1rem;
+  .picker-list, .picker-none { position: absolute; z-index: 20; top: calc(100% + 0.35rem); left: 0; right: 0; margin: 0; border-radius: var(--radius-inner);
     background: var(--glass-solid); border: 1px solid var(--edge); box-shadow: var(--glass-shadow); }
   .picker-list { list-style: none; padding: 0.35rem; max-height: 18rem; overflow-y: auto; overscroll-behavior: contain; }
   .picker-none { padding: 0.75rem 1rem; color: var(--fg-muted); font-size: 0.9375rem; }
-  .picker-option { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 0.75rem; cursor: pointer; }
+  .picker-option { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; border-radius: var(--radius-item); cursor: pointer; }
   .picker-option:hover { background: var(--ctl-hover); }
   .picker-option.is-active { background: var(--ctl-hover); outline: 2px solid var(--focus); outline-offset: -2px; }
   .picker-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
@@ -293,11 +287,11 @@
   .chip-remove:hover { background: var(--edge); }
   .chip-remove:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
   .chip-remove .icon { width: 0.9rem; height: 0.9rem; }
-  .search .input { padding-left: 2.75rem; padding-right: 2.75rem; border-radius: 999px; }
+  .search .input { padding-left: 2.75rem; padding-right: 2.75rem; border-radius: var(--radius-pill); }
   .search > .icon { position: absolute; left: 1rem; top: 50%; margin-top: -0.625rem; color: var(--fg-muted); pointer-events: none; }
   .search-clear { position: absolute; right: 0.25rem; top: 50%; margin-top: -1.1rem; }
 
-  .table-wrap { overflow-x: auto; border-radius: 1rem; -webkit-overflow-scrolling: touch; }
+  .table-wrap { overflow-x: auto; border-radius: var(--radius-inner); -webkit-overflow-scrolling: touch; }
   .table-wrap:focus-visible { outline-offset: -3px; }
   /* break-word, not the body's anywhere: with anywhere a column may shrink to one character, and the auto-width table
      squeezes its text column (users: name and email) down to a letter per line on a phone. With break-word a column
@@ -350,7 +344,7 @@
   .empty-state { display: grid; justify-items: center; gap: 0.75rem; padding: 3rem 1rem; text-align: center; }
   .empty-icon {
     display: grid; place-items: center; width: 4.5rem; height: 4.5rem; border-radius: 50%; color: var(--accent);
-    background: var(--glass-inset); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 0 1px var(--edge), 0 12px 24px -12px rgba(67, 56, 202, 0.5);
+    background: var(--glass-inset); box-shadow: var(--empty-icon-shadow);
   }
   .empty-icon .icon { width: 2rem; height: 2rem; }
 
@@ -363,8 +357,7 @@
 
   .avatar {
     display: inline-grid; place-items: center; width: 2.5rem; height: 2.5rem; flex: none; border-radius: 50%;
-    background: linear-gradient(135deg, #4338ca, #7c3aed); color: #fff; font-weight: 700; font-size: 0.9rem;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 4px 12px -4px rgba(67, 56, 202, 0.6);
+    background: var(--avatar-bg); color: var(--on-accent); font-weight: 700; font-size: 0.9rem; box-shadow: var(--avatar-shadow);
   }
 
   .avatar-lg { width: 4rem; height: 4rem; font-size: 1.5rem; }
@@ -395,7 +388,7 @@
 
   /* Compact settings rows: a label with its state on the left, one action on the right. */
   .setting-list { list-style: none; margin: 0; padding: 0; }
-  .setting-list > li + li { border-top: 1px solid var(--border, rgba(127, 127, 127, 0.3)); }
+  .setting-list > li + li { border-top: 1px solid var(--edge); }
   .setting-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; padding: 0.75rem 0; }
   .setting-row .setting-text { flex: 1 1 16rem; min-width: 0; }
   .setting-row .setting-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-weight: 600; }
@@ -413,7 +406,7 @@
   }
   /* The panel keeps its glass rim and sheen (absolutely positioned layers) still; the content scrolls inside it, so
      those layers never scroll through the form. */
-  .dialog-panel { display: flex; flex-direction: column; max-height: calc(100dvh - 1rem); overflow: hidden; padding: 0; border-radius: 1.75rem; }
+  .dialog-panel { display: flex; flex-direction: column; max-height: calc(100dvh - 1rem); overflow: hidden; padding: 0; border-radius: var(--radius-dialog); }
   .dialog-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-radius: inherit; }
   .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.25rem 0.75rem 1.5rem; }
   .dialog-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
@@ -431,7 +424,7 @@
     align-items: flex-end; gap: 0.6rem; pointer-events: none; }
   .toast-region { display: flex; flex-direction: column; align-items: flex-end; gap: 0.6rem; width: 100%; }
   .toast { pointer-events: auto; display: flex; align-items: flex-start; gap: 0.7rem; width: min(26rem, 100%); padding: 0.85rem 1rem;
-    border-radius: 1.1rem; font-weight: 600; font-size: 0.9375rem; }
+    border-radius: var(--radius-toast); font-weight: 600; font-size: 0.9375rem; }
   .toast.glass-panel { background: var(--glass-bg-toast); }
   .toast .icon { margin-top: 0.1rem; }
   .toast-success .icon { color: var(--success); }
@@ -484,7 +477,7 @@
   .otp-boxes { position: absolute; inset: 6px auto 6px 6px; display: flex; gap: 0.75ch; pointer-events: none; }
   .otp-box {
     width: 2.5ch; height: 100%; border-radius: 0.45em; border: 1.5px solid var(--ctl-border); background: var(--ctl-bg);
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1); transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: var(--ctl-shadow); transition: border-color 0.15s, box-shadow 0.15s;
   }
   .otp-box.is-filled { border-color: var(--fg-muted); }
   /* the focus indicator sits on the box that takes the next digit */

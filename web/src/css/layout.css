@@ -6,7 +6,7 @@
   :root { --page-max: 92rem; --page-gutter: 0.75rem; --header-h: 3.75rem; --header-gap: 0.75rem; --panel-gap: 1.5rem; }
   @media (min-width: 48rem) { :root { --page-gutter: 1.25rem; } }
   .app-header { position: relative; z-index: 30; width: min(calc(100% - 2 * var(--page-gutter)), calc(var(--page-max) - 2 * var(--page-gutter)));
-    height: var(--header-h); margin: var(--header-gap) auto var(--panel-gap); padding: 0.4rem 0.6rem 0.4rem 0.9rem; border-radius: 1.6rem;
+    height: var(--header-h); margin: var(--header-gap) auto var(--panel-gap); padding: 0.4rem 0.6rem 0.4rem 0.9rem; border-radius: var(--radius-header);
     display: flex; align-items: center; gap: 0.5rem; }
   @media (min-height: 40rem) { .app-header { position: sticky; top: var(--header-gap); } }
   .brand { display: inline-flex; align-items: center; gap: 0.65rem; min-height: 2.75rem; font-weight: 750; font-size: 1.1rem;
@@ -30,9 +30,9 @@
   @media (min-width: 40rem) { .user-chip-name { display: inline; } }
   .menu-wrap { position: relative; }
   .menu { position: absolute; right: 0; top: calc(100% + 0.6rem); width: min(18rem, calc(100vw - 1.5rem)); padding: 0.5rem; z-index: 40;
-    border-radius: 1.4rem; display: flex; flex-direction: column; gap: 0.15rem; }
+    border-radius: var(--radius-panel); display: flex; flex-direction: column; gap: 0.15rem; }
   .menu-head { padding: 0.6rem 0.75rem 0.7rem; border-bottom: 1px solid var(--edge); margin-bottom: 0.3rem; }
-  .menu-item { display: flex; align-items: center; gap: 0.7rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: 0.9rem; color: var(--fg);
+  .menu-item { display: flex; align-items: center; gap: 0.7rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: var(--radius-item); color: var(--fg);
     font: inherit; font-weight: 600; text-decoration: none; background: transparent; border: 0; width: 100%; text-align: left; cursor: pointer; }
   .menu-item:hover { background: var(--ctl-hover); text-decoration: none; }
 
@@ -48,7 +48,7 @@
      stay still; .nav-scroll scrolls. Without JavaScript the navigation stays in the page, above the content. */
   @media (max-width: 47.99rem) {
     html.js .app-nav { position: fixed; inset: 0 auto 0 0; z-index: 50; width: min(20rem, calc(100vw - 3.5rem));
-      display: flex; flex-direction: column; overflow: hidden; border-radius: 0 1.75rem 1.75rem 0;
+      display: flex; flex-direction: column; overflow: hidden; border-radius: 0 var(--radius-dialog) var(--radius-dialog) 0;
       padding: max(0.5rem, env(safe-area-inset-top)) 0.75rem 0 max(0.75rem, env(safe-area-inset-left));
       background: var(--glass-bg-dialog); touch-action: pan-y; transform: translateX(-105%); visibility: hidden;
       transition: transform 0.28s cubic-bezier(.2, .8, .2, 1), visibility 0s linear 0.28s; }
@@ -77,13 +77,12 @@
   .nav-org-label { font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); }
   .nav-org-name { font-weight: 700; overflow-wrap: anywhere; }
   .nav-org-link[aria-current="page"] .nav-org-label { color: inherit; }
-  .nav-link { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: 1rem; font-weight: 600;
+  .nav-link { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: var(--radius-inner); font-weight: 600;
     color: var(--fg); text-decoration: none; position: relative; transition: background-color 0.15s; }
   .nav-link:hover { background: var(--ctl-hover); text-decoration: none; }
-  .nav-link[aria-current="page"] { background: linear-gradient(135deg, var(--accent-solid), var(--accent-solid-2)); color: var(--on-accent);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 8px 18px -8px color-mix(in srgb, var(--accent-solid) 80%, transparent); }
+  .nav-link[aria-current="page"] { background: var(--nav-current-bg); color: var(--nav-current-fg); box-shadow: var(--nav-current-shadow); }
   .nav-link[aria-current="page"]::before { content: ""; position: absolute; left: 0.35rem; top: 50%; width: 0.25rem; height: 1.1rem; margin-top: -0.55rem;
-    border-radius: 99px; background: rgba(255, 255, 255, 0.85); }
+    border-radius: 99px; background: var(--nav-current-mark); }
   .app-main { min-width: 0; display: flex; flex-direction: column; gap: var(--panel-gap); outline: none; }
   /* The footer: quiet small print at the bottom of the window when the page is shorter, after the content otherwise. */
   .app-footer { margin-top: auto; width: 100%; text-align: center; padding: 0.55rem 1rem; font-size: 0.8125rem; line-height: 1.4;
@@ -91,10 +90,12 @@
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)); }
   /* a thin frosted strip along the bottom edge: text straight on the aurora could not keep AA contrast everywhere, and
      --fg (not --fg-muted) is what lets the tint be this light (--glass-bg-footer, tokens.css) */
+  /* links keep --fg: the footer's tint is budgeted for it, not for --accent */
+  .app-footer a { color: inherit; }
   .auth-wrap > .app-footer { margin-inline: -0.75rem; width: calc(100% + 1.5rem); }
   .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.5rem; }
   .page-head .page-sub { margin-top: 0.25rem; }
-  .crumbs { font-size: 0.9rem; color: var(--fg-muted); display: inline-flex; width: fit-content; max-width: 100%; padding: 0.35rem 1.1rem; border-radius: 999px; }
+  .crumbs { font-size: 0.9rem; color: var(--fg-muted); display: inline-flex; width: fit-content; max-width: 100%; padding: 0.35rem 1.1rem; border-radius: var(--radius-pill); }
   .crumbs ol { display: flex; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.55rem; list-style: none; margin: 0; padding: 0; }
   .crumbs li { display: inline-flex; align-items: center; min-height: 1.75rem; }
   .crumbs li + li::before { content: "›" / ""; margin-right: 0.55rem; color: var(--fg-muted); font-size: 1.25em; line-height: 1; }
@@ -105,13 +106,11 @@
   .head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.75rem 1.25rem; }
   /* Live updates in the header (managers and administrators): a small pause / play icon button, amber while paused. */
   .live-switch { flex: none; }
-  .live-btn { display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; border: 0; border-radius: 0.875rem;
+  .live-btn { display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; border: 0; border-radius: var(--radius-item);
     background: transparent; color: var(--fg-muted); cursor: pointer; transition: background-color 0.15s, color 0.15s; }
   .live-btn:hover { background: var(--ctl-hover); color: var(--fg); }
   .live-btn .icon { width: 1.35rem; height: 1.35rem; }
-  .live-btn.is-paused { background: #fef3c7; color: #92400e; }
-  :root[data-theme="dark"] .live-btn.is-paused { background: rgba(146, 64, 14, 0.45); color: #fde68a; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme]) .live-btn.is-paused { background: rgba(146, 64, 14, 0.45); color: #fde68a; } }
+  .live-btn.is-paused { background: var(--live-paused-bg); color: var(--live-paused-fg); }
   @media (forced-colors: active) { .live-btn.is-paused { border: 2px solid ButtonText; } }
   /* A card with a heading, help text and its primary action on one row. */
   .card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem 1.5rem; margin-bottom: 1.1rem; }
@@ -123,7 +122,7 @@
 
   .auth-wrap { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; padding: 1.5rem 0.75rem 0; }
   .auth-wrap > main { margin-block: auto 0; } /* the card in the middle, the footer at the bottom */
-  .auth-card { width: min(28rem, 100%); padding: 1.75rem 1.5rem; border-radius: 2rem; }
+  .auth-card { width: min(28rem, 100%); padding: 1.75rem 1.5rem; border-radius: var(--radius-auth); }
   @media (min-width: 40rem) { .auth-card { padding: 2.25rem 2.25rem; } }
   .auth-logo { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; text-align: center; margin-bottom: 1.5rem; }
   .auth-logo img { height: 3rem; width: auto; max-width: 12rem; border-radius: 0.75rem; }

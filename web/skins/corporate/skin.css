@@ -1,0 +1,113 @@
+/* Corporate skin: restrained and built to be trusted. Opaque surfaces with a hairline border instead of glass, one navy
+   accent throughout, square-ish corners, a solid header, no decoration behind the page.
+
+   The palette (--sk-*) is mapped onto Quisora's tokens once below. Colours use light-dark(light, dark): the theme sets
+   color-scheme on <html>, so one declaration covers light, dark and the no-JavaScript OS preference.
+   Every pair keeps WCAG 2.2 AA on its surface (text >= 4.5:1, controls >= 3:1): check again if you change a value. */
+
+:root[data-skin="corporate"] {
+  --sk-canvas: light-dark(#f3f5f8, #0b1120);
+  --sk-surface: light-dark(#ffffff, #111a2c);
+  --sk-surface-2: light-dark(#f7f8fa, #16213a);
+  --sk-surface-3: light-dark(#eef1f5, #1c2944);
+  --sk-line: light-dark(#dfe3ea, #26324a);
+  --sk-line-strong: light-dark(#7d879a, #67749a);
+  --sk-fg: light-dark(#0f172a, #e6ebf4);
+  --sk-fg-muted: light-dark(#4b5567, #a5afc3);
+  --sk-accent: light-dark(#1e3a8a, #2f5fd0);         /* fills: white text 10:1 / 5.7:1 */
+  --sk-accent-text: light-dark(#1e40af, #9db6f5);
+  --sk-accent-soft: light-dark(#e8eef9, #1a2a4c);
+  --sk-shadow: 0 1px 2px light-dark(rgb(15 23 42 / 0.06), rgb(0 0 0 / 0.35));
+
+  --page-bg: var(--sk-canvas);
+  --fg: var(--sk-fg);
+  --fg-muted: var(--sk-fg-muted);
+  --accent: var(--sk-accent-text);
+  --accent-solid: var(--sk-accent);
+  --accent-solid-2: var(--sk-accent);
+  --on-accent: #ffffff;
+  --danger: light-dark(#b91c1c, #fca5a5);
+  --danger-solid: light-dark(#b91c1c, #dc2626);
+  --danger-solid-2: light-dark(#b91c1c, #dc2626);
+  --success: light-dark(#15803d, #86efac);
+  --focus: var(--sk-accent-text);
+  --focus-halo: var(--sk-surface);
+
+  --aurora-opacity: 0;
+  --grid-dot: transparent;
+
+  --glass-bg: var(--sk-surface);
+  --glass-bg-strong: var(--sk-surface);
+  --glass-bg-panel: var(--sk-surface);
+  --glass-bg-header: var(--sk-surface);
+  --glass-bg-footer: transparent;
+  --glass-bg-toast: var(--sk-surface);
+  --glass-bg-dialog: var(--sk-surface);
+  --glass-solid: var(--sk-surface);
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  --glass-sheen: none;
+  --glass-rim: linear-gradient(var(--sk-line), var(--sk-line)); /* a 1px border */
+  --glass-shadow: var(--sk-shadow);
+  --glass-inset: var(--sk-surface-2);
+  --edge: var(--sk-line);
+  --scrim: light-dark(rgb(15 23 42 / 0.5), rgb(2 6 16 / 0.65));
+
+  --radius-glass: 0.5rem;
+  --radius-ctl: 0.375rem;
+  --radius-btn: 0.375rem;
+  --radius-pill: 0.375rem;
+  --radius-header: 0.5rem;
+  --radius-panel: 0.5rem;
+  --radius-dialog: 0.5rem;
+  --radius-auth: 0.5rem;
+  --radius-inner: 0.375rem;
+  --radius-item: 0.25rem;
+  --radius-toast: 0.375rem;
+
+  --ctl-bg: var(--sk-surface);
+  --ctl-border: var(--sk-line-strong);
+  --ctl-hover: var(--sk-surface-3);
+  --row-hover: var(--sk-surface-2);
+  --th-bg: var(--sk-surface-2);
+
+  --b-success-bg: light-dark(#e9f7ee, #12301f); --b-success-fg: light-dark(#15803d, #86efac);
+  --b-danger-bg: light-dark(#fdeeee, #3a1618);  --b-danger-fg: light-dark(#b91c1c, #fca5a5);
+  --b-warn-bg: light-dark(#fdf3e1, #33270f);    --b-warn-fg: light-dark(#a04a06, #fcd34d);
+  --b-info-bg: light-dark(#e8f1fb, #132a45);    --b-info-fg: light-dark(#1d4ed8, #93c5fd);
+  --b-neutral-bg: light-dark(#eef1f5, #232f47); --b-neutral-fg: light-dark(#3b4557, #cbd3e1);
+  --b-accent-bg: var(--sk-accent-soft);         --b-accent-fg: var(--sk-accent-text);
+  --live-paused-bg: var(--b-warn-bg);           --live-paused-fg: var(--b-warn-fg);
+
+  --btn-shadow: var(--sk-shadow);
+  --btn-danger-shadow: var(--sk-shadow);
+  --btn-secondary-shadow: var(--sk-shadow);
+  --btn-sheen: none;
+  --ctl-shadow: none;
+  --track-shadow: none;
+  --thumb-bg: #ffffff;
+  --thumb-bg-active: #ffffff;
+  --thumb-fg: #0f172a;
+  --thumb-shadow: 0 0 0 1px rgb(15 23 42 / 0.1), 0 1px 2px rgb(15 23 42 / 0.3);
+  --toggle-on-bg: var(--sk-accent);
+  --toggle-on-border: var(--sk-accent);
+  --avatar-bg: var(--sk-accent);
+  --avatar-shadow: none;
+  --empty-icon-shadow: 0 0 0 1px var(--sk-line);
+  --nav-current-bg: var(--sk-accent-soft);
+  --nav-current-fg: var(--sk-accent-text);
+  --nav-current-shadow: none;
+  --nav-current-mark: var(--sk-accent-text);
+}
+
+/* Sign-in, consent and the other end-user pages: the same palette over a faint navy wash. */
+:root[data-skin="corporate"][data-layout="auth"] .aurora {
+  background: linear-gradient(180deg, light-dark(rgb(30 58 138 / 0.07), rgb(47 95 208 / 0.12)), transparent 22rem), var(--page-bg);
+}
+
+/* No aurora, no blur, and bare section headings rather than chips: the canvas is opaque. */
+:root[data-skin="corporate"] .aurora i { display: none; }
+:root[data-skin="corporate"] .glass-panel { --glass-blur: 0px; }
+:root[data-skin="corporate"] .stack-lg > h2.section-title { background: none; box-shadow: none; padding-inline: 0; }
+:root[data-skin="corporate"] .stack-lg > h2.section-title::before,
+:root[data-skin="corporate"] .stack-lg > h2.section-title::after { display: none; }

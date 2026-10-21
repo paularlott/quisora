@@ -1,6 +1,6 @@
 {{/* Centred glass card for sign-in and consent pages. Pages begin with {{template "auth" .}} and define "content". */}}
 {{define "auth"}}<!doctype html>
-<html lang="en" data-default-theme="{{.Site.DefaultTheme}}">
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="auth"{{with .Site.Skin}} data-skin="{{.}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,7 +11,8 @@
 <link rel="icon" href="/branding/logo-dark" media="(prefers-color-scheme: dark)">
 <script src="{{asset "theme-boot.js"}}"></script>
 <link rel="stylesheet" href="{{asset "main.css"}}">
-<script type="module" src="{{asset "main.js"}}"></script>
+{{with .Site.SkinCSS}}<link rel="stylesheet" href="{{.}}">
+{{end}}<script type="module" src="{{asset "main.js"}}"></script>
 {{block "head" .}}{{end}}
 </head>
 <body x-data>

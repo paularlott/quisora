@@ -13,3 +13,8 @@ var Templates embed.FS
 //
 //go:embed all:dist
 var Dist embed.FS
+
+// Skins holds the built-in skins (ui.skin): skins/<name>/skin.css and its optional logos. See skins/README.md.
+//
+//go:embed skins/*/*
+var Skins embed.FS

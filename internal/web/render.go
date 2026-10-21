@@ -19,10 +19,12 @@ import (
 // Site is the branding passed to every page.
 type Site struct {
 	Name         string
-	DefaultTheme string // light, dark or system
-	LogoLight    string // URL
-	LogoDark     string // URL (falls back to LogoLight)
-	Footer       string
+	DefaultTheme string        // light, dark or system
+	LogoLight    string        // URL
+	LogoDark     string        // URL (falls back to LogoLight)
+	Skin         string        // ui.skin's name (data-skin on <html>), or ""
+	SkinCSS      string        // URL of the skin's stylesheet, or ""
+	Footer       template.HTML // ui.footer, limited to links and text emphasis (FooterHTML)
 	PublicURL    string
 	Mail         bool // an SMTP server is configured (config.Mail.Enabled)
 	Clustered    bool // nodes replicate over gossip: super admins get the cluster page
@@ -148,7 +150,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, p *Pag
 
 // SiteFromConfig builds the branding block.
 func SiteFromConfig(c *config.Config) Site {
-	s := Site{Name: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: c.UI.Footer, PublicURL: c.Server.PublicURL,
+	s := Site{Name: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
 		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled()}
 	return s
 }

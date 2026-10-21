@@ -81,7 +81,7 @@
     background: var(--glass-sheen);
   }
   /* A bare heading between glass cards sits on a glass chip so its text never lands on the raw backdrop. */
-  .stack-lg > h2.section-title { width: fit-content; max-width: 100%; padding: 0.4rem 1.2rem; border-radius: 999px; }
+  .stack-lg > h2.section-title { width: fit-content; max-width: 100%; padding: 0.4rem 1.2rem; border-radius: var(--radius-pill); }
   /* A bare heading's text cannot be lifted above the rim like card content, so the rim goes beneath the text. */
   .stack-lg > h2.section-title::before { z-index: -1; }
   .glass-card { padding: 1.25rem; }
@@ -102,7 +102,7 @@
   }
   /* A tinted well inside glass: no blur of its own (nested backdrop filters are costly and muddy). */
   .glass-inset {
-    background: var(--glass-inset); border-radius: 1rem; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--edge);
+    background: var(--glass-inset); border-radius: var(--radius-inner); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--edge);
   }
 
   /* Hover lift for interactive cards. */

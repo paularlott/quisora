@@ -60,6 +60,7 @@ type Server struct {
 	// Status is the cluster summary /readyz reports (counts only: /readyz is unauthenticated). Nil: none.
 	Status func() any
 
+	skin    *Skin // ui.skin, or nil
 	httpSrv *http.Server
 	addr    string
 }
@@ -71,9 +72,16 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		return nil, err
 	}
 	r.Log = log
+	skin, err := LoadSkin(cfg.UI.Skin)
+	if err != nil {
+		return nil, err
+	}
 	SetTrustedProxies(cfg.Server.TrustProxy)
 	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r,
-		Site: SiteFromConfig(cfg), Mux: http.NewServeMux()}
+		Site: SiteFromConfig(cfg), Mux: http.NewServeMux(), skin: skin}
+	if skin != nil {
+		s.Site.Skin, s.Site.SkinCSS = skin.Name, "/branding/skin.css?v="+skin.Version
+	}
 	s.baseRoutes()
 	return s, nil
 }
@@ -253,23 +261,45 @@ func openAPIDocument(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// branding serves the configured logos (local files or redirects to https URLs), else the built-in one.
+// branding serves the configured logos (local files or redirects to https URLs), else the skin's, else the built-in
+// one, and the skin's stylesheet.
 func (s *Server) branding(w http.ResponseWriter, r *http.Request) {
 	var src string
+	var skinLogo *SkinFile
 	switch r.PathValue("name") {
 	case "logo-light":
 		src = s.Cfg.UI.LogoLight
+		if s.skin != nil {
+			skinLogo = s.skin.LogoLight
+		}
 	case "logo-dark":
 		src = s.Cfg.UI.LogoDark
 		if src == "" {
 			src = s.Cfg.UI.LogoLight
 		}
+		if s.skin != nil {
+			skinLogo = s.skin.LogoDark
+		}
+	case "skin.css":
+		if s.skin == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		// the pages name it with ?v=<content hash>, so a changed skin is a new URL
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(s.skin.CSS)
+		return
 	default:
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	switch {
+	case src == "" && skinLogo != nil:
+		w.Header().Set("Content-Type", skinLogo.Type)
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+		_, _ = w.Write(skinLogo.Body)
 	case src == "":
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")

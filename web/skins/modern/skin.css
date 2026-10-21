@@ -1,0 +1,125 @@
+/* Modern skin: bold and crisp. Zinc neutrals that go near-black in the dark theme, a vivid teal accent (a teal-to-sky
+   gradient in light, neon teal with dark text in dark), card edges lit with the accent, heavy titles, soft rounded
+   corners, a translucent blurred header, and a two-tone glow over a dot grid behind the page.
+
+   The palette (--sk-*) is mapped onto Quisora's tokens once below. Colours use light-dark(light, dark): the theme sets
+   color-scheme on <html>, so one declaration covers light, dark and the no-JavaScript OS preference.
+   Every pair keeps WCAG 2.2 AA on its surface (text >= 4.5:1, controls >= 3:1): check again if you change a value. */
+
+:root[data-skin="modern"] {
+  --sk-canvas: light-dark(#fafafa, #09090b);
+  --sk-surface: light-dark(#ffffff, #131316);
+  --sk-surface-2: light-dark(#f4f4f5, #1a1a1e);
+  --sk-surface-3: light-dark(#ececee, #232328);
+  --sk-line: light-dark(#e4e4e7, #27272a);
+  --sk-line-strong: light-dark(#86868f, #6b6b75);
+  --sk-fg: light-dark(#09090b, #fafafa);
+  --sk-fg-muted: light-dark(#52525b, #a1a1aa);
+  --sk-accent: light-dark(#0f766e, #2dd4bf);          /* fills, with --sk-accent-2 and --sk-on-accent: >= 5.4:1 */
+  --sk-accent-2: light-dark(#0369a1, #67e8f9);
+  --sk-on-accent: light-dark(#ffffff, #042f2e);
+  --sk-accent-text: light-dark(#0f766e, #5eead4);
+  --sk-accent-soft: light-dark(#e3f6f2, #0d2f2b);
+  --sk-glow-1: light-dark(rgb(20 184 166 / 0.22), rgb(45 212 191 / 0.2));
+  --sk-glow-2: light-dark(rgb(14 165 233 / 0.16), rgb(56 189 248 / 0.14));
+  --sk-shadow: 0 1px 2px light-dark(rgb(9 9 11 / 0.05), rgb(0 0 0 / 0.4)),
+    0 8px 24px -12px light-dark(rgb(9 9 11 / 0.12), rgb(0 0 0 / 0.7));
+  --sk-glow: 0 1px 2px rgb(9 9 11 / 0.15), 0 8px 24px -6px light-dark(rgb(15 118 110 / 0.55), rgb(45 212 191 / 0.45));
+
+  --page-bg: var(--sk-canvas);
+  --fg: var(--sk-fg);
+  --fg-muted: var(--sk-fg-muted);
+  --accent: var(--sk-accent-text);
+  --accent-solid: var(--sk-accent);
+  --accent-solid-2: var(--sk-accent-2);
+  --on-accent: var(--sk-on-accent);
+  --danger: light-dark(#b91c1c, #fca5a5);
+  --danger-solid: light-dark(#dc2626, #f87171);      /* with --on-accent: >= 4.8:1 */
+  --danger-solid-2: light-dark(#be123c, #fb7185);
+  --success: light-dark(#047857, #6ee7b7);
+  --focus: var(--sk-accent-text);
+  --focus-halo: var(--sk-surface);
+
+  --aurora-opacity: 0;
+  --grid-dot: light-dark(rgb(9 9 11 / 0.09), rgb(255 255 255 / 0.07));
+
+  --glass-bg: var(--sk-surface);
+  --glass-bg-strong: var(--sk-surface);
+  --glass-bg-panel: var(--sk-surface);
+  --glass-bg-header: light-dark(rgb(255 255 255 / 0.78), rgb(19 19 22 / 0.78));
+  --glass-bg-footer: transparent;
+  --glass-bg-toast: var(--sk-surface);
+  --glass-bg-dialog: var(--sk-surface);
+  --glass-solid: var(--sk-surface);
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  --glass-sheen: none;
+  /* a 1px border, lit with the accent along the top left */
+  --glass-rim: linear-gradient(155deg, light-dark(rgb(15 118 110 / 0.45), rgb(45 212 191 / 0.55)), var(--sk-line) 32%, var(--sk-line));
+  --glass-shadow: var(--sk-shadow);
+  --glass-inset: var(--sk-surface-2);
+  --edge: var(--sk-line);
+  --scrim: light-dark(rgb(9 9 11 / 0.4), rgb(0 0 0 / 0.65));
+
+  --radius-glass: 0.875rem;
+  --radius-ctl: 0.625rem;
+  --radius-btn: 0.625rem;
+  --radius-pill: 0.625rem;
+  --radius-header: 0.875rem;
+  --radius-panel: 0.75rem;
+  --radius-dialog: 1rem;
+  --radius-auth: 1rem;
+  --radius-inner: 0.625rem;
+  --radius-item: 0.5rem;
+  --radius-toast: 0.75rem;
+
+  --ctl-bg: var(--sk-surface);
+  --ctl-border: var(--sk-line-strong);
+  --ctl-hover: var(--sk-surface-3);
+  --row-hover: var(--sk-surface-2);
+  --th-bg: var(--sk-surface-2);
+
+  --b-success-bg: light-dark(#ecfdf5, #0b2e24); --b-success-fg: light-dark(#047857, #6ee7b7);
+  --b-danger-bg: light-dark(#fef2f2, #3a1414);  --b-danger-fg: light-dark(#b91c1c, #fca5a5);
+  --b-warn-bg: light-dark(#fffbeb, #332507);    --b-warn-fg: light-dark(#a04a06, #fcd34d);
+  --b-info-bg: light-dark(#eff6ff, #13233f);    --b-info-fg: light-dark(#1d4ed8, #93c5fd);
+  --b-neutral-bg: light-dark(#f4f4f5, #27272a); --b-neutral-fg: light-dark(#3f3f46, #d4d4d8);
+  --b-accent-bg: var(--sk-accent-soft);         --b-accent-fg: var(--sk-accent-text);
+  --live-paused-bg: var(--b-warn-bg);           --live-paused-fg: var(--b-warn-fg);
+
+  --btn-shadow: var(--sk-glow);
+  --btn-danger-shadow: 0 1px 2px rgb(9 9 11 / 0.15), 0 8px 24px -6px rgb(220 38 38 / 0.5);
+  --btn-secondary-shadow: 0 1px 2px light-dark(rgb(9 9 11 / 0.05), rgb(0 0 0 / 0.4));
+  --btn-sheen: none;
+  --ctl-shadow: 0 1px 2px light-dark(rgb(9 9 11 / 0.04), rgb(0 0 0 / 0.3));
+  --track-shadow: none;
+  --thumb-bg: #ffffff;
+  --thumb-bg-active: #ffffff;
+  --thumb-fg: #09090b;
+  --thumb-shadow: 0 0 0 1px rgb(9 9 11 / 0.08), 0 2px 4px rgb(9 9 11 / 0.3);
+  --toggle-on-bg: linear-gradient(135deg, var(--sk-accent), var(--sk-accent-2));
+  --toggle-on-border: var(--sk-accent);
+  --avatar-bg: linear-gradient(135deg, var(--sk-accent), var(--sk-accent-2));
+  --avatar-shadow: none;
+  --empty-icon-shadow: 0 0 0 1px var(--sk-line);
+  --nav-current-bg: linear-gradient(135deg, var(--sk-accent), var(--sk-accent-2));
+  --nav-current-fg: var(--sk-on-accent);
+  --nav-current-shadow: var(--sk-glow);
+  --nav-current-mark: var(--sk-on-accent);
+}
+
+/* The backdrop: the canvas under a two-tone glow and the dot grid (aurora::after), instead of the drifting aurora. */
+:root[data-skin="modern"] .aurora {
+  background: radial-gradient(48rem 30rem at 12% -8rem, var(--sk-glow-1), transparent 70%),
+    radial-gradient(44rem 28rem at 92% -6rem, var(--sk-glow-2), transparent 70%), var(--page-bg);
+}
+:root[data-skin="modern"] .aurora i { display: none; }
+
+/* Opaque surfaces need no blur; the header is translucent and keeps one. Section headings sit bare on the canvas. */
+:root[data-skin="modern"] .glass-panel { --glass-blur: 0px; }
+:root[data-skin="modern"] .app-header.glass-panel { --glass-blur: 14px; --glass-sat: 1.4; }
+:root[data-skin="modern"] .stack-lg > h2.section-title { background: none; box-shadow: none; padding-inline: 0; }
+:root[data-skin="modern"] .stack-lg > h2.section-title::before,
+:root[data-skin="modern"] .stack-lg > h2.section-title::after { display: none; }
+:root[data-skin="modern"] .page-title { font-weight: 800; letter-spacing: -0.04em; }
+:root[data-skin="modern"] .eyebrow { color: var(--sk-accent-text); }
