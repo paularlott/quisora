@@ -1517,15 +1517,15 @@ export default function (Alpine) {
   const fmtShort = (v) => new Date(v).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 
   Alpine.data('adminAudit', () => mix(tableMixin(), formMixin(), dialogMixin(), comboMixin({ action: auditActionSource, org: orgSource }), {
-    sourceNote: '', range: '', rangePrev: '', from: '', to: '', outcome: '', filtersOpen: false,
+    sourceNote: '', range: '', rangePrev: '', rangeFrom: '', rangeTo: '', outcome: '', filtersOpen: false,
     init() {
       this.resetForm({ action: '', org: '', ...rangeForm('', '') })
       return this.initTable()
     },
     get customRange() { return this.range === 'custom' },
     get customLabel() {
-      if (!this.from && !this.to) return 'Custom range…'
-      return `${this.from ? fmtShort(this.from) : 'Any time'} – ${this.to ? fmtShort(this.to) : 'now'}`
+      if (!this.rangeFrom && !this.rangeTo) return 'Custom range…'
+      return `${this.rangeFrom ? fmtShort(this.rangeFrom) : 'Any time'} – ${this.rangeTo ? fmtShort(this.rangeTo) : 'now'}`
     },
     get rangeApplyLabel() { return 'Apply' },
     // ---- the Filters panel (action, outcome, organization) ----
@@ -1563,7 +1563,7 @@ export default function (Alpine) {
     },
     async removeFilter(ev) {
       const key = ev.currentTarget.dataset.key
-      if (key === 'range') { this.range = this.rangePrev = this.from = this.to = '' }
+      if (key === 'range') { this.range = this.rangePrev = this.rangeFrom = this.rangeTo = '' }
       if (key === 'outcome') this.outcome = ''
       if (key === 'action' || key === 'org') await this.comboSet(key, '', '')
       this.applyFilters()
@@ -1575,11 +1575,11 @@ export default function (Alpine) {
     rangeChanged(ev) {
       if (this.range === 'custom') { this.openRange(ev); return }
       this.rangePrev = this.range
-      this.from = this.to = ''
+      this.rangeFrom = this.rangeTo = ''
       this.applyFilters()
     },
     openRange(ev) {
-      this.resetForm({ ...this.form, ...rangeForm(this.from, this.to) })
+      this.resetForm({ ...this.form, ...rangeForm(this.rangeFrom, this.rangeTo) })
       this.openDlg('range-dialog', ev.currentTarget)
     },
     applyRange() {
@@ -1594,15 +1594,15 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'The end must not be before the start.', field: 'range_to' }))
         return
       }
-      this.from = from
-      this.to = to
+      this.rangeFrom = from
+      this.rangeTo = to
       this.range = this.rangePrev = 'custom'
       this.closeDlg('range-dialog')
       this.applyFilters()
     },
     // the range dialog closed without a range: back to the time window chosen before
     afterClose(id) {
-      if (id === 'range-dialog' && this.range === 'custom' && !this.from && !this.to) this.range = this.rangePrev === 'custom' ? '' : this.rangePrev
+      if (id === 'range-dialog' && this.range === 'custom' && !this.rangeFrom && !this.rangeTo) this.range = this.rangePrev === 'custom' ? '' : this.rangePrev
     },
     // The filters as API parameters. A preset is a window ending now, worked out again on every refresh; an action
     // ending in * is a kind of action (action_group).
@@ -1614,8 +1614,8 @@ export default function (Alpine) {
       const ms = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[this.range]
       if (ms) p.from = new Date(Date.now() - ms).toISOString()
       if (this.customRange) {
-        if (this.from) p.from = new Date(this.from).toISOString()
-        if (this.to) p.to = new Date(new Date(this.to).getTime() + 1000).toISOString() // the end's whole second is included
+        if (this.rangeFrom) p.from = new Date(this.rangeFrom).toISOString()
+        if (this.rangeTo) p.to = new Date(new Date(this.rangeTo).getTime() + 1000).toISOString() // the end's whole second is included
       }
       return p
     },
@@ -1629,7 +1629,7 @@ export default function (Alpine) {
       return this.load(true)
     },
     async clearFilters() {
-      this.range = this.rangePrev = this.from = this.to = this.outcome = ''
+      this.range = this.rangePrev = this.rangeFrom = this.rangeTo = this.outcome = ''
       await this.comboSet('action', '', '')
       await this.comboSet('org', '', '')
       return this.applyFilters()
