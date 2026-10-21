@@ -317,8 +317,8 @@ func (s *seeder) seedOrg(ctx context.Context, i int) error {
 		}
 		usr := &model.User{Meta: model.Meta{ID: o.userID(i, u), Created: now}, OrgID: oid, Username: un,
 			Email: UserEmail(name, u), EmailVerified: true,
-			GivenName: "User", FamilyName: fmt.Sprintf("%04d", u), Role: role, Active: true, PasswordHash: s.hash,
-			Locale: "en"}
+			GivenName: "User", FamilyName: fmt.Sprintf("%04d", u), Role: role, Active: true, Locale: "en"}
+		usr.PasswordHash = s.svc.SealPasswordHash(usr.ID, s.hash) // one hash for every user: sealing per user is cheap
 		if err := s.put(s.svc.Users.Create(ctx, usr)); err != nil {
 			return err
 		}

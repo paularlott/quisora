@@ -67,7 +67,19 @@ const (
 	argonKeyLen  = 32
 )
 
-var ErrBusy = errors.New("secure: password hashing capacity exceeded")
+// Bounds on the settings a stored hash may name: Verify refuses anything outside them before hashing, so a damaged
+// or planted hash naming, say, gigabytes of memory cannot make one sign-in exhaust the server.
+const (
+	argonMaxMemory  = 256 * 1024 // KiB
+	argonMaxTime    = 10
+	argonMaxThreads = 16
+)
+
+var (
+	ErrBusy = errors.New("secure: password hashing capacity exceeded")
+	// ErrHashParams means a stored hash names settings outside the accepted bounds, or is malformed.
+	ErrHashParams = errors.New("secure: password hash settings out of range")
+)
 
 // Hasher hashes and verifies passwords with a concurrency limit.
 type Hasher struct{ sem chan struct{} }
@@ -101,33 +113,45 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
-// Verify reports whether password matches the encoded hash. An empty hash never matches (but still costs a hash,
-// so timing does not reveal whether an account has a password).
-func (h *Hasher) Verify(ctx context.Context, password, encoded string) (bool, error) {
-	if err := h.acquire(ctx); err != nil {
-		return false, err
-	}
-	defer func() { <-h.sem }()
+// Verify reports whether password matches the encoded hash, and (rehash) whether the hash was made with settings
+// other than today's, so the caller can replace it while it has the password. An empty hash never matches (but
+// still costs a hash, so timing does not reveal whether an account has a password). A hash naming settings outside
+// the bounds above is refused without hashing (ErrHashParams).
+func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, rehash bool, err error) {
 	var m, t uint32
 	var p uint8
+	var salt, want []byte
 	parts := strings.Split(encoded, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" {
+	plain := len(parts) == 6 && parts[1] == "argon2id" && parts[2] == "v=19"
+	if plain {
+		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
+			return false, false, ErrHashParams
+		}
+		if salt, err = base64.RawStdEncoding.DecodeString(parts[4]); err != nil {
+			return false, false, ErrHashParams
+		}
+		if want, err = base64.RawStdEncoding.DecodeString(parts[5]); err != nil {
+			return false, false, ErrHashParams
+		}
+		if m < 8*1024 || m > argonMaxMemory || t < 1 || t > argonMaxTime || p < 1 || p > argonMaxThreads ||
+			len(salt) < 8 || len(salt) > 64 || len(want) < 16 || len(want) > 64 {
+			return false, false, ErrHashParams
+		}
+	}
+	if err := h.acquire(ctx); err != nil {
+		return false, false, err
+	}
+	defer func() { <-h.sem }()
+	if !plain {
 		argon2.IDKey([]byte(password), dummySalt, argonTime, argonMemory, argonThreads, argonKeyLen)
-		return false, nil
-	}
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
-		return false, err
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil {
-		return false, err
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil {
-		return false, err
+		return false, false, nil
 	}
 	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
-	return subtle.ConstantTimeCompare(got, want) == 1, nil
+	if subtle.ConstantTimeCompare(got, want) != 1 {
+		return false, false, nil
+	}
+	rehash = m != argonMemory || t != argonTime || p != argonThreads || len(want) != argonKeyLen || len(salt) != 16
+	return true, rehash, nil
 }
 
 var dummySalt = RandomBytes(16)

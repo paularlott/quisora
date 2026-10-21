@@ -9,7 +9,7 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Master key rotation: every secret sealed at rest (TOTP secrets, sign-in provider client secrets, signing keys'
+// Master key rotation: every secret sealed at rest (TOTP secrets, password hashes, sign-in provider client secrets, signing keys'
 // private keys, upstream refresh tokens, relying parties' refresh token keys) is re-sealed with the active master key
 // once it was sealed with a previous one (or before sealed values named their key). The housekeeping leader runs it
 // until a pass finds nothing left: from then on nothing the server holds needs the previous keys, and they are
@@ -74,7 +74,11 @@ func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (Resea
 		return nil
 	}
 	if err := walk(ctx, s.Users, func(u *model.User) error {
-		return reseal(TOTPBinding(u.ID), &u.TOTPSecret, func() error { return s.Users.Update(Durable(ctx), u) })
+		save := func() error { return s.Users.Update(Durable(ctx), u) }
+		if err := reseal(TOTPBinding(u.ID), &u.TOTPSecret, save); err != nil {
+			return err
+		}
+		return reseal(PasswordBinding(u.ID), &u.PasswordHash, save)
 	}); err != nil {
 		return r, err
 	}

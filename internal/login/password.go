@@ -72,12 +72,12 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Always spend one password hash, whatever is wrong, so timing does not reveal which accounts exist.
-	hash := ""
-	if u != nil && u.Enabled(time.Now()) {
-		hash = u.PasswordHash
+	check := u
+	if u != nil && !u.Enabled(time.Now()) {
+		check = nil
 	}
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	ok, err := m.s.Svc.Hasher.Verify(vctx, in.Password, hash)
+	ok, err := m.s.Svc.VerifyPassword(vctx, check, in.Password)
 	cancel()
 	if errors.Is(err, secure.ErrBusy) {
 		w.Header().Set("Retry-After", "1")

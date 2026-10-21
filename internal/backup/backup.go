@@ -232,7 +232,7 @@ func sealedKeys(rec *store.Record, ring []string, need map[string]bool) {
 	case model.KindUser:
 		var u model.User
 		if store.Decode(rec, &u) == nil {
-			vals = []string{u.TOTPSecret}
+			vals = []string{u.TOTPSecret, u.PasswordHash}
 		}
 	case model.KindProvider:
 		var p model.Provider

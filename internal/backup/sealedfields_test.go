@@ -27,6 +27,7 @@ var sealedBy = map[string]struct {
 	field string
 }{
 	"TOTPBinding":           {model.KindUser, "TOTPSecret"},
+	"PasswordBinding":       {model.KindUser, "PasswordHash"},
 	"ProviderSecretBinding": {model.KindProvider, "ClientSecret"},
 	"SigningKeyBinding":     {model.KindKey, "PrivateKey"},
 	"GrantKeyBinding":       {model.KindGrant, "Key"},

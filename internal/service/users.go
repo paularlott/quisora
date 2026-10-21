@@ -253,7 +253,10 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		if err := ValidatePassword(*in.Password); err != nil {
 			return err
 		}
-		h, err := s.Hasher.Hash(ctx, *in.Password)
+		if u.ID == "" {
+			u.ID = model.NewID() // a new user: the stored hash is bound to its id (passwords.go)
+		}
+		h, err := s.HashPassword(ctx, u.ID, *in.Password)
 		if err != nil {
 			return err
 		}

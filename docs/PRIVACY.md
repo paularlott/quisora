@@ -9,7 +9,7 @@ its records of processing and its privacy notice.
 | Where | Personal data | Kept |
 | --- | --- | --- |
 | User | Username, email address and linked addresses (with whether each is verified), given and family name, phone number, locale, time zone, user type, work details (title, department, organization, division, cost centre, employee number, manager), tags, external id, role, status and the reason for its last change, end date, when the password and authenticator were last set | Until the user is deleted |
-| Credentials | Password (argon2id hash), authenticator secret (sealed), passkeys (public key, name, authenticator model id, sign-in counter, when last used) | Until removed, or the user is deleted |
+| Credentials | Password (argon2id hash, sealed), authenticator secret (sealed), passkeys (public key, name, authenticator model id, sign-in counter, when last used) | Until removed, or the user is deleted |
 | Sign-ins | Last sign-in time; failed-attempt counters | Counters expire within minutes |
 | Sessions | Client IP address, browser user agent, sign-in time and methods | Until the session ends (`session.ttl`, `session.idle`) |
 | Applications | Consents and refresh grants: application, scopes, times | Until revoked or expired (`tokens.refresh_ttl`) |

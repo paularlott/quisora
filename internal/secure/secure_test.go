@@ -13,12 +13,15 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 func TestPassword(t *testing.T) {
@@ -28,14 +31,46 @@ func TestPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := h.Verify(ctx, "correct horse", enc); !ok {
-		t.Fatal("verify failed")
+	if ok, rehash, _ := h.Verify(ctx, "correct horse", enc); !ok || rehash {
+		t.Fatalf("verify: ok %v, rehash %v", ok, rehash)
 	}
-	if ok, _ := h.Verify(ctx, "wrong", enc); ok {
+	if ok, _, _ := h.Verify(ctx, "wrong", enc); ok {
 		t.Fatal("wrong password verified")
 	}
-	if ok, _ := h.Verify(ctx, "x", ""); ok {
+	if ok, _, _ := h.Verify(ctx, "x", ""); ok {
 		t.Fatal("empty hash verified")
+	}
+}
+
+// A hash made with other settings verifies and asks to be replaced; one naming settings out of bounds (or damaged) is
+// refused before any hashing.
+func TestPasswordSettings(t *testing.T) {
+	h := NewHasher(2)
+	ctx := context.Background()
+	salt := RandomBytes(16)
+	mk := func(m, tm uint32, p uint8, salt []byte, keyLen uint32) string {
+		key := argon2.IDKey([]byte("pw"), salt, tm, m, p, keyLen)
+		return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", m, tm, p,
+			base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+	}
+	weaker := mk(12*1024, 1, 1, salt, 32)
+	if ok, rehash, err := h.Verify(ctx, "pw", weaker); !ok || !rehash || err != nil {
+		t.Errorf("weaker settings: ok %v, rehash %v, %v", ok, rehash, err)
+	}
+	for name, enc := range map[string]string{
+		"too much memory": "$argon2id$v=19$m=4194304,t=2,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(salt[:16]),
+		"too many passes": "$argon2id$v=19$m=19456,t=1000,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(salt),
+		"too little":      mk(1024, 1, 1, salt, 32),
+		"short salt":      mk(19456, 2, 1, salt[:4], 32),
+		"damaged":         "$argon2id$v=19$m=x$y$z",
+	} {
+		start := time.Now()
+		if ok, _, err := h.Verify(ctx, "pw", enc); ok || !errors.Is(err, ErrHashParams) {
+			t.Errorf("%s: ok %v, %v", name, ok, err)
+		}
+		if d := time.Since(start); d > 100*time.Millisecond {
+			t.Errorf("%s: refused only after %v", name, d)
+		}
 	}
 }
 
@@ -102,7 +137,7 @@ func BenchmarkPasswordVerify(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			h.Verify(ctx, "password", enc)
+			_, _, _ = h.Verify(ctx, "password", enc)
 		}
 	})
 }

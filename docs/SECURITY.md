@@ -15,7 +15,7 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Internet → HTTPS | TLS 1.2+ only; strict CSP and HSTS; `__Host-` cookies; CSRF tokens plus Origin checks; rate limits and lockouts; load shedding | A real certificate (or a TLS proxy), `server.trust_proxy` behind a load balancer |
 | Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers |
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write | Few super admins; reviewed access |
-| Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
+| Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
 | Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused | `cluster.key` kept like the master key; the gossip port reachable by cluster members only |
 | Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private, loopback or metadata addresses unless `allow_private_networks` | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
@@ -83,8 +83,9 @@ re-seal is done; relying parties' refresh tokens from before then stop working a
 the backups made with the old key as exposed only if their passwords may be too: a backup's encryption does not use
 the master key.
 
-**A backup or the database leaked.** Passwords are argon2id hashes and secrets are sealed: without the master key they
-are of no use. Rotate the master key anyway, and reset passwords if you cannot rule out offline guessing of weak ones.
+**A backup or the database leaked.** Password hashes and secrets are sealed with the master key: without it they are
+of no use, and there is nothing to guess passwords against offline. If the master key may have leaked as well, the
+hashes are argon2id: rotate the master key, and reset passwords if you cannot rule out offline guessing of weak ones.
 
 **`cluster.key` leaked.** Anyone on the network path can read and inject gossip. Rotate it on every node while the
 cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and

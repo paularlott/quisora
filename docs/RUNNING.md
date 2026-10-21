@@ -306,8 +306,8 @@ Connections to `localhost`, a loopback address or a Unix socket are never warned
 
 ### Encryption at rest
 
-Sealed secrets (TOTP secrets, provider and signing keys, upstream tokens) are encrypted with the master key on every
-backend. The rest of the data (names, email addresses, password hashes, sessions, the audit log in the database) is
+Sealed secrets (TOTP secrets, password hashes, provider and signing keys, upstream tokens) are encrypted with the
+master key on every backend. The rest of the data (names, email addresses, sessions, the audit log in the database) is
 protected at rest by the storage:
 
 - **BadgerDB** encrypts its files when `storage.badgerdb.encryption_key` is set (`quisora genkey`; AES-256; not the
@@ -700,7 +700,9 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
 | Token introspection             | 48,800/s | 48,500/s |   48,100/s |
 | Password sign-in                |    487/s |    473/s |      516/s |
 
-- A password sign-in costs ~26 ms of CPU (argon2id, 19 MiB). Plan ~30 cores for 1,000 password sign-ins/s. A
+- A password sign-in costs ~26 ms of CPU (argon2id, 19 MiB; m=19456, t=2, p=1). Stored hashes are sealed with the
+  master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
+  far outside these (over 256 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
 - Tested at 5,000 organizations × 1,000 users (6M records); lookups and token traffic do not slow down at that size.
 - A new gossip node catches up at ~86,000 records/s.

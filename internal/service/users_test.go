@@ -306,7 +306,7 @@ func TestUserPasswordHashAndSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := c.svc.Hasher.Verify(c.ctx, "correct horse battery", u.PasswordHash)
+	ok, err := c.svc.VerifyPassword(c.ctx, u, "correct horse battery")
 	if err != nil || !ok {
 		t.Fatalf("verify: %v %v", ok, err)
 	}
