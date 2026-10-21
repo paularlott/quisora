@@ -124,8 +124,8 @@ type Cluster struct {
 	// both settings.
 	PreviousKeys []string `toml:"previous_keys" flag:"previous-keys" secret:"true" usage:"Earlier cluster keys (base64), during a cluster key rotation: they still decrypt gossip, never encrypt"`
 	// Size is the number of nodes the cluster is made of, required with cluster.bind. The quorum (size/2+1) is
-	// computed from it and never changes while the cluster runs: not when a node leaves, stops or restarts. Changing
-	// it is a planned change of the whole cluster (see docs/REPLICATION.md, "Scaling").
+	// computed from it and does not change when a node leaves, stops or restarts: only when every node's size is
+	// changed by one and the configuration reloaded (see docs/REPLICATION.md, "Changing the cluster size").
 	Size int `toml:"size" flag:"size" usage:"With cluster.bind: the number of nodes in the cluster (required; identical on every node; the quorum is size/2+1)"`
 	// MinorityGrace bounds how long a node cut off from the majority keeps serving tokens.
 	MinorityGrace int `toml:"minority_grace" flag:"minority-grace" usage:"Seconds a node cut off from the majority keeps serving the token, userinfo and introspection endpoints (0: refuse at once)"`
@@ -300,6 +300,21 @@ func LoadClusterKeys(path string) (key string, previous []string, err error) {
 		return "", nil, errors.Join(errs...)
 	}
 	return c.Cluster.Key, c.Cluster.PreviousKeys, nil
+}
+
+// LoadClusterSize reads cluster.size and cluster.peers again (a configuration reload), as LoadMasterKeys does the
+// master keys. Whether the running node can change to them is cluster.Node.CheckResize's to say.
+func LoadClusterSize(path string) (size int, peers []string, err error) {
+	c, err := reload(path, "cluster.size", "cluster.peers")
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, p := range c.Cluster.Peers {
+		if _, _, err := net.SplitHostPort(p); err != nil {
+			return 0, nil, fmt.Errorf("cluster.peers: %q must be host:port", p)
+		}
+	}
+	return c.Cluster.Size, c.Cluster.Peers, nil
 }
 
 // reload reads the settings at paths from the config file path (if non-empty), then the QUISORA_* environment

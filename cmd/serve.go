@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	logpkg "github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/app"
 	"github.com/paularlott/quisora/internal/build"
+	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
 )
 
@@ -44,8 +46,10 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if err != nil {
 				return err
 			}
-			// SIGHUP reloads the master keys and, when clustering, the cluster keys (rotations without restarts;
-			// docs/RUNNING.md). Nothing else is reloaded.
+			// SIGHUP re-reads the configuration: the master keys and, when clustering, the cluster keys and the
+			// cluster size (rotations and resizes without restarts; docs/RUNNING.md). POST /api/cluster/reload does
+			// the same on every node at once. Nothing else is reloaded.
+			a.Node.SetReloader(reloader(c, a, log))
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
 			defer signal.Stop(hup)
@@ -56,9 +60,8 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 					a.Close()
 					return nil
 				case <-hup:
-					reloadMasterKeys(ctx, c, a, log)
-					if cfg.Cluster.Bind != "" {
-						reloadClusterKeys(c, a, log)
+					if r := a.Node.Reload(ctx); r.Error != "" {
+						log.Error("configuration not (fully) reloaded", "error", r.Error, "applied", r.Changes)
 					}
 				}
 			}
@@ -66,52 +69,98 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 	}
 }
 
-// reloadMasterKeys reads server.master_key and server.previous_master_keys again (config file and environment) and
-// switches the running server to them (app.ReloadMasterKeys); any problem is logged, and the keys in use stay.
-func reloadMasterKeys(ctx context.Context, c *cli.Command, a *app.App, log logpkg.Logger) {
-	if onCommandLine(os.Args[1:], "master-key", "previous-master-keys") {
-		log.Error("master keys not reloaded: they were given on the command line, which cannot change while the " +
-			"server runs; put them in the config file to rotate without restarting")
-		return
-	}
-	file := ""
-	if c.ConfigFile != nil {
-		file = c.ConfigFile.FileUsed()
-	}
-	master, previous, err := config.LoadMasterKeys(file)
-	if err == nil {
-		err = a.ReloadMasterKeys(ctx, master, previous)
-	}
-	if err != nil {
-		log.Error("master keys not reloaded", "error", err)
-	}
-}
+// reloader re-reads the configuration file and environment for a configuration reload (SIGHUP, or a cluster-wide
+// reload): server.master_key and server.previous_master_keys, and when clustering cluster.key,
+// cluster.previous_keys, cluster.size and cluster.peers. Checking only reads them and asks whether they can be
+// applied; applying switches to them, master keys first. Values given on the command line cannot change while the
+// server runs and are left alone (the report says so).
+func reloader(c *cli.Command, a *app.App, log logpkg.Logger) cluster.Reloader {
+	return func(ctx context.Context, apply bool, want int) cluster.ReloadReport {
+		file := ""
+		if c.ConfigFile != nil {
+			file = c.ConfigFile.FileUsed()
+		}
+		r := cluster.ReloadReport{Size: a.Node.Size()}
+		fail := func(what string, err error) cluster.ReloadReport {
+			r.Error = what + ": " + err.Error()
+			return r
+		}
+		fixed := func(what string) { r.Changes = append(r.Changes, what+" given on the command line: not reloaded") }
 
-// reloadClusterKeys reads cluster.key and cluster.previous_keys again (config file and environment) and switches
-// gossip to them (cluster.Node.SetClusterKeys); any problem is logged, and the keys in use stay.
-func reloadClusterKeys(c *cli.Command, a *app.App, log logpkg.Logger) {
-	if onCommandLine(os.Args[1:], "cluster-key", "cluster-previous-keys") {
-		log.Error("cluster keys not reloaded: they were given on the command line, which cannot change while the " +
-			"server runs; put them in the config file to rotate without restarting")
-		return
-	}
-	file := ""
-	if c.ConfigFile != nil {
-		file = c.ConfigFile.FileUsed()
-	}
-	key, previous, err := config.LoadClusterKeys(file)
-	changed := false
-	if err == nil {
-		changed, err = a.Node.SetClusterKeys(key, previous)
-	}
-	switch {
-	case err != nil:
-		log.Error("cluster keys not reloaded", "error", err)
-	case changed:
-		ids := a.Node.ClusterKeyIDs()
-		log.Info("cluster keys reloaded", "key", ids[0], "previous", ids[1:])
-	default:
-		log.Info("cluster keys reloaded: no change")
+		var master string
+		var masterPrev []string
+		masterKeys := !onCommandLine(os.Args[1:], "master-key", "previous-master-keys")
+		if masterKeys {
+			var err error
+			if master, masterPrev, err = config.LoadMasterKeys(file); err != nil {
+				return fail("master keys", err)
+			}
+		} else {
+			fixed("master keys")
+		}
+		clustering := a.Cfg.Cluster.Bind != ""
+		var key string
+		var keyPrev, peers []string
+		clusterKeys := clustering && !onCommandLine(os.Args[1:], "cluster-key", "cluster-previous-keys")
+		if clusterKeys {
+			var err error
+			if key, keyPrev, err = config.LoadClusterKeys(file); err != nil {
+				return fail("cluster keys", err)
+			}
+		} else if clustering {
+			fixed("cluster keys")
+		}
+		size := clustering && !onCommandLine(os.Args[1:], "cluster-size", "cluster-peers")
+		if size {
+			var err error
+			if r.Size, peers, err = config.LoadClusterSize(file); err != nil {
+				return fail("cluster size", err)
+			}
+			if err := a.Node.CheckResize(r.Size, peers); err != nil {
+				return fail("cluster size", err)
+			}
+		} else if clustering {
+			fixed("cluster size and peers")
+		}
+		if !apply {
+			return r
+		}
+		if want != 0 && r.Size != want {
+			return fail("cluster size", fmt.Errorf("this node's configuration names %d nodes, the others %d", r.Size, want))
+		}
+
+		if masterKeys {
+			before := a.Svc.Sealer.KeyIDs()
+			if err := a.ReloadMasterKeys(ctx, master, masterPrev); err != nil {
+				return fail("master keys", err)
+			}
+			if !slices.Equal(before, a.Svc.Sealer.KeyIDs()) {
+				r.Changes = append(r.Changes, "master keys")
+			}
+		}
+		if clusterKeys {
+			changed, err := a.Node.SetClusterKeys(key, keyPrev)
+			if err != nil {
+				return fail("cluster keys", err)
+			}
+			if changed {
+				ids := a.Node.ClusterKeyIDs()
+				log.Info("cluster keys reloaded", "key", ids[0], "previous", ids[1:])
+				r.Changes = append(r.Changes, "cluster keys")
+			}
+		}
+		if size {
+			old := a.Node.Size()
+			changed, err := a.Node.Resize(r.Size, peers)
+			if err != nil {
+				return fail("cluster size", err)
+			}
+			if changed {
+				r.Changes = append(r.Changes, fmt.Sprintf("cluster size %d to %d", old, r.Size))
+			}
+		}
+		log.Info("configuration reloaded", "changed", r.Changes)
+		return r
 	}
 }
 

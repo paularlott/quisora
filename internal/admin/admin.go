@@ -49,6 +49,9 @@ type Module struct {
 	RemoveKey func(ctx context.Context, id string) error
 	// ClusterStatus reports this node's cluster status (wired to cluster.Node.Status by the app).
 	ClusterStatus func() any
+	// ReloadCluster has every node re-read its configuration (wired to cluster.Node.ReloadCluster by the app): the
+	// nodes' reports, and an error when nothing or not everything was applied.
+	ReloadCluster func(ctx context.Context) (any, error)
 	s             *web.Server
 }
 
@@ -157,6 +160,7 @@ func (m *Module) routes() []Route {
 		{"GET", "/api/backup", m.downloadBackup},
 		{"GET", "/api/master-key", m.masterKeyStatus},
 		{"GET", "/api/cluster", m.clusterStatus},
+		{"POST", "/api/cluster/reload", m.reloadCluster},
 		{"POST", "/api/sign-out", m.signOutServer},
 		{"GET", "/api/system", m.systemStatus},
 	}

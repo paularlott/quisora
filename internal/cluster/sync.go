@@ -307,7 +307,7 @@ func (n *Node) advanceSync(t int64) {
 // from enough peers to make a majority with this node (each with a majority in view): every write a majority held
 // before t is then here, whichever majority that was.
 func (n *Node) recomputeSync() {
-	need := max(n.quorum-1, 1)
+	need := max(n.Quorum()-1, 1)
 	n.peersMu.Lock()
 	times := make([]int64, 0, len(n.peers))
 	for _, p := range n.peers {
@@ -756,7 +756,7 @@ func (n *Node) holds(rec *store.Record) bool {
 // node, a majority of the cluster holds it: the write then survives the loss of any minority of
 // nodes. In a three-node cluster that is one peer.
 func (n *Node) ackPeers(ctx context.Context, b []byte) error {
-	need := n.quorum - 1
+	need := n.Quorum() - 1
 	peers := n.otherPeers()
 	if need <= 0 && len(peers) == 0 {
 		if n.peersExpected() {
@@ -821,9 +821,9 @@ func (n *Node) caughtUpWith(id string) {
 	n.caughtUp[id] = true
 	got := len(n.caughtUp)
 	n.peersMu.Unlock()
-	need := n.quorum - 1
+	need := n.Quorum() - 1
 	if n.startedEmpty {
-		need = n.quorum
+		need = n.Quorum()
 	}
 	if got >= need && n.catchingUp.CompareAndSwap(true, false) {
 		n.log.Info("caught up with the cluster", "peers", got)
@@ -880,7 +880,7 @@ func (n *Node) sawQuorumReady() bool {
 	if n.formed.Load() {
 		return true
 	}
-	if !n.catchingUp.Load() && !n.bootstrap.Load() && n.readyInView() >= n.quorum {
+	if !n.catchingUp.Load() && !n.bootstrap.Load() && n.readyInView() >= n.Quorum() {
 		n.markFormed()
 		return true
 	}

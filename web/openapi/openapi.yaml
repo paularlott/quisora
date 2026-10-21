@@ -2191,6 +2191,39 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/cluster/reload:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Cluster]
+      summary: Reload every node's configuration
+      description: "Every node in view re-reads its configuration file (super admin, after a recent re-authentication in the
+        admin console): the master keys, the cluster keys, and cluster.size and cluster.peers. Every node checks first;
+        only if all can apply and all name the same size does each one apply it (409 otherwise, with each node's report).
+        The size changes by one node at a time: grow after adding the node to every configuration, shrink after stopping
+        the node that leaves"
+      operationId: post_cluster_reload
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClusterReload"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: Nothing, or not everything, was reloaded
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClusterReload"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /scim/v2/Organizations:
     get:
       tags: [SCIM]
@@ -3256,6 +3289,33 @@ components:
         updated:
           type: string
           format: date-time
+    ClusterReload:
+      type: object
+      required: [nodes]
+      properties:
+        reloaded:
+          type: boolean
+        error:
+          type: string
+          description: Why nothing, or not everything, was reloaded
+        nodes:
+          type: array
+          items: {$ref: "#/components/schemas/ClusterReloadNode"}
+    ClusterReloadNode:
+      type: object
+      required: [node, size]
+      properties:
+        node:
+          type: string
+        size:
+          type: integer
+          description: The cluster.size the node's configuration names
+        changes:
+          type: array
+          items: {type: string}
+          description: What applying changed, and settings left alone because they were given on the command line
+        error:
+          type: string
     Cluster:
       type: object
       properties:

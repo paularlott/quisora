@@ -23,12 +23,21 @@
   </section>
 
   <section class="glass-card" aria-labelledby="cluster-h">
-    <h2 class="section-title mb-1" id="cluster-h">Cluster</h2>
+    <div class="flex flex-wrap items-start justify-between gap-3 mb-1">
+      <h2 class="section-title" id="cluster-h">Cluster</h2>
+      <button type="button" class="btn btn-secondary btn-sm" id="reload-config" x-show="s.clustered" x-cloak :disabled="reloading" :aria-busy="reloadBusyAttr" @click="reloadConfig">{{template "icon" "refresh"}} <span x-text="reloadLabel">Reload configuration</span></button>
+    </div>
     <p class="muted" x-show="standalone" x-cloak>This server does not replicate over gossip: a single node, or nodes sharing one database.</p>
     <div x-show="s.clustered" x-cloak>
       <p class="muted mb-4" x-text="clusterUpdatedText"></p>
       <div class="alert alert-error mb-4" role="alert" x-show="hasClusterError" x-cloak>{{template "icon" "alert"}}<span x-text="clError"></span></div>
       <p class="mb-4"><span :class="clusterClass" x-text="clusterState"></span> <span class="muted" x-text="quorumText"></span></p>
+      <div class="mb-6" x-show="hasReloadReport" x-cloak>
+        <h3 class="font-semibold mb-1">Last configuration reload</h3>
+        <ul class="space-y-1">
+          <template x-for="r in reloadReport" :key="r.node"><li><code class="mono" x-text="r.node"></code> <span :class="r.cls" x-text="r.text"></span></li></template>
+        </ul>
+      </div>
       <div class="table-wrap mb-6" role="region" aria-label="Cluster nodes table" tabindex="0" x-show="showNodes" x-cloak>
         <table class="table">
           <caption class="sr-only">Cluster nodes, by node ID</caption>

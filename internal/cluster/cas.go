@@ -464,7 +464,7 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 			s.abort(op, granted)
 			n.unconfirmed.Add(1)
 			return fmt.Errorf("%w: %d of the %d nodes needed granted the write", store.ErrUnconfirmed, len(granted),
-				n.quorum)
+				n.Quorum())
 		}
 	}
 }
@@ -489,7 +489,7 @@ func (s *Store) prepareAll(ctx context.Context, op string, rec *store.Record, b 
 	default:
 		return nil, own.St, hlc.Timestamp(own.Floor), nil
 	}
-	if len(granted) >= n.quorum {
+	if len(granted) >= n.Quorum() {
 		return granted, stGrant, 0, nil
 	}
 	peers := n.otherPeers()
@@ -513,7 +513,7 @@ func (s *Store) prepareAll(ctx context.Context, op string, rec *store.Record, b 
 		switch v.resp.St {
 		case stGrant:
 			granted = append(granted, v.mb)
-			if len(granted) >= n.quorum {
+			if len(granted) >= n.Quorum() {
 				go s.settleLate(op, votes, pending) // late grants are released
 				return granted, stGrant, 0, nil
 			}
@@ -593,18 +593,18 @@ func (s *Store) commitAll(ctx context.Context, op string, rec *store.Record, b [
 		if <-results {
 			applied++
 		}
-		if applied >= n.quorum {
+		if applied >= n.Quorum() {
 			break
 		}
 	}
 	if err := n.gc.Send(msgRecord, &recordMsg{B: b}); err != nil {
 		n.log.WithError(err).Debug("broadcast a committed write")
 	}
-	if applied < n.quorum {
+	if applied < n.Quorum() {
 		n.unconfirmed.Add(1)
 		n.log.Warn("a quorum write was applied by fewer than a majority (a node failed mid-commit): it may be in "+
-			"effect on some nodes", "kind", string(rec.Kind), "id", rec.ID, "applied", applied, "quorum", n.quorum)
-		return fmt.Errorf("%w: %d of the %d nodes needed applied the write", store.ErrUnconfirmed, applied, n.quorum)
+			"effect on some nodes", "kind", string(rec.Kind), "id", rec.ID, "applied", applied, "quorum", n.Quorum())
+		return fmt.Errorf("%w: %d of the %d nodes needed applied the write", store.ErrUnconfirmed, applied, n.Quorum())
 	}
 	// A write a quorum applied proves the cluster has formed, whatever gossip metadata (which can lag under load)
 	// has shown of the nodes' readiness: this node is never an origin again.
@@ -663,12 +663,12 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 				_, _ = s.applyReplica(ctx, r)
 			}
 		}
-		if got >= n.quorum {
+		if got >= n.Quorum() {
 			break
 		}
 	}
-	if got < n.quorum {
-		return nil, fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.quorum)
+	if got < n.Quorum() {
+		return nil, fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.Quorum())
 	}
 	return out, nil
 }

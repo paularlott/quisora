@@ -73,7 +73,7 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 	if n.gc == nil {
 		return recs, total, nodes, answered, nil
 	}
-	nodes = n.size
+	nodes = n.Size()
 	peers := n.otherPeers()
 	type reply struct {
 		resp auditResp

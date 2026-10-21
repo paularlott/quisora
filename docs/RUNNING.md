@@ -169,19 +169,22 @@ sealed them, and the log names keys by it (`key`).
 ### Changing the keys: reload or restart
 
 Each step below changes `server.master_key` and `server.previous_master_keys` in a node's config file, then either
-restarts the node or tells it to reload them, without a restart, with SIGHUP:
+restarts the node or tells it to reload them, without a restart. On a gossip cluster every node reloads at once with
+**Reload configuration** on the admin console's System page (or `POST /api/cluster/reload`, see
+[REPLICATION.md](REPLICATION.md#changing-the-cluster-size)); a single node reloads with SIGHUP:
 
 ```bash
 kill -HUP <pid>                          # systemd: systemctl reload quisora (ExecReload=/bin/kill -HUP $MAINPID)
 docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kill -HUP 1, once the mounted file has changed
 ```
 
-- SIGHUP reloads only these two settings (and, on a gossip cluster, `cluster.key` and `cluster.previous_keys`: see
-  [rotating the cluster key](#rotating-the-cluster-key)), read from the config file and the `QUISORA_*` environment
-  variables as at start-up. Nothing else is reloaded.
-- Keys given on the command line (`--master-key`) cannot change while the server runs, so a reload refuses with an
-  error: put them in the config file. Keys from environment variables cannot change either, since a running
-  process keeps its environment; use the config file, or restart.
+- A reload reads only these two settings (and, on a gossip cluster, `cluster.key` and `cluster.previous_keys`: see
+  [rotating the cluster key](#rotating-the-cluster-key); and `cluster.size` and `cluster.peers`: see
+  [changing the cluster size](REPLICATION.md#changing-the-cluster-size)), from the config file and the `QUISORA_*`
+  environment variables as at start-up. Nothing else is reloaded.
+- Settings given on the command line (`--master-key`) cannot change while the server runs, so a reload leaves them
+  alone and says so (the log, and the console's report): put them in the config file. Settings from environment
+  variables cannot change either, since a running process keeps its environment; use the config file, or restart.
 - A reload is refused, and the keys in use stay, when the new keys do not include the key in use: a typo or the
   wrong file cannot make a node seal with a key the others cannot open. The log says `master keys reloaded` or
   `master keys not reloaded` with the reason.
@@ -417,8 +420,9 @@ Every procedure and what each refusal means: [REPLICATION.md](REPLICATION.md#ope
 hour, so it does not wear out; rotate it on a schedule, and at once if it may have been exposed (anyone holding it on
 the network path can read and inject gossip). The cluster keeps running throughout.
 
-Three rounds, each on every node before the next round starts. Each round edits the node's config file and then
-reloads it with SIGHUP (as for the [master key](#changing-the-keys-reload-or-restart)) or restarts the node:
+Three rounds, each on every node before the next round starts. Each round edits every node's config file and then
+reloads them all at once (**Reload configuration**, as for the [master key](#changing-the-keys-reload-or-restart)),
+reloads each with SIGHUP, or restarts the nodes:
 
 1. `quisora genkey`, then on every node: `key = "<old>"`, `previous_keys = ["<new>"]`. Every node now also reads
    gossip encrypted with the new key.
@@ -474,7 +478,7 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `org.primary` |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |
 

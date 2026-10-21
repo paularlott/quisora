@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
@@ -123,6 +124,37 @@ func (m *Module) clusterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, m.ClusterStatus())
+}
+
+// reloadCluster has every node re-read its configuration file (POST /api/cluster/reload): the master keys, the
+// cluster keys and the cluster size, checked on every node first and applied only if all can. Super admins, after a
+// recent re-authentication.
+func (m *Module) reloadCluster(w http.ResponseWriter, r *http.Request) {
+	a := web.Actor(r)
+	if !a.IsSuper() {
+		web.WriteError(w, service.ErrForbidden)
+		return
+	}
+	if m.ReloadCluster == nil {
+		web.WriteJSON(w, http.StatusNotImplemented, web.ErrorBody{Error: "Reloading the configuration is not available."})
+		return
+	}
+	if !m.stepUp(w, r) {
+		return
+	}
+	nodes, err := m.ReloadCluster(r.Context())
+	detail := map[string]string{}
+	if b, jerr := json.Marshal(nodes); jerr == nil {
+		detail["nodes"] = string(b)
+	}
+	if err != nil {
+		detail["error"] = err.Error()
+		m.s.Svc.Audit(r.Context(), a, a.OrgID, "cluster.reload.failure", "configuration", detail)
+		web.WriteJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "nodes": nodes})
+		return
+	}
+	m.s.Svc.Audit(r.Context(), a, a.OrgID, "cluster.reload", "configuration", detail)
+	web.WriteJSON(w, http.StatusOK, map[string]any{"reloaded": true, "nodes": nodes})
 }
 
 // masterKeyStatus reports where a master key rotation stands (service.RotationStatus). Super admins only.

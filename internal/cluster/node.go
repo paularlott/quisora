@@ -173,11 +173,13 @@ type Node struct {
 	keyMu     sync.Mutex
 	clusterKs []string // cluster.key, then cluster.previous_keys, as in use (SetClusterKeys)
 
-	replicate bool // data replication on: gossip always replicates (each node has its own database)
-	size      int  // cluster.size: the number of nodes the cluster is made of
-	quorum    int  // size/2+1: fixed for the life of the process
-	seedOnce  sync.Once
-	seeds     []string // the configured peers other than this node (seedPeers)
+	replicate bool                     // data replication on: gossip always replicates (each node has its own database)
+	nodes     atomic.Int64             // cluster.size: the number of nodes the cluster is made of (changed only by Resize)
+	reloader  atomic.Pointer[Reloader] // re-reads the configuration (SetReloader)
+	reloadMu  sync.Mutex               // one ReloadCluster at a time
+	seedMu    sync.Mutex
+	seeds     []string // the configured peers other than this node (seedPeers; replaced by Resize)
+	seedsSet  bool
 
 	st  *Store
 	eph *Ephemeral
@@ -348,22 +350,21 @@ func (n *Node) buildGossip() error {
 		gcfg.Transport = n.opt.transport(gcfg.Transport)
 	}
 	others := n.seedPeers()
-	n.size = cfg.Cluster.Size
-	if n.size < 2 {
+	n.nodes.Store(int64(cfg.Cluster.Size))
+	if n.Size() < 2 {
 		return errors.New("cluster: cluster.size is required with cluster.bind (the number of nodes, at least 2)")
 	}
-	if len(others)+1 != n.size {
+	if len(others)+1 != n.Size() {
 		return fmt.Errorf("cluster: cluster.size is %d but cluster.peers names %d other nodes (and this one): every "+
-			"node lists every other node, and cluster.size counts them all", n.size, len(others))
+			"node lists every other node, and cluster.size counts them all", n.Size(), len(others))
 	}
-	n.quorum = n.size/2 + 1
 	gc, err := gossip.NewCluster(gcfg)
 	if err != nil {
 		return fmt.Errorf("cluster: %w", err)
 	}
 	n.gc = gc
 	md := gc.LocalMetadata()
-	md.SetInt(metaSize, n.size)
+	md.SetInt(metaSize, n.Size())
 	md.SetInt(metaCompat, compat)
 	md.SetInt(metaMinCompat, minCompat)
 	md.SetBool(metaReady, false)
@@ -371,8 +372,8 @@ func (n *Node) buildGossip() error {
 	// The quorum is pinned to the configured size: it never shrinks when nodes leave, stop or restart, so a minority
 	// can never reach "quorum" on its own (see docs/REPLICATION.md, "Cluster size and quorum").
 	lc := leader.DefaultConfig()
-	lc.MinClusterSize = n.quorum
-	lc.ExpectedClusterSize = n.size
+	lc.MinClusterSize = n.Quorum()
+	lc.ExpectedClusterSize = n.Size()
 	lc.AutoShrinkDisabled = true
 	if n.opt.Leader != nil {
 		n.opt.Leader(lc)
@@ -392,7 +393,7 @@ func (n *Node) buildGossip() error {
 		t gossip.MessageType
 		f gossip.ReplyHandler
 	}{{msgPush, n.handlePush}, {msgFeed, n.handleFeed}, {msgEph, n.handleEph}, {msgPrepare, n.handlePrepare},
-		{msgCommit, n.handleCommit}, {msgRead, n.handleRead}, {msgAudit, n.handleAudit}} {
+		{msgCommit, n.handleCommit}, {msgRead, n.handleRead}, {msgAudit, n.handleAudit}, {msgReload, n.handleReload}} {
 		if err := gc.HandleFuncWithReply(h.t, compatOnlyReply(h.f)); err != nil {
 			return err
 		}
@@ -412,18 +413,27 @@ func (n *Node) buildGossip() error {
 // cluster could not lose a node. An entry is this node when it has the same port and its host is the advertised
 // one, resolves to the same address, or is an address of this machine.
 func (n *Node) seedPeers() []string {
-	n.seedOnce.Do(func() {
-		adv := n.cfg.Cluster.Advertise
-		if adv == "" {
-			adv = n.cfg.Cluster.Bind
-		}
-		for _, p := range n.cfg.Cluster.Peers {
-			if p != "" && !isSelfAddr(p, adv) {
-				n.seeds = append(n.seeds, p)
-			}
-		}
-	})
+	n.seedMu.Lock()
+	defer n.seedMu.Unlock()
+	if !n.seedsSet {
+		n.seeds, n.seedsSet = n.others(n.cfg.Cluster.Peers), true
+	}
 	return n.seeds
+}
+
+// others returns the entries of peers that are not this node (see seedPeers).
+func (n *Node) others(peers []string) []string {
+	adv := n.cfg.Cluster.Advertise
+	if adv == "" {
+		adv = n.cfg.Cluster.Bind
+	}
+	var out []string
+	for _, p := range peers {
+		if p != "" && !isSelfAddr(p, adv) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // isSelfAddr reports whether peer (host:port) names the node advertised as adv (host:port).
@@ -742,10 +752,10 @@ func (n *Node) rebuildMembers() {
 					"before the next release (see docs/RUNNING.md, \"Upgrading\")", id, nd.ApplicationVersion, c, cm,
 					compat, minCompat)
 			}
-			if sz := nd.Metadata.GetInt(metaSize); sz != 0 && sz != n.size && st == gossip.NodeAlive {
+			if sz := nd.Metadata.GetInt(metaSize); sz != 0 && sz != n.Size() && st == gossip.NodeAlive {
 				sizes = fmt.Sprintf("node %s has cluster.size %d, this node %d: every node must be configured with "+
-					"the same cluster.size (a change of size is made on every node, with the whole cluster stopped; "+
-					"see docs/REPLICATION.md)", id, sz, n.size)
+					"the same cluster.size (a change of size is made in every node's configuration, then reloaded on "+
+					"every node at once; see docs/REPLICATION.md)", id, sz, n.Size())
 			}
 		}
 		if other, dup := m.byPrefix[mb.prefix]; dup && other.id != id {
@@ -891,11 +901,19 @@ func (n *Node) IsLeader() bool {
 
 // quorumOK reports whether this node sees at least a majority of the configured cluster size (itself included).
 func (n *Node) quorumOK() bool {
-	return n.mem.Load().alive >= n.quorum
+	return n.mem.Load().alive >= n.Quorum()
 }
 
 // Quorum is the number of nodes (this one included) that make a majority: cluster.size/2+1 (0 without gossip).
-func (n *Node) Quorum() int { return n.quorum }
+func (n *Node) Quorum() int {
+	if s := n.Size(); s > 0 {
+		return s/2 + 1
+	}
+	return 0
+}
+
+// Size returns the number of nodes the cluster is made of: cluster.size at start, then as changed by Resize.
+func (n *Node) Size() int { return int(n.nodes.Load()) }
 
 // Writable reports whether admin writes and new sign-ins are allowed: standalone, or a quorum is visible and the
 // node is neither catching up, out of date nor misconfigured.
@@ -956,7 +974,7 @@ func (n *Node) strict(ctx context.Context, rec *store.Record) bool {
 
 // canConfirm reports whether enough peers are in view for a majority to confirm a write (ackPeers).
 func (n *Node) canConfirm() error {
-	need := max(n.quorum-1, 1)
+	need := max(n.Quorum()-1, 1)
 	if got := len(n.otherPeers()); got < need {
 		return fmt.Errorf("%d peers reachable, %d must confirm", got, need)
 	}
@@ -1023,8 +1041,8 @@ func (n *Node) Ready() (bool, string) {
 		return false, "catching up with the other nodes after starting"
 	}
 	if !n.quorumOK() {
-		return false, fmt.Sprintf("no quorum: %d of the %d nodes visible, %d needed", n.mem.Load().alive, n.size,
-			n.quorum)
+		return false, fmt.Sprintf("no quorum: %d of the %d nodes visible, %d needed", n.mem.Load().alive, n.Size(),
+			n.Quorum())
 	}
 	if n.bootstrap.Load() && n.peersExpected() {
 		return false, "initial synchronisation pending"
@@ -1126,7 +1144,7 @@ func (n *Node) Status() Status {
 	}
 	if n.gc != nil {
 		m := n.mem.Load()
-		s.Members, s.Alive, s.Quorum, s.Size = len(m.all), m.alive, n.quorum, n.size
+		s.Members, s.Alive, s.Quorum, s.Size = len(m.all), m.alive, n.Quorum(), n.Size()
 		s.Nodes = n.members(ready)
 	}
 	return s

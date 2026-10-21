@@ -24,6 +24,7 @@ const (
 	msgRead    gossip.MessageType = gossip.UserMsg + 9  // request/response: records by id (quorum read)
 	msgAudit   gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's audit events
 	msgNotice  gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
+	msgReload  gossip.MessageType = gossip.UserMsg + 12 // request/response: re-read the configuration (check, or apply)
 )
 
 // recordMsg carries one encoded record (see encodeRecord).

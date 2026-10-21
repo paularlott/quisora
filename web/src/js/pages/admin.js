@@ -49,9 +49,16 @@ const NODE_STATE = {
   leaving: { text: 'Leaving', cls: 'badge badge-plain' },
 }
 const CLUSTER_POLL_MS = 5000
-function clusterMixin() {
+// one node's report from a configuration reload (POST /api/cluster/reload)
+function reloadRow(r) {
+  if (r.error) return { node: r.node, text: r.error, cls: 'badge badge-danger' }
+  const changed = (r.changes || []).join('; ')
+  return { node: r.node, text: `cluster.size ${r.size}${changed ? `: ${changed}` : ': no change'}`, cls: 'badge badge-success' }
+}
+function clusterMixin(Alpine) {
   return {
     cluster: {}, nodes: [], here: {}, clLoaded: false, clError: '', clUpdated: null, clTimer: null,
+    reloading: false, reloadReport: [],
     startCluster() {
       if (this.clTimer) return
       this.clTimer = setInterval(() => { if (document.visibilityState === 'visible') this.loadCluster() }, CLUSTER_POLL_MS)
@@ -85,6 +92,29 @@ function clusterMixin() {
         this.clError = ''
         this.clLoaded = true
       } catch (e) { this.clError = e.message }
+    },
+    get reloadBusyAttr() { return this.reloading ? 'true' : 'false' },
+    get reloadLabel() { return this.reloading ? 'Reloading…' : 'Reload configuration' },
+    get hasReloadReport() { return this.reloadReport.length > 0 },
+    async reloadConfig(ev) {
+      const opener = ev.currentTarget
+      const yes = await confirmAction(Alpine, { title: 'Reload the configuration?', message: 'Have every node re-read its configuration file?',
+        detail: 'Master keys, cluster keys, cluster.size and cluster.peers. Every node checks first; nothing changes unless all can apply it. Change cluster.size by one node at a time: to add a node, add it to every configuration and reload, then start it; to remove one, stop it first, then reload.',
+        confirmLabel: 'Reload' })
+      if (!yes) return
+      this.reloading = true
+      try {
+        const res = await withReauth(Alpine, () => post(`${this.apiBase}/cluster/reload`), opener)
+        this.reloadReport = (res.nodes || []).map(reloadRow)
+        toast('Configuration reloaded on every node.')
+        await this.loadCluster()
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          if (e.body && e.body.nodes) this.reloadReport = e.body.nodes.map(reloadRow)
+          toast(e.message, 'error')
+        }
+      }
+      this.reloading = false
     },
     get showNodes() { return this.clLoaded && this.nodes.length > 0 },
     get hasClusterError() { return this.clError !== '' },
@@ -1560,7 +1590,7 @@ export default function (Alpine) {
   }))
 
   // ---- System overview (super admins): the server as a whole, and its emergency sign-out --------------------------
-  Alpine.data('adminSystem', () => mix(formMixin(), dialogMixin(), signOutMixin(Alpine), keysMixin(Alpine), clusterMixin(), {
+  Alpine.data('adminSystem', () => mix(formMixin(), dialogMixin(), signOutMixin(Alpine), keysMixin(Alpine), clusterMixin(Alpine), {
     s: {}, loading: true, loaded: false, loadError: '', apiBase: '', signOutScope: 'server',
     init() {
       this.apiBase = this.$el.dataset.api

@@ -7,6 +7,7 @@ export class ApiError extends Error {
     super((body && body.error) || 'Something went wrong. Please try again.')
     this.status = status
     this.field = (body && body.field) || ''
+    this.body = body || null
   }
 }
 

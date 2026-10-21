@@ -41,14 +41,15 @@ default): the number of nodes the cluster is made of. It must equal the number o
 node included, however the list names it), or the node refuses to start. The **quorum** is `size/2+1`: 2 of 3, 3 of
 4, 3 of 5.
 
-- The size is **authoritative and fixed** for the life of the process: it decides how many nodes must confirm a
-  write, how many nodes a node must see to be ready and writable, how many peers it must catch up with, and when it
-  is cut off (and the minority grace starts). It **never shrinks** when nodes leave, stop or restart (the leader
-  election's baseline is pinned to it — `ExpectedClusterSize`, auto-shrink disabled), so a minority can never reach
-  "quorum" on its own.
+- The size is **authoritative**: it decides how many nodes must confirm a write, how many nodes a node must see to be
+  ready and writable, how many peers it must catch up with, and when it is cut off (and the minority grace starts).
+  It **never shrinks** when nodes leave, stop or restart (the leader election's baseline is pinned to it —
+  `ExpectedClusterSize`, auto-shrink disabled), so a minority can never reach "quorum" on its own. It changes only
+  when the operator changes it in the configuration and reloads it, **one node at a time** (see
+  [Changing the cluster size](#changing-the-cluster-size)).
 - **Every node must agree.** Each node publishes its size in gossip metadata (`quisora.size`); a node that sees an alive
   member with another size refuses to serve (not ready, not writable, no tokens) until they agree.
-- **Scaling is a planned change** with scheduled downtime: see [Changing the cluster size](#changing-the-cluster-size).
+- **Scaling is a planned change, made while the cluster runs**: see [Changing the cluster size](#changing-the-cluster-size).
 
 ## Records, versions and generations
 
@@ -335,24 +336,42 @@ start the others with empty databases: they copy from it. A restored node that m
 
 ### Changing the cluster size
 
-Scaling is a configuration change of the whole cluster, made with scheduled downtime (the size and quorum are fixed
-while a process runs, and every node must agree):
+The size changes while the cluster runs, **by one node at a time**: 3 → 4 → 5, or 7 → 6 → 5. Any majority of the old
+size and any majority of the new one then share a node, so every write a majority confirmed before the change is seen
+by every majority after it, and the cluster stays writable throughout (a one-step change keeps a majority of the new
+size among the nodes in view: growing, the nodes already running; shrinking, those that stay). A larger change is a
+series of steps, each completed before the next.
 
-1. Announce the maintenance and stop changes (administration, provisioning).
-2. Check that every node reports ready and that `unconfirmed` stays unchanged for a minute (`/readyz`): every write is
-   on a majority.
-3. Stop **every** node.
-4. On every node that will be part of the new cluster set `cluster.size` to the new number of nodes and
-   `cluster.peers` to all of them.
-   - **Growing** (3 → 5): keep the existing nodes' data directories; give the new nodes empty ones.
-   - **Shrinking** (5 → 3): keep the data of at least *old size − old quorum + 1* of the old nodes (3 of 5) — every
-     write a majority confirmed is on at least one of them; retire the others.
-5. Start the nodes that hold data first. They catch up with each other (a node with data needs `new quorum − 1` peers)
-   and serve once a new quorum of them is up. Then start the new, empty nodes: they copy and serve once they have
-   caught up with the required number of ready peers.
+Each step edits every node's configuration, then has every node re-read it at once: **Reload configuration** on the
+admin console's System page (Cluster), or `POST /api/cluster/reload` (super admin, after a recent re-authentication;
+audited as `cluster.reload`). Every node in view first reads and checks its configuration; only if all of them can
+apply it and all name the same `cluster.size` does each one apply it. Otherwise nothing changes, and the answer has
+each node's report. A node that is down is not asked: it reads its configuration when it starts. SIGHUP reloads a
+single node the same way, but the nodes then disagree on the size, and none of them serves until the last one has
+reloaded.
 
-A node started with a different `cluster.size` than its peers refuses to serve until they agree, so a forgotten node
-cannot form or join a wrong quorum.
+**Adding a node** (N → N+1):
+
+1. Check that every node reports ready (`/readyz`).
+2. On every running node set `cluster.size` to N+1 and add the new node to `cluster.peers`.
+3. Reload. Every node now needs a majority of N+1 (3 of 4, 3 of 5); the N running nodes still make one. A reload is
+   refused while too few nodes are in view for that.
+4. Start the new node with an empty database and the same `cluster.size` and `cluster.peers`. It copies from the
+   others and serves once it has caught up with enough of them.
+
+**Removing a node** (N → N−1):
+
+1. Check that every node reports ready (`/readyz`).
+2. Stop the node that leaves. The others carry on with the old size, on their majority (N−1 is at least a majority of
+   N for any N of 2 or more).
+3. On every remaining node set `cluster.size` to N−1 and remove the node from `cluster.peers`.
+4. Reload. A reload that would shrink the size is refused while more nodes than the new size are in view: stop the
+   leaving node first. Retire its data directory; it must not rejoin (with its old configuration it would refuse
+   anyway: its size disagrees).
+
+A step of more than one node, a `cluster.peers` that does not name `cluster.size` nodes, or nodes whose
+configurations name different sizes are refused before anything changes. A reload changes nothing when the sizes
+already match, so after a partial reload (a node that did not answer) reload again.
 
 ### `quisora force-start`
 
