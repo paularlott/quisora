@@ -23,7 +23,7 @@ type View struct {
 	OrgName    string
 	OrgDisplay string
 	IsPrimary  bool
-	CanSCIM    bool // super admins only
+	CanSCIM    bool // super admins only: the SCIM and first-party switches, and managing such clients
 	UserID     string
 	Self       bool // the user page is the viewer's own: read-only addresses, connections on the account page
 	Roles      []RoleOption

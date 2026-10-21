@@ -553,10 +553,12 @@ function clientDialogMixin(Alpine) {
     editingClient: null, apiBase: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
+      const locked = !this.canScim && !!(c.scim || c.first_party) // SCIM and first-party clients: super admins only
       return { ...c, createdText: fmtDate(c.created), statusText: b.text, statusClass: b.cls, copyLabel: 'Copy client ID of ' + c.name,
         editLabel: 'Edit ' + c.name, deleteLabel: 'Delete ' + c.name, rotateLabel: 'Rotate secret of ' + c.name,
         methodText: { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT', none: 'Public (no secret)' }[c.token_endpoint_auth_method] || c.token_endpoint_auth_method,
-        hasSecret: c.token_endpoint_auth_method !== 'none', firstParty: c.first_party, grantsText: (c.grant_types || []).join(', '), sub: c.description || '' }
+        hasSecret: c.token_endpoint_auth_method !== 'none', firstParty: c.first_party,
+        canChange: !locked, canRotate: !locked && c.token_endpoint_auth_method !== 'none', grantsText: (c.grant_types || []).join(', '), sub: c.description || '' }
     },
     tenantName(id) { const t = this.tenants.find((x) => x.id === id); return t ? t.display_name : '' },
     get canMove() { return this.editingClient !== null && this.tenants.length > 1 },
@@ -603,10 +605,10 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && g === 'client_credentials')),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
-        first_party: f.first_party, enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce }
+        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
-      if (this.canScim) b.scim = pub ? false : f.scim
+      if (this.canScim) { b.scim = pub ? false : f.scim; b.first_party = f.first_party }
       return b
     },
     async submitClient() {

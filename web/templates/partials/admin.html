@@ -325,7 +325,7 @@
     {{template "tag-field" (dict "name" "custom_scopes" "noun" "scope" "label" "Scopes for your own APIs" "help" "Optional. Scope names your own APIs check in access tokens, such as orders:read; the standard scopes above are ticked, not listed here.")}}
     {{template "textarea-field" (dict "name" "jwks" "label" "Public keys (JWKS)" "rows" 4 "show" "isJwt" "help" "The client's public keys as a JSON Web Key Set. Or give a JWKS URI below.")}}
     {{template "field" (dict "name" "jwks_uri" "label" "JWKS URI" "show" "isJwt" "autocomplete" "off")}}
-    {{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}
+    {{if .Data.CanSCIM}}{{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}{{end}}
     {{template "check-field" (dict "name" "enabled" "label" "Client is enabled" "switch" true)}}
     {{template "check-field" (dict "name" "rotate_refresh_tokens" "label" "Rotate refresh tokens" "switch" true "show" "notPublic" "help" "One-time refresh tokens; reuse revokes the grant. Costs a write per refresh.")}}
     {{template "check-field" (dict "name" "introspect_org" "label" "May introspect every token of the organization" "switch" true "show" "notPublic" "help" "For an API that serves several applications. Otherwise introspection reports only tokens issued for this client as active.")}}

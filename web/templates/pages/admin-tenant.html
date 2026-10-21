@@ -67,9 +67,9 @@
               <td x-text="row.methodText"></td>
               <td><span :class="row.statusClass" x-text="row.statusText"></span> <span class="badge badge-info" x-show="row.first_party">First party</span></td>
               <td class="actions">
-                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
-                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.rotateLabel" :data-id="row.id" x-show="row.hasSecret" @click="rotate">{{template "icon" "key"}}</button>
-                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" x-show="row.canChange" @click="edit">{{template "icon" "pencil"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.rotateLabel" :data-id="row.id" x-show="row.canRotate" @click="rotate">{{template "icon" "key"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" x-show="row.canChange" @click="remove">{{template "icon" "trash"}}</button>
               </td>
             </tr></template>
           </tbody>

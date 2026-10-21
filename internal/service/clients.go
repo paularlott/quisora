@@ -226,7 +226,12 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		}
 		c.JWKSURI = v
 	}
-	if in.FirstParty != nil {
+	// first_party skips the consent screen: its redirect URIs receive any user's code from one link they open, which
+	// would let an administrator act as a peer they may not reset. Super admins only, like SCIM.
+	if in.FirstParty != nil && *in.FirstParty != c.FirstParty {
+		if !a.IsSuper() {
+			return ErrForbidden
+		}
 		c.FirstParty = *in.FirstParty
 	}
 	if in.RotateRefresh != nil {
@@ -328,8 +333,8 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if err != nil {
 		return nil, err
 	}
-	if c.SCIM && !a.IsSuper() {
-		return nil, ErrForbidden // provisioning clients are managed by super admins only
+	if superOnly(c) && !a.IsSuper() {
+		return nil, ErrForbidden // provisioning and first-party clients are managed by super admins only
 	}
 	was := snapshot(c)
 	if err := s.applyClient(ctx, a, c, in); err != nil {
@@ -342,6 +347,10 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	return c, nil
 }
 
+// superOnly reports whether c carries a capability only super admins grant (SCIM provisioning, skipping consent), so
+// only they change, rotate or delete it.
+func superOnly(c *model.Client) bool { return c.SCIM || c.FirstParty }
+
 // RotateClientSecret issues a new secret; the old one stops working immediately.
 func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (string, error) {
 	c, err := s.GetClient(ctx, a, id)
@@ -351,7 +360,7 @@ func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (
 	if c.Public() {
 		return "", Invalid("token_endpoint_auth_method", "a public client has no secret")
 	}
-	if c.SCIM && !a.IsSuper() {
+	if superOnly(c) && !a.IsSuper() {
 		return "", ErrForbidden // the credential of a super-admin-only capability stays with super admins
 	}
 	secret := "qsrs_" + secure.RandomToken(32)
@@ -368,7 +377,7 @@ func (s *Service) DeleteClient(ctx context.Context, a *Actor, id string) error {
 	if err != nil {
 		return err
 	}
-	if c.SCIM && !a.IsSuper() {
+	if superOnly(c) && !a.IsSuper() {
 		return ErrForbidden
 	}
 	if err := s.Clients.Delete(Durable(ctx), id); err != nil {

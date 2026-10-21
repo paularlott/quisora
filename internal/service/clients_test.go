@@ -62,6 +62,55 @@ func TestClientSCIMFlag(t *testing.T) {
 	}
 }
 
+// first_party skips consent, so its redirect URIs receive any user's code from a link they open: an org admin who
+// could set it, or edit such a client, could act as a peer administrator. Like SCIM, it is super admins' alone.
+func TestClientFirstPartyFlag(t *testing.T) {
+	c := newCast(t)
+	super, admin := actor(c.super), actor(c.aAdmin)
+
+	if _, _, err := newClient(t, c, admin, c.a.ID, service.ClientInput{FirstParty: ptr(true)}); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("admin set first_party on create: %v", err)
+	}
+	plain, _, err := newClient(t, c, admin, c.a.ID, service.ClientInput{FirstParty: ptr(false)})
+	if err != nil {
+		t.Fatalf("admin creates a client, first_party false: %v", err)
+	}
+	if _, err := c.svc.UpdateClient(c.ctx, admin, plain.ID, service.ClientInput{FirstParty: ptr(true)}); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("admin enabled first_party: %v", err)
+	}
+	if _, err := c.svc.UpdateClient(c.ctx, admin, plain.ID, service.ClientInput{FirstParty: ptr(false), Description: ptr("d")}); err != nil {
+		t.Errorf("admin edits an ordinary client, first_party unchanged: %v", err)
+	}
+	fp, _, err := newClient(t, c, super, c.a.ID, service.ClientInput{FirstParty: ptr(true)})
+	if err != nil || !fp.FirstParty {
+		t.Fatalf("super first_party: %v", err)
+	}
+	for name, in := range map[string]service.ClientInput{
+		"clear":       {FirstParty: ptr(false)},
+		"description": {Description: ptr("d")},
+		"redirect":    {RedirectURIs: ptr([]string{"https://attacker.example/cb"})},
+	} {
+		if _, err := c.svc.UpdateClient(c.ctx, admin, fp.ID, in); !errors.Is(err, service.ErrForbidden) {
+			t.Errorf("org admin %s on a first-party client: %v", name, err)
+		}
+	}
+	if _, err := c.svc.RotateClientSecret(c.ctx, admin, fp.ID); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("org admin rotated a first-party client's secret: %v", err)
+	}
+	if err := c.svc.DeleteClient(c.ctx, admin, fp.ID); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("org admin deleted a first-party client: %v", err)
+	}
+	if got, _ := c.svc.Clients.Get(c.ctx, fp.ID); got == nil || !got.FirstParty || slices.Contains(got.RedirectURIs, "https://attacker.example/cb") {
+		t.Errorf("first-party client changed: %+v", got)
+	}
+	if _, err := c.svc.UpdateClient(c.ctx, super, fp.ID, service.ClientInput{FirstParty: ptr(false)}); err != nil {
+		t.Errorf("super admin clears first_party: %v", err)
+	}
+	if err := c.svc.DeleteClient(c.ctx, admin, fp.ID); err != nil {
+		t.Errorf("org admin deletes the client once it is ordinary: %v", err)
+	}
+}
+
 func TestClientSecretLifecycle(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)
