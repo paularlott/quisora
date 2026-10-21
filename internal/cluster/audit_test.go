@@ -58,6 +58,19 @@ func TestAuditIsNodeLocalAndMerged(t *testing.T) {
 	if total != 6 || len(recs) != 2 || recs[0].Fields["action"] != "action.7" || recs[1].Fields["action"] != "action.6" {
 		t.Fatalf("org-a page: total %d %v %v", total, recs[0].Fields["action"], recs[1].Fields["action"])
 	}
+	// filters reach every node: a family of actions and a time range, each event on its own node
+	recs, total, _, answered, err = c.nodes[0].n.AuditQuery(bg, store.ListQuery{Sort: "created", Desc: true, Limit: 100,
+		Filters: []store.Filter{{Field: "action", Op: store.OpPrefix, Value: "ACTION.1"},
+			{Field: "created", Op: store.OpGTE, Value: base.Add(time.Minute)}}})
+	if err != nil || answered != 3 || total != 1 || len(recs) != 1 || recs[0].Fields["action"] != "action.1" {
+		t.Fatalf("filtered: %d records, total %d, %d answered, %v", len(recs), total, answered, err)
+	}
+	recs, total, _, _, _ = c.nodes[2].n.AuditQuery(bg, store.ListQuery{Sort: "created", Limit: 100,
+		Filters: []store.Filter{{Field: "created", Op: store.OpGTE, Value: base.Add(3 * time.Minute)},
+			{Field: "created", Op: store.OpLT, Value: base.Add(6 * time.Minute)}}})
+	if total != 3 || len(recs) != 3 || recs[0].Fields["action"] != "action.3" || recs[2].Fields["action"] != "action.5" {
+		t.Fatalf("time range across nodes: total %d, %d records", total, len(recs))
+	}
 	// a node down: its events are missing and the answer says so
 	stop(c.nodes[2])
 	waitFor(t, 10*time.Second, "node 2 seen down", func() bool { return len(c.nodes[0].n.otherPeers()) == 1 })

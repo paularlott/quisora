@@ -9,7 +9,9 @@
 //     manager_id: { search: (q) => Promise<[{ value, label, detail }]> },        // looked up as the user types
 //   })
 // comboSet(name, value, label) fills a field (label looked up in a fixed list when omitted). comboPending(name) is
-// true when text was typed that is not a choice (a search field, which only takes chosen values).
+// true when text was typed that is not a choice (a search field, which only takes chosen values). A component that
+// defines comboChanged(name) hears when a field's value changes: chosen, typed and confirmed with Enter (free
+// fields), or cleared (comboClear, the clear button of the "combo-search" partial, or deleting the text).
 import { get } from './api.js'
 
 const DELAY = 200
@@ -28,7 +30,7 @@ export const zoneSource = { free: true, options: () => profileOptions().then((o)
 export const userTypeSource = { free: true, options: () => profileOptions().then((o) => o.user_types.map((t) => ({ value: t, label: t }))) }
 
 function blank() {
-  return { q: '', open: false, active: -1, items: [], options: [], expanded: 'false', activeId: '', listOpen: false, none: false, status: '', seq: 0, label: '' }
+  return { q: '', open: false, active: -1, items: [], options: [], expanded: 'false', activeId: '', listOpen: false, none: false, status: '', seq: 0, label: '', hasText: false }
 }
 
 export function comboMixin(defs) {
@@ -46,7 +48,9 @@ export function comboMixin(defs) {
       c.expanded = c.listOpen ? 'true' : 'false'
       c.activeId = c.active >= 0 && c.items[c.active] ? `combo-${name}-${c.active}` : ''
       c.none = c.open && c.items.length === 0 && c.q.trim() !== ''
+      c.hasText = c.q !== ''
     },
+    _comboChanged(name) { if (this.comboChanged) this.comboChanged(name) },
     async _comboList(name) {
       if (!this._comboAll[name]) this._comboAll[name] = await defs[name].options()
       return this._comboAll[name]
@@ -72,7 +76,7 @@ export function comboMixin(defs) {
       const name = ev.target.dataset.combo
       const c = this.combo[name]
       const q = c.q.trim()
-      if (q === '') this.form[name] = ''
+      if (q === '' && this.form[name] !== '') { this.form[name] = ''; this._comboChanged(name) }
       clearTimeout(this._comboTimers[name])
       if (defs[name].options) {
         this._comboFilter(name)
@@ -125,6 +129,22 @@ export function comboMixin(defs) {
       this.form[name] = it.value
       Object.assign(c, { q: it.label, label: it.label, open: false, active: -1, status: `Selected ${it.label}.` })
       this._comboSync(name)
+      this._comboChanged(name)
+    },
+    // comboClear empties a field from its clear button (data-combo) and gives the field focus back.
+    comboClear(ev) {
+      const name = ev.currentTarget.dataset.combo
+      Object.assign(this.combo[name], { q: '', label: '', open: false, active: -1, items: [], status: 'Cleared.' })
+      this.form[name] = ''
+      this._comboSync(name)
+      this._comboChanged(name)
+      const input = document.getElementById(`f-${name}`)
+      if (input) input.focus()
+    },
+    // comboFocus offers a fixed list's choices as soon as the empty field is entered.
+    comboFocus(ev) {
+      const name = ev.target.dataset.combo
+      if (defs[name].options && this.combo[name].q === '') this._comboFilter(name)
     },
     comboKey(ev) {
       const name = ev.target.dataset.combo
@@ -145,6 +165,7 @@ export function comboMixin(defs) {
           break
         case 'Enter':
           if (c.open && (c.active >= 0 || n === 1)) { ev.preventDefault(); this._comboChoose(name, c.active >= 0 ? c.active : 0); return }
+          if (defs[name].free) { ev.preventDefault(); c.open = false; c.label = c.q; this._comboSync(name); this._comboChanged(name); return }
           break
         case 'Escape':
           if (c.open) { ev.preventDefault(); ev.stopPropagation(); c.open = false; c.active = -1 } // the list, not the dialog
@@ -164,7 +185,12 @@ export function comboMixin(defs) {
     },
     comboBlur(ev) {
       const name = ev.target.dataset.combo
-      setTimeout(() => { const c = this.combo[name]; c.open = false; c.active = -1; this._comboSync(name) }, 120)
+      setTimeout(() => {
+        const c = this.combo[name]
+        c.open = false; c.active = -1
+        this._comboSync(name)
+        if (defs[name].free && c.q !== c.label) { c.label = c.q; this._comboChanged(name) } // typed, then left
+      }, 120)
     },
   }
 }

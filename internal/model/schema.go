@@ -135,11 +135,14 @@ var Schemas = map[Kind]Schema{
 		{Name: "last_login", Type: FieldTime, Sort: true},
 	}},
 	KindLock: {KindLock, nil},
+	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
-		{Name: "action", Type: FieldString, Search: true, Sort: true},
+		{Name: "action", Type: FieldString, Sort: true},
 		{Name: "actor", Type: FieldString, Search: true},
 		{Name: "target", Type: FieldString, Search: true},
 		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "outcome", Type: FieldString},
+		{Name: "ip", Type: FieldString, Search: true},
 	}},
 }
 

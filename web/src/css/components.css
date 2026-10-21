@@ -269,6 +269,30 @@
   .picker-detail { font-size: 0.8125rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @media (forced-colors: active) { .picker-option.is-active { outline-color: Highlight; } }
   .search.search-block { flex: none; max-width: none; width: 100%; }
+  /* An autocomplete filter in a list's toolbar ("combo-search"): a search-style field, narrower than the search. */
+  .filter-combo { flex: 1 1 9rem; max-width: 14rem; }
+  .filter-combo .search { max-width: none; }
+  /* The audit log: the search takes the room; time, Filters (a panel) and refresh follow it. Active filters show below
+     as chips, each with its own remove button. */
+  .audit-toolbar { justify-content: flex-start; gap: 0.5rem; }
+  .audit-toolbar > .search { flex: 1 1 14rem; max-width: none; }
+  @media (max-width: 40rem) { /* a phone: the search and refresh on the first line, time and Filters on the next */
+    .audit-toolbar > * { order: 3; }
+    .audit-toolbar > .search { order: 1; flex-basis: calc(100% - 3rem); }
+    .audit-toolbar > .audit-refresh { order: 2; }
+  }
+  .range-row { display: grid; grid-template-columns: 3fr 2fr; gap: 0.75rem; } /* a date and its time */
+  .filter-panel { width: min(22rem, calc(100vw - 2rem)); padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+  .filter-panel .filter-combo { flex: none; max-width: none; }
+  .filter-panel .help { margin: 0; }
+  .filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+  .chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.25rem 0.2rem 0.75rem; border-radius: 999px;
+    border: 1px solid var(--edge); background: var(--ctl-hover); font-size: 0.875rem; }
+  .chip-remove { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: 999px;
+    border: 0; background: transparent; color: inherit; cursor: pointer; }
+  .chip-remove:hover { background: var(--edge); }
+  .chip-remove:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .chip-remove .icon { width: 0.9rem; height: 0.9rem; }
   .search .input { padding-left: 2.75rem; padding-right: 2.75rem; border-radius: 999px; }
   .search > .icon { position: absolute; left: 1rem; top: 50%; margin-top: -0.625rem; color: var(--fg-muted); pointer-events: none; }
   .search-clear { position: absolute; right: 0.25rem; top: 50%; margin-top: -1.1rem; }

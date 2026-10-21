@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -25,9 +26,26 @@ type auditList struct {
 	Source        string      `json:"source"`
 }
 
-func auditQuery(r *http.Request) service.AuditQuery {
+// auditQuery reads an audit page's parameters: the list ones (q, sort, desc, offset, limit), and the filters from and
+// to (RFC 3339 times), action_group (a family of actions, such as "user."), action and outcome.
+func auditQuery(r *http.Request) (service.AuditQuery, error) {
 	q := listQuery(r)
-	return service.AuditQuery{Search: q.Search, Sort: q.Sort, Desc: q.Desc, Offset: q.Offset, Limit: q.Limit}
+	v := r.URL.Query()
+	aq := service.AuditQuery{Search: q.Search, Sort: q.Sort, Desc: q.Desc, Offset: q.Offset, Limit: q.Limit,
+		ActionPrefix: v.Get("action_group"), Action: v.Get("action"), Outcome: v.Get("outcome")}
+	for _, t := range []struct {
+		name string
+		to   *time.Time
+	}{{"from", &aq.From}, {"to", &aq.To}} {
+		if s := v.Get(t.name); s != "" {
+			at, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return aq, service.Invalid(t.name, "must be a time such as 2026-10-21T09:00:00Z")
+			}
+			*t.to = at
+		}
+	}
+	return aq, nil
 }
 
 func (m *Module) writeAudit(w http.ResponseWriter, r *http.Request, p service.AuditPage, names bool) {
@@ -57,7 +75,12 @@ func (m *Module) listAudit(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	p, err := m.s.Svc.ListAudit(r.Context(), a, org.ID, auditQuery(r))
+	aq, err := auditQuery(r)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	p, err := m.s.Svc.ListAudit(r.Context(), a, org.ID, aq)
 	if err != nil {
 		web.WriteError(w, err)
 		return
@@ -81,7 +104,12 @@ func (m *Module) listAllAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		orgID = o.ID
 	}
-	p, err := m.s.Svc.ListAudit(r.Context(), a, orgID, auditQuery(r))
+	aq, err := auditQuery(r)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	p, err := m.s.Svc.ListAudit(r.Context(), a, orgID, aq)
 	if err != nil {
 		web.WriteError(w, err)
 		return

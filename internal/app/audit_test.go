@@ -63,7 +63,7 @@ func auditAPI(t *testing.T, vl string) {
 	code := 0
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) { // VictoriaLogs makes rows searchable within a second or so
-		code, out = doJSON(t, hc, "GET", base+"/api/orgs/"+name+"/audit?q=user.create", bossHdr, nil)
+		code, out = doJSON(t, hc, "GET", base+"/api/orgs/"+name+"/audit?action=user.create", bossHdr, nil)
 		if code == 200 && out["total"].(float64) >= 1 {
 			break
 		}
@@ -89,7 +89,7 @@ func auditAPI(t *testing.T, vl string) {
 	}
 	found := false
 	for deadline := time.Now().Add(10 * time.Second); !found && time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
-		code, out = doJSON(t, hc, "GET", base+"/api/audit?q=user.create&limit=100", superHdr, nil)
+		code, out = doJSON(t, hc, "GET", base+"/api/audit?action=user.create&limit=100", superHdr, nil)
 		for _, it := range out["items"].([]any) {
 			m := it.(map[string]any)
 			found = found || (m["org_id"] == org.ID && m["org_name"] == name)

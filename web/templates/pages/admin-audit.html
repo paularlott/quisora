@@ -10,8 +10,47 @@
   </div>
 
   <section class="glass-card" aria-label="Audit events">
-    <div class="toolbar mb-4">{{template "search" (dict "label" "Search the audit log" "placeholder" "Search action, actor or target")}}
-      <button type="button" class="btn btn-secondary btn-sm" @click="load">{{template "icon" "refresh"}} Refresh</button></div>
+    <div class="toolbar audit-toolbar" role="group" aria-label="Search and filter the audit log">
+      {{template "search" (dict "label" "Search the audit log by actor, target or IP address" "placeholder" "Search actor, target or IP address")}}
+      <div class="field"><label class="sr-only" for="filter-range">Time</label>
+        <select class="select" id="filter-range" x-model="range" @change="rangeChanged"><option value="">Any time</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="custom" x-text="customLabel">Custom range…</option></select></div>
+      <button type="button" class="btn btn-ghost btn-icon btn-sm" aria-label="Change the custom range" title="Change the custom range" x-show="customRange" x-cloak @click="openRange">{{template "icon" "pencil"}}</button>
+      <div class="menu-wrap" @click.outside="closeFilters" @keydown.escape="escFilters">
+        <button type="button" class="btn btn-secondary btn-sm" id="filters-button" x-ref="filtersButton" aria-haspopup="true" aria-controls="filter-panel" aria-expanded="false" :aria-expanded="filtersExpanded" @click="toggleFilters">{{template "icon" "sliders"}} Filters<span class="badge badge-accent" x-show="hasPanelFilters" x-cloak x-text="panelFilterCount"></span><span class="sr-only" x-text="panelFilterNote"></span></button>
+        <div class="menu glass-panel filter-panel" id="filter-panel" role="group" aria-label="Filters" x-show="filtersOpen" x-cloak>
+          {{template "combo-search" (dict "name" "action" "label" "Action" "placeholder" "login.* or login.failure" "icon" "sliders" "visible" true)}}
+          <div class="field"><label class="label" for="filter-outcome">Outcome</label>
+            <select class="select" id="filter-outcome" x-model="outcome" @change="applyFilters"><option value="">Any outcome</option><option value="success">Succeeded</option><option value="failure">Failed or refused</option></select></div>
+          {{if .Data.AllOrgs}}{{template "combo-search" (dict "name" "org" "label" "Organization" "placeholder" "Type to search" "icon" "building" "visible" true)}}{{end}}
+          <p class="help">An action ending in * matches every action that starts with it: login.* is every sign-in event.</p>
+        </div>
+      </div>
+      <button type="button" class="btn btn-secondary btn-icon btn-sm audit-refresh" aria-label="Refresh" title="Refresh" @click="refresh">{{template "icon" "refresh"}}</button>
+    </div>
+    <div class="filter-chips" role="group" aria-label="Active filters" x-show="hasFilters" x-cloak>
+      <template x-for="c in chips" :key="c.key">
+        <span class="chip"><span x-text="c.text"></span><button type="button" class="chip-remove" :aria-label="c.removeLabel" :data-key="c.key" @click="removeFilter">{{template "icon" "x"}}</button></span>
+      </template>
+      <button type="button" class="btn btn-ghost btn-sm" @click="clearFilters">Clear all</button>
+    </div>
+    <div class="mb-4"></div>
+
+    {{template "dialog-start" (dict "id" "range-dialog" "title" "Custom range" "size" "sm")}}
+    <form @submit.prevent="applyRange" novalidate>
+      <div class="dialog-body">
+        <p class="muted">In your time zone, both days included. Leave a date empty for an open range.</p>
+        <div class="range-row">
+          {{template "field" (dict "name" "range_from" "label" "From" "type" "date" "autofocus" true)}}
+          {{template "field" (dict "name" "range_from_time" "label" "Start time" "type" "time" "step" "1")}}
+        </div>
+        <div class="range-row">
+          {{template "field" (dict "name" "range_to" "label" "To" "type" "date")}}
+          {{template "field" (dict "name" "range_to_time" "label" "End time" "type" "time" "step" "1")}}
+        </div>
+      </div>
+      {{template "form-foot" (dict "label" "rangeApplyLabel" "default" "Apply")}}
+    </form>
+    {{template "dialog-end"}}
     <p class="help mb-3" x-show="hasSourceNote" x-cloak x-text="sourceNote"></p>
     <div class="table-wrap" role="region" aria-label="Audit events table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
       <table class="table">

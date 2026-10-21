@@ -2,7 +2,7 @@
      id f-<name>; its error element e-<name> is always present and referenced by aria-describedby. */}}
 {{define "field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
   <label class="label" for="f-{{.name}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>
-  <input class="input" id="f-{{.name}}" name="{{.name}}" type="{{if .type}}{{.type}}{{else}}text{{end}}" x-model="form.{{.name}}" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}"{{if .required}} aria-required="true"{{end}}{{with .autocomplete}} autocomplete="{{.}}"{{end}}{{with .placeholder}} placeholder="{{.}}"{{end}}{{with .placeholderBind}} :placeholder="{{.}}"{{end}}{{with .inputmode}} inputmode="{{.}}"{{end}}{{if .autofocus}} data-autofocus{{end}} spellcheck="false">
+  <input class="input" id="f-{{.name}}" name="{{.name}}" type="{{if .type}}{{.type}}{{else}}text{{end}}" x-model="form.{{.name}}" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}"{{if .required}} aria-required="true"{{end}}{{with .autocomplete}} autocomplete="{{.}}"{{end}}{{with .placeholder}} placeholder="{{.}}"{{end}}{{with .placeholderBind}} :placeholder="{{.}}"{{end}}{{with .inputmode}} inputmode="{{.}}"{{end}}{{with .step}} step="{{.}}"{{end}}{{if .autofocus}} data-autofocus{{end}} spellcheck="false">
   {{with .help}}<p class="help" id="h-{{$.name}}"{{with $.helpBind}} x-text="{{.}}"{{end}}>{{.}}</p>{{end}}
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
 </div>{{end}}
@@ -145,5 +145,29 @@
   </div>
   {{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+  <p class="sr-only" role="status" x-text="combo.{{.name}}.status"></p>
+</div>{{end}}
+
+
+{{/* Autocomplete filter for a list's toolbar (lib/combo.js): a search-style field with a clear button. dict name
+     (form key; input f-<name>, combo state combo.<name>), label (shown with visible, else for screen readers only),
+     placeholder, icon. */}}
+{{define "combo-search"}}<div class="picker filter-combo">
+  <label class="{{if .visible}}label{{else}}sr-only{{end}}" for="f-{{.name}}">{{.label}}</label>
+  <div class="search">
+    {{template "icon" (or .icon "search")}}
+    <input class="input" id="f-{{.name}}" type="text" role="combobox" aria-autocomplete="list" aria-controls="l-{{.name}}" data-combo="{{.name}}"
+      :aria-expanded="combo.{{.name}}.expanded" :aria-activedescendant="combo.{{.name}}.activeId" autocomplete="off" spellcheck="false"
+      placeholder="{{.placeholder}}" x-model="combo.{{.name}}.q" @input="comboInput" @keydown="comboKey" @blur="comboBlur" @focus="comboFocus">
+    <button type="button" class="btn btn-ghost btn-icon btn-sm search-clear" aria-label="Clear {{.label}}" data-combo="{{.name}}" x-show="combo.{{.name}}.hasText" x-cloak @click="comboClear">{{template "icon" "x"}}</button>
+  </div>
+  <ul class="picker-list" id="l-{{.name}}" role="listbox" aria-label="{{.label}}" x-show="combo.{{.name}}.listOpen" x-cloak>
+    <template x-for="o in combo.{{.name}}.options" :key="o.key">
+      <li role="option" :id="o.optId" :class="o.cls" :aria-selected="o.selected" :data-combo="o.name" :data-index="o.index" @mousedown.prevent="comboClick">
+        <span class="picker-text"><span class="picker-label" x-text="o.label"></span><span class="picker-detail" x-show="o.hasDetail" x-text="o.detail"></span></span>
+      </li>
+    </template>
+  </ul>
+  <p class="picker-none" x-show="combo.{{.name}}.none" x-cloak>Nothing matches.</p>
   <p class="sr-only" role="status" x-text="combo.{{.name}}.status"></p>
 </div>{{end}}

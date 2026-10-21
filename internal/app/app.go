@@ -151,6 +151,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	go node.RunPurge(ctx, 10*time.Minute)
 	go a.auditForcedStart(ctx)
 	go a.auditRestore(ctx)
+	go refreshAuditIndex(ctx, inner, log)
 	return a, nil
 }
 

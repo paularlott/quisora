@@ -1907,6 +1907,11 @@ paths:
         - {$ref: "#/components/parameters/Desc"}
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/AuditFrom"}
+        - {$ref: "#/components/parameters/AuditTo"}
+        - {$ref: "#/components/parameters/AuditActionGroup"}
+        - {$ref: "#/components/parameters/AuditAction"}
+        - {$ref: "#/components/parameters/AuditOutcome"}
       responses:
         "200":
           description: Success
@@ -1942,6 +1947,11 @@ paths:
         - {$ref: "#/components/parameters/Desc"}
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/AuditFrom"}
+        - {$ref: "#/components/parameters/AuditTo"}
+        - {$ref: "#/components/parameters/AuditActionGroup"}
+        - {$ref: "#/components/parameters/AuditAction"}
+        - {$ref: "#/components/parameters/AuditOutcome"}
         - name: org
           in: query
           schema:
@@ -2743,6 +2753,38 @@ components:
       description: case-insensitive substring search
       schema:
         type: string
+    AuditFrom:
+      name: from
+      in: query
+      description: events at or after this time (RFC 3339)
+      schema:
+        type: string
+        format: date-time
+    AuditTo:
+      name: to
+      in: query
+      description: events before this time (RFC 3339)
+      schema:
+        type: string
+        format: date-time
+    AuditActionGroup:
+      name: action_group
+      in: query
+      description: "a family of actions: the actions starting with this text, such as user. or login. (case-insensitive)"
+      schema:
+        type: string
+    AuditAction:
+      name: action
+      in: query
+      description: one action, such as user.update
+      schema:
+        type: string
+    AuditOutcome:
+      name: outcome
+      in: query
+      schema:
+        type: string
+        enum: [success, failure]
     Desc:
       name: desc
       in: query

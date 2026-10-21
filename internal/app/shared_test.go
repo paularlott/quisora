@@ -387,10 +387,10 @@ func gossipAudit(t *testing.T, apps []*App) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(time.Second) // several sync rounds: nothing of it may replicate
-	if l, _, _ := apps[2].Svc.Audits.List(ctx, store.ListQuery{Search: "test.gossip"}); len(l) != 0 {
+	if l, _, _ := apps[2].Svc.Audits.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "action", Value: "test.gossip"}}}); len(l) != 0 {
 		t.Fatalf("audit events replicated to node 2: %d", len(l))
 	}
-	q := service.AuditQuery{Search: "test.gossip", Sort: "created", Desc: true, Limit: 2}
+	q := service.AuditQuery{Action: "test.gossip", Sort: "created", Desc: true, Limit: 2}
 	first, err := apps[2].Svc.ListAudit(ctx, service.System, primary.ID, q)
 	if err != nil || first.Source != "cluster" || first.Nodes != 3 || first.Answered != 3 || first.Total != 4 ||
 		len(first.Items) != 2 || first.Items[0].Target != "event-3" || first.Items[1].Target != "event-2" {

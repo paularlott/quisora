@@ -1478,9 +1478,162 @@ export default function (Alpine) {
   }))
 
   // ---- Audit ----------------------------------------------------------------------------------------------------
-  Alpine.data('adminAudit', () => mix(tableMixin(), {
-    sourceNote: '',
-    init() { this.initTable() },
+  // Kinds of action (the first part of the name: the action_group filter) and the known actions, for the filters.
+  const AUDIT_GROUPS = [
+    { value: 'login.', label: 'Sign-in' }, { value: 'password.', label: 'Password resets' }, { value: 'invite.', label: 'Invitations' },
+    { value: 'account.', label: 'Own account changes' }, { value: 'user.', label: 'Users' }, { value: 'group.', label: 'Groups' },
+    { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'client.', label: 'Applications' },
+    { value: 'oauth.', label: 'Consent' }, { value: 'provider.', label: 'Sign-in providers' }, { value: 'identity.', label: 'Linked sign-ins' },
+    { value: 'passkey.', label: 'Passkeys' }, { value: 'apitoken.', label: 'API tokens' }, { value: 'keys.', label: 'Signing keys' },
+    { value: 'signout.', label: 'Sign-out sweeps' }, { value: 'backup.', label: 'Backups' }, { value: 'cluster.', label: 'Cluster' },
+    { value: 'unique.', label: 'Duplicate values' },
+  ]
+  const AUDIT_ACTIONS = ['account.email.verify', 'account.passkey.add', 'account.provider.connect', 'account.provider.connect_refused',
+    'account.totp.enable', 'apitoken.create', 'apitoken.delete', 'apitoken.regenerate', 'apitoken.update', 'backup.download',
+    'backup.restore', 'client.create', 'client.delete', 'client.secret.rotate', 'client.self_register', 'client.self_registered.revoke',
+    'client.update', 'cluster.force_start', 'cluster.reload', 'cluster.reload.failure', 'group.create', 'group.delete',
+    'group.member.add', 'group.member.remove', 'group.update', 'identity.link.email', 'identity.link.refused',
+    'identity.refresh.refused', 'identity.unlink', 'invite.accept', 'keys.create', 'keys.remove', 'keys.rotate', 'login.failure',
+    'login.lockout', 'login.success', 'oauth.consent', 'org.create', 'org.delete', 'org.primary', 'org.update', 'passkey.clone',
+    'password.forgot', 'password.reset', 'provider.create', 'provider.delete', 'provider.update', 'signout.sweep',
+    'tenant.access.add', 'tenant.access.remove', 'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update',
+    'unique.conflict', 'user.app.revoke', 'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove',
+    'user.email.verify', 'user.expire', 'user.invite', 'user.locked_out', 'user.passkey.remove', 'user.password.remove',
+    'user.provider.disconnect', 'user.provision', 'user.session.revoke', 'user.sessions.revoke', 'user.update']
+  // The action field offers each kind of action ("login.*": every action whose name starts with "login.") and each
+  // known action; any other action can be typed.
+  const auditActionSource = { free: true, options: () => Promise.resolve([
+    ...AUDIT_GROUPS.map((g) => ({ value: `${g.value}*`, label: `${g.value}*`, detail: `${g.label}: every ${g.value.slice(0, -1)} action` })),
+    ...AUDIT_ACTIONS.map((a) => ({ value: a, label: a })),
+  ]) }
+  const orgSource = { search: (q) => get(`/api/orgs${qs({ q, sort: 'name', limit: 20 })}`)
+    .then((r) => r.items.map((o) => ({ value: o.name, label: o.display_name || o.name, detail: o.name }))) }
+  // rangeForm fills the range dialog from a range (local "YYYY-MM-DDTHH:MM:SS" ends, "" when open): a start's time
+  // defaults to the beginning of its day, an end's to the last second of its day.
+  const rangeForm = (from, to) => ({
+    range_from: from ? from.slice(0, 10) : '', range_from_time: from ? from.slice(11, 19) || '00:00:00' : '00:00:00',
+    range_to: to ? to.slice(0, 10) : '', range_to_time: to ? to.slice(11, 19) || '23:59:59' : '23:59:59',
+  })
+  const fmtShort = (v) => new Date(v).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
+  Alpine.data('adminAudit', () => mix(tableMixin(), formMixin(), dialogMixin(), comboMixin({ action: auditActionSource, org: orgSource }), {
+    sourceNote: '', range: '', rangePrev: '', from: '', to: '', outcome: '', filtersOpen: false,
+    init() {
+      this.resetForm({ action: '', org: '', ...rangeForm('', '') })
+      return this.initTable()
+    },
+    get customRange() { return this.range === 'custom' },
+    get customLabel() {
+      if (!this.from && !this.to) return 'Custom range…'
+      return `${this.from ? fmtShort(this.from) : 'Any time'} – ${this.to ? fmtShort(this.to) : 'now'}`
+    },
+    get rangeApplyLabel() { return 'Apply' },
+    // ---- the Filters panel (action, outcome, organization) ----
+    get filtersExpanded() { return this.filtersOpen ? 'true' : 'false' },
+    toggleFilters() {
+      this.filtersOpen = !this.filtersOpen
+      if (this.filtersOpen) this.$nextTick(() => { const f = document.getElementById('f-action'); if (f) f.focus() })
+    },
+    closeFilters() { this.filtersOpen = false },
+    escFilters() {
+      if (!this.filtersOpen) return
+      this.filtersOpen = false
+      this.$refs.filtersButton.focus()
+    },
+    get panelFilterCount() { return [this.form.action, this.outcome, this.form.org].filter((v) => v).length },
+    get hasPanelFilters() { return this.panelFilterCount > 0 },
+    get panelFilterNote() { return this.hasPanelFilters ? `, ${this.panelFilterCount} set` : '' },
+    // ---- active filters, as chips ----
+    get chips() {
+      const out = []
+      if (this.range) {
+        const t = this.customRange ? this.customLabel : { '1h': 'Last hour', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' }[this.range]
+        out.push({ key: 'range', text: t, removeLabel: `Remove filter: ${t}` })
+      }
+      if (this.form.action) out.push({ key: 'action', text: `Action: ${this.form.action}`, removeLabel: `Remove filter: action ${this.form.action}` })
+      if (this.outcome) {
+        const t = this.outcome === 'failure' ? 'Failed or refused' : 'Succeeded'
+        out.push({ key: 'outcome', text: t, removeLabel: `Remove filter: ${t}` })
+      }
+      if (this.form.org) {
+        const t = this.combo.org.label || this.form.org
+        out.push({ key: 'org', text: `Organization: ${t}`, removeLabel: `Remove filter: organization ${t}` })
+      }
+      return out
+    },
+    async removeFilter(ev) {
+      const key = ev.currentTarget.dataset.key
+      if (key === 'range') { this.range = this.rangePrev = this.from = this.to = '' }
+      if (key === 'outcome') this.outcome = ''
+      if (key === 'action' || key === 'org') await this.comboSet(key, '', '')
+      this.applyFilters()
+      this.$refs.filtersButton.focus() // the chip is gone
+    },
+    get hasFilters() { return !!(this.range || this.form.action || this.outcome || this.form.org) },
+    // an autocomplete filter changed (chosen, typed and confirmed, or cleared)
+    comboChanged() { this.applyFilters() },
+    rangeChanged(ev) {
+      if (this.range === 'custom') { this.openRange(ev); return }
+      this.rangePrev = this.range
+      this.from = this.to = ''
+      this.applyFilters()
+    },
+    openRange(ev) {
+      this.resetForm({ ...this.form, ...rangeForm(this.from, this.to) })
+      this.openDlg('range-dialog', ev.currentTarget)
+    },
+    applyRange() {
+      const f = this.form
+      const from = f.range_from ? `${f.range_from}T${f.range_from_time || '00:00:00'}` : ''
+      const to = f.range_to ? `${f.range_to}T${f.range_to_time || '23:59:59'}` : ''
+      if (!from && !to) {
+        this.setErrors(new ApiError(422, { error: 'Enter a start date, an end date, or both.', field: 'range_from' }))
+        return
+      }
+      if (from && to && new Date(from) > new Date(to)) {
+        this.setErrors(new ApiError(422, { error: 'The end must not be before the start.', field: 'range_to' }))
+        return
+      }
+      this.from = from
+      this.to = to
+      this.range = this.rangePrev = 'custom'
+      this.closeDlg('range-dialog')
+      this.applyFilters()
+    },
+    // the range dialog closed without a range: back to the time window chosen before
+    afterClose(id) {
+      if (id === 'range-dialog' && this.range === 'custom' && !this.from && !this.to) this.range = this.rangePrev === 'custom' ? '' : this.rangePrev
+    },
+    // The filters as API parameters. A preset is a window ending now, worked out again on every refresh; an action
+    // ending in * is a kind of action (action_group).
+    filterParams() {
+      const a = this.form.action.trim()
+      const p = { outcome: this.outcome, org: this.form.org }
+      if (a.endsWith('*')) p.action_group = a.slice(0, -1)
+      else p.action = a
+      const ms = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[this.range]
+      if (ms) p.from = new Date(Date.now() - ms).toISOString()
+      if (this.customRange) {
+        if (this.from) p.from = new Date(this.from).toISOString()
+        if (this.to) p.to = new Date(new Date(this.to).getTime() + 1000).toISOString() // the end's whole second is included
+      }
+      return p
+    },
+    applyFilters() {
+      this.extra = this.filterParams()
+      this.offset = 0
+      return this.load(true)
+    },
+    refresh() {
+      this.extra = this.filterParams()
+      return this.load(true)
+    },
+    async clearFilters() {
+      this.range = this.rangePrev = this.from = this.to = this.outcome = ''
+      await this.comboSet('action', '', '')
+      await this.comboSet('org', '', '')
+      return this.applyFilters()
+    },
     transform(a) {
       const d = a.detail ? Object.entries(a.detail).map(([k, v]) => `${k}: ${v}`).join(', ') : ''
       return { ...a, timeText: fmtDateTime(a.created), detailText: d || '—', actorText: a.actor || 'system', ipText: a.ip || '—', targetText: a.target || '—',

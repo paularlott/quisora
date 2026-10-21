@@ -81,3 +81,31 @@ func (r clusterAudit) ReadAudit(ctx context.Context, q service.AuditQuery) (serv
 	}
 	return page, nil
 }
+
+// refreshAuditIndex fills in the indexed outcome and IP address (the audit log's filters and search) of audit events
+// recorded before they were indexed, in the background, in batches: events are never rewritten, so nothing else
+// would. Once every event has its outcome there is nothing left to do, and a later start finds none.
+func refreshAuditIndex(ctx context.Context, st store.Store, log logger.Logger) {
+	fr, ok := st.(store.FieldRefresher)
+	if !ok {
+		return
+	}
+	q := store.ListQuery{Filters: []store.Filter{{Field: "outcome", Value: ""}}, Limit: 500}
+	total := 0
+	for {
+		n, err := fr.RefreshFields(ctx, model.KindAudit, q)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.WithError(err).Warn("audit log: indexing older events for filtering (retried at the next start)")
+			}
+			return
+		}
+		total += n
+		if n == 0 {
+			break
+		}
+	}
+	if total > 0 {
+		log.Info("audit log: older events indexed for filtering", "events", total)
+	}
+}

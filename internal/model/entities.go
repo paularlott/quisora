@@ -1,6 +1,7 @@
 package model
 
 import (
+	"cmp"
 	"net/url"
 	"regexp"
 	"slices"
@@ -787,8 +788,9 @@ func AuditOutcome(action string) string {
 func (a *Audit) Kind() Kind { return KindAudit }
 func (a *Audit) Index() Index {
 	return Index{
-		Scope:   a.OrgID,
-		Fields:  map[string]any{"action": a.Action, "actor": a.Actor, "target": a.Target, "created": a.Created},
+		Scope: a.OrgID,
+		Fields: map[string]any{"action": a.Action, "actor": a.Actor, "target": a.Target, "created": a.Created,
+			"outcome": cmp.Or(a.Outcome, AuditOutcome(a.Action)), "ip": a.IP}, // older events may carry no outcome
 		Expires: a.Expires,
 	}
 }

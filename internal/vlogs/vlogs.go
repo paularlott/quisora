@@ -351,9 +351,24 @@ func Filter(q service.AuditQuery) string {
 	if q.Org != "" {
 		b.WriteString(` org:=` + strconv.Quote(q.Org))
 	}
+	if !q.From.IsZero() {
+		b.WriteString(` _time:>=` + q.From.UTC().Format(time.RFC3339Nano))
+	}
+	if !q.To.IsZero() {
+		b.WriteString(` _time:<` + q.To.UTC().Format(time.RFC3339Nano))
+	}
+	if q.ActionPrefix != "" {
+		b.WriteString(` action:~` + strconv.Quote("(?i)^"+regexp.QuoteMeta(q.ActionPrefix)))
+	}
+	if q.Action != "" {
+		b.WriteString(` action:=` + strconv.Quote(q.Action))
+	}
+	if q.Outcome != "" {
+		b.WriteString(` outcome:=` + strconv.Quote(q.Outcome))
+	}
 	if s := strings.TrimSpace(q.Search); s != "" {
 		re := strconv.Quote("(?i)" + regexp.QuoteMeta(s))
-		fmt.Fprintf(&b, ` (action:~%s or actor:~%s or target:~%s)`, re, re, re)
+		fmt.Fprintf(&b, ` (actor:~%s or target:~%s or ip:~%s)`, re, re, re)
 	}
 	return b.String()
 }

@@ -18,16 +18,56 @@ import (
 const auditWait = 3 * time.Second
 
 type auditReq struct {
-	Scope  string // organization id, "" = all
-	Search string
-	Sort   string // "created" or "action"
-	Desc   bool
-	Limit  int
+	Scope   string // organization id, "" = all
+	Search  string
+	Sort    string // "created" or "action"
+	Desc    bool
+	Limit   int
+	Filters []auditFilter
+}
+
+// auditFilter is a store.Filter on the wire: a string value, or a time (UnixMicro).
+type auditFilter struct {
+	Field string
+	Op    string
+	Str   string
+	Time  int64
+	IsT   bool
 }
 
 type auditResp struct {
 	Recs  [][]byte
 	Total int
+	// Filtered says the node applied the request's filters: a node of an older build ignores them and answers with
+	// unfiltered events, which are left out of the page (it counts as not answering).
+	Filtered bool
+}
+
+func toAuditFilters(fs []store.Filter) []auditFilter {
+	out := make([]auditFilter, 0, len(fs))
+	for _, f := range fs {
+		w := auditFilter{Field: f.Field, Op: f.Op}
+		switch v := f.Value.(type) {
+		case time.Time:
+			w.Time, w.IsT = v.UnixMicro(), true
+		case string:
+			w.Str = v
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+func fromAuditFilters(fs []auditFilter) []store.Filter {
+	out := make([]store.Filter, 0, len(fs))
+	for _, w := range fs {
+		f := store.Filter{Field: w.Field, Op: w.Op, Value: w.Str}
+		if w.IsT {
+			f.Value = time.UnixMicro(w.Time).UTC()
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // handleAudit answers with this node's newest audit events matching the request.
@@ -40,7 +80,7 @@ func (n *Node) handleAudit(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp := &auditResp{Total: total}
+	resp := &auditResp{Total: total, Filtered: true}
 	for _, r := range recs {
 		if b, err := encodeRecord(r); err == nil {
 			resp.Recs = append(resp.Recs, b)
@@ -52,7 +92,7 @@ func (n *Node) handleAudit(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, int, error) {
 	limit := min(max(req.Limit, 1), 5000)
 	res, err := n.st.inner.List(ctx, model.KindAudit, store.ListQuery{Scope: req.Scope, Search: req.Search,
-		Sort: req.Sort, Desc: req.Desc, Limit: limit})
+		Filters: fromAuditFilters(req.Filters), Sort: req.Sort, Desc: req.Desc, Limit: limit})
 	if err != nil {
 		return nil, 0, err
 	}
@@ -64,7 +104,8 @@ func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, i
 // of matches on the nodes that answered. nodes is the cluster size and answered how many nodes answered within
 // auditWait (this one counts): a node that is down or slow is missing from the page, not an error.
 func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store.Record, total, nodes, answered int, err error) {
-	req := auditReq{Scope: q.Scope, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Limit: q.Limit}
+	req := auditReq{Scope: q.Scope, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Limit: q.Limit,
+		Filters: toAuditFilters(q.Filters)}
 	own, total, err := n.localAudit(ctx, req)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -92,7 +133,7 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 	for range peers {
 		select {
 		case rp := <-replies:
-			if rp.err != nil {
+			if rp.err != nil || (len(req.Filters) > 0 && !rp.resp.Filtered) {
 				continue
 			}
 			answered++

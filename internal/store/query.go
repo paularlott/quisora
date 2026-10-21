@@ -25,11 +25,37 @@ func ValidateQuery(kind model.Kind, q ListQuery) error {
 		}
 	}
 	for _, flt := range q.Filters {
-		if _, ok := s.Field(flt.Field); !ok {
+		f, ok := s.Field(flt.Field)
+		if !ok {
 			return fmt.Errorf("%w: cannot filter by %q", ErrBadQuery, flt.Field)
+		}
+		switch flt.Op {
+		case "":
+		case OpPrefix:
+			if _, ok := flt.Value.(string); !ok || f.Type != model.FieldString {
+				return fmt.Errorf("%w: a prefix filter needs a string field and value (%q)", ErrBadQuery, flt.Field)
+			}
+		case OpGTE, OpLT:
+			if f.Type != model.FieldTime && f.Type != model.FieldInt {
+				return fmt.Errorf("%w: a range filter needs a time or integer field (%q)", ErrBadQuery, flt.Field)
+			}
+		default:
+			return fmt.Errorf("%w: unknown filter operator %q", ErrBadQuery, flt.Op)
 		}
 	}
 	return nil
+}
+
+// IndexFields recomputes a live record's index fields from its data (as encoding the entity would).
+func IndexFields(r *Record) (map[string]any, error) {
+	e := model.NewEntity(r.Kind)
+	if e == nil {
+		return nil, fmt.Errorf("%w: unknown kind %q", ErrBadQuery, r.Kind)
+	}
+	if err := Decode(r, e); err != nil {
+		return nil, err
+	}
+	return e.Index().Fields, nil
 }
 
 // IsPlainScan reports whether q is a plain ID-ordered page (no search, filters or sort field).
@@ -87,8 +113,25 @@ func Page(recs []*Record, offset, limit int) []*Record {
 
 func matchFilters(r *Record, filters []Filter) bool {
 	for _, f := range filters {
-		if !EqualValues(r.Fields[f.Field], f.Value) {
-			return false
+		v := r.Fields[f.Field]
+		switch f.Op {
+		case OpPrefix:
+			sv, _ := v.(string)
+			if !strings.HasPrefix(strings.ToLower(sv), strings.ToLower(f.Value.(string))) {
+				return false
+			}
+		case OpGTE:
+			if v == nil || CompareValues(v, f.Value) < 0 {
+				return false
+			}
+		case OpLT:
+			if v == nil || CompareValues(v, f.Value) >= 0 {
+				return false
+			}
+		default:
+			if !EqualValues(v, f.Value) {
+				return false
+			}
 		}
 	}
 	return true

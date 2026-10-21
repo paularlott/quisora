@@ -894,3 +894,49 @@ func retry(ctx context.Context, attempt func() error) error {
 	}
 	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
 }
+
+// RefreshFields recomputes the index fields stored with the records q selects, from their data
+// (store.FieldRefresher). The record keeps its version and its place in the change feed; one rewritten meanwhile is
+// left alone.
+func (s *Store) RefreshFields(ctx context.Context, kind model.Kind, q store.ListQuery) (int, error) {
+	res, err := s.List(ctx, kind, q)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range res.Records {
+		fields, err := store.IndexFields(r)
+		if err != nil {
+			return n, err
+		}
+		changed := false
+		err = s.write(ctx, kind, r.ID, func(tx txn) error {
+			k := recKey(kind, r.ID)
+			b, err := tx.Get(k)
+			if err != nil || b == nil {
+				return err
+			}
+			old, err := decodeRecord(b)
+			if err != nil || !live(old) || old.rec.Version != r.Version {
+				return err
+			}
+			rec := *old.rec
+			rec.Fields = fields
+			body, err := encodeRecord(&rec)
+			if err != nil {
+				return err
+			}
+			copy(body[:seqHeader], b[:seqHeader]) // the same feed position
+			tx.Set(k, body)
+			changed = true
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+		if changed {
+			n++
+		}
+	}
+	return n, nil
+}

@@ -108,10 +108,27 @@ func (h *Head) Rank() Rank {
 // Rank returns the record's rank (Head.Rank).
 func (r *Record) Rank() Rank { return r.Head().Rank() }
 
-// Filter is an equality condition on a schema field.
+// Filter is a condition on a schema field: equality (Op ""), or one of the operators below.
 type Filter struct {
 	Field string
 	Value any
+	Op    string
+}
+
+// Filter operators besides equality.
+const (
+	OpPrefix = "prefix" // a string field starts with Value (case-insensitively)
+	OpGTE    = "gte"    // a time or integer field is at or after Value
+	OpLT     = "lt"     // a time or integer field is before Value
+)
+
+// FieldRefresher is implemented by backends that can recompute a kind's stored index fields in place. A field
+// added to a kind's schema is empty on records written before (see sqlstore.reconcile) until they are rewritten,
+// and some kinds (audit events) never are.
+type FieldRefresher interface {
+	// RefreshFields recomputes, from their data, the index fields of the live records of kind that q selects (q.Limit
+	// of them at most), without changing their version or replicating anything, and returns how many it rewrote.
+	RefreshFields(ctx context.Context, kind model.Kind, q ListQuery) (int, error)
 }
 
 // ListQuery selects records of one kind.

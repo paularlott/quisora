@@ -52,6 +52,8 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ListScopeAndTotal", testListScope},
 		{"ListSearch", testListSearch},
 		{"ListFilters", testListFilters},
+		{"ListFilterOperators", testListFilterOps},
+		{"RefreshFields", testRefreshFields},
 		{"ListSort", testListSort},
 		{"ListPaging", testListPaging},
 		{"ListPlainScanLarge", testPlainScanLarge},
@@ -380,6 +382,99 @@ func testListFilters(t *testing.T, s store.Store) {
 	must(t, err)
 	if total != 5 { // user000,002,004,006,008
 		t.Errorf("search+filter: %d", total)
+	}
+}
+
+func audits(s store.Store) *store.Table[model.Audit, *model.Audit] {
+	return store.NewTable[model.Audit](s)
+}
+
+// seedAudit writes n audit events of org one minute apart from base, cycling through three actions.
+func seedAudit(t testing.TB, s store.Store, org string, base time.Time, n int) {
+	actions := []string{"user.create", "user.update", "login.failure"}
+	for i := range n {
+		a := actions[i%3]
+		e := &model.Audit{OrgID: org, Action: a, Actor: fmt.Sprintf("actor%d", i), Target: "t", IP: fmt.Sprintf("10.0.0.%d", i),
+			Outcome: model.AuditOutcome(a)}
+		e.Created = base.Add(time.Duration(i) * time.Minute)
+		must(t, audits(s).Put(ctx, e))
+	}
+}
+
+// Prefix (case-insensitive, LIKE wildcards literal) and time range filters, alone and with the others.
+func testListFilterOps(t *testing.T, s store.Store) {
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	seedAudit(t, s, "org1", base, 12)
+	cases := []struct {
+		f    []store.Filter
+		want int
+	}{
+		{[]store.Filter{{Field: "action", Op: store.OpPrefix, Value: "user."}}, 8},
+		{[]store.Filter{{Field: "action", Op: store.OpPrefix, Value: "USER."}}, 8},
+		{[]store.Filter{{Field: "action", Op: store.OpPrefix, Value: "user_"}}, 0},
+		{[]store.Filter{{Field: "action", Op: store.OpPrefix, Value: "%"}}, 0},
+		{[]store.Filter{{Field: "created", Op: store.OpGTE, Value: base.Add(5 * time.Minute)}}, 7},
+		{[]store.Filter{{Field: "created", Op: store.OpLT, Value: base.Add(5 * time.Minute)}}, 5},
+		{[]store.Filter{{Field: "created", Op: store.OpGTE, Value: base.Add(2 * time.Minute)},
+			{Field: "created", Op: store.OpLT, Value: base.Add(8 * time.Minute)}}, 6},
+		{[]store.Filter{{Field: "outcome", Value: "failure"}}, 4},
+		{[]store.Filter{{Field: "outcome", Value: "success"}, {Field: "action", Op: store.OpPrefix, Value: "user."},
+			{Field: "created", Op: store.OpGTE, Value: base.Add(6 * time.Minute)}}, 4},
+	}
+	for i, c := range cases {
+		_, total, err := audits(s).List(ctx, store.ListQuery{Scope: "org1", Filters: c.f})
+		must(t, err)
+		if total != c.want {
+			t.Errorf("case %d: got %d want %d", i, total, c.want)
+		}
+	}
+	// with a search (the IP address is searchable) and a sort
+	l, total, err := audits(s).List(ctx, store.ListQuery{Scope: "org1", Search: "10.0.0.1", Sort: "created", Desc: true,
+		Filters: []store.Filter{{Field: "action", Op: store.OpPrefix, Value: "user."}}})
+	must(t, err)
+	if total != 2 || l[0].IP != "10.0.0.10" || l[1].IP != "10.0.0.1" { // 10.0.0.1, 10.0.0.10 (10.0.0.11 is login.failure)
+		t.Errorf("search+prefix: %d %v", total, l)
+	}
+	for _, bad := range []store.Filter{{Field: "created", Op: store.OpPrefix, Value: "2026"},
+		{Field: "action", Op: store.OpGTE, Value: "a"}, {Field: "action", Op: "like", Value: "a"}} {
+		if _, _, err := audits(s).List(ctx, store.ListQuery{Filters: []store.Filter{bad}}); !errors.Is(err, store.ErrBadQuery) {
+			t.Errorf("filter %+v: %v", bad, err)
+		}
+	}
+}
+
+// RefreshFields fills in index fields a record was written without (a field added to the schema since), from its
+// data, without changing its version.
+func testRefreshFields(t *testing.T, s store.Store) {
+	fr, ok := s.(store.FieldRefresher)
+	if !ok {
+		t.Skip("no FieldRefresher")
+	}
+	e := &model.Audit{OrgID: "org1", Action: "login.failure", Actor: "old", IP: "192.0.2.7", Outcome: "failure"}
+	rec, err := store.Encode(e)
+	must(t, err)
+	delete(rec.Fields, "outcome") // as written by a build that did not index them
+	delete(rec.Fields, "ip")
+	must(t, s.Put(ctx, rec))
+	stale := store.ListQuery{Filters: []store.Filter{{Field: "outcome", Value: ""}}}
+	if _, n, _ := audits(s).List(ctx, stale); n != 1 {
+		t.Fatalf("records without an outcome: %d", n)
+	}
+	n, err := fr.RefreshFields(ctx, model.KindAudit, store.ListQuery{Filters: stale.Filters, Limit: 10})
+	must(t, err)
+	if n != 1 {
+		t.Fatalf("refreshed %d", n)
+	}
+	if _, n, _ := audits(s).List(ctx, stale); n != 0 {
+		t.Fatalf("still without an outcome: %d", n)
+	}
+	l, n, err := audits(s).List(ctx, store.ListQuery{Search: "192.0.2", Filters: []store.Filter{{Field: "outcome", Value: "failure"}}})
+	must(t, err)
+	if n != 1 || l[0].Version != rec.Version {
+		t.Fatalf("after refreshing: %d records, version %v (was %v)", n, l, rec.Version)
+	}
+	if n, err := fr.RefreshFields(ctx, model.KindAudit, store.ListQuery{Filters: stale.Filters, Limit: 10}); err != nil || n != 0 {
+		t.Fatalf("second refresh: %d %v", n, err)
 	}
 }
 

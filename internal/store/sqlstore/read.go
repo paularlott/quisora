@@ -83,7 +83,16 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 		if err != nil {
 			return "", nil, fmt.Errorf("%w: %v", store.ErrBadQuery, err)
 		}
-		b.WriteString(" AND " + s.d.quote(fld.Name) + " = ?")
+		col, op := s.d.quote(fld.Name), " = ?"
+		switch f.Op {
+		case store.OpPrefix:
+			col, op, v = "LOWER("+col+")", " LIKE ? ESCAPE '!'", likeEscape.Replace(strings.ToLower(f.Value.(string)))+"%"
+		case store.OpGTE:
+			op = " >= ?"
+		case store.OpLT:
+			op = " < ?"
+		}
+		b.WriteString(" AND " + col + op)
 		args = append(args, v)
 	}
 	if q.Search != "" {
