@@ -60,13 +60,14 @@
             <p class="muted" id="password-note" x-text="note">Changing your password signs you out of every other browser and device.</p>
           </div>
           <button type="button" class="btn btn-secondary btn-sm" x-show="hasPassword" x-cloak aria-describedby="password-h" @click="open">Change…<span class="sr-only"> password</span></button>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="canSetPassword" x-cloak aria-describedby="password-h" @click="open">Set a password…</button>
 
-          {{template "dialog-start" (dict "id" "password-dialog" "title" "Change password" "size" "sm")}}
+          {{template "dialog-start" (dict "id" "password-dialog" "title" "Change password" "titleBind" "dialogTitle" "size" "sm")}}
           <form @submit.prevent="submit" novalidate>
             <div class="dialog-body">
-              <p class="muted">Changing your password signs you out of every other browser and device.</p>
-              {{template "field" (dict "name" "pw_current" "label" "Current password" "type" "password" "required" true "autofocus" true "autocomplete" "current-password")}}
-              {{template "field" (dict "name" "pw_new" "label" "New password" "type" "password" "required" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
+              <p class="muted" x-text="dialogNote">Changing your password signs you out of every other browser and device.</p>
+              {{template "field" (dict "name" "pw_current" "label" "Current password" "type" "password" "required" true "autofocus" true "autocomplete" "current-password" "show" "hasPassword")}}
+              {{template "field" (dict "name" "pw_new" "label" "New password" "type" "password" "required" true "autofocus" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
               {{template "field" (dict "name" "pw_confirm" "label" "Confirm new password" "type" "password" "required" true "autocomplete" "new-password")}}
             </div>
             {{template "form-foot" (dict "label" "submitLabel" "default" "Change password")}}

@@ -148,6 +148,7 @@ type accountResp struct {
 		TOTP              bool     `json:"totp"`
 		Passkeys          int      `json:"passkeys"`
 		PasskeysAvailable bool     `json:"passkeys_available"`
+		PasswordsAllowed  bool     `json:"passwords_allowed"` // the organization signs people in with passwords
 		MailAvailable     bool     `json:"mail_available"`
 		Providers         []string `json:"providers"`
 	} `json:"security"`
@@ -165,6 +166,7 @@ func (m *Module) summary(ctx context.Context, u *model.User) (accountResp, error
 	}
 	out.Security.HasPassword, out.Security.TOTP, out.Security.Passkeys = u.PasswordHash != "", u.HasTOTP(), n
 	out.Security.PasskeysAvailable, out.Security.MailAvailable = m.Passkeys != nil, m.Mail != nil
+	out.Security.PasswordsAllowed = m.passwordsAllowed(ctx, u)
 	out.Security.Providers = []string{}
 	if ids, err := m.s.Svc.Identities.All(ctx, u.ID); err == nil {
 		for _, id := range ids {
@@ -366,7 +368,8 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 }
 
 // changePassword handles POST /api-internal/account/password: {current, new}. The current session survives; every other
-// session of the user (and its refresh grants) is ended.
+// session of the user (and its refresh grants) is ended. An account without a password (set up with a passkey, an
+// authenticator app or a sign-in provider) sets its first one here with {new} alone: setFirstPassword.
 func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) {
 	var in changePasswordReq
 	if !decode(w, r, &in) {
@@ -378,9 +381,8 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 		web.WriteError(w, err)
 		return
 	}
-	// Passwords only come from invitations: an account without one cannot add one from here.
 	if u.PasswordHash == "" {
-		writeErr(w, http.StatusConflict, "Your account has no password. Ask an administrator for an invitation to set one.", "")
+		m.setFirstPassword(w, r, a, u, in.New)
 		return
 	}
 	if in.Current == "" {
@@ -411,6 +413,48 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 	n := m.endOtherSessions(ctx, a)
 	m.changed(a)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": n})
+}
+
+// setFirstPassword adds a password to an account that has none, when its organization signs people in with
+// passwords. It adds a way into the account, so it needs a recent re-authentication with what the account already
+// signs in with (needReauth: its passkey or authenticator code, or signing in again through its provider), as adding
+// a passkey or an authenticator app does; a session alone, perhaps a stolen one, cannot add it. Nothing else changes:
+// the other sessions stay.
+func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct, u *model.User, password string) {
+	ctx := r.Context()
+	if !m.passwordsAllowed(ctx, u) {
+		writeErr(w, http.StatusConflict, "Your organization does not sign people in with passwords.", "")
+		return
+	}
+	if !m.needReauth(w, r, a) {
+		return
+	}
+	if err := service.ValidatePassword(password); err != nil {
+		var fe *service.FieldError
+		if errors.As(err, &fe) {
+			writeErr(w, http.StatusUnprocessableEntity, "Your password "+fe.Msg+".", "new")
+			return
+		}
+		web.WriteError(w, err)
+		return
+	}
+	if _, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password}); err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	m.changed(a)
+	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": 0})
+}
+
+// passwordsAllowed reports whether u's organization signs people in with passwords (anywhere: as an invitation
+// decides whether to offer one).
+func (m *Module) passwordsAllowed(ctx context.Context, u *model.User) bool {
+	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	if err != nil {
+		return false
+	}
+	eff, err := m.s.Svc.EffectiveSignIn(ctx, org, nil)
+	return err == nil && eff.Password
 }
 
 func (m *Module) endOtherSessions(ctx context.Context, a acct) int {

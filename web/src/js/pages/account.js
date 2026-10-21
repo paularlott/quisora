@@ -235,37 +235,59 @@ export default function (Alpine) {
   }))
 
   // ---- Password ----------------------------------------------------------------------------------------------
-  // Passwords only come from invitations: the row offers "Change…" to users who have one and an explanation otherwise.
+  // The row offers "Change…" to users who have a password, "Set a password…" to those without one where their
+  // organization uses passwords (after confirming it is them), and an explanation otherwise.
   Alpine.data('accountPassword', () => mix(formMixin(), dialogMixin(), scoped(), {
-    hasPassword: false, loaded: false,
+    hasPassword: false, allowed: false, loaded: false,
     async init() {
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })
-      const read = async () => { try { this.hasPassword = (await Alpine.store('account').load()).security.has_password; this.loaded = true } catch { /* shown by the profile card */ } }
+      const read = async () => {
+        try {
+          const sec = (await Alpine.store('account').load()).security
+          this.hasPassword = sec.has_password
+          this.allowed = !!sec.passwords_allowed
+          this.loaded = true
+        } catch { /* shown by the profile card */ }
+      }
       window.addEventListener('account-live', read)
       await read()
     },
+    // an account set up without a password (a passkey, an authenticator app, a sign-in provider) may add one where its
+    // organization uses passwords, after confirming it is them
+    get canSetPassword() { return this.loaded && !this.hasPassword && this.allowed },
     get statusText() { return !this.loaded ? '' : this.hasPassword ? 'Set' : 'Not set' },
     get statusClass() { return this.hasPassword ? 'badge badge-success' : 'badge badge-plain' },
     get note() {
-      return !this.loaded ? '' : this.hasPassword ? 'Changing your password signs you out of every other browser and device.'
-        : 'Your account has no password. Ask an administrator for an invitation to set one.'
+      if (!this.loaded) return ''
+      if (this.hasPassword) return 'Changing your password signs you out of every other browser and device.'
+      return this.allowed ? 'You sign in without a password. You can add one as another way to sign in.'
+        : 'Your organization does not sign people in with passwords.'
     },
-    get submitLabel() { return this.busy ? 'Saving…' : 'Change password' },
+    get dialogTitle() { return this.hasPassword ? 'Change password' : 'Set a password' },
+    get dialogNote() {
+      return this.hasPassword ? 'Changing your password signs you out of every other browser and device.'
+        : 'You will confirm it is you first, with your passkey or authenticator app. Your other sign-in methods keep working.'
+    },
+    get submitLabel() { return this.busy ? 'Saving…' : this.hasPassword ? 'Change password' : 'Set password' },
     open(ev) {
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })
       this.openDlg('password-dialog', ev.currentTarget)
     },
     async submit() {
+      const opener = document.activeElement
       const f = this.form
       if (f.pw_new !== f.pw_confirm) {
         this.setErrors(new ApiError(422, { error: 'The two passwords do not match.', field: 'pw_confirm' }))
         return
       }
-      const res = await this.runIn('pw_', () => post('/api-internal/account/password', { current: f.pw_current, new: f.pw_new }))
+      const first = !this.hasPassword
+      const send = () => post('/api-internal/account/password', first ? { new: f.pw_new } : { current: f.pw_current, new: f.pw_new })
+      const res = await this.runIn('pw_', () => (first ? withReauth(Alpine, send, opener, this) : send()))
       if (!res) return
       this.closeDlg('password-dialog')
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })
-      toast(res.signed_out > 0 ? `Password changed. ${res.signed_out} other session${res.signed_out === 1 ? ' was' : 's were'} signed out.` : 'Password changed.')
+      toast(first ? 'Password set. You can now sign in with it as well.'
+        : res.signed_out > 0 ? `Password changed. ${res.signed_out} other session${res.signed_out === 1 ? ' was' : 's were'} signed out.` : 'Password changed.')
       Alpine.store('account').reload()
     },
   }))

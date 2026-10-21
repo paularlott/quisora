@@ -5,7 +5,7 @@
   <div x-show="isSetup">
     <h1 class="page-title">Welcome{{with .Data.Name}}, {{.}}{{end}}</h1>
     <p class="page-sub">You have been invited to <strong>{{.Data.Org}}</strong>{{with .Data.Email}} as <span class="mono">{{.}}</span>{{end}}.
-      {{if and .Data.Password .Data.Passkey}}Set a password, create a passkey, or both.
+      {{if and .Data.Password .Data.Passkey}}Create a passkey, set a password, or both.
       {{else if .Data.Password}}Choose a password for your account.
       {{else if .Data.Passkey}}Create a passkey for your account.{{end}}</p>
   </div>
@@ -18,19 +18,19 @@
   </div>
   {{else}}
   <form class="stack" x-show="isSetup" @submit.prevent="submitPassword" novalidate>
-    {{if .Data.Password}}
-    <input type="text" name="username" value="{{.Data.Email}}" autocomplete="username" readonly hidden>
-    {{template "field" (dict "name" "password" "label" "Password" "required" (not $.Data.Passkey) "type" "password" "autofocus" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
-    {{template "field" (dict "name" "confirm" "label" "Confirm password" "required" (not $.Data.Passkey) "type" "password" "autocomplete" "new-password")}}
-    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="passwordLabel">{{if .Data.Passkey}}Set password{{else}}Activate account{{end}}</span></button>
-    {{end}}
     {{if .Data.Passkey}}
     <div class="stack" x-show="showPasskeyButton" x-cloak>
-      {{if .Data.Password}}<p class="eyebrow text-center" aria-hidden="true">or</p>
-      <p class="help">A passkey replaces the password: you sign in with your fingerprint, face or device PIN. Fill in the password above as well to set up both.</p>{{end}}
-      <button type="button" class="btn {{if .Data.Password}}btn-secondary{{else}}btn-primary{{end}} w-full" :aria-busy="busyAttr" :disabled="busy" @click="createPasskey">{{template "icon" "key"}} Create a passkey</button>
+      <button type="button" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy" @click="createPasskey">{{template "icon" "key"}} Create a passkey</button>
+      {{if .Data.Password}}<p class="help">A passkey replaces the password: you sign in with your fingerprint, face or device PIN. To set up both, fill in a password below first, then create the passkey.</p>
+      <p class="eyebrow text-center" aria-hidden="true">or</p>{{end}}
     </div>
     <div class="alert alert-warning" role="status" x-show="noPasskeySupport" x-cloak>{{template "icon" "alert"}}<span>This browser or device cannot create passkeys.{{if .Data.Password}} Set a password instead.{{else}} Open this link on a device that supports them.{{end}}</span></div>
+    {{end}}
+    {{if .Data.Password}}
+    <input type="text" name="username" value="{{.Data.Email}}" autocomplete="username" readonly hidden>
+    {{template "field" (dict "name" "password" "label" "Password" "required" (not $.Data.Passkey) "type" "password" "autofocus" (not $.Data.Passkey) "autocomplete" "new-password" "help" "At least 10 characters.")}}
+    {{template "field" (dict "name" "confirm" "label" "Confirm password" "required" (not $.Data.Passkey) "type" "password" "autocomplete" "new-password")}}
+    <button type="submit" class="btn w-full" :class="passwordButtonClass" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="passwordLabel">{{if .Data.Passkey}}Set password{{else}}Activate account{{end}}</span></button>
     {{end}}
   </form>
   {{template "login-steps"}}

@@ -192,6 +192,9 @@ func TestAccountPassword(t *testing.T) {
 	}
 }
 
+// An account without a password (set up with an authenticator app, a passkey or a provider) adds its first one from
+// the account page, where its organization uses passwords, after confirming it is them with what it already signs in
+// with: a session alone cannot add a way in.
 func TestAccountPasswordForPasswordlessUser(t *testing.T) {
 	e := newEnv(t, nil)
 	org := e.org(t, "acme", nil)
@@ -201,23 +204,70 @@ func TestAccountPasswordForPasswordlessUser(t *testing.T) {
 	b := e.signedIn(t, u)
 
 	res, out := b.api("GET", "/api-internal/account", nil)
-	if out["security"].(map[string]any)["has_password"] != false {
-		t.Fatalf("has_password: %v", out["_raw"])
+	sec := out["security"].(map[string]any)
+	if sec["has_password"] != false || sec["passwords_allowed"] != true {
+		t.Fatalf("security: %v", out["_raw"])
 	}
-	// Passwords come only from invitations: there is no way to add a first password here, re-authenticated or not.
-	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "my first password!"})
-	wantStatus(t, res, out, 409)
-	if !strings.Contains(str(out, "error"), "no password") {
-		t.Fatalf("message: %v", out)
+	// not without confirming first
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "my first password!"})
+	wantStatus(t, res, out, 403)
+	if str(out, "field") != "reauth" {
+		t.Fatalf("not confirmed: %v", out)
 	}
 	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
-	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "my first password!"})
-	wantStatus(t, res, out, 409)
-	res, out = b.api("GET", "/api-internal/account", nil)
-	if out["security"].(map[string]any)["has_password"] != false {
-		t.Fatalf("password was set: %v", out["_raw"])
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "short"})
+	wantStatus(t, res, out, 422)
+	if str(out, "field") != "new" {
+		t.Fatalf("short password: %v", out)
 	}
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "my first password!"})
+	wantStatus(t, res, out, 200)
+	got, _ := e.Svc.Users.Get(context.Background(), u.ID)
+	if ok, err := e.Svc.VerifyPassword(context.Background(), got, "my first password!"); err != nil || !ok {
+		t.Fatalf("password not set: %v %v", ok, err)
+	}
+	// the session that set it carries on, and from now on changing it needs the current one
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "yet another password"})
+	wantStatus(t, res, out, 422)
+	if str(out, "field") != "current" {
+		t.Fatalf("change without the current password: %v", out)
+	}
+
+	// a passkey-only account confirms with its passkey
+	name2, email2 := "pk", "pk@example.com"
+	pk, _ := e.Svc.CreateUser(context.Background(), service.System, org.ID, service.UserInput{GivenName: gn("P"), Username: &name2, Email: &email2})
+	setup := e.signedIn(t, pk)
+	setup.fresh()
+	setup.registerPasskey("Key")
+	c := e.signedIn(t, pk) // another browser, signed in an hour ago
+	c.auth = setup.auth
+	res, out = c.api("POST", "/api-internal/account/password", map[string]any{"new": "passkey user password"})
+	wantStatus(t, res, out, 403)
+	res, begin := c.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
+	wantStatus(t, res, begin, 200)
+	opts, _ := json.Marshal(begin["options"])
+	assertion, _, err := c.auth.Get(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, out = c.api("POST", "/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	wantStatus(t, res, out, 200)
+	res, out = c.api("POST", "/api-internal/account/password", map[string]any{"new": "passkey user password"})
+	wantStatus(t, res, out, 200)
+
+	// an organization without passwords offers none
+	nopw := e.org(t, "nopw", func(s *model.OrgSettings) { s.PasswordLogin = false })
+	name3, email3 := "np", "np@example.com"
+	np, _ := e.Svc.CreateUser(context.Background(), service.System, nopw.ID, service.UserInput{GivenName: gn("N"), Username: &name3, Email: &email3})
+	d := e.signedIn(t, np)
+	d.fresh()
+	res, out = d.api("GET", "/api-internal/account", nil)
+	if out["security"].(map[string]any)["passwords_allowed"] != false {
+		t.Fatalf("passwords_allowed: %v", out["_raw"])
+	}
+	res, out = d.api("POST", "/api-internal/account/password", map[string]any{"new": "not allowed here!"})
+	wantStatus(t, res, out, 409)
 }
 
 func TestAccountPasskeys(t *testing.T) {

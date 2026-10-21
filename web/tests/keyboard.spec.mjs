@@ -609,13 +609,31 @@ test('account: Change password opens from the keyboard, traps focus, closes with
   await expect(opener).toBeFocused()
 })
 
-test('account: a user without a password sees why, and no way to add one', async ({ page }) => {
+test('account: a user without a password in an organization without passwords sees why, and no way to add one', async ({ page }) => {
   await signIn(page, 'user')
   await page.goto('/account', { waitUntil: 'load' })
-  await accountStub({ has_password: false })(page)
-  await expect(page.getByText('Your account has no password. Ask an administrator for an invitation to set one.')).toBeVisible()
+  await accountStub({ has_password: false, passwords_allowed: false })(page)
+  await expect(page.getByText('Your organization does not sign people in with passwords.')).toBeVisible()
   await expect(page.getByRole('button', { name: /Change… password/ })).toBeHidden()
-  await expect(page.getByText('Add a password', { exact: false })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Set a password…' })).toBeHidden()
+})
+
+test('account: a user without a password can set one: the dialog asks for no current password and returns focus', async ({ page }) => {
+  await signIn(page, 'user')
+  await page.goto('/account', { waitUntil: 'load' })
+  await accountStub({ has_password: false, passwords_allowed: true })(page)
+  await expect(page.getByText('You sign in without a password. You can add one as another way to sign in.')).toBeVisible()
+  const opener = page.getByRole('button', { name: 'Set a password…' })
+  await opener.focus()
+  await page.keyboard.press('Enter')
+  const dlg = page.getByRole('dialog', { name: 'Set a password' })
+  await expect(dlg).toBeVisible()
+  await expect(page.locator('#f-pw_current')).toBeHidden()
+  await expect(page.locator('#f-pw_new')).toBeFocused()
+  await expect(dlg.getByRole('button', { name: 'Set password' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dlg).toBeHidden()
+  await expect(opener).toBeFocused()
 })
 
 test('account: Authenticator App set-up dialog opens, shows the key, closes with Esc and returns focus', async ({ page }) => {

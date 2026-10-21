@@ -376,6 +376,8 @@ export default function (Alpine) {
     get showPasskeyButton() { return this.passkeyAllowed && this.canPasskey },
     get noPasskeySupport() { return this.passkeyAllowed && !this.canPasskey },
     get passwordLabel() { return this.busy ? 'Saving…' : this.passwordOn && this.passkeyAllowed ? 'Set password' : 'Activate account' },
+    // the passkey comes first and is the main action where it can be created; the password button is then secondary
+    get passwordButtonClass() { return this.showPasskeyButton ? 'btn-secondary' : 'btn-primary' },
 
     async submitPassword() {
       const f = this.form

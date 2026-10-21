@@ -8,11 +8,14 @@ test('passkey option is offered, reachable by keyboard and accessible (password 
   const btn = page.getByRole('button', { name: 'Create a passkey' })
   await expect(btn).toBeVisible()
   await expect(page.getByText('This browser or device cannot create passkeys.')).toBeHidden()
-  // Tab from the password fields reaches the passkey button
-  await page.locator('#f-confirm').focus()
-  await page.keyboard.press('Tab') // "Set password"
-  await page.keyboard.press('Tab') // "Create a passkey"
-  await expect(btn).toBeFocused()
+  // the passkey comes first and is the main action; Tab from it reaches the password fields
+  const pw = page.locator('#f-password')
+  expect(await btn.evaluate((b, p) => !!(b.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING), await pw.elementHandle())).toBe(true)
+  await expect(btn).toHaveClass(/btn-primary/)
+  await expect(page.getByRole('button', { name: 'Set password' })).toHaveClass(/btn-secondary/)
+  await btn.focus()
+  await page.keyboard.press('Tab') // "Password"
+  await expect(pw).toBeFocused()
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })
@@ -38,6 +41,7 @@ test('browser without WebAuthn: the passkey button is replaced by an explanation
   await expect(page.getByRole('button', { name: 'Create a passkey' })).toHaveCount(0)
   const note = page.getByText('This browser or device cannot create passkeys. Set a password instead.')
   await expect(note).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Set password' })).toHaveClass(/btn-primary/)
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })
