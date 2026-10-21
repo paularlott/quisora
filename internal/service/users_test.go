@@ -77,40 +77,45 @@ func TestSelfServiceProfile(t *testing.T) {
 	}
 }
 
-func TestLastAdminProtection(t *testing.T) {
+// Organizations need no administrator (super admins administer every one): an organization's last administrator can
+// be demoted, disabled or deleted.
+func TestLastOrgAdminNotProtected(t *testing.T) {
 	c := newCast(t)
 	org := c.org("solo")
-	only := c.user(org.ID, "only", model.RoleAdmin)
+	for _, change := range []service.UserInput{{Role: ptr(model.RoleUser)}, {Active: ptr(false)}} {
+		only := c.user(org.ID, c.next("only"), model.RoleAdmin)
+		if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, change); err != nil {
+			t.Errorf("change of the last admin %+v: %v", change, err)
+		}
+	}
+	only := c.user(org.ID, "last", model.RoleAdmin)
+	if err := c.svc.DeleteUser(c.ctx, actor(c.super), only.ID); err != nil {
+		t.Errorf("delete the last admin: %v", err)
+	}
+}
 
-	// Super admin cannot demote, disable or delete the last admin.
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, service.UserInput{Role: ptr(model.RoleUser)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("demote last admin: %v", err)
+// The server keeps as many super admins as it needs (Service.MinSuperAdmins): two in a gossip cluster, and the error
+// says so.
+func TestMinSuperAdmins(t *testing.T) {
+	c := newCast(t)
+	c.svc.MinSuperAdmins = 2
+	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
+	s3 := c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s3.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
+		t.Fatalf("three super admins, one demoted: %v", err)
 	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("disable last admin: %v", err)
+	_, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
+	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "at least 2 super admins") {
+		t.Fatalf("two super admins in a gossip cluster: %v", err)
 	}
-	if err := c.svc.DeleteUser(c.ctx, actor(c.super), only.ID); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("delete last admin: %v", err)
+	c.svc.MinSuperAdmins = 0
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
+		t.Fatalf("one super admin is enough without gossip: %v", err)
 	}
-	// With a second admin it is allowed, then the remaining one is protected again.
-	second := c.user(org.ID, "second", model.RoleAdmin)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
-		t.Fatalf("demote with two admins: %v", err)
-	}
-	if err := c.svc.DeleteUser(c.ctx, actor(c.super), second.ID); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("delete remaining admin: %v", err)
-	}
-	// A disabled admin does not count as an admin.
-	third := c.user(org.ID, "third", model.RoleAdmin)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(second), third.ID, service.UserInput{Active: ptr(false)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), second.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("disable the only active admin: %v", err)
-	}
-	// ... but the disabled one can be deleted.
-	if err := c.svc.DeleteUser(c.ctx, actor(second), third.ID); err != nil {
-		t.Errorf("delete disabled admin: %v", err)
+	ghost := &service.Actor{UserID: "someone-else", OrgID: c.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
+	_, err = c.svc.UpdateUser(c.ctx, ghost, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
+	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "last super admin") {
+		t.Fatalf("the last super admin: %v", err)
 	}
 }
 
@@ -580,21 +585,21 @@ func TestProvisioningClientCannotTouchAdmins(t *testing.T) {
 func TestLastAdminRace(t *testing.T) {
 	for i := range 20 {
 		c := newCast(t)
-		second, err := c.svc.CreateUser(c.ctx, service.System, c.aAdmin.OrgID, service.UserInput{GivenName: gn("T"),
-			Username: ptr(fmt.Sprintf("admin2-%d", i)), Email: ptr(fmt.Sprintf("admin2-%d@example.com", i)), Role: ptr(model.RoleAdmin)})
+		second, err := c.svc.CreateUser(c.ctx, service.System, c.primary.ID, service.UserInput{GivenName: gn("T"),
+			Username: ptr(fmt.Sprintf("super2-%d", i)), Email: ptr(fmt.Sprintf("super2-%d@example.com", i)), Role: ptr(model.RoleSuperAdmin)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		role := model.RoleUser
 		var wg sync.WaitGroup
-		for _, id := range []string{c.aAdmin.ID, second.ID} {
+		for _, id := range []string{c.super.ID, second.ID} {
 			wg.Go(func() { _, _ = c.svc.UpdateUser(c.ctx, service.System, id, service.UserInput{Role: &role}) })
 		}
 		wg.Wait()
-		_, n, err := c.svc.Users.List(c.ctx, store.ListQuery{Scope: c.aAdmin.OrgID, Filters: []store.Filter{
-			{Field: "role", Value: "admin"}, {Field: "active", Value: true}}})
+		_, n, err := c.svc.Users.List(c.ctx, store.ListQuery{Scope: c.primary.ID, Filters: []store.Filter{
+			{Field: "role", Value: "super_admin"}, {Field: "active", Value: true}}})
 		if err != nil || n != 1 {
-			t.Fatalf("run %d: %d active admins left", i, n)
+			t.Fatalf("run %d: %d active super admins left", i, n)
 		}
 	}
 }

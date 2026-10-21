@@ -152,7 +152,7 @@ func (s *Service) NoteTOTPStep(ctx context.Context, u *model.User, step int64) e
 const adminLockTTL = 30 * time.Second
 
 // lockAdmins takes the organization's admin lock: a lock record written with a compare-and-swap (a quorum one in a
-// gossip cluster), so changes that could remove the last administrator are serialised across every node. It waits
+// gossip cluster), so changes that could remove a super admin the server needs are serialised across every node. It waits
 // up to ten seconds for another holder. The returned function releases it.
 func (s *Service) lockAdmins(ctx context.Context, orgID string) (func(), error) {
 	id := "admins/" + orgID

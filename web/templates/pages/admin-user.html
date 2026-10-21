@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminUser" data-base="{{.Data.API}}" data-user="{{.Data.UserID}}" data-list="{{.Data.Base}}/users" class="stack-lg" @user-emails-changed.window="reloadUser" @user-signin-changed.window="reloadUser">
+<div x-data="adminUser" data-base="{{.Data.API}}" data-user="{{.Data.UserID}}"{{if .Data.Self}} data-self{{end}} data-list="{{.Data.Base}}/users" class="stack-lg" @user-emails-changed.window="reloadUser" @user-signin-changed.window="reloadUser">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <nav class="crumbs glass" aria-label="Breadcrumb"><ol>
       <li><a href="{{.Data.Base}}/users">{{template "icon" "building"}}<span class="sr-only">Organization: </span>{{.Org.DisplayName}}</a></li><li><a href="{{.Data.Base}}/users">Users</a></li><li><span aria-current="page" x-text="user ? user.title : 'User'">User</span></li></ol></nav>
@@ -19,8 +19,9 @@
           <p class="page-sub mt-1"><span x-text="user.username"></span> · <span :class="user.roleClass" x-text="user.roleText"></span> <span :class="user.statusClass" x-text="user.statusText"></span></p>
         </div>
       </div>
-      <button type="button" class="btn btn-primary" @click="edit">{{template "icon" "pencil"}} Edit user</button>
+      <button type="button" class="btn btn-primary" x-show="manageable" @click="edit">{{template "icon" "pencil"}} Edit user</button>
     </div>
+    <p class="alert alert-info" x-show="readOnly" x-cloak>{{template "icon" "info"}}<span>You can see this user but not change them: their role is above yours.</span></p>
 
     <section class="glass-card" aria-labelledby="profile-h">
       <h2 class="section-title mb-4" id="profile-h">Profile</h2>
@@ -41,7 +42,16 @@
 
     {{$addHelp := "Email is not set up on this server, so an address added here counts as verified at once."}}{{if .Site.Mail}}{{$addHelp = "We email the user a link to verify it. Until they follow it, the address matches no sign-ins and cannot be made primary."}}{{end}}
     {{$help := "Sign-ins from GitHub, Google and other providers that use one of these verified addresses find this user."}}{{if .Data.Self}}{{$help = "Your own addresses: changes ask you to confirm it is you, and addresses you add stay unverified until you follow the link mailed to them."}}{{$addHelp = "We email a link to this address to verify it. Adding an address asks you to confirm it is you."}}{{end}}
+    <template x-if="manageable"><div>
     {{template "emails-card" (dict "comp" "adminUserEmails" "id" "emails" "help" $help "addHelp" $addHelp)}}
+    </div></template>
+    <section class="glass-card" aria-labelledby="emails-ro-h" x-show="readOnly" x-cloak>
+      <h2 class="section-title mb-4" id="emails-ro-h">Email addresses</h2>
+      <ul class="stack" aria-labelledby="emails-ro-h">
+        <li><span x-text="user.emailText"></span> <span class="badge badge-accent ml-1">Primary</span></li>
+        <template x-for="l in user.linkedView" :key="l.address"><li><span x-text="l.address"></span> <span :class="l.badgeClass" x-text="l.badgeText"></span></li></template>
+      </ul>
+    </section>
 
     <section class="glass-card" aria-labelledby="signin-h">
       <h2 class="section-title mb-1" id="signin-h">Sign-in</h2>
@@ -51,14 +61,15 @@
         <div><dt>Authenticator app</dt><dd x-text="user.mfaText"></dd></div>
         <div><dt>Passkeys</dt><dd x-text="passkeysText"></dd></div>
       </dl>
-      <p class="help mb-3" x-show="resetBySuperOnly" x-cloak>Only a super admin can send a manager or administrator a new invitation link or remove their password.</p>
-      <div class="flex flex-wrap gap-3">
+      <p class="help mb-3" x-show="resetNoteShown" x-cloak>Only a super admin can send a manager or administrator a new invitation link or remove their password.</p>
+      <div class="flex flex-wrap gap-3" x-show="manageable">
         <button type="button" class="btn btn-secondary" x-show="canResetSignIn" @click="newInvite">{{template "icon" "key"}} New invitation link</button>
         <button type="button" class="btn btn-secondary" x-show="canRemovePassword" @click="removePassword">{{template "icon" "trash"}} Remove password</button>
         <button type="button" class="btn btn-secondary" @click="revoke">{{template "icon" "logout"}} Sign out everywhere</button>
       </div>
     </section>
 
+    <template x-if="manageable"><div class="stack-lg">
     <section class="glass-card" aria-labelledby="passkeys-h" x-data="adminUserPasskeys">
       <h2 class="section-title mb-1" id="passkeys-h" tabindex="-1">Passkeys</h2>
       <p class="muted mb-4">Passkeys this user signs in with. Removing one (a lost or replaced device) stops it signing them in and ends the sessions that signed in with it.</p>
@@ -173,6 +184,7 @@
       <p class="muted mb-4">Deleting a user removes their sessions, passkeys and API tokens. This cannot be undone.</p>
       <button type="button" class="btn btn-danger" @click="remove">{{template "icon" "trash"}} Delete user</button>
     </section>
+    </div></template>
   </div></template>
 
 {{template "dialog-start" (dict "id" "lockout-dialog" "title" "Lock this user out?" "size" "sm")}}

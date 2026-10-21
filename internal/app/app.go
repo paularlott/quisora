@@ -106,6 +106,9 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.Svc = service.New(c, a.Store, sealer)
 	a.Svc.Log = log
 	a.Svc.Writable = node.Writable
+	if node.Replicating() {
+		a.Svc.MinSuperAdmins = 2 // see service.Service.MinSuperAdmins
+	}
 	a.closers = append(a.closers, a.Svc.WaitBackground) // closed before the store (closers run in reverse)
 	if err := a.setupAudit(c, node, log); err != nil {
 		a.Close()

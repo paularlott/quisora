@@ -27,11 +27,12 @@ var (
 	ErrForbidden = errors.New("forbidden")
 	ErrNotFound  = errors.New("not found")
 	// ErrLimit: a server-wide cap is reached (self-registered applications); try again later.
-	ErrLimit      = errors.New("limit reached")
-	ErrInvalid    = errors.New("invalid")
-	ErrConflict   = errors.New("already exists")
-	ErrStale      = errors.New("changed by someone else, reload and try again")
-	ErrLastAdmin  = errors.New("cannot remove the last administrator")
+	ErrLimit    = errors.New("limit reached")
+	ErrInvalid  = errors.New("invalid")
+	ErrConflict = errors.New("already exists")
+	ErrStale    = errors.New("changed by someone else, reload and try again")
+	// ErrLastAdmin: the change would leave fewer usable super admins than the server keeps (Service.MinSuperAdmins).
+	ErrLastAdmin  = errors.New("cannot remove the last super admin")
 	ErrNotEmpty   = errors.New("organization still has users")
 	ErrPrimaryOrg = errors.New("the primary organization cannot be deleted")
 	// ErrNotReplicated: the change was made on this server but no other server confirmed it yet (store.Applied).
@@ -151,8 +152,13 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 
 	primary *orgCache
-	signOut signOutCache   // emergency sign-out counters (signout.go)
-	bg      sync.WaitGroup // Background work
+
+	// MinSuperAdmins is how many usable super admins must remain after a demotion, disable, deletion or end date (0:
+	// one). The app sets 2 when nodes replicate over gossip: a change one node applied but the majority has not
+	// confirmed yet could otherwise leave none.
+	MinSuperAdmins int
+	signOut        signOutCache   // emergency sign-out counters (signout.go)
+	bg             sync.WaitGroup // Background work
 
 	// Writable reports whether this node may change replicated data now (cluster.Node.Writable; nil: always). Writes
 	// made in passing while serving reads (a session's or token's last use, a sign-in's last-login stamp) are skipped

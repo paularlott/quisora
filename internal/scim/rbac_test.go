@@ -111,15 +111,21 @@ func TestSCIMRBAC(t *testing.T) {
 		t.Errorf("super creates in B: %d", r.Status)
 	}
 
-	// Guards through SCIM: last admin, self.
-	if r := e.do("DELETE", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, nil); r.Status != 409 {
-		t.Errorf("delete last admin: %d %s", r.Status, r.Raw)
+	// Guards through SCIM: the super admins the server keeps (two here, as in a gossip cluster), self.
+	e.Svc.MinSuperAdmins = 2
+	if r := e.do("DELETE", "/scim/v2/primary/Users/"+super2.ID, e.super, nil); r.Status != 409 {
+		t.Errorf("delete a super admin the server needs: %d %s", r.Status, r.Raw)
 	}
-	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", "active", false))); r.Status != 409 {
-		t.Errorf("disable last admin: %d %s", r.Status, r.Raw)
+	if r := e.do("PATCH", "/scim/v2/primary/Users/"+super2.ID, e.super, patchBody(op("replace", "active", false))); r.Status != 409 {
+		t.Errorf("disable a super admin the server needs: %d %s", r.Status, r.Raw)
 	}
-	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); r.Status != 409 {
-		t.Errorf("demote last admin: %d %s", r.Status, r.Raw)
+	if r := e.do("PATCH", "/scim/v2/primary/Users/"+super2.ID, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); r.Status != 409 {
+		t.Errorf("demote a super admin the server needs: %d %s", r.Status, r.Raw)
+	}
+	e.Svc.MinSuperAdmins = 0
+	// an organization's last administrator is not guarded: super admins administer every organization
+	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", "active", false))); r.Status != 200 {
+		t.Errorf("disable an organization's last admin: %d %s", r.Status, r.Raw)
 	}
 	if r := e.do("DELETE", "/scim/v2/acme/Users/"+admUser.ID, e.admA, nil); r.Status != 400 {
 		t.Errorf("delete self: %d %s", r.Status, r.Raw)

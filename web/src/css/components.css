@@ -247,6 +247,7 @@
   .alert-error { background: var(--b-danger-bg); color: var(--b-danger-fg); }
   .alert-success { background: var(--b-success-bg); color: var(--b-success-fg); }
   .alert-warning { background: var(--b-warn-bg); color: var(--b-warn-fg); }
+  .alert-info { background: var(--b-info-bg); color: var(--b-info-fg); }
   .alert a { color: inherit; }
 
   /* ---- Toolbar, search, tables ------------------------------------------------------------------------------ */

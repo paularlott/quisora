@@ -107,6 +107,12 @@ their role, or changing their primary email address, where password resets go) i
 or administrator who has not signed in yet gets the next invitation only from whoever issued the current one, or from
 a super admin.
 
+**Super admins the server keeps.** Demoting, disabling, deleting or end-dating a super admin is refused when fewer
+usable super admins than the server needs would remain: one on a single node or nodes sharing a database, two in a
+gossip cluster (a change one node made but the majority has not confirmed yet must never leave none). Make someone
+else a super admin first. Organizations need no administrator of their own: super admins administer every one, so an
+organization's last administrator can be demoted or removed.
+
 **Account changes** (a passkey, the authenticator app, the primary address, connecting a sign-in provider, an API
 token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
 sign-in through a provider trusted as a second factor does not count when the account has one of its own.
@@ -358,6 +364,8 @@ Run `quisora bootstrap` once, against the database, before the first node starts
 ### Replicated (gossip)
 
 Every node has its own database (BadgerDB is the usual choice) and the nodes replicate every write.
+A gossip cluster keeps at least two super admins: make a second one before you rely on the cluster (see
+[sensitive changes](#sessions-tokens-and-sensitive-changes)).
 
 ```toml
 [server]

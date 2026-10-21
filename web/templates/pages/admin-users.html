@@ -40,8 +40,8 @@
             <td><span :class="row.statusClass" x-text="row.statusText"></span> <span class="badge badge-plain ml-1" x-show="row.noPassword">No password</span></td>
             <td x-text="row.lastLoginText"></td>
             <td class="actions">
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.manageable" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.manageable" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
             </td>
           </tr></template>
         </tbody>

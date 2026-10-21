@@ -457,11 +457,11 @@ func (e *conflictErr) Unwrap() error { return e.error }
 // verified state.
 func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserInput) (*model.User, error) {
 	before, err := s.Users.Get(ctx, id)
-	if err != nil || !isAdminRank(before) || (in.Role == nil && in.Active == nil && in.ValidUntil == nil) {
+	if err != nil || before.Role != model.RoleSuperAdmin || (in.Role == nil && in.Active == nil && in.ValidUntil == nil) {
 		return s.updateUser(ctx, a, id, in)
 	}
-	// A change that can remove an admin holds the organization's admin lock (cluster-wide), and its last-admin check
-	// counts from a quorum's copies: two such changes on two nodes can never both pass it.
+	// A change that can remove a super admin holds the primary organization's admin lock (cluster-wide), and its
+	// last-super-admin check counts from a quorum's copies: two such changes on two nodes can never both pass it.
 	unlock, err := s.lockAdmins(ctx, before.OrgID)
 	if err != nil {
 		return nil, err
@@ -552,8 +552,11 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		if privileged(u) && in.Role.Rank() < u.Role.Rank() && a != System && !a.IsSuper() {
 			return nil, Invalid("role", "only a super admin can lower the role of a manager or administrator")
 		}
-		if err := s.guardLastAdmin(ctx, u); err != nil {
-			return nil, err
+		// Only a lower role can take administration away: a promotion never needs the guard.
+		if in.Role.Rank() < u.Role.Rank() {
+			if err := s.guardLastAdmin(ctx, u); err != nil {
+				return nil, err
+			}
 		}
 		u.Role = *in.Role
 		critical = true
@@ -624,22 +627,23 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	return u, nil
 }
 
-// guardLastAdmin refuses to demote, disable, delete or end-date the last usable admin of an org or the last usable
-// super admin. A usable admin is active and not past their end date. An admin without an end date may only stop being
-// one while another usable admin of the same role without an end date remains: otherwise end dates set on each other
-// (or a disable next to an end-dated colleague) would leave the organization without an administrator once the last
-// end date passes. The caller holds the organization's admin lock (lockAdmins).
+// guardLastAdmin refuses to demote, disable, delete or end-date a super admin when fewer than MinSuperAdmins usable
+// super admins would remain (one, or two in a gossip cluster). A usable super admin is active and not past their end
+// date. One without an end date may only stop being one while enough others without an end date remain: otherwise end
+// dates set on each other would leave none once the last one passes. Organizations need no administrator: super admins
+// administer every one of them. The caller holds the primary organization's admin lock (lockAdmins).
 func (s *Service) guardLastAdmin(ctx context.Context, u *model.User) error {
 	now := time.Now()
-	if !isAdminRank(u) || !u.Enabled(now) {
-		return nil // not a usable admin: removing them takes nothing away
+	if u.Role != model.RoleSuperAdmin || !u.Enabled(now) {
+		return nil // not a usable super admin: removing them takes nothing away
 	}
-	admins, err := s.usableAdmins(ctx, u.OrgID, u.Role)
+	need := max(s.MinSuperAdmins, 1)
+	supers, err := s.usableAdmins(ctx, u.OrgID, model.RoleSuperAdmin)
 	if err != nil {
 		return err
 	}
 	others, lasting := 0, 0
-	for _, o := range admins {
+	for _, o := range supers {
 		if o.ID == u.ID {
 			continue
 		}
@@ -648,16 +652,28 @@ func (s *Service) guardLastAdmin(ctx context.Context, u *model.User) error {
 			lasting++
 		}
 	}
-	if others == 0 || (u.ValidUntil == nil && lasting == 0) {
-		return ErrLastAdmin
+	if others < need || (u.ValidUntil == nil && lasting < need) {
+		return lastSuperAdminErr{need}
 	}
 	return nil
 }
 
+// lastSuperAdminErr is ErrLastAdmin saying how many super admins the server keeps.
+type lastSuperAdminErr struct{ need int }
+
+func (e lastSuperAdminErr) Error() string {
+	if e.need > 1 {
+		return "a gossip cluster keeps at least " + strconv.Itoa(e.need) + " super admins (a change one server made but the others have not confirmed must never leave none): make someone else a super admin first"
+	}
+	return "this is the last super admin: make someone else a super admin first"
+}
+
+func (e lastSuperAdminErr) Is(target error) bool { return target == ErrLastAdmin }
+
 // guardEndDate applies guardLastAdmin to a change of u's end date to v (the UserInput value: "" clears it). Clearing
-// an end date, or moving it later, never removes an administrator.
+// an end date, or moving it later, never removes a super admin.
 func (s *Service) guardEndDate(ctx context.Context, u *model.User, v string) error {
-	if !isAdminRank(u) {
+	if u.Role != model.RoleSuperAdmin {
 		return nil
 	}
 	v = strings.TrimSpace(v)
@@ -691,7 +707,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	if err != nil {
 		return mapStore(err)
 	}
-	if isAdminRank(u) {
+	if u.Role == model.RoleSuperAdmin {
 		unlock, err := s.lockAdmins(ctx, u.OrgID)
 		if err != nil {
 			return err
@@ -1003,7 +1019,7 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 				return n, nil // sorted by end date: the rest end later
 			}
 			if _, err := s.UpdateUser(ctx, System, u.ID, UserInput{Active: ptrBool(false), StatusReason: &endReached}); err != nil {
-				continue // the last administrator of an organization is never disabled; their end date still stops sign-in
+				continue // the last super admin(s) are never disabled; their end date still stops sign-in
 			}
 			s.Audit(ctx, System, u.OrgID, "user.expire", u.Username, map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)})
 			n++

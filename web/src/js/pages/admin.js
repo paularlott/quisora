@@ -910,7 +910,8 @@ export default function (Alpine) {
       return { ...u, title: u.name || u.username, initial: (u.name || u.username || '?').slice(0, 1).toUpperCase(), sub: u.email || u.username, roleText: ROLE_LABEL[u.role] || u.role,
         roleClass: 'badge ' + (ROLE_BADGE[u.role] || 'badge-plain'), statusText: b.text, statusClass: b.cls,
         lastLoginText: relTime(u.last_login), href: `${this.pageUrl}/${enc(u.id)}`, editLabel: 'Edit ' + (u.name || u.username),
-        deleteLabel: 'Delete ' + (u.name || u.username), createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users') }
+        deleteLabel: 'Delete ' + (u.name || u.username), createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users'),
+        manageable: u.can_manage !== false }
     },
     edit(ev) { this.openEditUser(this.rowFromEvent(ev), ev.currentTarget) },
     afterUserSaved() { return this.load() },
@@ -926,11 +927,12 @@ export default function (Alpine) {
   // ---- One user -------------------------------------------------------------------------------------------------
   Alpine.data('adminUser', () => mix(formMixin(), dialogMixin(), userDialogMixin(Alpine), {
     reloadUser() { return this.refresh(true) },
-    user: null, loading: true, loadError: '', userId: '', listUrl: '', gone: false, _sig: '', _lr: null,
+    user: null, loading: true, loadError: '', userId: '', listUrl: '', gone: false, _sig: '', _lr: null, isSelf: false,
     init() {
       const d = this.$el.dataset
       this.apiBase = d.base
       this.userId = d.user
+      this.isSelf = d.self !== undefined
       this.listUrl = d.list
       this._lr = liveRunner(() => this.refresh(true))
       subscribe(['user', 'group', 'member', 'passkey'], (ev) => { if (aboutUser(ev, this.userId)) this._lr.trigger() })
@@ -965,10 +967,17 @@ export default function (Alpine) {
         phoneText: u.phone_number || '—', phoneVerifiedText: u.phone_number ? (u.phone_number_verified ? 'Verified' : 'Not verified') : '',
         phoneVerifiedClass: 'badge ml-1 ' + (u.phone_number_verified ? 'badge-success' : 'badge-warning'),
         statusNote: statusNote(u), hasStatusNote: !!u.status_changed,
+        linkedView: (u.linked_emails || []).map((l) => ({ address: l.address, badgeText: l.verified ? 'Verified' : 'Not verified',
+          badgeClass: 'badge ml-1 ' + (l.verified ? 'badge-success' : 'badge-warning') })),
         passwordDetail: u.password_changed_at ? (u.has_password ? 'Last changed ' : 'Removed ') + fmtDateTime(u.password_changed_at) : '',
         mfaText: u.mfa_enrolled_at ? 'Set up ' + fmtDateTime(u.mfa_enrolled_at) : 'Not set up' }
     },
     get showUser() { return this.user !== null },
+    // Another user of a higher role is shown read-only (the server refuses any change to them anyway); your own page
+    // keeps its self-service rules.
+    get manageable() { return !!this.user && (this.isSelf || this.user.can_manage !== false) },
+    get readOnly() { return !!this.user && !this.manageable },
+    get resetNoteShown() { return this.manageable && this.resetBySuperOnly },
     get hasLoadError() { return this.loadError !== '' },
     get groups() { return this.user ? this.user.groups || [] : [] },
     get hasGroups() { return this.groups.length > 0 },

@@ -507,10 +507,10 @@ func TestHousekeepingFencedAfterLeaseLoss(t *testing.T) {
 	}
 }
 
-// A9: two administrators of an organization are demoted at once on two different nodes. The last-admin guard is a
-// cluster-wide lock plus a count from a quorum's copies: at most one demotion succeeds, and the organization always
-// keeps an active administrator.
-func TestLastAdminGuardIsClusterWide(t *testing.T) {
+// superAdminRace sets up two nodes' services over a gossip cluster with its minimum of two super admins, and runs
+// rounds: two new super admins (three with the bootstrap one), and race(i, us) on node i at once against them.
+// At most one of the two removals may succeed, and every node must keep seeing at least two active super admins.
+func superAdminRace(t *testing.T, rounds int, race func(svcs []*service.Service, i int, us []*model.User) error) {
 	c := newTCluster(t, 3, memBackend)
 	c.startAll()
 	c.waitReady()
@@ -518,92 +518,32 @@ func TestLastAdminGuardIsClusterWide(t *testing.T) {
 	cfg.Limits.PasswordWorkers = 1
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
 	svcs := []*service.Service{service.New(cfg, c.nodes[0].st(), sealer), service.New(cfg, c.nodes[1].st(), sealer)}
-	admin, user := model.RoleAdmin, model.RoleUser
-	for round := range 4 {
-		name := fmt.Sprintf("org-%d", round)
-		org, err := svcs[0].CreateOrg(bg, service.System, service.OrgInput{Name: &name})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var ids []string
-		for i := range 2 {
-			un, em := fmt.Sprintf("admin%d", i), fmt.Sprintf("admin%d@example.com", i)
-			u, err := svcs[0].CreateUser(bg, service.System, org.ID, service.UserInput{Username: &un, Email: &em,
-				GivenName: &un, Role: &admin})
-			if err != nil {
-				t.Fatal(err)
-			}
-			ids = append(ids, u.ID)
-		}
-		for _, id := range ids {
-			c.waitUser(t, id, func(u *model.User) bool { return u.Role == model.RoleAdmin && u.Active })
-		}
-		var wg sync.WaitGroup
-		errs := make([]error, 2)
-		for i := range 2 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_, errs[i] = svcs[i].UpdateUser(bg, service.System, ids[i], service.UserInput{Role: &user})
-			}()
-		}
-		wg.Wait()
-		ok := 0
-		for _, err := range errs {
-			if err == nil {
-				ok++
-			} else if !errors.Is(err, service.ErrLastAdmin) && !errors.Is(err, service.ErrUnavailable) &&
-				!errors.Is(err, service.ErrStale) {
-				t.Fatalf("round %d: %v", round, err)
-			}
-		}
-		if ok > 1 {
-			t.Fatalf("round %d: both administrators were demoted", round)
-		}
-		time.Sleep(500 * time.Millisecond)
-		for i, tn := range c.nodes {
-			n := 0
-			for _, id := range ids {
-				if u, err := users(tn).Get(bg, id); err == nil && u.Role == model.RoleAdmin && u.Active {
-					n++
-				}
-			}
-			if n == 0 {
-				t.Fatalf("round %d: node %d sees the organization without an administrator", round, i)
-			}
-		}
+	for _, s := range svcs {
+		s.MinSuperAdmins = 2
 	}
-}
-
-// A9b: as A9, with two administrators deleting each other at once on two nodes: at most one deletion succeeds, and
-// the organization always keeps an active administrator.
-func TestLastAdminDeleteIsClusterWide(t *testing.T) {
-	c := newTCluster(t, 3, memBackend)
-	c.startAll()
-	c.waitReady()
-	cfg := config.Default()
-	cfg.Limits.PasswordWorkers = 1
-	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
-	svcs := []*service.Service{service.New(cfg, c.nodes[0].st(), sealer), service.New(cfg, c.nodes[1].st(), sealer)}
-	admin := model.RoleAdmin
-	for round := range 3 {
-		name := fmt.Sprintf("org-%d", round)
-		org, err := svcs[0].CreateOrg(bg, service.System, service.OrgInput{Name: &name})
-		if err != nil {
-			t.Fatal(err)
-		}
+	root, _, err := svcs[0].Bootstrap(bg, "root@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.waitUser(t, root.ID, func(u *model.User) bool { return u.Role == model.RoleSuperAdmin && u.Active })
+	primary, err := svcs[0].PrimaryOrg(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	super := model.RoleSuperAdmin
+	for round := range rounds {
 		var us []*model.User
 		for i := range 2 {
-			un, em := fmt.Sprintf("admin%d", i), fmt.Sprintf("admin%d@example.com", i)
-			u, err := svcs[0].CreateUser(bg, service.System, org.ID, service.UserInput{Username: &un, Email: &em,
-				GivenName: &un, Role: &admin})
+			un, em := fmt.Sprintf("super%d-%d", round, i), fmt.Sprintf("super%d-%d@example.com", round, i)
+			u, err := svcs[0].CreateUser(bg, service.System, primary.ID, service.UserInput{Username: &un, Email: &em,
+				GivenName: &un, Role: &super})
 			if err != nil {
 				t.Fatal(err)
 			}
 			us = append(us, u)
 		}
 		for _, u := range us {
-			c.waitUser(t, u.ID, func(u *model.User) bool { return u.Role == model.RoleAdmin && u.Active })
+			c.waitUser(t, u.ID, func(u *model.User) bool { return u.Role == model.RoleSuperAdmin && u.Active })
 		}
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
@@ -611,8 +551,7 @@ func TestLastAdminDeleteIsClusterWide(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// each administrator deletes the other, on their own node
-				errs[i] = svcs[i].DeleteUser(bg, service.ActorForUser(us[i], ""), us[1-i].ID)
+				errs[i] = race(svcs, i, us)
 			}()
 		}
 		wg.Wait()
@@ -626,21 +565,43 @@ func TestLastAdminDeleteIsClusterWide(t *testing.T) {
 			}
 		}
 		if ok > 1 {
-			t.Fatalf("round %d: both administrators were deleted", round)
+			t.Fatalf("round %d: both removals succeeded", round)
 		}
 		time.Sleep(500 * time.Millisecond)
 		for i, tn := range c.nodes {
 			n := 0
-			for _, u := range us {
-				if cur, err := users(tn).Get(bg, u.ID); err == nil && cur.Role == model.RoleAdmin && cur.Active {
+			for _, id := range []string{root.ID, us[0].ID, us[1].ID} {
+				if u, err := users(tn).Get(bg, id); err == nil && u.Role == model.RoleSuperAdmin && u.Active {
 					n++
 				}
 			}
-			if n == 0 {
-				t.Fatalf("round %d: node %d sees the organization without an administrator", round, i)
+			if n < 2 {
+				t.Fatalf("round %d: node %d sees %d super admins, fewer than the cluster keeps", round, i, n)
 			}
 		}
+		// back to the bootstrap super admin alone for the next round (directly: the guard would refuse it)
+		for _, u := range us {
+			_ = svcs[0].Users.Delete(bg, u.ID)
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+// A9: two super admins demoted at once on two nodes, where the cluster keeps two: the super admins' lock is
+// cluster-wide and the check counts from a quorum's copies, so at most one demotion succeeds.
+func TestLastAdminGuardIsClusterWide(t *testing.T) {
+	user := model.RoleUser
+	superAdminRace(t, 4, func(svcs []*service.Service, i int, us []*model.User) error {
+		_, err := svcs[i].UpdateUser(bg, service.System, us[i].ID, service.UserInput{Role: &user})
+		return err
+	})
+}
+
+// A9b: as A9, with the two super admins deleting each other at once on two nodes.
+func TestLastAdminDeleteIsClusterWide(t *testing.T) {
+	superAdminRace(t, 3, func(svcs []*service.Service, i int, us []*model.User) error {
+		return svcs[i].DeleteUser(bg, service.ActorForUser(us[i], ""), us[1-i].ID)
+	})
 }
 
 // A10: a node refuses to start on a clock set before the version clock's epoch; a version far ahead of this node's

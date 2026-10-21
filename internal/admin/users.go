@@ -32,6 +32,10 @@ type userView struct {
 	// Name is the read-only full name (given + family name).
 	Name         string              `json:"name"`
 	LinkedEmails []model.LinkedEmail `json:"linked_emails"` // never null
+	// CanManage says the caller may change this user at all (never someone of a higher role: a manager manages plain
+	// users, an administrator everyone but super admins); the console shows another user read-only without it. Present
+	// on lists and on GET of one user.
+	CanManage *bool `json:"can_manage,omitempty"`
 	// CanResetSignIn says the caller may issue this user an invitation or remove their password (a manager's or
 	// administrator's only a super admin may, once they have a way to sign in); present on GET of one user.
 	CanResetSignIn *bool `json:"can_reset_sign_in,omitempty"`
@@ -138,6 +142,8 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 	views := make([]userView, len(items))
 	for i, u := range items {
 		views[i] = viewOf(u)
+		can := m.s.Svc.CanManageUser(a, u)
+		views[i].CanManage = &can
 	}
 	writeList(w, views, total)
 }
@@ -166,6 +172,8 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 			view.Manager = &userRef{ID: mu.ID, Name: mu.FullName()}
 		}
 	}
+	manage := m.s.Svc.CanManageUser(a, u)
+	view.CanManage = &manage
 	can := m.s.Svc.CanResetSignIn(r.Context(), a, u)
 	view.CanResetSignIn = &can
 	canVerify := m.s.Svc.CanMarkEmailVerified(r.Context(), a, u)

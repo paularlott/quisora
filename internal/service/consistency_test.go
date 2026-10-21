@@ -120,14 +120,14 @@ func TestUniqueClashResolvedWithoutDeletion(t *testing.T) {
 	}
 }
 
-// A9: concurrent demotions of an organization's two administrators: the admin lock serialises them and the count is
-// fresh, so at most one succeeds and the organization keeps an administrator. The lock is released afterwards.
+// A9: concurrent removals of two super admins where the server keeps two (three with the bootstrap one): the admin
+// lock serialises them and the count is fresh, so exactly one succeeds. The lock is released afterwards.
 func TestLastAdminConcurrentDemotions(t *testing.T) {
 	e := newEnv(t)
+	e.svc.MinSuperAdmins = 2
 	for round := range 10 {
-		o := e.org(e.next("org"))
-		a := e.user(o.ID, "a", model.RoleAdmin)
-		b := e.user(o.ID, "b", model.RoleAdmin)
+		a := e.user(e.primary.ID, e.next("sa"), model.RoleSuperAdmin)
+		b := e.user(e.primary.ID, e.next("sb"), model.RoleSuperAdmin)
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
 		for i, id := range []string{a.ID, b.ID} {
@@ -151,11 +151,14 @@ func TestLastAdminConcurrentDemotions(t *testing.T) {
 			}
 		}
 		if ok != 1 {
-			t.Fatalf("round %d: %d demotions succeeded, want exactly 1", round, ok)
+			t.Fatalf("round %d: %d removals succeeded, want exactly 1", round, ok)
 		}
-		l, err := e.svc.Locks.Get(e.ctx, "admins/"+o.ID)
+		l, err := e.svc.Locks.Get(e.ctx, "admins/"+e.primary.ID)
 		if err != nil || l.Holder != "" {
 			t.Fatalf("round %d: the admin lock was not released: %+v %v", round, l, err)
+		}
+		for _, u := range []*model.User{a, b} { // back to the bootstrap super admin alone
+			_ = e.svc.Users.Delete(e.ctx, u.ID)
 		}
 	}
 }
