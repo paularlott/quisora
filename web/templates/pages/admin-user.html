@@ -30,14 +30,34 @@
         <div x-show="user.full"><dt>Username</dt><dd x-text="user.username"></dd></div>
         <div x-show="user.full"><dt>Email</dt><dd><span x-text="user.emailText"></span> <span :class="user.emailVerifiedClass" x-show="user.emailVerifiedText !== ''" x-text="user.emailVerifiedText"></span></dd></div>
         <div x-show="user.full"><dt>Phone</dt><dd><span x-text="user.phoneText"></span> <span :class="user.phoneVerifiedClass" x-show="user.phoneVerifiedText !== ''" x-text="user.phoneVerifiedText"></span></dd></div>
-        <div><dt>Role</dt><dd x-text="user.roleText"></dd></div>
-        <div><dt>Status</dt><dd><span x-text="user.statusText"></span><span class="help block mt-1" x-show="user.hasStatusNote" x-text="user.statusNote"></span></dd></div>
-        <div x-show="user.full"><dt>Last sign-in</dt><dd x-text="user.lastLoginText"></dd></div>
-        <div><dt>Created</dt><dd x-text="user.createdText"></dd></div>
-        <div x-show="user.full"><dt>External ID</dt><dd x-text="user.externalText"></dd></div>
-        <div x-show="user.full"><dt>Groups</dt><dd x-text="user.groupsText"></dd></div>
-        <div x-show="user.full"><dt>Tags</dt><dd><span x-show="user.noTags">None</span><ul class="tag-badges" aria-label="Tags" x-show="user.hasTags" x-cloak><template x-for="t in user.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></dd></div>
+        <div x-show="user.full"><dt>Language</dt><dd x-text="user.localeText"></dd></div>
+        <div x-show="user.full"><dt>Time zone</dt><dd x-text="user.zoneText"></dd></div>
       </dl>
+
+      <h3 class="font-semibold mt-6 mb-3">Account</h3>
+      <dl class="kv">
+        <div x-show="user.hasStatusNote"><dt>Last status change</dt><dd x-text="user.statusNote"></dd></div>
+        <div x-show="user.full"><dt>User type</dt><dd x-text="user.userTypeText"></dd></div>
+        <div x-show="user.full"><dt>End date</dt><dd><span x-text="user.endText"></span> <span :class="user.endClass" x-show="user.hasEndBadge" x-text="user.endBadge"></span></dd></div>
+        <div x-show="user.full"><dt>External ID</dt><dd x-text="user.externalText"></dd></div>
+        <div><dt>Created</dt><dd x-text="user.createdText"></dd></div>
+        <div x-show="user.full"><dt>Last sign-in</dt><dd x-text="user.lastLoginText"></dd></div>
+      </dl>
+
+      <div x-show="user.full">
+        <h3 class="font-semibold mt-6 mb-3">Work</h3>
+        <p class="muted" x-show="user.noWork">No work details.</p>
+        <dl class="kv" x-show="user.hasWork">
+          <template x-for="r in user.workRows" :key="r.key"><div><dt x-text="r.label"></dt><dd x-text="r.value"></dd></div></template>
+          <div><dt>Manager</dt><dd><a x-show="user.hasManager" :href="user.managerHref" x-text="user.managerName"></a><span x-show="!user.hasManager">—</span></dd></div>
+        </dl>
+
+        <h3 class="font-semibold mt-6 mb-3">Groups and tags</h3>
+        <dl class="kv">
+          <div><dt>Groups</dt><dd x-text="user.groupsText"></dd></div>
+          <div><dt>Tags</dt><dd><span x-show="user.noTags">None</span><ul class="tag-badges" aria-label="Tags" x-show="user.hasTags" x-cloak><template x-for="t in user.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></dd></div>
+        </dl>
+      </div>
     </section>
 
     {{$addHelp := "Email is not set up on this server, so an address added here counts as verified at once."}}{{if .Site.Mail}}{{$addHelp = "We email the user a link to verify it. Until they follow it, the address matches no sign-ins and cannot be made primary."}}{{end}}

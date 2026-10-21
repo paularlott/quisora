@@ -238,6 +238,40 @@ function statusNote(u) {
   return `${u.active ? 'Enabled again' : 'Disabled'} ${fmtDateTime(s.at)} ${who}${s.reason ? ': ' + s.reason : '.'}`
 }
 
+// profileDetails are the user page's display values beyond the basics: locale, time zone, user type, end date and the
+// work details (each "—" when unset), and the manager as a link.
+function profileDetails(u, listUrl) {
+  const w = u.work || {}
+  const workRows = WORK_FIELDS.map((k) => ({ key: k, label: WORK_LABELS[k], value: w[k] || '—' }))
+  const hasWork = WORK_FIELDS.some((k) => w[k]) || !!u.manager
+  let endText = 'No end date', endBadge = '', endClass = ''
+  if (isSet(u.valid_until)) {
+    const left = new Date(u.valid_until).getTime() - Date.now()
+    endText = fmtDateTime(u.valid_until)
+    if (left <= 0) { endBadge = 'Ended'; endClass = 'badge badge-danger ml-1' }
+    else if (left <= SOON_MS) { endBadge = 'Ends soon'; endClass = 'badge badge-warning ml-1' }
+  }
+  return {
+    localeText: localeName(u.locale), zoneText: u.zoneinfo || '—', userTypeText: u.user_type ? u.user_type[0].toUpperCase() + u.user_type.slice(1) : '—',
+    endText, endBadge, endClass, hasEndBadge: endBadge !== '',
+    workRows, hasWork, noWork: !hasWork,
+    managerName: u.manager ? u.manager.name : '—', hasManager: !!u.manager,
+    managerHref: u.manager ? `${listUrl}/${encodeURIComponent(u.manager.id)}` : '',
+  }
+}
+
+// localeName is a locale tag as a language name and the tag ("English (United Kingdom) · en-GB"), or the tag alone.
+function localeName(tag) {
+  if (!tag) return '—'
+  try {
+    const name = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }).of(tag)
+    return name && name !== tag ? `${name} · ${tag}` : tag
+  } catch (e) { return tag }
+}
+const WORK_LABELS = { title: 'Job title', department: 'Department', organization: 'Organization', division: 'Division',
+  cost_center: 'Cost centre', employee_number: 'Employee number' }
+const SOON_MS = 7 * 24 * 3600 * 1000 // an end date this close is pointed out
+
 // The date part (UTC) of an end date, for a date input.
 const dateOnly = (iso) => (iso ? new Date(iso).toISOString().slice(0, 10) : '')
 
@@ -970,6 +1004,7 @@ export default function (Alpine) {
         phoneVerifiedClass: 'badge ml-1 ' + (u.phone_number_verified ? 'badge-success' : 'badge-warning'),
         statusNote: statusNote(u), hasStatusNote: !!u.status_changed,
         directory: !!u.directory, full: !u.directory, hasUsername: !!u.username,
+        ...profileDetails(u, this.listUrl),
         linkedView: (u.linked_emails || []).map((l) => ({ address: l.address, badgeText: l.verified ? 'Verified' : 'Not verified',
           badgeClass: 'badge ml-1 ' + (l.verified ? 'badge-success' : 'badge-warning') })),
         passwordDetail: u.password_changed_at ? (u.has_password ? 'Last changed ' : 'Removed ') + fmtDateTime(u.password_changed_at) : '',
