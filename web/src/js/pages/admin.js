@@ -539,7 +539,9 @@ function tenantDialogMixin(Alpine) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // Client dialogs (create / edit / secret shown once); used on the tenant page.
-const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials']
+const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange'
+const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials', TOKEN_EXCHANGE]
+const CONFIDENTIAL_GRANTS = ['client_credentials', TOKEN_EXCHANGE]
 // Standard scopes shown as checkboxes (the rest of a client's scopes are its own API scopes, edited as rows).
 const STD_SCOPES = [
   { value: 'openid', help: 'Required for OpenID Connect sign-in: the user\u2019s identity.' },
@@ -609,7 +611,7 @@ function clientDialogMixin(Alpine) {
         redirect_uris: listRows(c.redirect_uris, LIST_ITEMS.redirect_uris), post_logout_redirect_uris: listRows(c.post_logout_redirect_uris, LIST_ITEMS.post_logout_redirect_uris, true),
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
-        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, scim: !!c.scim }
+        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests, scim: !!c.scim }
     },
     openCreateClient(opener) {
       this._form = 'client'
@@ -633,9 +635,10 @@ function clientDialogMixin(Alpine) {
       const redirects = this.usesRedirects
       const b = { name: f.name, description: f.description, redirect_uris: redirects ? listValues(f.redirect_uris) : [], post_logout_redirect_uris: redirects ? listValues(f.post_logout_redirect_uris) : [],
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
-        grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && g === 'client_credentials')),
+        grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && CONFIDENTIAL_GRANTS.includes(g))),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
-        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce }
+        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce,
+        require_pushed_authorization_requests: redirects && f.require_pushed_authorization_requests }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
       if (this.canScim) { b.scim = pub ? false : f.scim; b.first_party = f.first_party }

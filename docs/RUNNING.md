@@ -87,6 +87,22 @@ A resource server that serves several applications of the organization needs "Ma
 organization" on its client; so does one that applications name as a resource (RFC 8707), since a resource is in a
 token's audience as its URI, not as a client.
 
+**Pushed authorization requests** (RFC 9126, `POST /oauth/par`): a client posts its authorization request there,
+authenticated as at the token endpoint, and sends the browser to `/oauth/authorize` with only `client_id` and the
+`request_uri` it got back. The request is checked before the user sees anything, its parameters never pass through
+the browser, and the `request_uri` works once, for 60 seconds. "Require pushed authorization requests" on a client
+refuses its authorization requests made any other way. Request objects (JAR) are still not supported, pushed or not.
+
+**Token exchange** (RFC 8693, grant type `urn:ietf:params:oauth:grant-type:token-exchange`, confidential clients
+only): a client trades a user's access token (`subject_token`, type `urn:ietf:params:oauth:token-type:access_token`)
+for an access token of its own that acts for the user, to call another API with the user's identity. The client must
+be in the subject token's audience, or have "May introspect every token of the organization"; the user must have
+access to the client, as for a sign-in. The new token has at most the subject token's scopes (and the client's), only
+resources registered for the client (`resource` or `audience`), the subject token's expiry at the latest, and an
+`act` claim naming the client (and any actor before it, up to four). It is bound to the user's original grant:
+signing out ends it, but revoking it does not end that grant. There is no refresh or ID token, and no `actor_token`.
+Every exchange is audited (`oauth.token_exchange`).
+
 **`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
 and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a
 condition of the sign-in. An `acr` claim requested as essential with values none of which Quisora knows fails with
@@ -477,7 +493,7 @@ VictoriaLogs:
 | Area | Events |
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
-| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
+| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |

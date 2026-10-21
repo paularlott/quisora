@@ -435,6 +435,9 @@ type Client struct {
 	// PKCEOptional lets a confidential client make authorization requests without PKCE (unset: PKCE required, as
 	// OAuth 2.1 does; public clients always need it). The management API shows it as require_pkce.
 	PKCEOptional bool `msgpack:"po" json:"-"`
+	// RequirePAR makes the client send its authorization requests through the pushed authorization request endpoint
+	// (RFC 9126): an authorization request carrying its parameters in the URL is refused.
+	RequirePAR bool `msgpack:"par,omitempty" json:"require_pushed_authorization_requests"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to

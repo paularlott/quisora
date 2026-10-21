@@ -58,6 +58,8 @@ none changed a result:
   design. Public clients are covered by the Go end-to-end tests (PKCE, CORS, rotating refresh tokens, revocation).
 - **Introspection (RFC 7662) and revocation (RFC 7009)** have no OpenID Foundation plan outside FAPI; the Go tests
   cover them, including cross-organization confinement and disabled clients.
+- **Pushed authorization requests (RFC 9126) and token exchange (RFC 8693)** are in no plan run here (PAR is tested
+  by the FAPI plans, which also need sender-constrained tokens); the Go end-to-end tests cover them.
 - Dynamic registration, implicit and hybrid flows and request objects are not supported, and discovery says so.
 
 ## Expected warnings (basic plan)

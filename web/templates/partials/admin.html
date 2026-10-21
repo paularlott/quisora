@@ -312,6 +312,7 @@
       <label class="check"><input class="checkbox" type="checkbox" value="authorization_code" x-model="form.grant_types"><span class="check-text">Authorization code<span class="help">Sign users in (always with PKCE).</span></span></label>
       <label class="check"><input class="checkbox" type="checkbox" value="refresh_token" x-model="form.grant_types"><span class="check-text">Refresh token</span></label>
       <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="client_credentials" x-model="form.grant_types"><span class="check-text">Client credentials<span class="help">The application acts as itself, without a user.</span></span></label>
+      <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:token-exchange" x-model="form.grant_types"><span class="check-text">Token exchange<span class="help">Trade a user's access token issued for this client for one to call other APIs on their behalf (RFC 8693).</span></span></label>
       <p class="help" id="h-grants" x-show="isPublic" x-cloak>Public clients use the authorization code grant with refresh tokens; refresh tokens always rotate.</p>
       <p class="field-error" id="e-grant_types" x-text="errors.grant_types"></p>
     </fieldset>
@@ -330,6 +331,7 @@
     {{template "check-field" (dict "name" "rotate_refresh_tokens" "label" "Rotate refresh tokens" "switch" true "show" "notPublic" "help" "One-time refresh tokens; reuse revokes the grant. Costs a write per refresh.")}}
     {{template "check-field" (dict "name" "introspect_org" "label" "May introspect every token of the organization" "switch" true "show" "notPublic" "help" "For an API that serves several applications. Otherwise introspection reports only tokens issued for this client as active.")}}
     {{template "check-field" (dict "name" "require_pkce" "label" "Require PKCE" "switch" true "show" "notPublic" "help" "Recommended. Turn off only for an older server-side application that cannot send PKCE: its sign-ins then rely on the client secret alone. Public clients always use PKCE.")}}
+    {{template "check-field" (dict "name" "require_pushed_authorization_requests" "label" "Require pushed authorization requests" "switch" true "show" "usesRedirects" "help" "The application must post its sign-in requests to the PAR endpoint first (RFC 9126), so their parameters never pass through the browser. Turn on only if the application supports it.")}}
     {{if .Data.CanSCIM}}{{template "check-field" (dict "name" "scim" "label" "May provision users with SCIM" "switch" true "show" "notPublic" "help" "Tokens issued to this client can call the SCIM API for this organization.")}}{{end}}
   </div>
   {{template "form-foot" (dict "label" "clientSubmitLabel" "default" "Save")}}

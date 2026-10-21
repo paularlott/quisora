@@ -325,6 +325,9 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	o.num("exp", int64(cl.Exp))
 	o.num("iat", int64(cl.Iat))
 	o.strIf("jti", cl.Jti)
+	if len(cl.Act) > 0 { // signed by this server: embedded as it is
+		o.raw("act", string(cl.Act))
+	}
 	o.strIf("org", cl.Org)
 	o.strIf("org_name", cl.OrgName)
 	o.strIf("tenant", cl.Tenant)
@@ -437,8 +440,9 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	case strings.HasPrefix(tok, "ey") && strings.Count(tok, ".") == 2:
 		// A JWT cannot be recalled, but revoking one of this client's user tokens ends the grant it came from,
-		// which stops refreshing and makes introspection report it inactive.
-		if cl, err := p.VerifyAccessToken(ctx, tok); err == nil && cl.ClientID == ce.c.ID && cl.GID != "" {
+		// which stops refreshing and makes introspection report it inactive. A token from a token exchange carries
+		// the grant of the application the user signed in to: its holder (acting for the user) cannot end that.
+		if cl, err := p.VerifyAccessToken(ctx, tok); err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {
 			p.revokeGrant(ctx, cl.GID)
 			p.auditClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"})
 		}

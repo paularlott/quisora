@@ -249,9 +249,19 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.Form
 	dup := repeated(q)
-	if dup == "client_id" || dup == "redirect_uri" { // which application, or where to: nothing to trust
+	if dup == "client_id" || dup == "redirect_uri" || dup == "request_uri" { // which application, or where to: nothing to trust
 		p.message(w, r, http.StatusBadRequest, "Invalid request", "This request could not be read", "")
 		return
+	}
+	// A pushed request (RFC 9126): its parameters are the ones the client pushed, whatever else the URL carries.
+	pushed := strings.HasPrefix(q.Get("request_uri"), parURNPrefix)
+	if pushed {
+		pq, err := p.takePushed(r.Context(), q.Get("client_id"), q.Get("request_uri"))
+		if err != nil {
+			p.expired(w, r)
+			return
+		}
+		q, dup = pq, repeated(pq)
 	}
 	// A metadata document is read only for a resource whose tenant accepts self-registered applications: requests
 	// naming documents for anything else never make this server fetch anything.
@@ -294,68 +304,81 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		p.redirectError(w, r, f, "invalid_request", dup+" is repeated")
 		return
 	}
+	if c.RequirePAR && !pushed {
+		p.redirectError(w, r, f, "invalid_request", "this client must push its authorization requests (RFC 9126)")
+		return
+	}
+	c, e := p.checkAuthz(r.Context(), q, c, f)
+	if e != nil {
+		p.redirectError(w, r, f, e.code, e.desc)
+		return
+	}
+	secret, bind := newFlowSecret()
+	f.Bind = bind
+	b, _ := json.Marshal(f)
+	id, err := p.s.Eph.New(r.Context(), nsFlow, b, flowTTL)
+	if err != nil {
+		p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+		return
+	}
+	setFlowCookie(w, id, secret)
+	p.proceed(w, r, id, f, c)
+}
+
+// checkAuthz validates the parameters of an authorization request q for client c (its redirect URI already matched)
+// into f, the same way for /oauth/authorize and for a pushed request (par.go). It returns the client that governs the
+// request: c, or for a self-registered application its view in the tenant owning the requested resources.
+func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client, f *flow) (*model.Client, *oauthError) {
 	switch m := q.Get("response_mode"); m {
 	case "", "query":
 	case "form_post":
 		f.Mode = "form_post"
 	default:
-		p.redirectError(w, r, f, "invalid_request", "unsupported response_mode")
-		return
+		return nil, oerr("invalid_request", "unsupported response_mode")
 	}
-	fail := func(code, desc string) { p.redirectError(w, r, f, code, desc) }
 	if q.Get("request") != "" {
-		fail("request_not_supported", "request objects are not supported")
-		return
+		return nil, oerr("request_not_supported", "request objects are not supported")
 	}
 	if q.Get("request_uri") != "" {
-		fail("request_uri_not_supported", "request_uri is not supported")
-		return
+		return nil, oerr("request_uri_not_supported", "request_uri is only supported for pushed authorization requests")
 	}
 	if q.Get("response_type") != "code" {
-		fail("unsupported_response_type", "only response_type=code is supported")
-		return
+		return nil, oerr("unsupported_response_type", "only response_type=code is supported")
 	}
 	if !slices.Contains(c.GrantTypes, "authorization_code") {
-		fail("unauthorized_client", "the client may not use the authorization code grant")
-		return
+		return nil, oerr("unauthorized_client", "the client may not use the authorization code grant")
 	}
 	f.Challenge = q.Get("code_challenge")
 	switch {
 	case f.Challenge == "" && q.Get("code_challenge_method") == "" && !c.RequirePKCE():
 		// a confidential client that may omit PKCE (require_pkce off); its code then needs no verifier
 	case !validChallenge(f.Challenge) || q.Get("code_challenge_method") != "S256":
-		fail("invalid_request", "PKCE is required: send code_challenge and code_challenge_method=S256")
-		return
+		return nil, oerr("invalid_request", "PKCE is required: send code_challenge and code_challenge_method=S256")
 	}
 	f.Scopes = dedupe(splitScope(q.Get("scope")))
 	if len(f.Scopes) == 0 {
 		f.Scopes = slices.Clone(c.Scopes)
 	}
 	if !subset(f.Scopes, c.Scopes) {
-		fail("invalid_scope", "the requested scope is not available to this client")
-		return
+		return nil, oerr("invalid_scope", "the requested scope is not available to this client")
 	}
 	f.Nonce = q.Get("nonce")
 	if len(f.Nonce) > 1024 {
-		fail("invalid_request", "nonce is too long")
-		return
+		return nil, oerr("invalid_request", "nonce is too long")
 	}
 	f.Prompt = strings.Fields(q.Get("prompt"))
 	for _, v := range f.Prompt {
 		if v != "none" && v != "login" && v != "consent" && v != "select_account" {
-			fail("invalid_request", "unsupported prompt value")
-			return
+			return nil, oerr("invalid_request", "unsupported prompt value")
 		}
 	}
 	if f.has("none") && len(f.Prompt) > 1 {
-		fail("invalid_request", "prompt=none cannot be combined with other values")
-		return
+		return nil, oerr("invalid_request", "prompt=none cannot be combined with other values")
 	}
 	if v := q.Get("max_age"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			fail("invalid_request", "max_age must be a non-negative integer")
-			return
+			return nil, oerr("invalid_request", "max_age must be a non-negative integer")
 		}
 		f.MaxAge = n
 	}
@@ -364,19 +387,16 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := parseResources(q["resource"])
 	if err != nil {
-		fail("invalid_target", err.Error())
-		return
+		return nil, oerr("invalid_target", err.Error())
 	}
 	if c.SelfRegistered {
 		// a self-registered application is governed by the tenant that owns the resources it asks for
 		if len(res) == 0 {
-			fail("invalid_target", "a self-registered application must name the resource it wants access to (RFC 8707)")
-			return
+			return nil, oerr("invalid_target", "a self-registered application must name the resource it wants access to (RFC 8707)")
 		}
-		inT, _, err := p.forResources(r.Context(), c, res)
+		inT, _, err := p.forResources(ctx, c, res)
 		if err != nil {
-			fail("invalid_target", "the resource does not accept self-registered applications")
-			return
+			return nil, oerr("invalid_target", "the resource does not accept self-registered applications")
 		}
 		c = inT
 		if q.Get("scope") == "" {
@@ -384,34 +404,22 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !subset(res, c.Resources) {
-		fail("invalid_target", "the resource is not registered for this client")
-		return
+		return nil, oerr("invalid_target", "the resource is not registered for this client")
 	}
 	f.Resources = res
 	cp, err := parseClaimsParam(q.Get("claims"), c.Scopes)
 	if err != nil {
-		fail("invalid_request", err.Error())
-		return
+		return nil, oerr("invalid_request", err.Error())
 	}
 	f.ClaimsUI, f.ClaimsID = cp.UserInfo, cp.IDToken
 	// Essential with values: one of them must be met. Essential without values only asks that an acr be returned
 	// (OIDC Core 5.5.1.1), which it always is.
 	if cp.ACREssential && len(cp.ACR) > 0 && !knowsACR(cp.ACR) {
-		fail("unmet_authentication_requirements", "none of the essential acr values can be satisfied (supported: "+
+		return nil, oerr("unmet_authentication_requirements", "none of the essential acr values can be satisfied (supported: "+
 			acrBasic+", "+acrMFA+")")
-		return
 	}
 	f.MFA = demandsMFA(append(slices.Clone(cp.ACR), strings.Fields(q.Get("acr_values"))...))
-	secret, bind := newFlowSecret()
-	f.Bind = bind
-	b, _ := json.Marshal(f)
-	id, err := p.s.Eph.New(r.Context(), nsFlow, b, flowTTL)
-	if err != nil {
-		fail("server_error", "temporarily unavailable")
-		return
-	}
-	setFlowCookie(w, id, secret)
-	p.proceed(w, r, id, f, c)
+	return c, nil
 }
 
 func (p *Provider) handleResume(w http.ResponseWriter, r *http.Request) {

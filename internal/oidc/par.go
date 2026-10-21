@@ -1,0 +1,113 @@
+package oidc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+)
+
+// Pushed authorization requests (RFC 9126). The client posts the parameters of an authorization request to
+// /oauth/par, authenticated the way it authenticates at the token endpoint, and gets back a single-use request_uri;
+// it then sends the browser to /oauth/authorize with only client_id and that request_uri. The parameters never pass
+// through the browser, and they are checked (the same way the authorization endpoint checks them) before the user is
+// involved. A client with RequirePAR may start sign-ins no other way.
+const (
+	nsPAR        = "oauth.par"
+	parURNPrefix = "urn:ietf:params:oauth:request_uri:"
+	parTTL       = 60 * time.Second
+)
+
+// pushedRequest is a pushed authorization request waiting for the browser (ephemeral, ns "oauth.par", single use).
+type pushedRequest struct {
+	ClientID string `json:"c"`
+	Params   string `json:"q"` // the authorization request's parameters, form-encoded
+}
+
+var errPushed = errors.New("oidc: unknown, used or expired request_uri")
+
+// clientAuthParams are the form fields of client authentication: not part of the authorization request.
+var clientAuthParams = []string{"client_secret", "client_assertion", "client_assertion_type"}
+
+func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	p.corsActual(w, r)
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))
+		return
+	}
+	form := r.PostForm
+	if dup := repeated(form); dup != "" {
+		writeOAuthError(w, oerr("invalid_request", dup+" is repeated"))
+		return
+	}
+	ce, e := p.authenticateClient(r, true)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
+	p.corsRestrict(w, r, ce.c.ID)
+	c := ce.c
+	if form.Get("request_uri") != "" {
+		writeOAuthError(w, oerr("invalid_request", "request_uri cannot be pushed"))
+		return
+	}
+	if !redirectMatches(c.RedirectURIs, form.Get("redirect_uri")) {
+		writeOAuthError(w, oerr("invalid_request", "redirect_uri is not registered for this client"))
+		return
+	}
+	if len(form.Get("state")) > 2048 {
+		writeOAuthError(w, oerr("invalid_request", "state is too long"))
+		return
+	}
+	if _, e := p.checkAuthz(r.Context(), form, c, &flow{MaxAge: -1, Mode: "query"}); e != nil {
+		writeOAuthError(w, e)
+		return
+	}
+	params := url.Values{}
+	for k, v := range form {
+		if !slices.Contains(clientAuthParams, k) {
+			params[k] = v
+		}
+	}
+	params.Set("client_id", c.ID) // a client using Basic authentication need not repeat it in the body
+	b, _ := json.Marshal(pushedRequest{ClientID: c.ID, Params: params.Encode()})
+	id, err := p.s.Eph.New(r.Context(), nsPAR, b, parTTL)
+	if err != nil {
+		writeOAuthError(w, serverError(err))
+		return
+	}
+	o := newObj(128)
+	o.str("request_uri", parURNPrefix+id)
+	o.num("expires_in", int64(parTTL/time.Second))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusCreated)
+	_, _ = w.Write(o.bytes())
+}
+
+// takePushed returns the parameters pushed as uri by clientID, once: a request_uri is used up by its first
+// authorization request (RFC 9126 §4), and only the client that pushed it may use it.
+func (p *Provider) takePushed(ctx context.Context, clientID, uri string) (url.Values, error) {
+	id := strings.TrimPrefix(uri, parURNPrefix)
+	if clientID == "" || id == "" || len(id) > 200 {
+		return nil, errPushed
+	}
+	raw, err := p.s.Eph.Take(ctx, nsPAR, id)
+	if err != nil {
+		return nil, errPushed
+	}
+	var pr pushedRequest
+	if json.Unmarshal(raw, &pr) != nil || pr.ClientID != clientID {
+		return nil, errPushed
+	}
+	q, err := url.ParseQuery(pr.Params)
+	if err != nil {
+		return nil, errPushed
+	}
+	return q, nil
+}

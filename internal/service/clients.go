@@ -31,11 +31,15 @@ type ClientInput struct {
 	RotateRefresh  *bool     `json:"rotate_refresh_tokens"`
 	IntrospectOrg  *bool     `json:"introspect_org"`
 	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
+	RequirePAR     *bool     `json:"require_pushed_authorization_requests"`
 	Enabled        *bool     `json:"enabled"`
 }
 
+// GrantTokenExchange is the RFC 8693 token exchange grant type.
+const GrantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
 var (
-	validGrants      = []string{"authorization_code", "refresh_token", "client_credentials"}
+	validGrants      = []string{"authorization_code", "refresh_token", "client_credentials", GrantTokenExchange}
 	validAuthMethods = []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic, model.AuthMethodPrivateJWT,
 		model.AuthMethodNone}
 	validAlgs = []string{"", "ES256", "EdDSA", "RS256"}
@@ -243,6 +247,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.RequirePKCE != nil {
 		c.PKCEOptional = !*in.RequirePKCE
 	}
+	if in.RequirePAR != nil {
+		c.RequirePAR = *in.RequirePAR
+	}
 	if in.Enabled != nil {
 		c.Enabled = *in.Enabled
 	}
@@ -257,6 +264,8 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		switch {
 		case slices.Contains(c.GrantTypes, "client_credentials"):
 			return Invalid("grant_types", "a public client cannot use the client credentials grant")
+		case slices.Contains(c.GrantTypes, GrantTokenExchange):
+			return Invalid("grant_types", "a public client cannot use the token exchange grant")
 		case c.SCIM:
 			return Invalid("scim", "a public client cannot use SCIM")
 		case c.PKCEOptional:

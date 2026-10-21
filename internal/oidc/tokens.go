@@ -59,6 +59,17 @@ type issue struct {
 	app       *service.AppAccess // the user's access to the client (decided by mint when nil)
 	claimsUI  []string           // claims requested individually for userinfo (carried in the access token)
 	claimsID  []string           // ... and for the ID token
+	act       string             // act claim, raw JSON (token exchange)
+	expires   time.Time          // the access token expires no later than this (zero: its usual lifetime)
+}
+
+// accessExpiry is when the access token of is expires.
+func (p *Provider) accessExpiry(is *issue, now time.Time) time.Time {
+	exp := now.Add(p.cfg.Tokens.Access())
+	if !is.expires.IsZero() && is.expires.Before(exp) {
+		return is.expires
+	}
+	return exp
 }
 
 func (is *issue) has(scope string) bool { return slices.Contains(is.scopes, scope) }
@@ -84,9 +95,12 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 	}
 	o.str("client_id", is.client.ID)
 	o.str("scope", joinScope(is.scopes))
-	o.num("exp", now.Add(p.cfg.Tokens.Access()).Unix())
+	o.num("exp", p.accessExpiry(is, now).Unix())
 	o.num("iat", now.Unix())
 	o.str("jti", newJTI())
+	if is.act != "" {
+		o.raw("act", is.act)
+	}
 	if is.user != nil {
 		o.num("auth_time", is.authTime.Unix())
 		o.str("acr", acrFor(is.amr))
@@ -320,6 +334,7 @@ type tokenResponse struct {
 	access, refresh, id string
 	expiresIn           int
 	scopes              []string
+	issuedType          string // issued_token_type (token exchange)
 }
 
 func writeTokens(w http.ResponseWriter, t *tokenResponse) {
@@ -332,6 +347,10 @@ func writeTokens(w http.ResponseWriter, t *tokenResponse) {
 	b = strconv.AppendInt(b, int64(t.expiresIn), 10)
 	b = append(b, `,"scope":`...)
 	b = appendJSONString(b, joinScope(t.scopes))
+	if t.issuedType != "" {
+		b = append(b, `,"issued_token_type":`...)
+		b = appendJSONString(b, t.issuedType)
+	}
 	if t.refresh != "" {
 		b = append(b, `,"refresh_token":"`...)
 		b = append(b, t.refresh...)
@@ -375,7 +394,7 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 	if err != nil {
 		return nil, err
 	}
-	tr := &tokenResponse{access: at, expiresIn: int(p.cfg.Tokens.Access() / time.Second), scopes: is.scopes}
+	tr := &tokenResponse{access: at, expiresIn: int(p.accessExpiry(is, now).Sub(now) / time.Second), scopes: is.scopes}
 	if withID && is.user != nil && is.has("openid") {
 		if tr.id, err = p.idToken(ctx, key, is, now, at); err != nil {
 			return nil, err

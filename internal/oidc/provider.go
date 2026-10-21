@@ -199,6 +199,8 @@ func (p *Provider) Register(s *web.Server) {
 	m.Handle("GET /oauth/consent", s.RequirePage(p.handleConsentPage))
 	m.Handle("POST /api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
 
+	m.HandleFunc("POST /oauth/par", p.handlePAR)
+	m.HandleFunc("OPTIONS /oauth/par", p.handleCORSPreflight)
 	m.HandleFunc("POST /oauth/token", p.handleToken)
 	m.HandleFunc("OPTIONS /oauth/token", p.handleCORSPreflight)
 	m.HandleFunc("OPTIONS /oauth/revoke", p.handleCORSPreflight)
@@ -351,9 +353,12 @@ func (p *Provider) buildDiscovery() []byte {
 		"registration_endpoint":                 iss + "/oauth/register",
 		"revocation_endpoint":                   iss + "/oauth/revoke",
 		"end_session_endpoint":                  iss + "/oauth/logout",
+		"pushed_authorization_request_endpoint": iss + "/oauth/par",
+		"require_pushed_authorization_requests": false, // per client (require_pushed_authorization_requests)
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query", "form_post"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token", "client_credentials"},
+		"grant_types_supported": []string{"authorization_code", "refresh_token", "client_credentials",
+			service.GrantTokenExchange},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
 		"token_endpoint_auth_methods_supported": []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic,
@@ -377,7 +382,7 @@ func (p *Provider) buildDiscovery() []byte {
 		"claims_parameter_supported":                     true,
 		"acr_values_supported":                           []string{acrBasic, acrMFA},
 		"request_parameter_supported":                    false,
-		"request_uri_parameter_supported":                false,
+		"request_uri_parameter_supported":                false, // only the request_uri of a pushed request
 		"authorization_response_iss_parameter_supported": true,
 		"backchannel_logout_supported":                   true,
 		"backchannel_logout_session_supported":           true,

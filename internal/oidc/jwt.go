@@ -285,6 +285,9 @@ type Claims struct {
 	Username   string                     `json:"preferred_username"`
 	// UserinfoClaims are the claims requested one by one for userinfo (access tokens).
 	UserinfoClaims []string `json:"userinfo_claims"`
+	// Act is the actor of a token from a token exchange (RFC 8693 §4.1): the client acting for the subject, with the
+	// actor before it nested inside (exchange.go).
+	Act json.RawMessage `json:"act"`
 }
 
 // Scopes splits the scope claim.

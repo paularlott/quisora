@@ -60,12 +60,12 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	p.corsRestrict(w, r, ce.c.ID)
 	gt := r.PostForm.Get("grant_type")
 	switch gt {
-	case "authorization_code", "refresh_token", "client_credentials":
+	case "authorization_code", "refresh_token", "client_credentials", service.GrantTokenExchange:
 	default:
 		writeOAuthError(w, oerr("unsupported_grant_type", "unsupported grant_type"))
 		return
 	}
-	if !slices.Contains(ce.c.GrantTypes, gt) || (gt == "client_credentials" && ce.c.Public()) {
+	if !slices.Contains(ce.c.GrantTypes, gt) || ((gt == "client_credentials" || gt == service.GrantTokenExchange) && ce.c.Public()) {
 		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
 		return
 	}
@@ -79,6 +79,8 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 			r.PostForm.Get("code_verifier"), r.PostForm["resource"])
 	case "refresh_token":
 		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"])
+	case service.GrantTokenExchange:
+		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm)
 	default:
 		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"])
 	}
