@@ -171,9 +171,22 @@ type request struct {
 	actor *service.Actor
 	org   *model.Org
 	base  string // https://host/scim/v2
+	// unseen holds the users of the org the caller does not see in full (loaded once, by unseenUsers): SCIM leaves
+	// them out of every member list and membership filter, as it leaves them out of the users.
+	unseen map[string]bool
+	loaded bool
 }
 
 func (rq *request) fail(err error) { writeError(rq.w, rq.m.fromService(err)) }
+
+// unseenUsers returns the ids of the org's users the caller does not see in full.
+func (rq *request) unseenUsers() map[string]bool {
+	if !rq.loaded {
+		rq.unseen, _ = rq.m.srv.Svc.NotSeenInFull(rq.ctx, rq.actor, rq.org.ID)
+		rq.loaded = true
+	}
+	return rq.unseen
+}
 
 // location is the absolute URL of a resource of this org.
 func (rq *request) location(kind, id string) string {

@@ -19,10 +19,7 @@ func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason stri
 		return nil, mapStore(err)
 	}
 	if !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return nil, ErrForbidden
-		}
-		return nil, ErrNotFound
+		return nil, s.denied(a, u)
 	}
 	if a.UserID == u.ID {
 		return nil, Invalid("reason", "you cannot lock yourself out")

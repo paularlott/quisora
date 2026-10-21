@@ -158,6 +158,8 @@ export const PAGES = [
   { name: 'keys-rotate', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Rotate now')] },
   { name: 'error-404', path: '/admin/nowhere', as: 'admin' },
   { name: 'users-manager', path: `${A}/users`, as: 'manager', steps: [waitRows] },
+  // An administrator, as a manager sees them: a directory entry (name, role, status), read-only.
+  { name: 'user-directory', path: `${A}/users`, as: 'manager', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Ada Lovelace' }).click(); await p.waitForSelector('text=their role is above yours') }] },
 ]
 
 // Pages owned by the login module (anonymous and account pages).

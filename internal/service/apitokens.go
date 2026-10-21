@@ -101,10 +101,7 @@ func (s *Service) ListUserAPITokens(ctx context.Context, a *Actor, userID string
 		return nil, 0, mapStore(err)
 	}
 	if a.UserID != userID && !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return nil, 0, ErrForbidden
-		}
-		return nil, 0, ErrNotFound
+		return nil, 0, s.denied(a, u)
 	}
 	q.Scope = userID
 	l, n, err := s.APITokens.List(ctx, q)

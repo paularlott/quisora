@@ -28,19 +28,25 @@ func TestSCIMRBAC(t *testing.T) {
 	if r := e.do("PATCH", "/scim/v2/acme/Users/"+plain, e.mgrA, patchBody(op("replace", quisoraURN+":role", "manager"))); r.Status != 403 {
 		t.Errorf("manager promotes: %d %s", r.Status, r.Raw)
 	}
+	// An administrator does not exist for a manager's SCIM token (SCIM shows only users seen in full); another manager
+	// is seen but cannot be changed.
 	otherMgr := e.mkUser(e.orgA, "other-mgr", model.RoleManager)
-	for name, u := range map[string]*model.User{"admin": admUser, "manager": otherMgr} {
-		if r := e.do("PATCH", "/scim/v2/acme/Users/"+u.ID, e.mgrA, patchBody(op("replace", "name.familyName", "x"))); r.Status != 403 {
+	for name, c := range map[string]struct {
+		u    *model.User
+		want int
+	}{"admin": {admUser, 404}, "manager": {otherMgr, 403}} {
+		u := c.u
+		if r := e.do("PATCH", "/scim/v2/acme/Users/"+u.ID, e.mgrA, patchBody(op("replace", "name.familyName", "x"))); r.Status != c.want {
 			t.Errorf("manager patches %s: %d", name, r.Status)
 		}
-		if r := e.do("PUT", "/scim/v2/acme/Users/"+u.ID, e.mgrA, map[string]any{"userName": u.Username, "emails": mail(u.Email), "name": map[string]any{"givenName": "Changed"}}); r.Status != 403 {
+		if r := e.do("PUT", "/scim/v2/acme/Users/"+u.ID, e.mgrA, map[string]any{"userName": u.Username, "emails": mail(u.Email), "name": map[string]any{"givenName": "Changed"}}); r.Status != c.want {
 			t.Errorf("manager puts %s: %d", name, r.Status)
 		}
-		if r := e.do("DELETE", "/scim/v2/acme/Users/"+u.ID, e.mgrA, nil); r.Status != 403 {
+		if r := e.do("DELETE", "/scim/v2/acme/Users/"+u.ID, e.mgrA, nil); r.Status != c.want {
 			t.Errorf("manager deletes %s: %d", name, r.Status)
 		}
 	}
-	if r := e.do("GET", "/scim/v2/acme/Users/"+admUser.ID, e.mgrA, nil); r.Status != 200 {
+	if r := e.do("GET", "/scim/v2/acme/Users/"+admUser.ID, e.mgrA, nil); r.Status != 404 {
 		t.Errorf("manager reads admin: %d", r.Status)
 	}
 	if r := e.do("GET", "/scim/v2/acme/Groups", e.mgrA, nil); r.Status != 200 {

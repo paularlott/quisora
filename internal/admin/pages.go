@@ -27,6 +27,9 @@ type View struct {
 	UserID     string
 	Self       bool // the user page is the viewer's own: read-only addresses, connections on the account page
 	Roles      []RoleOption
+	// FilterRoles are the roles the users list may be filtered by: the viewer's own and lower (super admins only for
+	// super admins, on the primary organization: nobody else sees any).
+	FilterRoles []RoleOption
 
 	// Tenant page (/admin/orgs/{org}/tenants/{tenant}).
 	TenantID      string
@@ -52,6 +55,19 @@ type View struct {
 var roleLabels = map[model.Role]string{
 	model.RoleSuperAdmin: "Super administrator", model.RoleAdmin: "Administrator", model.RoleManager: "Manager",
 	model.RoleUser: "User",
+}
+
+// filterRoles lists the roles a may filter org's users by: its own role and lower; super admin only for super admins on
+// the primary organization (they are hidden from everyone else, and only the primary organization has any).
+func filterRoles(a *service.Actor, org *model.Org) []RoleOption {
+	var out []RoleOption
+	for _, r := range []model.Role{model.RoleUser, model.RoleManager, model.RoleAdmin, model.RoleSuperAdmin} {
+		if r.Rank() > a.Role.Rank() || (r == model.RoleSuperAdmin && !org.Primary) {
+			continue
+		}
+		out = append(out, RoleOption{string(r), roleLabels[r]})
+	}
+	return out
 }
 
 // assignableRoles lists the roles the actor may give to users of org (mirrors the service rules for the UI only; the
@@ -211,7 +227,7 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 	esc := url.PathEscape(org.Name)
 	v := &View{API: "/api/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
 		IsPrimary: org.Primary, CanSCIM: a.IsSuper(),
-		Roles: assignableRoles(a, org)}
+		Roles: assignableRoles(a, org), FilterRoles: filterRoles(a, org)}
 	return org, v, true
 }
 

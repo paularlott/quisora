@@ -208,6 +208,7 @@ func (u *User) Index() Index {
 			"tags": strings.Join(u.Tags, " "), "user_type": u.UserType, "department": u.Work.Department,
 			"manager_id": u.Work.ManagerID, "employee_number": u.Work.EmployeeNumber,
 			"expiring": u.ValidUntil != nil, "valid_until": validUntilField(u.ValidUntil),
+			"super_admin": u.Role == RoleSuperAdmin, "admin_rank": u.Role.Rank() >= RoleAdmin.Rank(),
 		},
 	}
 }

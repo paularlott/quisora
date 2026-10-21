@@ -110,12 +110,12 @@ func (s *Service) tenantForAccess(ctx context.Context, a *Actor, tenantID string
 }
 
 // accessSubject resolves the user or group an access is for, within the tenant's org.
-func (s *Service) accessSubject(ctx context.Context, orgID, typ, id string) (name, detail string, err error) {
+func (s *Service) accessSubject(ctx context.Context, a *Actor, orgID, typ, id string) (name, detail string, err error) {
 	switch typ {
 	case model.SubjectUser:
 		u, err := s.Users.Get(ctx, id)
-		if err != nil || u.OrgID != orgID {
-			return "", "", Invalid("subject_id", "unknown user")
+		if err != nil || u.OrgID != orgID || s.Visibility(a, u) == Hidden {
+			return "", "", Invalid("subject_id", "unknown user") // a super admin is unknown below them
 		}
 		return u.FullName(), u.Email, nil
 	case model.SubjectGroup:
@@ -144,8 +144,11 @@ func (s *Service) ListAccess(ctx context.Context, a *Actor, tenantID string, q s
 	search := strings.ToLower(strings.TrimSpace(q.Search))
 	out := make([]*AccessEntry, 0, len(all))
 	for _, acc := range all {
+		if acc.SubjectType == model.SubjectUser && s.hiddenSubject(ctx, a, acc.SubjectID) {
+			continue // a super admin's access is not listed below them
+		}
 		e := &AccessEntry{TenantAccess: acc, Expired: !acc.Live(now)}
-		e.Name, e.Detail, _ = s.accessSubject(ctx, t.OrgID, acc.SubjectType, acc.SubjectID)
+		e.Name, e.Detail, _ = s.accessSubject(ctx, a, t.OrgID, acc.SubjectType, acc.SubjectID)
 		if search != "" && !strings.Contains(strings.ToLower(e.Name), search) && !strings.Contains(strings.ToLower(e.Detail), search) {
 			continue
 		}
@@ -206,9 +209,18 @@ func (s *Service) GetAccess(ctx context.Context, a *Actor, tenantID, id string) 
 	if err != nil || acc.TenantID != t.ID {
 		return nil, ErrNotFound
 	}
+	if acc.SubjectType == model.SubjectUser && s.hiddenSubject(ctx, a, acc.SubjectID) {
+		return nil, ErrNotFound // nor read, changed or removed: a super admin's access, below them
+	}
 	e := &AccessEntry{TenantAccess: acc, Expired: !acc.Live(time.Now())}
-	e.Name, e.Detail, _ = s.accessSubject(ctx, t.OrgID, acc.SubjectType, acc.SubjectID)
+	e.Name, e.Detail, _ = s.accessSubject(ctx, a, t.OrgID, acc.SubjectType, acc.SubjectID)
 	return e, nil
+}
+
+// hiddenSubject reports whether the user with id exists but a may not see them.
+func (s *Service) hiddenSubject(ctx context.Context, a *Actor, id string) bool {
+	u, err := s.Users.Get(ctx, id)
+	return err == nil && s.Visibility(a, u) == Hidden
 }
 
 // AddAccess gives a user or group access to a tenant.
@@ -217,7 +229,7 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	if err != nil {
 		return nil, err
 	}
-	name, detail, err := s.accessSubject(ctx, t.OrgID, in.SubjectType, in.SubjectID)
+	name, detail, err := s.accessSubject(ctx, a, t.OrgID, in.SubjectType, in.SubjectID)
 	if err != nil {
 		return nil, err
 	}

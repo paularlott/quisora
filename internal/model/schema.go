@@ -58,6 +58,10 @@ var Schemas = map[Kind]Schema{
 		{Name: "employee_number", Type: FieldString},
 		{Name: "expiring", Type: FieldBool},
 		{Name: "valid_until", Type: FieldTime, Sort: true},
+		// who may see the user (service.Visibility): super admins are hidden below them, administrators are a
+		// directory entry to managers
+		{Name: "super_admin", Type: FieldBool},
+		{Name: "admin_rank", Type: FieldBool},
 	}},
 	KindGroup: {KindGroup, []Field{
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true},

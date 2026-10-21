@@ -312,6 +312,12 @@ func (s *Service) GetUser(ctx context.Context, a *Actor, id string) (*model.User
 	if a != nil && a.UserID != id && !s.canManageUsers(a, u.OrgID) {
 		return nil, ErrNotFound
 	}
+	switch s.Visibility(a, u) {
+	case Hidden:
+		return nil, ErrNotFound
+	case Directory:
+		return DirectoryEntry(u), nil
+	}
 	s.WithSignIn(ctx, u)
 	return u, nil
 }
@@ -323,15 +329,25 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 		return nil, 0, ErrForbidden
 	}
 	q.Scope = orgID
+	q = visibleQuery(a, q)
 	if q.Sort == "last_login" {
-		return s.listByLastLogin(ctx, q)
+		return s.listByLastLogin(ctx, a, q)
+	}
+	leaks, err := s.searchLeaks(ctx, a, q)
+	if err != nil {
+		return nil, 0, err
 	}
 	l, n, err := s.Users.List(ctx, q)
 	if err != nil {
 		return nil, 0, mapStore(err)
 	}
+	if len(leaks) > 0 {
+		// each is in the full result set: the total loses them all; this page, those it holds
+		l = slices.DeleteFunc(l, func(u *model.User) bool { return leaks[u.ID] })
+		n -= len(leaks)
+	}
 	s.WithSignIn(ctx, l...)
-	return l, n, nil
+	return s.present(a, l), n, nil
 }
 
 // ListUsersTagged lists the users of an org carrying exactly the tag (the store cannot filter inside a list, so the
@@ -346,13 +362,15 @@ func (s *Service) ListUsersTagged(ctx context.Context, a *Actor, orgID string, q
 		q.Sort, q.Desc = "", false
 	}
 	q.Scope, q.Offset, q.Limit = orgID, 0, 0
+	q = visibleQuery(a, q)
 	all, _, err := s.Users.List(ctx, q)
 	if err != nil {
 		return nil, 0, mapStore(err)
 	}
 	out := all[:0]
 	for _, u := range all {
-		if slices.Contains(u.Tags, tag) {
+		// the tags of someone a sees only as a directory entry are not theirs to see: no match on them either
+		if slices.Contains(u.Tags, tag) && s.Visibility(a, u) == Full {
 			out = append(out, u)
 		}
 	}
@@ -470,6 +488,59 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	return s.updateUser(ctx, a, id, in)
 }
 
+// dropUnchanged clears the fields of in that equal u's, so a form saving the whole record changes only what differs
+// (the rules about changing yourself then see only real changes).
+func dropUnchanged(u *model.User, in *UserInput) {
+	same := func(p *string, cur string) bool { return p == nil || strings.TrimSpace(*p) == cur }
+	if in.Username != nil && strings.EqualFold(strings.TrimSpace(*in.Username), u.Username) {
+		in.Username = nil
+	}
+	if in.Role != nil && *in.Role == u.Role {
+		in.Role = nil
+	}
+	if in.Active != nil && *in.Active == u.Active {
+		in.Active = nil
+	}
+	if in.ExternalID != nil && same(in.ExternalID, u.ExternalID) {
+		in.ExternalID = nil
+	}
+	if in.Verified != nil && *in.Verified == u.EmailVerified {
+		in.Verified = nil
+	}
+	if in.PhoneVerified != nil && *in.PhoneVerified == u.PhoneVerified {
+		in.PhoneVerified = nil
+	}
+	if in.Tags != nil {
+		a, b := slices.Clone(*in.Tags), slices.Clone(u.Tags)
+		slices.Sort(a)
+		slices.Sort(b)
+		if slices.Equal(a, b) {
+			in.Tags = nil
+		}
+	}
+	if in.UserType != nil && strings.EqualFold(strings.TrimSpace(*in.UserType), u.UserType) {
+		in.UserType = nil
+	}
+	if w := in.Work; w != nil && same(w.Title, u.Work.Title) && same(w.Department, u.Work.Department) &&
+		same(w.Organization, u.Work.Organization) && same(w.Division, u.Work.Division) &&
+		same(w.CostCenter, u.Work.CostCenter) && same(w.EmployeeNumber, u.Work.EmployeeNumber) &&
+		same(w.ManagerID, u.Work.ManagerID) {
+		in.Work = nil
+	}
+	if in.ValidUntil != nil {
+		v := strings.TrimSpace(*in.ValidUntil)
+		switch {
+		case v == "" && u.ValidUntil == nil:
+			in.ValidUntil = nil
+		case v != "" && u.ValidUntil != nil:
+			// the form shows the end as a date: the same day is the same end
+			if t, err := parseEndDate(v); err == nil && t.UTC().Format(time.DateOnly) == u.ValidUntil.UTC().Format(time.DateOnly) {
+				in.ValidUntil = nil
+			}
+		}
+	}
+}
+
 func isAdminRank(u *model.User) bool {
 	return u.Role == model.RoleAdmin || u.Role == model.RoleSuperAdmin
 }
@@ -480,12 +551,12 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		return nil, mapStore(err)
 	}
 	self := a.UserID == id
+	if self {
+		dropUnchanged(u, &in) // a form saving yourself sends every field: only what differs is a change
+	}
 	if !s.canManageUser(a, u) {
 		if !self {
-			if s.canManageUsers(a, u.OrgID) {
-				return nil, ErrForbidden
-			}
-			return nil, ErrNotFound
+			return nil, s.denied(a, u)
 		}
 		if in.Role != nil || in.Active != nil || in.ExternalID != nil || in.Verified != nil || in.Username != nil ||
 			in.Tags != nil || in.LinkedEmails != nil || in.PhoneVerified != nil {
@@ -532,7 +603,9 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if self && ((in.Role != nil && *in.Role != u.Role) || (in.Active != nil && !*in.Active)) {
 		return nil, Invalid("role", "you cannot change your own role or disable yourself")
 	}
-	if self && (in.ValidUntil != nil || in.UserType != nil || in.Work != nil) && a != System {
+	if self && (in.ValidUntil != nil || in.UserType != nil || in.Work != nil) && a != System && !a.IsSuper() {
+		// Applications may trust these (a department, a manager): someone above you sets them. Super admins have
+		// nobody above them.
 		return nil, Invalid("work", "your work details, user type and end date are set by an administrator")
 	}
 	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
@@ -718,10 +791,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 		return Invalid("user", "you cannot delete yourself")
 	}
 	if !s.canManageUser(a, u) {
-		if !s.canManageUsers(a, u.OrgID) {
-			return ErrNotFound // do not reveal users of other organizations
-		}
-		return ErrForbidden
+		return s.denied(a, u) // not found for users a may not see (other organizations, super admins)
 	}
 	if err := s.guardLastAdmin(ctx, u); err != nil {
 		return err
@@ -895,7 +965,7 @@ func (s *Service) RevokeSessions(ctx context.Context, a *Actor, userID string) e
 		return mapStore(err)
 	}
 	if a.UserID != userID && !s.canManageUser(a, u) {
-		return ErrForbidden
+		return s.denied(a, u)
 	}
 	if err := s.endUserSessions(ctx, userID, nil); err != nil {
 		s.Audit(ctx, a, u.OrgID, "user.sessions.revoke", u.Username, map[string]string{"result": "incomplete",

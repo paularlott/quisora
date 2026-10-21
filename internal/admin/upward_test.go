@@ -73,13 +73,17 @@ func TestNoUpwardEdits(t *testing.T) {
 			len(after.LinkedEmails) != len(before.LinkedEmails) || after.PasswordHash != before.PasswordHash {
 			t.Errorf("%s -> %s: the user changed", c.who, c.target.Role)
 		}
-		// the console is told: can_manage false on the user and on its row
-		if r := caller.get(u); r.JSON["can_manage"] != false {
-			t.Errorf("%s -> %s: can_manage %v", c.who, c.target.Role, r.JSON["can_manage"])
+		// the console is told: a super admin does not exist below them; an administrator is a directory entry to a
+		// manager, which cannot be managed
+		r := caller.get(u)
+		if c.target.Role == model.RoleSuperAdmin {
+			want(t, r, 404)
+		} else if r.JSON["can_manage"] != false || r.JSON["directory"] != true {
+			t.Errorf("%s -> %s: can_manage %v, directory %v", c.who, c.target.Role, r.JSON["can_manage"], r.JSON["directory"])
 		}
 		for _, it := range caller.get(base[:len(base)-1] + "?limit=100").items() {
-			if row := it.(map[string]any); row["id"] == c.target.ID && row["can_manage"] != false {
-				t.Errorf("%s -> %s: row can_manage %v", c.who, c.target.Role, row["can_manage"])
+			if row := it.(map[string]any); row["id"] == c.target.ID && (c.target.Role == model.RoleSuperAdmin || row["can_manage"] != false) {
+				t.Errorf("%s -> %s: listed as %v", c.who, c.target.Role, row)
 			}
 		}
 	}

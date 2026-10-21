@@ -911,7 +911,9 @@ export default function (Alpine) {
         roleClass: 'badge ' + (ROLE_BADGE[u.role] || 'badge-plain'), statusText: b.text, statusClass: b.cls,
         lastLoginText: relTime(u.last_login), href: `${this.pageUrl}/${enc(u.id)}`, editLabel: 'Edit ' + (u.name || u.username),
         deleteLabel: 'Delete ' + (u.name || u.username), createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users'),
-        manageable: u.can_manage !== false }
+        manageable: u.can_manage !== false,
+        // someone above the viewer: a directory entry, so whatever it does not carry is unknown, not "none"
+        ...(u.directory ? { sub: '', noPassword: false, lastLoginText: '—' } : {}) }
     },
     edit(ev) { this.openEditUser(this.rowFromEvent(ev), ev.currentTarget) },
     afterUserSaved() { return this.load() },
@@ -967,6 +969,7 @@ export default function (Alpine) {
         phoneText: u.phone_number || '—', phoneVerifiedText: u.phone_number ? (u.phone_number_verified ? 'Verified' : 'Not verified') : '',
         phoneVerifiedClass: 'badge ml-1 ' + (u.phone_number_verified ? 'badge-success' : 'badge-warning'),
         statusNote: statusNote(u), hasStatusNote: !!u.status_changed,
+        directory: !!u.directory, full: !u.directory, hasUsername: !!u.username,
         linkedView: (u.linked_emails || []).map((l) => ({ address: l.address, badgeText: l.verified ? 'Verified' : 'Not verified',
           badgeClass: 'badge ml-1 ' + (l.verified ? 'badge-success' : 'badge-warning') })),
         passwordDetail: u.password_changed_at ? (u.has_password ? 'Last changed ' : 'Removed ') + fmtDateTime(u.password_changed_at) : '',
@@ -977,6 +980,12 @@ export default function (Alpine) {
     // keeps its self-service rules.
     get manageable() { return !!this.user && (this.isSelf || this.user.can_manage !== false) },
     get readOnly() { return !!this.user && !this.manageable },
+    get readOnlyFull() { return this.readOnly && !this.user.directory },
+    get readOnlyText() {
+      return this.user && this.user.directory
+        ? 'You can see who this is, but not their contact or sign-in details, and you cannot change them: their role is above yours.'
+        : 'You can see this user but not change them.'
+    },
     get resetNoteShown() { return this.manageable && this.resetBySuperOnly },
     get hasLoadError() { return this.loadError !== '' },
     get groups() { return this.user ? this.user.groups || [] : [] },

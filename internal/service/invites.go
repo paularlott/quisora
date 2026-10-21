@@ -135,10 +135,7 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 		return "", time.Time{}, mapStore(err)
 	}
 	if a != System && !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return "", time.Time{}, ErrForbidden
-		}
-		return "", time.Time{}, ErrNotFound
+		return "", time.Time{}, s.denied(a, u)
 	}
 	if a != System && a.UserID == u.ID {
 		return "", time.Time{}, Invalid("user", "you cannot invite yourself")
@@ -172,10 +169,7 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 		return mapStore(err)
 	}
 	if !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return ErrForbidden
-		}
-		return ErrNotFound
+		return s.denied(a, u)
 	}
 	if a.UserID == u.ID {
 		return Invalid("password", "remove your own password from your account page")

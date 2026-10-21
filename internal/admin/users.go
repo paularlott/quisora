@@ -32,6 +32,9 @@ type userView struct {
 	// Name is the read-only full name (given + family name).
 	Name         string              `json:"name"`
 	LinkedEmails []model.LinkedEmail `json:"linked_emails"` // never null
+	// Directory marks a user above the caller, shown as a directory entry only: id, name, role and status
+	// (service.Visibility); every other field is empty.
+	Directory bool `json:"directory,omitempty"`
 	// CanManage says the caller may change this user at all (never someone of a higher role: a manager manages plain
 	// users, an administrator everyone but super admins); the console shows another user read-only without it. Present
 	// on lists and on GET of one user.
@@ -144,6 +147,7 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 		views[i] = viewOf(u)
 		can := m.s.Svc.CanManageUser(a, u)
 		views[i].CanManage = &can
+		views[i].Directory = m.s.Svc.Visibility(a, u) == service.Directory
 	}
 	writeList(w, views, total)
 }
@@ -158,6 +162,13 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := viewOf(u)
+	if m.s.Svc.Visibility(a, u) == service.Directory {
+		// someone above the caller: who they are, nothing else (u is already the directory entry)
+		no := false
+		view.Directory, view.CanManage, view.CanResetSignIn, view.CanVerifyEmail = true, &no, &no, &no
+		web.WriteJSON(w, http.StatusOK, view)
+		return
+	}
 	if pks, err := m.s.Svc.Passkeys.All(r.Context(), u.ID); err == nil {
 		n := len(pks)
 		view.Passkeys = &n
@@ -168,7 +179,7 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if id := u.Work.ManagerID; id != "" {
-		if mu, err := m.s.Svc.Users.Get(r.Context(), id); err == nil && mu.OrgID == u.OrgID {
+		if mu, err := m.s.Svc.Users.Get(r.Context(), id); err == nil && mu.OrgID == u.OrgID && m.s.Svc.Visibility(a, mu) != service.Hidden {
 			view.Manager = &userRef{ID: mu.ID, Name: mu.FullName()}
 		}
 	}

@@ -115,10 +115,7 @@ func (s *Service) manageConnections(ctx context.Context, a *Actor, u *model.User
 		return nil
 	}
 	if a != System && !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return ErrForbidden
-		}
-		return ErrNotFound
+		return s.denied(a, u)
 	}
 	return nil
 }

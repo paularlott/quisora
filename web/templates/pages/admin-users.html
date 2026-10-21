@@ -15,7 +15,7 @@
       {{template "search" (dict "label" "Search users" "placeholder" "Search by name, username or email")}}
       <div class="toolbar-group">
         <div class="field"><label class="sr-only" for="filter-role">Filter by role</label>
-          <select class="select" id="filter-role" data-filter="role" @change="setFilter"><option value="">All roles</option><option value="user">User</option><option value="manager">Manager</option><option value="admin">Administrator</option><option value="super_admin">Super administrator</option></select></div>
+          <select class="select" id="filter-role" data-filter="role" @change="setFilter"><option value="">All roles</option>{{range .Data.FilterRoles}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></div>
         <div class="field"><label class="sr-only" for="filter-active">Filter by status</label>
           <select class="select" id="filter-active" data-filter="active" @change="setFilter"><option value="">Any status</option><option value="1">Active</option><option value="0">Disabled</option></select></div>
         <div class="tag-filter" x-show="hasTagFilter" x-cloak><span class="tag-filter-text">Tag <span class="badge badge-tag badge-plain" x-text="activeTag"></span></span><button type="button" class="btn btn-secondary btn-sm" id="clear-tag-filter" :aria-label="clearTagLabel" @click="clearTagFilter">{{template "icon" "x"}} Clear</button></div>

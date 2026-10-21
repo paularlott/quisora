@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -58,7 +59,7 @@ func TestSelfServiceProfile(t *testing.T) {
 	}
 	for name, in := range map[string]service.UserInput{
 		"username": {Username: ptr("renamed")},
-		"active":   {Active: ptr(true)},
+		"active":   {Active: ptr(false)}, // a value equal to the stored one is no change (a whole-form save)
 		"external": {ExternalID: ptr("x")},
 		"verified": {Verified: ptr(true)},
 		"tags":     {Tags: tags("a")},
@@ -91,6 +92,47 @@ func TestLastOrgAdminNotProtected(t *testing.T) {
 	only := c.user(org.ID, "last", model.RoleAdmin)
 	if err := c.svc.DeleteUser(c.ctx, actor(c.super), only.ID); err != nil {
 		t.Errorf("delete the last admin: %v", err)
+	}
+}
+
+// Deactivating a super admin (disabling, locking out, or an end date in the past) is refused when fewer usable super
+// admins than the server keeps would remain: one, or two in a gossip cluster.
+func TestSuperAdminDeactivationThreshold(t *testing.T) {
+	c := newCast(t)
+	ghost := &service.Actor{UserID: "someone-else", OrgID: c.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	deactivations := map[string]func(id string) error{
+		"disable": func(id string) error {
+			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{Active: ptr(false)})
+			return err
+		},
+		"lock out": func(id string) error { _, err := c.svc.LockOutUser(c.ctx, ghost, id, "x"); return err },
+		"end date": func(id string) error {
+			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{ValidUntil: ptr(past)})
+			return err
+		},
+	}
+	// one super admin: none of them
+	for name, f := range deactivations {
+		if err := f(c.super.ID); !errors.Is(err, service.ErrLastAdmin) {
+			t.Errorf("%s the only super admin: %v", name, err)
+		}
+	}
+	// a gossip cluster keeps two: with two, still none
+	c.svc.MinSuperAdmins = 2
+	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
+	for name, f := range deactivations {
+		if err := f(s2.ID); !errors.Is(err, service.ErrLastAdmin) {
+			t.Errorf("%s one of two super admins in a gossip cluster: %v", name, err)
+		}
+	}
+	if got, _ := c.svc.Users.Get(c.ctx, s2.ID); !got.Active || got.ValidUntil != nil {
+		t.Error("a refused deactivation changed the super admin")
+	}
+	// with three, one may go
+	c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
+	if err := deactivations["disable"](s2.ID); err != nil {
+		t.Errorf("disable one of three super admins in a gossip cluster: %v", err)
 	}
 }
 

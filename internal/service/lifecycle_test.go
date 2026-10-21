@@ -99,6 +99,9 @@ func TestPhoneNumber(t *testing.T) {
 	if err != nil || got.PhoneNumber != "+442079460958" || !got.PhoneVerified {
 		t.Fatalf("admin set: %+v %v", got, err)
 	}
+	if _, err := e.svc.UpdateUser(e.ctx, actor(admin), u.ID, service.UserInput{PhoneVerified: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.svc.UpdateUser(e.ctx, actor(u), u.ID, service.UserInput{PhoneVerified: ptr(true)}); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("self-verify: %v", err)
 	}

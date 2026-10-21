@@ -136,11 +136,40 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	return nil
 }
 
-// GroupMemberCount returns how many users are in group g (no permission check: the caller has read g). One indexed
-// count, not a scan of the members.
-func (s *Service) GroupMemberCount(ctx context.Context, g *model.Group) (int, error) {
+// GroupMemberCount returns how many of group g's users a may see (no permission check: the caller has read g). One
+// indexed count, less the super admins among them for those who may not see super admins.
+func (s *Service) GroupMemberCount(ctx context.Context, a *Actor, g *model.Group) (int, error) {
 	_, n, err := s.Members.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
-	return n, mapStore(err)
+	if err != nil || seesSuperAdmins(a) {
+		return n, mapStore(err)
+	}
+	hidden, err := s.hiddenSuperAdmins(ctx, a, g.OrgID)
+	if err != nil || len(hidden) == 0 {
+		return n, err
+	}
+	for id := range hidden {
+		if _, err := s.Members.Get(ctx, model.MemberID(g.ID, id)); err == nil {
+			n--
+		}
+	}
+	return n, nil
+}
+
+// hiddenSuperAdmins returns the ids of the super admins of org that a may not see (only the primary organization has
+// any, and few).
+func (s *Service) hiddenSuperAdmins(ctx context.Context, a *Actor, orgID string) (map[string]bool, error) {
+	if seesSuperAdmins(a) {
+		return nil, nil
+	}
+	l, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "super_admin", Value: true}}})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	out := make(map[string]bool, len(l))
+	for _, u := range l {
+		out[u.ID] = true
+	}
+	return out, nil
 }
 
 // GroupMembers returns the user ids in a group.
@@ -153,9 +182,15 @@ func (s *Service) GroupMembers(ctx context.Context, a *Actor, groupID string) ([
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, len(ms))
-	for i, m := range ms {
-		ids[i] = m.UserID
+	hidden, err := s.hiddenSuperAdmins(ctx, a, g.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
+		if !hidden[m.UserID] {
+			ids = append(ids, m.UserID)
+		}
 	}
 	return ids, nil
 }
@@ -171,6 +206,9 @@ func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID s
 	}
 	id := model.MemberID(groupID, userID)
 	u, uerr := s.Users.Get(ctx, userID)
+	if uerr == nil && u.OrgID == g.OrgID && s.Visibility(a, u) == Hidden {
+		return ErrNotFound // a super admin, to anyone but a super admin
+	}
 	// Group membership carries access and tags: a provisioning client changes it only for users it may manage
 	// (never an administrator), like their other attributes. (A membership of a user who no longer exists can go.)
 	if a.ClientID != "" && uerr == nil && !s.canManageUser(a, u) {

@@ -42,14 +42,21 @@ func sortByLastLogin(users []*model.User, desc bool) {
 
 // listByLastLogin is ListUsers sorted by last sign-in: the organization's matching users are loaded, stamped and
 // sorted in memory, then paged.
-func (s *Service) listByLastLogin(ctx context.Context, q store.ListQuery) ([]*model.User, int, error) {
+func (s *Service) listByLastLogin(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.User, int, error) {
 	offset, limit, desc := q.Offset, q.Limit, q.Desc
+	leaks, err := s.searchLeaks(ctx, a, q)
+	if err != nil {
+		return nil, 0, err
+	}
 	q.Sort, q.Desc, q.Offset, q.Limit = "", false, 0, 0
 	all, _, err := s.Users.List(ctx, q)
 	if err != nil {
 		return nil, 0, mapStore(err)
 	}
+	all = slices.DeleteFunc(all, func(u *model.User) bool { return leaks[u.ID] })
 	s.WithSignIn(ctx, all...)
+	// directory entries carry no last sign-in, so they sort as never signed in: their order reveals nothing either
+	all = s.present(a, all)
 	sortByLastLogin(all, desc)
 	total := len(all)
 	all = all[min(max(offset, 0), total):]

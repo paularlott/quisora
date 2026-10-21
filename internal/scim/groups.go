@@ -54,8 +54,11 @@ func (rq *request) memberIndex() (map[string][]string, error) {
 		return nil, err
 	}
 	idx := map[string][]string{}
+	unseen := rq.unseenUsers()
 	for _, m := range ms {
-		idx[m.GroupID] = append(idx[m.GroupID], m.UserID)
+		if !unseen[m.UserID] {
+			idx[m.GroupID] = append(idx[m.GroupID], m.UserID)
+		}
 	}
 	for _, ids := range idx {
 		sort.Strings(ids)
@@ -65,6 +68,8 @@ func (rq *request) memberIndex() (map[string][]string, error) {
 
 // refs turns user ids into members with display names (one lookup per user for small groups, one scan for large).
 func (rq *request) refs(ids []string) []memberRef {
+	unseen := rq.unseenUsers()
+	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return unseen[id] })
 	out := make([]memberRef, len(ids))
 	for i, id := range ids {
 		out[i].id = id

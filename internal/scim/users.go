@@ -570,7 +570,8 @@ func (rq *request) loadUser(id string) (*model.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.OrgID != rq.org.ID {
+	// SCIM shows only users seen in full: someone above the caller is not there at all
+	if u.OrgID != rq.org.ID || rq.m.srv.Svc.Visibility(rq.actor, u) != service.Full {
 		return nil, service.ErrNotFound
 	}
 	return u, nil
@@ -805,8 +806,8 @@ func (rq *request) listUsers() {
 			field, ok = userSortField(*p.sortBy)
 		}
 		if ok {
-			if p.count == 0 { // only the total was asked for
-				n, err := svc.Users.Count(rq.ctx, rq.org.ID)
+			if p.count == 0 { // only the total was asked for (of the users the caller sees in full)
+				_, n, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor, store.ListQuery{Limit: 1}))
 				if err != nil {
 					rq.fail(err)
 					return
@@ -814,8 +815,8 @@ func (rq *request) listUsers() {
 				rq.listResponse(nil, n, p, userSchemas)
 				return
 			}
-			users, total, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, store.ListQuery{Sort: field, Desc: p.desc,
-				Offset: p.start - 1, Limit: p.count})
+			users, total, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor,
+				store.ListQuery{Sort: field, Desc: p.desc, Offset: p.start - 1, Limit: p.count}))
 			if err != nil {
 				rq.fail(err)
 				return
@@ -834,14 +835,14 @@ func (rq *request) listUsers() {
 	var users []*model.User
 	if unique != "" {
 		u, err := svc.Users.GetByUnique(rq.ctx, unique)
-		if err == nil {
+		if err == nil && svc.Visibility(rq.actor, u) == service.Full {
 			users = []*model.User{u}
 		}
 	} else {
 		var err error
 		var n int
 		q.Limit = maxScan + 1
-		if users, n, err = svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, q); err != nil {
+		if users, n, err = svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor, q)); err != nil {
 			rq.fail(err)
 			return
 		}
@@ -899,7 +900,7 @@ func (rq *request) enterpriseValue(u *model.User) map[string]any {
 			out[k] = v
 		}
 	}
-	if w.ManagerID != "" {
+	if w.ManagerID != "" && !rq.unseenUsers()[w.ManagerID] { // a manager the caller does not see is not shown
 		m := map[string]any{"value": w.ManagerID, "$ref": rq.location("Users", w.ManagerID)}
 		if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), w.ManagerID); err == nil && mu.OrgID == u.OrgID {
 			m["displayName"] = mu.FullName()
@@ -980,7 +981,7 @@ func (rq *request) profileInput(res map[string]any, in *service.UserInput, exist
 	mgr = strings.TrimSpace(mgr)
 	if hasMgr && mgr != "" {
 		if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), mgr); err != nil || mu.OrgID != rq.org.ID ||
-			(existing != nil && mu.ID == existing.ID) {
+			(existing != nil && mu.ID == existing.ID) || rq.unseenUsers()[mu.ID] {
 			hasMgr, mgr = existing == nil, "" // unknown: unset on create, unchanged on update
 			if existing != nil {
 				mgr, hasMgr = existing.Work.ManagerID, true

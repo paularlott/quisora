@@ -25,7 +25,7 @@ type groupView struct {
 }
 
 func (m *Module) groupViewOf(r *http.Request, g *model.Group) groupView {
-	n, _ := m.s.Svc.GroupMemberCount(r.Context(), g)
+	n, _ := m.s.Svc.GroupMemberCount(r.Context(), web.Actor(r), g)
 	return groupView{Group: g, Tags: nonNilTags(g.Tags), Members: n}
 }
 

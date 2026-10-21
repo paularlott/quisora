@@ -86,10 +86,7 @@ func (s *Service) emailActor(ctx context.Context, a *Actor, u *model.User) (self
 		return true, nil
 	}
 	if a != System && !s.canManageUser(a, u) {
-		if s.canManageUsers(a, u.OrgID) {
-			return false, ErrForbidden
-		}
-		return false, ErrNotFound
+		return false, s.denied(a, u)
 	}
 	return false, nil
 }

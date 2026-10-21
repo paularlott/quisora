@@ -16,27 +16,27 @@
         <span class="avatar avatar-lg" aria-hidden="true" x-text="user.initial"></span>
         <div>
           <h1 class="page-title" x-text="user.title">User</h1>
-          <p class="page-sub mt-1"><span x-text="user.username"></span> · <span :class="user.roleClass" x-text="user.roleText"></span> <span :class="user.statusClass" x-text="user.statusText"></span></p>
+          <p class="page-sub mt-1"><span x-show="user.hasUsername"><span x-text="user.username"></span> · </span><span :class="user.roleClass" x-text="user.roleText"></span> <span :class="user.statusClass" x-text="user.statusText"></span></p>
         </div>
       </div>
       <button type="button" class="btn btn-primary" x-show="manageable" @click="edit">{{template "icon" "pencil"}} Edit user</button>
     </div>
-    <p class="alert alert-info" x-show="readOnly" x-cloak>{{template "icon" "info"}}<span>You can see this user but not change them: their role is above yours.</span></p>
 
     <section class="glass-card" aria-labelledby="profile-h">
       <h2 class="section-title mb-4" id="profile-h">Profile</h2>
+      <p class="alert mb-4" x-show="readOnly" x-cloak>{{template "icon" "info"}}<span x-text="readOnlyText"></span></p>
       <dl class="kv">
         <div><dt>Name</dt><dd x-text="user.name"></dd></div>
-        <div><dt>Username</dt><dd x-text="user.username"></dd></div>
-        <div><dt>Email</dt><dd><span x-text="user.emailText"></span> <span :class="user.emailVerifiedClass" x-show="user.emailVerifiedText !== ''" x-text="user.emailVerifiedText"></span></dd></div>
-        <div><dt>Phone</dt><dd><span x-text="user.phoneText"></span> <span :class="user.phoneVerifiedClass" x-show="user.phoneVerifiedText !== ''" x-text="user.phoneVerifiedText"></span></dd></div>
+        <div x-show="user.full"><dt>Username</dt><dd x-text="user.username"></dd></div>
+        <div x-show="user.full"><dt>Email</dt><dd><span x-text="user.emailText"></span> <span :class="user.emailVerifiedClass" x-show="user.emailVerifiedText !== ''" x-text="user.emailVerifiedText"></span></dd></div>
+        <div x-show="user.full"><dt>Phone</dt><dd><span x-text="user.phoneText"></span> <span :class="user.phoneVerifiedClass" x-show="user.phoneVerifiedText !== ''" x-text="user.phoneVerifiedText"></span></dd></div>
         <div><dt>Role</dt><dd x-text="user.roleText"></dd></div>
         <div><dt>Status</dt><dd><span x-text="user.statusText"></span><span class="help block mt-1" x-show="user.hasStatusNote" x-text="user.statusNote"></span></dd></div>
-        <div><dt>Last sign-in</dt><dd x-text="user.lastLoginText"></dd></div>
+        <div x-show="user.full"><dt>Last sign-in</dt><dd x-text="user.lastLoginText"></dd></div>
         <div><dt>Created</dt><dd x-text="user.createdText"></dd></div>
-        <div><dt>External ID</dt><dd x-text="user.externalText"></dd></div>
-        <div><dt>Groups</dt><dd x-text="user.groupsText"></dd></div>
-        <div><dt>Tags</dt><dd><span x-show="user.noTags">None</span><ul class="tag-badges" aria-label="Tags" x-show="user.hasTags" x-cloak><template x-for="t in user.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></dd></div>
+        <div x-show="user.full"><dt>External ID</dt><dd x-text="user.externalText"></dd></div>
+        <div x-show="user.full"><dt>Groups</dt><dd x-text="user.groupsText"></dd></div>
+        <div x-show="user.full"><dt>Tags</dt><dd><span x-show="user.noTags">None</span><ul class="tag-badges" aria-label="Tags" x-show="user.hasTags" x-cloak><template x-for="t in user.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></dd></div>
       </dl>
     </section>
 
@@ -45,7 +45,7 @@
     <template x-if="manageable"><div>
     {{template "emails-card" (dict "comp" "adminUserEmails" "id" "emails" "help" $help "addHelp" $addHelp)}}
     </div></template>
-    <section class="glass-card" aria-labelledby="emails-ro-h" x-show="readOnly" x-cloak>
+    <section class="glass-card" aria-labelledby="emails-ro-h" x-show="readOnlyFull" x-cloak>
       <h2 class="section-title mb-4" id="emails-ro-h">Email addresses</h2>
       <ul class="stack" aria-labelledby="emails-ro-h">
         <li><span x-text="user.emailText"></span> <span class="badge badge-accent ml-1">Primary</span></li>
@@ -53,7 +53,7 @@
       </ul>
     </section>
 
-    <section class="glass-card" aria-labelledby="signin-h">
+    <section class="glass-card" aria-labelledby="signin-h" x-show="user.full">
       <h2 class="section-title mb-1" id="signin-h">Sign-in</h2>
       <p class="muted mb-4">How this user signs in. Passwords are chosen by the user through an invitation link.</p>
       <dl class="kv mb-4">
