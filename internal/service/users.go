@@ -337,6 +337,16 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 	if err != nil {
 		return nil, 0, err
 	}
+	if q.Sort != "" && !directorySortable[q.Sort] {
+		// The store orders on the stored value, which a directory entry does not show: the row's place would.
+		unseen, err := s.NotSeenInFull(ctx, a, q.Scope)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(unseen) > 0 {
+			return s.listByPresented(ctx, a, q, leaks)
+		}
+	}
 	l, n, err := s.Users.List(ctx, q)
 	if err != nil {
 		return nil, 0, mapStore(err)
@@ -348,6 +358,47 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 	}
 	s.WithSignIn(ctx, l...)
 	return s.present(a, l), n, nil
+}
+
+// directorySortable are the sort fields a directory entry keeps: sorting on them orders every row on what it shows.
+var directorySortable = map[string]bool{"name": true, "role": true, "active": true, "created": true}
+
+// listByPresented is ListUsers sorted on a field directory entries blank (username, email, department...) for a
+// caller who sees some users only as directory entries: the matches are loaded, presented and sorted in memory on the
+// values as shown, as the store would sort them, so a directory entry sorts on "" and its place reveals nothing.
+func (s *Service) listByPresented(ctx context.Context, a *Actor, q store.ListQuery, leaks map[string]bool) ([]*model.User, int, error) {
+	if err := store.ValidateQuery(model.KindUser, q); err != nil {
+		return nil, 0, mapStore(err)
+	}
+	offset, limit, field, desc := q.Offset, q.Limit, q.Sort, q.Desc
+	q.Sort, q.Desc, q.Offset, q.Limit = "", false, 0, 0
+	all, _, err := s.Users.List(ctx, q)
+	if err != nil {
+		return nil, 0, mapStore(err)
+	}
+	all = slices.DeleteFunc(all, func(u *model.User) bool { return leaks[u.ID] })
+	s.WithSignIn(ctx, all...)
+	all = s.present(a, all)
+	key := make(map[string]any, len(all))
+	for _, u := range all {
+		key[u.ID] = u.Index().Fields[field]
+	}
+	slices.SortStableFunc(all, func(x, y *model.User) int {
+		c := store.CompareValues(key[x.ID], key[y.ID])
+		if desc {
+			c = -c
+		}
+		if c == 0 {
+			c = strings.Compare(x.ID, y.ID)
+		}
+		return c
+	})
+	total := len(all)
+	all = all[min(max(offset, 0), total):]
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
+	return all, total, nil
 }
 
 // ListUsersTagged lists the users of an org carrying exactly the tag (the store cannot filter inside a list, so the
