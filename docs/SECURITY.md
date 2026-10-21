@@ -20,6 +20,11 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private, loopback or metadata addresses unless `allow_private_networks` | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
 
+Accepted: usernames, email addresses and external ids are unique within an organization, so a manager or
+administrator creating or editing a user learns that a value is taken even when the account holding it is one they do
+not see (an administrator to a manager, a super admin to everyone below them). Only that the value is in use, not who
+holds it; reads, listings and searches still withhold the account.
+
 ## Hardening checklist
 
 Before production:
