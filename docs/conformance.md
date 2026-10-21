@@ -1,7 +1,8 @@
 # OpenID conformance results
 
 Quisora run against the OpenID Foundation conformance suite (built from source, October 2026) with the harness in
-[conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256.
+[conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256. The
+results below are from commit `1474bc1`, run on 21 October 2026, against a freshly seeded node.
 
 The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seeded confidential clients have
 **Require PKCE** turned off (a per-client setting, on by default; public clients always need PKCE). The only local
@@ -22,19 +23,21 @@ and client assertion modules to the basic plan's:
 
 | Plan | Modules | Failures | Warnings |
 |---|---|---|---|
-| `oidcc-test-plan` with `client_secret_post` | 36 | 0 (rotate-keys: see below) | 3 |
-| `oidcc-test-plan` with `private_key_jwt` (ES256 client keys) | 37 | 0 (rotate-keys: see below) | 3 |
+| `oidcc-test-plan` with `client_secret_post` | 36 | 0 | 3 |
+| `oidcc-test-plan` with `private_key_jwt` (ES256 client keys) | 37 | 0 | 3 |
 
 The same three expected warnings as the basic plan. One module of these plans, `oidcc-server-rotate-keys`, compares
-the JWKS before and after a rotation that the tester triggers between the module's set-up and its start;
-`run-test-plan.py` starts it at once, so it always fails unattended. `conformance/rotate-keys.py` runs it properly
-(it rotates through `POST /api/keys/rotate` in between) and it passes; the run found that the endpoint did not
-actually rotate (fixed below).
+the JWKS before and after a rotation that the tester triggers between the module's set-up and its start. The suite's
+`run-test-plan.py` starts it at once, so run alone it always fails. The harness runs the suite's runner unmodified
+through `conformance/run-plan.py`, which rotates Quisora's signing key (`POST /api/keys/rotate`, as the seeded super
+admin) just before that module starts, once no other module of the plan is in flight. The rotation is part of the
+same unattended plan run, and the module passes in the plan's own export. Its first runs found that the endpoint did
+not actually rotate (fixed below).
 
-## Changes since these runs
+## Changes covered by these runs
 
-Security fixes made after the runs above touch flows the plans exercise; the plans have not been run again yet.
-None is meant to change a result:
+Security fixes made after the previous runs touch flows the plans exercise. The runs above include all of them, and
+none changed a result:
 
 - **Re-authentication** (`oidcc-prompt-login`, `oidcc-max-age-1`): signing in again as the same user now upgrades the
   browser's session instead of replacing it. `auth_time` is the new sign-in, as before; the session id (`sid`) stays
@@ -44,6 +47,9 @@ None is meant to change a result:
 - **Back-channel logout URIs** must be https; the harness relay already is.
 - The seed (`conformance/seed`) mints its API token as an interactive actor (`service.ActorForUser`), as actors
   without one now hold no scope.
+- **First-party clients** (no consent screen) are set up and managed by super admins only; the seed creates them as
+  the super admin.
+- **Invitations** are checked again, against their issuer, when used (not exercised by the plans).
 
 ## Not covered by the suite
 
@@ -78,8 +84,9 @@ These finish as REVIEW: the suite screenshots a page for a person to confirm. Th
 text before each screenshot.
 
 - `oidcc-prompt-login`, `oidcc-max-age-1`: the sign-in page appears again (forced re-authentication).
-- `oidcc-ensure-registered-redirect-uri`, `oidcc-ensure-request-object-with-redirect-uri`: "This request cannot be
-  completed" (an unregistered `redirect_uri` is never redirected to).
+- `oidcc-ensure-registered-redirect-uri`, `oidcc-ensure-request-object-with-redirect-uri`, and in the comprehensive
+  plan `oidcc-redirect-uri-query-added`: "This request cannot be completed" (an unregistered `redirect_uri` is never
+  redirected to).
 - RP-initiated logout with a bad, modified or missing `id_token_hint`, or an unregistered or altered
   `post_logout_redirect_uri`: "The sign-out request is not valid".
 - RP-initiated logout without parameters, without `post_logout_redirect_uri`, or with only `state`: the "Sign out?"

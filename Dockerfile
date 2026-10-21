@@ -8,7 +8,7 @@
 # Every setting is an QUISORA_* environment variable, a flag after "serve", or /etc/quisora/quisora.toml (mount it).
 
 ARG NODE_VERSION=24.15.0
-ARG GO_VERSION=1.27.2
+ARG GO_VERSION=1.27.3
 
 FROM node:${NODE_VERSION}-alpine AS web
 WORKDIR /src/web
