@@ -608,6 +608,11 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		// nobody above them.
 		return nil, Invalid("work", "your work details, user type and end date are set by an administrator")
 	}
+	if self && (in.Tags != nil || in.Username != nil || in.ExternalID != nil) && a != System && !a.IsSuper() {
+		// The same for the tags and username every application receives and the id provisioning matches on. Users
+		// and managers were refused above (they cannot manage themselves); this catches an administrator, who can.
+		return nil, ErrForbidden
+	}
 	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
 	before := u.Role
 	was := snapshot(u)
