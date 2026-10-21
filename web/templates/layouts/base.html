@@ -74,16 +74,15 @@
     <div class="nav-group">
       <span class="eyebrow nav-heading">Administration</span>
       {{with .Org}}
-      {{if $.IsSuper}}
-      <a class="nav-link nav-org-switch" href="/admin/orgs"{{if eq $.Nav "orgs"}} aria-current="page"{{end}}>
+      {{/* The organization being administered: for administrators, the link to its overview. */}}
+      {{if $.IsAdmin}}
+      <a class="nav-link nav-org-link" href="/admin/orgs/{{.Name}}"{{if eq $.Nav "overview"}} aria-current="page"{{end}}>
         {{template "icon" "building"}}
-        <span class="nav-org-text"><span class="nav-org-label">Organization</span><span class="nav-org-name">{{.DisplayName}}</span><span class="sr-only">, switch organization</span></span>
-        {{template "icon" "chevron-right"}}
+        <span class="nav-org-text"><span class="nav-org-label">Organization</span><span class="nav-org-name">{{.DisplayName}}</span></span>
       </a>
       {{else}}
       <div class="nav-org"><span class="cell-sub block">Organization</span>{{.DisplayName}}</div>
       {{end}}
-      {{if $.IsAdmin}}<a class="nav-link" href="/admin/orgs/{{.Name}}"{{if eq $.Nav "overview"}} aria-current="page"{{end}}>{{template "icon" "home"}} Overview</a>{{end}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/users"{{if eq $.Nav "users"}} aria-current="page"{{end}}>{{template "icon" "users"}} Users</a>
       {{if $.IsAdmin}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>{{template "icon" "shield"}} Groups</a>
@@ -92,14 +91,14 @@
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
       {{end}}
       {{end}}
-      {{if and .IsSuper (not .Org)}}<a class="nav-link" href="/admin/orgs"{{if eq .Nav "orgs"}} aria-current="page"{{end}}>{{template "icon" "building"}} Organizations</a>
-      <a class="nav-link" href="/admin/audit"{{if eq .Nav "audit-all"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>{{end}}
     </div>
     {{end}}
     {{if .IsSuper}}
     <div class="nav-group">
       <span class="eyebrow nav-heading">System</span>
+      <a class="nav-link" href="/admin/orgs"{{if eq .Nav "orgs"}} aria-current="page"{{end}}>{{template "icon" "building"}} Organizations</a>
       <a class="nav-link" href="/admin/system"{{if eq .Nav "system"}} aria-current="page"{{end}}>{{template "icon" "network"}} System overview</a>
+      <a class="nav-link" href="/admin/audit"{{if eq .Nav "audit-all"}} aria-current="page"{{end}}>{{template "icon" "list"}} All audit logs</a>
     </div>
     {{end}}
     </div>

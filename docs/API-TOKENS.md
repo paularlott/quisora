@@ -15,9 +15,10 @@ is made, so if you are demoted or your account is disabled, the token loses that
 | `admin` | managers and up | The management API, `/api/…` (what the admin console uses), including the live event stream `/api/events` |
 | `scim` | managers and up | The SCIM 2.0 API, `/scim/v2/…`, for provisioning tools |
 | `backup` | super admins | `GET /api/backup` only; such a token expires within 30 days |
+| `import` | super admins | With `admin`: creating users with a password hash from another system (`password_hash`) |
 | `api` | everyone | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
 
-A token with the `api` scope cannot also have `admin`, `scim` or `backup`: applications that see an `api` token
+A token with the `api` scope cannot also have `admin`, `scim`, `backup` or `import`: applications that see an `api` token
 must never be able to administer Quisora with it. Make a separate token for each purpose.
 
 Send the token as a bearer token on every request:
@@ -83,6 +84,27 @@ QUISORA_ADMIN_TOKEN=$TOKEN quisora backup --server "$QUISORA" quisora.bak
 ```
 
 See [RUNNING.md](RUNNING.md#backup-and-restore) for the backup format, encryption and restore.
+
+## Importing users with their passwords (`import`)
+
+Moving people from another system without asking them all to set a new password: create each user with the hash that
+system stored, using a super admin's token with the `admin` and `import` scopes.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$QUISORA/api/orgs/acme/users" \
+  -d '{"email": "alan@acme.example", "given_name": "Alan", "email_verified": true,
+       "password_hash": "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"}'
+```
+
+- `password_hash` is bcrypt (`$2a$`, `$2b$` or `$2y$`, cost 4 to 14) or argon2id. Anything else is refused (422).
+- It is accepted only when a user is created, never on an update: setting a hash sets a password someone may know,
+  so an existing account cannot be taken over this way. Only super admins can do it; an organization's admins cannot.
+- It is stored sealed with the master key like every password. The user's first sign-in checks it and re-hashes the
+  password with Quisora's own argon2id settings; from then on the old hash is gone.
+- bcrypt reads only the first 72 bytes of a password: someone whose old password was longer cannot sign in with it and
+  needs an invitation.
+- The import is audited on `user.create` (`password` = `imported bcrypt` or `imported argon2id`).
+- Imported users have no second factor: where the organization requires one, they set it up at their first sign-in.
 
 ## Your own applications (`api`)
 

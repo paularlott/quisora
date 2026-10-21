@@ -10,6 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // argonHash is an argon2id hash of pw with the given settings, not yet sealed.
@@ -159,5 +160,73 @@ func TestPasswordsReseal(t *testing.T) {
 	e.setHash(bob, ring(keyA).SealFor(service.PasswordBinding(bob.ID), []byte(argonHash("bob's password!", 19*1024, 2))))
 	if e.verify(bob, "bob's password!") {
 		t.Error("a hash sealed with a key that is not configured verified")
+	}
+}
+
+// Users created with a bcrypt (or argon2id) hash from another system: only by the system or a super admin (a token
+// only with the import scope), only at creation, only valid hashes; the first sign-in re-hashes it with argon2id.
+func TestImportPasswordHash(t *testing.T) {
+	e := newEnv(t)
+	acme := e.org("acme")
+	admin := e.user(acme.ID, "admin", model.RoleAdmin)
+	bc, err := bcrypt.GenerateFromPassword([]byte("old system password"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := func(name, hash string) service.UserInput {
+		return service.UserInput{GivenName: ptr("I"), Username: ptr(name), Email: ptr(name + "@example.com"), PasswordHash: ptr(hash)}
+	}
+	superTok := func(scopes ...string) *service.Actor {
+		a := *actor(e.super)
+		a.Unscoped, a.Scopes = false, scopes
+		return &a
+	}
+	for _, c := range []struct {
+		name string
+		a    *service.Actor
+		in   service.UserInput
+	}{
+		{"an organization's admin", actor(admin), in("i1", string(bc))},
+		{"a super admin's token without import", superTok(service.ScopeAdmin), in("i2", string(bc))},
+		{"not a supported hash", actor(e.super), in("i3", "$1$md5$abc")},
+		{"bcrypt cost too high", actor(e.super), in("i4", "$2b$31$"+string(bc)[7:])},
+		{"a password and a hash", actor(e.super), func() service.UserInput { x := in("i5", string(bc)); x.Password = ptr("x y z w v u"); return x }()},
+	} {
+		if _, err := e.svc.CreateUser(e.ctx, c.a, acme.ID, c.in); outcome(err) != "invalid" {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+
+	u, err := e.svc.CreateUser(e.ctx, superTok(service.ScopeAdmin, service.ScopeImport), acme.ID, in("imported", string(bc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(u.PasswordHash, "v3:") {
+		t.Fatalf("stored unsealed: %q", u.PasswordHash)
+	}
+	if inner, _ := e.svc.Sealer.OpenFor(service.PasswordBinding(u.ID), u.PasswordHash); string(inner) != string(bc) {
+		t.Fatal("the imported hash is not what was stored")
+	}
+	if e.verify(u, "wrong") {
+		t.Error("a wrong password verified")
+	}
+	if !e.verify(u, "old system password") {
+		t.Fatal("the imported password does not verify")
+	}
+	inner, _ := e.svc.Sealer.OpenFor(service.PasswordBinding(u.ID), e.stored(u))
+	if !strings.HasPrefix(string(inner), "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Errorf("not re-hashed with argon2id at the first sign-in: %q", inner)
+	}
+	if !e.verify(u, "old system password") {
+		t.Error("the re-hashed password does not verify")
+	}
+
+	// never on an update: an existing account could be taken over
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{PasswordHash: ptr(string(bc))}); outcome(err) != "invalid" {
+		t.Errorf("hash on an update: %v", err)
+	}
+	// an argon2id hash from another system is accepted too
+	if _, err := e.svc.CreateUser(e.ctx, service.System, acme.ID, in("a2", argonHash("pw pw pw pw", 19*1024, 2))); err != nil {
+		t.Errorf("argon2id import: %v", err)
 	}
 }

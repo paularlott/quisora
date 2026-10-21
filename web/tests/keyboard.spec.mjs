@@ -553,19 +553,25 @@ test('user page: sign-in section, remove password confirm and new invitation lin
   await expect(sec2).toContainText('Set')
 })
 
-test('super admin: the organization block is the switcher (link to the organizations list)', async ({ page }) => {
-  await gotoRows(page, `${A}/users`, 'super')
-  const sw = page.getByRole('link', { name: /Acme Corporation\s*, switch organization/ })
-  await expect(sw).toBeVisible()
-  await expect(sw).toHaveAttribute('href', '/admin/orgs')
-  await sw.focus()
-  expect(await sw.evaluate((el) => parseFloat(getComputedStyle(el).outlineWidth))).toBeGreaterThanOrEqual(2)
-  await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/admin\/orgs$/)
-  await page.waitForSelector('tbody tr')
-  // an org admin gets a plain label, no link
+test('the organization block links administrators to its overview; the organizations list is under System', async ({ page }) => {
   await gotoRows(page, `${A}/users`, 'admin')
-  await expect(page.getByRole('link', { name: /switch organization/ })).toHaveCount(0)
+  const org = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Organization\s*Acme Corporation/ })
+  await expect(org).toHaveAttribute('href', A)
+  await org.focus()
+  expect(await org.evaluate((el) => parseFloat(getComputedStyle(el).outlineWidth))).toBeGreaterThanOrEqual(2)
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(new RegExp(A + '$'))
+  await expect(org).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('link', { name: 'Organizations' })).toHaveCount(0)
+  // a super admin also has the organizations list, first in System
+  await gotoRows(page, `${A}/users`, 'super')
+  const system = page.getByRole('navigation', { name: 'Primary' }).locator('.nav-group', { hasText: 'System' })
+  await expect(system.getByRole('link').first()).toHaveAccessibleName('Organizations')
+  await expect(system.getByRole('link').first()).toHaveAttribute('href', '/admin/orgs')
+  // a manager gets a plain label: the overview is for administrators
+  await gotoRows(page, `${A}/users`, 'manager')
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Acme Corporation/ })).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toContainText('Acme Corporation')
 })
 
 // ---- Account: compact security rows with their dialogs ------------------------------------------------------

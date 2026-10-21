@@ -24,7 +24,8 @@ export function describeAgent(ua) {
 }
 
 const SCOPE_TEXT = { api: 'Your organization’s applications (they check the token with Quisora)', scim: 'Provisioning (SCIM)', admin: 'Administration API',
-  backup: 'Backups of the whole server (expires within 30 days)' }
+  backup: 'Backups of the whole server (expires within 30 days)',
+  import: 'Import users with a password hash from another system (with Administration API)' }
 
 // Sensitive actions (changing the email address, adding or deleting a passkey, creating an API token, removing the
 // Authenticator App) need a recent re-authentication. The server answers 403 with field "reauth"; withReauth opens

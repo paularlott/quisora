@@ -2845,7 +2845,7 @@ components:
   securitySchemes:
     bearer:
       bearerFormat: qsr_<id>_<secret>
-      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope). The
+      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash: the import scope too, super admins only). The
         owning user's role still limits every call."
       scheme: bearer
       type: http
@@ -4220,6 +4220,12 @@ components:
         given_name:
           type: string
           description: first name; required on create and never empty
+        password_hash:
+          type: string
+          description: "a password hash brought from another system, for a migration: bcrypt ($2a$, $2b$ or $2y$, cost 4 to
+            14) or argon2id. Super admins only (an API token needs the import scope too); never with password, never on an
+            update. It is stored sealed like any password, and the user's first sign-in re-hashes it with argon2id. Audited
+            on user.create as password: imported bcrypt (or argon2id)."
         invite:
           type: object
           description: issue an invitation link and return it in the response

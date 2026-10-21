@@ -7,7 +7,6 @@
       <h1 class="page-title">Audit log</h1>
       <p class="page-sub">{{if .Data.AllOrgs}}Security-relevant changes in every organization, newest first.{{else}}Security-relevant changes in this organization, newest first.{{end}}</p>
     </div>
-    {{if and .IsSuper (not .Data.AllOrgs)}}<a class="btn btn-secondary" href="/admin/audit">{{template "icon" "list"}} Every organization</a>{{end}}
   </div>
 
   <section class="glass-card" aria-label="Audit events">

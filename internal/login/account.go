@@ -1026,7 +1026,7 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 	scopes := []string{}
 	for _, sc := range service.APITokenScopes {
 		if (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && a.actor.Role.Rank() < model.RoleManager.Rank() ||
-			sc == service.ScopeBackup && !a.actor.IsSuper() {
+			service.SuperOnlyScope(sc) && !a.actor.IsSuper() {
 			continue
 		}
 		scopes = append(scopes, sc)

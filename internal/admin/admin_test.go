@@ -1060,8 +1060,24 @@ func TestPages(t *testing.T) {
 			t.Errorf("%s: inline script", p.path)
 		}
 	}
-	if b := html(su, "/admin/orgs", 200); !strings.Contains(b, `x-data="adminOrgs"`) || !strings.Contains(b, "switch organization") {
+	if b := html(su, "/admin/orgs", 200); !strings.Contains(b, `x-data="adminOrgs"`) || !strings.Contains(b, `href="/admin/orgs" aria-current="page"`) {
 		t.Error("orgs page")
+	}
+	// the organization block: for administrators the link to its overview (current on that page); for managers a
+	// label; the organizations list is a System link, for super admins only
+	if b := html(ad, "/admin/orgs/acme", 200); !strings.Contains(b, `class="nav-link nav-org-link" href="/admin/orgs/acme" aria-current="page"`) ||
+		strings.Contains(b, `href="/admin/orgs"`) {
+		t.Error("admin: organization block")
+	}
+	if b := html(mg, "/admin/orgs/acme/users", 200); strings.Contains(b, "nav-org-link") || !strings.Contains(b, `class="nav-org"`) {
+		t.Error("manager: organization block")
+	}
+	if b := html(su, "/admin/orgs/acme/users", 200); !strings.Contains(b, `href="/admin/orgs"`) || !strings.Contains(b, `href="/admin/audit"`) {
+		t.Error("super admin: System links")
+	}
+	// the audit log of every organization is reached from the menu, not from an organization's audit log
+	if b := html(su, "/admin/orgs/acme/audit", 200); strings.Count(b, `href="/admin/audit"`) != 1 {
+		t.Error("an organization's audit log links to every organization's besides the menu")
 	}
 	// current-page marker in the navigation
 	if b := html(ad, "/admin/orgs/acme/groups", 200); !strings.Contains(b, `href="/admin/orgs/acme/groups" aria-current="page"`) {
@@ -1072,8 +1088,8 @@ func TestPages(t *testing.T) {
 		t.Error("super admin on another org")
 	}
 
-	// the system overview (the server as a whole: cluster, signing keys, emergency sign-out): super admins only, one
-	// link at the bottom of the menu, which keeps the organization last administered
+	// the system overview (the server as a whole: cluster, signing keys, emergency sign-out): super admins only, in the
+	// menu's System group, which keeps the organization last administered
 	if b := html(su, "/admin/system", 200); !strings.Contains(b, `x-data="adminSystem"`) ||
 		!strings.Contains(b, `href="/admin/system" aria-current="page"`) || !strings.Contains(b, `id="signout-dialog"`) ||
 		!strings.Contains(b, `id="rotate-keys"`) || !strings.Contains(b, `aria-label="Cluster nodes table"`) {

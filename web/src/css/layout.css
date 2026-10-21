@@ -71,12 +71,12 @@
   .nav-group + .nav-group { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--edge); }
   .nav-heading { padding: 0 0.75rem; margin-bottom: 0.2rem; }
   .nav-org { padding: 0.5rem 0.75rem 0.6rem; font-weight: 700; line-height: 1.25; }
-  /* Super admins: the current organization is the switcher (links to the organizations list). */
-  .nav-org-switch { align-items: center; }
+  /* Administrators: the current organization links to its overview. */
+  .nav-org-link { align-items: center; }
   .nav-org-text { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
   .nav-org-label { font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); }
   .nav-org-name { font-weight: 700; overflow-wrap: anywhere; }
-  .nav-org-switch[aria-current="page"] .nav-org-label { color: inherit; }
+  .nav-org-link[aria-current="page"] .nav-org-label { color: inherit; }
   .nav-link { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.5rem 0.75rem; border-radius: 1rem; font-weight: 600;
     color: var(--fg); text-decoration: none; position: relative; transition: background-color 0.15s; }
   .nav-link:hover { background: var(--ctl-hover); text-decoration: none; }

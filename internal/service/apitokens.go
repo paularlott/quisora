@@ -20,10 +20,16 @@ const (
 	// always expires within BackupTokenMaxDays — a backup holds every credential (sealed) of every organization.
 	ScopeBackup = "backup"
 	ScopeAPI    = "api" // for the user's own applications: validated by them through introspection
+	// ScopeImport lets an admin-scope token create users with a password hash brought from another system
+	// (UserInput.PasswordHash): super admins only.
+	ScopeImport = "import"
 )
 
 // APITokenScopes are the scopes a user may choose from.
-var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup}
+var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup, ScopeImport}
+
+// SuperOnlyScope reports whether only super admins may hold a token with scope sc.
+func SuperOnlyScope(sc string) bool { return sc == ScopeBackup || sc == ScopeImport }
 
 // BackupTokenMaxDays bounds the lifetime of a token with the backup scope.
 const BackupTokenMaxDays = 30
@@ -129,10 +135,10 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 		if (sc == ScopeSCIM || sc == ScopeAdmin) && a.Role.Rank() < model.RoleManager.Rank() {
 			return nil, "", Invalid("scopes", "your role cannot use the "+sc+" scope")
 		}
+		if SuperOnlyScope(sc) && !a.IsSuper() {
+			return nil, "", Invalid("scopes", "only super admins can use the "+sc+" scope")
+		}
 		if sc == ScopeBackup {
-			if !a.IsSuper() {
-				return nil, "", Invalid("scopes", "only super admins can use the backup scope")
-			}
 			if in.Expires < 1 || in.Expires > BackupTokenMaxDays {
 				return nil, "", Invalid("expires_days", "a token with the backup scope expires within "+itoa(BackupTokenMaxDays)+" days")
 			}
@@ -190,7 +196,7 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
 	for _, sc := range t.Scopes {
 		if (sc == ScopeSCIM || sc == ScopeAdmin) && a.Role.Rank() < model.RoleManager.Rank() ||
-			sc == ScopeBackup && !a.IsSuper() {
+			SuperOnlyScope(sc) && !a.IsSuper() {
 			return nil, "", Invalid("scopes", "your role can no longer use the "+sc+" scope: revoke this token instead")
 		}
 	}
@@ -397,7 +403,8 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if err != nil || !u.Enabled(time.Now()) {
 		return nil, nil, ErrBadToken
 	}
-	if u.Role.Rank() < model.RoleManager.Rank() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) {
+	if u.Role.Rank() < model.RoleManager.Rank() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
+		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {
 		return nil, nil, ErrBadToken // the owner was demoted since the token was made
 	}
 	s.touchAPIToken(ctx, t)

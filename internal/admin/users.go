@@ -175,6 +175,9 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 
 type createUserBody struct {
 	userBody
+	// PasswordHash imports a password hash from another system (bcrypt or argon2id): super admins, and an API token
+	// only with the import scope. See service.UserInput.PasswordHash.
+	PasswordHash *string `json:"password_hash"`
 	// Invite asks for an invitation link in the response; Invite.Email also mails it.
 	Invite *struct {
 		Email bool `json:"email"`
@@ -191,6 +194,7 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := in.input()
+	input.PasswordHash = in.PasswordHash
 	input.Username = emptyToNil(input.Username)
 	if input.Email != nil && *input.Email == "" {
 		input.Email = nil

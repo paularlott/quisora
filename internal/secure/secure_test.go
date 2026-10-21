@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestPassword(t *testing.T) {
@@ -254,4 +255,47 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// An imported bcrypt hash verifies (and always asks to be replaced); costs outside 4..14 and malformed hashes are
+// refused, at import and at sign-in.
+func TestPasswordBcrypt(t *testing.T) {
+	h := NewHasher(2)
+	ctx := context.Background()
+	enc, err := bcrypt.GenerateFromPassword([]byte("correct horse"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind, err := CheckImport(string(enc)); kind != "bcrypt" || err != nil {
+		t.Fatalf("import check: %q %v", kind, err)
+	}
+	if ok, rehash, err := h.Verify(ctx, "correct horse", string(enc)); !ok || !rehash || err != nil {
+		t.Errorf("verify: ok %v, rehash %v, %v", ok, rehash, err)
+	}
+	if ok, _, _ := h.Verify(ctx, "wrong", string(enc)); ok {
+		t.Error("wrong password verified")
+	}
+	// PHP's $2y$ is the same algorithm
+	y := "$2y$" + string(enc)[4:]
+	if ok, _, err := h.Verify(ctx, "correct horse", y); !ok || err != nil {
+		t.Errorf("$2y$: %v %v", ok, err)
+	}
+	high, _ := bcrypt.GenerateFromPassword([]byte("x"), 4)
+	tooHigh := "$2b$31$" + string(high)[7:]
+	for name, bad := range map[string]string{"cost 31": tooHigh, "short": "$2b$10$abc", "garbage": "$2b$xx$" + string(enc)[7:]} {
+		if _, err := CheckImport(bad); !errors.Is(err, ErrHashParams) {
+			t.Errorf("import %s: %v", name, err)
+		}
+		if ok, _, err := h.Verify(ctx, "x", bad); ok || !errors.Is(err, ErrHashParams) {
+			t.Errorf("verify %s: %v %v", name, ok, err)
+		}
+	}
+	if kind, err := CheckImport("$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"); kind != "argon2id" || err != nil {
+		t.Errorf("argon2id import: %q %v", kind, err)
+	}
+	for _, bad := range []string{"", "plaintext", "$1$md5$x", "$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"} {
+		if _, err := CheckImport(bad); !errors.Is(err, ErrHashParams) {
+			t.Errorf("import %q accepted: %v", bad, err)
+		}
+	}
 }

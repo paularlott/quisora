@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // RandomBytes returns n cryptographically random bytes.
@@ -113,30 +114,77 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
-// Verify reports whether password matches the encoded hash, and (rehash) whether the hash was made with settings
-// other than today's, so the caller can replace it while it has the password. An empty hash never matches (but
-// still costs a hash, so timing does not reveal whether an account has a password). A hash naming settings outside
-// the bounds above is refused without hashing (ErrHashParams).
-func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, rehash bool, err error) {
-	var m, t uint32
-	var p uint8
-	var salt, want []byte
+// Imported bcrypt hashes (users moved from another system) are accepted with a cost in this range.
+const (
+	bcryptMinCost = 4
+	bcryptMaxCost = 14
+)
+
+// isBcrypt reports whether encoded is a bcrypt hash ($2a$, $2b$, $2y$...): its own prefix says so, so a password is
+// only ever compared one way.
+func isBcrypt(encoded string) bool { return strings.HasPrefix(encoded, "$2") }
+
+// CheckImport validates a password hash brought from another system before it is stored: bcrypt with a cost of 4 to
+// 14, or argon2id within the bounds Verify accepts. It returns the kind ("bcrypt" or "argon2id"), or ErrHashParams.
+func CheckImport(encoded string) (string, error) {
+	if isBcrypt(encoded) {
+		cost, err := bcrypt.Cost([]byte(encoded))
+		if err != nil || cost < bcryptMinCost || cost > bcryptMaxCost || len(encoded) != 60 {
+			return "", ErrHashParams
+		}
+		return "bcrypt", nil
+	}
+	if _, _, _, _, _, err := parseArgon2(encoded); err != nil {
+		return "", err
+	}
+	return "argon2id", nil
+}
+
+// parseArgon2 parses an argon2id hash, refusing settings outside the bounds above.
+func parseArgon2(encoded string) (m, t uint32, p uint8, salt, want []byte, err error) {
 	parts := strings.Split(encoded, "$")
-	plain := len(parts) == 6 && parts[1] == "argon2id" && parts[2] == "v=19"
-	if plain {
-		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
-			return false, false, ErrHashParams
+	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" {
+		return 0, 0, 0, nil, nil, ErrHashParams
+	}
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
+		return 0, 0, 0, nil, nil, ErrHashParams
+	}
+	if salt, err = base64.RawStdEncoding.DecodeString(parts[4]); err != nil {
+		return 0, 0, 0, nil, nil, ErrHashParams
+	}
+	if want, err = base64.RawStdEncoding.DecodeString(parts[5]); err != nil {
+		return 0, 0, 0, nil, nil, ErrHashParams
+	}
+	if m < 8*1024 || m > argonMaxMemory || t < 1 || t > argonMaxTime || p < 1 || p > argonMaxThreads ||
+		len(salt) < 8 || len(salt) > 64 || len(want) < 16 || len(want) > 64 {
+		return 0, 0, 0, nil, nil, ErrHashParams
+	}
+	return m, t, p, salt, want, nil
+}
+
+// Verify reports whether password matches the encoded hash, and (rehash) whether the hash should be replaced while
+// the caller has the password: an imported bcrypt hash, or argon2id made with settings other than today's. An empty
+// hash never matches (but still costs a hash, so timing does not reveal whether an account has a password). A hash
+// naming settings outside the bounds above is refused without hashing (ErrHashParams).
+func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, rehash bool, err error) {
+	if isBcrypt(encoded) {
+		if _, err := CheckImport(encoded); err != nil {
+			return false, false, err
 		}
-		if salt, err = base64.RawStdEncoding.DecodeString(parts[4]); err != nil {
-			return false, false, ErrHashParams
+		if err := h.acquire(ctx); err != nil {
+			return false, false, err
 		}
-		if want, err = base64.RawStdEncoding.DecodeString(parts[5]); err != nil {
-			return false, false, ErrHashParams
+		defer func() { <-h.sem }()
+		// a password longer than bcrypt's 72 bytes is an error here: it cannot match
+		if bcrypt.CompareHashAndPassword([]byte(encoded), []byte(password)) != nil {
+			return false, false, nil
 		}
-		if m < 8*1024 || m > argonMaxMemory || t < 1 || t > argonMaxTime || p < 1 || p > argonMaxThreads ||
-			len(salt) < 8 || len(salt) > 64 || len(want) < 16 || len(want) > 64 {
-			return false, false, ErrHashParams
-		}
+		return true, true, nil
+	}
+	plain := encoded != ""
+	m, t, p, salt, want, perr := parseArgon2(encoded)
+	if plain && perr != nil {
+		return false, false, perr
 	}
 	if err := h.acquire(ctx); err != nil {
 		return false, false, err

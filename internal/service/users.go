@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -45,7 +46,11 @@ type UserInput struct {
 	ValidUntil *string    `json:"valid_until"`
 	Work       *WorkInput `json:"work"`
 	Password   *string    `json:"password"`
-	Verified   *bool      `json:"email_verified"`
+	// PasswordHash imports a password hash from another system when a user is created (never on an update): bcrypt
+	// (cost 4 to 14) or argon2id. The system, or super admins (an API token needs the import scope). The first sign-in
+	// re-hashes it with today's argon2id (passwords.go).
+	PasswordHash *string `json:"password_hash"`
+	Verified     *bool   `json:"email_verified"`
 	// Phone is a contact number: spaces, dots, dashes and brackets are dropped and the rest must be E.164 (+ and
 	// the country code); "" clears. A new number is unverified unless PhoneVerified says otherwise.
 	Phone         *string   `json:"phone_number"`
@@ -249,12 +254,12 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 	if u.GivenName == "" {
 		return Invalid("given_name", "is required")
 	}
+	if in.PasswordHash != nil {
+		return Invalid("password_hash", "a password hash is imported only when the user is created")
+	}
 	if in.Password != nil {
 		if err := ValidatePassword(*in.Password); err != nil {
 			return err
-		}
-		if u.ID == "" {
-			u.ID = model.NewID() // a new user: the stored hash is bound to its id (passwords.go)
 		}
 		h, err := s.HashPassword(ctx, u.ID, *in.Password)
 		if err != nil {
@@ -385,9 +390,27 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if in.Password != nil && a != System {
 		return nil, Invalid("password", "passwords are set by the user through their invitation link")
 	}
-	u := &model.User{OrgID: orgID, Role: role, Active: true}
+	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true}
 	if in.Email == nil || strings.TrimSpace(*in.Email) == "" {
 		return nil, Invalid("email", "is required")
+	}
+	imported := ""
+	if in.PasswordHash != nil {
+		// Setting a hash is setting a password someone may know: only the system and super admins, and a token only
+		// with the import scope, for a new user (an existing account could otherwise be taken over).
+		if a != System && !(a.IsSuper() && a.HasScope(ScopeImport)) {
+			return nil, Invalid("password_hash", "only super admins import password hashes (an API token needs the import scope)")
+		}
+		if in.Password != nil {
+			return nil, Invalid("password_hash", "give a password or a password hash, not both")
+		}
+		kind, err := secure.CheckImport(*in.PasswordHash)
+		if err != nil {
+			return nil, Invalid("password_hash", "must be a bcrypt hash (cost 4 to 14) or an argon2id hash")
+		}
+		imported = kind
+		u.PasswordHash = s.SealPasswordHash(u.ID, *in.PasswordHash)
+		in.PasswordHash = nil // apply refuses it (updates never take one)
 	}
 	if err := s.apply(ctx, u, in); err != nil {
 		return nil, err
@@ -398,6 +421,9 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	detail := map[string]string{"role": string(role)}
 	if len(u.Tags) > 0 {
 		detail["tags"] = strings.Join(u.Tags, " ")
+	}
+	if imported != "" {
+		detail["password"] = "imported " + imported
 	}
 	s.Audit(ctx, a, orgID, "user.create", u.Username, detail)
 	return u, nil
