@@ -12,6 +12,7 @@ test('audit log: the Filters panel, chips that remove one filter, and Clear all'
   await page.goto('/admin/orgs/acme/audit', { waitUntil: 'load' })
   await expect(rows(page).first()).toBeVisible()
   const all = await page.locator('.pager').textContent()
+  expect(all).toMatch(/Showing 1–\d+ of \d+/) // the pager's own range (not the filters')
   const button = page.getByRole('button', { name: /^Filters/ })
 
   // search, time, Filters and refresh share one line
@@ -66,6 +67,14 @@ test('audit log: the Filters panel, chips that remove one filter, and Clear all'
   await dlg.getByRole('button', { name: 'Cancel' }).click()
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
+
+  // the shortest windows: everything the demo recorded at start-up is within the last 30 minutes, and shows as a chip
+  await chips(page).getByRole('button', { name: 'Clear all' }).click()
+  await page.getByLabel('Time', { exact: true }).selectOption('30m')
+  await expect(chips(page)).toContainText('Last 30 minutes')
+  await expect(page.locator('.pager')).toHaveText(all)
+  await page.getByLabel('Time', { exact: true }).selectOption('15m')
+  await expect(chips(page)).toContainText('Last 15 minutes')
 
   // one day, today: today's events are all in it (the end's whole day is included)
   const today = new Date()

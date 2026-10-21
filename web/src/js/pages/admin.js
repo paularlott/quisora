@@ -1547,7 +1547,7 @@ export default function (Alpine) {
     get chips() {
       const out = []
       if (this.range) {
-        const t = this.customRange ? this.customLabel : { '1h': 'Last hour', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' }[this.range]
+        const t = this.customRange ? this.customLabel : { '15m': 'Last 15 minutes', '30m': 'Last 30 minutes', '1h': 'Last hour', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' }[this.range]
         out.push({ key: 'range', text: t, removeLabel: `Remove filter: ${t}` })
       }
       if (this.form.action) out.push({ key: 'action', text: `Action: ${this.form.action}`, removeLabel: `Remove filter: action ${this.form.action}` })
@@ -1611,7 +1611,7 @@ export default function (Alpine) {
       const p = { outcome: this.outcome, org: this.form.org }
       if (a.endsWith('*')) p.action_group = a.slice(0, -1)
       else p.action = a
-      const ms = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[this.range]
+      const ms = { '15m': 900e3, '30m': 1800e3, '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[this.range]
       if (ms) p.from = new Date(Date.now() - ms).toISOString()
       if (this.customRange) {
         if (this.rangeFrom) p.from = new Date(this.rangeFrom).toISOString()
