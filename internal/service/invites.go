@@ -72,7 +72,23 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	if err != nil || !u.Enabled(time.Now()) || !u.Created.Equal(l.UserCreated) {
 		return nil, nil, ErrLink
 	}
+	if l.Purpose == LinkInvite && l.IssuedBy != "" && !s.issuerMayInvite(ctx, l.IssuedBy, u) {
+		_ = s.Links.Delete(ctx, l.ID) // it can never become valid again: the issuer would have to issue a new one
+		return nil, nil, ErrLink
+	}
 	return l, u, nil
+}
+
+// issuerMayInvite asks CreateInvite's rules again when an invitation is used, of its issuer as they are now: the
+// account may have been promoted since (an administrator's invitation for a plain user must not open a super admin),
+// or the issuer demoted or disabled (a link they hold keeps no authority they lost).
+func (s *Service) issuerMayInvite(ctx context.Context, issuerID string, u *model.User) bool {
+	iu, err := s.Users.Get(ctx, issuerID)
+	if err != nil || !iu.Enabled(time.Now()) || iu.ID == u.ID {
+		return false
+	}
+	a := ActorForUser(iu, "")
+	return s.canManageUser(a, u) && s.mayResetSignIn(ctx, a, u, "user") == nil
 }
 
 // RedeemLink uses the link: exactly one caller succeeds (compare-and-put on the record).

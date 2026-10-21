@@ -216,3 +216,90 @@ func TestRedeemRevokesOtherSignInLinks(t *testing.T) {
 		t.Fatalf("verification link revoked: %v", err)
 	}
 }
+
+// An invitation is checked again when used, against its issuer as they are now: one an administrator issued for a
+// plain user does not open the account once it is promoted beyond them, one a super admin issued does not outlive
+// their demotion or their account, and a refused link is gone. The flows the issue-time rules allow still work.
+func TestInviteRecheckedAgainstIssuer(t *testing.T) {
+	e := newEnv(t)
+	p := e.primary.ID
+	admin := e.user(p, "inv-admin", model.RoleAdmin)
+	setRole := func(u *model.User, r model.Role) {
+		t.Helper()
+		if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: &r}); err != nil {
+			t.Fatalf("role %s for %s: %v", r, u.Username, err)
+		}
+	}
+	invite := func(by *model.User, u *model.User) string {
+		t.Helper()
+		link, _, err := e.svc.CreateInvite(e.ctx, actor(by), u.ID)
+		if err != nil {
+			t.Fatalf("%s invites %s: %v", by.Username, u.Username, err)
+		}
+		return tokenFrom(link)
+	}
+	refused := func(name, tok string, u *model.User) {
+		t.Helper()
+		if _, _, err := e.svc.PeekLink(e.ctx, tok, service.LinkInvite); !errors.Is(err, service.ErrLink) {
+			t.Errorf("%s: page shown: %v", name, err)
+		}
+		if _, _, err := e.svc.RedeemLink(e.ctx, tok, service.LinkInvite); !errors.Is(err, service.ErrLink) {
+			t.Errorf("%s: redeemed: %v", name, err)
+		}
+		if links, _, _ := e.svc.Links.List(e.ctx, store.ListQuery{Scope: u.ID}); len(links) > 0 {
+			t.Errorf("%s: a refused invitation is kept", name)
+		}
+	}
+	redeems := func(name, tok string) {
+		t.Helper()
+		if _, _, err := e.svc.RedeemLink(e.ctx, tok, service.LinkInvite); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	// promoted beyond the issuer after the invitation: refused
+	target := e.user(p, "inv-target", model.RoleUser)
+	tok := invite(admin, target)
+	setRole(target, model.RoleSuperAdmin)
+	refused("admin's invitation after promotion to super admin", tok, target)
+
+	// the issuer demoted after issuing: refused
+	super2 := e.user(p, "inv-super", model.RoleSuperAdmin)
+	mgr := e.user(p, "inv-mgr", model.RoleManager)
+	tok = invite(super2, mgr)
+	setRole(super2, model.RoleUser)
+	refused("invitation of a demoted super admin", tok, mgr)
+
+	// the issuer disabled after issuing: refused
+	plain := e.user(p, "inv-plain", model.RoleUser)
+	tok = invite(admin, plain)
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, admin.ID, service.UserInput{Active: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	refused("invitation of a disabled administrator", tok, plain)
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, admin.ID, service.UserInput{Active: ptr(true)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// still allowed: an administrator invites a plain user, or a brand-new manager (the first invitation)
+	redeems("admin invites a plain user", invite(admin, e.user(p, "inv-u2", model.RoleUser)))
+	redeems("admin invites a brand-new manager", invite(admin, e.user(p, "inv-mgr2", model.RoleManager)))
+	// promoted to the issuer's own rank before it was ever set up: the administrator could invite a new one anyway
+	u3 := e.user(p, "inv-u3", model.RoleUser)
+	tok = invite(admin, u3)
+	setRole(u3, model.RoleAdmin)
+	redeems("admin's invitation for an account promoted to admin, never set up", tok)
+	// a super admin invites an established manager
+	est := e.user(p, "inv-est", model.RoleManager)
+	est.PasswordHash = "x"
+	if err := e.svc.Users.Update(e.ctx, est); err != nil {
+		t.Fatal(err)
+	}
+	redeems("super admin invites an established manager", invite(e.super, est))
+	// no issuer (bootstrap, the mailer): unchanged
+	link, _, err := e.svc.CreateInvite(e.ctx, service.System, e.user(p, "inv-sys", model.RoleManager).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redeems("system invitation", tokenFrom(link))
+}
