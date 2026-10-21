@@ -67,7 +67,7 @@ type Server struct {
 type UI struct {
 	SiteName     string `toml:"site_name" flag:"site-name" usage:"Product name shown in the UI"`
 	DefaultTheme string `toml:"default_theme" flag:"default-theme" usage:"Default theme: light, dark or system"`
-	LogoLight    string `toml:"logo_light" flag:"logo-light" usage:"Logo file path or https URL (default: built-in)"`
+	LogoLight    string `toml:"logo_light" flag:"logo-light" usage:"Logo absolute file path or https URL (default: built-in)"`
 	LogoDark     string `toml:"logo_dark" flag:"logo-dark" usage:"Dark-theme logo (default: logo-light)"`
 	Footer       string `toml:"footer" flag:"footer" usage:"Footer line"`
 }
@@ -456,6 +456,11 @@ func (c *Config) Validate() error {
 	default:
 		errs = append(errs, errors.New("ui.default_theme must be light, dark or system"))
 	}
+	for _, l := range [][2]string{{"ui.logo_light", c.UI.LogoLight}, {"ui.logo_dark", c.UI.LogoDark}} {
+		if err := logoError(l[0], l[1]); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	switch c.Tokens.SigningAlg {
 	case "ES256", "EdDSA":
 	default:
@@ -592,7 +597,31 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// LocalStorage reports whether the backend lives on this node only (so cluster data replication is needed).
+// logoError checks a logo setting: empty (the built-in logo), an https URL, or an absolute path to a regular file.
+// The branding handler serves the file as is, so a directory (which http.ServeFile would list) or a relative path
+// (resolved against whatever the working directory is) is refused here rather than at the first request.
+func logoError(name, v string) error {
+	if v == "" {
+		return nil
+	}
+	if strings.HasPrefix(v, "https://") {
+		if u, err := url.Parse(v); err != nil || u.Host == "" || u.User != nil {
+			return fmt.Errorf("%s %q must be an https URL such as https://example.com/logo.svg", name, v)
+		}
+		return nil
+	}
+	if !filepath.IsAbs(v) {
+		return fmt.Errorf("%s %q must be an https URL or an absolute file path", name, v)
+	}
+	if fi, err := os.Stat(v); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	} else if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s %q is not a regular file", name, v)
+	}
+	return nil
+}
+
+// LocalStoragereports whether the backend lives on this node only (so cluster data replication is needed).
 func (c *Config) LocalStorage() bool {
 	return c.Storage.Backend == "badgerdb" || c.Storage.Backend == "sqlite"
 }

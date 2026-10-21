@@ -24,7 +24,7 @@ data_dir = "/var/lib/quisora"
 [ui]
 site_name = "Identity"
 default_theme = "system"                  # light, dark or system
-# logo_light = "/etc/quisora/logo.svg"        # file path or https URL
+# logo_light = "/etc/quisora/logo.svg"        # absolute file path or https URL
 # logo_dark = "/etc/quisora/logo-dark.svg"    # optional; falls back to logo_light
 # footer = "© Example Ltd · Support: help@example.com"
 
