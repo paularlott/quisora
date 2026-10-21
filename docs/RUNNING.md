@@ -103,6 +103,17 @@ resources registered for the client (`resource` or `audience`), the subject toke
 signing out ends it, but revoking it does not end that grant. There is no refresh or ID token, and no `actor_token`.
 Every exchange is audited (`oauth.token_exchange`).
 
+**DPoP** (RFC 9449, sender-constrained tokens): a client that sends a DPoP proof (header `DPoP`) with a token request
+gets an access token bound to the proof's key (`token_type` `DPoP`, `cnf.jkt` in the token and in introspection),
+accepted at userinfo and SCIM only with the `DPoP` authorization scheme and a fresh proof of that key. Proofs at the
+token and PAR endpoints need a nonce from this server: the first request fails with `use_dpop_nonce`, and every
+response carries the nonce for the next one in `DPoP-Nonce` (nonces last two to three minutes, on every node). Each
+proof works once. A public client's refresh tokens are bound to the key it first used; a confidential client's stay
+bound to its client authentication. An authorization request can name the key in advance (`dpop_jkt`, or a proof
+sent with a pushed request), and its code is then redeemed only with that key. "Require DPoP-bound tokens" on a
+client (`dpop_bound_access_tokens`) refuses its token requests without a proof. APIs that verify Quisora's access
+tokens themselves must check `cnf.jkt` against the request's proof; introspection reports it.
+
 **`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
 and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a
 condition of the sign-in. An `acr` claim requested as essential with values none of which Quisora knows fails with

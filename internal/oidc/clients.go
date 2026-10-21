@@ -83,8 +83,9 @@ type oauthError struct {
 	status int
 	code   string
 	desc   string
-	realm  bool // add WWW-Authenticate: Basic
-	retry  bool // add Retry-After (rate limited)
+	realm  bool   // add WWW-Authenticate: Basic
+	retry  bool   // add Retry-After (rate limited)
+	nonce  string // add DPoP-Nonce (use_dpop_nonce)
 }
 
 func (e *oauthError) Error() string { return e.code + ": " + e.desc }
@@ -116,6 +117,9 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 	}
 	if e.retry {
 		w.Header().Set("Retry-After", "60")
+	}
+	if e.nonce != "" {
+		w.Header().Set("DPoP-Nonce", e.nonce)
 	}
 	w.WriteHeader(e.status)
 	o := newObj(96)

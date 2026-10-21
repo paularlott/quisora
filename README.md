@@ -18,7 +18,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   links instead of admin-set passwords. Per-organization and per-tenant MFA.
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
   revocation, userinfo, RP-initiated and back-channel logout, resource indicators, pushed authorization requests
-  (RFC 9126), token exchange (RFC 8693), `claims` and `acr_values`. JWT
+  (RFC 9126), token exchange (RFC 8693), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`. JWT
   access tokens signed with ES256, EdDSA or RS256, and keys rotate automatically. Passes the OpenID Foundation
   certification plans ([docs/conformance.md](docs/conformance.md)).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI

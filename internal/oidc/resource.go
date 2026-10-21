@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -86,33 +87,36 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 // ---------------------------------------------------------------------------------------------------------------
 // userinfo
 
-// bearer returns the request's access token (RFC 6750 §2.1 header or §2.2 form body). ok is false when the client
-// used more than one method, which §2 forbids.
-func bearer(r *http.Request) (tok string, ok bool) {
+// bearer returns the request's access token (RFC 6750 §2.1 header or §2.2 form body, or the DPoP scheme of RFC 9449
+// §7.1) and its scheme ("Bearer" or "DPoP"). ok is false when the client used more than one method, which §2 forbids.
+func bearer(r *http.Request) (tok, scheme string, ok bool) {
 	var form string
 	if r.Method == http.MethodPost && strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
 		r.Body = http.MaxBytesReader(nil, r.Body, 64<<10)
 		if r.ParseForm() == nil {
 			if len(r.PostForm["access_token"]) > 1 {
-				return "", false
+				return "", "", false
 			}
 			form = r.PostForm.Get("access_token")
 		}
 	}
 	if r.URL.Query().Has("access_token") { // §2.3 query tokens leak into logs and history; not supported
-		return "", false
+		return "", "", false
 	}
 	if h := r.Header.Get("Authorization"); h != "" {
 		if form != "" {
-			return "", false
+			return "", "", false
 		}
 		scheme, t, _ := strings.Cut(h, " ")
-		if strings.EqualFold(scheme, "Bearer") {
-			return strings.TrimSpace(t), true
+		switch {
+		case strings.EqualFold(scheme, "Bearer"):
+			return strings.TrimSpace(t), "Bearer", true
+		case strings.EqualFold(scheme, "DPoP"):
+			return strings.TrimSpace(t), "DPoP", true
 		}
-		return "", true
+		return "", "", true
 	}
-	return form, true
+	return form, "Bearer", true
 }
 
 func bearerError(w http.ResponseWriter, status int, code string) {
@@ -127,7 +131,7 @@ func bearerError(w http.ResponseWriter, status int, code string) {
 
 func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	p.corsActual(w, r)
-	tok, ok := bearer(r)
+	tok, scheme, ok := bearer(r)
 	if !ok {
 		bearerError(w, http.StatusBadRequest, "invalid_request")
 		return
@@ -136,8 +140,15 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		bearerError(w, http.StatusUnauthorized, "")
 		return
 	}
-	cl, err := p.VerifyAccessToken(r.Context(), tok)
-	if err != nil || cl.Sub == cl.ClientID {
+	cl, err := p.VerifyRequestToken(r, scheme, tok)
+	switch {
+	case errors.Is(err, ErrDPoPProof):
+		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_dpop_proof")
+		return
+	case err != nil && scheme == "DPoP":
+		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_token")
+		return
+	case err != nil || cl.Sub == cl.ClientID:
 		bearerError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
@@ -311,7 +322,14 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	}
 	o := newObj(512)
 	o.boolean("active", true)
-	o.str("token_type", "Bearer")
+	if cl.Cnf != nil && cl.Cnf.JKT != "" {
+		o.str("token_type", "DPoP") // RFC 9449 §6.2
+		c := newObj(64)
+		c.str("jkt", cl.Cnf.JKT)
+		o.raw("cnf", string(c.bytes()))
+	} else {
+		o.str("token_type", "Bearer")
+	}
 	o.str("token_kind", "access_token")
 	o.str("iss", cl.Iss)
 	o.str("sub", cl.Sub)

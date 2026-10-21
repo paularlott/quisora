@@ -8,7 +8,7 @@ import (
 )
 
 // ReloadMasterKeys switches the running server to the master keys master and previous (server.master_key and
-// server.previous_master_keys, as config.LoadMasterKeys reads them again on SIGHUP), without a restart: the keyring
+// server.previous_master_keys, as a configuration reload reads them again on SIGHUP), without a restart: the keyring
 // every part of the server uses is replaced in place. It refuses keys that do not include the key in use now (a
 // mistyped or wrong key would seal new secrets with a key the other nodes cannot open, or open nothing), and, on a
 // shared database, keys the database's key check does not accept, as start-up does.

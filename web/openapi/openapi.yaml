@@ -3171,6 +3171,9 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        dpop_bound_access_tokens:
+          type: boolean
+          description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -3240,6 +3243,9 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        dpop_bound_access_tokens:
+          type: boolean
+          description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -3316,6 +3322,9 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        dpop_bound_access_tokens:
+          type: boolean
+          description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most

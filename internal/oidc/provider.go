@@ -371,6 +371,7 @@ func (p *Provider) buildDiscovery() []byte {
 			model.AuthMethodNone},
 		"revocation_endpoint_auth_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
 		"code_challenge_methods_supported":                      []string{"S256"},
+		"dpop_signing_alg_values_supported":                     dpopAlgs,
 		// a client_id may be the https URL of the client's metadata document (MCP's Client ID Metadata Documents)
 		"client_id_metadata_document_supported": true,
 		"scopes_supported":                      []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"},

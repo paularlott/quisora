@@ -11,6 +11,33 @@ import (
 	cli_toml "github.com/paularlott/cli/toml"
 )
 
+// parse runs a "serve" command built from Flags with the config file path ("" for none) and args after "serve", the
+// way the quisora command does, and returns the configuration it filled (not validated).
+func parse(t *testing.T, path string, args ...string) (*Config, error) {
+	t.Helper()
+	cfg := Default()
+	global, server := Flags(cfg)
+	ran := false
+	cmd := &cli.Command{Name: "quisora", Flags: global,
+		Commands: []*cli.Command{{Name: "serve", Flags: server, Run: func(context.Context, *cli.Command) error {
+			ran = true
+			return nil
+		}}}}
+	if path != "" {
+		cmd.ConfigFile = cli_toml.NewConfigFile(&path, func() []string { return nil })
+	}
+	old := os.Args
+	defer func() { os.Args = old }()
+	os.Args = append([]string{"quisora", "serve"}, args...)
+	if err := cmd.Execute(context.Background()); err != nil {
+		return nil, err
+	}
+	if !ran {
+		t.Fatal("command did not run")
+	}
+	return cfg, nil
+}
+
 // Every setting can come from a flag, an QUISORA_* environment variable or the config file; a flag beats the
 // environment, which beats the file, which beats the default.
 func TestFlagsEnvAndConfigFile(t *testing.T) {
@@ -36,23 +63,9 @@ level = "warn"
 	t.Setenv("QUISORA_LISTEN", ":2222")
 	t.Setenv("QUISORA_SESSION_IDLE", "42")
 
-	cfg := Default()
-	global, server := Flags(cfg)
-	var ran bool
-	cmd := &cli.Command{Name: "quisora", ConfigFile: cli_toml.NewConfigFile(&path, func() []string { return nil }),
-		Flags: global,
-		Commands: []*cli.Command{{Name: "serve", Flags: server, Run: func(context.Context, *cli.Command) error {
-			ran = true
-			return nil
-		}}}}
-	old := os.Args
-	defer func() { os.Args = old }()
-	os.Args = []string{"quisora", "serve", "--listen", ":3333", "--badgerdb-sync-writes=false"}
-	if err := cmd.Execute(context.Background()); err != nil {
+	cfg, err := parse(t, path, "--listen", ":3333", "--badgerdb-sync-writes=false")
+	if err != nil {
 		t.Fatal(err)
-	}
-	if !ran {
-		t.Fatal("command did not run")
 	}
 	checks := []struct{ name, got, want string }{
 		{"flag beats env and file", cfg.Server.Listen, ":3333"},
@@ -107,5 +120,20 @@ func TestListenAndTrustProxyValidation(t *testing.T) {
 	}
 	if p, err := ParseProxy("2001:db8::1"); err != nil || p.Bits() != 128 {
 		t.Errorf("v6 address: %v %v", p, err)
+	}
+}
+
+// A value that does not parse, from the environment or the config file, fails rather than falling back to the default.
+func TestBadValuesFail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quisora.toml")
+	if err := os.WriteFile(path, []byte("[session]\nidle = \"soon\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parse(t, path); err == nil || !strings.Contains(err.Error(), "session.idle") {
+		t.Errorf("config file: %v", err)
+	}
+	t.Setenv("QUISORA_CLUSTER_SIZE", "three")
+	if _, err := parse(t, ""); err == nil || !strings.Contains(err.Error(), "QUISORA_CLUSTER_SIZE") {
+		t.Errorf("environment: %v", err)
 	}
 }

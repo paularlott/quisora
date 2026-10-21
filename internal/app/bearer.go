@@ -27,9 +27,10 @@ func bearer(svc *service.Service) web.BearerFunc {
 
 // scimVerifier accepts OAuth client_credentials access tokens carrying the scim scope from an enabled client with
 // SCIM provisioning turned on; the client acts as an admin of its own organization (never granting admin roles).
-func scimVerifier(a *App) func(ctx context.Context, bearer string) (*service.Actor, error) {
-	return func(ctx context.Context, tok string) (*service.Actor, error) {
-		cl, err := a.OIDC.VerifyAccessToken(ctx, tok)
+func scimVerifier(a *App) func(r *http.Request, scheme, tok string) (*service.Actor, error) {
+	return func(r *http.Request, scheme, tok string) (*service.Actor, error) {
+		ctx := r.Context()
+		cl, err := a.OIDC.VerifyRequestToken(r, scheme, tok)
 		if err != nil {
 			return nil, err
 		}

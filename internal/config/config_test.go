@@ -8,7 +8,10 @@ import (
 )
 
 func TestExampleParses(t *testing.T) {
-	c, err := Load("../../quisora.toml.example")
+	c, err := parse(t, "../../quisora.toml.example")
+	if err == nil {
+		err = c.Validate()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +35,7 @@ func TestEnvOverride(t *testing.T) {
 	t.Setenv("QUISORA_STORAGE", "sqlite")
 	t.Setenv("QUISORA_CLUSTER_PEERS", "a:1, b:2")
 	t.Setenv("QUISORA_DEFAULT_THEME", "dark")
-	c, err := Load("")
+	c, err := parse(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,28 +169,6 @@ func TestSkinSetting(t *testing.T) {
 		if got != want {
 			t.Errorf("skin %q: got %q (err %v), want %q", v, got, err, want)
 		}
-	}
-}
-
-// A reload (SIGHUP) reads the master keys from the config file and the environment, as at start-up, and nothing else.
-func TestLoadMasterKeys(t *testing.T) {
-	k0 := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	k1 := base64.StdEncoding.EncodeToString(append(make([]byte, 31), 1))
-	f := filepath.Join(t.TempDir(), "q.toml")
-	if err := os.WriteFile(f, []byte("[server]\nmaster_key = \""+k1+"\"\nprevious_master_keys = [\""+k0+"\"]\nlisten = \"bad\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	m, prev, err := LoadMasterKeys(f)
-	if err != nil || m != k1 || len(prev) != 1 || prev[0] != k0 {
-		t.Fatalf("from the file (other settings not checked): %q %v %v", m, prev, err)
-	}
-	t.Setenv(EnvPrefix+"PREVIOUS_MASTER_KEYS", "")
-	if m, prev, err = LoadMasterKeys(f); err != nil || m != k1 || len(prev) != 0 {
-		t.Fatalf("the environment over the file: %q %v %v", m, prev, err)
-	}
-	t.Setenv(EnvPrefix+"MASTER_KEY", "short")
-	if _, _, err = LoadMasterKeys(f); err == nil {
-		t.Fatal("an invalid key was accepted")
 	}
 }
 

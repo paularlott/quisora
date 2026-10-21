@@ -83,30 +83,13 @@ func TestRemoteBackup(t *testing.T) {
 	}
 }
 
-func TestOnCommandLine(t *testing.T) {
-	for _, tc := range []struct {
-		args []string
-		want bool
-	}{
-		{[]string{"--config", "q.toml", "serve"}, false},
-		{[]string{"serve", "--master-key", "x"}, true},
-		{[]string{"serve", "--master-key=x"}, true},
-		{[]string{"serve", "-previous-master-keys=x"}, true},
-		{[]string{"serve", "--", "--master-key"}, false},
-	} {
-		if got := onCommandLine(tc.args, "master-key", "previous-master-keys"); got != tc.want {
-			t.Errorf("%v: %v", tc.args, got)
-		}
-	}
-}
-
 // Secrets given as flags are warned about (named with the environment variable and config key to use instead);
 // other flags, and a VictoriaLogs URL without credentials, are not.
 func TestWarnSecretFlags(t *testing.T) {
 	cfg := config.Default()
 	var b strings.Builder
-	warnSecretFlags(&b, cfg, []string{"serve", "--master-key=x", "--smtp-password", "y", "--data-dir", "d",
-		"--audit-victorialogs-url", "http://vl:9428"})
+	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--master-key=x", "--smtp-password", "y", "--data-dir", "d",
+		"--audit-victorialogs-url", "http://vl:9428"))
 	out := b.String()
 	if !strings.Contains(out, "--master-key") || !strings.Contains(out, "QUISORA_MASTER_KEY") ||
 		!strings.Contains(out, "--smtp-password") || strings.Contains(out, "data-dir") || strings.Contains(out, "victorialogs") {
@@ -114,7 +97,7 @@ func TestWarnSecretFlags(t *testing.T) {
 	}
 	cfg.Audit.VictoriaLogs = "http://user:pw@vl:9428"
 	b.Reset()
-	warnSecretFlags(&b, cfg, []string{"serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs})
+	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs))
 	if !strings.Contains(b.String(), "--audit-victorialogs-url") {
 		t.Fatal("a VictoriaLogs URL with credentials was not warned about")
 	}

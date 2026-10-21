@@ -36,6 +36,7 @@ var clientAuthParams = []string{"client_secret", "client_assertion", "client_ass
 func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	p.corsActual(w, r)
+	p.setDPoPNonce(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))
@@ -56,6 +57,19 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	if form.Get("request_uri") != "" {
 		writeOAuthError(w, oerr("invalid_request", "request_uri cannot be pushed"))
 		return
+	}
+	// A DPoP proof here binds the code to its key, as dpop_jkt does (RFC 9449 §10.1).
+	jkt, e := p.checkProof(r, "", true)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
+	if jkt != "" {
+		if v := form.Get("dpop_jkt"); v != "" && v != jkt {
+			writeOAuthError(w, dpopErr("dpop_jkt is not the thumbprint of the DPoP proof's key"))
+			return
+		}
+		form.Set("dpop_jkt", jkt)
 	}
 	if !redirectMatches(c.RedirectURIs, form.Get("redirect_uri")) {
 		writeOAuthError(w, oerr("invalid_request", "redirect_uri is not registered for this client"))

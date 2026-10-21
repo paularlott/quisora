@@ -1,7 +1,6 @@
 package scim_test
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -149,7 +148,7 @@ func TestClientCredentialsVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.verify = func(_ context.Context, b string) (*service.Actor, error) {
+	e.verify = func(_ *http.Request, _, b string) (*service.Actor, error) {
 		if b == "jwt-for-entra" {
 			return service.ActorForClient(cl, ""), nil
 		}

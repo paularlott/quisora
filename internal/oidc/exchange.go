@@ -29,7 +29,7 @@ const (
 	maxActDepth     = 4 // actors in a chain of exchanges
 )
 
-func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.Values) (*tokenResponse, *oauthError) {
+func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.Values, jkt string) (*tokenResponse, *oauthError) {
 	st := form.Get("subject_token")
 	if st == "" {
 		return nil, oerr("invalid_request", "subject_token is required")
@@ -100,7 +100,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cl.SID, gid: cl.GID,
 		authTime: time.Unix(int64(cl.AuthTime), 0), amr: cl.AMR, app: app, act: act,
-		expires: time.Unix(int64(cl.Exp), 0)}
+		expires: time.Unix(int64(cl.Exp), 0), jkt: jkt}
 	tr, err := p.mint(ctx, is, false)
 	if err != nil {
 		return nil, serverError(err)

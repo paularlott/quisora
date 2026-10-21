@@ -288,6 +288,13 @@ type Claims struct {
 	// Act is the actor of a token from a token exchange (RFC 8693 §4.1): the client acting for the subject, with the
 	// actor before it nested inside (exchange.go).
 	Act json.RawMessage `json:"act"`
+	// Cnf binds a DPoP access token to the key of its proofs (RFC 9449 §6).
+	Cnf *Confirmation `json:"cnf"`
+}
+
+// Confirmation is the cnf claim (RFC 7800): the thumbprint of the DPoP key the token is bound to.
+type Confirmation struct {
+	JKT string `json:"jkt"`
 }
 
 // Scopes splits the scope claim.

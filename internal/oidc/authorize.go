@@ -44,6 +44,7 @@ type flow struct {
 	ClaimsUI    []string `json:"cu,omitempty"`  // claims requested individually for userinfo (claims.go)
 	ClaimsID    []string `json:"ci,omitempty"`  // ... and for the ID token
 	MFA         bool     `json:"mfa,omitempty"` // acr values that ask for a second factor
+	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt: the DPoP key the code must be redeemed with
 }
 
 // consent is what the request asks the user to allow (consentScopes).
@@ -419,6 +420,9 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 			acrBasic+", "+acrMFA+")")
 	}
 	f.MFA = demandsMFA(append(slices.Clone(cp.ACR), strings.Fields(q.Get("acr_values"))...))
+	if f.DPoPJKT = q.Get("dpop_jkt"); f.DPoPJKT != "" && !validJKT(f.DPoPJKT) {
+		return nil, oerr("invalid_request", "dpop_jkt must be a SHA-256 JWK thumbprint")
+	}
 	return c, nil
 }
 
@@ -575,7 +579,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 
 	cd := codeData{ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, Scopes: f.Scopes,
-		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID}
+		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.cfg.Tokens.Code())
 	if err != nil {

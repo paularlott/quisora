@@ -438,6 +438,9 @@ type Client struct {
 	// RequirePAR makes the client send its authorization requests through the pushed authorization request endpoint
 	// (RFC 9126): an authorization request carrying its parameters in the URL is refused.
 	RequirePAR bool `msgpack:"par,omitempty" json:"require_pushed_authorization_requests"`
+	// DPoPBound makes every token request of the client carry a DPoP proof (RFC 9449 §5.2): its access tokens are
+	// always bound to a key it holds.
+	DPoPBound bool `msgpack:"dpop,omitempty" json:"dpop_bound_access_tokens"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to
@@ -694,6 +697,9 @@ type Grant struct {
 	Revoked  bool      `msgpack:"rv" json:"revoked"`
 	// Stamp is the session sign-out counters it was made under (signout.go).
 	Stamp SignOutStamp `msgpack:"st" json:"-"`
+	// DPoPJKT binds the refresh tokens of a public client's grant to a DPoP key (RFC 9449 §5): the thumbprint of
+	// the key of the proof sent with the code exchange.
+	DPoPJKT string `msgpack:"jkt,omitempty" json:"-"`
 }
 
 func (g *Grant) Kind() Kind { return KindGrant }

@@ -38,9 +38,9 @@ func newEnv(t testing.TB) *env {
 	t.Helper()
 	e := &env{t: t, ctx: context.Background(), users: map[string]*model.User{}}
 	e.Env = webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module {
-		return []web.Module{&scim.Module{TokenVerifier: func(ctx context.Context, b string) (*service.Actor, error) {
+		return []web.Module{&scim.Module{TokenVerifier: func(r *http.Request, scheme, b string) (*service.Actor, error) {
 			if e.verify != nil {
-				return e.verify(ctx, b)
+				return e.verify(r, scheme, b)
 			}
 			return nil, service.ErrBadToken
 		}}}

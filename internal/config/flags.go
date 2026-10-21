@@ -1,9 +1,7 @@
 package config
 
 import (
-	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/paularlott/cli"
@@ -57,37 +55,6 @@ func settings(c *Config) []Setting {
 
 // Settings lists every setting of c (for documentation and tests).
 func Settings(c *Config) []Setting { return settings(c) }
-
-// set parses an environment value into the field (lists are comma separated).
-func (s Setting) set(val string) error {
-	switch s.field.Kind() {
-	case reflect.String:
-		s.field.SetString(val)
-	case reflect.Int:
-		n, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil {
-			return err
-		}
-		s.field.SetInt(int64(n))
-	case reflect.Bool:
-		b, err := strconv.ParseBool(strings.TrimSpace(val))
-		if err != nil {
-			return err
-		}
-		s.field.SetBool(b)
-	case reflect.Slice:
-		parts := []string{}
-		for p := range strings.SplitSeq(val, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				parts = append(parts, p)
-			}
-		}
-		s.field.Set(reflect.ValueOf(parts))
-	default:
-		return fmt.Errorf("unsupported setting type %s", s.field.Kind())
-	}
-	return nil
-}
 
 // Flags returns a command-line flag for every setting, bound to c (which should hold the defaults). The cli package
 // fills each from, in order: the flag, its QUISORA_* environment variable, its key in the config file, the default.

@@ -1959,7 +1959,7 @@ func TestPublicClientCORS(t *testing.T) {
 		resp := preflight(path, "https://spa.example")
 		if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "https://spa.example" ||
 			!strings.Contains(resp.Header.Get("Vary"), "Origin") || resp.Header.Get("Access-Control-Allow-Credentials") != "" ||
-			strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "DPoP") || len(resp.Header.Values("Vary")) != 1 ||
+			!strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "DPoP") || len(resp.Header.Values("Vary")) != 1 ||
 			!strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") ||
 			resp.Header.Get("Access-Control-Max-Age") == "" {
 			t.Errorf("%s preflight: %d %v", path, resp.StatusCode, resp.Header)

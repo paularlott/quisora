@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -231,28 +230,6 @@ func Default() *Config {
 	}
 }
 
-// Load reads path (if non-empty) over the defaults, then applies the QUISORA_* environment variables, then validates.
-// The command line uses Flags instead (flags, environment and config file, through the cli package); Load serves
-// programmatic callers and tests with the same names.
-func Load(path string) (*Config, error) {
-	c := Default()
-	if path != "" {
-		if _, err := toml.DecodeFile(path, c); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
-		}
-	}
-	for _, s := range settings(c) {
-		val, ok := os.LookupEnv(s.Env)
-		if !ok {
-			continue
-		}
-		if err := s.set(val); err != nil {
-			return nil, fmt.Errorf("%s: %w", s.Env, err)
-		}
-	}
-	return c, c.Validate()
-}
-
 // masterKeyErrors checks server.master_key and server.previous_master_keys.
 func masterKeyErrors(master string, previous []string) []error {
 	var errs []error
@@ -275,26 +252,18 @@ func masterKeyErrors(master string, previous []string) []error {
 	return errs
 }
 
-// LoadMasterKeys reads server.master_key and server.previous_master_keys again, for a running server reloading its
-// master keys (SIGHUP): from the config file path (if non-empty), then the QUISORA_* environment variables, as at
-// start-up; nothing else is read or checked. (Values given on the command line cannot change while it runs.)
-func LoadMasterKeys(path string) (master string, previous []string, err error) {
-	c, err := reload(path, "server.master_key", "server.previous_master_keys")
-	if err != nil {
-		return "", nil, err
-	}
+// MasterKeys returns server.master_key and server.previous_master_keys, checked, for a running server reloading its
+// master keys (SIGHUP): c is a configuration read again for the reload (the command line, the environment and the
+// config file, as at start-up); nothing else of it is checked.
+func (c *Config) MasterKeys() (master string, previous []string, err error) {
 	if errs := masterKeyErrors(c.Server.MasterKey, c.Server.PreviousMasterKeys); len(errs) > 0 {
 		return "", nil, errors.Join(errs...)
 	}
 	return c.Server.MasterKey, c.Server.PreviousMasterKeys, nil
 }
 
-// LoadClusterKeys reads cluster.key and cluster.previous_keys again (SIGHUP), as LoadMasterKeys does the master keys.
-func LoadClusterKeys(path string) (key string, previous []string, err error) {
-	c, err := reload(path, "cluster.key", "cluster.previous_keys")
-	if err != nil {
-		return "", nil, err
-	}
+// ClusterKeys returns cluster.key and cluster.previous_keys, checked, for a reload, as MasterKeys does the master keys.
+func (c *Config) ClusterKeys() (key string, previous []string, err error) {
 	if c.Cluster.Key == "" {
 		return "", nil, errors.New("cluster.key is not set")
 	}
@@ -304,41 +273,15 @@ func LoadClusterKeys(path string) (key string, previous []string, err error) {
 	return c.Cluster.Key, c.Cluster.PreviousKeys, nil
 }
 
-// LoadClusterSize reads cluster.size and cluster.peers again (a configuration reload), as LoadMasterKeys does the
-// master keys. Whether the running node can change to them is cluster.Node.CheckResize's to say.
-func LoadClusterSize(path string) (size int, peers []string, err error) {
-	c, err := reload(path, "cluster.size", "cluster.peers")
-	if err != nil {
-		return 0, nil, err
-	}
+// ClusterSize returns cluster.size and cluster.peers for a reload, as MasterKeys does the master keys. Whether the
+// running node can change to them is cluster.Node.CheckResize's to say.
+func (c *Config) ClusterSize() (size int, peers []string, err error) {
 	for _, p := range c.Cluster.Peers {
 		if _, _, err := net.SplitHostPort(p); err != nil {
 			return 0, nil, fmt.Errorf("cluster.peers: %q must be host:port", p)
 		}
 	}
 	return c.Cluster.Size, c.Cluster.Peers, nil
-}
-
-// reload reads the settings at paths from the config file path (if non-empty), then the QUISORA_* environment
-// variables, over the defaults; nothing else is read or checked.
-func reload(path string, paths ...string) (*Config, error) {
-	c := Default()
-	if path != "" {
-		if _, err := toml.DecodeFile(path, c); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
-		}
-	}
-	for _, st := range settings(c) {
-		if !slices.Contains(paths, st.Path) {
-			continue
-		}
-		if val, ok := os.LookupEnv(st.Env); ok {
-			if err := st.set(val); err != nil {
-				return nil, fmt.Errorf("%s: %w", st.Env, err)
-			}
-		}
-	}
-	return c, nil
 }
 
 func clusterKeyErrors(key string, previous []string) []error {

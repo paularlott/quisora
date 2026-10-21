@@ -32,6 +32,7 @@ type ClientInput struct {
 	IntrospectOrg  *bool     `json:"introspect_org"`
 	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
 	RequirePAR     *bool     `json:"require_pushed_authorization_requests"`
+	DPoPBound      *bool     `json:"dpop_bound_access_tokens"`
 	Enabled        *bool     `json:"enabled"`
 }
 
@@ -249,6 +250,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	}
 	if in.RequirePAR != nil {
 		c.RequirePAR = *in.RequirePAR
+	}
+	if in.DPoPBound != nil {
+		c.DPoPBound = *in.DPoPBound
 	}
 	if in.Enabled != nil {
 		c.Enabled = *in.Enabled

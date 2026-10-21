@@ -61,6 +61,7 @@ type issue struct {
 	claimsID  []string           // ... and for the ID token
 	act       string             // act claim, raw JSON (token exchange)
 	expires   time.Time          // the access token expires no later than this (zero: its usual lifetime)
+	jkt       string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
 }
 
 // accessExpiry is when the access token of is expires.
@@ -100,6 +101,11 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 	o.str("jti", newJTI())
 	if is.act != "" {
 		o.raw("act", is.act)
+	}
+	if is.jkt != "" {
+		c := newObj(64)
+		c.str("jkt", is.jkt)
+		o.raw("cnf", string(c.bytes()))
 	}
 	if is.user != nil {
 		o.num("auth_time", is.authTime.Unix())
@@ -335,6 +341,7 @@ type tokenResponse struct {
 	expiresIn           int
 	scopes              []string
 	issuedType          string // issued_token_type (token exchange)
+	dpop                bool   // token_type DPoP: the access token is bound to a key
 }
 
 func writeTokens(w http.ResponseWriter, t *tokenResponse) {
@@ -343,7 +350,11 @@ func writeTokens(w http.ResponseWriter, t *tokenResponse) {
 	b := make([]byte, 0, len(t.access)+len(t.refresh)+len(t.id)+160)
 	b = append(b, `{"access_token":"`...)
 	b = append(b, t.access...)
-	b = append(b, `","token_type":"Bearer","expires_in":`...)
+	if t.dpop {
+		b = append(b, `","token_type":"DPoP","expires_in":`...)
+	} else {
+		b = append(b, `","token_type":"Bearer","expires_in":`...)
+	}
 	b = strconv.AppendInt(b, int64(t.expiresIn), 10)
 	b = append(b, `,"scope":`...)
 	b = appendJSONString(b, joinScope(t.scopes))
@@ -394,7 +405,8 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 	if err != nil {
 		return nil, err
 	}
-	tr := &tokenResponse{access: at, expiresIn: int(p.accessExpiry(is, now).Sub(now) / time.Second), scopes: is.scopes}
+	tr := &tokenResponse{access: at, expiresIn: int(p.accessExpiry(is, now).Sub(now) / time.Second), scopes: is.scopes,
+		dpop: is.jkt != ""}
 	if withID && is.user != nil && is.has("openid") {
 		if tr.id, err = p.idToken(ctx, key, is, now, at); err != nil {
 			return nil, err

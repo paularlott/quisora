@@ -29,9 +29,10 @@ const (
 	maxCount     = 1000
 )
 
-// TokenVerifier turns a bearer token that is not a personal API token (for example an OAuth client_credentials
-// access token) into the actor for the request. It must return an error for tokens it does not accept.
-type TokenVerifier func(ctx context.Context, bearer string) (*service.Actor, error)
+// TokenVerifier turns a token that is not a personal API token (for example an OAuth client_credentials access
+// token), presented in request r with scheme "Bearer" or "DPoP", into the actor for the request. It must return an
+// error for tokens it does not accept.
+type TokenVerifier func(r *http.Request, scheme, tok string) (*service.Actor, error)
 
 // Module serves SCIM.
 type Module struct {
@@ -300,22 +301,26 @@ func (rq *request) resource(segs []string) {
 // ---------------------------------------------------------------------------------------------------------------
 // Authentication
 
-func bearerToken(r *http.Request) string {
+// bearerToken returns the request's token and its scheme: Bearer, or DPoP for a DPoP-bound OAuth token (RFC 9449).
+func bearerToken(r *http.Request) (tok, scheme string) {
 	h := r.Header.Get("Authorization")
 	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
-		return strings.TrimSpace(h[7:])
+		return strings.TrimSpace(h[7:]), "Bearer"
 	}
-	return ""
+	if len(h) > 5 && strings.EqualFold(h[:5], "DPoP ") {
+		return strings.TrimSpace(h[5:]), "DPoP"
+	}
+	return "", ""
 }
 
 // authenticate resolves the bearer token to an actor holding the scim scope.
 func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
-	tok := bearerToken(r)
+	tok, scheme := bearerToken(r)
 	if tok == "" {
 		return nil, errf(401, "", "A bearer token is required")
 	}
 	var actor *service.Actor
-	if service.IsAPIToken(tok) {
+	if service.IsAPIToken(tok) && scheme == "Bearer" {
 		t, u, err := m.srv.Svc.ValidateAPIToken(r.Context(), tok)
 		if err != nil {
 			return nil, errf(401, "", "The token is invalid or has expired")
@@ -325,7 +330,7 @@ func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 			return nil, errf(403, "", "The token's owner no longer has a role that may use SCIM")
 		}
 	} else if m.TokenVerifier != nil {
-		a, err := m.TokenVerifier(r.Context(), tok)
+		a, err := m.TokenVerifier(r, scheme, tok)
 		if err != nil || a == nil {
 			return nil, errf(401, "", "The token is invalid or has expired")
 		}

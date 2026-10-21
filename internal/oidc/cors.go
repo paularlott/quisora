@@ -85,7 +85,7 @@ func (p *Provider) handleCORSPreflight(w http.ResponseWriter, r *http.Request) {
 		setAllowOrigin(w, o)
 		h := w.Header()
 		h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, DPoP")
 		h.Set("Access-Control-Max-Age", "600")
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -101,7 +101,7 @@ func (p *Provider) corsActual(w http.ResponseWriter, r *http.Request) {
 	varyOrigin(w)
 	if p.publicOrigins(r).allows(o) {
 		setAllowOrigin(w, o)
-		w.Header().Add("Access-Control-Expose-Headers", "WWW-Authenticate")
+		w.Header().Add("Access-Control-Expose-Headers", "WWW-Authenticate, DPoP-Nonce")
 	}
 }
 

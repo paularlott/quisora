@@ -9,7 +9,7 @@ require (
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/paularlott/cli v0.10.1
+	github.com/paularlott/cli v0.10.2
 	github.com/paularlott/gossip v0.27.0
 	github.com/paularlott/logger v0.4.0
 	github.com/shamaton/msgpack/v3 v3.2.4

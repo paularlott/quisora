@@ -38,11 +38,13 @@ type codeData struct {
 	Resources   []string `json:"res,omitempty"`
 	ClaimsUI    []string `json:"cu,omitempty"`
 	ClaimsID    []string `json:"ci,omitempty"`
+	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt of the authorization request
 }
 
 func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	p.corsActual(w, r)
+	p.setDPoPNonce(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))
@@ -69,6 +71,11 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
 		return
 	}
+	jkt, e := p.tokenProof(r, ce.c.DPoPBound)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
 	var (
 		tr *tokenResponse
 		oe *oauthError
@@ -76,13 +83,13 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	switch gt {
 	case "authorization_code":
 		tr, oe = p.exchangeCode(r.Context(), ce.c, r.PostForm.Get("code"), r.PostForm.Get("redirect_uri"),
-			r.PostForm.Get("code_verifier"), r.PostForm["resource"])
+			r.PostForm.Get("code_verifier"), r.PostForm["resource"], jkt)
 	case "refresh_token":
-		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"])
+		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
 	case service.GrantTokenExchange:
-		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm)
+		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm, jkt)
 	default:
-		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"])
+		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
 	}
 	if oe != nil {
 		writeOAuthError(w, oe)
@@ -133,7 +140,7 @@ func pkceOK(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(b64.EncodeToString(h[:])), []byte(challenge)) == 1
 }
 
-func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource []string) (*tokenResponse, *oauthError) {
+func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource []string, jkt string) (*tokenResponse, *oauthError) {
 	if code == "" || len(code) > 200 {
 		return nil, oerr("invalid_request", "code is required")
 	}
@@ -165,6 +172,10 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		}
 	} else if !pkceOK(verifier, cd.Challenge) {
 		return nil, oerr("invalid_grant", "PKCE verification failed")
+	}
+	// A code requested for a DPoP key (dpop_jkt) is only redeemed with a proof of that key (RFC 9449 §10).
+	if cd.DPoPJKT != "" && cd.DPoPJKT != jkt {
+		return nil, oerr("invalid_grant", "the DPoP proof is not made with the key the authorization request named (dpop_jkt)")
 	}
 	res, err := parseResources(resource)
 	if err != nil {
@@ -203,6 +214,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
 		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
+	if c.Public() {
+		g.DPoPJKT = jkt // a public client's refresh tokens need the same key from now on (RFC 9449 §5)
+	}
 	g.ID = model.NewID() // the key is sealed bound to the id
 	if g.Stamp, err = p.svc.SessionStamp(ctx, u.OrgID); err != nil {
 		return nil, serverError(err)
@@ -218,7 +232,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
 	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID}
+		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, serverError(err)
@@ -359,7 +373,7 @@ func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) (ok bool, legacy 
 	return false, nil
 }
 
-func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string) (*tokenResponse, *oauthError) {
+func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
 	invalid := oerr("invalid_grant", "the refresh token is invalid, expired or revoked")
 	pr, ok := parseRefresh(token)
 	if !ok {
@@ -378,6 +392,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	if c, _, err = p.forResources(ctx, c, g.Resources); err != nil {
 		return nil, invalid // a self-registered application whose resource no longer accepts it
+	}
+	if g.DPoPJKT != "" && g.DPoPJKT != jkt { // checked before any counter moves: a stolen token alone does nothing
+		return nil, oerr("invalid_grant", "the refresh token is bound to a DPoP key: send a proof made with it")
 	}
 	if legacy != nil {
 		// A grant from before grants had their own key: the key its tokens are made from becomes its own (the
@@ -486,7 +503,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
 		authTime: g.AuthTime, amr: g.AMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
-		claimsID: allowedClaims(g.ClaimsID, c.Scopes)}
+		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, serverError(err)
@@ -502,7 +519,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 // ---------------------------------------------------------------------------------------------------------------
 // client_credentials
 
-func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource []string) (*tokenResponse, *oauthError) {
+func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
 	allowed := make([]string, 0, len(c.Scopes)+1)
 	for _, s := range c.Scopes {
 		if !slices.Contains(userScopes, s) {
@@ -530,7 +547,7 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	if err != nil {
 		return nil, oerr("invalid_client", "the client's organization no longer exists")
 	}
-	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res}, false)
+	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res, jkt: jkt}, false)
 	if err == nil && p.cfg.Audit.Tokens {
 		p.auditClient(ctx, c, "", "oauth.client_credentials", map[string]string{"scopes": strings.Join(scopes, " ")})
 	}
