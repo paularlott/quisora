@@ -138,6 +138,16 @@ func main() {
 		must(err)
 		repl = append(repl, "@"+key+"_ID@", cl.ID, "@"+key+"_JWKS@", private)
 	}
+	// The FAPI 2.0 client credentials plan's two clients: no user, so the protected resource is SCIM, the API that
+	// takes client tokens (with the scim scope, from a client with SCIM provisioning on): its acme/Users list.
+	for _, key := range []string{"CLIENTFAPICC", "CLIENTFAPICC2"} {
+		pub, private := jwkPair(key)
+		cl, _, err := svc.CreateClient(ctx, sys, org.ID, service.ClientInput{Name: ptr("Conformance " + strings.ToLower(key)),
+			AuthMethod: ptr(model.AuthMethodPrivateJWT), JWKS: &pub, FAPI: ptr(true), SCIM: ptr(true),
+			GrantTypes: &[]string{"client_credentials"}, Scopes: &[]string{"scim"}})
+		must(err)
+		repl = append(repl, "@"+key+"_ID@", cl.ID, "@"+key+"_JWKS@", private)
+	}
 	r := strings.NewReplacer(append(repl, "@ISSUER@", *publicURL)...)
 	must(os.MkdirAll(*out, 0o700))
 	files, _ := filepath.Glob(filepath.Join(*templates, "*.json"))

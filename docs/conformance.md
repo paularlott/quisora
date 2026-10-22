@@ -40,6 +40,12 @@ keys, and with PS256 (RSA) client keys, which the module refusing RS256 client a
 |---|---|---|---|---|---|---|---|
 | `fapi2-security-profile-final-test-plan` | ES256 | 52 | 48 | 0 | 1 | 2 | 1 |
 | `fapi2-security-profile-final-test-plan` | PS256 | 52 | 49 | 0 | 1 | 2 | 0 |
+| `fapi2-security-profile-final-test-plan`, client credentials | ES256 | 15 | 14 | 0 | 0 | 0 | 1 |
+
+The client credentials run (`fapi_profile=fapi_client_credentials_grant`, `openid=plain_oauth`) has no user, so its
+protected resource is SCIM (`/scim/v2/acme/Users`), the API that takes client tokens: its clients have the profile
+and SCIM provisioning on, and only the `scim` scope. Its first run found that discovery's `scopes_supported` did not
+list `scim` (a warning); it does now. Its one skip is the RS256 module again, covered by the PS256 run above.
 
 - **Warning** (`test-claims-parameter-identity-claims`): the ID token carries `sid`, the session id of OpenID
   Connect back-channel logout, which the module does not know. Quisora supports back-channel logout, so it stays.

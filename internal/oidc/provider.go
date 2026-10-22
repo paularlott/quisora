@@ -375,7 +375,8 @@ func (p *Provider) buildDiscovery() []byte {
 		"dpop_signing_alg_values_supported":                     dpopAlgs,
 		// a client_id may be the https URL of the client's metadata document (MCP's Client ID Metadata Documents)
 		"client_id_metadata_document_supported": true,
-		"scopes_supported":                      []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"},
+		"scopes_supported": []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access",
+			service.ScopeSCIM}, // scim: client credentials tokens of SCIM provisioning clients
 		"claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "sid", "org",
 			"org_name", "tenant", "tenant_name", "role", "email", "email_verified", "name", "preferred_username", "given_name", "family_name",
 			"locale", "zoneinfo", "updated_at", "phone_number", "phone_number_verified", "groups", "tags", "roles", "enterprise"},

@@ -1,0 +1,20 @@
+{
+  "alias": "quisora",
+  "description": "Quisora (FAPI 2.0 Security Profile, client credentials: private_key_jwt, DPoP)",
+  "server": {
+    "discoveryUrl": "@ISSUER@/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "@CLIENTFAPICC_ID@",
+    "scope": "scim",
+    "jwks": @CLIENTFAPICC_JWKS@
+  },
+  "client2": {
+    "client_id": "@CLIENTFAPICC2_ID@",
+    "scope": "scim",
+    "jwks": @CLIENTFAPICC2_JWKS@
+  },
+  "resource": {
+    "resourceUrl": "@ISSUER@/scim/v2/acme/Users?count=1"
+  }
+}
