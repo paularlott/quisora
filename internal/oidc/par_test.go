@@ -65,11 +65,13 @@ func TestPushedAuthorizationRequest(t *testing.T) {
 	// only by the client that pushed it
 	other, _ := h.newClient(nil)
 	r = h.push(cl, secret, authzQuery(cl, ch, nil))
-	if resp := h.get(c, "/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode()); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+	resp := h.get(c, "/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode())
+	if b := body(resp); resp.StatusCode != 400 || resp.Header.Get("Location") != "" || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("another client's request_uri: %d", resp.StatusCode)
 	}
 	// an unknown one
-	if resp := h.get(c, "/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode()); resp.StatusCode != 400 {
+	resp = h.get(c, "/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode())
+	if b := body(resp); resp.StatusCode != 400 || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("unknown request_uri: %d", resp.StatusCode)
 	}
 	// a request_uri that is not a pushed one is still not supported

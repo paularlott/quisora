@@ -85,7 +85,7 @@
                   "xpath",
                   "//*",
                   10,
-                  "This request has expired",
+                  "This sign-in request is not valid",
                   "update-image-placeholder"
                 ]
               ]
@@ -108,7 +108,7 @@
                   "xpath",
                   "//*",
                   10,
-                  "This request has expired",
+                  "This sign-in request is not valid",
                   "update-image-placeholder"
                 ]
               ]

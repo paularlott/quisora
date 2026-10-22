@@ -174,6 +174,13 @@ func (p *Provider) message(w http.ResponseWriter, r *http.Request, status int, t
 	p.s.Render.Render(w, status, "oauth-message", p.s.Page(w, r, title, "", MessageData{Heading: heading, Body: body}))
 }
 
+// invalidRequestURI is the page for a request_uri that cannot be used and whose request cannot be answered at the
+// client (expired, unknown, or pushed by another client: nothing in it can be trusted for this one).
+func (p *Provider) invalidRequestURI(w http.ResponseWriter, r *http.Request) {
+	p.message(w, r, http.StatusBadRequest, "Invalid request", "This sign-in request is not valid",
+		"It has expired, or it was made for another application. Return to the application you were using and start again.")
+}
+
 func (p *Provider) expired(w http.ResponseWriter, r *http.Request) {
 	p.message(w, r, http.StatusBadRequest, "Request expired", "This request has expired",
 		"Return to the application you were using and start again.")
@@ -273,7 +280,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if pushed {
 		pq, id, used, err := p.loadPushed(r.Context(), q.Get("client_id"), q.Get("request_uri"))
 		if err != nil {
-			p.expired(w, r)
+			p.invalidRequestURI(w, r)
 			return
 		}
 		q, dup, pushedID, pushedUsed = pq, repeated(pq), id, used
