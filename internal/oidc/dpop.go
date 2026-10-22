@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/paularlott/quisora/internal/model"
 )
 
 // DPoP: sender-constrained tokens (RFC 9449). A client sends a DPoP proof, a JWT signed with a key of its own whose
@@ -37,7 +39,7 @@ const (
 )
 
 // dpopAlgs are the proof algorithms accepted (discovery's dpop_signing_alg_values_supported).
-var dpopAlgs = []string{AlgES256, AlgEdDSA, AlgRS256}
+var dpopAlgs = allAlgs
 
 // ErrDPoPProof is returned by VerifyRequestToken when the request's DPoP proof is missing, invalid or does not match
 // the token: the caller answers with a DPoP challenge carrying error="invalid_dpop_proof".
@@ -50,8 +52,8 @@ var privateJWKMembers = []string{"d", "p", "q", "dp", "dq", "qi", "oth", "k"}
 
 // checkProof checks the request's DPoP proof for its method and URL, bound to accessToken when that is not empty
 // (ath), and returns the thumbprint of its key; "" and nil when the request carries no proof. needNonce asks for a
-// nonce of this server.
-func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce bool) (string, *oauthError) {
+// nonce of this server; fapi refuses RS256 proofs (FAPI 2.0 §5.4.1).
+func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce, fapi bool) (string, *oauthError) {
 	vals := r.Header.Values("DPoP")
 	if len(vals) == 0 {
 		return "", nil
@@ -70,12 +72,15 @@ func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce boo
 	if pj.Header.Typ != dpopTyp {
 		return "", dpopErr("the DPoP proof's typ must be " + dpopTyp)
 	}
+	if fapi && pj.Header.Alg == AlgRS256 {
+		return "", dpopErr("FAPI 2.0 does not allow RS256 DPoP proofs")
+	}
 	pub, err := proofKey(proof[:strings.IndexByte(proof, '.')])
 	if err != nil {
 		return "", dpopErr(err.Error())
 	}
 	jwk, _ := EncodeJWK(pub, "", "")
-	if jwk.KeyAlg() != pj.Header.Alg || pj.Verify(pub) != nil {
+	if pj.Verify(pub) != nil { // (which also requires the key type of the header's alg)
 		return "", dpopErr("the DPoP proof's signature does not verify with its jwk")
 	}
 	var cl struct {
@@ -242,7 +247,11 @@ func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Cla
 	case !dpop:
 		return nil, badToken("a DPoP-bound token was presented as a bearer token")
 	}
-	jkt, e := p.checkProof(r, tok, false)
+	fapi := false
+	if ce, err := p.client(r.Context(), cl.ClientID); err == nil {
+		fapi = ce.c.FAPI
+	}
+	jkt, e := p.checkProof(r, tok, false, fapi)
 	if e != nil || jkt == "" {
 		return nil, ErrDPoPProof
 	}
@@ -264,14 +273,14 @@ func (p *Provider) dpopChallenge(w http.ResponseWriter, status int, code string)
 	w.WriteHeader(status)
 }
 
-// tokenProof checks the DPoP proof of a token or PAR request from client c: required when the client is DPoP-bound,
-// always with a nonce.
-func (p *Provider) tokenProof(r *http.Request, dpopBound bool) (string, *oauthError) {
-	jkt, e := p.checkProof(r, "", true)
+// tokenProof checks the DPoP proof of a token request from client c: required when the client is DPoP-bound, always
+// with a nonce.
+func (p *Provider) tokenProof(r *http.Request, c *model.Client) (string, *oauthError) {
+	jkt, e := p.checkProof(r, "", true, c.FAPI)
 	if e != nil {
 		return "", e
 	}
-	if jkt == "" && dpopBound {
+	if jkt == "" && c.DPoPBound {
 		return "", dpopErr("this client must send a DPoP proof (dpop_bound_access_tokens)")
 	}
 	return jkt, nil

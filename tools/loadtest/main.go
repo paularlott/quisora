@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/paularlott/cli"
-	cli_toml "github.com/paularlott/cli/toml"
 	"github.com/paularlott/quisora/internal/app"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/loadtest"
@@ -29,18 +28,15 @@ import (
 
 func main() {
 	cfg := config.Default()
-	configFile := "quisora.toml"
-	global, server := config.Flags(cfg)
+	flags := config.Flags(cfg)
+	cfgFile, configFlag := config.NewConfigFile(cfg) // the server's, read by seed
 	cmd := &cli.Command{
-		Name:       "loadtest",
-		Usage:      "Seed a large synthetic dataset and drive load against a server (development only)",
-		ConfigFile: cli_toml.NewConfigFile(&configFile, func() []string { return []string{"."} }),
-		Flags: append([]cli.Flag{
-			&cli.StringFlag{Name: "config", Aliases: []string{"c"}, AssignTo: &configFile, Global: true,
-				Usage: "Server configuration file (TOML), read by seed", DefaultText: "quisora.toml in the current directory",
-				EnvVars: []string{config.EnvPrefix + "CONFIG"}},
-		}, global...),
-		Commands: []*cli.Command{seedCmd(cfg, server), runCmd()},
+		Name:        "loadtest",
+		Usage:       "Seed a large synthetic dataset and drive load against a server (development only)",
+		ConfigFile:  cfgFile,
+		Suggestions: true,
+		Flags:       append([]cli.Flag{configFlag}, flags.Global...),
+		Commands:    []*cli.Command{seedCmd(cfg, flags.Server), runCmd()},
 	}
 	if err := cmd.Execute(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

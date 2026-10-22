@@ -33,6 +33,7 @@ type ClientInput struct {
 	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
 	RequirePAR     *bool     `json:"require_pushed_authorization_requests"`
 	DPoPBound      *bool     `json:"dpop_bound_access_tokens"`
+	FAPI           *bool     `json:"fapi2_security_profile"`
 	Enabled        *bool     `json:"enabled"`
 }
 
@@ -43,7 +44,7 @@ var (
 	validGrants      = []string{"authorization_code", "refresh_token", "client_credentials", GrantTokenExchange}
 	validAuthMethods = []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic, model.AuthMethodPrivateJWT,
 		model.AuthMethodNone}
-	validAlgs = []string{"", "ES256", "EdDSA", "RS256"}
+	validAlgs = []string{"", "ES256", "EdDSA", "RS256", "PS256"}
 )
 
 func validRedirect(raw string, allowHTTPLoopback bool) bool {
@@ -217,7 +218,7 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	}
 	if in.SigningAlg != nil {
 		if !slices.Contains(validAlgs, *in.SigningAlg) {
-			return Invalid("id_token_signed_response_alg", "must be ES256, EdDSA or RS256")
+			return Invalid("id_token_signed_response_alg", "must be ES256, EdDSA, RS256 or PS256")
 		}
 		c.SigningAlg = *in.SigningAlg
 	}
@@ -254,6 +255,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.DPoPBound != nil {
 		c.DPoPBound = *in.DPoPBound
 	}
+	if in.FAPI != nil {
+		c.FAPI = *in.FAPI
+	}
 	if in.Enabled != nil {
 		c.Enabled = *in.Enabled
 	}
@@ -277,6 +281,19 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		}
 		c.RotateRefresh = true  // public clients always get one-time refresh tokens
 		c.IntrospectOrg = false // and cannot introspect at all
+	}
+	if c.FAPI {
+		// FAPI 2.0 Security Profile §5.3.2: the settings it requires follow from the profile; the ones the
+		// administrator must choose are refused until they are right.
+		switch {
+		case c.AuthMethod != model.AuthMethodPrivateJWT:
+			return Invalid("token_endpoint_auth_method", "a FAPI 2.0 client must authenticate with private_key_jwt")
+		case c.SigningAlg == "RS256":
+			return Invalid("id_token_signed_response_alg", "FAPI 2.0 does not allow RS256: use ES256, EdDSA or PS256")
+		case c.PKCEOptional:
+			return Invalid("require_pkce", "a FAPI 2.0 client must use PKCE")
+		}
+		c.RequirePAR, c.DPoPBound, c.RotateRefresh = true, true, false
 	}
 	if c.AuthMethod == model.AuthMethodPrivateJWT && c.JWKS == "" && c.JWKSURI == "" {
 		return Invalid("jwks", "private_key_jwt needs the client's public keys (jwks or jwks_uri)")

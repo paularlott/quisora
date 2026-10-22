@@ -46,8 +46,13 @@ func parseKeys(jwks []JWK) []pubKey {
 			continue
 		}
 		alg := j.KeyAlg()
-		if j.Alg != "" && j.Alg != alg {
+		switch {
+		case j.Alg == AlgPS256 && alg == AlgRS256:
+			alg = AlgPS256 // an RSA key declared for PSS
+		case j.Alg != "" && j.Alg != alg:
 			continue
+		case j.Alg == "" && alg == AlgRS256:
+			out = append(out, pubKey{kid: j.Kid, alg: AlgPS256, pub: pub}) // an RSA key without alg: either scheme
 		}
 		out = append(out, pubKey{kid: j.Kid, alg: alg, pub: pub})
 	}
@@ -308,6 +313,11 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion st
 	if !p.verifyWithClientKeys(ctx, e, pj) {
 		return nil, bad
 	}
+	// FAPI 2.0 §5.3.2.1: the issuer alone, as a string, is the audience (an assertion made for another server's
+	// token endpoint cannot be replayed here), and RS256 is not allowed.
+	if e.c.FAPI && (pj.Header.Alg == AlgRS256 || !audIsIssuer(pj.Payload, p.issuer)) {
+		return nil, errInvalidClient("a FAPI 2.0 client's assertion needs aud set to the issuer alone, and an algorithm other than RS256")
+	}
 	now := time.Now()
 	exp := time.Unix(int64(cl.Exp), 0)
 	if cl.Exp == 0 || now.After(exp.Add(leeway)) || exp.After(now.Add(5*time.Minute+leeway)) {
@@ -332,6 +342,16 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion st
 		return nil, errInvalidClient("assertion already used")
 	}
 	return e, nil
+}
+
+// audIsIssuer reports whether the aud claim of payload is the string iss (not an array holding it).
+func audIsIssuer(payload []byte, iss string) bool {
+	var cl struct {
+		Aud json.RawMessage `json:"aud"`
+	}
+	var aud string
+	return json.Unmarshal(payload, &cl) == nil && len(cl.Aud) > 0 && cl.Aud[0] == '"' &&
+		json.Unmarshal(cl.Aud, &aud) == nil && aud == iss
 }
 
 // verifyWithClientKeys verifies pj against the client's registered keys (inline JWKS first, then jwks_uri).

@@ -1,0 +1,213 @@
+{
+  "alias": "quisora",
+  "description": "Quisora (FAPI 2.0 Security Profile: private_key_jwt with PS256 keys, DPoP)",
+  "server": {
+    "discoveryUrl": "@ISSUER@/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "@CLIENTFAPIRSA_ID@",
+    "scope": "openid profile email offline_access",
+    "jwks": @CLIENTFAPIRSA_JWKS@
+  },
+  "client2": {
+    "client_id": "@CLIENTFAPIRSA2_ID@",
+    "scope": "openid profile email offline_access",
+    "jwks": @CLIENTFAPIRSA2_JWKS@
+  },
+  "resource": {
+    "resourceUrl": "@ISSUER@/oauth/userinfo"
+  },
+  "browser": [
+    {
+      "match": "@ISSUER@/oauth/authorize*",
+      "tasks": [
+        {
+          "task": "Login",
+          "optional": true,
+          "match": "@ISSUER@/login/*",
+          "commands": [
+            [
+              "click",
+              "css",
+              "a[href*='/provider/']"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "*/test/*/callback*",
+          "commands": [
+            [
+              "wait",
+              "id",
+              "submission_complete",
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "match": "@ISSUER@/oauth/logout*",
+      "tasks": [
+        {
+          "task": "Confirm sign out",
+          "optional": true,
+          "match": "@ISSUER@/oauth/logout*",
+          "commands": [
+            [
+              "click",
+              "css",
+              "form[action='/oauth/logout/confirm'] button[type=submit]",
+              "optional"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "*/test/*/post*"
+        }
+      ]
+    }
+  ],
+  "override": {
+    "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri": {
+      "browser": [
+        {
+          "match": "@ISSUER@/oauth/authorize*",
+          "tasks": [
+            {
+              "task": "Expect invalid request_uri error page",
+              "match": "@ISSUER@/oauth/authorize*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "This request has expired",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client": {
+      "browser": [
+        {
+          "match": "@ISSUER@/oauth/authorize*",
+          "tasks": [
+            {
+              "task": "Expect invalid request_uri error page",
+              "match": "@ISSUER@/oauth/authorize*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "This request has expired",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-user-rejects-authentication": {
+      "browser": [
+        {
+          "match": "@ISSUER@/oauth/authorize*",
+          "tasks": [
+            {
+              "task": "Cancel sign-in",
+              "match": "@ISSUER@/login/*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign in",
+                  "update-image-placeholder-optional"
+                ],
+                [
+                  "click",
+                  "css",
+                  "a[href*='/oauth/authorize/cancel']"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+      "browser": [
+        {
+          "match": "@ISSUER@/oauth/authorize*",
+          "match-limit": 1,
+          "tasks": [
+            {
+              "task": "First visit: stop at the sign-in page",
+              "match": "@ISSUER@/login/*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign in"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "@ISSUER@/oauth/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "@ISSUER@/login/*",
+              "commands": [
+                [
+                  "click",
+                  "css",
+                  "a[href*='/provider/']"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

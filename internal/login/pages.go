@@ -76,6 +76,15 @@ type loginData struct {
 	Hint        string // OIDC login_hint: an email address that pre-fills the sign-in form
 	// A second-factor step after a provider sign-in (step totp, passkey or enrol, its ticket, enrolment methods).
 	Step, Ticket, Methods string
+	Cancel                string // declines the authorization request next continues (empty for other sign-ins)
+}
+
+// cancelURL is where a sign-in that continues an authorization request (next is its resume URL) can be declined.
+func cancelURL(next string) string {
+	if q, ok := strings.CutPrefix(next, "/oauth/authorize/resume?"); ok {
+		return "/oauth/authorize/cancel?" + q
+	}
+	return ""
 }
 
 // loginPage handles GET /login/{org}.
@@ -101,7 +110,7 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 	}
 	d := loginData{OrgName: org.Name, OrgDisplay: org.DisplayName, Tenant: tenant, Next: next, Reauth: reauth,
 		Password: eff.Password, Passkey: eff.Passkey && m.Passkeys != nil,
-		Error: upstreamMessages[q.Get("error")]}
+		Error: upstreamMessages[q.Get("error")], Cancel: cancelURL(next)}
 	d.CanReset = eff.PasswordReset && m.Mail != nil
 	if c, err := r.Cookie(stepCookie); err == nil && q.Get("step") == "1" && c.Value != "" && len(c.Value) < 200 {
 		// only the step a provider sign-in left, for this org

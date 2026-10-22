@@ -12,12 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/google/uuid"
+	"github.com/paularlott/cli"
 	"github.com/paularlott/quisora/internal/secure"
 )
 
@@ -25,9 +26,9 @@ import (
 // structs it sits in), an QUISORA_<FLAG> environment variable or a key in the TOML config file (`toml` path); see
 // Flags. Precedence: flag, then environment, then config file, then the default.
 type Config struct {
-	// FileUsed names the configuration file that was read ("" for none); Validate refuses keys in it that are not
-	// settings (a misspelt key would otherwise be ignored silently). Set by the command line.
-	FileUsed func() string `toml:"-"`
+	// ConfigFile is the configuration file the command line read (nil or no file used: none); Validate refuses keys
+	// in it that are not settings (a misspelt key would otherwise be ignored silently). Set by NewConfigFile's caller.
+	ConfigFile cli.ConfigFileSource `toml:"-"`
 
 	Server  Server  `toml:"server"`
 	UI      UI      `toml:"ui"`
@@ -57,7 +58,7 @@ type Server struct {
 	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
 	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" secret:"true" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
 	TrustProxy           []string `toml:"trust_proxy" flag:"trust-proxy" usage:"Proxies (CIDRs or IPs) whose X-Forwarded-For is honoured"`
-	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
+	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" cmd:"bootstrap" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
 	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach private addresses"`
 	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
@@ -315,11 +316,9 @@ func keyErrors(name, key string) []error {
 // Validate checks the configuration and fills derived defaults.
 func (c *Config) Validate() error {
 	var errs []error
-	if c.FileUsed != nil {
-		if f := c.FileUsed(); f != "" {
-			if err := CheckFile(f); err != nil {
-				errs = append(errs, err)
-			}
+	if c.ConfigFile != nil && c.ConfigFile.FileUsed() != "" {
+		if u := c.UnknownKeys(); len(u) > 0 {
+			errs = append(errs, fmt.Errorf("%s: unknown settings: %s", c.ConfigFile.FileUsed(), strings.Join(u, ", ")))
 		}
 	}
 	_, port, lerr := net.SplitHostPort(c.Server.Listen)
@@ -658,19 +657,36 @@ func ParseProxy(s string) (netip.Prefix, error) {
 	return p.Masked(), nil
 }
 
-// CheckFile reports keys in the TOML configuration file that are not settings.
-func CheckFile(path string) error {
-	var c Config
-	md, err := toml.DecodeFile(path, &c)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if u := md.Undecoded(); len(u) > 0 {
-		keys := make([]string, len(u))
-		for i, k := range u {
-			keys[i] = k.String()
+// UnknownKeys lists the keys of the configuration file that are not settings, as dotted paths, sorted: walking the
+// file the cli package read, every table must be a section of settings and every value a setting.
+func (c *Config) UnknownKeys() []string {
+	known, sections := map[string]bool{}, map[string]bool{}
+	for _, st := range settings(c) {
+		known[st.Path] = true
+		for i := range len(st.Path) {
+			if st.Path[i] == '.' {
+				sections[st.Path[:i]] = true
+			}
 		}
-		return fmt.Errorf("%s: unknown settings: %s", path, strings.Join(keys, ", "))
 	}
-	return nil
+	var unknown []string
+	var walk func(prefix string)
+	walk = func(prefix string) {
+		for _, k := range c.ConfigFile.GetKeys(prefix) {
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			switch {
+			case known[path]:
+			case sections[path] && c.ConfigFile.GetKeys(path) != nil:
+				walk(path)
+			default:
+				unknown = append(unknown, path)
+			}
+		}
+	}
+	walk("")
+	slices.Sort(unknown)
+	return unknown
 }

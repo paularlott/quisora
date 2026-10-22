@@ -3174,6 +3174,11 @@ components:
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
+        fapi2_security_profile:
+          type: boolean
+          description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
+            dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
+            no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -3246,6 +3251,11 @@ components:
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
+        fapi2_security_profile:
+          type: boolean
+          description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
+            dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
+            no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -3325,6 +3335,11 @@ components:
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
+        fapi2_security_profile:
+          type: boolean
+          description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
+            dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
+            no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most

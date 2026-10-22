@@ -16,6 +16,11 @@ import (
 // it then sends the browser to /oauth/authorize with only client_id and that request_uri. The parameters never pass
 // through the browser, and they are checked (the same way the authorization endpoint checks them) before the user is
 // involved. A client with RequirePAR may start sign-ins no other way.
+//
+// A request_uri must first be used within parTTL. It is used up when the request is decided (a code is issued, or
+// the user denies or cancels), not on the first visit (FAPI 2.0 §5.3.2.2 note 3): a browser that reloads the page, or
+// comes back from signing in, carries on. Once used, it is kept as used until the request would have expired, and
+// presenting it again sends invalid_request_uri back to the client (RFC 9126 §7.3).
 const (
 	nsPAR        = "oauth.par"
 	parURNPrefix = "urn:ietf:params:oauth:request_uri:"
@@ -25,7 +30,9 @@ const (
 // pushedRequest is a pushed authorization request waiting for the browser (ephemeral, ns "oauth.par", single use).
 type pushedRequest struct {
 	ClientID string `json:"c"`
-	Params   string `json:"q"` // the authorization request's parameters, form-encoded
+	Params   string `json:"q"`           // the authorization request's parameters, form-encoded
+	Started  bool   `json:"s,omitempty"` // visited: it lasts as long as a sign-in flow from then on
+	Used     bool   `json:"u,omitempty"` // decided: presenting it again is an error
 }
 
 var errPushed = errors.New("oidc: unknown, used or expired request_uri")
@@ -59,7 +66,7 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A DPoP proof here binds the code to its key, as dpop_jkt does (RFC 9449 §10.1).
-	jkt, e := p.checkProof(r, "", true)
+	jkt, e := p.checkProof(r, "", true, c.FAPI)
 	if e != nil {
 		writeOAuthError(w, e)
 		return
@@ -104,24 +111,45 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(o.bytes())
 }
 
-// takePushed returns the parameters pushed as uri by clientID, once: a request_uri is used up by its first
-// authorization request (RFC 9126 §4), and only the client that pushed it may use it.
-func (p *Provider) takePushed(ctx context.Context, clientID, uri string) (url.Values, error) {
-	id := strings.TrimPrefix(uri, parURNPrefix)
+// loadPushed returns the parameters pushed as uri by clientID (only that client may use it), its id, and whether it
+// was already used. Its first visit makes it last as long as the sign-in flow it starts.
+func (p *Provider) loadPushed(ctx context.Context, clientID, uri string) (q url.Values, id string, used bool, err error) {
+	id = strings.TrimPrefix(uri, parURNPrefix)
 	if clientID == "" || id == "" || len(id) > 200 {
-		return nil, errPushed
+		return nil, "", false, errPushed
 	}
-	raw, err := p.s.Eph.Take(ctx, nsPAR, id)
+	raw, err := p.s.Eph.Get(ctx, nsPAR, id)
 	if err != nil {
-		return nil, errPushed
+		return nil, "", false, errPushed
 	}
 	var pr pushedRequest
 	if json.Unmarshal(raw, &pr) != nil || pr.ClientID != clientID {
-		return nil, errPushed
+		return nil, "", false, errPushed
 	}
-	q, err := url.ParseQuery(pr.Params)
+	if q, err = url.ParseQuery(pr.Params); err != nil {
+		return nil, "", false, errPushed
+	}
+	if !pr.Started && !pr.Used {
+		pr.Started = true
+		b, _ := json.Marshal(pr)
+		_ = p.s.Eph.Set(ctx, nsPAR, id, b, flowTTL)
+	}
+	return q, id, pr.Used, nil
+}
+
+// usePushed marks the pushed request id as decided. It reports false when it was already used (or is gone): the
+// request that called it must not issue a code. Take makes it atomic between concurrent flows of one request_uri.
+func (p *Provider) usePushed(ctx context.Context, id string) bool {
+	raw, err := p.s.Eph.Take(ctx, nsPAR, id)
 	if err != nil {
-		return nil, errPushed
+		return false
 	}
-	return q, nil
+	var pr pushedRequest
+	if json.Unmarshal(raw, &pr) != nil || pr.Used {
+		return false
+	}
+	pr.Used = true
+	b, _ := json.Marshal(pr)
+	_ = p.s.Eph.Set(ctx, nsPAR, id, b, flowTTL)
+	return true
 }

@@ -26,7 +26,40 @@ and client assertion modules to the basic plan's:
 | `oidcc-test-plan` with `client_secret_post` | 36 | 0 | 3 |
 | `oidcc-test-plan` with `private_key_jwt` (ES256 client keys) | 37 | 0 | 3 |
 
-The same three expected warnings as the basic plan. One module of these plans, `oidcc-server-rotate-keys`, compares
+The same three expected warnings as the basic plan.
+
+## FAPI 2.0 Security Profile
+
+`fapi2-security-profile-final-test-plan` (the certifiable FAPI 2.0 plan) with OpenID Connect, `private_key_jwt`
+client authentication and DPoP sender-constrained tokens, `plain_fapi`, run on 22 October 2026 on top of commit
+`b973fe7` (with the PAR, DPoP and FAPI profile changes described in RUNNING.md). The seeded FAPI clients have the
+FAPI 2.0 Security Profile turned on and nothing else changed from their defaults. It runs twice: with ES256 client
+keys, and with PS256 (RSA) client keys, which the module refusing RS256 client assertions needs.
+
+| Plan | Client keys | Modules | Passed | Failures | Warnings | Review | Skipped |
+|---|---|---|---|---|---|---|---|
+| `fapi2-security-profile-final-test-plan` | ES256 | 52 | 48 | 0 | 1 | 2 | 1 |
+| `fapi2-security-profile-final-test-plan` | PS256 | 52 | 49 | 0 | 1 | 2 | 0 |
+
+- **Warning** (`test-claims-parameter-identity-claims`): the ID token carries `sid`, the session id of OpenID
+  Connect back-channel logout, which the module does not know. Quisora supports back-channel logout, so it stays.
+- **Review** (`par-attempt-to-use-expired-request_uri`, `par-attempt-to-use-request_uri-for-different-client`):
+  neither request can be sent back to the client (an expired request_uri is gone, and one presented by another client
+  belongs to the client that pushed it, so nothing in it can be trusted for this one), so Quisora shows its error page. The suite asks for a
+  screenshot of it, which the harness takes; a person confirms it shows the request was refused.
+- **Skipped** (ES256 run only): `ensure-signed-client-assertion-with-RS256-fails` needs RSA client keys; the PS256 run
+  covers it, and it passes.
+
+The first runs found two things, both fixed before the results above:
+
+- **A pushed request_uri was used up by the first visit** to the authorization endpoint, so a browser that reloaded
+  the sign-in page could not carry on (`par-ensure-reused-request-uri-prior-to-auth-completion-succeeds`, FAPI 2.0
+  §5.3.2.2 note 3). It is now used up when the request is decided (a code, a denial or a cancel). Presented again
+  after that, it goes back to the client as `invalid_request_uri` (`par-attempt-reuse-request_uri`) instead of an
+  error page.
+- **The sign-in page had no way to decline** an application's request (`user-rejects-authentication` needs the user
+  to cancel or deny consent, and first-party applications have no consent page). It now has "Cancel and return to
+  the application", which sends `access_denied` back. One module of these plans, `oidcc-server-rotate-keys`, compares
 the JWKS before and after a rotation that the tester triggers between the module's set-up and its start. The suite's
 `run-test-plan.py` starts it at once, so run alone it always fails. The harness runs the suite's runner unmodified
 through `conformance/run-plan.py`, which rotates Quisora's signing key (`POST /api/keys/rotate`, as the seeded super
@@ -58,8 +91,10 @@ none changed a result:
   design. Public clients are covered by the Go end-to-end tests (PKCE, CORS, rotating refresh tokens, revocation).
 - **Introspection (RFC 7662) and revocation (RFC 7009)** have no OpenID Foundation plan outside FAPI; the Go tests
   cover them, including cross-organization confinement and disabled clients.
-- **Pushed authorization requests (RFC 9126), DPoP (RFC 9449) and token exchange (RFC 8693)** are in no plan run
-  here (the FAPI 2.0 plans test PAR and DPoP); the Go end-to-end tests cover them.
+- **Token exchange (RFC 8693)** is in no plan; the Go end-to-end tests cover it. PAR and DPoP are covered by the
+  FAPI 2.0 plan above, and by the Go tests for clients without the profile.
+- **FAPI 2.0 with mTLS** (client authentication or sender-constrained tokens) is not supported, so those variants are
+  not run.
 - Dynamic registration, implicit and hybrid flows and request objects are not supported, and discovery says so.
 
 ## Expected warnings (basic plan)

@@ -196,6 +196,7 @@ func (p *Provider) Register(s *web.Server) {
 	m.HandleFunc("GET /oauth/authorize", p.handleAuthorize)
 	m.HandleFunc("POST /oauth/authorize", p.handleAuthorize)
 	m.HandleFunc("GET /oauth/authorize/resume", p.handleResume)
+	m.HandleFunc("GET /oauth/authorize/cancel", p.handleCancel)
 	m.Handle("GET /oauth/consent", s.RequirePage(p.handleConsentPage))
 	m.Handle("POST /api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
 
@@ -360,16 +361,16 @@ func (p *Provider) buildDiscovery() []byte {
 		"grant_types_supported": []string{"authorization_code", "refresh_token", "client_credentials",
 			service.GrantTokenExchange},
 		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
+		"id_token_signing_alg_values_supported": allAlgs,
 		"token_endpoint_auth_methods_supported": []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic,
 			model.AuthMethodPrivateJWT, model.AuthMethodNone},
-		"token_endpoint_auth_signing_alg_values_supported":         []string{AlgES256, AlgEdDSA, AlgRS256},
+		"token_endpoint_auth_signing_alg_values_supported":         allAlgs,
 		"introspection_endpoint_auth_methods_supported":            []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic, model.AuthMethodPrivateJWT},
-		"introspection_endpoint_auth_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
+		"introspection_endpoint_auth_signing_alg_values_supported": allAlgs,
 		// public clients revoke their own tokens (RFC 7009 §2.1); introspection is for confidential clients only
 		"revocation_endpoint_auth_methods_supported": []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic, model.AuthMethodPrivateJWT,
 			model.AuthMethodNone},
-		"revocation_endpoint_auth_signing_alg_values_supported": []string{AlgES256, AlgEdDSA, AlgRS256},
+		"revocation_endpoint_auth_signing_alg_values_supported": allAlgs,
 		"code_challenge_methods_supported":                      []string{"S256"},
 		"dpop_signing_alg_values_supported":                     dpopAlgs,
 		// a client_id may be the https URL of the client's metadata document (MCP's Client ID Metadata Documents)

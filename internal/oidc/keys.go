@@ -116,6 +116,9 @@ func (p *Provider) loadKeys(ctx context.Context) (*keySet, error) {
 			continue
 		}
 		priv, pub, alg, err := parsePrivate(der)
+		if err == nil && alg == AlgRS256 && r.Alg == AlgPS256 {
+			alg = AlgPS256 // the same RSA key type, used with PSS
+		}
 		if err != nil || alg != r.Alg {
 			p.log.Warn("oidc: bad signing key", "kid", r.ID, "error", err)
 			continue
@@ -165,7 +168,8 @@ func (p *Provider) Invalidate() {
 	p.verified.clear()
 }
 
-// signingKey returns the key that signs for alg, creating one on first use (RS256 is only ever created this way).
+// signingKey returns the key that signs for alg, creating one on first use (RS256 and PS256 are only ever created this
+// way).
 func (p *Provider) signingKey(ctx context.Context, alg string) (*keyEntry, error) {
 	ks, err := p.keys(ctx)
 	if err != nil {
@@ -241,7 +245,7 @@ func (p *Provider) createKey(ctx context.Context, alg string, notBefore time.Tim
 		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	case AlgEdDSA:
 		_, priv, err = ed25519.GenerateKey(rand.Reader)
-	case AlgRS256:
+	case AlgRS256, AlgPS256:
 		priv, err = rsa.GenerateKey(rand.Reader, 2048)
 	default:
 		err = fmt.Errorf("oidc: unsupported signing algorithm %q", alg)

@@ -92,7 +92,7 @@ func refreshAuditIndex(ctx context.Context, st store.Store, log logger.Logger) {
 	}
 	q := store.ListQuery{Filters: []store.Filter{{Field: "outcome", Value: ""}}, Limit: 500}
 	total := 0
-	for {
+	for ctx.Err() == nil { // Close waits for this: it stops between batches
 		n, err := fr.RefreshFields(ctx, model.KindAudit, q)
 		if err != nil {
 			if ctx.Err() == nil {

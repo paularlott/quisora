@@ -181,7 +181,7 @@ func TestParseRejectsMalformed(t *testing.T) {
 		"alg empty":        hdr(`{"alg":""}`) + "." + body + ".c2ln",
 		"alg missing":      hdr(`{"typ":"JWT"}`) + "." + body + ".c2ln",
 		"alg ES384":        hdr(`{"alg":"ES384"}`) + "." + body + ".c2ln",
-		"alg PS256":        hdr(`{"alg":"PS256"}`) + "." + body + ".c2ln",
+		"alg PS384":        hdr(`{"alg":"PS384"}`) + "." + body + ".c2ln",
 		"crit":             hdr(`{"alg":"ES256","crit":["x"],"x":1}`) + "." + body + ".c2ln",
 		"header not json":  hdr(`not json`) + "." + body + ".c2ln",
 		"padded base64":    hdr(`{"alg":"ES256"}`) + "=." + body + ".c2ln",

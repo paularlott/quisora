@@ -2,7 +2,8 @@
 // first start would), an organization "acme" with the fake sign-in provider, the user it signs in, and the suite's
 // clients. Clients get generated ids and secrets, so seed writes the suite configurations with them: it fills the
 // templates in conformance/config into -out. Only the back-channel plan's clients get a back-channel logout URI
-// (the suite reports logout posts to the other clients as unexpected). Repeatable: it starts from an empty store.
+// (the suite reports logout posts to the other clients as unexpected); two more clients have the FAPI 2.0 Security
+// Profile, for its plan. Repeatable: it starts from an empty store.
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -91,7 +93,8 @@ func main() {
 		AutoProvision: ptr(false), Enabled: ptr(true)})
 	must(err)
 	_, err = svc.CreateUser(ctx, sys, org.ID, service.UserInput{Email: ptr("user@acme.test"), GivenName: ptr("Conformance"),
-		FamilyName: ptr("User"), Verified: ptr(true), Phone: ptr("+44 20 7946 0958"), PhoneVerified: ptr(true)})
+		FamilyName: ptr("User"), Verified: ptr(true), Phone: ptr("+44 20 7946 0958"), PhoneVerified: ptr(true),
+		Locale: ptr("en-GB"), ZoneInfo: ptr("Europe/London")}) // the FAPI plan's claims request asks for both
 	must(err)
 
 	repl := []string{}
@@ -117,6 +120,24 @@ func main() {
 		must(err)
 		repl = append(repl, "@"+c.key+"_ID@", cl.ID, "@"+c.key+"_SECRET@", secret, "@"+c.key+"_JWKS@", private)
 	}
+	// The FAPI 2.0 plan's two clients: the profile on (private_key_jwt with ES256 keys, PAR and DPoP required, PKCE,
+	// refresh tokens that do not rotate).
+	// The plan's second client uses a redirect URI with a query string. The RSA pair (PS256 keys) runs the plan
+	// again with the modules that need RSA client keys (an RS256 client assertion must be refused).
+	for key, redirect := range map[string]string{"CLIENTFAPI": *suite + "/callback",
+		"CLIENTFAPI2": *suite + "/callback?dummy1=lorem&dummy2=ipsum", "CLIENTFAPIRSA": *suite + "/callback",
+		"CLIENTFAPIRSA2": *suite + "/callback?dummy1=lorem&dummy2=ipsum"} {
+		pub, private := jwkPair(key)
+		if strings.Contains(key, "RSA") {
+			pub, private = rsaJWKPair(key)
+		}
+		cl, _, err := svc.CreateClient(ctx, sys, org.ID, service.ClientInput{Name: ptr("Conformance " + strings.ToLower(key)),
+			AuthMethod: ptr(model.AuthMethodPrivateJWT), JWKS: &pub, FirstParty: ptr(true), FAPI: ptr(true),
+			RedirectURIs: &[]string{redirect}, GrantTypes: &[]string{"authorization_code", "refresh_token"},
+			Scopes: &[]string{"openid", "profile", "email", "phone", "offline_access"}})
+		must(err)
+		repl = append(repl, "@"+key+"_ID@", cl.ID, "@"+key+"_JWKS@", private)
+	}
 	r := strings.NewReplacer(append(repl, "@ISSUER@", *publicURL)...)
 	must(os.MkdirAll(*out, 0o700))
 	files, _ := filepath.Glob(filepath.Join(*templates, "*.json"))
@@ -126,6 +147,26 @@ func main() {
 		must(os.WriteFile(filepath.Join(*out, filepath.Base(f)), []byte(r.Replace(string(b))), 0o600))
 	}
 	log.Printf("seeded; suite configurations in %s", *out)
+}
+
+// rsaJWKPair makes an RSA key for PS256, as jwkPair does for ES256.
+func rsaJWKPair(kid string) (public, private string) {
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		log.Fatal(err)
+	}
+	k.Precompute()
+	b := func(n *big.Int) string { return base64.RawURLEncoding.EncodeToString(n.Bytes()) }
+	pub := map[string]string{"kty": "RSA", "alg": "PS256", "use": "sig", "kid": strings.ToLower(kid), "n": b(k.N),
+		"e": b(big.NewInt(int64(k.E)))}
+	priv := map[string]string{"d": b(k.D), "p": b(k.Primes[0]), "q": b(k.Primes[1]), "dp": b(k.Precomputed.Dp),
+		"dq": b(k.Precomputed.Dq), "qi": b(k.Precomputed.Qinv)}
+	for n, v := range pub {
+		priv[n] = v
+	}
+	pj, _ := json.Marshal(map[string]any{"keys": []any{pub}})
+	sj, _ := json.Marshal(map[string]any{"keys": []any{priv}})
+	return string(pj), string(sj)
 }
 
 // jwkPair makes an ES256 key: the client's public JWKS (registered with Quisora) and the private JWKS (for the suite).

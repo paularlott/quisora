@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,15 +17,16 @@ import (
 func parse(t *testing.T, path string, args ...string) (*Config, error) {
 	t.Helper()
 	cfg := Default()
-	global, server := Flags(cfg)
+	fs := Flags(cfg)
 	ran := false
-	cmd := &cli.Command{Name: "quisora", Flags: global,
-		Commands: []*cli.Command{{Name: "serve", Flags: server, Run: func(context.Context, *cli.Command) error {
+	cmd := &cli.Command{Name: "quisora", Flags: fs.Global,
+		Commands: []*cli.Command{{Name: "serve", Flags: fs.Server, Run: func(context.Context, *cli.Command) error {
 			ran = true
 			return nil
 		}}}}
 	if path != "" {
 		cmd.ConfigFile = cli_toml.NewConfigFile(&path, func() []string { return nil })
+		cfg.ConfigFile = cmd.ConfigFile
 	}
 	old := os.Args
 	defer func() { os.Args = old }()
@@ -135,5 +137,49 @@ func TestBadValuesFail(t *testing.T) {
 	t.Setenv("QUISORA_CLUSTER_SIZE", "three")
 	if _, err := parse(t, ""); err == nil || !strings.Contains(err.Error(), "QUISORA_CLUSTER_SIZE") {
 		t.Errorf("environment: %v", err)
+	}
+}
+
+// Keys of the config file that are not settings are refused by Validate, named by their dotted paths; settings,
+// their sections and empty sections are not.
+func TestUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quisora.toml")
+	if err := os.WriteFile(path, []byte(`
+colour = "red"
+[server]
+listen = ":1111"
+lisen = ":2222"
+[storage.postgres]
+dsn = "postgres://x"
+tls = true
+[cluster.notify]
+[nosuch]
+a = 1
+[server.listen_extra]
+b = 2
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parse(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"colour", "nosuch", "server.lisen", "server.listen_extra", "storage.postgres.tls"}
+	if got := cfg.UnknownKeys(); !slices.Equal(got, want) {
+		t.Fatalf("unknown keys %v, want %v", got, want)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown settings: colour, nosuch") {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+// A setting only one command reads is offered there alone.
+func TestCommandOnlyFlags(t *testing.T) {
+	fs := Flags(Default())
+	has := func(flags []cli.Flag, name string) bool {
+		return slices.ContainsFunc(flags, func(f cli.Flag) bool { s, ok := f.(*cli.StringFlag); return ok && s.Name == name })
+	}
+	if has(fs.Server, "bootstrap-admin") || !has(fs.For("bootstrap"), "bootstrap-admin") || !has(fs.For("bootstrap"), "listen") {
+		t.Fatal("bootstrap-admin placement")
 	}
 }

@@ -18,7 +18,7 @@ import (
 	"unicode/utf8"
 )
 
-// A minimal JWT / JWK implementation: ES256, EdDSA and RS256 only, strict header checks. Tokens are produced by
+// A minimal JWT / JWK implementation: ES256, EdDSA, RS256 and PS256 only, strict header checks. Tokens are produced by
 // hand-written JSON appenders (no reflection) because signing is on the hot path of the token endpoint.
 
 // Signature algorithms (RFC 7518 / RFC 8037).
@@ -26,10 +26,19 @@ const (
 	AlgES256 = "ES256"
 	AlgEdDSA = "EdDSA"
 	AlgRS256 = "RS256"
+	AlgPS256 = "PS256" // RSASSA-PSS with SHA-256 (RFC 7518 §3.5), as FAPI 2.0 allows where it forbids RS256
 )
 
 // ValidAlg reports whether alg is a signature algorithm this package implements.
-func ValidAlg(alg string) bool { return alg == AlgES256 || alg == AlgEdDSA || alg == AlgRS256 }
+func ValidAlg(alg string) bool {
+	return alg == AlgES256 || alg == AlgEdDSA || alg == AlgRS256 || alg == AlgPS256
+}
+
+// allAlgs lists the algorithms of ValidAlg (discovery).
+var allAlgs = []string{AlgES256, AlgEdDSA, AlgRS256, AlgPS256}
+
+// pssOpts are the RSASSA-PSS parameters of PS256: SHA-256 and a salt as long as the hash (RFC 7518 §3.5).
+var pssOpts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
 
 var (
 	// ErrInvalidToken is returned for any malformed, forged or unacceptable JWT. Callers never learn which check
@@ -130,6 +139,13 @@ func verifySig(alg string, pub crypto.PublicKey, input, sig []byte) bool {
 		}
 		h := sha256.Sum256(input)
 		return rsa.VerifyPKCS1v15(k, crypto.SHA256, h[:], sig) == nil
+	case AlgPS256:
+		k, ok := pub.(*rsa.PublicKey)
+		if !ok || k.N.BitLen() < 2048 {
+			return false
+		}
+		h := sha256.Sum256(input)
+		return rsa.VerifyPSS(k, crypto.SHA256, h[:], sig, pssOpts) == nil
 	}
 	return false
 }
@@ -158,6 +174,12 @@ func signJWT(alg string, priv crypto.Signer, hdr string, payload []byte) (string
 		h := sha256.Sum256(buf)
 		var err error
 		if sig, err = rsa.SignPKCS1v15(randReader, priv.(*rsa.PrivateKey), crypto.SHA256, h[:]); err != nil {
+			return "", err
+		}
+	case AlgPS256:
+		h := sha256.Sum256(buf)
+		var err error
+		if sig, err = rsa.SignPSS(randReader, priv.(*rsa.PrivateKey), crypto.SHA256, h[:], pssOpts); err != nil {
 			return "", err
 		}
 	default:
@@ -487,7 +509,7 @@ func (j JWK) PublicKey() (crypto.PublicKey, error) {
 	return nil, errors.New("unsupported key type")
 }
 
-// KeyAlg returns the JWS algorithm a key of this type is used with.
+// KeyAlg returns the JWS algorithm a key of this type is used with by default (an RSA key may also be PS256).
 func (j JWK) KeyAlg() string {
 	switch j.Kty {
 	case "EC":

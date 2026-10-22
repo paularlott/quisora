@@ -57,9 +57,10 @@ func TestPushedAuthorizationRequest(t *testing.T) {
 	if tr.status != 200 || tr.str("id_token") == "" || tr.str("scope") != "openid profile email offline_access" {
 		t.Fatalf("exchange: %d %v", tr.status, tr.m)
 	}
-	// single use
-	if resp := h.get(c, "/oauth/authorize?"+pushedQuery(cl, uri).Encode()); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
-		t.Fatalf("reused request_uri: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	// single use: presented again after the code, it is sent back to the client as invalid_request_uri
+	u = h.authorize(c, pushedQuery(cl, uri))
+	if u.Scheme+"://"+u.Host+u.Path != rpCallback || u.Query().Get("error") != "invalid_request_uri" || u.Query().Get("state") != "pushed" {
+		t.Fatalf("reused request_uri: %s", u)
 	}
 	// only by the client that pushed it
 	other, _ := h.newClient(nil)
@@ -171,5 +172,57 @@ func TestDiscoveryPAR(t *testing.T) {
 	_ = json.Unmarshal([]byte(body(resp)), &d)
 	if d["pushed_authorization_request_endpoint"] != h.env.Cfg.Issuer()+"/oauth/par" || d["require_pushed_authorization_requests"] != false {
 		t.Fatalf("%v", d)
+	}
+}
+
+// A request_uri is used up when the request is decided, not when the browser first opens it (FAPI 2.0 §5.3.2.2): the
+// sign-in page can be reloaded, and only one of two flows of the same request_uri gets a code.
+func TestPushedRequestUsedWhenDecided(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	_, ch := pkce()
+	uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
+	anon := h.anon()
+	for i := 0; i < 2; i++ { // not signed in: sent to the sign-in page, twice
+		if u := h.authorize(anon, pushedQuery(cl, uri)); !strings.HasPrefix(u.Path, "/login/") {
+			t.Fatalf("visit %d: %s", i, u)
+		}
+	}
+	// two signed-in browsers start flows from it; the first to be decided gets the code
+	b1, _ := h.session(h.user)
+	b2, _ := h.session(h.user)
+	u1 := h.authorize(b1, pushedQuery(cl, uri))
+	u2 := h.authorize(b2, pushedQuery(cl, uri))
+	if u1.Query().Get("code") == "" || u2.Query().Get("error") != "invalid_request_uri" {
+		t.Fatalf("decided twice: %s / %s", u1, u2)
+	}
+}
+
+func TestCancelSignIn(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	_, ch := pkce()
+	for name, q := range map[string]url.Values{"plain": authzQuery(cl, ch, nil),
+		"pushed": pushedQuery(cl, h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri"))} {
+		b := h.anon()
+		login := h.authorize(b, q)
+		next := login.Query().Get("next") // the sign-in page's Cancel link (login.cancelURL) is built from it
+		cancel := "/oauth/authorize/cancel?" + strings.TrimPrefix(next, "/oauth/authorize/resume?")
+		if !strings.HasPrefix(next, "/oauth/authorize/resume?flow=") {
+			t.Fatalf("%s: next %q", name, next)
+		}
+		// another browser cannot cancel it
+		if resp := h.get(h.anon(), cancel); resp.StatusCode != 403 {
+			t.Errorf("%s: cancel from another browser: %d", name, resp.StatusCode)
+		}
+		u := loc(t, h.get(b, cancel))
+		if u.Scheme+"://"+u.Host+u.Path != rpCallback || u.Query().Get("error") != "access_denied" || u.Query().Get("state") != "st1" {
+			t.Fatalf("%s: cancel: %s", name, u)
+		}
+		if name == "pushed" {
+			if u := h.authorize(b, q); u.Query().Get("error") != "invalid_request_uri" {
+				t.Fatalf("cancelled request_uri reused: %s", u)
+			}
+		}
 	}
 }

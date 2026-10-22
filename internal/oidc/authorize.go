@@ -45,6 +45,7 @@ type flow struct {
 	ClaimsID    []string `json:"ci,omitempty"`  // ... and for the ID token
 	MFA         bool     `json:"mfa,omitempty"` // acr values that ask for a second factor
 	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt: the DPoP key the code must be redeemed with
+	Pushed      string   `json:"pu,omitempty"`  // the pushed request (par.go) the flow came from, used up when decided
 }
 
 // consent is what the request asks the user to allow (consentScopes).
@@ -96,6 +97,17 @@ func (p *Provider) wrongBrowser(w http.ResponseWriter, r *http.Request) {
 }
 
 const maxLoginRedirects = 6
+
+// fapiCodeTTL bounds the authorization codes of FAPI 2.0 clients (§5.3.2.1: at most 60 seconds).
+const fapiCodeTTL = time.Minute
+
+// codeTTL is how long an authorization code for c lasts.
+func (p *Provider) codeTTL(c *model.Client) time.Duration {
+	if c.FAPI {
+		return min(p.cfg.Tokens.Code(), fapiCodeTTL)
+	}
+	return p.cfg.Tokens.Code()
+}
 
 func (f *flow) has(prompt string) bool { return slices.Contains(f.Prompt, prompt) }
 
@@ -256,13 +268,15 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	// A pushed request (RFC 9126): its parameters are the ones the client pushed, whatever else the URL carries.
 	pushed := strings.HasPrefix(q.Get("request_uri"), parURNPrefix)
+	var pushedID string
+	pushedUsed := false
 	if pushed {
-		pq, err := p.takePushed(r.Context(), q.Get("client_id"), q.Get("request_uri"))
+		pq, id, used, err := p.loadPushed(r.Context(), q.Get("client_id"), q.Get("request_uri"))
 		if err != nil {
 			p.expired(w, r)
 			return
 		}
-		q, dup = pq, repeated(pq)
+		q, dup, pushedID, pushedUsed = pq, repeated(pq), id, used
 	}
 	// A metadata document is read only for a resource whose tenant accepts self-registered applications: requests
 	// naming documents for anything else never make this server fetch anything.
@@ -305,6 +319,14 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		p.redirectError(w, r, f, "invalid_request", dup+" is repeated")
 		return
 	}
+	if pushedUsed { // its redirect URI and state were checked when it was pushed
+		if q.Get("response_mode") == "form_post" {
+			f.Mode = "form_post"
+		}
+		p.redirectError(w, r, f, "invalid_request_uri", "the request_uri was already used")
+		return
+	}
+	f.Pushed = pushedID
 	if c.RequirePAR && !pushed {
 		p.redirectError(w, r, f, "invalid_request", "this client must push its authorization requests (RFC 9126)")
 		return
@@ -455,6 +477,28 @@ func (p *Provider) handleResume(w http.ResponseWriter, r *http.Request) {
 	p.proceed(w, r, id, &f, c)
 }
 
+// handleCancel is the sign-in page's Cancel: the user declines the request, and the application gets access_denied
+// (OIDC Core §3.1.2.6). Only the browser that started the flow can cancel it.
+func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("flow")
+	raw, err := p.s.Eph.Get(r.Context(), nsFlow, id)
+	var f flow
+	if err != nil || json.Unmarshal(raw, &f) != nil {
+		p.expired(w, r)
+		return
+	}
+	if !flowBound(r, id, &f) {
+		p.wrongBrowser(w, r)
+		return
+	}
+	_ = p.s.Eph.Delete(r.Context(), nsFlow, id)
+	clearFlowCookie(w, id)
+	if f.Pushed != "" {
+		p.usePushed(r.Context(), f.Pushed)
+	}
+	p.redirectError(w, r, &f, "access_denied", "the user cancelled the sign-in")
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Flow engine
 
@@ -558,6 +602,9 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		if f.Decision == "deny" {
 			_ = p.s.Eph.Delete(ctx, nsFlow, id)
 			clearFlowCookie(w, id)
+			if f.Pushed != "" {
+				p.usePushed(ctx, f.Pushed)
+			}
 			p.redirectError(w, r, f, "access_denied", "the user denied the request")
 			return
 		}
@@ -577,11 +624,17 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		}
 	}
 
+	if f.Pushed != "" && !p.usePushed(ctx, f.Pushed) { // another flow of the same request_uri was decided first
+		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		clearFlowCookie(w, id)
+		p.redirectError(w, r, f, "invalid_request_uri", "the request_uri was already used")
+		return
+	}
 	cd := codeData{ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, Scopes: f.Scopes,
 		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
-	code, err := p.s.Eph.New(ctx, nsCode, b, p.cfg.Tokens.Code())
+	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
 	if err != nil {
 		p.redirectError(w, r, f, "server_error", "temporarily unavailable")
 		return

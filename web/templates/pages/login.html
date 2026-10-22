@@ -67,6 +67,8 @@
   {{end}}
   {{end}}
 
-
+  {{/* A sign-in for an application can be declined: the application is told the user cancelled (access_denied). A
+       plain link, so it works without JavaScript. */}}
+  {{with .Data.Cancel}}<a class="btn btn-ghost btn-sm self-center" href="{{.}}">Cancel and return to the application</a>{{end}}
 </div>
 {{end}}

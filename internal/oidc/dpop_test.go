@@ -347,7 +347,7 @@ func TestDPoPDiscoveryAndThumbprint(t *testing.T) {
 	h := setup(t, nil)
 	var d map[string]any
 	_ = json.Unmarshal([]byte(body(h.get(h.http, "/.well-known/openid-configuration"))), &d)
-	if algs, _ := d["dpop_signing_alg_values_supported"].([]any); len(algs) != 3 {
+	if algs, _ := d["dpop_signing_alg_values_supported"].([]any); len(algs) != 4 {
 		t.Fatalf("%v", d["dpop_signing_alg_values_supported"])
 	}
 	// RFC 7638 §3.1 example

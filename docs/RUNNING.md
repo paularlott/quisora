@@ -91,7 +91,11 @@ token's audience as its URI, not as a client.
 authenticated as at the token endpoint, and sends the browser to `/oauth/authorize` with only `client_id` and the
 `request_uri` it got back. The request is checked before the user sees anything, its parameters never pass through
 the browser, and the `request_uri` works once, for 60 seconds. "Require pushed authorization requests" on a client
-refuses its authorization requests made any other way. Request objects (JAR) are still not supported, pushed or not.
+refuses its authorization requests made any other way. A `request_uri` is used up when the
+request is decided (a code is issued, or the user denies or cancels), not on its first visit, so reloading the
+sign-in page works; presented again after that, it goes back to the application as `invalid_request_uri`.
+The sign-in page of an application's request has "Cancel and return to the application", which sends `access_denied`
+back to it. Request objects (JAR) are still not supported, pushed or not.
 
 **Token exchange** (RFC 8693, grant type `urn:ietf:params:oauth:grant-type:token-exchange`, confidential clients
 only): a client trades a user's access token (`subject_token`, type `urn:ietf:params:oauth:token-type:access_token`)
@@ -113,6 +117,15 @@ bound to its client authentication. An authorization request can name the key in
 sent with a pushed request), and its code is then redeemed only with that key. "Require DPoP-bound tokens" on a
 client (`dpop_bound_access_tokens`) refuses its token requests without a proof. APIs that verify Quisora's access
 tokens themselves must check `cnf.jkt` against the request's proof; introspection reports it.
+
+**FAPI 2.0 Security Profile** ("FAPI 2.0 Security Profile" on a client, `fapi2_security_profile`): for APIs that need
+it, such as open banking. The client must use `private_key_jwt`, and the profile turns on "Require pushed
+authorization requests" and "Require DPoP-bound tokens" and turns off refresh token rotation (the profile asks for
+refresh tokens that do not rotate). Its client assertions must have the issuer alone, as a string, as their `aud`
+(not the token endpoint, not an array), and no RS256 is accepted from it or used for it: PS256, ES256 or EdDSA for
+assertions, DPoP proofs and ID tokens. Its authorization codes last at most 60 seconds whatever `tokens.code_ttl`
+says. Over TLS 1.2 the server offers only the forward-secret AES-GCM cipher suites (RFC 9325), for every client;
+TLS 1.3 is unaffected. Behind a proxy that ends TLS, the proxy's configuration decides.
 
 **`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
 and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a

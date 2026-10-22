@@ -39,7 +39,7 @@ func (p *Provider) verifyIDTokenHint(ctx context.Context, tok string) (*Claims, 
 		return nil, badToken("not an ID token")
 	}
 	key := p.keyByKID(ctx, pj.Header.Kid)
-	if key == nil && pj.Header.Kid != "" && slices.Contains([]string{AlgES256, AlgEdDSA, AlgRS256}, pj.Header.Alg) {
+	if key == nil && pj.Header.Kid != "" && ValidAlg(pj.Header.Alg) {
 		cl := &Claims{}
 		if json.Unmarshal(pj.Payload, cl) == nil && cl.Iss == p.issuer && len(cl.Aud) > 0 {
 			return cl, errHintKeyGone

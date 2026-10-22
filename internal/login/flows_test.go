@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -433,5 +434,21 @@ func TestPrivilegedUsersNeedSecondFactor(t *testing.T) {
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "" || !b.hasSession() {
 		t.Fatalf("plain user: %v", out)
+	}
+}
+
+// A sign-in that continues an authorization request offers Cancel (the OIDC provider then sends access_denied to the
+// application); other sign-ins do not.
+func TestLoginPageCancel(t *testing.T) {
+	e := newEnv(t, nil)
+	b := e.browser(t)
+	_, body := b.get("/login/primary?next=" + url.QueryEscape("/oauth/authorize/resume?flow=abc"))
+	if !strings.Contains(body, `href="/oauth/authorize/cancel?flow=abc"`) {
+		t.Fatal("no Cancel link for an authorization request")
+	}
+	for _, path := range []string{"/login/primary", "/login/primary?next=%2Faccount"} {
+		if _, body := b.get(path); strings.Contains(body, "/oauth/authorize/cancel") {
+			t.Fatalf("%s: Cancel link without an authorization request", path)
+		}
 	}
 }

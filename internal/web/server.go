@@ -65,6 +65,14 @@ type Server struct {
 	addr    string
 }
 
+// TLS12CipherSuites are the only cipher suites offered over TLS 1.2: forward-secret AEAD suites, the ones RFC 9325
+// §4.2 recommends (as FAPI 2.0 §5.2.2 requires; Go implements no DHE). TLS 1.3 suites are not configurable and are
+// all acceptable.
+var TLS12CipherSuites = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+}
+
 // New builds the server; modules are added with Use before Start.
 func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logger.Logger) (*Server, error) {
 	r, err := NewRenderer(webassets.Templates, webassets.Dist)
@@ -387,7 +395,7 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
-			NextProtos: []string{"h2", "http/1.1"}},
+			CipherSuites: TLS12CipherSuites, NextProtos: []string{"h2", "http/1.1"}},
 		ErrorLog: stdlog.New(debugWriter{s.Log}, "", 0),
 	}
 	go func() {

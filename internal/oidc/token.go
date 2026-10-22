@@ -71,7 +71,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
 		return
 	}
-	jkt, e := p.tokenProof(r, ce.c.DPoPBound)
+	jkt, e := p.tokenProof(r, ce.c)
 	if e != nil {
 		writeOAuthError(w, e)
 		return

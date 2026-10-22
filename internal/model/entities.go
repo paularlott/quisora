@@ -441,6 +441,10 @@ type Client struct {
 	// DPoPBound makes every token request of the client carry a DPoP proof (RFC 9449 §5.2): its access tokens are
 	// always bound to a key it holds.
 	DPoPBound bool `msgpack:"dpop,omitempty" json:"dpop_bound_access_tokens"`
+	// FAPI applies the FAPI 2.0 Security Profile to the client: private_key_jwt with the issuer alone as the
+	// assertion's audience, no RS256 anywhere (assertions, DPoP proofs, its ID tokens), pushed authorization requests
+	// and DPoP-bound tokens, refresh tokens that do not rotate, and authorization codes that last at most 60 seconds.
+	FAPI bool `msgpack:"fapi,omitempty" json:"fapi2_security_profile"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to

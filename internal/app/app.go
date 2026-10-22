@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/paularlott/logger"
@@ -40,6 +41,19 @@ type App struct {
 	onChange []func(*store.Record) // cache eviction hooks of modules
 
 	closers []func()
+
+	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
+	// cancels their context and waits for them before it closes anything they use.
+	bg sync.WaitGroup
+}
+
+// background runs f on its own goroutine until Close.
+func (a *App) background(f func()) {
+	a.bg.Add(1)
+	go func() {
+		defer a.bg.Done()
+		f()
+	}()
 }
 
 // masterKey returns the configured master key (server.master_key, from the config file, QUISORA_MASTER_KEY or
@@ -53,7 +67,8 @@ func masterKey(c *config.Config) ([]byte, error) {
 		"file, QUISORA_MASTER_KEY or --master-key (keep it safe, apart from the data and the backups)")
 }
 
-// Start opens everything and starts serving. Stop with Close (or cancel ctx and then Close).
+// Start opens everything and starts serving. Stop with Close (or cancel ctx and then Close): it stops the background
+// work and waits for it before closing the store.
 func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, error) {
 	a := &App{Cfg: c, Log: log}
 	if err := os.MkdirAll(c.Server.DataDir, 0o700); err != nil {
@@ -136,7 +151,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	// A record that lost a unique value to another created before it (two nodes accepted the same email address,
 	// name...) is kept: the value is removed from it, it is flagged and the change audited (nothing is deleted).
 	node.OnConflict(func(loser *store.Record) {
-		go a.Svc.ResolveUniqueClash(context.WithoutCancel(ctx), loser.Kind, loser.ID)
+		a.Svc.Background(ctx, func(ctx context.Context) { a.Svc.ResolveUniqueClash(ctx, loser.Kind, loser.ID) })
 	})
 	if node.SharedDatabase() {
 		// No gossip, so no eviction messages from the other nodes: cached sessions are trusted for 5 seconds.
@@ -148,10 +163,12 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		a.Close()
 		return nil, err
 	}
-	go node.RunPurge(ctx, 10*time.Minute)
-	go a.auditForcedStart(ctx)
-	go a.auditRestore(ctx)
-	go refreshAuditIndex(ctx, inner, log)
+	bg, stop := context.WithCancel(ctx)
+	a.closers = append(a.closers, func() { stop(); a.bg.Wait() }) // the first to run (closers run in reverse)
+	a.background(func() { node.RunPurge(bg, 10*time.Minute) })
+	a.background(func() { a.auditForcedStart(bg) })
+	a.background(func() { a.auditRestore(bg) })
+	a.background(func() { refreshAuditIndex(bg, inner, log) })
 	return a, nil
 }
 
