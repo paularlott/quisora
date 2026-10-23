@@ -144,6 +144,23 @@ resources registered for the client (`resource` or `audience`), the subject toke
 signing out ends it, but revoking it does not end that grant. There is no refresh or ID token, and no `actor_token`.
 Every exchange is audited (`oauth.token_exchange`).
 
+**Device sign-in** (RFC 8628, grant type `urn:ietf:params:oauth:grant-type:device_code`): for CLIs, TVs and other
+devices without a browser. Off by default; tick "Device sign-in" on the client (public or confidential, never with
+the FAPI 2.0 profile). The device posts to `POST /oauth/device_authorization` (`client_id`, or the client's usual
+authentication; optional `scope` and `resource`) and gets a `device_code`, a `user_code` such as `WDJB-MJHT`, the
+address `/device` (and `verification_uri_complete` with the code in it, for a QR code), `expires_in` 600 and
+`interval` 5. It shows the code and polls the token endpoint with `grant_type` and `device_code`: the answer is
+`authorization_pending`, `slow_down` (polling faster than the interval, which grows by five seconds each time),
+`access_denied`, `expired_token`, or once, the tokens: an ID token with `openid`, a refresh token with the refresh
+grant, and DPoP binding as at any token request. On `/device` the user types the code, signs in as for any
+application of the client's tenant (its sign-in methods, second factor and access lists apply), and always sees a
+consent screen warning them not to approve a code someone else sent: that is how device sign-in is phished. Managers
+and administrators can approve only on clients with "Managers and administrators may approve device sign-ins". A code
+works once, for 10 minutes, and an address may get 20 codes wrong per 15 minutes. As with a code exchange, the
+grant lasts as long as the approving browser's session unless `offline_access` was granted. Approvals are audited
+(`oauth.device.approve`; denials as `oauth.consent`), and so is the grant (`oauth.grant` with `grant_type`
+`device_code`).
+
 **DPoP** (RFC 9449, sender-constrained tokens): a client that sends a DPoP proof (header `DPoP`) with a token request
 gets an access token bound to the proof's key (`token_type` `DPoP`, `cnf.jkt` in the token and in introspection),
 accepted at userinfo and SCIM only with the `DPoP` authorization scheme and a fresh proof of that key. Proofs at the
@@ -633,7 +650,7 @@ VictoriaLogs:
 | Area | Events |
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
-| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued |
+| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |

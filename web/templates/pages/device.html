@@ -1,0 +1,18 @@
+{{template "auth" .}}{{define "content"}}
+{{/* The device authorization grant's verification page (oidc/device.go): the code a device shows, then the usual
+     sign-in and a consent screen. A plain form: it works without JavaScript. */}}
+<form class="stack" method="get" action="/device" novalidate>
+  <div>
+    <h1 class="page-title">Sign in on a device</h1>
+    <p class="page-sub">Enter the code your device shows.</p>
+  </div>
+  <div class="alert alert-warning" role="note">{{template "icon" "alert"}}<span>Only enter a code from a device in front of you that you are signing in yourself. Never enter a code someone sent you: it would give them your account.</span></div>
+  <div class="field">
+    <label class="label" for="f-user_code">Code <span class="req" aria-hidden="true">*</span></label>
+    <input class="input mono" id="f-user_code" name="user_code" type="text" value="{{.Data.Code}}" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-required="true" aria-describedby="h-user_code e-user_code"{{if .Data.Error}} aria-invalid="true"{{end}} autofocus>
+    <p class="help" id="h-user_code">8 letters, like WDJB-MJHT. Capitals and the dash don't matter.</p>
+    <p class="field-error" id="e-user_code"{{if .Data.Error}} role="alert"{{end}}>{{.Data.Error}}</p>
+  </div>
+  <button type="submit" class="btn btn-primary w-full">Continue</button>
+</form>
+{{end}}

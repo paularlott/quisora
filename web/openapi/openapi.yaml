@@ -3142,8 +3142,9 @@ components:
           type: boolean
         grant_types:
           type: array
-          description: "authorization_code, refresh_token, client_credentials and urn:ietf:params:oauth:grant-type:token-exchange
-            (RFC 8693); the last two not for public clients"
+          description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
+            (RFC 8693) and urn:ietf:params:oauth:grant-type:device_code (RFC 8628); client_credentials and token exchange
+            not for public clients, the device grant not for FAPI 2.0 clients"
           items:
             type: string
         id_token_signed_response_alg:
@@ -3173,6 +3174,10 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        device_privileged_users:
+          type: boolean
+          description: managers and administrators may approve the client's device sign-ins (RFC 8628); off by default, so
+            only users without an administrative role can
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
@@ -3221,8 +3226,9 @@ components:
           type: boolean
         grant_types:
           type: array
-          description: "authorization_code, refresh_token, client_credentials and urn:ietf:params:oauth:grant-type:token-exchange
-            (RFC 8693); the last two not for public clients"
+          description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
+            (RFC 8693) and urn:ietf:params:oauth:grant-type:device_code (RFC 8628); client_credentials and token exchange
+            not for public clients, the device grant not for FAPI 2.0 clients"
           items:
             type: string
         id_token_signed_response_alg:
@@ -3250,6 +3256,10 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        device_privileged_users:
+          type: boolean
+          description: managers and administrators may approve the client's device sign-ins (RFC 8628); off by default, so
+            only users without an administrative role can
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound
@@ -3303,8 +3313,9 @@ components:
           type: boolean
         grant_types:
           type: array
-          description: "authorization_code, refresh_token, client_credentials and urn:ietf:params:oauth:grant-type:token-exchange
-            (RFC 8693); the last two not for public clients"
+          description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
+            (RFC 8693) and urn:ietf:params:oauth:grant-type:device_code (RFC 8628); client_credentials and token exchange
+            not for public clients, the device grant not for FAPI 2.0 clients"
           items:
             type: string
         id_token_signed_response_alg:
@@ -3334,6 +3345,10 @@ components:
         require_pushed_authorization_requests:
           type: boolean
           description: authorization requests must be pushed to /oauth/par first (RFC 9126); others are refused
+        device_privileged_users:
+          type: boolean
+          description: managers and administrators may approve the client's device sign-ins (RFC 8628); off by default, so
+            only users without an administrative role can
         dpop_bound_access_tokens:
           type: boolean
           description: every token request must carry a DPoP proof (RFC 9449), so every access token is DPoP-bound

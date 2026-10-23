@@ -540,8 +540,11 @@ function tenantDialogMixin(Alpine) {
 // ---------------------------------------------------------------------------------------------------------------
 // Client dialogs (create / edit / secret shown once); used on the tenant page.
 const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange'
-const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials', TOKEN_EXCHANGE]
+const DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code'
+const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials', TOKEN_EXCHANGE, DEVICE_CODE]
 const CONFIDENTIAL_GRANTS = ['client_credentials', TOKEN_EXCHANGE]
+// The client list's names for the grant types whose identifiers are URNs.
+const GRANT_NAMES = { [TOKEN_EXCHANGE]: 'token_exchange', [DEVICE_CODE]: 'device_code' }
 // Standard scopes shown as checkboxes (the rest of a client's scopes are its own API scopes, edited as rows).
 const STD_SCOPES = [
   { value: 'openid', help: 'Required for OpenID Connect sign-in: the user\u2019s identity.' },
@@ -582,6 +585,7 @@ function clientDialogMixin(Alpine) {
       return true
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
+    get usesDevice() { return (this.form.grant_types || []).includes(DEVICE_CODE) },
     editingClient: null, apiBase: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
@@ -590,7 +594,7 @@ function clientDialogMixin(Alpine) {
         editLabel: 'Edit ' + c.name, deleteLabel: 'Delete ' + c.name, rotateLabel: 'Rotate secret of ' + c.name,
         methodText: { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT', none: 'Public (no secret)' }[c.token_endpoint_auth_method] || c.token_endpoint_auth_method,
         hasSecret: c.token_endpoint_auth_method !== 'none', firstParty: c.first_party,
-        canChange: !locked, canRotate: !locked && c.token_endpoint_auth_method !== 'none', grantsText: (c.grant_types || []).join(', '), sub: c.description || '' }
+        canChange: !locked, canRotate: !locked && c.token_endpoint_auth_method !== 'none', grantsText: (c.grant_types || []).map((g) => GRANT_NAMES[g] || g).join(', '), sub: c.description || '' }
     },
     tenantName(id) { const t = this.tenants.find((x) => x.id === id); return t ? t.display_name : '' },
     get canMove() { return this.editingClient !== null && this.tenants.length > 1 },
@@ -612,7 +616,8 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
         first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
-        dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile, scim: !!c.scim }
+        dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile, scim: !!c.scim,
+        device_privileged_users: !!c.device_privileged_users }
     },
     openCreateClient(opener) {
       this._form = 'client'
@@ -641,6 +646,7 @@ function clientDialogMixin(Alpine) {
         enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce,
         require_pushed_authorization_requests: redirects && f.require_pushed_authorization_requests,
         dpop_bound_access_tokens: f.dpop_bound_access_tokens,
+        device_privileged_users: this.usesDevice && f.device_privileged_users,
         fapi2_security_profile: f.token_endpoint_auth_method === 'private_key_jwt' && f.fapi2_security_profile }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }

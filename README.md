@@ -19,7 +19,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   MFA.
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
   revocation, userinfo, RP-initiated and back-channel logout, resource indicators, pushed authorization requests
-  (RFC 9126), token exchange (RFC 8693), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`. JWT
+  (RFC 9126), token exchange (RFC 8693), device sign-in for CLIs and TVs (RFC 8628), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`. JWT
   access tokens signed with ES256, EdDSA, RS256 or PS256, and keys rotate automatically. The FAPI 2.0 Security
   Profile can be turned on per application. Passes the OpenID Foundation
   certification plans ([docs/conformance.md](docs/conformance.md)).

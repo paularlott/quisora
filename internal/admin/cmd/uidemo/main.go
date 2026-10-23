@@ -103,6 +103,7 @@ func main() {
 	srv.Use(&events.Module{Hub: hub})
 	extraModules(srv, adm)
 	srv.Mux.Handle("/", admin.NotFound(srv))
+	srv.Mux.HandleFunc("GET /__demo/device-client", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(demoDeviceClient)) })
 	srv.Mux.HandleFunc("GET /__demo/login", func(w http.ResponseWriter, r *http.Request) {
 		u := demo[r.URL.Query().Get("as")]
 		if u == nil {
@@ -147,6 +148,9 @@ func main() {
 	fmt.Println("uidemo listening on", cfg.Server.PublicURL, "— sign in with /__demo/login?as=super")
 	<-sctx.Done()
 }
+
+// demoDeviceClient is the client id of the demo's device sign-in application (GET /__demo/device-client).
+var demoDeviceClient string
 
 func must(err error) {
 	if err != nil {
@@ -296,6 +300,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 			Scopes: []string{"openid", "profile", "email", "offline_access"}}))
 	}
 	client("Docs single-page app", "Public SPA with PKCE", "none", []string{"authorization_code", "refresh_token"}, []string{"https://docs.acme.example/cb", "http://localhost:5173/cb"})
+	// Device sign-in (RFC 8628): the tests start one for the /device page and its consent screen.
+	tv := client("Lobby display", "Device sign-in", "none", []string{"refresh_token", service.GrantDeviceCode}, nil)
+	demoDeviceClient = tv.ID
 	curTenant = staff.ID
 	for i := 0; i < 3; i++ {
 		client(fmt.Sprintf("Internal tool %d", i+1), "", "client_secret_post", []string{"authorization_code"}, []string{"https://tool.acme.example/cb"})

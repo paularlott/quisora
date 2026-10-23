@@ -46,6 +46,9 @@ type flow struct {
 	MFA         bool     `json:"mfa,omitempty"` // acr values that ask for a second factor
 	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt: the DPoP key the code must be redeemed with
 	Pushed      string   `json:"pu,omitempty"`  // the pushed request (par.go) the flow came from, used up when decided
+	// Device is the device_code of the device sign-in (device.go) the flow approves: it ends in the browser, with
+	// the device told, instead of at a redirect URI.
+	Device string `json:"dv,omitempty"`
 }
 
 // consent is what the request asks the user to allow (consentScopes).
@@ -147,6 +150,8 @@ type ConsentData struct {
 	// where it sends the result, so the user can tell a look-alike name from the real thing.
 	SelfRegistered bool
 	RedirectHost   string
+	// UserCode: the flow approves a device sign-in (device.go) showing this code.
+	UserCode string
 }
 
 // returnURL is the home of the web application behind a validated redirect URI: its scheme and host. It is empty for
@@ -596,12 +601,25 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	if !app.Allowed {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
+		if f.Device != "" {
+			p.decideDevice(ctx, f, false, nil, nil)
+		}
 		if none {
 			p.redirectError(w, r, f, "access_denied", errNoAccess.Error())
 			return
 		}
 		p.message(w, r, http.StatusForbidden, "No access", "You do not have access to "+c.Name,
 			"You are signed in as "+user.Email+". Ask your administrator to give you access to this application.")
+		return
+	}
+
+	// A device sign-in for a manager or above, where the application does not allow it: refused, and the device told.
+	if f.Device != "" && user.Role.Privileged() && !c.DevicePrivileged {
+		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		clearFlowCookie(w, id)
+		p.decideDevice(ctx, f, false, nil, nil)
+		p.message(w, r, http.StatusForbidden, "Not allowed", "Managers and administrators cannot sign in on devices with "+c.Name,
+			"You are signed in as "+user.Email+". Your device was not signed in. Ask your administrator if you need this.")
 		return
 	}
 
@@ -615,9 +633,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 			p.redirectError(w, r, f, "access_denied", "the user denied the request")
 			return
 		}
-	} else if !c.FirstParty {
+	} else if !c.FirstParty || f.Device != "" {
+		// A device sign-in is always confirmed: the code may have come from someone else.
 		consented := false
-		if !f.has("consent") && !c.Public() {
+		if !f.has("consent") && !c.Public() && f.Device == "" {
 			consented = p.hasConsent(ctx, user.ID, c.ID, f.consent(), f.Resources)
 		}
 		if !consented {
@@ -631,6 +650,20 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		}
 	}
 
+	if f.Device != "" {
+		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		clearFlowCookie(w, id)
+		if !p.decideDevice(ctx, f, true, sess, user) {
+			p.message(w, r, http.StatusBadRequest, "Code expired", "This code can no longer be used",
+				"It has expired, or it was already used. Start again on your device to get a new code.")
+			return
+		}
+		p.svc.Audit(ctx, service.ActorForUser(user, web.ClientIP(r)), user.OrgID, "oauth.device.approve", c.Name, map[string]string{"client_id": c.ID,
+			"scopes": strings.Join(f.Scopes, " ")})
+		p.message(w, r, http.StatusOK, "Device signed in", "Your device is signed in to "+c.Name,
+			"Return to your device: it carries on by itself. You can close this page.")
+		return
+	}
 	if f.Pushed != "" && !p.usePushed(ctx, f.Pushed) { // another flow of the same request_uri was decided first
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
@@ -709,6 +742,10 @@ func (p *Provider) redirectError(w http.ResponseWriter, r *http.Request, f *flow
 
 // respond returns params (plus state and iss, RFC 9207) to the client's redirect URI using f's response mode.
 func (p *Provider) respond(w http.ResponseWriter, r *http.Request, f *flow, params url.Values) {
+	if f.Device != "" {
+		p.deviceRespond(w, r, f, params)
+		return
+	}
 	if f.State != "" {
 		params.Set("state", f.State)
 	}
@@ -835,6 +872,14 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 		data.Scopes = append(data.Scopes, ScopeInfo{Name: s, Description: d})
 	}
 	data.Resources = f.Resources
+	if f.Device != "" {
+		if raw, err := p.s.Eph.Get(r.Context(), nsDevice, f.Device); err == nil {
+			var d deviceGrant
+			if json.Unmarshal(raw, &d) == nil {
+				data.UserCode = formatUserCode(d.UserCode)
+			}
+		}
+	}
 	if c.SelfRegistered {
 		data.SelfRegistered = true
 		if u, err := url.Parse(f.RedirectURI); err == nil {

@@ -153,6 +153,11 @@ export const PAGES = [
   { name: 'tenant-edit-rules', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit sign-in rules')], dialog: true },
   { name: 'tenant-client-new', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('New client')], dialog: true },
   { name: 'tenant-client-edit', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit Internal tool 1')], dialog: true },
+  // device sign-in ticked: the switch for managers and administrators appears
+  { name: 'tenant-client-device', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, open('New client'), async (p) => {
+    await p.getByRole('checkbox', { name: /Device sign-in/ }).check()
+    await p.getByRole('switch', { name: /Managers and administrators may approve device sign-ins/ }).scrollIntoViewIfNeeded()
+  }] },
   { name: 'tenant-client-secret', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
       await p.getByRole('button', { name: 'Rotate secret of Internal tool 2' }).click()
       await p.getByRole('button', { name: 'Rotate secret', exact: true }).click()
@@ -180,6 +185,17 @@ export const PAGES = [
 // Pages owned by the login module (anonymous and account pages).
 PAGES.push(
   { name: 'landing', path: '/', as: 'none' },
+  // the device sign-in page (RFC 8628), and with a code that is not valid
+  { name: 'device', path: '/device', as: 'none' },
+  { name: 'device-error', path: '/device?user_code=BBBB-BBBB', as: 'none' },
+  // the consent screen of a device sign-in (the demo's device client), with its warning and the code
+  { name: 'device-consent', path: '/account', as: 'user', steps: [async (p) => {
+    const id = await (await p.request.get('/__demo/device-client')).text()
+    const res = await p.request.post('/oauth/device_authorization', { form: { client_id: id, scope: 'openid profile' } })
+    const { user_code: code } = await res.json()
+    await p.goto('/device?user_code=' + encodeURIComponent(code))
+    await p.getByText('Signing in a device').waitFor()
+  }] },
   { name: 'landing-picker', path: '/?next=%2Foauth%2Fauthorize%2Fresume', as: 'none' },
   { name: 'login-org', path: '/login/acme', as: 'none' },
   // the second-factor step (the password step's answer stubbed): "Try another way", then a recovery code

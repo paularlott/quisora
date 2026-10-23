@@ -62,7 +62,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	p.corsRestrict(w, r, ce.c.ID)
 	gt := r.PostForm.Get("grant_type")
 	switch gt {
-	case "authorization_code", "refresh_token", "client_credentials", service.GrantTokenExchange:
+	case "authorization_code", "refresh_token", "client_credentials", service.GrantTokenExchange, service.GrantDeviceCode:
 	default:
 		writeOAuthError(w, oerr("unsupported_grant_type", "unsupported grant_type"))
 		return
@@ -88,6 +88,8 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
 	case service.GrantTokenExchange:
 		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm, jkt)
+	case service.GrantDeviceCode:
+		tr, oe = p.deviceToken(r.Context(), ce.c, r.PostForm.Get("device_code"), jkt)
 	default:
 		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
 	}
@@ -191,24 +193,35 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	if c, _, err = p.forResources(ctx, c, cd.Resources); err != nil {
 		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
 	}
+	tr, gid, oe := p.userGrant(ctx, c, &cd, res, jkt, "")
+	if oe == nil {
+		_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(gid), usedTTL)
+	}
+	return tr, oe
+}
+
+// userGrant makes the grant a user authorized (cd: from an authorization code, or an approved device sign-in, via
+// naming its grant type) and issues its tokens for res, checking again that the user, their session and their access
+// to the application are still there. It returns the grant's id.
+func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res []string, jkt, via string) (*tokenResponse, string, *oauthError) {
 	u, err := p.user(ctx, cd.UserID)
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != cd.OrgID {
-		return nil, oerr("invalid_grant", "the user is no longer active")
+		return nil, "", oerr("invalid_grant", "the user is no longer active")
 	}
 	if s, err := p.svc.Sessions.Get(ctx, cd.SessionID); err != nil || !s.Valid(time.Now()) {
-		return nil, oerr("invalid_grant", "the user's session has ended")
+		return nil, "", oerr("invalid_grant", "the user's session has ended")
 	}
 	org, err := p.org(ctx, cd.OrgID)
 	if err != nil {
-		return nil, oerr("invalid_grant", "the organization no longer exists")
+		return nil, "", oerr("invalid_grant", "the organization no longer exists")
 	}
 	// Access is checked again: it may have been taken away (or expired) since the user was sent back with the code.
 	app, err := p.appAccess(ctx, c, nil, u)
 	if err != nil {
-		return nil, serverError(err)
+		return nil, "", serverError(err)
 	}
 	if !app.Allowed {
-		return nil, oerr("invalid_grant", errNoAccess.Error())
+		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
 	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
@@ -219,15 +232,17 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	}
 	g.ID = model.NewID() // the key is sealed bound to the id
 	if g.Stamp, err = p.svc.SessionStamp(ctx, u.OrgID); err != nil {
-		return nil, serverError(err)
+		return nil, "", serverError(err)
 	}
 	p.svc.NewGrantKey(g)
 	if err := p.svc.Grants.Create(ctx, g); err != nil {
-		return nil, serverError(err)
+		return nil, "", serverError(err)
 	}
-	_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(g.ID), usedTTL)
-	p.auditClient(ctx, c, u.Username, "oauth.grant", map[string]string{"grant": g.ID, "user_id": u.ID,
-		"scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID})
+	detail := map[string]string{"grant": g.ID, "user_id": u.ID, "scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID}
+	if via != "" {
+		detail["grant_type"] = via
+	}
+	p.auditClient(ctx, c, u.Username, "oauth.grant", detail)
 	if c.BackchannelURI != "" {
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
@@ -235,14 +250,14 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
-		return nil, serverError(err)
+		return nil, "", serverError(err)
 	}
 	if slices.Contains(c.GrantTypes, "refresh_token") {
 		if tr.refresh, err = p.refreshToken(g, c.RotateRefresh || c.Public()); err != nil {
-			return nil, serverError(err)
+			return nil, "", serverError(err)
 		}
 	}
-	return tr, nil
+	return tr, g.ID, nil
 }
 
 // grantLive: a grant made without the offline_access scope lasts only as long as the user's browser session (OIDC

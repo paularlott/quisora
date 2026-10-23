@@ -9,6 +9,7 @@ import (
 	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/mail"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -23,7 +24,9 @@ func extraModules(s *web.Server, adm *admin.Module) {
 	m.Transport = mail.TransportFunc(func(context.Context, mail.Message) error { return nil })
 	m.SetService(s.Svc)
 	adm.Mailer = demoMailer{m}
-	s.Use(login.New(s, login.Options{Mail: m}))
+	op := oidc.New(s) // the OAuth pages: consent, device sign-in
+	s.Use(op)
+	s.Use(login.New(s, login.Options{Mail: m, StepUp: op.FlowWantsMFA}))
 }
 
 type demoMailer struct{ m *mail.Mailer }

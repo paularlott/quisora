@@ -216,3 +216,31 @@ test('tenant page: manager and users are refused with a styled 403', async ({ pa
   expect(res.status()).toBe(403)
   await expect(page.getByRole('heading', { name: 'Not allowed' })).toBeVisible()
 })
+
+// Device sign-in on a client: off by default; ticking it shows the switch for managers and administrators (off), and
+// both are saved.
+test('client device sign-in', async ({ page }) => {
+  await signIn(page, 'admin')
+  let sent = null
+  await page.route('**/api/orgs/acme/clients', async (r) => {
+    if (r.request().method() !== 'POST') return r.continue()
+    sent = r.request().postDataJSON()
+    return r.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ ...sent, id: 'c1', secret: 's' }) })
+  })
+  await page.goto('/admin/orgs/acme/tenants/staff')
+  await page.waitForSelector('tbody tr')
+  await page.getByRole('button', { name: 'New client' }).first().click()
+  const device = page.getByRole('checkbox', { name: /Device sign-in/ })
+  const privileged = page.getByRole('switch', { name: /Managers and administrators may approve device sign-ins/ })
+  await expect(device).not.toBeChecked()
+  await expect(privileged).toBeHidden()
+  await device.check()
+  await expect(privileged).toBeVisible()
+  await expect(privileged).not.toBeChecked()
+  await privileged.check()
+  await page.locator('#f-name').fill('TV app')
+  await page.getByRole('button', { name: 'Create client' }).click()
+  await expect.poll(() => sent).not.toBeNull()
+  expect(sent.grant_types).toContain('urn:ietf:params:oauth:grant-type:device_code')
+  expect(sent.device_privileged_users).toBe(true)
+})

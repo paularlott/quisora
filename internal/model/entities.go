@@ -452,6 +452,10 @@ type Client struct {
 	// assertion's audience, no RS256 anywhere (assertions, DPoP proofs, its ID tokens), pushed authorization requests
 	// and DPoP-bound tokens, refresh tokens that do not rotate, and authorization codes that last at most 60 seconds.
 	FAPI bool `msgpack:"fapi,omitempty" json:"fapi2_security_profile"`
+	// DevicePrivileged lets managers and above approve the client's device sign-ins (the device authorization grant,
+	// RFC 8628). Off: only plain users may, as a code someone was talked into entering would give their device an
+	// administrator's tokens.
+	DevicePrivileged bool `msgpack:"dvp,omitempty" json:"device_privileged_users"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to

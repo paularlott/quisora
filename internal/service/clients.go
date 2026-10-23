@@ -34,14 +34,20 @@ type ClientInput struct {
 	RequirePAR     *bool     `json:"require_pushed_authorization_requests"`
 	DPoPBound      *bool     `json:"dpop_bound_access_tokens"`
 	FAPI           *bool     `json:"fapi2_security_profile"`
-	Enabled        *bool     `json:"enabled"`
+	// DevicePrivileged lets managers and above approve device sign-ins (RFC 8628).
+	DevicePrivileged *bool `json:"device_privileged_users"`
+	Enabled          *bool `json:"enabled"`
 }
 
 // GrantTokenExchange is the RFC 8693 token exchange grant type.
 const GrantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 
+// GrantDeviceCode is the RFC 8628 device authorization grant type: sign-in on a device without a browser (a CLI, a
+// TV), approved by the user on another one.
+const GrantDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
+
 var (
-	validGrants      = []string{"authorization_code", "refresh_token", "client_credentials", GrantTokenExchange}
+	validGrants      = []string{"authorization_code", "refresh_token", "client_credentials", GrantTokenExchange, GrantDeviceCode}
 	validAuthMethods = []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic, model.AuthMethodPrivateJWT,
 		model.AuthMethodNone}
 	validAlgs = []string{"", "ES256", "EdDSA", "RS256", "PS256"}
@@ -258,6 +264,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.FAPI != nil {
 		c.FAPI = *in.FAPI
 	}
+	if in.DevicePrivileged != nil {
+		c.DevicePrivileged = *in.DevicePrivileged
+	}
 	if in.Enabled != nil {
 		c.Enabled = *in.Enabled
 	}
@@ -292,6 +301,8 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 			return Invalid("id_token_signed_response_alg", "FAPI 2.0 does not allow RS256: use ES256, EdDSA or PS256")
 		case c.PKCEOptional:
 			return Invalid("require_pkce", "a FAPI 2.0 client must use PKCE")
+		case slices.Contains(c.GrantTypes, GrantDeviceCode):
+			return Invalid("grant_types", "FAPI 2.0 does not allow the device authorization grant")
 		}
 		c.RequirePAR, c.DPoPBound, c.RotateRefresh = true, true, false
 	}

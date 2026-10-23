@@ -97,7 +97,7 @@ none changed a result:
   design. Public clients are covered by the Go end-to-end tests (PKCE, CORS, rotating refresh tokens, revocation).
 - **Introspection (RFC 7662) and revocation (RFC 7009)** have no OpenID Foundation plan outside FAPI; the Go tests
   cover them, including cross-organization confinement and disabled clients.
-- **Token exchange (RFC 8693)** is in no plan; the Go end-to-end tests cover it. PAR and DPoP are covered by the
+- **Token exchange (RFC 8693)** and **device sign-in (RFC 8628)** are in no plan; the Go end-to-end tests cover them. PAR and DPoP are covered by the
   FAPI 2.0 plan above, and by the Go tests for clients without the profile.
 - **FAPI 2.0 with mTLS** (client authentication or sender-constrained tokens) is not supported, so those variants are
   not run.

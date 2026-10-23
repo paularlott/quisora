@@ -104,6 +104,11 @@ new factor; without, an administrator sends them an invitation (which replaces e
 Where the organization allows codes by email, a `login.email_code.sent` the user did not ask for means someone has
 their password: reset it, and check who can read their mailbox.
 
+**A user approved a device sign-in they did not start** (they entered a code someone sent them). Find the
+`oauth.device.approve` and the `oauth.grant` after it, revoke that grant (the user's **Applications**, or sign the
+user out everywhere), and consider whether the application needs device sign-in at all. Managers and administrators
+cannot be caught this way unless the client allows them to approve device sign-ins.
+
 **Nobody can get into the console** (break-glass: the last super admin lost their password, authenticator and
 passkeys, left, or their account ended). Recovery needs a server's configuration and the master key, not the console,
 and the servers keep running:

@@ -200,6 +200,8 @@ func (p *Provider) Register(s *web.Server) {
 	m.Handle("GET /oauth/consent", s.RequirePage(p.handleConsentPage))
 	m.Handle("POST /api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
 
+	m.HandleFunc("POST /oauth/device_authorization", p.handleDeviceAuthorization)
+	m.HandleFunc("GET /device", p.handleDevicePage)
 	m.HandleFunc("POST /oauth/par", p.handlePAR)
 	m.HandleFunc("OPTIONS /oauth/par", p.handleCORSPreflight)
 	m.HandleFunc("POST /oauth/token", p.handleToken)
@@ -355,11 +357,12 @@ func (p *Provider) buildDiscovery() []byte {
 		"revocation_endpoint":                   iss + "/oauth/revoke",
 		"end_session_endpoint":                  iss + "/oauth/logout",
 		"pushed_authorization_request_endpoint": iss + "/oauth/par",
+		"device_authorization_endpoint":         iss + "/oauth/device_authorization",
 		"require_pushed_authorization_requests": false, // per client (require_pushed_authorization_requests)
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query", "form_post"},
 		"grant_types_supported": []string{"authorization_code", "refresh_token", "client_credentials",
-			service.GrantTokenExchange},
+			service.GrantTokenExchange, service.GrantDeviceCode},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": allAlgs,
 		"token_endpoint_auth_methods_supported": []string{model.AuthMethodSecretPost, model.AuthMethodSecretBasic,
