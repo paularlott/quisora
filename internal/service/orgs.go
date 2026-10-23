@@ -340,6 +340,9 @@ func (s *Service) validOrgSettings(st model.OrgSettings, old *model.OrgSettings)
 	if st.SessionTTL < 0 || st.SessionIdle < 0 {
 		return Invalid("settings", "lifetimes cannot be negative")
 	}
+	if st.EmailCodes && !s.Cfg.Mail.Enabled() && (old == nil || !old.EmailCodes) {
+		return Invalid("email_codes", "needs the server to send email (mail.smtp_host)")
+	}
 	// Only a lifetime being changed is held to the server's: one saved before the limit (or before the server's
 	// was lowered) does not block saving other settings; sessions are capped at the server's anyway.
 	if st.SessionTTL > s.Cfg.Session.TTL && (old == nil || st.SessionTTL != old.SessionTTL) {

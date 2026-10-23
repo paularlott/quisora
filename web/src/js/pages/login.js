@@ -4,7 +4,7 @@
 // helpers that account.js reuses.
 import { ApiError } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
-import { announce } from '../lib/announce.js'
+import { announce, toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 
 const csrf = () => {
@@ -160,11 +160,16 @@ function passkeyMixin() {
 
 function stepsMixin() {
   return {
-    step: 'password', ticket: '', methods: [], alternatives: [], qr: '', secret: '', enrolStarted: false,
-    // at a second-factor step: '' the step itself, 'choose' the "Try another way" list, 'recovery' a recovery code
+    step: 'password', ticket: '', methods: [], alternatives: [], email: '', emailSent: false, qr: '', secret: '', enrolStarted: false,
+    // at a second-factor step: '' the step itself, 'choose' the "Try another way" list, 'recovery' a recovery code,
+    // 'email_code' a code by email
     view: '',
 
-    get secondFactor() { return this.step === 'totp' || this.step === 'passkey' },
+    get secondFactor() { return this.step === 'totp' || this.step === 'passkey' || this.step === 'email_code' },
+    get isEmailCode() { return (this.step === 'email_code' && this.view === '') || (this.secondFactor && this.view === 'email_code') },
+    get altEmail() { return this.alternatives.includes('email_code') && this.view !== 'email_code' && this.step !== 'email_code' },
+    get emailTo() { return this.email || 'your email address' },
+    get emailOptionText() { return this.email ? `Email a code to ${this.email}` : 'Email me a code' },
     get isTotp() { return this.step === 'totp' && this.view === '' },
     get isPasskeyStep() { return this.step === 'passkey' && this.view === '' },
     get isChooser() { return this.secondFactor && this.view === 'choose' },
@@ -172,7 +177,7 @@ function stepsMixin() {
     get altPasskey() { return this.step === 'totp' && this.alternatives.includes('passkey') && this.canPasskey },
     get altRecovery() { return this.alternatives.includes('recovery') },
     get noOtherWayText() {
-      return (this.altPasskey || this.altRecovery ? 'None of these? ' : 'There is no other way to finish signing in to this account. ') +
+      return (this.altPasskey || this.altEmail || this.altRecovery ? 'None of these? ' : 'There is no other way to finish signing in to this account. ') +
         'Ask your administrator for a new invitation: it lets you set up your sign-in again.'
     },
     get isEnrol() { return this.step === 'enrol' },
@@ -191,12 +196,14 @@ function stepsMixin() {
     },
 
     // focusFirst moves focus to the first visible [data-step-focus] of the step now shown. The step's markup may
-    // become visible a frame or two after the state changes, so it retries briefly. $root, not $el: $el is the
-    // element whose handler is running (e.g. the password form), which does not contain the next step's field.
+    // become visible a frame or two after the state changes, so it retries briefly; until then the previous step can
+    // still be showing, so the field that already has focus (the password just submitted) only counts on the last
+    // try. $root, not $el: $el is the element whose handler is running (e.g. the password form), which does not
+    // contain the next step's field.
     focusFirst() {
       const attempt = (left) => {
         const target = [...this.$root.querySelectorAll('[data-step-focus]')].find((e) => e.offsetParent !== null)
-        if (target) target.focus()
+        if (target && (target !== document.activeElement || left === 0)) target.focus()
         else if (left > 0) requestAnimationFrame(() => attempt(left - 1))
       }
       this.$nextTick(() => attempt(30))
@@ -208,11 +215,15 @@ function stepsMixin() {
       this.step = res.step
       this.view = ''
       this.alternatives = res.alternatives || []
+      this.email = res.email || ''
+      this.form.mcode = ''
+      this.emailSent = res.step === 'email_code' // the server sent the first code itself
       this.ticket = res.ticket
       this.methods = res.methods || []
       if (this.stopConditional) this.stopConditional()
       this.clearErrors()
-      announce(({ totp: 'Enter the code from your Authenticator App.', passkey: 'Confirm with your passkey to finish signing in.' })[res.step] || '')
+      announce(({ totp: 'Enter the code from your Authenticator App.', passkey: 'Confirm with your passkey to finish signing in.',
+        email_code: 'We emailed you a code. Enter it to finish signing in.' })[res.step] || '')
       // MFA enrolment goes straight to the authenticator-app set-up (QR code and code box); a passkey is offered
       // underneath when available. No intermediate "choose a method" screen.
       if (res.step === 'enrol') { this.startTotpEnrol(); return }
@@ -233,6 +244,30 @@ function stepsMixin() {
       this.view = ''
       this.clearErrors()
       this.focusFirst()
+    },
+    // an emailed code: chosen under "Try another way" (sends one, unless one was sent already), or asked for again
+    async chooseEmailCode() {
+      if (!this.emailSent) {
+        const res = await this.call('', () => anon('/api-internal/login/email/send', { ticket: this.ticket }))
+        if (!res) return
+        this.email = res.email || this.email
+        this.emailSent = true
+      }
+      this.view = 'email_code'
+      this.form.mcode = ''
+      this.clearErrors()
+      announce('We emailed you a code. Enter it to finish signing in.')
+      this.focusFirst()
+    },
+    async resendEmailCode() {
+      const res = await this.call('m', () => anon('/api-internal/login/email/send', { ticket: this.ticket }))
+      if (!res) return
+      toast('A new code is on its way. Only the newest one works.')
+      this.focusFirst()
+    },
+    async submitEmailCode() {
+      const res = await this.call('', () => anon('/api-internal/login/email', { ticket: this.ticket, code: this.form.mcode }))
+      if (res) this.handle(res)
     },
     startRecovery() {
       this.view = 'recovery'
@@ -287,7 +322,7 @@ export default function (Alpine) {
       // Back from a provider with a second factor due: continue with that step.
       if (d.step && d.ticket) {
         this.handle({ step: d.step, ticket: d.ticket, methods: (d.methods || '').split(' ').filter(Boolean),
-          alternatives: (d.alternatives || '').split(' ').filter(Boolean) })
+          alternatives: (d.alternatives || '').split(' ').filter(Boolean), email: d.email || '' })
         return
       }
       this.startConditional({ org: this.org, next: this.next, tenant: this.tenant })

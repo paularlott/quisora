@@ -28,18 +28,24 @@ type stepResp struct {
 	Next    string   `json:"next,omitempty"`
 	Methods []string `json:"methods,omitempty"`
 	// Alternatives are the other ways this account can give its second factor at a totp or passkey step ("passkey",
-	// "recovery"): the page's "Try another way" offers only these.
+	// "email_code", "recovery"): the page's "Try another way" offers only these.
 	Alternatives []string `json:"alternatives,omitempty"`
+	// Email is the address an email code goes to, masked (a step "email_code", or "email_code" among the alternatives).
+	Email string `json:"email,omitempty"`
 }
 
 // alternatives lists the other ways u can give the second factor at step (see stepResp.Alternatives): a passkey
-// instead of the authenticator code, and recovery codes when some are left.
-func (m *Module) alternatives(ctx context.Context, u *model.User, step string) []string {
+// instead of the authenticator code, an emailed code (email: the organization allows it for u), and recovery codes
+// when some are left.
+func (m *Module) alternatives(ctx context.Context, u *model.User, step string, email bool) []string {
 	var out []string
 	if step == "totp" && m.Passkeys != nil {
 		if n, err := m.s.Svc.UsablePasskeys(ctx, u.ID, ""); err == nil && n > 0 {
 			out = append(out, "passkey")
 		}
+	}
+	if (step == "totp" || step == "passkey") && email {
+		out = append(out, "email_code")
 	}
 	if step == "totp" || step == "passkey" {
 		if left, _ := m.s.Svc.RecoveryCodesLeft(ctx, u); left > 0 {
@@ -128,7 +134,8 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 // passkey (if they have one) or enrolment;
 // otherwise nothing (""). It stores the step's ticket. A provider's own claims about MFA are never trusted: a
 // federated sign-in is a first factor like a password.
-func (m *Module) secondFactor(ctx context.Context, u *model.User, eff *service.SignInMethods, t ticket) (stepResp, error) {
+func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignInMethods, t ticket) (stepResp, error) {
+	ctx := r.Context()
 	t.UserID = u.ID
 	ttl := ticketTTL
 	switch {
@@ -153,6 +160,10 @@ func (m *Module) secondFactor(ctx context.Context, u *model.User, eff *service.S
 		} else if all > 0 {
 			return stepResp{}, errFactorLost
 		}
+		// No factor of their own, and the organization takes a code by email: emailed now, instead of setting one up.
+		if m.emailOK(u, eff.EmailCodes) {
+			t.Step, ttl = "email_code", emailCodeTTL
+		}
 	default:
 		return stepResp{}, nil
 	}
@@ -160,7 +171,21 @@ func (m *Module) secondFactor(ctx context.Context, u *model.User, eff *service.S
 	if err != nil {
 		return stepResp{}, err
 	}
-	resp := stepResp{Step: t.Step, Ticket: id, Alternatives: m.alternatives(ctx, u, t.Step)}
+	email := m.emailOK(u, eff.EmailCodes)
+	resp := stepResp{Step: t.Step, Ticket: id, Alternatives: m.alternatives(ctx, u, t.Step, email)}
+	if email {
+		resp.Email = maskEmail(u.Email)
+	}
+	if t.Step == "email_code" {
+		org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+		if err != nil {
+			return stepResp{}, err
+		}
+		if err := m.sendEmailCode(ctx, id, u, org); err != nil {
+			return stepResp{}, err
+		}
+		m.audit(r, "login.email_code.sent", org, u, u.Username, nil)
+	}
 	if t.Step == "enrol" {
 		resp.Methods = []string{"totp"}
 		if m.Passkeys != nil {
@@ -173,8 +198,7 @@ func (m *Module) secondFactor(ctx context.Context, u *model.User, eff *service.S
 // afterPassword continues a sign-in whose password step has succeeded: a second factor when one is due
 // (secondFactor), otherwise the session.
 func (m *Module) afterPassword(w http.ResponseWriter, r *http.Request, u *model.User, org *model.Org, eff *service.SignInMethods, tenant, next string) {
-	ctx := r.Context()
-	step, err := m.secondFactor(ctx, u, eff, ticket{Next: next, AMR: []string{"pwd"}, Tenant: tenant})
+	step, err := m.secondFactor(r, u, eff, ticket{Next: next, AMR: []string{"pwd"}, Tenant: tenant})
 	if errors.Is(err, errFactorLost) {
 		m.audit(r, "login.failure", org, u, "", map[string]string{"reason": "second factor unusable"})
 		writeErr(w, http.StatusForbidden, msgFactorLost, "")
@@ -211,6 +235,8 @@ func (m *Module) failed(w http.ResponseWriter, r *http.Request, key string, org 
 		msg, field = "That code is incorrect or has already been used.", "code"
 	case "recovery_code":
 		msg, field = "That recovery code is incorrect or has already been used.", "rcode"
+	case "email_code":
+		msg, field = "That code is incorrect, or a newer one was sent.", "mcode"
 	}
 	writeErr(w, http.StatusUnauthorized, msg, field)
 }

@@ -77,6 +77,7 @@ type loginData struct {
 	// A second-factor step after a provider sign-in (step totp, passkey or enrol, its ticket, enrolment methods).
 	Step, Ticket, Methods string
 	Alternatives          string // the other ways to give the second factor at that step (stepResp.Alternatives)
+	Email                 string // where an email code goes, masked (stepResp.Email)
 	Cancel                string // declines the authorization request next continues (empty for other sign-ins)
 }
 
@@ -115,10 +116,14 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 	d.CanReset = eff.PasswordReset && m.Mail != nil
 	if c, err := r.Cookie(stepCookie); err == nil && q.Get("step") == "1" && c.Value != "" && len(c.Value) < 200 {
 		// only the step a provider sign-in left, for this org
-		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "enrol"); ok && t.Provider != "" {
+		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "email_code", "enrol"); ok && t.Provider != "" {
 			if u, err := m.s.Svc.Users.Get(ctx, t.UserID); err == nil && u.OrgID == org.ID {
 				d.Step, d.Ticket = t.Step, c.Value
-				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step), " ")
+				email := m.emailOK(u, org.Settings.EmailCodes)
+				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step, email), " ")
+				if email {
+					d.Email = maskEmail(u.Email)
+				}
 			}
 			if d.Step == "enrol" {
 				d.Methods = "totp"

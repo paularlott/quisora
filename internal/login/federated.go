@@ -115,7 +115,7 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	if res.Provider.TrustMFA && !res.User.Role.Privileged() {
 		amr = append(amr, "mfa")
 	} else {
-		step, err = m.secondFactor(ctx, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID})
+		step, err = m.secondFactor(r, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID})
 	}
 	if errors.Is(err, errFactorLost) {
 		m.audit(r, "login.failure", res.Org, res.User, "", map[string]string{"reason": "second factor unusable",

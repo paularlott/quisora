@@ -239,6 +239,7 @@ type SignInMethods struct {
 	Passkey       bool
 	Providers     []*model.Provider // enabled org providers the tenant allows, sorted by name
 	RequireMFA    bool
+	EmailCodes    bool // the organization's EmailCodes (a second factor by email)
 }
 
 // AllowsProvider reports whether providerID is among the allowed providers.
@@ -259,7 +260,7 @@ func (s *Service) EffectiveSignIn(ctx context.Context, org *model.Org, t *model.
 		return nil, err
 	}
 	m := &SignInMethods{Password: org.Settings.PasswordLogin, Passkey: org.Settings.PasskeyLogin,
-		RequireMFA: org.Settings.RequireMFA, Providers: providers}
+		RequireMFA: org.Settings.RequireMFA, Providers: providers, EmailCodes: org.Settings.EmailCodes}
 	m.PasswordReset = m.Password && org.Settings.PasswordReset
 	if t == nil {
 		return m, nil

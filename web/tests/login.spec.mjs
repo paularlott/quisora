@@ -69,3 +69,54 @@ test('email first, then the password', async ({ page }) => {
   await page.keyboard.press('Enter')
   await expect(password).toHaveValue('')
 })
+
+// Codes by email: the step itself when the server sent one (no factor of the account's own), a new code on request,
+// and the option under "Try another way" at the authenticator-code step.
+test('a code by email finishes the second factor', async ({ page }) => {
+  await signIn(page, 'none')
+  let step = { step: 'email_code', ticket: 'n1.stub', email: 'a•••@acme.example', alternatives: [] }
+  await page.route('**/api-internal/login/password', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(step) }))
+  let sends = 0
+  await page.route('**/api-internal/login/email/send', (r) => {
+    sends++
+    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ email: 'a•••@acme.example' }) })
+  })
+  let verified = null
+  await page.route('**/api-internal/login/email', (r) => {
+    verified = r.request().postDataJSON()
+    return r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'That code is incorrect, or a newer one was sent.', field: 'mcode' }) })
+  })
+  const toPassword = async () => {
+    await page.goto('/login/acme')
+    await page.locator('#f-email').fill('alan@acme.example')
+    await page.getByRole('button', { name: 'Continue' }).click()
+    await page.locator('#f-password').fill('stubbed password')
+    await page.locator('#f-password').press('Enter')
+  }
+
+  await toPassword()
+  await expect(page.getByText('We emailed a 6-digit code to a•••@acme.example.')).toBeVisible()
+  await expect(page.locator('#f-mcode')).toBeFocused()
+  await page.keyboard.insertText('123456')
+  await expect.poll(() => verified).toEqual({ ticket: 'n1.stub', code: '123456' })
+  await expect(page.getByText('That code is incorrect, or a newer one was sent.').first()).toBeVisible()
+  expect(sends, 'the server sent the first code itself').toBe(0)
+  await page.getByRole('button', { name: 'Send a new code' }).click()
+  await expect(page.getByText('A new code is on its way.').first()).toBeVisible()
+  expect(sends).toBe(1)
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+
+  // at the authenticator-code step it is one of the other ways, and choosing it sends a code
+  step = { step: 'totp', ticket: 'n1.stub', email: 'a•••@acme.example', alternatives: ['email_code'] }
+  await toPassword()
+  await page.getByRole('button', { name: 'Try another way' }).first().click()
+  await page.getByRole('button', { name: 'Email a code to a•••@acme.example' }).click()
+  await expect(page.locator('#f-mcode')).toBeVisible()
+  expect(sends).toBe(2)
+  // back to the list and to the code again: no second send
+  await page.getByRole('button', { name: 'Try another way' }).last().click()
+  await page.getByRole('button', { name: 'Email a code to a•••@acme.example' }).click()
+  await expect(page.locator('#f-mcode')).toBeVisible()
+  expect(sends).toBe(2)
+})

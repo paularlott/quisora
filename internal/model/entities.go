@@ -19,8 +19,11 @@ type OrgSettings struct {
 	PasswordReset bool `msgpack:"pr" json:"password_reset"` // users may reset a forgotten password by email
 	PasskeyLogin  bool `msgpack:"pk" json:"passkey_login"`
 	RequireMFA    bool `msgpack:"mfa" json:"require_mfa"`
-	SessionTTL    int  `msgpack:"sttl" json:"session_ttl"`  // seconds
-	SessionIdle   int  `msgpack:"sidl" json:"session_idle"` // seconds
+	// EmailCodes lets people without an authenticator app or passkey give the second factor as a one-time code
+	// emailed to their verified address (not managers and above). Off by default: weaker than an app or a passkey.
+	EmailCodes  bool `msgpack:"ec,omitempty" json:"email_codes"`
+	SessionTTL  int  `msgpack:"sttl" json:"session_ttl"`  // seconds
+	SessionIdle int  `msgpack:"sidl" json:"session_idle"` // seconds
 }
 
 // DefaultOrgSettings is applied to new organizations.

@@ -3833,6 +3833,10 @@ components:
     OrgSettings:
       type: object
       properties:
+        email_codes:
+          type: boolean
+          description: users without an authenticator app or passkey may give the second factor as a one-time code emailed to
+            their verified address (never managers and above); needs the server to send email; off by default
         passkey_login:
           type: boolean
         password_login:

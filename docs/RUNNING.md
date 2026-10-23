@@ -200,6 +200,16 @@ else got hold of is noticed at its first use. Making new codes ends the old ones
 an invitation or a lock-out removes them. They are stored as hashes, and a used one is refused on every node. They do
 not replace a forgotten password: that is a reset or an invitation.
 
+**Codes by email** are a second factor an organization can allow (the organization dialog, "Allow codes by email as
+a second factor"; off by default, and it needs `mail.smtp_host`). Where a second factor is required, a user without
+an authenticator app or passkey gets a 6-digit code emailed to their verified address instead of being asked to set
+one up; users with one see "Email me a code" under **Try another way**. A code lasts 10 minutes, works once, and
+only for the sign-in it was sent for; a new one ends the last, at most every 30 seconds and five times per
+sign-in. Wrong codes count towards the lock-out like wrong authenticator codes. Sending is audited
+(`login.email_code.sent`), and the session's `amr` is `pwd otp mfa`. Managers and above never get it, and neither do
+addresses that are not verified. It is weaker than an app or a passkey: whoever can read the mailbox (and reset the
+password with it, where resets are on) has both factors, so allow it only where that is acceptable.
+
 **Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
 provider, an API token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
 sign-in through a provider trusted as a second factor does not count when the account has one of its own.

@@ -883,15 +883,23 @@ export default function (Alpine) {
     get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
     get resetOff() { return !this.form.password_login },
+    // Codes by email need the server to send email. Without it the switch can only be turned off (it was on when the
+    // email set-up went away), and says why.
+    get emailCodesOff() { return !mailOn() && !this.form.email_codes },
+    get emailCodesNote() {
+      if (mailOn()) return ''
+      return this.form.email_codes ? 'Not in use: email is not set up on the server (mail.smtp_host).'
+        : 'Unavailable: email is not set up on the server (mail.smtp_host).'
+    },
     orgToForm(o) {
       const s = o.settings
       return { name: o.name, display_name: o.display_name, password_login: !!s.password_login, password_reset: !!s.password_reset,
-        passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa,
+        passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes,
         session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' }
     },
     openCreate(ev) {
       this.editing = null
-      this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false } }))
+      this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false } }))
       this.openDlg('org-dialog', ev.currentTarget)
     },
     edit(ev) {
@@ -911,7 +919,7 @@ export default function (Alpine) {
       }
       const edit = this.editing
       const res = await this.run(() => {
-        const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa,
+        const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa, email_codes: f.email_codes,
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
@@ -1743,7 +1751,10 @@ export default function (Alpine) {
       return !s.password_login ? 'Off' : s.password_reset ? 'On, with reset by email' : 'On, no reset by email'
     },
     get passkeyText() { return this.org.settings.passkey_login ? 'On' : 'Off' },
-    get mfaText() { return this.org.settings.require_mfa ? 'Required' : 'Optional' },
+    get mfaText() {
+      const s = this.org.settings
+      return (s.require_mfa ? 'Required' : 'Optional') + (!s.email_codes ? '' : mailOn() ? ', codes by email allowed' : ', codes by email allowed but email is not set up')
+    },
     get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
     get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },
   }))

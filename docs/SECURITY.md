@@ -45,7 +45,8 @@ Before production:
 8. **People**: as few super admins as possible; every administrator with a passkey or authenticator app; API tokens
    with short lifetimes (set `tokens.api_token_max_days`: there is no limit by default); access reviewed
    periodically from the user lists.
-9. **Mail**: `mail.tls` `starttls` or `tls`.
+9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
+   the mailboxes are at least as well protected as the passwords.
 
 ## Incident response
 
@@ -100,6 +101,8 @@ check who could reach the gossip port.
 **A user lost their authenticator app or passkey.** With recovery codes they sign in with one of those and set up a
 new factor; without, an administrator sends them an invitation (which replaces every credential). A
 `login.recovery_code` they did not make means someone has their password and their codes: lock the account out.
+Where the organization allows codes by email, a `login.email_code.sent` the user did not ask for means someone has
+their password: reset it, and check who can read their mailbox.
 
 **Nobody can get into the console** (break-glass: the last super admin lost their password, authenticator and
 passkeys, left, or their account ended). Recovery needs a server's configuration and the master key, not the console,

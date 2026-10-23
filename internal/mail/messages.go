@@ -69,6 +69,7 @@ type tplData struct {
 	Link    string
 	Expires string
 	Left    string // recovery codes left (recoveryTpl)
+	Code    string // a sign-in code (codeTpl)
 }
 
 var linkPaths = map[string]string{service.LinkInvite: "/invite", service.LinkReset: "/reset", service.LinkVerify: "/verify-email"}
@@ -108,6 +109,20 @@ func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model
 		d.Org = org.DisplayName
 	}
 	msg, err := recoveryTpl.render(d)
+	if err != nil {
+		return err
+	}
+	msg.To = u.Email
+	return m.Send(ctx, msg)
+}
+
+// SendSignInCode emails u the one-time code that finishes a sign-in as its second factor, valid for ttl.
+func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.Org, code string, ttl time.Duration) error {
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Code: code, Expires: humanTTL(ttl)}
+	if org != nil {
+		d.Org = org.DisplayName
+	}
+	msg, err := codeTpl.render(d)
 	if err != nil {
 		return err
 	}
@@ -190,6 +205,29 @@ func htmlShell(intro, button, outro string) string {
 <p style="margin:0 0 24px;font-size:14px;word-break:break-all"><a href="{{.Link}}" style="color:#3730a3">{{.Link}}</a></p>
 <p style="margin:0;line-height:1.5;font-size:14px;color:#4b5263">` + outro + `</p>
 </div></body></html>`
+}
+
+// codeTpl is the sign-in code: no link (a code is typed where the sign-in asked for it), the code itself large.
+var codeTpl = &tpl{
+	subject: "{{.Code}} is your {{.Site}} sign-in code",
+	text: texttemplate.Must(texttemplate.New("t").Parse(`Hello {{.Name}},
+
+Your code to finish signing in to {{.Site}}:
+
+    {{.Code}}
+
+It works once and expires in {{.Expires}}. Never give it to anyone: {{.Site}} never asks for it by phone or by email.
+If you are not signing in, someone has your password: change it, and tell your administrator.
+`)),
+	html: htmltemplate.Must(htmltemplate.New("h").Parse(`<!doctype html><html lang="en"><body style="margin:0;padding:24px;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2430">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e3e5ea">
+<p style="margin:0 0 16px;font-size:18px;font-weight:600">{{.Site}}</p>
+<p style="margin:0 0 16px;line-height:1.5">Hello {{.Name}},</p>
+<p style="margin:0 0 16px;line-height:1.5">Your code to finish signing in to {{.Site}}:</p>
+<p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:6px;font-family:ui-monospace,Menlo,Consolas,monospace">{{.Code}}</p>
+<p style="margin:0 0 8px;line-height:1.5;font-size:14px;color:#4b5263">It works once and expires in {{.Expires}}. Never give it to anyone: {{.Site}} never asks for it by phone or by email.</p>
+<p style="margin:0;line-height:1.5;font-size:14px;color:#4b5263">If you are not signing in, someone has your password: change it, and tell your administrator.</p>
+</div></body></html>`)),
 }
 
 var (

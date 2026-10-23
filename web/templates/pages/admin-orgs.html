@@ -62,6 +62,7 @@
         {{template "check-field" (dict "name" "passkey_login" "label" "Passkeys" "switch" true "help" "Users sign in with a passkey: fingerprint, face, or a security key.")}}
         <div class="alert alert-warning" x-show="noMethod" x-cloak>{{template "icon" "alert"}}<span>With both switched off, users can only sign in through an upstream provider.</span></div>
         {{template "check-field" (dict "name" "require_mfa" "label" "Require a second factor" "switch" true "help" "Password sign-ins must also enter a one-time code from an Authenticator App.")}}
+        {{template "check-field" (dict "name" "email_codes" "label" "Allow codes by email as a second factor" "switch" true "disabled" "emailCodesOff" "note" "emailCodesNote" "help" "Users without an Authenticator App or passkey get a code emailed to their verified address instead of setting one up. Weaker than an app or a passkey: anyone who can read the mailbox can use it. Never for managers and administrators.")}}
       </fieldset>
 
       <fieldset class="fieldset">

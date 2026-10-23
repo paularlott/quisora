@@ -128,6 +128,7 @@
   .field-beside .check { align-items: center; min-height: 2.75rem; padding: 0; }
   .check-text { display: flex; flex-direction: column; gap: 0.1rem; font-weight: 600; font-size: 0.9375rem; }
   .check-text .help { font-weight: 400; }
+  .check-note:empty { display: none; }
   .checkbox {
     appearance: none; -webkit-appearance: none; flex: none; width: 1.5rem; height: 1.5rem; margin-top: 0.1rem; border-radius: 0.45rem;
     border: 1.5px solid var(--ctl-border); background: var(--ctl-bg); display: inline-grid; place-content: center; cursor: pointer;
@@ -166,6 +167,12 @@
   .switch:checked::before { transform: scale(0.78) translateX(1.2rem); }
   .switch:active::before { width: 2.5rem; }
   .switch:checked:active::before { transform: scale(0.78) translateX(0.6rem); }
+  /* Disabled: a faded pill with a dashed edge and no thumb shadow, so it reads as unavailable rather than off. The
+     label keeps its contrast (the note under it says why). */
+  .switch:disabled { opacity: 0.45; border-style: dashed; cursor: not-allowed; box-shadow: none; }
+  .switch:disabled::before { box-shadow: none; }
+  .switch:disabled:active::before { width: 1.9rem; }
+  .check:has(.switch:disabled), .check:has(.checkbox:disabled) { cursor: not-allowed; }
 
   /* The theme toggle: same glass pill, with a sun/moon thumb. */
   .glass-switch {

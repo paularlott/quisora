@@ -137,6 +137,8 @@ func (m *Module) Register(s *web.Server) {
 	mux.HandleFunc("POST /api-internal/login/password", m.password)
 	mux.HandleFunc("POST /api-internal/login/totp", m.totp)
 	mux.HandleFunc("POST /api-internal/login/recovery", m.recovery)
+	mux.HandleFunc("POST /api-internal/login/email/send", m.emailSend)
+	mux.HandleFunc("POST /api-internal/login/email", m.emailVerify)
 	mux.HandleFunc("POST /api-internal/login/passkey/begin", m.passkeyBegin)
 	mux.HandleFunc("POST /api-internal/login/passkey/finish", m.passkeyFinish)
 	mux.HandleFunc("POST /api-internal/login/enrol/totp/begin", m.enrolTOTPBegin)
@@ -406,7 +408,7 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 
 // ticket is the state between the steps of a sign-in (TOTP code, passkey as second factor, MFA enrolment).
 type ticket struct {
-	Step    string   `json:"s"` // totp, passkey, enrol
+	Step    string   `json:"s"` // totp, passkey, email_code, enrol
 	UserID  string   `json:"u"`
 	Next    string   `json:"n,omitempty"`
 	AMR     []string `json:"a"`

@@ -28,11 +28,13 @@ const emailsStep = async (p) => {
 }
 const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.getByRole('list', { name: 'Email addresses' }).waitFor() }, emailsStep]
 
-// secondFactorStep reaches the authenticator-code step with the password step's answer stubbed (a passkey and
-// recovery codes as the other ways).
+// secondFactorStep reaches the authenticator-code step with the password step's answer stubbed (a passkey, a code by
+// email and recovery codes as the other ways).
 const secondFactorStep = async (p) => {
   await p.route('**/api-internal/login/password', (r) => r.fulfill({ status: 200, contentType: 'application/json',
-    body: JSON.stringify({ step: 'totp', ticket: 'n1.stub', alternatives: ['passkey', 'recovery'] }) }))
+    body: JSON.stringify({ step: 'totp', ticket: 'n1.stub', alternatives: ['passkey', 'email_code', 'recovery'], email: 'a•••@acme.example' }) }))
+  await p.route('**/api-internal/login/email/send', (r) => r.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ email: 'a•••@acme.example' }) }))
   await p.locator('#f-email').fill('alan@acme.example')
   await p.getByRole('button', { name: 'Continue' }).click()
   await p.locator('#f-password').fill('stubbed password')
@@ -189,6 +191,11 @@ PAGES.push(
     await p.getByRole('button', { name: 'Try another way' }).first().click()
     await p.getByRole('button', { name: 'Use a recovery code' }).click()
     await p.locator('#f-rcode').waitFor()
+  }] },
+  { name: 'login-email-code', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+    await p.getByRole('button', { name: 'Try another way' }).first().click()
+    await p.getByRole('button', { name: 'Email a code to a•••@acme.example' }).click()
+    await p.locator('#f-mcode').waitFor()
   }] },
   { name: 'account', path: '/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
   // The user menu: a floating glass panel over the page, open for the audit (contrast budget of --glass-bg-panel).

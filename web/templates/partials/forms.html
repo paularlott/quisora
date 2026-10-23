@@ -25,11 +25,12 @@
 </div>{{end}}
 
 {{/* A checkbox; with "switch" true it renders as a glass switch (role=switch). "class" adds to the field's classes
-   (field-beside: lined up with the input of the field next to it in a field-row). */}}
+   (field-beside: lined up with the input of the field next to it in a field-row). "note" is an expression for a line
+   under the help (e.g. why the control is disabled; empty for none), read with the control. */}}
 {{define "check-field"}}<div class="field{{with .class}} {{.}}{{end}}"{{with .show}} x-show="{{.}}"{{end}}>
   <label class="check" for="f-{{.name}}">
-    <input type="checkbox"{{if .switch}} role="switch" class="switch"{{else}} class="checkbox"{{end}} id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}"{{with .disabled}} :disabled="{{.}}"{{end}} aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}">
-    <span class="check-text">{{.label}}{{with .help}}<span class="help" id="h-{{$.name}}">{{.}}</span>{{end}}</span>
+    <input type="checkbox"{{if .switch}} role="switch" class="switch"{{else}} class="checkbox"{{end}} id="f-{{.name}}" name="{{.name}}" x-model="form.{{.name}}"{{with .disabled}} :disabled="{{.}}"{{end}} aria-describedby="e-{{.name}}{{if .help}} h-{{.name}}{{end}}{{if .note}} n-{{.name}}{{end}}">
+    <span class="check-text">{{.label}}{{with .help}}<span class="help" id="h-{{$.name}}">{{.}}</span>{{end}}{{with .note}}<span class="help check-note" id="n-{{$.name}}" x-text="{{.}}"></span>{{end}}</span>
   </label>
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
 </div>{{end}}
@@ -87,7 +88,7 @@
 </div>{{end}}
 
 {{/* A six-digit authentication code: one input drawn as six boxes (web/src/js/lib/otp.js). Fills from paste and the
-     OS's one-time-code autofill; the form submits itself once all six digits are in. Options: name, label, show,
+     OS's one-time-code autofill; the form submits itself once all six digits are in. Options: name, label, help, show,
      stepfocus (data-step-focus), autofocus (data-autofocus). */}}
 {{define "otp-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
   <label class="label" for="f-{{.name}}">{{if .label}}{{.label}}{{else}}Authentication code{{end}} <span class="req" aria-hidden="true">*</span></label>
@@ -95,7 +96,7 @@
     <input class="otp-input" id="f-{{.name}}" name="{{.name}}" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" x-model="form.{{.name}}" data-otp{{if .stepfocus}} data-step-focus{{end}}{{if .autofocus}} data-autofocus{{end}} :aria-invalid="invalid.{{.name}}" aria-describedby="h-{{.name}} e-{{.name}}" aria-required="true" spellcheck="false">
     <div class="otp-boxes" aria-hidden="true"><span class="otp-box is-current"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span><span class="otp-box"></span></div>
   </div></div>
-  <p class="help" id="h-{{.name}}">The 6-digit code from your Authenticator App. It's checked as soon as all 6 digits are in.</p>
+  <p class="help" id="h-{{.name}}">{{if .help}}{{.help}}{{else}}The 6-digit code from your Authenticator App.{{end}} It's checked as soon as all 6 digits are in.</p>
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
 </div>{{end}}
 

@@ -13,12 +13,23 @@
     <button type="button" class="btn btn-ghost btn-sm self-center" @click="tryAnotherWay">Try another way</button>
   </div>
 
+  {{/* A code emailed to the user's address: the step itself (an account with no factor of its own, where the
+     organization takes email codes), or chosen under "Try another way". */}}
+  <form class="stack" x-show="isEmailCode" x-cloak @submit.prevent="submitEmailCode" novalidate>
+    <p>We emailed a 6-digit code to <strong x-text="emailTo"></strong>. It expires in 10 minutes.</p>
+    {{template "otp-field" (dict "name" "mcode" "label" "Code from the email" "help" "The 6-digit code from the email." "stepfocus" true)}}
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
+    <button type="button" class="btn btn-ghost btn-sm self-center" :disabled="busy" @click="resendEmailCode">Send a new code</button>
+    <button type="button" class="btn btn-ghost btn-sm self-center" @click="tryAnotherWay">Try another way</button>
+  </form>
+
   {{/* Try another way: the other ways this account can give its second factor (the server lists them), and what to do
        when there is none. */}}
   <div class="stack" x-show="isChooser" x-cloak>
     <h2 class="section-title" id="another-way-h" tabindex="-1" data-step-focus>Try another way</h2>
     <div class="stack" role="group" aria-labelledby="another-way-h">
       <button type="button" class="btn btn-secondary w-full" x-show="altPasskey" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Use your passkey instead</button>
+      <button type="button" class="btn btn-secondary w-full" x-show="altEmail" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="chooseEmailCode">{{template "icon" "mail"}} <span x-text="emailOptionText">Email me a code</span></button>
       <button type="button" class="btn btn-secondary w-full" x-show="altRecovery" x-cloak @click="startRecovery">{{template "icon" "lock"}} Use a recovery code</button>
     </div>
     <p class="muted" x-text="noOtherWayText">No other way? Ask your administrator for a new invitation: it lets you set up your sign-in again.</p>

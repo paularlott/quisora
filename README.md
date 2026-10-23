@@ -14,7 +14,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   providers and policies. Tenants group applications that share sign-in rules and access lists (users and groups,
   application roles, end dates).
 - **Sign-in.** Passkeys (as the whole sign-in or a second factor), password plus authenticator app (TOTP), recovery
-  codes for a lost second factor, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0
+  codes for a lost second factor, codes by email as a second factor where an organization allows it, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0
   and any OpenID Connect provider. Invitation links instead of admin-set passwords. Per-organization and per-tenant
   MFA.
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
