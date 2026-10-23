@@ -51,11 +51,9 @@ func modules(ctx context.Context, a *App) []web.Module {
 	// address verification; the admin module's default mailer refuses, and administrators share invitation links).
 	var lopts login.Options
 	var adminMail admin.Mailer
-	if a.Cfg.Mail.Enabled() {
-		mailer := mail.New(a.Cfg, a.Log)
+	if mailer := a.mailer; mailer != nil {
 		metrics.Default.Gauge("quisora_mail_queued", "Emails waiting to be sent (invitations, password resets, verifications).",
 			nil, metrics.Value(func() float64 { return float64(mailer.Queued()) }))
-		a.closers = append(a.closers, mailer.Close)
 		mailer.SetService(a.Server.Svc) // invitation/reset links are durable service records: any node, any restart
 		lopts.Mail = mailer
 		adminMail = adminMailer{mailer}
@@ -178,7 +176,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	}
 	a.Admin = adm
 	a.Server.Mux.Handle("/", admin.NotFound(a.Server))
-	return []web.Module{op, lm, &scim.Module{TokenVerifier: scimVerifier(a)}, adm, &events.Module{Hub: hub}}
+	return []web.Module{op, lm, &scim.Module{TokenVerifier: scimVerifier(a)}, adm, &events.Module{Hub: hub}, commandModule{a}}
 }
 
 // adminMailer adapts the mailer to the admin module's interface.

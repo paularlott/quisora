@@ -4,7 +4,7 @@
 [server]
 listen = ":8443"                          # HTTPS only; there is no plain-HTTP listener
 public_url = "https://id.example.com"     # the issuer; identical on every node
-data_dir = "/var/lib/quisora"
+data_dir = "/var/lib/quisora"             # required: everything this node keeps on disk (store, mail queue, audit spool, tls)
 # tls_cert = "/etc/quisora/tls.crt"           # PEM; without these a self-signed certificate is generated in data_dir/tls
 # tls_key = "/etc/quisora/tls.key"
 # master_key = ""                         # required: `quisora genkey`; seals secrets at rest; identical on every node of a
@@ -18,6 +18,8 @@ data_dir = "/var/lib/quisora"
                                           # invitation link to set one; `quisora invite primary admin@example.com` reissues it
 # allow_private_networks = false          # let back-channel logout / jwks_uri / upstream calls reach private addresses
 # extra_ca_file = ""                      # PEM of extra CA certificates trusted for those outbound HTTPS calls (an internal CA)
+# shutdown_drain = 10                     # seconds /readyz answers 503 before stopping, when a load balancer polls it
+# shutdown_timeout = 30                   # seconds requests in flight get to finish at shutdown
 # restore_from = ""                       # backup file loaded at start-up when the store is empty (ignored once it has data)
 # restore_password = ""                   # its password, when it is encrypted
 
@@ -32,11 +34,8 @@ default_theme = "system"                  # light, dark or system
 [storage]
 backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, mariadb or valkey
 # [storage.badgerdb]
-# path = "/var/lib/quisora/badgerdb"
 # sync_writes = true
 # encryption_key = ""                     # `quisora genkey`: encrypt the files at rest; set when the store is created
-# [storage.sqlite]
-# path = "/var/lib/quisora/quisora.db"
 # [storage.postgres]
 # dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=verify-full"
 # max_open_conns = 0                      # 0 = the driver's default (also for mysql and mariadb)
@@ -115,8 +114,7 @@ logins = true                             # also record successful sign-ins (fai
 tokens = false                            # also record every refresh and client_credentials token (new grants,
                                           # revocations and token reuse are always recorded)
 # victorialogs_url = "http://victorialogs:9428"   # send audit events there instead, and read the audit pages from it
-# victorialogs_spool_dir = "/var/lib/quisora/audit-spool"   # keep events VictoriaLogs does not take on disk until it does (one per node)
-# victorialogs_spool_max_mb = 256        # most disk space the spool may use; past it the oldest events are dropped
+# victorialogs_spool_max_mb = 256        # most disk the spool (<data_dir>/auditspool) may use; past it the oldest events go
 
 [limits]
 max_in_flight = 4096                      # concurrent requests per node before 503
@@ -128,7 +126,7 @@ password_workers = 0                      # concurrent password hashes (0 = numb
 [log]
 level = "info"                            # trace, debug, info, warn, error
 format = "console"                        # console or json
-access = false                            # log every HTTP request (never its query string)
+access = true                             # log every HTTP request (never its query string)
 
 [metrics]
 # token = ""                              # bearer token Prometheus sends to GET /metrics; empty = no metrics endpoint

@@ -1,5 +1,5 @@
 // Package mail sends the transactional emails (invitation, password reset, address verification): SMTP with
-// STARTTLS or implicit TLS, a small in-memory retry queue, and durable single-use links from the service.
+// STARTTLS or implicit TLS, a queue on disk with retries, and durable single-use links from the service.
 //
 // Without an SMTP host there is no mailer at all: nothing is emailed, and administrators share invitation links
 // themselves (see app.modules).
@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -20,13 +21,18 @@ import (
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -49,6 +55,11 @@ type TransportFunc func(ctx context.Context, m Message) error
 func (f TransportFunc) Deliver(ctx context.Context, m Message) error { return f(ctx, m) }
 
 // Mailer queues messages and delivers them with retries.
+//
+// The queue is on disk, in <data-dir>/mailqueue: a message is one file, written before Send returns, so it survives a
+// restart (or a crash) and is delivered by the node once it is back. Each file is sealed with the master key: the
+// messages carry single-use invitation and reset links. A file is removed once its message is delivered, or given up
+// on after the last retry.
 type Mailer struct {
 	Cfg *config.Config
 	Log logger.Logger
@@ -60,90 +71,224 @@ type Mailer struct {
 	// Svc issues the single-use links; set by SetService.
 	Svc *service.Service
 
-	queue chan *job
-	stop  chan struct{}
-	wg    sync.WaitGroup
-	once  sync.Once
+	dir    string
+	sealer *secure.Sealer
+	queued atomic.Int64
+	kick   chan struct{}
+	stop   chan struct{}
+	wg     sync.WaitGroup
+	once   sync.Once
 }
 
-type job struct {
-	msg     Message
-	attempt int
+// queued is a message in the queue, as its file holds it (sealed).
+type queued struct {
+	Msg     Message   `json:"m"`
+	Attempt int       `json:"a"` // failed deliveries so far
+	Next    time.Time `json:"n"` // not before
 }
 
-// QueueSize bounds the in-memory outbox; when it is full, new messages are dropped with an error log.
-const QueueSize = 1024
+// QueueSize bounds the queue; when it is full, new messages are refused (and logged). The queue is on disk, so this
+// only stops a flood of messages SMTP cannot take from filling it.
+const QueueSize = 10000
 
-// New builds a mailer and starts its delivery worker; call Close to stop it.
-func New(cfg *config.Config, log logger.Logger) *Mailer {
+// testTransport replaces the SMTP transport of mailers made while it is set (tests of a restart with messages
+// waiting, whose worker delivers before the caller could swap the transport).
+var testTransport Transport
+
+// queueBinding binds the sealed queue files to their purpose (secure.Sealer.SealFor).
+const queueBinding = "mail/queue"
+
+// New builds a mailer on the queue in cfg's data directory (made if missing) and starts its delivery worker, which
+// first delivers whatever a previous run left queued; call Close to stop it.
+func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer) (*Mailer, error) {
+	dir := cfg.DataPath(config.DirMailQueue)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("mail queue: %w", err)
+	}
 	m := &Mailer{Cfg: cfg, Log: log, Backoff: []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour},
-		queue: make(chan *job, QueueSize), stop: make(chan struct{})}
+		dir: dir, sealer: sealer, kick: make(chan struct{}, 1), stop: make(chan struct{})}
 	m.Transport = &SMTP{Cfg: cfg.Mail}
+	if testTransport != nil {
+		m.Transport = testTransport
+	}
+	names, err := m.files()
+	if err != nil {
+		return nil, fmt.Errorf("mail queue: %w", err)
+	}
+	m.queued.Store(int64(len(names)))
+	if len(names) > 0 {
+		log.Info("mail queue: delivering messages left from before", "messages", len(names))
+	}
 	m.wg.Add(1)
 	go m.run()
-	return m
+	return m, nil
 }
 
-// Close stops the worker; queued messages that have not been delivered are dropped.
+// Close stops the worker; messages not yet delivered stay queued for the next start.
 func (m *Mailer) Close() {
 	m.once.Do(func() { close(m.stop) })
 	m.wg.Wait()
 }
 
-// ErrQueueFull is returned when the outbox is full.
-var ErrQueueFull = errors.New("mail: outbox full")
+// ErrQueueFull is returned when the queue is full.
+var ErrQueueFull = errors.New("mail: queue full")
 
-// Send queues msg for delivery and returns immediately.
+// Send queues msg for delivery and returns once it is on disk.
 func (m *Mailer) Send(_ context.Context, msg Message) error {
 	if _, err := mail.ParseAddress(msg.To); err != nil {
 		return fmt.Errorf("mail: bad recipient: %w", err)
 	}
-	select {
-	case m.queue <- &job{msg: msg}:
-		return nil
-	default:
-		m.Log.Error("mail outbox full, dropping message", "to", msg.To, "subject", msg.Subject)
+	if m.queued.Load() >= QueueSize {
+		m.Log.Error("mail queue full, refusing message", "to", msg.To, "subject", msg.Subject)
 		return ErrQueueFull
+	}
+	name := fmt.Sprintf("%020d-%s.mail", time.Now().UnixNano(), randomHex(6)) // oldest first when listed
+	if err := m.write(name, &queued{Msg: msg}); err != nil {
+		m.Log.Error("mail queue: message not queued", "to", msg.To, "error", err)
+		return err
+	}
+	m.queued.Add(1)
+	select {
+	case m.kick <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// write stores q as name, atomically: a crash leaves the old file or the new one, never part of one.
+func (m *Mailer) write(name string, q *queued) error {
+	b, err := json.Marshal(q)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(m.dir, "."+name+".tmp")
+	if err := os.WriteFile(tmp, []byte(m.sealer.SealFor(queueBinding, b)), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(m.dir, name))
+}
+
+func (m *Mailer) read(name string) (*queued, error) {
+	b, err := os.ReadFile(filepath.Join(m.dir, name))
+	if err != nil {
+		return nil, err
+	}
+	plain, err := m.sealer.OpenFor(queueBinding, string(b))
+	if err != nil {
+		return nil, err
+	}
+	var q queued
+	return &q, json.Unmarshal(plain, &q)
+}
+
+func (m *Mailer) remove(name string) {
+	if err := os.Remove(filepath.Join(m.dir, name)); err == nil {
+		m.queued.Add(-1)
 	}
 }
 
-func (m *Mailer) run() {
-	defer m.wg.Done()
-	for {
-		select {
-		case <-m.stop:
-			return
-		case j := <-m.queue:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := m.Transport.Deliver(ctx, j.msg)
-			cancel()
-			if err == nil {
-				continue
-			}
-			if j.attempt >= len(m.Backoff) {
-				m.Log.Error("mail delivery failed, giving up", "to", j.msg.To, "subject", j.msg.Subject, "error", err)
-				continue
-			}
-			delay := m.Backoff[j.attempt]
-			j.attempt++
-			m.Log.Warn("mail delivery failed, will retry", "to", j.msg.To, "attempt", j.attempt, "in", delay, "error", err)
-			m.wg.Add(1)
-			go func() {
-				defer m.wg.Done()
-				t := time.NewTimer(delay)
-				defer t.Stop()
-				select {
-				case <-m.stop:
-				case <-t.C:
-					select {
-					case m.queue <- j:
-					default:
-						m.Log.Error("mail outbox full, dropping retry", "to", j.msg.To)
-					}
-				}
-			}()
+// files lists the queued messages, oldest first (left-over temporary files are removed).
+func (m *Mailer) files() ([]string, error) {
+	ents, err := os.ReadDir(m.dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		switch n := e.Name(); {
+		case strings.HasPrefix(n, ".") && strings.HasSuffix(n, ".tmp"):
+			_ = os.Remove(filepath.Join(m.dir, n)) // a write cut short: Send reported the failure
+		case strings.HasSuffix(n, ".mail") && e.Type().IsRegular():
+			out = append(out, n)
 		}
 	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// idleCheck bounds how long the worker sleeps: it notices a retry that is due, or files put there by hand.
+const idleCheck = time.Minute
+
+func (m *Mailer) run() {
+	defer m.wg.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { <-m.stop; cancel() }()
+	for {
+		wait := idleCheck
+		if next := m.deliverDue(ctx); !next.IsZero() {
+			wait = min(max(time.Until(next), 0), idleCheck)
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-m.stop:
+			t.Stop()
+			return
+		case <-m.kick:
+		case <-t.C:
+		}
+		t.Stop()
+	}
+}
+
+// deliverDue tries every message that is due, and returns when the next waiting one is (zero: none waiting).
+func (m *Mailer) deliverDue(ctx context.Context) time.Time {
+	names, err := m.files()
+	if err != nil {
+		m.Log.Error("mail queue: cannot be read", "error", err)
+		return time.Time{}
+	}
+	var next time.Time
+	for _, name := range names {
+		if ctx.Err() != nil {
+			return time.Time{}
+		}
+		q, err := m.read(name)
+		if err != nil {
+			// Not openable with the configured master keys (sealed under a key since removed) or damaged.
+			m.Log.Error("mail queue: message cannot be read, dropping it", "file", name, "error", err)
+			m.remove(name)
+			continue
+		}
+		if now := time.Now(); q.Next.After(now) {
+			if next.IsZero() || q.Next.Before(next) {
+				next = q.Next
+			}
+			continue
+		}
+		dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
+		err = m.Transport.Deliver(dctx, q.Msg)
+		dcancel()
+		if err == nil {
+			m.remove(name)
+			continue
+		}
+		if ctx.Err() != nil { // stopping: the attempt does not count
+			return time.Time{}
+		}
+		if q.Attempt >= len(m.Backoff) {
+			m.Log.Error("mail delivery failed, giving up", "to", q.Msg.To, "subject", q.Msg.Subject, "error", err)
+			m.remove(name)
+			continue
+		}
+		delay := m.Backoff[q.Attempt]
+		q.Attempt++
+		q.Next = time.Now().Add(delay)
+		m.Log.Warn("mail delivery failed, will retry", "to", q.Msg.To, "attempt", q.Attempt, "in", delay, "error", err)
+		if err := m.write(name, q); err != nil {
+			m.Log.Error("mail queue: retry not recorded", "to", q.Msg.To, "error", err)
+		}
+		if next.IsZero() || q.Next.Before(next) {
+			next = q.Next
+		}
+	}
+	return next
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -272,4 +417,4 @@ func Build(from string, m Message) []byte {
 }
 
 // Queued is the number of messages waiting to be sent.
-func (m *Mailer) Queued() int { return len(m.queue) }
+func (m *Mailer) Queued() int { return int(m.queued.Load()) }

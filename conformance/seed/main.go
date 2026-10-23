@@ -31,7 +31,7 @@ import (
 func ptr[T any](v T) *T { return &v }
 
 func main() {
-	dataDir := flag.String("data", "", "data directory of the stopped node")
+	dataDir := flag.String("data-dir", "", "data directory of the stopped node")
 	masterKey := flag.String("master-key", "", "the node's master key")
 	publicURL := flag.String("public-url", "https://host.docker.internal:8090", "the node's public URL")
 	suite := flag.String("suite", "https://localhost.emobix.co.uk:8453/test/a/quisora", "the suite's base URL for alias quisora")

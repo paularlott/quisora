@@ -27,7 +27,6 @@ func TestGossipBootstrapNeedsAnEmptyDatabase(t *testing.T) {
 		c.Server.DataDir = dir
 		c.Server.MasterKey = key
 		c.Storage.Backend = "sqlite"
-		c.Storage.SQLite.Path = filepath.Join(dir, "quisora.db")
 		c.Cluster.Bind, c.Cluster.Key = "127.0.0.1:7946", key
 		c.Limits.PasswordWorkers = 2
 		return c

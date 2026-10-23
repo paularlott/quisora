@@ -392,7 +392,7 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 	if !m.verifyPassword(w, r, u, in.Current, "current") {
 		return
 	}
-	if err := service.ValidatePassword(in.New); err != nil {
+	if err := m.s.Svc.CheckPassword(r.Context(), u, in.New); err != nil {
 		var fe *service.FieldError
 		if errors.As(err, &fe) {
 			writeErr(w, http.StatusUnprocessableEntity, "Your new password "+fe.Msg+".", "new")
@@ -429,7 +429,7 @@ func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct
 	if !m.needReauth(w, r, a) {
 		return
 	}
-	if err := service.ValidatePassword(password); err != nil {
+	if err := m.s.Svc.CheckPassword(ctx, u, password); err != nil {
 		var fe *service.FieldError
 		if errors.As(err, &fe) {
 			writeErr(w, http.StatusUnprocessableEntity, "Your password "+fe.Msg+".", "new")

@@ -347,7 +347,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Validate before redeeming so a too-short password does not burn the link.
-	if err := service.ValidatePassword(in.Password); err != nil {
+	if err := m.s.Svc.CheckPassword(ctx, u, in.Password); err != nil {
 		web.WriteError(w, err)
 		return
 	}

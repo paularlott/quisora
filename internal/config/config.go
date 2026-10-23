@@ -52,7 +52,7 @@ type Metrics struct {
 type Server struct {
 	Listen               string   `toml:"listen" flag:"listen" usage:"HTTPS listen address (there is no plain-HTTP listener)"`
 	PublicURL            string   `toml:"public_url" flag:"public-url" usage:"Public base URL and OIDC issuer, https://host[:port], identical on every node (default https://localhost:<port>)"`
-	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory (keys, self-signed certificate, embedded databases)"`
+	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory: everything this node keeps on disk (embedded database, self-signed certificate, mail queue, audit spool, cluster state)"`
 	TLSCert              string   `toml:"tls_cert" flag:"tls-cert" usage:"TLS certificate (PEM); without it a self-signed certificate is generated in <data-dir>/tls"`
 	TLSKey               string   `toml:"tls_key" flag:"tls-key" usage:"TLS private key (PEM)"`
 	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
@@ -63,6 +63,8 @@ type Server struct {
 	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
+	ShutdownDrain        int      `toml:"shutdown_drain" flag:"shutdown-drain" usage:"Seconds /readyz answers 503 before shutting down, when a load balancer has been polling it, so traffic moves to other nodes first (0 = none)"`
+	ShutdownTimeout      int      `toml:"shutdown_timeout" flag:"shutdown-timeout" usage:"Seconds requests in flight get to finish at shutdown"`
 }
 
 type UI struct {
@@ -77,7 +79,6 @@ type UI struct {
 type Storage struct {
 	Backend  string   `toml:"backend" flag:"storage" usage:"Storage backend: badgerdb, sqlite, postgres, mysql, mariadb or valkey"`
 	BadgerDB BadgerDB `toml:"badgerdb" flag:"badgerdb"`
-	SQLite   SQLite   `toml:"sqlite" flag:"sqlite"`
 	Postgres SQLDSN   `toml:"postgres" flag:"postgres"`
 	MySQL    SQLDSN   `toml:"mysql" flag:"mysql"`
 	MariaDB  SQLDSN   `toml:"mariadb" flag:"mariadb"`
@@ -85,15 +86,10 @@ type Storage struct {
 }
 
 type BadgerDB struct {
-	Path       string `toml:"path" flag:"path" usage:"BadgerDB directory (default <data-dir>/badgerdb)"`
-	SyncWrites bool   `toml:"sync_writes" flag:"sync-writes" usage:"Sync every BadgerDB write to disk"`
+	SyncWrites bool `toml:"sync_writes" flag:"sync-writes" usage:"Sync every BadgerDB write to disk"`
 	// EncryptionKey encrypts the BadgerDB files at rest (AES-256). It is not the master key, and a store is created
 	// encrypted or not: an existing store cannot be switched (back up, then restore into a new encrypted one).
 	EncryptionKey string `toml:"encryption_key" flag:"encryption-key" secret:"true" usage:"Base64 32-byte key (quisora genkey) encrypting the BadgerDB files at rest; set when the store is created (empty = not encrypted)"`
-}
-
-type SQLite struct {
-	Path string `toml:"path" flag:"path" usage:"SQLite database file (default <data-dir>/quisora.db)"`
 }
 
 type SQLDSN struct {
@@ -192,10 +188,9 @@ type Audit struct {
 	// VictoriaLogs sends audit events to VictoriaLogs instead of the database, and the audit pages read them from
 	// there (any node). The base URL; user:password in it is sent as basic authentication.
 	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" secret:"true" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
-	// SpoolDir keeps audit events VictoriaLogs does not take (unreachable, refusing) on disk until it does, at most
-	// SpoolMaxMB; without it they are retried briefly and then dropped. One directory per node.
-	SpoolDir   string `toml:"victorialogs_spool_dir" flag:"victorialogs-spool-dir" usage:"Directory that keeps audit events VictoriaLogs does not take until it does (one per node; empty = no spool: they are retried briefly, then dropped)"`
-	SpoolMaxMB int    `toml:"victorialogs_spool_max_mb" flag:"victorialogs-spool-max-mb" usage:"Most disk space the VictoriaLogs spool may use, in megabytes; past it the oldest events are dropped"`
+	// Audit events VictoriaLogs does not take (unreachable, refusing) wait in <data-dir>/auditspool until it does, at
+	// most SpoolMaxMB.
+	SpoolMaxMB int `toml:"victorialogs_spool_max_mb" flag:"victorialogs-spool-max-mb" usage:"Most disk space the VictoriaLogs spool may use, in megabytes; past it the oldest events are dropped"`
 }
 
 type Limits struct {
@@ -214,10 +209,25 @@ type Log struct {
 	Access bool `toml:"access" flag:"access" usage:"Log every HTTP request (never its query string)"`
 }
 
+// The layout of server.data_dir: everything a node keeps on disk lives under it, so one setting (one volume, one
+// backup exclusion, one permission check) covers it all. Each node of a cluster has its own.
+const (
+	DirBadgerDB   = "badgerdb"   // storage.backend badgerdb
+	FileSQLite    = "quisora.db" // storage.backend sqlite
+	DirTLS        = "tls"        // the self-signed certificate, when no tls_cert is configured
+	DirMailQueue  = "mailqueue"  // outgoing email waiting for (re)delivery, sealed with the master key
+	DirAuditSpool = "auditspool" // audit events VictoriaLogs has not taken yet
+)
+
+// DataPath is name inside server.data_dir.
+func (c *Config) DataPath(name ...string) string {
+	return filepath.Join(append([]string{c.Server.DataDir}, name...)...)
+}
+
 // Default returns the configuration used when nothing is set.
 func Default() *Config {
 	return &Config{
-		Server:  Server{Listen: ":8443", DataDir: "data"},
+		Server:  Server{Listen: ":8443", DataDir: "data", ShutdownDrain: 10, ShutdownTimeout: 30},
 		Cluster: Cluster{MinorityGrace: 300},
 		UI:      UI{SiteName: "Quisora", DefaultTheme: "system"},
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
@@ -227,7 +237,7 @@ func Default() *Config {
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
 		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15},
-		Log:     Log{Level: "info", Format: "console"},
+		Log:     Log{Level: "info", Format: "console", Access: true},
 	}
 }
 
@@ -430,15 +440,11 @@ func (c *Config) Validate() error {
 	default:
 		errs = append(errs, errors.New("tokens.signing_alg must be ES256 or EdDSA"))
 	}
+	if strings.TrimSpace(c.Server.DataDir) == "" {
+		errs = append(errs, errors.New("server.data_dir is required: the directory this node keeps everything on disk in"))
+	}
 	switch c.Storage.Backend {
-	case "badgerdb":
-		if c.Storage.BadgerDB.Path == "" {
-			c.Storage.BadgerDB.Path = filepath.Join(c.Server.DataDir, "badgerdb")
-		}
-	case "sqlite":
-		if c.Storage.SQLite.Path == "" {
-			c.Storage.SQLite.Path = filepath.Join(c.Server.DataDir, "quisora.db")
-		}
+	case "badgerdb", "sqlite": // in the data directory (DataPath)
 	case "postgres":
 		if c.Storage.Postgres.DSN == "" {
 			errs = append(errs, errors.New("storage.postgres.dsn is required"))
@@ -473,6 +479,10 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("%s must be 0 or more", name))
 		}
 	}
+	if c.Server.ShutdownDrain < 0 {
+		errs = append(errs, errors.New("server.shutdown_drain must not be negative"))
+	}
+	positive("server.shutdown_timeout", c.Server.ShutdownTimeout)
 	positive("tokens.access_ttl", c.Tokens.AccessTTL)
 	positive("tokens.id_token_ttl", c.Tokens.IDTokenTTL)
 	positive("tokens.refresh_ttl", c.Tokens.RefreshTTL)
@@ -489,9 +499,6 @@ func (c *Config) Validate() error {
 		if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, fmt.Errorf("audit.victorialogs_url %q must be an http(s) URL such as http://victorialogs:9428", v))
 		}
-	}
-	if c.Audit.SpoolDir != "" && c.Audit.VictoriaLogs == "" {
-		errs = append(errs, fmt.Errorf("audit.victorialogs_spool_dir needs audit.victorialogs_url"))
 	}
 	positive("audit.victorialogs_spool_max_mb", c.Audit.SpoolMaxMB)
 	positive("limits.max_in_flight", c.Limits.MaxInFlight)

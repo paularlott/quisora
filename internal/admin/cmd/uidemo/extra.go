@@ -18,7 +18,8 @@ const demoMailHost = "mail.demo.invalid"
 // extraModules registers modules owned by other packages so their pages can be audited together with the admin UI.
 // The demo has email turned on with a transport that delivers nothing.
 func extraModules(s *web.Server, adm *admin.Module) {
-	m := mail.New(s.Cfg, logger.NewNullLogger())
+	m, err := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Sealer)
+	must(err)
 	m.Transport = mail.TransportFunc(func(context.Context, mail.Message) error { return nil })
 	m.SetService(s.Svc)
 	adm.Mailer = demoMailer{m}

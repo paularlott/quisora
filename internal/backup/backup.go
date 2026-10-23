@@ -8,10 +8,10 @@
 // the master key: the header carries a check value derived from it, and a restore with a different key is refused
 // (the sealed data would be unreadable).
 //
-// Optionally (Options.Encrypt) the whole compressed stream is encrypted with AES-256-GCM under a key derived from the
-// master key, in authenticated chunks (a STREAM construction: a truncated, reordered or altered file is refused), so
-// the backup file reveals nothing — not even the names and addresses that are not sealed. Restore and Verify detect
-// an encrypted backup by its magic bytes.
+// By default the whole compressed stream is encrypted with AES-256-GCM under a key derived from a password (argon2id),
+// in authenticated chunks (a STREAM construction: a truncated, reordered or altered file is refused), so the backup
+// file reveals nothing — not even the names and addresses that are not sealed. Restore and Verify detect an encrypted
+// backup by its magic bytes; backups encrypted under the master key by earlier builds still restore.
 //
 // Where the backend offers a point-in-time view (store.Snapshotter: Badger, SQLite, PostgreSQL, MySQL, MariaDB) the
 // backup reads through it and is a consistent snapshot of the whole store. Otherwise (Valkey) it reads the live store

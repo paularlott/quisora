@@ -140,7 +140,7 @@ func TestPasswordsReseal(t *testing.T) {
 	for _, c := range []struct {
 		u  *model.User
 		pw string
-	}{{alan, "alan's password"}, {bob, "bob's password!"}} {
+	}{{alan, "first sealed passphrase"}, {bob, "second sealed passphrase!"}} {
 		if _, err := e.svc.UpdateUser(e.ctx, service.System, c.u.ID, service.UserInput{Password: ptr(c.pw)}); err != nil {
 			t.Fatal(err)
 		}
@@ -153,12 +153,12 @@ func TestPasswordsReseal(t *testing.T) {
 		t.Fatalf("re-seal after the rotation: %+v %v", res, err)
 	}
 	e.svc.Sealer.Replace(ring(keyB))
-	if !e.verify(alan, "alan's password") || !e.verify(bob, "bob's password!") {
+	if !e.verify(alan, "first sealed passphrase") || !e.verify(bob, "second sealed passphrase!") {
 		t.Error("a password no longer verifies after the rotation")
 	}
 	// had the previous key been removed before the re-seal, the password could not be checked (and is refused)
-	e.setHash(bob, ring(keyA).SealFor(service.PasswordBinding(bob.ID), []byte(argonHash("bob's password!", 19*1024, 2))))
-	if e.verify(bob, "bob's password!") {
+	e.setHash(bob, ring(keyA).SealFor(service.PasswordBinding(bob.ID), []byte(argonHash("second sealed passphrase!", 19*1024, 2))))
+	if e.verify(bob, "second sealed passphrase!") {
 		t.Error("a hash sealed with a key that is not configured verified")
 	}
 }

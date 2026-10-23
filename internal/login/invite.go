@@ -113,7 +113,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Validate everything that can be rejected before the link is used, so a typo does not burn it.
 	if wantPassword {
-		if err := service.ValidatePassword(in.Password); err != nil {
+		if err := m.s.Svc.CheckPassword(r.Context(), u, in.Password); err != nil {
 			web.WriteError(w, err)
 			return
 		}

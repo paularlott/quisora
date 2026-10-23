@@ -21,7 +21,7 @@ stop)
   sleep 1.5; rm -f "$R/node.pid";;
 seed)
   rm -rf "$R/data"
-  (cd "$ROOT" && bin/seed --data "$R/data" --master-key "$K" --public-url "$URL");;
+  (cd "$ROOT" && bin/seed --data-dir "$R/data" --master-key "$K" --public-url "$URL");;
 idp-start)
   nohup "$ROOT/bin/fakeidp" --cert-out "$R/fakeidp.pem" >> "$R/fakeidp.log" 2>&1 &
   echo $! > "$R/fakeidp.pid"; sleep 0.7

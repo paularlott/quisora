@@ -830,6 +830,9 @@ type LinkToken struct {
 	// IssuedBy is the user who issued an invitation ("" for the system or a command): until it is used, nobody else
 	// below a super admin may replace it (service.mayResetSignIn).
 	IssuedBy string `msgpack:"ib,omitempty" json:"-"`
+	// BreakGlass marks an invitation issued with "quisora invite --break-glass": it opens even for an account that is
+	// disabled (locked out, or past its end date), and using it enables the account again.
+	BreakGlass bool `msgpack:"bg,omitempty" json:"-"`
 }
 
 func (l *LinkToken) Kind() Kind { return KindLink }

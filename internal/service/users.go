@@ -258,7 +258,7 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		return Invalid("password_hash", "a password hash is imported only when the user is created")
 	}
 	if in.Password != nil {
-		if err := ValidatePassword(*in.Password); err != nil {
+		if err := s.CheckPassword(ctx, u, *in.Password); err != nil {
 			return err
 		}
 		h, err := s.HashPassword(ctx, u.ID, *in.Password)

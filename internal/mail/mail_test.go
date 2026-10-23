@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http/httptest"
 	"net/mail"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,8 +34,12 @@ func newMailer(t *testing.T, mut func(*config.Config)) *Mailer {
 	if mut != nil {
 		mut(cfg)
 	}
-	m := New(cfg, logger.NewNullLogger())
+	cfg.Server.DataDir = t.TempDir()
 	sealer, err := secure.NewSealer(secure.RandomBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(cfg, logger.NewNullLogger(), sealer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +180,12 @@ func TestSendInviteLinkAndExpiry(t *testing.T) {
 		t.Fatal("older invitation still valid")
 	}
 	// No service: link mails are refused rather than sent without a token.
-	bare := New(config.Default(), logger.NewNullLogger())
+	bareCfg := config.Default()
+	bareCfg.Server.DataDir = t.TempDir()
+	bare, err := New(bareCfg, logger.NewNullLogger(), m.sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer bare.Close()
 	if err := bare.SendReset(ctx, u, org); err == nil {
 		t.Fatal("reset mail without a service")
@@ -385,4 +396,107 @@ func TestSMTPModes(t *testing.T) {
 			t.Fatal("sent in clear although STARTTLS is required")
 		}
 	})
+}
+
+// The queue is on disk: a message not yet delivered when the mailer stops goes out from the next one on the same
+// data directory. The files are sealed (no address or link readable on disk), and one that cannot be opened (sealed
+// under a master key since removed) is dropped rather than retried for ever.
+func TestQueueSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	sealer, err := secure.NewSealer(secure.RandomBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.DataDir = dir
+	m, err := New(cfg, logger.NewNullLogger(), sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Backoff = []time.Duration{time.Hour} // the first attempt fails, the retry is far off
+	m.Transport = TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") })
+	secret := "https://quisora.example.test/reset?token=s3cr3t"
+	if err := m.Send(context.Background(), Message{To: "ann@example.com", Subject: "Reset", Text: secret}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return queuedAttempts(t, m) == 1 })
+	m.Close()
+
+	files, _ := os.ReadDir(cfg.DataPath(config.DirMailQueue))
+	if len(files) != 1 {
+		t.Fatalf("queue holds %d files", len(files))
+	}
+	raw, _ := os.ReadFile(filepath.Join(cfg.DataPath(config.DirMailQueue), files[0].Name()))
+	if strings.Contains(string(raw), "ann@example.com") || strings.Contains(string(raw), "s3cr3t") {
+		t.Fatal("queued message readable on disk")
+	}
+
+	// The next start delivers it once its retry is due (made due here), and removes the file.
+	q, _ := m.read(files[0].Name())
+	q.Next = time.Time{}
+	if err := m.write(files[0].Name(), q); err != nil {
+		t.Fatal(err)
+	}
+	cap := newCapture()
+	m2, err := newWith(cfg, sealer, cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+	if got := cap.wait(t); got.To != "ann@example.com" || got.Text != secret {
+		t.Fatalf("delivered %+v", got)
+	}
+	waitFor(t, func() bool { return m2.Queued() == 0 })
+
+	// sealed under another master key: dropped, not retried
+	other, _ := secure.NewSealer(secure.RandomBytes(32))
+	foreign := &Mailer{dir: cfg.DataPath(config.DirMailQueue), sealer: other}
+	if err := foreign.write("00000000000000000001-aa.mail", &queued{Msg: Message{To: "x@example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	m3, err := newWith(cfg, sealer, newCapture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m3.Close()
+	waitFor(t, func() bool { files, _ := os.ReadDir(cfg.DataPath(config.DirMailQueue)); return len(files) == 0 })
+}
+
+// newWith makes a mailer whose transport is set before its worker reads the queue (a restart with messages waiting).
+func newWith(cfg *config.Config, sealer *secure.Sealer, tr Transport) (*Mailer, error) {
+	old := testTransport
+	testTransport = tr
+	defer func() { testTransport = old }()
+	return New(cfg, logger.NewNullLogger(), sealer)
+}
+
+func queuedAttempts(t *testing.T, m *Mailer) int {
+	names, _ := m.files()
+	if len(names) != 1 {
+		return -1
+	}
+	q, err := m.read(names[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return q.Attempt
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestQueueFull(t *testing.T) {
+	m := newMailer(t, nil)
+	m.queued.Store(QueueSize)
+	if err := m.Send(context.Background(), Message{To: "a@example.com"}); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("full queue: %v", err)
+	}
 }

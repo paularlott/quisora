@@ -22,10 +22,9 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 		if err != nil {
 			return fmt.Errorf("audit: %w", err)
 		}
-		if c.Audit.SpoolDir != "" {
-			if err := vl.Spool(c.Audit.SpoolDir, c.Audit.SpoolMaxMB); err != nil {
-				return fmt.Errorf("audit: %w", err)
-			}
+		// Events VictoriaLogs does not take (down, refusing) wait on disk, also across restarts.
+		if err := vl.Spool(c.DataPath(config.DirAuditSpool), c.Audit.SpoolMaxMB); err != nil {
+			return fmt.Errorf("audit: %w", err)
 		}
 		vl.Start()
 		a.closers = append(a.closers, vl.Close)

@@ -12,7 +12,7 @@ backup. It does not defend against someone who controls a node's host, its proce
 
 | Boundary | Protected by | The operator provides |
 | --- | --- | --- |
-| Internet → HTTPS | TLS 1.2+ only; strict CSP and HSTS; `__Host-` cookies; CSRF tokens plus Origin checks; rate limits and lockouts; load shedding | A real certificate (or a TLS proxy), `server.trust_proxy` behind a load balancer |
+| Internet → HTTPS | TLS 1.2+ only; strict CSP and HSTS; `__Host-` cookies; CSRF tokens plus Origin checks; rate limits and lockouts; load shedding; passwords of at least 10 characters, refused when they are a common word dressed up, a keyboard or alphabet run, a repeated pattern, or built on the person's name, email or organization (offline checks, nothing is looked up elsewhere) | A real certificate (or a TLS proxy), `server.trust_proxy` behind a load balancer |
 | Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers |
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write | Few super admins; reviewed access |
 | Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
@@ -37,7 +37,7 @@ Before production:
 3. **Database**: verified TLS (no start-up warning about it); encryption at rest (RUNNING.md,
    [Encryption at rest](RUNNING.md#encryption-at-rest)).
 4. **Cluster**: `cluster.key` from a secret store; the gossip port (7946) reachable by the other nodes only.
-5. **Audit**: VictoriaLogs with the spool turned on, retention covering your audit period, and nobody able to delete
+5. **Audit**: VictoriaLogs (its spool is always on, in each node's data directory: give it room), retention covering your audit period, and nobody able to delete
    from it; the structured log shipped too, with an alert on `audit.undelivered` (RUNNING.md, [Audit log](RUNNING.md#audit-log)).
 6. **Monitoring**: `metrics.token` set and the [suggested alerts](RUNNING.md#metrics) in place.
 7. **Backups**: on a schedule, encrypted (the default), the password kept apart from them; a restore tested regularly.
@@ -95,6 +95,35 @@ hashes are argon2id: rotate the master key, and reset passwords if you cannot ru
 **`cluster.key` leaked.** Anyone on the network path can read and inject gossip. Rotate it on every node while the
 cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and
 check who could reach the gossip port.
+
+**Nobody can get into the console** (break-glass: the last super admin lost their password, authenticator and
+passkeys, left, or their account ended). Recovery needs a server's configuration and the master key, not the console,
+and the servers keep running:
+
+1. On a node (or any machine with its configuration file or `QUISORA_*` environment, including the master key),
+   issue a break-glass invitation for a super admin of the primary organization:
+
+   ```bash
+   quisora invite primary admin@example.com --break-glass
+   ```
+
+   The command asks the running server at `server.public_url` (or `--server https://…`) to issue it, signing the
+   request with the master key: no sign-in or API token is involved, and the request is good for two minutes and
+   once. The server's certificate is checked against the system roots, `server.extra_ca_file`, `--ca-file` and the
+   node's own self-signed certificate; `--insecure` skips the check. With a shared database, or when no server
+   answers, the command writes the invitation to the store itself.
+2. It prints a single-use link, valid for 24 hours. Earlier unused invitations of that user stop working. Open it, set
+   a new password or create a passkey, and enrol a second factor (super admins always need one).
+3. It works even when the account is disabled (locked out, or past its end date), and using it enables the account
+   again (its end date is cleared if it had passed). Like any invitation, accepting it removes the account's old
+   password, authenticator app and passkeys and ends its sessions and API tokens: whoever held the old ones is out.
+4. Check the audit log: `user.invite.break_glass` (issued by the system), the account enabled again, and the sign-ins
+   after it. Then give a second person super admin so this is not needed again.
+
+Without `--break-glass`, `quisora invite` issues an ordinary invitation (7 days) the same way, and refuses a disabled
+account. Whoever runs either command holds the master key, and with it everything the server protects: keep the
+configuration and the key as protected as the break-glass step they enable. A user who is only locked out by failed
+attempts needs nothing: the lock ends after `limits.lockout_minutes` (default 15).
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
 `oauth.client_auth.limited`; any `oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the

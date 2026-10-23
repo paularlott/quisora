@@ -47,7 +47,8 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			}
 			// SIGHUP re-reads the configuration: the master keys and, when clustering, the cluster keys and the
 			// cluster size (rotations and resizes without restarts; docs/RUNNING.md). POST /api/cluster/reload does
-			// the same on every node at once. Nothing else is reloaded.
+			// the same on every node at once. SIGHUP also loads the TLS certificate again (a renewed certificate is
+			// picked up within an hour anyway). Nothing else is reloaded.
 			a.Node.SetReloader(reloader(c, a, log))
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
@@ -59,6 +60,7 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 					a.Close()
 					return nil
 				case <-hup:
+					_ = a.Server.ReloadCertificate() // logs its own outcome
 					if r := a.Node.Reload(ctx); r.Error != "" {
 						log.Error("configuration not (fully) reloaded", "error", r.Error, "applied", r.Changes)
 					}

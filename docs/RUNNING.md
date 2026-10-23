@@ -25,10 +25,45 @@ Settings every deployment sets:
 | ----------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `server.public_url`                 | `--public-url`            | The issuer and the address users reach. https only.                                                                                                                |
 | `server.listen`                     | `--listen`                | Default `:8443`. HTTPS only; there is no plain-HTTP listener.                                                                                                      |
-| `server.data_dir`                   | `--data-dir`              | Node id, TLS files, cluster state, and the BadgerDB/SQLite store.                                                                                                  |
+| `server.data_dir`                   | `--data-dir`              | Everything the node keeps on disk ([layout](#the-data-directory)). Required; default `data`. One per node.                                                         |
 | `server.master_key`                 | `--master-key`            | Seals secrets at rest. Required (identical on every node of a cluster); nothing is generated or kept in the data directory. Keep it safe, apart from the data and the backups. |
 | `server.previous_master_keys`       | `--previous-master-keys`  | Earlier master keys, only while [rotating the master key](#rotating-the-master-key). Identical on every node.                                                     |
-| `server.tls_cert`, `server.tls_key` | `--tls-cert`, `--tls-key` | PEM files. Without them a self-signed certificate is generated in `<data-dir>/tls`.                                                                                |
+| `server.tls_cert`, `server.tls_key` | `--tls-cert`, `--tls-key` | PEM files. Without them a self-signed certificate is generated in `<data-dir>/tls`. A renewed certificate is used without a restart ([TLS certificates](#tls-certificates)). |
+
+### The data directory
+
+`server.data_dir` is the one place a node keeps files; nothing is written anywhere else. Put it on persistent storage,
+readable only by the user Quisora runs as (it is created with mode 0700). Each node of a cluster has its own: never
+share one between nodes or processes.
+
+| In `<data-dir>`      | What                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `badgerdb/`          | The store, with `storage.backend = "badgerdb"` (the default).                                          |
+| `quisora.db`         | The store, with `storage.backend = "sqlite"`.                                                          |
+| `tls/`               | The self-signed certificate, when `server.tls_cert` is not set.                                        |
+| `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
+| `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
+| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
+
+Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
+restoring a node without it gives it a new identity, and email or audit events still queued in it are lost.
+
+### TLS certificates
+
+With `server.tls_cert` and `server.tls_key` set, Quisora looks at the two files every hour and switches to a renewed
+certificate (certbot, cert-manager or a script replacing them): new connections get the new certificate, open ones
+carry on. `kill -HUP` loads it at once; make it the renewal hook to switch straight away. A pair that does not load, such as a certificate
+written before its key, or a key that does not match, leaves the current certificate in use, is logged
+(`TLS certificate not reloaded`) and is tried again at the next check. Without them, the self-signed certificate in
+`<data-dir>/tls` is replaced before it expires.
+
+### Stopping
+
+On SIGTERM or SIGINT a node stops taking new requests, lets those in flight finish, then closes. When something has
+been polling `/readyz` in the last two minutes (a load balancer, an orchestrator), `/readyz` first answers 503
+(`"status": "draining"`) for `server.shutdown_drain` seconds (default 10) while the node still serves, so traffic
+moves to other nodes before it goes. Then requests in flight get `server.shutdown_timeout` seconds (default 30). Make
+the orchestrator's stop timeout longer than the two together. A node nobody polls stops without the wait.
 
 ## First start
 
@@ -42,8 +77,9 @@ quisora serve --data-dir /var/lib/quisora --public-url https://id.example.com
 - `bootstrap` creates the `primary` organization (second factor required) and a super admin without a password,
   `server.bootstrap_admin` (default `admin@example.com`).
 - It prints a single-use invitation link (7 days). Open it, set a password or create a passkey, then a second factor.
-- A second run changes nothing. `quisora invite primary admin@example.com` issues a new link (on BadgerDB and SQLite stop
-  the server first; on a shared database it works while the server runs).
+- A second run changes nothing. `quisora invite primary admin@example.com` issues a new link while the server runs
+  (it asks the running server, signing the request with the master key). Locked out of the console:
+  [break-glass](SECURITY.md#incident-response).
 - Until the server is set up, `/readyz` reports not ready.
 
 ## Signing keys
@@ -315,8 +351,8 @@ must exist.
 
 | Backend            | Use                                                            | Settings                                                                                         |
 | ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `badgerdb` (default) | One node, or each node of a gossip cluster. Embedded.          | `storage.badgerdb.path` (default `<data-dir>/badgerdb`), `storage.badgerdb.sync_writes` (default true) |
-| `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go. | `storage.sqlite.path` (default `<data-dir>/quisora.db`)                                            |
+| `badgerdb` (default) | One node, or each node of a gossip cluster. Embedded, in `<data-dir>/badgerdb`. | `storage.badgerdb.sync_writes` (default true), `encryption_key`                |
+| `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go, in `<data-dir>/quisora.db`. | none                                                                   |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
 | `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
 | `valkey`           | As PostgreSQL.                                                 | `storage.valkey.addrs`, `username`, `password`, `db`, `key_prefix`, `tls`, `ca_file`, `server_name`, `cert_file`, `key_file` |
@@ -334,8 +370,8 @@ quisora serve --storage mysql
 export QUISORA_VALKEY_PASSWORD=secret
 quisora serve --storage valkey --valkey-addrs valkey:6379 --valkey-tls --valkey-key-prefix quisora:
 
-# SQLite
-quisora serve --storage sqlite --sqlite-path /var/lib/quisora/quisora.db
+# SQLite (in <data-dir>/quisora.db)
+quisora serve --storage sqlite --data-dir /var/lib/quisora
 ```
 
 Every backend passes the same store conformance suite. BadgerDB is the fastest; see [Sizing](#sizing).
@@ -508,7 +544,7 @@ VictoriaLogs:
 - make it the tamper-evident copy: Quisora does not sign or chain its events, so only Quisora may write to that
   VictoriaLogs, nobody may delete from or rewrite it during the retention period, and its storage is backed up to
   write-once (immutable) storage;
-- turn on the spool (below) on every node;
+- give every node room for the spool (below) in its data directory;
 - ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
   never receive, logged in full so it can still be captured from the log.
 
@@ -554,8 +590,7 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 
 - Every node sends events in batches, and so do `bootstrap` and `invite`. A sign-in never waits for VictoriaLogs:
   events are queued and sent in the background.
-- Without a spool, a batch VictoriaLogs does not take is retried a few times and then given up; so is an event that
-  finds the queue full.
+- An event that finds the in-memory queue full, because the node writes faster than the spool keeps up, is given up.
 - An event VictoriaLogs will never receive is written to the structured log in full, at error level, with the message
   `audit.undelivered`, a `reason`, and the event under `event` (the same fields VictoriaLogs would have stored). That
   is the last place it goes: ship the structured log, or such events are lost.
@@ -564,16 +599,15 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 
 ```toml
 [audit]
-victorialogs_spool_dir = "/var/lib/quisora/audit-spool"
 victorialogs_spool_max_mb = 256          # default 256
 ```
 
-With a spool, a batch VictoriaLogs does not take (unreachable, or answering an error) is written to disk at once, and
-sent when VictoriaLogs answers again, oldest first; a restart keeps it. So an outage of VictoriaLogs loses no events
-while the spool has room.
+With VictoriaLogs, a batch it does not take (unreachable, or answering an error) is written at once to the spool,
+`<data-dir>/auditspool`, and sent when VictoriaLogs answers again, oldest first; a restart keeps it. So an outage of
+VictoriaLogs loses no events while the spool has room.
 
 - The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
-- **One directory per node**, on that node's own disk: never a directory two nodes (or two processes) share.
+- It is part of the node's data directory, so it is one per node, on that node's own disk.
 - Past `victorialogs_spool_max_mb` the oldest events leave the spool first, each logged as `audit.undelivered`. Size
   it for the longest outage you must ride out; each event takes roughly 300–500 bytes. So does a batch the spool
   cannot be written to (a full or failing disk).
@@ -604,6 +638,8 @@ docker run --rm -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_UR
 docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 quisora
 ```
 
+- The container's data directory is `/data`: mount a volume there; it holds the store (BadgerDB or SQLite), the mail
+  queue and the audit spool.
 - `quisora healthcheck` is the container health check (liveness, `/healthz`). Don't restart a node for being unready:
   a cluster node catching up is alive. `quisora healthcheck --ready` checks `/readyz`.
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
@@ -645,6 +681,19 @@ QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quiso
 - BadgerDB, SQLite, PostgreSQL, MySQL and MariaDB give a point-in-time snapshot. Valkey gives every record that
   existed throughout the backup.
 
+Quisora has no backup schedule of its own: run `quisora backup --server` from cron (or a systemd timer, or a
+Kubernetes CronJob) on a machine that keeps the files away from the node, and alert when it fails. For example,
+nightly at 02:30 with 30 days kept:
+
+```bash
+# /etc/cron.d/quisora-backup: the token and password files are readable by the backup user only
+30 2 * * * backup QUISORA_ADMIN_TOKEN="$(cat /etc/quisora/backup-token)" quisora backup --server https://id.example.com --password-file /etc/quisora/backup-password /srv/backups/quisora-$(date +\%F).bak && find /srv/backups -name 'quisora-*.bak' -mtime +30 -delete
+```
+
+- The token is a super admin's API token with only the `backup` scope; give it an expiry and renew it.
+- Try a restore now and then (into a scratch node, `quisora restore` on an empty data directory): a backup nobody has
+  restored is a hope, not a backup.
+
 Restore into an empty store:
 
 ```bash
@@ -664,6 +713,10 @@ quisora restore quisora.bak                   # into the configured store, witho
   - A restored node that meets peers holding data refuses.
 
 ## Upgrading
+
+Settings removed: `storage.badgerdb.path`, `storage.sqlite.path` and `audit.victorialogs_spool_dir` (the store and
+the spool are always in `server.data_dir`, [The data directory](#the-data-directory)). A configuration that still has
+them is refused at start-up; take them out, and move an existing store or spool into the data directory first.
 
 **Before the first release** there is no upgrade path: a store written by an older pre-release build is refused at
 start-up. Wipe it and start clean (or restore a backup made by the new build).
@@ -693,6 +746,18 @@ Until the first release, formats change in place. From then on:
 - What nodes send each other changes: raise `compat`; raise `minCompat` only when this build stops understanding the
   previous release (`internal/cluster/node.go`).
 - Never edit or remove a released migration or upgrade: append.
+
+## Email
+
+With `mail.smtp_host` set, invitations, password resets and address confirmations are emailed. Without it nothing is
+emailed: administrators share invitation links themselves, and there is no self-service password reset.
+
+Email is queued on disk, in `<data-dir>/mailqueue`, before the request that sends it answers: one file per message,
+sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30
+and 120 minutes, then given up and logged (`mail delivery failed, giving up`). A restart, or a crash, keeps the queue:
+the node sends what is left when it is back. A message sealed under a master key that has since been removed cannot
+be opened and is dropped (logged). The queue holds at most 10,000 messages; past that, new ones are refused with an
+error. Watch `quisora_mail_queued`: growing means SMTP is not taking mail.
 
 ## Health and monitoring
 
@@ -736,7 +801,8 @@ Alerts worth having:
 
 ### Access log
 
-`log.access = true` (`QUISORA_LOG_ACCESS`) logs every request: method, path, status, duration, size, client address
+The access log is on by default (`log.access`, `QUISORA_LOG_ACCESS`; set it to false to turn it off). It logs every
+request: method, path, status, duration, size, client address
 and request id (the `X-Request-ID` response header, also in the audit events the request made). The query string is
 never logged: it carries authorization codes, states and link tokens. Probes, scrapes and static files are not
 logged.

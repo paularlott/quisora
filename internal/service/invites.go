@@ -20,8 +20,10 @@ const (
 	LinkVerify = "verify" // confirm an email address
 
 	InviteTTL = 7 * 24 * time.Hour
-	ResetTTL  = time.Hour
-	VerifyTTL = 24 * time.Hour
+	// BreakGlassTTL is how long a break-glass invitation lasts: it is for the person standing at the server now.
+	BreakGlassTTL = 24 * time.Hour
+	ResetTTL      = time.Hour
+	VerifyTTL     = 24 * time.Hour
 )
 
 // ErrLink means the link is unknown, expired, already used or of another kind.
@@ -38,7 +40,7 @@ func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email s
 }
 
 // issueLink is IssueLink recording who issued it (an invitation's issuer: see mayResetSignIn).
-func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string) (string, *model.LinkToken, error) {
+func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string, edit ...func(*model.LinkToken)) (string, *model.LinkToken, error) {
 	if purpose == LinkInvite || purpose == LinkReset {
 		old, _, err := s.Links.List(ctx, store.ListQuery{Scope: u.ID, Filters: []store.Filter{{Field: "purpose", Value: purpose}}})
 		if err != nil {
@@ -51,6 +53,9 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	token := secure.RandomToken(32)
 	l := &model.LinkToken{Meta: model.Meta{ID: linkID(token)}, UserID: u.ID, OrgID: u.OrgID, Purpose: purpose,
 		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created, IssuedBy: by}
+	for _, e := range edit {
+		e(l)
+	}
 	if err := s.Links.Create(Durable(ctx), l); err != nil {
 		return "", nil, mapStore(err)
 	}
@@ -69,7 +74,7 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	u, err := s.Users.Get(ctx, l.UserID)
 	// The account must be the one the link was issued for: in a cluster a second "quisora bootstrap" on a new node
 	// issues a link for a first administrator with the same fixed id, and that link must not open the real one.
-	if err != nil || !u.Enabled(time.Now()) || !u.Created.Equal(l.UserCreated) {
+	if err != nil || !(u.Enabled(time.Now()) || l.BreakGlass) || !u.Created.Equal(l.UserCreated) {
 		return nil, nil, ErrLink
 	}
 	if l.Purpose == LinkInvite && l.IssuedBy != "" && !s.issuerMayInvite(ctx, l.IssuedBy, u) {
@@ -103,6 +108,18 @@ func (s *Service) RedeemLink(ctx context.Context, token string, purposes ...stri
 	}
 	if l.Purpose == LinkInvite || l.Purpose == LinkReset {
 		s.revokeOtherSignInLinks(ctx, l)
+	}
+	if l.BreakGlass && !u.Enabled(time.Now()) {
+		reason, noEnd := "break-glass invitation used", ""
+		in := UserInput{Active: ptrBool(true), StatusReason: &reason}
+		if u.ValidUntil != nil && !time.Now().Before(*u.ValidUntil) {
+			in.ValidUntil = &noEnd // ended: the account must be usable again to be recovered
+		}
+		fresh, err := s.UpdateUser(Durable(ctx), System, u.ID, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		u = fresh
 	}
 	return l, u, nil
 }
@@ -141,6 +158,28 @@ func (s *Service) MarkLinkSent(ctx context.Context, link, email string) error {
 // LinkURL is the absolute URL of a link page for token ("/invite", "/reset", "/verify-email").
 func (s *Service) LinkURL(path, token string) string {
 	return s.Cfg.Server.PublicURL + path + "?token=" + url.QueryEscape(token)
+}
+
+// CreateBreakGlassInvite issues the invitation of "quisora invite --break-glass", for getting back into a server
+// nobody can sign in to: only the command issues it (whoever runs it holds the master key and so everything already).
+// Unlike CreateInvite it works for a disabled account (a super admin locked out, or past their end date), whose
+// invitation enables it again when used; it lasts BreakGlassTTL. Earlier invitations stop working, and accepting it
+// replaces every credential of the account, as any invitation does.
+func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string) (string, time.Time, error) {
+	u, err := s.Users.Get(ctx, userID)
+	if err != nil {
+		return "", time.Time{}, mapStore(err)
+	}
+	token, l, err := s.issueLink(ctx, u, LinkInvite, "", BreakGlassTTL, "", func(l *model.LinkToken) { l.BreakGlass = true })
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	detail := map[string]string{"role": string(u.Role)}
+	if !u.Enabled(time.Now()) {
+		detail["account"] = "disabled: enabled again when the invitation is used"
+	}
+	s.Audit(ctx, System, u.OrgID, "user.invite.break_glass", u.Username, detail)
+	return s.LinkURL("/invite", token), l.Expires, nil
 }
 
 // CreateInvite issues a new invitation for a user (new or existing): the link lets them set a password (if their

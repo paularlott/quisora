@@ -12,8 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
@@ -63,7 +64,15 @@ type Server struct {
 	skin    *Skin // ui.skin, or nil
 	httpSrv *http.Server
 	addr    string
+	certs   *certSource
+
+	lastProbe atomic.Int64 // unix nanos of the last GET /readyz: something is routing traffic by it
+	draining  atomic.Bool  // shutting down: /readyz answers 503
+	stopOnce  sync.Once
 }
+
+// probeSeen is how recent a /readyz probe must be for Stop to drain first: something is routing traffic by it.
+const probeSeen = 2 * time.Minute
 
 // TLS12CipherSuites are the only cipher suites offered over TLS 1.2: forward-secret AEAD suites, the ones RFC 9325
 // §4.2 recommends (as FAPI 2.0 §5.2.2 requires; Go implements no DHE). TLS 1.3 suites are not configurable and are
@@ -220,11 +229,17 @@ func (s *Server) baseRoutes() {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	s.Mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		s.lastProbe.Store(time.Now().UnixNano())
 		body := map[string]any{"status": "ready"}
 		if s.Status != nil {
 			body["cluster"] = s.Status() // counts only; the reasons stay in the log: /readyz is unauthenticated
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		if s.draining.Load() {
+			body["status"] = "draining"
+			WriteJSON(w, http.StatusServiceUnavailable, body)
+			return
+		}
 		if s.Health != nil {
 			if ok, why := s.Health.Ready(); !ok {
 				s.Log.Debug("not ready", "reason", why)
@@ -376,10 +391,12 @@ func (s *Server) CheckAnonCSRF(r *http.Request) bool {
 }
 
 // Start listens on the configured address with TLS (self-signed when no certificate is configured) and serves until
-// ctx is done. It returns once the listener is up; errors after that are logged.
+// ctx is done or Stop. It returns once the listener is up; errors after that are logged. The certificate is replaced
+// without a restart when it is renewed (certSource).
 func (s *Server) Start(ctx context.Context) error {
 	u, _ := url.Parse(s.Cfg.Server.PublicURL)
-	cert, err := LoadOrCreateCert(s.Cfg.Server.TLSCert, s.Cfg.Server.TLSKey, s.Cfg.Server.DataDir+string(os.PathSeparator)+"tls", u.Hostname())
+	certs, err := newCertSource(s.Cfg.Server.TLSCert, s.Cfg.Server.TLSKey, s.Cfg.DataPath(config.DirTLS),
+		u.Hostname(), s.Log)
 	if err != nil {
 		return err
 	}
@@ -387,6 +404,8 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.certs = certs
+	go certs.watch()
 	s.httpSrv = &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -394,7 +413,7 @@ func (s *Server) Start(ctx context.Context) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
-		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate,
 			CipherSuites: TLS12CipherSuites, NextProtos: []string{"h2", "http/1.1"}},
 		ErrorLog: stdlog.New(debugWriter{s.Log}, "", 0),
 	}
@@ -405,13 +424,43 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 	go func() {
 		<-ctx.Done()
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.httpSrv.Shutdown(sctx)
+		s.Stop()
 	}()
 	s.addr = ln.Addr().String()
 	s.Log.Info("listening", "addr", ln.Addr().String(), "url", s.Cfg.Server.PublicURL)
 	return nil
+}
+
+// ReloadCertificate loads the TLS certificate again now (SIGHUP); a renewal is also picked up by itself within an
+// hour. A certificate that does not load leaves the current one in place.
+func (s *Server) ReloadCertificate() error {
+	if s.certs == nil {
+		return nil
+	}
+	return s.certs.Reload()
+}
+
+// Stop stops serving, once (later calls wait for the first). When something has been polling /readyz (a load
+// balancer, an orchestrator), /readyz first answers 503 for server.shutdown_drain seconds, so traffic moves to other
+// nodes before the listener closes; then requests in flight get server.shutdown_timeout seconds to finish.
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() {
+		if s.httpSrv == nil {
+			return
+		}
+		s.draining.Store(true)
+		drain := time.Duration(s.Cfg.Server.ShutdownDrain) * time.Second
+		if drain > 0 && time.Since(time.Unix(0, s.lastProbe.Load())) < probeSeen {
+			s.Log.Info("draining before shutdown: /readyz answers 503", "for", drain)
+			time.Sleep(drain)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.Cfg.Server.ShutdownTimeout)*time.Second)
+		defer cancel()
+		if err := s.httpSrv.Shutdown(ctx); err != nil {
+			s.Log.Warn("requests still running at shutdown were cut off", "error", err)
+		}
+		s.certs.Close()
+	})
 }
 
 // Addr returns the listening address (after Start).

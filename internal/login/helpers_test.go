@@ -61,7 +61,11 @@ func newEnvWith(t testing.TB, mut func(*config.Config), keepIP bool) *env {
 			}
 		},
 		Modules: func(s *web.Server) []web.Module {
-			e.Mailer = mail.New(s.Cfg, logger.NewNullLogger())
+			m, err := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Sealer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.Mailer = m
 			e.Mailer.Transport = mail.TransportFunc(func(_ context.Context, m mail.Message) error {
 				e.mu.Lock()
 				e.mails = append(e.mails, m)

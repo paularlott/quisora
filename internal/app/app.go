@@ -17,6 +17,7 @@ import (
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/mail"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
@@ -41,6 +42,7 @@ type App struct {
 	onChange []func(*store.Record) // cache eviction hooks of modules
 
 	closers []func()
+	mailer  *mail.Mailer // nil without an SMTP server
 
 	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
 	// cancels their context and waits for them before it closes anything they use.
@@ -158,6 +160,13 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		srv.Sessions.CacheTTL = 5 * time.Second
 	}
 	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
+	if c.Mail.Enabled() { // its queue is on disk: messages left by the last run go out now
+		if a.mailer, err = mail.New(c, log, sealer); err != nil {
+			a.Close()
+			return nil, err
+		}
+		a.closers = append(a.closers, a.mailer.Close)
+	}
 	srv.Use(modules(ctx, a)...)
 	if err := srv.Start(ctx); err != nil {
 		a.Close()
@@ -169,6 +178,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.background(func() { a.auditForcedStart(bg) })
 	a.background(func() { a.auditRestore(bg) })
 	a.background(func() { refreshAuditIndex(bg, inner, log) })
+	a.closers = append(a.closers, srv.Stop) // the very first: stop taking requests (draining) before anything else
 	return a, nil
 }
 
