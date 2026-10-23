@@ -61,6 +61,10 @@ func (n *Node) buildNotify() error {
 	if err := gc.HandleFunc(msgNotice, n.handleNotice); err != nil {
 		return err
 	}
+	// A configuration reload reaches every node sharing the database through the notice gossip (ReloadCluster).
+	if err := gc.HandleFuncWithReply(msgReload, n.handleReload); err != nil {
+		return err
+	}
 	for _, p := range nc.Peers {
 		if p != "" && !isSelfAddr(p, adv) {
 			n.notifyPeers = append(n.notifyPeers, p)

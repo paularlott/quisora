@@ -156,6 +156,7 @@ export const PAGES = [
   { name: 'system', path: '/admin/system', as: 'super', steps: [waitRows] },
   { name: 'system-signout', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Sign everyone out…')] },
   { name: 'keys-rotate', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Rotate now')] },
+  { name: 'secret-stores-read', path: '/admin/system', as: 'super', dialog: true, steps: [waitRows, open('Read secret stores now')] },
   { name: 'error-404', path: '/admin/nowhere', as: 'admin' },
   { name: 'users-manager', path: `${A}/users`, as: 'manager', steps: [waitRows] },
   // An administrator, as a manager sees them: a directory entry (name, role, status), read-only.

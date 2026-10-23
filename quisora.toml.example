@@ -130,3 +130,18 @@ access = true                             # log every HTTP request (never its qu
 
 [metrics]
 # token = ""                              # bearer token Prometheus sends to GET /metrics; empty = no metrics endpoint
+
+# Secret stores: any secret setting above may name its value instead of holding it, "vault://<path>#<field>" or
+# "op://<vault>/<item>/<field>" (docs/RUNNING.md, Secrets in Vault or 1Password). Read at start; master and cluster
+# keys again on a reload (SIGHUP, or "Read secret stores now" on the system page).
+# [secrets.vault]
+# address = "https://vault.internal:8200"
+# token_file = "/etc/quisora/vault-token"  # or token; or AppRole: role_id with secret_id or secret_id_file
+# approle_mount = "approle"
+# namespace = ""                          # Vault Enterprise
+# ca_file = ""
+# [secrets.onepassword]
+# connect_url = "https://op-connect.internal:8080"
+# connect_token_file = "/etc/quisora/op-connect-token"   # or connect_token
+# service_account_token_file = ""         # a service account instead of Connect: the 1Password build only
+# ca_file = ""

@@ -111,6 +111,7 @@ func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer) (*Mailer,
 	if testTransport != nil {
 		m.Transport = testTransport
 	}
+	m.removeTemp()
 	names, err := m.files()
 	if err != nil {
 		return nil, fmt.Errorf("mail queue: %w", err)
@@ -187,7 +188,8 @@ func (m *Mailer) remove(name string) {
 	}
 }
 
-// files lists the queued messages, oldest first (left-over temporary files are removed).
+// files lists the queued messages, oldest first. Temporary files are a Send writing one (or, at start, a write a
+// crash cut short: removeTemp).
 func (m *Mailer) files() ([]string, error) {
 	ents, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -195,15 +197,23 @@ func (m *Mailer) files() ([]string, error) {
 	}
 	var out []string
 	for _, e := range ents {
-		switch n := e.Name(); {
-		case strings.HasPrefix(n, ".") && strings.HasSuffix(n, ".tmp"):
-			_ = os.Remove(filepath.Join(m.dir, n)) // a write cut short: Send reported the failure
-		case strings.HasSuffix(n, ".mail") && e.Type().IsRegular():
+		if n := e.Name(); strings.HasSuffix(n, ".mail") && !strings.HasPrefix(n, ".") && e.Type().IsRegular() {
 			out = append(out, n)
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// removeTemp removes the temporary files of writes a crash cut short (their Send reported the failure). Only at
+// start, before anything can be writing one.
+func (m *Mailer) removeTemp() {
+	ents, _ := os.ReadDir(m.dir)
+	for _, e := range ents {
+		if n := e.Name(); strings.HasPrefix(n, ".") && strings.HasSuffix(n, ".tmp") {
+			_ = os.Remove(filepath.Join(m.dir, n))
+		}
+	}
 }
 
 // idleCheck bounds how long the worker sleeps: it notices a retry that is due, or files put there by hand.

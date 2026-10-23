@@ -63,6 +63,14 @@ tasks:
     cmds:
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} .
 
+  build-1password:
+    desc: "Build the binary for the current platform with 1Password service accounts (the onepassword tag: the 1Password SDK, about 15 MB, which calls 1Password's servers)"
+    deps: [webassets]
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -tags onepassword {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} .
+
   conformance-tools:
     desc: Build the OpenID conformance harness tools (bin/seed, bin/fakeidp); see conformance/README.md
     cmds:
@@ -75,7 +83,7 @@ tasks:
       - go build -o {{.OUTPUT_DIR}}/loadtest{{exeExt}} ./tools/loadtest
 
   all:
-    desc: Build the binary for every platform
+    desc: Build the binary for every platform, with and without 1Password service accounts (quisora-1password-…)
     deps: [webassets]
     cmds:
       - for: { var: PLATFORMS }
@@ -83,6 +91,11 @@ tasks:
           CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
           go build {{.BUILD_FLAGS}}
           -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
+      - for: { var: PLATFORMS }
+        cmd: >-
+          CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
+          go build -tags onepassword {{.BUILD_FLAGS}}
+          -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
 
   run:
     desc: Run a local server (BadgerDB, self-signed certificate) on https://localhost:8443
@@ -92,21 +105,21 @@ tasks:
       - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev --master-key "{{.DEV_MASTER_KEY}}"'
 
   run-server:
-    desc: Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.110:1025
-    deps: [build]
+    desc: "Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.110:1025. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
+    deps: [build-1password]
     vars:
       PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
       LISTEN: '{{.DEV_LISTEN | default "localhost:8443"}}'
     cmds:
       - mkdir -p ./data/dev
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} bootstrap
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} bootstrap
         --master-key "{{.DEV_MASTER_KEY}}"
         --data-dir ./data/dev
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --bootstrap-admin admin@example.com
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} serve
         --master-key "{{.DEV_MASTER_KEY}}"
         --listen {{.LISTEN | default "127.0.0.1:8443"}}
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
@@ -122,7 +135,9 @@ tasks:
     desc: Vet and run every Go test with the race detector (set the QUISORA_TEST_* variables for database servers)
     cmds:
       - go vet ./...
+      - go vet -tags onepassword ./...      # the build with 1Password service accounts compiles too
       - go test -race ./...
+      - go test -tags onepassword ./internal/secrets/
 
   check:
     desc: "Release gate: vet and every Go test with the race detector, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"

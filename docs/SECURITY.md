@@ -29,8 +29,9 @@ holds it; reads, listings and searches still withhold the account.
 
 Before production:
 
-1. **Master key** (`server.master_key`): from a secret store, as an environment variable or in a config file only root
-   can read, never on the command line or in the data directory. Kept apart from the data and from the backups.
+1. **Master key** (`server.master_key`): best read from Vault or 1Password ([references](RUNNING.md#secrets-in-vault-or-1password),
+   with read access to Quisora's items only), else an environment variable or a config file only Quisora's user can
+   read; never on the command line or in the data directory. Kept apart from the data and from the backups.
    [Rotate it](RUNNING.md#rotating-the-master-key) on a schedule.
 2. **TLS**: a real certificate; behind a load balancer, `server.trust_proxy` set to its addresses, so rate limits see
    real client addresses.

@@ -123,6 +123,16 @@
       </div>
     </template>
     <p class="muted" x-show="noMasterKeyRotation" x-cloak>No rotation in progress: every secret is sealed with the one master key.</p>
+    <div class="mt-4" x-show="hasSecretStores" x-cloak>
+      <p class="muted mb-3">Keys can be read from <span x-text="secretStoresText"></span>. Every node reads them when it starts. After changing a key there (a master key or cluster key rotation, one step at a time), have every node read it now:</p>
+      <button type="button" class="btn btn-secondary btn-sm" id="read-secret-stores" :disabled="reloading" :aria-busy="reloadBusyAttr" @click="readSecretStores">{{template "icon" "refresh"}} <span x-text="readStoresLabel">Read secret stores now</span></button>
+      <div class="mt-4" x-show="hasStoresReport" x-cloak>
+        <h3 class="font-semibold mb-1">Last read</h3>
+        <ul class="space-y-1">
+          <template x-for="r in storesReport" :key="r.node"><li><code class="mono" x-text="r.node"></code> <span :class="r.cls" x-text="r.text"></span></li></template>
+        </ul>
+      </div>
+    </div>
   </section>
 
   <section class="glass-card" aria-labelledby="signout-h">

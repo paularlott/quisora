@@ -2,6 +2,7 @@
 # Quisora container image: a static binary (web assets embedded) on a distroless base, running as a non-root user.
 #
 #   docker build -t quisora .
+#   docker build --build-arg GO_TAGS=onepassword -t quisora:1password .   # with 1Password service accounts
 #   docker run -p 8443:8443 -v quisora-data:/data -e QUISORA_PUBLIC_URL=https://localhost:8443 \
 #     -e QUISORA_BOOTSTRAP_ADMIN=admin@example.com quisora
 #
@@ -19,12 +20,14 @@ RUN npm run build
 
 FROM golang:${GO_VERSION}-alpine AS build
 ARG VERSION=dev
+# "onepassword" links the 1Password SDK for service accounts (secrets.onepassword.service_account_token)
+ARG GO_TAGS=
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 go build -trimpath -tags "${GO_TAGS}" \
       -ldflags "-s -w -X github.com/paularlott/quisora/internal/build.Version=${VERSION}" \
       -o /out/quisora . \
  && mkdir -p /out/data

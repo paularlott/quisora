@@ -14,6 +14,7 @@ import (
 	"github.com/paularlott/quisora/internal/build"
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/secrets"
 )
 
 func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
@@ -28,7 +29,7 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"it first and start the others with empty databases. See docs/REPLICATION.md.",
 		Flags: flags,
 		Run: func(ctx context.Context, c *cli.Command) error {
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			log := logger(cfg)
@@ -70,6 +71,9 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 	}
 }
 
+// reloadedSecrets are the secret settings a reload applies, read again from their secret store when they name one.
+var reloadedSecrets = []string{"server.master_key", "server.previous_master_keys", "cluster.key", "cluster.previous_keys"}
+
 // reloader re-reads the configuration for a configuration reload (SIGHUP, or a cluster-wide reload): it parses the
 // command line, the environment and the config file again (read afresh) into a scratch configuration, through a
 // second command tree, and takes from it server.master_key and server.previous_master_keys, and when clustering
@@ -90,6 +94,10 @@ func reloader(c *cli.Command, a *app.App, log logpkg.Logger) cluster.Reloader {
 		fresh := config.Default()
 		if err := newRoot(fresh).ReloadFlags(); err != nil {
 			return fail("configuration", err)
+		}
+		// Keys that name a secret store are read from it again now: rotating one is an edit there and a reload.
+		if err := secrets.Apply(ctx, fresh, reloadedSecrets...); err != nil {
+			return fail("secret stores", err)
 		}
 
 		var master string

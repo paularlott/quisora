@@ -35,7 +35,7 @@ func inviteCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			&cli.StringArg{Name: "email", Usage: "Email address of the user", Required: true},
 		},
 		Run: func(ctx context.Context, c *cli.Command) error {
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			log := logslog.New(logslog.Config{Level: "error", Format: cfg.Log.Format})

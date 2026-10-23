@@ -31,7 +31,7 @@ func bootstrapCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 		Flags: append([]cli.Flag{&cli.BoolFlag{Name: "new-cluster", AssignTo: &newCluster,
 			Usage: "With cluster.bind: confirm this node starts a new cluster (never on a node joining an existing one)"}}, flags...),
 		Run: func(ctx context.Context, c *cli.Command) error {
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			if cfg.Cluster.Bind != "" && !newCluster {

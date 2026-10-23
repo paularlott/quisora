@@ -1,7 +1,9 @@
 package cluster
 
 import (
+	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,5 +108,84 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 	defer plain.Close()
 	if plain.ngc != nil {
 		t.Error("notice gossip without cluster.notify")
+	}
+}
+
+// A configuration reload reaches every node sharing the database through the notice gossip, in the same two phases
+// as a gossip cluster: one node that cannot apply it stops it everywhere. Without cluster.notify only the node asked
+// reloads, and the error says so.
+func TestSharedDatabaseReloadOverNoticeGossip(t *testing.T) {
+	shared, err := sqlstore.Open(bg, sqlstore.Config{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "shared.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { shared.Close() })
+	key := testKey()
+	addrs := []string{freeAddr(t), freeAddr(t)}
+	var mu sync.Mutex
+	applied := map[string]int{}
+	refuse := map[string]bool{}
+	mk := func(i int) *Node {
+		cfg := config.Default()
+		cfg.Server.DataDir = t.TempDir()
+		cfg.Storage.Backend = "postgres"
+		cfg.Cluster.Notify = config.Notify{Bind: addrs[i], Peers: addrs, Key: key}
+		n, err := New(cfg, shared, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { n.Close() })
+		n.SetReloader(func(_ context.Context, apply bool, _ int) ReloadReport {
+			mu.Lock()
+			defer mu.Unlock()
+			if refuse[n.ID()] {
+				return ReloadReport{Error: "master keys: not base64"}
+			}
+			if apply {
+				applied[n.ID()]++
+			}
+			return ReloadReport{}
+		})
+		return n
+	}
+	a, b := mk(0), mk(1)
+	for _, n := range []*Node{a, b} {
+		if err := n.Start(bg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, 5*time.Second, "notice gossip joined", func() bool { return a.ngc.NumAliveNodes() >= 2 && b.ngc.NumAliveNodes() >= 2 })
+
+	reports, err := a.ReloadCluster(bg)
+	if err != nil || len(reports) != 2 {
+		t.Fatalf("reload: %v %+v", err, reports)
+	}
+	mu.Lock()
+	if applied[a.ID()] != 1 || applied[b.ID()] != 1 {
+		t.Fatalf("applied %v", applied)
+	}
+	refuse[b.ID()] = true
+	mu.Unlock()
+	if _, err := a.ReloadCluster(bg); err == nil {
+		t.Fatal("a node that cannot apply the configuration did not stop the reload")
+	}
+	mu.Lock()
+	if applied[a.ID()] != 1 {
+		t.Fatalf("applied on a although b refused: %v", applied)
+	}
+	mu.Unlock()
+
+	// without cluster.notify: this node only, and the error says so
+	cfg := config.Default()
+	cfg.Server.DataDir = t.TempDir()
+	cfg.Storage.Backend = "postgres"
+	plain, err := New(cfg, shared, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	plain.SetReloader(func(context.Context, bool, int) ReloadReport { return ReloadReport{} })
+	if _, err := plain.ReloadCluster(bg); err == nil || !strings.Contains(err.Error(), "cluster.notify") {
+		t.Fatalf("shared database without notify: %v", err)
 	}
 }

@@ -56,6 +56,8 @@ func main() {
 	cfg.UI.Footer = "Quisora demo · All data is in memory"
 	cfg.Limits.PasswordWorkers = 4
 	cfg.Mail.SMTPHost = demoMailHost
+	// a secret store, so the system page offers "Read secret stores now" (it reads nothing until that is clicked)
+	cfg.Secrets.Vault = config.Vault{Address: "https://vault.demo.invalid", Token: "demo"}
 	must(cfg.Validate())
 
 	hub := events.NewHub()

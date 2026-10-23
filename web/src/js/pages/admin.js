@@ -52,8 +52,8 @@ const CLUSTER_POLL_MS = 5000
 // one node's report from a configuration reload (POST /api/cluster/reload)
 function reloadRow(r) {
   if (r.error) return { node: r.node, text: r.error, cls: 'badge badge-danger' }
-  const changed = (r.changes || []).join('; ')
-  return { node: r.node, text: `cluster.size ${r.size}${changed ? `: ${changed}` : ': no change'}`, cls: 'badge badge-success' }
+  const changed = (r.changes || []).join('; ') || 'no change'
+  return { node: r.node, text: r.size > 1 ? `cluster.size ${r.size}: ${changed}` : changed, cls: 'badge badge-success' }
 }
 function clusterMixin(Alpine) {
   return {
@@ -1774,6 +1774,32 @@ export default function (Alpine) {
     destroy() { this.stopCluster() },
     get standalone() { return this.loaded && !this.s.clustered },
     get noMasterKeyRotation() { return this.loaded && !this.s.master_key_rotation },
+    // keys read from Vault or 1Password: read them again on every node (the same reload as SIGHUP, cluster-wide)
+    storesReport: [],
+    get hasSecretStores() { return this.loaded && (this.s.secret_stores || []).length > 0 },
+    get secretStoresText() { return (this.s.secret_stores || []).join(' and ') },
+    get hasStoresReport() { return this.storesReport.length > 0 },
+    get readStoresLabel() { return this.reloading ? 'Reading…' : 'Read secret stores now' },
+    async readSecretStores(ev) {
+      const opener = ev.currentTarget
+      const yes = await confirmAction(Alpine, { title: 'Read the secret stores now?', message: 'Have every node read its keys from the secret stores again?',
+        detail: 'The master keys and cluster keys that name a secret store are read again and switched to. Every node checks first; nothing changes unless all can. Rotate the master key in two steps: add the new key as a previous key and read; then make it the master key (the old one previous) and read.',
+        confirmLabel: 'Read now' })
+      if (!yes) return
+      this.reloading = true
+      try {
+        const res = await withReauth(Alpine, () => post(`${this.apiBase}/cluster/reload`), opener)
+        this.storesReport = (res.nodes || []).map(reloadRow)
+        toast('Keys read on every node.')
+        await this.load()
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          if (e.body && e.body.nodes) this.storesReport = e.body.nodes.map(reloadRow)
+          toast(e.message, 'error')
+        }
+      }
+      this.reloading = false
+    },
   }))
 
   // ---- Small shared page behaviours -------------------------------------------------------------------------------

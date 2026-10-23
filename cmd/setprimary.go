@@ -31,7 +31,7 @@ func setPrimaryCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			&cli.StringArg{Name: "org", Usage: "Name of the organization to make primary", Required: true},
 		},
 		Run: func(ctx context.Context, c *cli.Command) error {
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			log := logslog.New(logslog.Config{Level: "error", Format: cfg.Log.Format})

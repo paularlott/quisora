@@ -2208,7 +2208,9 @@ paths:
       tags: [Cluster]
       summary: Reload every node's configuration
       description: "Every node in view re-reads its configuration file (super admin, after a recent re-authentication in the
-        admin console): the master keys, the cluster keys, and cluster.size and cluster.peers. Every node checks first;
+        admin console): the master keys, the cluster keys (read again from Vault or 1Password when they name a secret
+        store), and cluster.size and cluster.peers. Nodes sharing a database are reached through cluster.notify; without
+        it only the node asked reloads (409, saying so). Every node checks first;
         only if all can apply and all name the same size does each one apply it (409 otherwise, with each node's report).
         The size changes by one node at a time: grow after adding the node to every configuration, shrink after stopping
         the node that leaves"
@@ -3779,6 +3781,12 @@ components:
           type: boolean
           description: previous master keys are configured (GET /api/master-key has where the rotation stands)
         last_sign_out: {$ref: "#/components/schemas/SignOutEvent"}
+        secret_stores:
+          type: array
+          description: "secret stores configured ([secrets]): Vault, 1Password Connect, 1Password. Keys that name one
+            (op://, vault://) are read again by POST /api/cluster/reload"
+          items:
+            type: string
     SignOutEvent:
       type: object
       description: an emergency sign-out (on an organization, the last one; absent when there has been none)

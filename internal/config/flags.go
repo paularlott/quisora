@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -59,6 +60,21 @@ func settings(c *Config) []Setting {
 	}
 	walk(reflect.ValueOf(c).Elem(), "", "")
 	return out
+}
+
+// Value is the setting's current value as text (a list's values joined by commas).
+func (s Setting) Value() string {
+	switch s.field.Kind() {
+	case reflect.String:
+		return s.field.String()
+	case reflect.Slice:
+		var out []string
+		for i := range s.field.Len() {
+			out = append(out, fmt.Sprint(s.field.Index(i).Interface()))
+		}
+		return strings.Join(out, ",")
+	}
+	return fmt.Sprint(s.field.Interface())
 }
 
 // Settings lists every setting of c (for documentation and tests).

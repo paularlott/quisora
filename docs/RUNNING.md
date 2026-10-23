@@ -17,7 +17,8 @@ which beats the file. The public URL, for example, is `--public-url`, `QUISORA_P
   `storage.badgerdb.encryption_key`, `server.restore_password`, a VictoriaLogs URL with credentials) belong in the config
   file or the environment. Given as flags they are accepted, but anyone on the machine can read them in the process
   list (`ps`), so every command prints a warning naming the variable and key to use instead. (The Taskfile's
-  development tasks pass a development key as a flag on purpose.)
+  development tasks pass a development key as a flag on purpose.) Any of them can instead name a value in HashiCorp
+  Vault or 1Password: [Secrets in Vault or 1Password](#secrets-in-vault-or-1password).
 
 Settings every deployment sets:
 
@@ -231,6 +232,62 @@ To lock out one person instead (a compromised account, or a leaver), use **Lock 
 (`POST /api/orgs/{org}/users/{id}/lock-out`): it disables the account, signs them out everywhere and removes every way
 they had to sign in. Enabling the account again brings none of that back; send a new invitation.
 
+## Secrets in Vault or 1Password
+
+Any secret setting (the list above) can name its value in a secret store instead of holding it:
+
+| Reference                               | Store                                                                                   |
+| --------------------------------------- | --------------------------------------------------------------------------------------- |
+| `op://<vault>/<item>/<field>`           | 1Password: the field of an item, by name (or id).                                       |
+| `op://<vault>/<item>/<section>/<field>` | 1Password: a field in a section of the item.                                            |
+| `vault://<path>#<field>`                | HashiCorp Vault (or OpenBao): the API path after `/v1/`, KV version 1 or 2; field `value` when none is named. |
+
+Every other value is the value itself, as before, so references and plain values mix freely.
+
+```toml
+[server]
+master_key = "vault://secret/data/quisora#master_key"            # a KV version 2 mount called "secret"
+previous_master_keys = ["vault://secret/data/quisora#previous_master_key"]
+
+[storage.postgres]
+dsn = "op://Infra/Quisora PostgreSQL/dsn"
+
+[secrets.vault]
+address = "https://vault.internal:8200"
+token_file = "/etc/quisora/vault-token"   # or token = "…"; or AppRole: role_id, secret_id or secret_id_file
+# namespace = "admin/quisora"             # Vault Enterprise
+# ca_file = "/etc/quisora/internal-ca.pem"
+
+[secrets.onepassword]
+connect_url = "https://op-connect.internal:8080"   # 1Password Connect
+connect_token_file = "/etc/quisora/op-connect-token"
+# service_account_token = "ops_…"         # a service account instead of Connect: needs the 1Password build (below)
+```
+
+- **When they are read.** Every command that runs against the server reads the references it needs when it starts;
+  `serve` refuses to start if a store cannot be read. The values are kept in memory only: nothing is written to disk.
+- **Reloading.** A configuration reload reads the master keys and the cluster keys from their stores again and
+  switches to them: SIGHUP on one node, or **Read secret stores now** on the console's system page (super admins,
+  after confirming it is them), which every node runs, checking first and changing nothing unless all can. Nodes
+  sharing a database are reached through `cluster.notify`; without it, reload each node (SIGHUP). A store that cannot
+  be read fails the reload and leaves the keys in use as they were. Other settings (DSNs, the SMTP password, the
+  BadgerDB encryption key) are read at start-up only, like their plain values.
+- **Rotating the master key** is the [usual two steps](#rotating-the-master-key), each an edit in the store and a
+  reload: put the new key in the previous key's field (keeping the old one as the master key), read; then swap them,
+  read; once the status says `complete`, empty the previous key's field, read. An empty field means "no key": a
+  previous key's field can stay in the configuration between rotations. Removing the old key before every secret is
+  re-sealed is refused, as with keys in the config file.
+- **The stores' own credentials** go in the config file, in a file it names (`*_file`, its first line) or in the
+  environment (`QUISORA_VAULT_TOKEN`, `QUISORA_ONEPASSWORD_CONNECT_TOKEN`…). Keep those files, and a config file that
+  holds a secret, readable by the user Quisora runs as only (`chmod 600`): every command warns about one that others
+  can read. Prefer Vault AppRole, with a short token lifetime, to a long-lived token; give the token, or the 1Password
+  service account or Connect token, read access to Quisora's items only.
+- **1Password service accounts** use 1Password's SDK, which talks to 1Password's servers over the internet. Builds
+  include it only with the `onepassword` build tag (`task build-1password`, the `quisora-1password-…` release
+  binaries, or `docker build --build-arg GO_TAGS=onepassword`), about 15 MB larger. Any other build reads 1Password
+  through a Connect server you run, and refuses a service account token with a message saying so. Vault and Connect
+  can both run on your own network.
+
 ## Rotating the master key
 
 The master key seals every secret Quisora stores: authenticator (TOTP) secrets, sign-in providers' client secrets,
@@ -399,6 +456,9 @@ protected at rest by the storage:
   master key, and kept apart from the data like it). It is chosen when the store is created: a store made without it
   cannot be opened with it, and the reverse. To encrypt an existing store, back it up, then restore into a new store
   with the key set. Every node of a gossip cluster has its own store and may have its own key.
+  To change the key: in a gossip cluster, one node at a time, stop it, set its new key, empty its data directory's
+  `badgerdb` and start it: it copies everything back from the others, encrypted with the new key; wait until it is
+  ready before the next. A single node: back up, then restore into a new store with the new key.
 - **SQLite**: put the data directory on an encrypted volume (LUKS, FileVault, BitLocker, an encrypted cloud disk), or
   accept plain files for local use.
 - **PostgreSQL, MySQL, MariaDB, Valkey**: encryption at rest is the database's, set up by its administrator: encrypted

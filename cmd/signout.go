@@ -41,7 +41,7 @@ func signOutCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if (org == "") == !all {
 				return errors.New("give exactly one of --org <name> and --all")
 			}
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			what, confirm := "every organization", "everyone"

@@ -500,3 +500,33 @@ func TestQueueFull(t *testing.T) {
 		t.Fatalf("full queue: %v", err)
 	}
 }
+
+// Messages sent while the worker reads the queue are never lost to it, and a temporary file a crash left behind is
+// cleared at the next start.
+func TestQueueConcurrentSends(t *testing.T) {
+	m := newMailer(t, nil)
+	cap := newCapture()
+	cap.ch = make(chan Message, 200)
+	m.Transport = cap
+	_ = os.WriteFile(filepath.Join(m.dir, ".leftover.mail.tmp"), []byte("x"), 0o600)
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := m.Send(context.Background(), Message{To: "a@example.com", Subject: strconv.Itoa(i)}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	waitFor(t, func() bool { cap.mu.Lock(); defer cap.mu.Unlock(); return len(cap.msgs) == 100 })
+	m2, err := New(m.Cfg, logger.NewNullLogger(), m.sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2.Close()
+	if _, err := os.Stat(filepath.Join(m.dir, ".leftover.mail.tmp")); !os.IsNotExist(err) {
+		t.Fatal("a crash's temporary file was not cleared at start")
+	}
+}

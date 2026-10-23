@@ -23,7 +23,8 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   Profile can be turned on per application. Passes the OpenID Foundation
   certification plans ([docs/conformance.md](docs/conformance.md)).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
-  document, and personal API tokens with scopes.
+  document, and personal API tokens with scopes. Keys and passwords can be read from HashiCorp Vault or 1Password
+  (Connect, or a service account in the 1Password build) and rotated without a restart.
 - **Roles.** Super admin, admin, manager and user. Managers and above always use a second factor. Only a super admin
   can reset a manager's or administrator's sign-in (a new invitation, removing the password) or lower their role, so
   one administrator cannot take over another's account.

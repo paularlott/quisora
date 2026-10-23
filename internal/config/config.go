@@ -41,6 +41,7 @@ type Config struct {
 	Limits  Limits  `toml:"limits"`
 	Log     Log     `toml:"log" flag:"log"`
 	Metrics Metrics `toml:"metrics" flag:"metrics"`
+	Secrets Secrets `toml:"secrets"`
 }
 
 // Metrics configures GET /metrics (Prometheus). It is served only with a token: the counters say how the server is

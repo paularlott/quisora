@@ -348,7 +348,9 @@ audited as `cluster.reload`). Every node in view first reads and checks its conf
 apply it and all name the same `cluster.size` does each one apply it. Otherwise nothing changes, and the answer has
 each node's report. A node that is down is not asked: it reads its configuration when it starts. SIGHUP reloads a
 single node the same way, but the nodes then disagree on the size, and none of them serves until the last one has
-reloaded.
+reloaded. Keys kept in Vault or 1Password are read again by the same reload ([RUNNING.md](RUNNING.md#secrets-in-vault-or-1password)).
+Nodes sharing a database (no gossip) run the same two-phase reload over `cluster.notify`; without it each node
+reloads on its own (SIGHUP).
 
 **Adding a node** (N → N+1):
 

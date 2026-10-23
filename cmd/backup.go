@@ -85,7 +85,7 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if server := c.GetString("server"); server != "" {
 				stats, err = remoteBackup(ctx, server, c.GetString("token"), c.GetString("ca-file"), c.GetBool("insecure"),
 					password, w)
-			} else if err = cfg.Validate(); err == nil {
+			} else if err = prepare(ctx, cfg); err == nil {
 				stats, err = app.Backup(ctx, cfg, w, backup.Options{Password: password})
 			}
 			if tmp != nil {
@@ -200,7 +200,7 @@ func restoreCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			&cli.StringArg{Name: "file", Usage: "Backup file to read, or - for standard input", Required: true},
 		},
 		Run: func(ctx context.Context, c *cli.Command) error {
-			if err := cfg.Validate(); err != nil {
+			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			// The backup is read twice (verified whole before anything is written), so standard input is kept in

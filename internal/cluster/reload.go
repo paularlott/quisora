@@ -66,18 +66,31 @@ func (n *Node) handleReload(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 // it; only if every node can apply it and all name the same cluster size does each one apply it. A node that is
 // down is not asked: it reads its configuration when it starts. The reports are sorted by node, and the error says
 // why nothing (or not everything) was applied.
+//
+// The nodes are those of the cluster gossip, or, for nodes sharing a database, of the notice gossip
+// (cluster.notify). Nodes sharing a database without it have no way to reach each other: only this one reloads, and
+// the error says so.
 func (n *Node) ReloadCluster(ctx context.Context) ([]ReloadReport, error) {
-	if n.gc == nil {
+	gc, peers := n.gc, []*member(nil)
+	switch {
+	case n.gc != nil:
+		peers = n.otherPeers()
+	case n.ngc != nil:
+		gc, peers = n.ngc, n.noticePeers()
+	default:
 		r := n.reload(ctx, true, 0)
 		if r.Error != "" {
 			return []ReloadReport{r}, errors.New(r.Error)
+		}
+		if n.shared != nil {
+			return []ReloadReport{r}, errors.New("reloaded this node only: nodes sharing the database without " +
+				"cluster.notify cannot reach each other; reload each of them (SIGHUP), or set up cluster.notify")
 		}
 		return []ReloadReport{r}, nil
 	}
 	n.reloadMu.Lock() // one reload at a time from this node
 	defer n.reloadMu.Unlock()
-	peers := n.otherPeers()
-	checks := n.reloadPhase(ctx, peers, reloadReq{})
+	checks := n.reloadPhase(ctx, gc, peers, reloadReq{})
 	want, bad := 0, ""
 	for _, r := range checks {
 		switch {
@@ -93,7 +106,7 @@ func (n *Node) ReloadCluster(ctx context.Context) ([]ReloadReport, error) {
 			return checks, errors.New("nothing was reloaded: " + bad)
 		}
 	}
-	applied := n.reloadPhase(ctx, peers, reloadReq{Apply: true, Want: want})
+	applied := n.reloadPhase(ctx, gc, peers, reloadReq{Apply: true, Want: want})
 	var failed []string
 	for _, r := range applied {
 		if r.Error != "" {
@@ -108,12 +121,12 @@ func (n *Node) ReloadCluster(ctx context.Context) ([]ReloadReport, error) {
 
 // reloadPhase runs one phase on this node and on peers, and returns every node's report (a node that does not
 // answer in time gets one with an error).
-func (n *Node) reloadPhase(ctx context.Context, peers []*member, req reloadReq) []ReloadReport {
+func (n *Node) reloadPhase(ctx context.Context, gc *gossip.Cluster, peers []*member, req reloadReq) []ReloadReport {
 	replies := make(chan ReloadReport, len(peers))
 	for _, mb := range peers {
 		go func(mb *member) {
 			var resp ReloadReport
-			if err := n.gc.SendToWithResponse(mb.node, msgReload, &req, &resp); err != nil {
+			if err := gc.SendToWithResponse(mb.node, msgReload, &req, &resp); err != nil {
 				resp = ReloadReport{Error: "did not answer: " + err.Error()}
 			}
 			resp.Node = mb.id
@@ -143,6 +156,17 @@ collect:
 		out = append(out, ReloadReport{Node: id, Error: "did not answer in time"})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Node < out[j].Node })
+	return out
+}
+
+// noticePeers are the other nodes alive in the notice gossip of nodes sharing a database.
+func (n *Node) noticePeers() []*member {
+	var out []*member
+	for _, nd := range n.ngc.Nodes() {
+		if id := nd.ID.String(); id != n.id && nd.GetObservedState() == gossip.NodeAlive {
+			out = append(out, &member{id: id, node: nd, state: gossip.NodeAlive})
+		}
+	}
 	return out
 }
 
