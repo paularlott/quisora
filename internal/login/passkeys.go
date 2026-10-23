@@ -42,7 +42,7 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		extra = map[string]string{}
 	)
 	if in.Ticket != "" {
-		t, ok := m.getTicket(ctx, in.Ticket, "passkey")
+		t, ok := m.getTicket(ctx, in.Ticket, "passkey", "totp") // a passkey in place of the authenticator code, too
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 			return
@@ -172,7 +172,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 
 	if tid := res.Extra["ticket"]; tid != "" {
 		// Second factor after a verified password.
-		t, ok := m.getTicket(ctx, tid, "passkey")
+		t, ok := m.getTicket(ctx, tid, "passkey", "totp")
 		if !ok || t.UserID != u.ID || !m.useTicket(ctx, tid) {
 			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 			return

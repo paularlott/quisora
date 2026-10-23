@@ -353,3 +353,46 @@ test('clients: the FAPI 2.0 profile is offered for private_key_jwt clients and t
   expect(c.dpop_bound_access_tokens).toBe(true)
   expect(c.rotate_refresh_tokens).toBe(false)
 })
+
+test('account: recovery codes are made after confirming it is you, shown once, and not kept after the dialog', async ({ page }) => {
+  await signIn(page, 'user')
+  let made = false
+  await page.route('**/api-internal/account', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const res = await route.fetch()
+    const body = await res.json()
+    body.security.recovery_available = true
+    body.security.recovery_left = made ? 10 : 0
+    body.security.recovery_created = made ? new Date().toISOString() : null
+    return route.fulfill({ response: res, json: body })
+  })
+  let posts = 0
+  const codes = Array.from({ length: 10 }, (_, i) => `7K2M-9QXT-4HWD-B3R${i}`)
+  await page.route('**/api-internal/account/recovery-codes', (route) => {
+    posts++
+    if (posts === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
+    made = true
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ codes }) })
+  })
+  await page.route('**/api-internal/account/reauth', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
+  await page.goto('/account', { waitUntil: 'load' })
+  const row = page.locator('[x-data="accountRecovery"]')
+  await expect(row).toContainText('None')
+  await row.getByRole('button', { name: 'Create codes…' }).click()
+  const reauth = page.getByRole('dialog', { name: 'Confirm it is you' })
+  await expect(reauth).toBeVisible()
+  await reauth.locator('#f-ra_password').fill('stubbed')
+  await page.keyboard.press('Enter')
+  const dlg = page.getByRole('dialog', { name: 'Your recovery codes' })
+  await expect(dlg).toBeVisible()
+  await expect(dlg.locator('#recovery-codes')).toContainText(codes[0])
+  await expect(dlg.locator('#recovery-codes')).toContainText(codes[9])
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+  await dlg.getByRole('button', { name: 'I have saved them' }).click()
+  await expect(dlg).toBeHidden()
+  await expect(page.locator('#recovery-codes')).toHaveText('') // not kept in the page
+  await expect(row).toContainText('10 left')
+  await expect(row.getByRole('button', { name: 'Create new codes…' })).toBeVisible()
+})

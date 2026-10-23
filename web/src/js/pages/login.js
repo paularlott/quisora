@@ -160,10 +160,21 @@ function passkeyMixin() {
 
 function stepsMixin() {
   return {
-    step: 'password', ticket: '', methods: [], qr: '', secret: '', enrolStarted: false,
+    step: 'password', ticket: '', methods: [], alternatives: [], qr: '', secret: '', enrolStarted: false,
+    // at a second-factor step: '' the step itself, 'choose' the "Try another way" list, 'recovery' a recovery code
+    view: '',
 
-    get isTotp() { return this.step === 'totp' },
-    get isPasskeyStep() { return this.step === 'passkey' },
+    get secondFactor() { return this.step === 'totp' || this.step === 'passkey' },
+    get isTotp() { return this.step === 'totp' && this.view === '' },
+    get isPasskeyStep() { return this.step === 'passkey' && this.view === '' },
+    get isChooser() { return this.secondFactor && this.view === 'choose' },
+    get isRecovery() { return this.secondFactor && this.view === 'recovery' },
+    get altPasskey() { return this.step === 'totp' && this.alternatives.includes('passkey') && this.canPasskey },
+    get altRecovery() { return this.alternatives.includes('recovery') },
+    get noOtherWayText() {
+      return (this.altPasskey || this.altRecovery ? 'None of these? ' : 'There is no other way to finish signing in to this account. ') +
+        'Ask your administrator for a new invitation: it lets you set up your sign-in again.'
+    },
     get isEnrol() { return this.step === 'enrol' },
     get canEnrolPasskey() { return this.methods.includes('passkey') && this.canPasskey },
     get hasQR() { return this.qr !== '' },
@@ -195,6 +206,8 @@ function stepsMixin() {
     handle(res) {
       if (res.next) { announce('Signed in. Redirecting.'); go(res.next); return }
       this.step = res.step
+      this.view = ''
+      this.alternatives = res.alternatives || []
       this.ticket = res.ticket
       this.methods = res.methods || []
       if (this.stopConditional) this.stopConditional()
@@ -211,6 +224,26 @@ function stepsMixin() {
       if (res) this.handle(res)
     },
     confirmWithPasskey() { return this.passkeyLogin({ ticket: this.ticket }) },
+    tryAnotherWay() {
+      this.view = 'choose'
+      this.clearErrors()
+      this.focusFirst()
+    },
+    backToStep() {
+      this.view = ''
+      this.clearErrors()
+      this.focusFirst()
+    },
+    startRecovery() {
+      this.view = 'recovery'
+      this.clearErrors()
+      announce('Enter one of your recovery codes.')
+      this.focusFirst()
+    },
+    async submitRecovery() {
+      const res = await this.call('', () => anon('/api-internal/login/recovery', { ticket: this.ticket, code: this.form.rcode }))
+      if (res) this.handle(res)
+    },
 
     // ---- MFA enrolment
     async startTotpEnrol() {
@@ -253,7 +286,8 @@ export default function (Alpine) {
       this.step = 'email' // the sign-in starts with the email address (or a provider, or a passkey)
       // Back from a provider with a second factor due: continue with that step.
       if (d.step && d.ticket) {
-        this.handle({ step: d.step, ticket: d.ticket, methods: (d.methods || '').split(' ').filter(Boolean) })
+        this.handle({ step: d.step, ticket: d.ticket, methods: (d.methods || '').split(' ').filter(Boolean),
+          alternatives: (d.alternatives || '').split(' ').filter(Boolean) })
         return
       }
       this.startConditional({ org: this.org, next: this.next, tenant: this.tenant })

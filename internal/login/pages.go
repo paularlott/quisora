@@ -76,6 +76,7 @@ type loginData struct {
 	Hint        string // OIDC login_hint: an email address that pre-fills the sign-in form
 	// A second-factor step after a provider sign-in (step totp, passkey or enrol, its ticket, enrolment methods).
 	Step, Ticket, Methods string
+	Alternatives          string // the other ways to give the second factor at that step (stepResp.Alternatives)
 	Cancel                string // declines the authorization request next continues (empty for other sign-ins)
 }
 
@@ -117,6 +118,7 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "enrol"); ok && t.Provider != "" {
 			if u, err := m.s.Svc.Users.Get(ctx, t.UserID); err == nil && u.OrgID == org.ID {
 				d.Step, d.Ticket = t.Step, c.Value
+				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step), " ")
 			}
 			if d.Step == "enrol" {
 				d.Methods = "totp"

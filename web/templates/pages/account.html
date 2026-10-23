@@ -100,6 +100,28 @@
           </form>
           {{template "dialog-end"}}
         </li>
+
+        <li class="setting-row" x-data="accountRecovery">
+          <div class="setting-text">
+            <p class="setting-title"><span id="recovery-h">Recovery codes</span> <span :class="statusClass" x-text="statusText"></span></p>
+            <p class="muted" x-text="note">Codes that sign you in when your Authenticator App or passkey is not at hand, each once.</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" x-show="canCreate" x-cloak :aria-busy="busyAttr" :disabled="busy" aria-describedby="recovery-h" @click="create"><span x-text="createLabel">Create codes…</span></button>
+
+          {{template "dialog-start" (dict "id" "recovery-dialog" "title" "Your recovery codes" "size" "sm")}}
+          <div class="dialog-body">
+            <p>Save these codes somewhere safe, apart from your phone: a password manager, or printed and locked away. Each signs you in once in place of your Authenticator App or passkey. They are not shown again.</p>
+            <pre class="code-box mono" id="recovery-codes" aria-label="Recovery codes" x-text="codesText"></pre>
+            <div class="flex flex-wrap gap-2" x-data="copyFrom">
+              <button type="button" class="btn btn-secondary btn-sm" data-source="recovery-codes" data-what="recovery codes" @click="copy"><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button>
+              <button type="button" class="btn btn-secondary btn-sm" @click="download">{{template "icon" "download"}} Download</button>
+            </div>
+          </div>
+          <div class="dialog-foot">
+            <button type="button" class="btn btn-primary" @click="closeThis">I have saved them</button>
+          </div>
+          {{template "dialog-end"}}
+        </li>
       </ul>
     </section>
 

@@ -440,6 +440,61 @@ export default function (Alpine) {
     },
   }))
 
+  // ---- Recovery codes ----------------------------------------------------------------------------------------
+  // Made (or replaced) after a recent re-authentication and shown once, in a dialog with copy and download.
+  Alpine.data('accountRecovery', () => mix(formMixin(), dialogMixin(), scoped(), {
+    left: 0, created: null, available: false, loading: true, codes: [],
+    async init() {
+      window.addEventListener('account-live', () => this.refresh())
+      await this.refresh()
+    },
+    async refresh() {
+      try {
+        const r = await Alpine.store('account').load()
+        this.left = r.security.recovery_left
+        this.created = r.security.recovery_created
+        this.available = r.security.recovery_available
+      } catch { /* the profile card shows the error */ } finally { this.loading = false }
+    },
+    get has() { return this.created !== null && this.created !== undefined },
+    get statusText() { return this.loading ? '' : this.has ? `${this.left} left` : 'None' },
+    get statusClass() { return this.has && this.left > 3 ? 'badge badge-success' : this.has ? 'badge badge-warning' : 'badge badge-plain' },
+    get note() {
+      if (!this.available) return 'Set up an Authenticator App or a passkey first: recovery codes stand in for them when they are not at hand.'
+      if (!this.has) return 'Codes that sign you in when your Authenticator App or passkey is not at hand, each once. Make them now, before you need them.'
+      const made = `Made ${fmtDate(this.created)}.`
+      return this.left === 0 ? `${made} All have been used: make new ones.` : this.left <= 3 ? `${made} Only a few are left: make new ones.` : `${made} Each signs you in once when your Authenticator App or passkey is not at hand.`
+    },
+    get canCreate() { return !this.loading && this.available },
+    get createLabel() { return this.busy ? 'Creating…' : this.has ? 'Create new codes…' : 'Create codes…' },
+    get codesText() { return this.codes.join('\n') },
+    async create(ev) {
+      const opener = ev.currentTarget
+      if (this.has) {
+        const ok = await Alpine.store('confirm').ask({ title: 'Create new recovery codes', message: 'Replace your recovery codes?',
+          detail: 'Your current codes stop working at once, used or not.', confirmLabel: 'Create new codes' })
+        if (!ok) return
+      }
+      const res = await this.runIn('recovery_', () => withReauth(Alpine, () => post('/api-internal/account/recovery-codes'), opener, this))
+      if (!res) return
+      this.codes = res.codes
+      this.openDlg('recovery-dialog', opener)
+      announce('Your recovery codes are shown. Save them now: they are not shown again.')
+      await Alpine.store('account').reload()
+      await this.refresh()
+    },
+    download() {
+      const site = document.title.split(' · ').pop() || 'Quisora'
+      const text = `${site} recovery codes (made ${new Date().toLocaleDateString()}). Each works once.\n\n${this.codes.join('\n')}\n`
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
+      a.download = 'recovery-codes.txt'
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    },
+    afterClose() { this.codes = [] }, // not kept in the page once the dialog is closed
+  }))
+
   // ---- Sessions ----------------------------------------------------------------------------------------------
   Alpine.data('accountSessions', () => ({
     items: [], loading: true, loadError: '', busy: false,

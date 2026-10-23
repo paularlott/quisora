@@ -2,6 +2,7 @@ package login_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -900,5 +901,90 @@ func TestDeviceCookieEndsWithPasswordChange(t *testing.T) {
 	}
 	if res, _ := b.login("acme", "pat", pw); res.StatusCode != 429 {
 		t.Fatalf("the old device cookie still counts after the password changed: %d", res.StatusCode)
+	}
+}
+
+// A recovery code in place of the authenticator code: it signs in once, as two factors, its owner is told by email,
+// and a wrong one counts towards the lockout like a wrong authenticator code.
+func TestRecoveryCodeStep(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Audit.Logins = true })
+	u := e.user(t, e.Primary, "pat", model.RoleUser)
+	e.giveTOTP(t, u)
+	u, _ = e.Svc.Users.Get(context.Background(), u.ID)
+	codes, err := e.Svc.CreateRecoveryCodes(context.Background(), service.System, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := func(b *browser) string {
+		res, out := b.login("primary", "pat", userPassword)
+		wantStatus(t, res, out, 200)
+		if str(out, "step") != "totp" {
+			t.Fatalf("no second-factor step: %v", out)
+		}
+		return str(out, "ticket")
+	}
+
+	b := e.browser(t)
+	tk := ticket(b)
+	res, out := b.post("/api-internal/login/recovery", map[string]any{"ticket": tk, "code": "AAAA-AAAA-AAAA-AAAA"})
+	wantStatus(t, res, out, 401)
+	if str(out, "field") != "rcode" || b.hasSession() {
+		t.Fatalf("wrong code: %v", out)
+	}
+	res, out = b.post("/api-internal/login/recovery", map[string]any{"ticket": tk, "code": strings.ToLower(codes[2])})
+	wantStatus(t, res, out, 200)
+	if str(out, "next") != "/account" || !b.hasSession() {
+		t.Fatalf("recovery sign-in: %v", out)
+	}
+	sess, _ := e.Svc.Sessions.All(context.Background(), u.ID)
+	if len(sess) != 1 || strings.Join(sess[0].AMR, ",") != "pwd,otp,mfa" {
+		t.Fatalf("amr %+v", sess)
+	}
+	if m := e.nextMail(t); !strings.Contains(m.Subject, "recovery code was used") || !strings.Contains(m.Text, "9 of them are left") {
+		t.Fatalf("notice: %q %q", m.Subject, m.Text)
+	}
+	if len(e.audits(t, "login.recovery_code")) != 1 {
+		t.Fatal("not audited")
+	}
+
+	// the same code again, from another browser: refused
+	b2 := e.browser(t)
+	res, out = b2.post("/api-internal/login/recovery", map[string]any{"ticket": ticket(b2), "code": codes[2]})
+	wantStatus(t, res, out, 401)
+
+	// a ticket that has not passed the first factor, or an unknown one: refused
+	res, out = b2.post("/api-internal/login/recovery", map[string]any{"ticket": "n1.unknown", "code": codes[3]})
+	wantStatus(t, res, out, 401)
+}
+
+// The account page makes recovery codes after a recent re-authentication, once the account has a second factor.
+func TestAccountRecoveryCodes(t *testing.T) {
+	e := newEnv(t, nil)
+	u := e.user(t, e.Primary, "pat", model.RoleUser)
+	b := e.signedIn(t, u)
+	res, out := b.get("/api-internal/account")
+	_ = res
+	var acct map[string]any
+	_ = json.Unmarshal([]byte(out), &acct)
+	sec := acct["security"].(map[string]any)
+	if sec["recovery_available"] != false || sec["recovery_created"] != nil {
+		t.Fatalf("no second factor: %v", sec)
+	}
+	b.markReauth()
+	res2, o := b.post("/api-internal/account/recovery-codes", nil)
+	wantStatus(t, res2, o, 422)
+
+	e.giveTOTP(t, u)
+	b.markReauth()
+	res2, o = b.post("/api-internal/account/recovery-codes", nil)
+	wantStatus(t, res2, o, 200)
+	if list, _ := o["codes"].([]any); len(list) != service.RecoveryCodeCount || res2.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("codes: %v %q", o, res2.Header.Get("Cache-Control"))
+	}
+	_, out = b.get("/api-internal/account")
+	_ = json.Unmarshal([]byte(out), &acct)
+	sec = acct["security"].(map[string]any)
+	if sec["recovery_left"] != float64(10) || sec["recovery_created"] == nil || sec["recovery_available"] != true {
+		t.Fatalf("after: %v", sec)
 	}
 }

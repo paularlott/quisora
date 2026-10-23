@@ -27,6 +27,26 @@ type stepResp struct {
 	Ticket  string   `json:"ticket,omitempty"`
 	Next    string   `json:"next,omitempty"`
 	Methods []string `json:"methods,omitempty"`
+	// Alternatives are the other ways this account can give its second factor at a totp or passkey step ("passkey",
+	// "recovery"): the page's "Try another way" offers only these.
+	Alternatives []string `json:"alternatives,omitempty"`
+}
+
+// alternatives lists the other ways u can give the second factor at step (see stepResp.Alternatives): a passkey
+// instead of the authenticator code, and recovery codes when some are left.
+func (m *Module) alternatives(ctx context.Context, u *model.User, step string) []string {
+	var out []string
+	if step == "totp" && m.Passkeys != nil {
+		if n, err := m.s.Svc.UsablePasskeys(ctx, u.ID, ""); err == nil && n > 0 {
+			out = append(out, "passkey")
+		}
+	}
+	if step == "totp" || step == "passkey" {
+		if left, _ := m.s.Svc.RecoveryCodesLeft(ctx, u); left > 0 {
+			out = append(out, "recovery")
+		}
+	}
+	return out
 }
 
 // password handles POST /api-internal/login/password: {org, email, password[, next]} -> {next} or {step, ticket}.
@@ -140,7 +160,7 @@ func (m *Module) secondFactor(ctx context.Context, u *model.User, eff *service.S
 	if err != nil {
 		return stepResp{}, err
 	}
-	resp := stepResp{Step: t.Step, Ticket: id}
+	resp := stepResp{Step: t.Step, Ticket: id, Alternatives: m.alternatives(ctx, u, t.Step)}
 	if t.Step == "enrol" {
 		resp.Methods = []string{"totp"}
 		if m.Passkeys != nil {
@@ -186,8 +206,11 @@ func (m *Module) failed(w http.ResponseWriter, r *http.Request, key string, org 
 	}
 	field := ""
 	msg := msgBadLogin
-	if reason == "totp" {
+	switch reason {
+	case "totp":
 		msg, field = "That code is incorrect or has already been used.", "code"
+	case "recovery_code":
+		msg, field = "That recovery code is incorrect or has already been used.", "rcode"
 	}
 	writeErr(w, http.StatusUnauthorized, msg, field)
 }
@@ -248,6 +271,76 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 		return
 	}
+	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider}, t.Next)
+	if err != nil {
+		m.internalError(w, r, "create session", err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
+}
+
+type recoveryReq struct {
+	Ticket string `json:"ticket"`
+	Code   string `json:"code"`
+}
+
+// recovery handles POST /api-internal/login/recovery: {ticket, code} -> {next}. A recovery code stands in for the
+// second factor a sign-in asks for after the first (an authenticator code, or a passkey), once. It counts towards
+// the lockout like a wrong authenticator code, and its owner is emailed when one is used.
+func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
+	if !m.anonOK(w, r) {
+		return
+	}
+	var in recoveryReq
+	if !decode(w, r, &in) {
+		return
+	}
+	ctx := r.Context()
+	t, ok := m.getTicket(ctx, in.Ticket, "totp", "passkey")
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		return
+	}
+	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
+	if err != nil || !u.Enabled(time.Now()) {
+		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		return
+	}
+	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		return
+	}
+	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+		return
+	}
+	key := m.lockKeyFor(r, u, u.ID)
+	if m.locked(ctx, key) {
+		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
+		m.lockedResponse(w)
+		return
+	}
+	if !m.attempt(ctx, in.Ticket) {
+		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
+		return
+	}
+	used, left := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.Code)
+	if !used {
+		m.failed(w, r, key, org, u, u.Username, "recovery_code")
+		return
+	}
+	if !m.useTicket(ctx, in.Ticket) {
+		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		return
+	}
+	m.audit(r, "login.recovery_code", org, u, u.Username, map[string]string{"left": strconv.Itoa(left)})
+	if m.Mail != nil && u.Email != "" {
+		if err := m.Mail.SendRecoveryUsed(ctx, u, org, left); err != nil {
+			m.s.Log.Error("send recovery code notice", "error", err)
+		}
+	}
+	// A one-time code as the second factor (RFC 8176 "otp"), as an authenticator code is.
 	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
 	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider}, t.Next)
 	if err != nil {

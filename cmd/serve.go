@@ -57,7 +57,8 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			for {
 				select {
 				case <-ctx.Done():
-					log.Info("shutting down")
+					stop() // a second Ctrl+C (or SIGTERM) now ends the process at once
+					log.Info("shutting down (interrupt again to stop at once)")
 					a.Close()
 					return nil
 				case <-hup:

@@ -1,6 +1,6 @@
 {{template "auth" .}}
 {{define "content"}}
-<div x-data="loginPage" data-org="{{.Data.OrgName}}" data-tenant="{{.Data.Tenant}}" data-next="{{.Data.Next}}" data-hint="{{.Data.Hint}}" data-passkey="{{if .Data.Passkey}}1{{end}}"{{with .Data.Step}} data-step="{{.}}" data-ticket="{{$.Data.Ticket}}" data-methods="{{$.Data.Methods}}"{{end}} class="stack">
+<div x-data="loginPage" data-org="{{.Data.OrgName}}" data-tenant="{{.Data.Tenant}}" data-next="{{.Data.Next}}" data-hint="{{.Data.Hint}}" data-passkey="{{if .Data.Passkey}}1{{end}}"{{with .Data.Step}} data-step="{{.}}" data-ticket="{{$.Data.Ticket}}" data-methods="{{$.Data.Methods}}" data-alternatives="{{$.Data.Alternatives}}"{{end}} class="stack">
   <div>
     <h1 class="page-title">Sign in</h1>
     <p class="page-sub">to <strong>{{.Data.OrgDisplay}}</strong></p>
@@ -48,7 +48,7 @@
       <p class="field-error" id="e-password" x-text="errors.password"></p>
     </div>
     <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="submitLabel">Sign in</span></button>
-    {{if .Data.CanReset}}<button type="button" class="btn btn-ghost btn-sm self-start" @click="openForgot">Forgot your password?</button>{{end}}
+    {{if .Data.CanReset}}<button type="button" class="btn btn-ghost btn-sm self-center" @click="openForgot">Forgot your password?</button>{{end}}
   </form>
 
   {{template "login-steps"}}

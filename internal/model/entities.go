@@ -143,6 +143,10 @@ type User struct {
 	// last set up (nil without one).
 	PasswordChangedAt *time.Time `msgpack:"pca,omitempty" json:"password_changed_at"`
 	MFAEnrolledAt     *time.Time `msgpack:"mfa,omitempty" json:"mfa_enrolled_at"`
+	// RecoveryCodes are the hashes of the user's recovery codes (service.CreateRecoveryCodes), each a second factor
+	// once; RecoveryCreated is when they were made. The codes used are in SignIn.RecoveryUsed.
+	RecoveryCodes   []string   `msgpack:"rc,omitempty" json:"-"`
+	RecoveryCreated *time.Time `msgpack:"rct,omitempty" json:"-"`
 	// StatusChanged records the last time the account was disabled or enabled again (Active says which).
 	StatusChanged *StatusChange `msgpack:"stc,omitempty" json:"status_changed"`
 }
@@ -851,6 +855,8 @@ type SignIn struct {
 	OrgID        string    `msgpack:"o" json:"org_id"`
 	LastLogin    time.Time `msgpack:"ll" json:"last_login"`
 	TOTPLastStep int64     `msgpack:"tl" json:"-"` // the last TOTP time step accepted: a code works once
+	// RecoveryUsed are the hashes of the recovery codes used (User.RecoveryCodes): each works once, on every node.
+	RecoveryUsed []string `msgpack:"ru,omitempty" json:"-"`
 }
 
 func (s *SignIn) Kind() Kind { return KindSignIn }

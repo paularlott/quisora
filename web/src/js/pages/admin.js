@@ -545,7 +545,7 @@ const CONFIDENTIAL_GRANTS = ['client_credentials', TOKEN_EXCHANGE]
 // Standard scopes shown as checkboxes (the rest of a client's scopes are its own API scopes, edited as rows).
 const STD_SCOPES = [
   { value: 'openid', help: 'Required for OpenID Connect sign-in: the user\u2019s identity.' },
-  { value: 'profile', help: 'The user\u2019s name, username and picture.' },
+  { value: 'profile', help: 'The user\u2019s name, username, language and time zone.' },
   { value: 'email', help: 'The user\u2019s email address and whether it is verified.' },
   { value: 'groups', help: 'The user\u2019s group names and tags.' },
   { value: 'org', help: 'The user\u2019s organization and tenant.' },

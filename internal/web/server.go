@@ -69,7 +69,13 @@ type Server struct {
 	lastProbe atomic.Int64 // unix nanos of the last GET /readyz: something is routing traffic by it
 	draining  atomic.Bool  // shutting down: /readyz answers 503
 	stopOnce  sync.Once
+	stopping  chan struct{} // closed when the listener closes (Stopping)
+	closeOnce sync.Once
 }
+
+// Stopping is closed when the server stops taking requests. Handlers that hold a response open (the live-update
+// streams) return on it: shutdown waits for every request in flight, and the clients reconnect by themselves.
+func (s *Server) Stopping() <-chan struct{} { return s.stopping }
 
 // probeSeen is how recent a /readyz probe must be for Stop to drain first: something is routing traffic by it.
 const probeSeen = 2 * time.Minute
@@ -94,7 +100,7 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		return nil, err
 	}
 	SetTrustedProxies(cfg.Server.TrustProxy)
-	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r,
+	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r, stopping: make(chan struct{}),
 		Site: SiteFromConfig(cfg), Mux: http.NewServeMux(), skin: skin}
 	if skin != nil {
 		s.Site.Skin, s.Site.SkinCSS = skin.Name, "/branding/skin.css?v="+skin.Version
@@ -422,6 +428,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.Log.Error("https server", "error", err)
 		}
 	}()
+	s.httpSrv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.stopping) }) })
 	go func() {
 		<-ctx.Done()
 		s.Stop()

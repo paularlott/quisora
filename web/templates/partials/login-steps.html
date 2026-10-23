@@ -1,15 +1,41 @@
-{{/* The steps after a verified password or an invitation: authenticator code, passkey as second factor, MFA
-     enrolment. Bound to the stepsMixin in pages/login.js (loginPage and invitePage). */}}
+{{/* The steps after a verified password or an invitation: authenticator code, passkey as second factor, a recovery
+     code instead of either, MFA enrolment. Bound to the stepsMixin in pages/login.js (loginPage and invitePage). */}}
 {{define "login-steps"}}
   <form class="stack" x-show="isTotp" x-cloak @submit.prevent="submitTotp" novalidate>
     {{template "otp-field" (dict "name" "code" "stepfocus" true)}}
     <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
+    <button type="button" class="btn btn-ghost btn-sm self-center" @click="tryAnotherWay">Try another way</button>
   </form>
 
   <div class="stack" x-show="isPasskeyStep" x-cloak>
     <p>Your organization asks for your passkey as well as your password.</p>
     <button type="button" class="btn btn-primary w-full" data-step-focus :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Confirm with your passkey</button>
+    <button type="button" class="btn btn-ghost btn-sm self-center" @click="tryAnotherWay">Try another way</button>
   </div>
+
+  {{/* Try another way: the other ways this account can give its second factor (the server lists them), and what to do
+       when there is none. */}}
+  <div class="stack" x-show="isChooser" x-cloak>
+    <h2 class="section-title" id="another-way-h" tabindex="-1" data-step-focus>Try another way</h2>
+    <div class="stack" role="group" aria-labelledby="another-way-h">
+      <button type="button" class="btn btn-secondary w-full" x-show="altPasskey" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Use your passkey instead</button>
+      <button type="button" class="btn btn-secondary w-full" x-show="altRecovery" x-cloak @click="startRecovery">{{template "icon" "lock"}} Use a recovery code</button>
+    </div>
+    <p class="muted" x-text="noOtherWayText">No other way? Ask your administrator for a new invitation: it lets you set up your sign-in again.</p>
+    <button type="button" class="btn btn-ghost btn-sm self-start" @click="backToStep">{{template "icon" "chevron-left"}} Back</button>
+  </div>
+
+  {{/* A recovery code in place of the authenticator code or passkey: one of the codes saved when they were made. */}}
+  <form class="stack" x-show="isRecovery" x-cloak @submit.prevent="submitRecovery" novalidate>
+    <div class="field">
+      <label class="label" for="f-rcode">Recovery code <span class="req" aria-hidden="true">*</span></label>
+      <input class="input mono" id="f-rcode" name="rcode" type="text" autocomplete="off" autocapitalize="characters" x-model="form.rcode" data-step-focus :aria-invalid="invalid.rcode" aria-describedby="h-rcode e-rcode" aria-required="true" spellcheck="false">
+      <p class="help" id="h-rcode">One of the recovery codes you saved. Each only works once.</p>
+      <p class="field-error" id="e-rcode" x-text="errors.rcode"></p>
+    </div>
+    <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
+    <button type="button" class="btn btn-ghost btn-sm self-start" @click="tryAnotherWay">{{template "icon" "chevron-left"}} Back</button>
+  </form>
 
   <div class="stack" x-show="isEnrol" x-cloak>
     <form class="stack" @submit.prevent="confirmTotpEnrol" novalidate>

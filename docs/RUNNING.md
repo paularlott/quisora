@@ -190,8 +190,18 @@ gossip cluster (a change one node made but the majority has not confirmed yet mu
 else a super admin first. Organizations need no administrator of their own: super admins administer every one, so an
 organization's last administrator can be demoted or removed.
 
-**Account changes** (a passkey, the authenticator app, the primary address, connecting a sign-in provider, an API
-token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
+**Recovery codes** stand in for the second factor (the authenticator app, or a passkey after the password) when it
+is not at hand: a lost phone, a broken security key. A user with a second factor makes ten from the account page
+(after confirming it is them) and sees them once; each signs in once, typed loosely (lower case, without dashes, O
+for 0). The second-factor step's **Try another way** lists what the account has instead: its passkey in place of the
+authenticator code, and its recovery codes while some are left; with neither, it says to ask an administrator for a
+new invitation. Using one is audited (`login.recovery_code`) and emailed to the user with the number left, so a code someone
+else got hold of is noticed at its first use. Making new codes ends the old ones; removing the last second factor,
+an invitation or a lock-out removes them. They are stored as hashes, and a used one is refused on every node. They do
+not replace a forgotten password: that is a reset or an invitation.
+
+**Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
+provider, an API token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
 sign-in through a provider trusted as a second factor does not count when the account has one of its own.
 
 **Personal API tokens** never expire unless their owner gives a lifetime when making one (at most 10 years). Set

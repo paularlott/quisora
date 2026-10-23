@@ -300,6 +300,8 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, 
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.s.Stopping(): // the server is shutting down: the client reconnects (retry), elsewhere or later
+			return
 		case <-recheck.C:
 			if !allowed() {
 				_ = write("event: ended\ndata: {}\n\n") // the client reloads, and signs in again if it must

@@ -28,6 +28,18 @@ const emailsStep = async (p) => {
 }
 const userEmailsStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.getByRole('list', { name: 'Email addresses' }).waitFor() }, emailsStep]
 
+// secondFactorStep reaches the authenticator-code step with the password step's answer stubbed (a passkey and
+// recovery codes as the other ways).
+const secondFactorStep = async (p) => {
+  await p.route('**/api-internal/login/password', (r) => r.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ step: 'totp', ticket: 'n1.stub', alternatives: ['passkey', 'recovery'] }) }))
+  await p.locator('#f-email').fill('alan@acme.example')
+  await p.getByRole('button', { name: 'Continue' }).click()
+  await p.locator('#f-password').fill('stubbed password')
+  await p.locator('#f-password').press('Enter')
+  await p.getByRole('button', { name: 'Try another way' }).first().waitFor()
+}
+
 export const PAGES = [
   { name: 'orgs', path: '/admin/orgs', as: 'super', steps: [waitRows] },
   // the navigation drawer, open over the users list on a phone-sized screen (super admin: every navigation group)
@@ -168,6 +180,16 @@ PAGES.push(
   { name: 'landing', path: '/', as: 'none' },
   { name: 'landing-picker', path: '/?next=%2Foauth%2Fauthorize%2Fresume', as: 'none' },
   { name: 'login-org', path: '/login/acme', as: 'none' },
+  // the second-factor step (the password step's answer stubbed): "Try another way", then a recovery code
+  { name: 'login-another-way', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+    await p.getByRole('button', { name: 'Try another way' }).first().click()
+    await p.getByRole('heading', { name: 'Try another way' }).waitFor()
+  }] },
+  { name: 'login-recovery-code', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+    await p.getByRole('button', { name: 'Try another way' }).first().click()
+    await p.getByRole('button', { name: 'Use a recovery code' }).click()
+    await p.locator('#f-rcode').waitFor()
+  }] },
   { name: 'account', path: '/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
   // The user menu: a floating glass panel over the page, open for the audit (contrast budget of --glass-bg-panel).
   { name: 'account-usermenu', path: '/account', as: 'user', steps: [async (p) => {

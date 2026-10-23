@@ -68,6 +68,7 @@ type tplData struct {
 	Org     string
 	Link    string
 	Expires string
+	Left    string // recovery codes left (recoveryTpl)
 }
 
 var linkPaths = map[string]string{service.LinkInvite: "/invite", service.LinkReset: "/reset", service.LinkVerify: "/verify-email"}
@@ -97,6 +98,21 @@ func (m *Mailer) SendVerifyAddress(ctx context.Context, u *model.User, org *mode
 		return err
 	}
 	return m.renderTo(ctx, address, u, org, verifyTpl, m.Svc.LinkURL(linkPaths[service.LinkVerify], tok), service.VerifyTTL)
+}
+
+// SendRecoveryUsed tells u that one of their recovery codes was used to sign in, and how many are left: someone who
+// got hold of the codes is noticed at their first use.
+func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model.Org, left int) error {
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Link: m.Cfg.Server.PublicURL + "/account", Left: strconv.Itoa(left)}
+	if org != nil {
+		d.Org = org.DisplayName
+	}
+	msg, err := recoveryTpl.render(d)
+	if err != nil {
+		return err
+	}
+	msg.To = u.Email
+	return m.Send(ctx, msg)
 }
 
 func (m *Mailer) render(ctx context.Context, u *model.User, org *model.Org, t *tpl, link string, ttl time.Duration) error {
@@ -204,6 +220,21 @@ If you did not ask for this, ignore this message: your password has not changed.
 		`Someone asked to reset the password for your {{.Site}} account. Choose a new password to continue.`,
 		"Reset password",
 		`This link can be used once and expires in {{.Expires}}. If you did not ask for this, ignore this message: your password has not changed.`)
+
+	recoveryTpl = mk("A recovery code was used to sign in to {{.Site}}",
+		`Hello {{.Name}},
+
+One of your recovery codes was just used to sign in to your {{.Site}} account. {{.Left}} of them are left.
+
+If it was you, set up your authenticator app or passkey again, and make new recovery codes once few are left:
+
+{{.Link}}
+
+If it was not you, tell your administrator at once: someone has your password and your recovery codes.
+`,
+		`One of your recovery codes was just used to sign in to your {{.Site}} account. <strong>{{.Left}}</strong> of them are left. If it was you, set up your authenticator app or passkey again, and make new recovery codes once few are left.`,
+		"Open your account",
+		`If it was not you, tell your administrator at once: someone has your password and your recovery codes.`)
 
 	verifyTpl = mk("Confirm your email address for {{.Site}}",
 		`Hello {{.Name}},

@@ -54,6 +54,7 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("POST /api-internal/account/totp/begin", m.totpBegin)
 	h("POST /api-internal/account/totp/confirm", m.totpConfirm)
 	h("DELETE /api-internal/account/totp", m.totpDisable)
+	h("POST /api-internal/account/recovery-codes", m.createRecoveryCodes)
 
 	h("GET /api-internal/account/reauth", m.reauthStatus)
 	h("POST /api-internal/account/reauth", m.reauthPassword)
@@ -144,13 +145,18 @@ type accountResp struct {
 		RequireMFA bool   `json:"require_mfa"`
 	} `json:"org"`
 	Security struct {
-		HasPassword       bool     `json:"has_password"`
-		TOTP              bool     `json:"totp"`
-		Passkeys          int      `json:"passkeys"`
-		PasskeysAvailable bool     `json:"passkeys_available"`
-		PasswordsAllowed  bool     `json:"passwords_allowed"` // the organization signs people in with passwords
-		MailAvailable     bool     `json:"mail_available"`
-		Providers         []string `json:"providers"`
+		HasPassword bool `json:"has_password"`
+		TOTP        bool `json:"totp"`
+		// Recovery codes: how many are left, when they were made (null: never), and whether the account has a
+		// second factor for them to stand in for.
+		RecoveryLeft      int        `json:"recovery_left"`
+		RecoveryCreated   *time.Time `json:"recovery_created"`
+		RecoveryAvailable bool       `json:"recovery_available"`
+		Passkeys          int        `json:"passkeys"`
+		PasskeysAvailable bool       `json:"passkeys_available"`
+		PasswordsAllowed  bool       `json:"passwords_allowed"` // the organization signs people in with passwords
+		MailAvailable     bool       `json:"mail_available"`
+		Providers         []string   `json:"providers"`
 	} `json:"security"`
 }
 
@@ -165,6 +171,8 @@ func (m *Module) summary(ctx context.Context, u *model.User) (accountResp, error
 		return out, err
 	}
 	out.Security.HasPassword, out.Security.TOTP, out.Security.Passkeys = u.PasswordHash != "", u.HasTOTP(), n
+	out.Security.RecoveryLeft, out.Security.RecoveryCreated = m.s.Svc.RecoveryCodesLeft(ctx, u)
+	out.Security.RecoveryAvailable = u.HasTOTP() || n > 0
 	out.Security.PasskeysAvailable, out.Security.MailAvailable = m.Passkeys != nil, m.Mail != nil
 	out.Security.PasswordsAllowed = m.passwordsAllowed(ctx, u)
 	out.Security.Providers = []string{}
@@ -765,6 +773,9 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 			}
 		}
 	}
+	if err := m.s.Svc.DropRecoveryCodes(ctx, a.u.ID); err != nil {
+		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", a.u.ID, "error", err)
+	}
 	m.auditSelf(r, a, "account.passkey.delete", map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -927,6 +938,27 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 }
 
 // totpDisable handles DELETE /api-internal/account/totp; it needs a re-authentication within the last five minutes.
+// createRecoveryCodes handles POST /api-internal/account/recovery-codes: a new set of recovery codes (the old ones
+// stop working), shown this once. After a recent re-authentication.
+func (m *Module) createRecoveryCodes(w http.ResponseWriter, r *http.Request, a acct) {
+	if !m.needReauth(w, r, a) {
+		return
+	}
+	u, err := m.fresh(r.Context(), a)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	codes, err := m.s.Svc.CreateRecoveryCodes(r.Context(), a.actor, u)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	m.changed(a)
+	w.Header().Set("Cache-Control", "no-store") // shown this once
+	web.WriteJSON(w, http.StatusOK, map[string]any{"codes": codes})
+}
+
 func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	if !m.needReauth(w, r, a) {
@@ -951,6 +983,9 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); err != nil {
 		web.WriteError(w, mapStoreErr(err))
 		return
+	}
+	if err := m.s.Svc.DropRecoveryCodes(ctx, u.ID); err != nil {
+		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", u.ID, "error", err)
 	}
 	m.changed(a)
 	m.auditSelf(r, a, "account.totp.disable", nil)

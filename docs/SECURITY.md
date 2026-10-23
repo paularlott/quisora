@@ -97,6 +97,10 @@ hashes are argon2id: rotate the master key, and reset passwords if you cannot ru
 cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and
 check who could reach the gossip port.
 
+**A user lost their authenticator app or passkey.** With recovery codes they sign in with one of those and set up a
+new factor; without, an administrator sends them an invitation (which replaces every credential). A
+`login.recovery_code` they did not make means someone has their password and their codes: lock the account out.
+
 **Nobody can get into the console** (break-glass: the last super admin lost their password, authenticator and
 passkeys, left, or their account ended). Recovery needs a server's configuration and the master key, not the console,
 and the servers keep running:

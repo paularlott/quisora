@@ -136,6 +136,7 @@ func (m *Module) Register(s *web.Server) {
 	// anonymous sign-in JSON
 	mux.HandleFunc("POST /api-internal/login/password", m.password)
 	mux.HandleFunc("POST /api-internal/login/totp", m.totp)
+	mux.HandleFunc("POST /api-internal/login/recovery", m.recovery)
 	mux.HandleFunc("POST /api-internal/login/passkey/begin", m.passkeyBegin)
 	mux.HandleFunc("POST /api-internal/login/passkey/finish", m.passkeyFinish)
 	mux.HandleFunc("POST /api-internal/login/enrol/totp/begin", m.enrolTOTPBegin)

@@ -942,6 +942,7 @@ func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey stri
 			u.PasswordChangedAt = &now
 		}
 		u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
+		u.RecoveryCodes, u.RecoveryCreated = nil, nil
 		err := s.Users.Update(ctx, u)
 		if !errors.Is(err, store.ErrStale) || attempt == 9 {
 			fail(err)

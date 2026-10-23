@@ -311,3 +311,51 @@ func TestDeletingPasskeyEndsItsSessions(t *testing.T) {
 		}
 	}
 }
+
+// "Try another way" at the authenticator-code step: the step lists the account's other ways (a passkey, recovery
+// codes left), and a passkey is accepted there in place of the code.
+func TestSecondFactorAlternatives(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	e.giveTOTP(t, pat)
+	alts := func() ([]any, string) {
+		res, out := e.browser(t).login("acme", "pat", userPassword)
+		wantStatus(t, res, out, 200)
+		a, _ := out["alternatives"].([]any)
+		return a, str(out, "step")
+	}
+	if a, step := alts(); step != "totp" || len(a) != 0 {
+		t.Fatalf("no other way: %s %v", step, a)
+	}
+
+	signed := e.signedIn(t, pat)
+	signed.registerPasskey("Laptop")
+	u, _ := e.Svc.Users.Get(context.Background(), pat.ID)
+	if _, err := e.Svc.CreateRecoveryCodes(context.Background(), nil, u); err != nil {
+		t.Fatal(err)
+	}
+	if a, step := alts(); step != "totp" || len(a) != 2 || a[0] != "passkey" || a[1] != "recovery" {
+		t.Fatalf("passkey and codes: %s %v", step, a)
+	}
+
+	// the passkey in place of the code, with the authenticator-code step's ticket
+	b := e.browser(t)
+	b.auth = signed.auth
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	status, done := b.passkeyLogin(map[string]any{"ticket": str(out, "ticket")})
+	if status != 200 || !b.hasSession() {
+		t.Fatalf("passkey at the code step: %d %v", status, done)
+	}
+	sess, _ := e.Svc.Sessions.All(context.Background(), pat.ID)
+	found := false
+	for _, s := range sess {
+		if strings.HasPrefix(strings.Join(s.AMR, ","), "pwd,") && strings.HasSuffix(strings.Join(s.AMR, ","), ",mfa") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no two-factor session: %+v", sess)
+	}
+}
