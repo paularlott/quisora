@@ -161,7 +161,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	}
 	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
 	if c.Mail.Enabled() { // its queue is on disk: messages left by the last run go out now
-		if a.mailer, err = mail.New(c, log, sealer); err != nil {
+		if a.mailer, err = mail.New(c, log, sealer, &mail.SMTP{Cfg: c.Mail}); err != nil {
 			a.Close()
 			return nil, err
 		}

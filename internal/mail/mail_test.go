@@ -39,7 +39,7 @@ func newMailer(t *testing.T, mut func(*config.Config)) *Mailer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(cfg, logger.NewNullLogger(), sealer)
+	m, err := New(cfg, logger.NewNullLogger(), sealer, &SMTP{Cfg: cfg.Mail})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSendInviteLinkAndExpiry(t *testing.T) {
 	// No service: link mails are refused rather than sent without a token.
 	bareCfg := config.Default()
 	bareCfg.Server.DataDir = t.TempDir()
-	bare, err := New(bareCfg, logger.NewNullLogger(), m.sealer)
+	bare, err := New(bareCfg, logger.NewNullLogger(), m.sealer, &SMTP{Cfg: bareCfg.Mail})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,12 +409,11 @@ func TestQueueSurvivesRestart(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Server.DataDir = dir
-	m, err := New(cfg, logger.NewNullLogger(), sealer)
+	m, err := New(cfg, logger.NewNullLogger(), sealer, TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.Backoff = []time.Duration{time.Hour} // the first attempt fails, the retry is far off
-	m.Transport = TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") })
 	secret := "https://quisora.example.test/reset?token=s3cr3t"
 	if err := m.Send(context.Background(), Message{To: "ann@example.com", Subject: "Reset", Text: secret}); err != nil {
 		t.Fatal(err)
@@ -448,26 +447,52 @@ func TestQueueSurvivesRestart(t *testing.T) {
 	}
 	waitFor(t, func() bool { return m2.Queued() == 0 })
 
-	// sealed under another master key: dropped, not retried
-	other, _ := secure.NewSealer(secure.RandomBytes(32))
-	foreign := &Mailer{dir: cfg.DataPath(config.DirMailQueue), sealer: other}
-	if err := foreign.write("00000000000000000001-aa.mail", &queued{Msg: Message{To: "x@example.com"}}); err != nil {
-		t.Fatal(err)
-	}
-	m3, err := newWith(cfg, sealer, newCapture())
+}
+
+// A master key rotation re-seals the queue, so the previous key can go without losing queued mail; a message sealed
+// with a key that is not configured is kept, not dropped.
+func TestQueueSurvivesKeyRotation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.DataDir = t.TempDir()
+	oldKey, newKey := secure.RandomBytes(32), secure.RandomBytes(32)
+	oldOnly, _ := secure.NewKeyring(oldKey)
+	down := TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") })
+	m, err := New(cfg, logger.NewNullLogger(), oldOnly, down)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m3.Close()
-	waitFor(t, func() bool { files, _ := os.ReadDir(cfg.DataPath(config.DirMailQueue)); return len(files) == 0 })
+	m.Backoff = []time.Duration{time.Hour}
+	if err := m.Send(context.Background(), Message{To: "ann@example.com", Subject: "Invite"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return queuedAttempts(t, m) == 1 })
+	m.Close()
+
+	// Started with the new key only (the old one removed too early): the message is kept.
+	newOnly, _ := secure.NewKeyring(newKey)
+	m2, err := New(cfg, logger.NewNullLogger(), newOnly, down)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := m2.Reseal(); n != 1 || m2.Queued() != 1 {
+		t.Fatalf("unopenable %d, queued %d", n, m2.Queued())
+	}
+	m2.Close()
+
+	// The rotation's keys, the old key as a previous one, re-seal it with the new key, so the old key can go.
+	dir := cfg.DataPath(config.DirMailQueue)
+	rotating, _ := secure.NewKeyring(newKey, oldKey)
+	if n := (&Mailer{dir: dir, sealer: rotating, Log: logger.NewNullLogger()}).Reseal(); n != 0 {
+		t.Fatalf("unopenable during rotation: %d", n)
+	}
+	names, _ := (&Mailer{dir: dir}).files()
+	if q, err := (&Mailer{dir: dir, sealer: newOnly}).read(names[0]); err != nil || q.Msg.To != "ann@example.com" {
+		t.Fatalf("after the re-seal: %v %+v", err, q)
+	}
 }
 
-// newWith makes a mailer whose transport is set before its worker reads the queue (a restart with messages waiting).
 func newWith(cfg *config.Config, sealer *secure.Sealer, tr Transport) (*Mailer, error) {
-	old := testTransport
-	testTransport = tr
-	defer func() { testTransport = old }()
-	return New(cfg, logger.NewNullLogger(), sealer)
+	return New(cfg, logger.NewNullLogger(), sealer, tr)
 }
 
 func queuedAttempts(t *testing.T, m *Mailer) int {
@@ -521,7 +546,7 @@ func TestQueueConcurrentSends(t *testing.T) {
 	}
 	wg.Wait()
 	waitFor(t, func() bool { cap.mu.Lock(); defer cap.mu.Unlock(); return len(cap.msgs) == 100 })
-	m2, err := New(m.Cfg, logger.NewNullLogger(), m.sealer)
+	m2, err := New(m.Cfg, logger.NewNullLogger(), m.sealer, cap)
 	if err != nil {
 		t.Fatal(err)
 	}

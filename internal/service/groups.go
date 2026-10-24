@@ -197,14 +197,99 @@ func (s *Service) GroupMembers(ctx context.Context, a *Actor, groupID string) ([
 
 // SetMembership adds (member=true) or removes a user from a group. Idempotent.
 func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID string, member bool) error {
-	g, err := s.Groups.Get(ctx, groupID)
-	if err != nil {
-		return mapStore(err)
+	var add, remove []string
+	if member {
+		add = []string{userID}
+	} else {
+		remove = []string{userID}
 	}
+	for range 5 {
+		g, err := s.Groups.Get(ctx, groupID)
+		if err != nil {
+			return mapStore(err)
+		}
+		if _, err = s.ChangeGroup(ctx, a, g, GroupInput{}, add, remove); !errors.Is(err, ErrStale) {
+			return err
+		}
+	}
+	return ErrStale
+}
+
+// ChangeGroup changes group g (as read: a group changed since then is ErrStale) and its members as one change. It
+// is checked in full before anything is written, and a write that fails part-way undoes the writes before it, so a
+// refused or failed change leaves the group as it was (a SCIM PATCH is atomic, RFC 7644 §3.5.2). The group's record
+// is written last, also when only its members change, so its version (a SCIM ETag) moves with its member list.
+func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in GroupInput, add, remove []string) (*model.Group, error) {
 	if !s.canAdminOrg(a, g.OrgID) {
-		return ErrForbidden
+		return nil, ErrForbidden
 	}
-	id := model.MemberID(groupID, userID)
+	next := *g
+	next.Tags = slices.Clone(g.Tags)
+	if err := applyGroup(&next, in); err != nil {
+		return nil, err
+	}
+	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
+	if tagsChanged {
+		// A group's tags reach every member's tokens: a provisioning client changes them only on a group whose
+		// members it could manage one by one.
+		if err := s.clientMayAffectMembers(ctx, a, g); err != nil {
+			return nil, err
+		}
+	}
+	type change struct {
+		user   string
+		member bool
+	}
+	var changes, done []change
+	for _, uid := range add {
+		changes = append(changes, change{uid, true})
+	}
+	for _, uid := range remove {
+		changes = append(changes, change{uid, false})
+	}
+	for _, c := range changes {
+		if err := s.checkMembership(ctx, a, g, c.user, c.member); err != nil {
+			return nil, err
+		}
+	}
+	undo := func() {
+		for _, c := range done {
+			_, _ = s.putMembership(context.WithoutCancel(ctx), g, c.user, !c.member)
+		}
+	}
+	for _, c := range changes {
+		changed, err := s.putMembership(ctx, g, c.user, c.member)
+		if err != nil {
+			undo()
+			return nil, err
+		}
+		if changed {
+			done = append(done, c)
+		}
+	}
+	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
+	if !fieldsChanged && len(done) == 0 {
+		return g, nil
+	}
+	if err := s.Groups.Update(ctx, &next); err != nil {
+		undo()
+		return nil, s.groupConflict(ctx, err, &next)
+	}
+	if fieldsChanged {
+		s.Audit(ctx, a, g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next))
+	}
+	for _, c := range done {
+		action := "group.member.remove"
+		if c.member {
+			action = "group.member.add"
+		}
+		s.Audit(ctx, a, g.OrgID, action, next.DisplayName, map[string]string{"user": c.user})
+	}
+	return &next, nil
+}
+
+// checkMembership refuses a change to a user's membership of g that a may not make.
+func (s *Service) checkMembership(ctx context.Context, a *Actor, g *model.Group, userID string, member bool) error {
 	u, uerr := s.Users.Get(ctx, userID)
 	if uerr == nil && u.OrgID == g.OrgID && s.Visibility(a, u) == Hidden {
 		return ErrNotFound // a super admin, to anyone but a super admin
@@ -214,31 +299,41 @@ func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID s
 	if a.ClientID != "" && uerr == nil && !s.canManageUser(a, u) {
 		return ErrForbidden
 	}
-	if !member {
-		if err := s.Members.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) {
-			return mapStore(err)
-		}
-		s.Audit(ctx, a, g.OrgID, "group.member.remove", g.DisplayName, map[string]string{"user": userID})
-		return nil
-	}
-	if uerr != nil || u.OrgID != g.OrgID {
+	if member && (uerr != nil || u.OrgID != g.OrgID) {
 		return Invalid("members", "user "+userID+" is not in this organization")
 	}
-	if _, err := s.Members.Get(ctx, id); err == nil {
-		return nil
+	return nil
+}
+
+// putMembership writes a user's membership of g, reporting whether it changed anything.
+func (s *Service) putMembership(ctx context.Context, g *model.Group, userID string, member bool) (bool, error) {
+	id := model.MemberID(g.ID, userID)
+	_, err := s.Members.Get(ctx, id)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return false, mapStore(err)
+	}
+	if exists := err == nil; exists == member {
+		return false, nil
+	}
+	if !member {
+		if err := s.Members.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) {
+			return false, mapStore(err)
+		}
+		return true, nil
 	}
 	// The id is deterministic: after a removal a tombstone holds it, and adding the user again is a create, which
 	// starts a new generation of the record whose epoch is the removal this node has seen (a plain put over the
 	// tombstone is refused: store.ErrDeleted). A removal made elsewhere that this node had not seen yet still wins:
 	// the add is then refused (ErrDeleted from the quorum), reported as a concurrent change to retry.
-	m := &model.Member{Meta: model.Meta{ID: id}, GroupID: groupID, UserID: userID, OrgID: g.OrgID}
+	m := &model.Member{Meta: model.Meta{ID: id}, GroupID: g.ID, UserID: userID, OrgID: g.OrgID}
 	if err := s.Members.Create(ctx, m); errors.Is(err, store.ErrDeleted) {
-		return ErrStale
-	} else if err != nil && !errors.Is(err, store.ErrStale) {
-		return mapStore(err)
+		return false, ErrStale
+	} else if errors.Is(err, store.ErrStale) {
+		return false, nil // added concurrently by someone else
+	} else if err != nil {
+		return false, mapStore(err)
 	}
-	s.Audit(ctx, a, g.OrgID, "group.member.add", g.DisplayName, map[string]string{"user": userID})
-	return nil
+	return true, nil
 }
 
 // clientMayAffectMembers refuses a provisioning client (a client actor) a change that affects every member of g (its
@@ -266,40 +361,30 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 	return nil
 }
 
-// maxProbeGroups bounds how many groups UserGroups probes one by one; larger orgs fall back to scanning memberships.
-const maxProbeGroups = 64
-
 // UserGroups returns the groups a user belongs to (no permission check: used to build tokens, SCIM and admin
-// views). A membership's id is deterministic (MemberID), so for the usual handful of groups per organization this
-// probes one key per group instead of scanning every membership of the organization (hundreds to thousands of
-// records) on each token, SCIM user or user-detail request.
+// views). A membership's id is deterministic (MemberID), so this pages through the organization's groups and probes
+// one key per group. Groups are far fewer than memberships, and a plain paged scan never loads a whole scope, where
+// filtering memberships by user loads every membership of the organization on the key-value backends.
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
-	all, _, err := s.Groups.List(ctx, store.ListQuery{Scope: u.OrgID, Limit: maxProbeGroups + 1})
-	if err != nil {
-		return nil, err
-	}
-	if len(all) <= maxProbeGroups {
-		out := make([]*model.Group, 0, 2)
-		for _, g := range all {
+	out := []*model.Group{}
+	q := store.ListQuery{Scope: u.OrgID, Limit: 500}
+	for {
+		page, _, err := s.Groups.List(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range page {
 			if _, err := s.Members.Get(ctx, model.MemberID(g.ID, u.ID)); err == nil {
 				out = append(out, g)
 			} else if !errors.Is(err, store.ErrNotFound) {
 				return nil, err
 			}
 		}
-		return out, nil
-	}
-	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*model.Group, 0, len(ms))
-	for _, m := range ms {
-		if g, err := s.Groups.Get(ctx, m.GroupID); err == nil {
-			out = append(out, g)
+		if len(page) < q.Limit {
+			return out, nil
 		}
+		q.After = page[len(page)-1].ID
 	}
-	return out, nil
 }
 
 // tagDetail is the audit detail recording a tag change.

@@ -61,18 +61,17 @@ func newEnvWith(t testing.TB, mut func(*config.Config), keepIP bool) *env {
 			}
 		},
 		Modules: func(s *web.Server) []web.Module {
-			m, err := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Sealer)
-			if err != nil {
-				t.Fatal(err)
-			}
-			e.Mailer = m
-			e.Mailer.Transport = mail.TransportFunc(func(_ context.Context, m mail.Message) error {
+			m, err := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Sealer, mail.TransportFunc(func(_ context.Context, m mail.Message) error {
 				e.mu.Lock()
 				e.mails = append(e.mails, m)
 				e.mu.Unlock()
 				e.mailCh <- m
 				return nil
-			})
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.Mailer = m
 			// "/step-up" stands for an authorization request that asked for a second factor (acr_values).
 			e.Mod = login.New(s, login.Options{Mail: e.Mailer, StepUp: func(_ context.Context, next string) bool { return next == "/step-up" }})
 			return []web.Module{e.Mod}

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -9,45 +10,39 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
+// A single-use value (a client assertion or DPoP proof jti) is a model.Replay record written with a quorum
+// compare-and-swap, not hash-routed state in one node's memory: once accepted it stays refused on every node,
+// whichever node stops serving.
 func TestReviewReplayAfterOwnerReadinessChange(t *testing.T) {
 	c := newTCluster(t, 3, memBackend)
 	c.startAll()
 	c.waitReady()
-	waitFor(t, 10*time.Second, "everyone sees everyone ready", func() bool {
-		for _, tn := range c.nodes {
-			for _, mb := range tn.n.mem.Load().routable {
-				if !mb.ready {
-					return false
-				}
+	replays := func(i int) *store.Table[model.Replay, *model.Replay] {
+		return store.NewTable[model.Replay](c.nodes[i].st())
+	}
+	use := func(i int) error {
+		return replays(i).Create(bg, &model.Replay{Meta: model.Meta{ID: "review-jti"}, Expires: time.Now().Add(time.Minute)})
+	}
+	if err := use(0); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if err := use(0); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("normal replay: %v", err)
+	}
+	for _, stopped := range []int{0, 1} {
+		why := "review: node stopped serving"
+		c.nodes[stopped].n.misconfig.Store(&why)
+		c.nodes[stopped].n.rebuild()
+		for i := range c.nodes {
+			if i == stopped {
+				continue
+			}
+			if err := use(i); err == nil {
+				t.Fatalf("SECURITY: same jti accepted again on node %d after node %d stopped serving", i, stopped)
 			}
 		}
-		return true
-	})
-	var key string
-	for i := range 1000 {
-		k := fmt.Sprintf("client|review-jti-%d", i)
-		if owner, _, _ := c.nodes[0].n.OwnerOf("jti", k); owner == c.nodes[1].n.ID() {
-			key = k
-			break
-		}
-	}
-	if key == "" {
-		t.Fatal("no key")
-	}
-	eph := c.nodes[0].n.Ephemeral()
-	if n, err := eph.Incr(bg, "jti", key, 1, time.Minute); err != nil || n != 1 {
-		t.Fatalf("first use: %d %v", n, err)
-	}
-	if n, err := eph.Incr(bg, "jti", key, 1, time.Minute); err != nil || n != 2 {
-		t.Fatalf("normal replay: %d %v", n, err)
-	}
-	why := "review: node stopped serving"
-	c.nodes[1].n.misconfig.Store(&why)
-	c.nodes[1].n.rebuild()
-	waitFor(t, 10*time.Second, "owner changed", func() bool { owner, _, _ := c.nodes[0].n.OwnerOf("jti", key); return owner != c.nodes[1].n.ID() })
-	n, err := eph.Incr(bg, "jti", key, 1, time.Minute)
-	if err == nil && n == 1 {
-		t.Fatalf("SECURITY: same JTI accepted again after owner readiness change, within replay TTL")
+		c.nodes[stopped].n.misconfig.Store(nil)
+		c.nodes[stopped].n.rebuild()
 	}
 }
 

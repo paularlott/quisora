@@ -43,11 +43,13 @@ type ephResp struct {
 
 // Ephemeral implements ephemeral.Store over a node-local ephemeral.Local. New always creates locally (the id carries
 // this node's prefix). Operations on an id owned by another node are forwarded to it; when that node is dead per
-// gossip the state is gone and ErrNotFound is returned. Ids without an owner prefix (hash-routed keys: single-use
-// ids such as client assertion jtis) and counters (Incr: rate limits, lockouts) go to the rendezvous-hash owner among
-// the live nodes that serve (Ready, published in gossip metadata): a node that is catching up or cut off owns
-// nothing. Everything fails closed: when the owner cannot be reached the operation returns an error (a rate limit or
-// lockout then refuses, a single-use id is not accepted) rather than counting or remembering on this node alone.
+// gossip the state is gone and ErrNotFound is returned. Ids without an owner prefix (hash-routed keys) and counters
+// (Incr: rate limits, lockouts) go to the rendezvous-hash owner among the live nodes that serve (Ready, published in
+// gossip metadata): a node that is catching up or cut off owns nothing. Everything fails closed: when the owner
+// cannot be reached the operation returns an error (a rate limit or lockout then refuses) rather than counting on
+// this node alone. Hash-routed state lives in its owner's memory only, so when the owner changes (a node stops
+// serving, starts again, or goes) the new owner starts from nothing: a rate limit's window starts again. Nothing that
+// must hold across that, such as a single-use value, is kept here (service.UseOnce keeps those).
 type Ephemeral struct {
 	n     *Node
 	local *ephemeral.Local
@@ -222,9 +224,8 @@ func (e *Ephemeral) Delete(ctx context.Context, ns, id string) error {
 }
 
 // Incr routes to the rendezvous-hash owner of key among the live nodes that serve. It fails closed: when no such
-// node is in view, or the owner cannot be reached, it returns an error (rate limits, lockouts and single-use ids
-// then refuse) instead of counting on this node alone, which would let a client multiply its attempts by the number
-// of nodes or replay a single-use id on another node.
+// node is in view, or the owner cannot be reached, it returns an error (rate limits and lockouts then refuse)
+// instead of counting on this node alone, which would let a client multiply its attempts by the number of nodes.
 func (e *Ephemeral) Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error) {
 	if e.n.gc == nil {
 		return e.local.Incr(ctx, ns, key, delta, window)

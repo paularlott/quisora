@@ -8,7 +8,8 @@ The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seed
 **Require PKCE** turned off (a per-client setting, on by default; public clients always need PKCE). The only local
 change (`conformance/suite.patch`) moves the suite to port 8453 so it does not collide with `task run-server`; it
 does not affect the tests. A formal certification is run on the OpenID Foundation's hosted suite; these runs are the
-same plans locally.
+same plans locally. They are evidence about the commits named, not a certification: run them again on the build you
+release.
 
 | Plan | Modules | Failures | Warnings |
 |---|---|---|---|
@@ -101,7 +102,10 @@ none changed a result:
   FAPI 2.0 plan above, and by the Go tests for clients without the profile.
 - **FAPI 2.0 with mTLS** (client authentication or sender-constrained tokens) is not supported, so those variants are
   not run.
-- Dynamic registration, implicit and hybrid flows and request objects are not supported, and discovery says so.
+- **Dynamic registration (RFC 7591)** is supported for self-registering clients such as MCP servers and AI clients
+  ([MCP.md](MCP.md)), with Client ID Metadata Documents, but only where a tenant allows it; the suite's
+  dynamic-client plans are not run. The Go end-to-end tests cover both.
+- Implicit and hybrid flows and request objects are not supported, and discovery says so.
 
 ## Expected warnings (basic plan)
 

@@ -51,6 +51,7 @@ What remains:
 ## Choices that reduce what is kept
 
 - `audit.logins = false` stops recording successful sign-ins (failures are always recorded).
-- `log.access` off (the default) keeps request paths and client addresses out of the log.
+- `log.access = false` keeps request paths and client addresses out of the log (it is on by default; query strings
+  are never logged).
 - Short `audit.retention_days`, and a VictoriaLogs retention no longer than your audit period needs.
 - Backups kept no longer than your recovery policy needs.

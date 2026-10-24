@@ -28,7 +28,9 @@ type noticeMsg struct {
 }
 
 // noticeWorthy: the kinds whose changes other nodes care about (not short-lived state, nor the housekeeping lease).
-func noticeWorthy(k model.Kind) bool { return k != model.KindEphemeral && k != model.KindLock }
+func noticeWorthy(k model.Kind) bool {
+	return k != model.KindEphemeral && k != model.KindLock && k != model.KindReplay
+}
 
 // buildNotify sets up the notice gossip (cluster.notify) of a node sharing its database.
 func (n *Node) buildNotify() error {

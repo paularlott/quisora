@@ -500,9 +500,11 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 victorialogs_spool_max_mb = 256          # default 256
 ```
 
-With VictoriaLogs, a batch it does not take (unreachable, or answering an error) is written at once to the spool,
-`<data-dir>/auditspool`, and sent when VictoriaLogs answers again, oldest first; a restart keeps it. So an outage of
-VictoriaLogs loses no events while the spool has room.
+With VictoriaLogs, every batch is written to the spool, `<data-dir>/auditspool` (and synced to disk), before it is
+sent, and leaves it only once VictoriaLogs has taken it; a batch VictoriaLogs does not take (unreachable, or answering
+an error) stays there and is sent when VictoriaLogs answers again, oldest first. A shutdown does not wait for
+VictoriaLogs: what is still queued goes to the spool, and the next start sends it. So neither an outage of
+VictoriaLogs nor a restart or crash of the node loses an event while the spool has room.
 
 - The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
 - It is part of the node's data directory, so it is one per node, on that node's own disk.
@@ -653,8 +655,11 @@ emailed: administrators share invitation links themselves, and there is no self-
 Email is queued on disk, in `<data-dir>/mailqueue`, before the request that sends it answers: one file per message,
 sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30
 and 120 minutes, then given up and logged (`mail delivery failed, giving up`). A restart, or a crash, keeps the queue:
-the node sends what is left when it is back. A message sealed under a master key that has since been removed cannot
-be opened and is dropped (logged). The queue holds at most 10,000 messages; past that, new ones are refused with an
+the node sends what is left when it is back. When the master keys change (a start with new keys, or a reload) each
+node re-seals its own queue with the active key before it reports that key, so a rotation reported complete leaves
+no queued message needing the old key. A message sealed under a key that is not configured (one removed too early,
+or a node that was down during the rotation started without it) is kept and logged, and sent once that key is put
+back in `previous_master_keys`. The queue holds at most 10,000 messages; past that, new ones are refused with an
 error. Watch `quisora_mail_queued`: growing means SMTP is not taking mail.
 
 ## Health and monitoring

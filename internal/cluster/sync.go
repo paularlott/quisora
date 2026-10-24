@@ -810,9 +810,10 @@ func (n *Node) ackPeers(ctx context.Context, b []byte) error {
 
 // caughtUpWith records that this node has copied everything peer id had. A node that started with its own data
 // has caught up once that holds for quorum-1 peers: with itself they make a majority, which shares a node with every
-// majority that confirmed a write. A node that started empty holds no write of its own, so it needs a full quorum of
-// peers, each caught up itself (syncPeer counts only those): otherwise an empty replacement could serve after copying
-// from a single node that lacks a write the others confirmed.
+// majority that confirmed a write. A node that started empty holds no write of its own, so it needs size-quorum+1
+// peers, each caught up itself (syncPeer counts only those): the fewest that share a node with every quorum that
+// confirmed a write (the quorum for odd sizes; the sole survivor of two nodes). Fewer could let an empty replacement
+// serve after copying from nodes that lack a write the others confirmed.
 func (n *Node) caughtUpWith(id string) {
 	if !n.catchingUp.Load() {
 		return
@@ -823,7 +824,7 @@ func (n *Node) caughtUpWith(id string) {
 	n.peersMu.Unlock()
 	need := n.Quorum() - 1
 	if n.startedEmpty {
-		need = n.Quorum()
+		need = n.Size() - n.Quorum() + 1
 	}
 	if got >= need && n.catchingUp.CompareAndSwap(true, false) {
 		n.log.Info("caught up with the cluster", "peers", got)

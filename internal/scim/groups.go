@@ -250,13 +250,13 @@ func (rq *request) createGroup() {
 		rq.fail(err)
 		return
 	}
-	for _, uid := range ids {
-		if err := svc.SetMembership(rq.ctx, rq.actor, g.ID, uid, true); err != nil {
-			_ = svc.DeleteGroup(rq.ctx, rq.actor, g.ID) // roll back: a failed create leaves nothing behind
-			rq.fail(err)
-			return
-		}
+	withMembers, err := svc.ChangeGroup(rq.ctx, rq.actor, g, service.GroupInput{}, ids, nil)
+	if err != nil {
+		_ = svc.DeleteGroup(rq.ctx, rq.actor, g.ID) // roll back: a failed create leaves nothing behind
+		rq.fail(err)
+		return
 	}
+	g = withMembers
 	attrs, excl := rq.getParams()
 	rq.respond(http.StatusCreated, rq.groupResource(g, rq.refs(ids), true), attrs, excl, groupSchemas)
 }
@@ -299,33 +299,23 @@ func (rq *request) updateGroup(id string, keepMembers bool, mutate func(cur map[
 		} else {
 			given = true
 		}
-		result = g
-		if *in.DisplayName != g.DisplayName || *in.ExternalID != g.ExternalID ||
-			in.Tags != nil && !slices.Equal(model.NormTags(*in.Tags), model.NormTags(g.Tags)) {
-			if result, err = svc.UpdateGroup(rq.ctx, rq.actor, id, in); err != nil {
-				return err
+		var add, remove []string
+		if given {
+			wantSet := map[string]bool{}
+			for _, uid := range want {
+				wantSet[uid] = true
+				if !have[uid] {
+					add = append(add, uid)
+				}
 			}
-		}
-		if !given {
-			return nil
-		}
-		wantSet := map[string]bool{}
-		for _, uid := range want {
-			wantSet[uid] = true
-			if !have[uid] {
-				if err := svc.SetMembership(rq.ctx, rq.actor, id, uid, true); err != nil {
-					return err
+			for uid := range have {
+				if !wantSet[uid] {
+					remove = append(remove, uid)
 				}
 			}
 		}
-		for uid := range have {
-			if !wantSet[uid] {
-				if err := svc.SetMembership(rq.ctx, rq.actor, id, uid, false); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+		result, err = svc.ChangeGroup(rq.ctx, rq.actor, g, in, add, remove)
+		return err
 	})
 	if err != nil {
 		rq.fail(err)

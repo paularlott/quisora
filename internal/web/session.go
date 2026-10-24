@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -25,10 +26,13 @@ const (
 	sessionCacheLimit = 100_000
 )
 
+// cachedSession is never changed once it is in the cache (lookups read it without the lock): a newer copy of the
+// session replaces the whole entry.
 type cachedSession struct {
-	sess    *model.Session
-	user    *model.User
-	fetched time.Time
+	sess     *model.Session
+	user     *model.User
+	fetched  time.Time
+	touching atomic.Bool // one request records LastSeen; concurrent ones for the same entry skip it
 }
 
 // Sessions creates, looks up and ends browser sessions. Lookups are cached per node for a short time; Evict is
@@ -268,16 +272,20 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 // touch records that the session is in use (best effort). A node that may not change replicated data now (catching
 // up, cut off from the majority) skips it: the session record is not changed here at all.
 func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
-	if !m.svc.CanWrite() {
+	if !m.svc.CanWrite() || !cs.touching.CompareAndSwap(false, true) {
 		return
 	}
 	s := *cs.sess
 	s.LastSeen = time.Now().UTC()
-	if err := m.svc.Sessions.Update(context.WithoutCancel(ctx), &s); err == nil {
-		m.mu.Lock()
-		cs.sess = &s
-		m.mu.Unlock()
+	if err := m.svc.Sessions.Update(context.WithoutCancel(ctx), &s); err != nil {
+		cs.touching.Store(false)
+		return
 	}
+	m.mu.Lock()
+	if m.cache[s.ID] == cs { // not evicted or replaced meanwhile
+		m.cache[s.ID] = &cachedSession{sess: &s, user: cs.user, fetched: cs.fetched}
+	}
+	m.mu.Unlock()
 }
 
 // End deletes the request's session and clears the cookie.

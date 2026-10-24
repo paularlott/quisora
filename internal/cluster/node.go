@@ -71,9 +71,12 @@ const (
 // this build no longer understands what the previous compat sent. Builds from before this check publish neither
 // (0) and are refused. A node that sees an incompatible peer drops its messages and refuses to serve (Ready) until
 // the peer is upgraded or gone, as for a cluster.size mismatch.
+//
+// 2: refresh grants are written with a quorum compare-and-swap (model.QuorumCAS); a node of 1 refuses their prepares
+// and writes them without one.
 const (
-	compat    = 1
-	minCompat = 1
+	compat    = 2
+	minCompat = 2
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.

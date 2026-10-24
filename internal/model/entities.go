@@ -882,6 +882,18 @@ type Lock struct {
 func (l *Lock) Kind() Kind   { return KindLock }
 func (l *Lock) Index() Index { return Index{} }
 
+// Replay records that a single-use value (a client assertion's or a DPoP proof's jti) was used, until it expires:
+// creating it again is refused while it lives. It is written with QuorumCAS, so in a cluster a majority confirms it
+// before the value is accepted, and no node accepts the value again whichever node it reaches and whatever nodes come
+// and go meanwhile. Its id is derived from the value (service.UseOnce).
+type Replay struct {
+	Meta
+	Expires time.Time `msgpack:"ex" json:"expires"`
+}
+
+func (r *Replay) Kind() Kind   { return KindReplay }
+func (r *Replay) Index() Index { return Index{Expires: r.Expires} }
+
 // Ephemeral is one item of short-lived state kept in a shared database (see KindEphemeral): a value, or a counter.
 // Its id is derived from the namespace and key (ephemeral.Shared), never chosen by a client.
 type Ephemeral struct {

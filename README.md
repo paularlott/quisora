@@ -19,10 +19,12 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   MFA. Guides: [docs/sign-in](docs/sign-in/README.md).
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
   revocation, userinfo, RP-initiated and back-channel logout, resource indicators, pushed authorization requests
-  (RFC 9126), token exchange (RFC 8693), device sign-in for CLIs and TVs (RFC 8628), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`. JWT
+  (RFC 9126), token exchange (RFC 8693), device sign-in for CLIs and TVs (RFC 8628), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`, and for MCP servers and AI clients
+  dynamic client registration (RFC 7591) and Client ID Metadata Documents ([docs/MCP.md](docs/MCP.md)). JWT
   access tokens signed with ES256, EdDSA, RS256 or PS256, and keys rotate automatically. The FAPI 2.0 Security
   Profile can be turned on per application. Passes the OpenID Foundation
-  certification plans ([docs/conformance.md](docs/conformance.md)). A guide for each, with curl examples:
+  certification test plans in local runs of the conformance suite (not a formal certification; the results name the
+  commit they were run on: [docs/conformance.md](docs/conformance.md)). A guide for each, with curl examples:
   [docs/oauth](docs/oauth/README.md).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
   document, and personal API tokens with scopes. Keys and passwords can be read from HashiCorp Vault or 1Password
@@ -77,7 +79,8 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 ## Clusters
 
 - **Shared database:** point every node at the same PostgreSQL, MySQL, MariaDB or Valkey database and give them the
-  same `--master-key`. There's no gossip; the database is the only copy.
+  same `--master-key`. Nothing is replicated: the database is the only copy. Optional `cluster.notify` gossip only
+  tells the other nodes what changed, so their caches update at once.
 - **Replicated:** every node has its own database (any backend, e.g. BadgerDB) and sets `cluster.bind`, `cluster.peers` (every node), `cluster.size` and `cluster.key`. Run `quisora bootstrap --new-cluster` on one node first.
 
 Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.md](docs/RUNNING.md). Replication rules
@@ -97,9 +100,10 @@ By default audit events are kept in the database for 7 days (`audit.retention_da
 keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing.
 
 **Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
-(typically a year or more); a disk spool in each node's data directory keeps an outage of VictoriaLogs from losing
-anything. Every node's
-audit page then reads from VictoriaLogs:
+(typically a year or more). Each node writes every event to a disk spool in its data directory before sending it, and
+removes it once VictoriaLogs has taken it, so an outage of VictoriaLogs, a restart or a crash loses no event, unless
+an outage outlasts the spool's space (the oldest events then leave it, each written in full to the structured log).
+Every node's audit page then reads from VictoriaLogs:
 
 ```toml
 [audit]

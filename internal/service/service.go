@@ -150,6 +150,7 @@ type Service struct {
 	Links      *store.Table[model.LinkToken, *model.LinkToken]
 	SignIns    *store.Table[model.SignIn, *model.SignIn]
 	Locks      *store.Table[model.Lock, *model.Lock]
+	Replays    *store.Table[model.Replay, *model.Replay]
 
 	primary *orgCache
 
@@ -212,6 +213,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Links:      store.NewTable[model.LinkToken](s),
 		SignIns:    store.NewTable[model.SignIn](s),
 		Locks:      store.NewTable[model.Lock](s),
+		Replays:    store.NewTable[model.Replay](s),
 		primary:    &orgCache{},
 	}
 }

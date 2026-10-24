@@ -104,7 +104,7 @@ separately bootstrapped cluster are refused by comparing the records' own creati
 ## Quorum compare-and-swap
 
 Writes of the kinds listed in `model.QuorumCAS` (user, sign-in, passkey, API token, client, provider, organization,
-tenant, tenant access, group membership, lock) are two-phase commits validated by a majority
+tenant, tenant access, group membership, lock, refresh grant, replay record) are two-phase commits validated by a majority
 (`internal/cluster/cas.go`). Nothing is applied before a quorum has granted the write, so a write that fails in
 prepare has no effect anywhere and there is no compensation step to race with.
 
@@ -188,9 +188,16 @@ quorum compare-and-swap, held for at most 30 s and waited for up to 10 s — and
 quorum's copies** (quorum read): a demotion confirmed by a majority anywhere is counted even before it has reached
 this node. Two demotions on two nodes are therefore serialised, and the second sees the first.
 
+### Refresh grants and single-use values
+
+Refresh grants are quorum writes because rotating a refresh token advances the grant's counter: a node that had not
+yet received the advance must not accept the old token. Replay records (`model.Replay`, `service.UseOnce`) hold the
+single-use values seen — client assertion and DPoP proof `jti`s — until they expire, so a value accepted once is
+refused on every node, whichever nodes stop, restart or leave meanwhile.
+
 ## Other writes
 
-Records of other kinds (sessions, refresh grants, upstream identities, groups, signing keys, invitation and reset
+Records of other kinds (sessions, upstream identities, groups, signing keys, invitation and reset
 links, audit entries) are applied locally, broadcast, and replicated by anti-entropy. Security-relevant ones are
 **durable** (`store.WithDurable`): the writer pushes the record to every alive peer and waits until enough peers to
 make a majority with it **have applied exactly that version**. A peer that holds something newer does not apply it
@@ -263,10 +270,12 @@ does not rotate refresh tokens, userinfo, introspection), and a code exchange or
 ### Short-lived state
 
 Sign-in steps, codes and challenges stay in the memory of the node that made them (their ids carry its prefix) and
-the others forward to it. Hash-routed state — rate-limit and lockout counters, single-use ids such as client
-assertion `jti`s — lives on the rendezvous-hash owner **among the nodes that are ready** (each publishes `quisora.ready`
-in gossip metadata). It **fails closed**: when no ready node is in view, or the owner cannot be reached, the operation
-fails (the rate limit or lockout refuses, the assertion is not accepted) instead of counting on one node.
+the others forward to it. Hash-routed state — rate-limit and lockout counters — lives on the rendezvous-hash owner
+**among the nodes that are ready** (each publishes `quisora.ready` in gossip metadata). It **fails closed**: when no
+ready node is in view, or the owner cannot be reached, the operation fails (the rate limit or lockout refuses)
+instead of counting on one node. It is in the owner's memory only: when the owner changes (a node stops serving,
+restarts or leaves) the new owner starts from nothing, so a counter's window starts again. Nothing whose safety
+depends on it surviving that is kept there: single-use values are replay records (quorum compare-and-swap, above).
 
 ## Sync point and ageing
 

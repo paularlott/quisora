@@ -16,13 +16,14 @@ type reviewGateStore struct {
 	resume chan struct{}
 }
 
-func (s *reviewGateStore) Take(ctx context.Context, ns, id string) ([]byte, error) {
-	b, e := s.Store.Take(ctx, ns, id)
-	if ns == nsDevice && e == nil {
+// Set pauses the approval just before it records the decision: the window in which a poll must not see the
+// sign-in gone.
+func (s *reviewGateStore) Set(ctx context.Context, ns, id string, value []byte, ttl time.Duration) error {
+	if ns == nsDevice {
 		close(s.taken)
 		<-s.resume
 	}
-	return b, e
+	return s.Store.Set(ctx, ns, id, value, ttl)
 }
 func TestReviewDevicePollDuringApproval(t *testing.T) {
 	ctx := context.Background()
@@ -32,6 +33,7 @@ func TestReviewDevicePollDuringApproval(t *testing.T) {
 	p := &Provider{s: &web.Server{Eph: gate}}
 	raw, _ := json.Marshal(deviceGrant{ClientID: "client", UserCode: "BCDFGHJK", Expires: time.Now().Add(time.Minute).Unix()})
 	id, _ := local.New(ctx, nsDevice, raw, time.Minute)
+	_ = local.Set(ctx, nsDeviceTurn, id, []byte{1}, time.Minute)
 	done := make(chan bool, 1)
 	go func() {
 		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{})
@@ -42,7 +44,7 @@ func TestReviewDevicePollDuringApproval(t *testing.T) {
 	if !<-done {
 		t.Fatal("approval failed")
 	}
-	if oe == nil || oe.code == "expired_token" {
+	if oe == nil || oe.code != "authorization_pending" {
 		t.Fatalf("live device grant returned terminal expiry during approval: %v", oe)
 	}
 }

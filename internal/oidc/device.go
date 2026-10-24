@@ -34,6 +34,7 @@ const (
 	nsDevice     = "oauth.device"      // device_code -> deviceGrant
 	nsDeviceUser = "oauth.device.user" // normalised user code -> device_code
 	nsDevicePoll = "oauth.device.poll" // device_code -> devicePoll
+	nsDeviceTurn = "oauth.device.turn" // device_code -> the right to decide it, taken by the first decision
 
 	deviceTTL          = 10 * time.Minute
 	deviceInterval     = 5 // seconds between polls
@@ -179,6 +180,9 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	d := deviceGrant{ClientID: c.ID, Scopes: scopes, Resources: res, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix()}
 	b, _ := json.Marshal(d)
 	deviceCode, err := p.s.Eph.New(ctx, nsDevice, b, deviceTTL)
+	if err == nil { // kept by the node that holds the sign-in (the device code names it)
+		err = p.s.Eph.Set(ctx, nsDeviceTurn, deviceCode, []byte{1}, deviceTTL)
+	}
 	if err == nil {
 		err = p.s.Eph.Set(ctx, nsDeviceUser, userCode, []byte(deviceCode), deviceTTL)
 	}
@@ -341,15 +345,17 @@ func (p *Provider) pendingDevice(ctx context.Context, code string) (*deviceGrant
 // decideDevice records the user's decision on the device sign-in a flow approves; it reports false when the sign-in
 // has expired or was decided already (another browser with the same code). Its user code stops working either way.
 func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User) bool {
-	raw, err := p.s.Eph.Take(ctx, nsDevice, f.Device)
+	raw, err := p.s.Eph.Get(ctx, nsDevice, f.Device)
 	if err != nil {
 		return false
 	}
 	var d deviceGrant
 	if json.Unmarshal(raw, &d) != nil || d.Decision != "" || d.ttl() <= 0 {
-		if d.Decision != "" && d.ttl() > 0 { // put back what someone else decided
-			_ = p.s.Eph.Set(ctx, nsDevice, f.Device, raw, d.ttl())
-		}
+		return false
+	}
+	// One decision per sign-in, whichever browser makes it first. The sign-in itself stays readable meanwhile: a
+	// poll in between is still pending (taking it away would answer expired_token, which ends the device's flow).
+	if _, err := p.s.Eph.Take(ctx, nsDeviceTurn, f.Device); err != nil {
 		return false
 	}
 	_ = p.s.Eph.Delete(ctx, nsDeviceUser, d.UserCode)

@@ -44,7 +44,7 @@ type Message struct {
 	HTML    string
 }
 
-// Transport delivers a message once. The SMTP transport is the default; tests substitute a capturing one.
+// Transport delivers a message once: SMTP in the server, a capturing one in tests.
 type Transport interface {
 	Deliver(ctx context.Context, m Message) error
 }
@@ -59,7 +59,9 @@ func (f TransportFunc) Deliver(ctx context.Context, m Message) error { return f(
 // The queue is on disk, in <data-dir>/mailqueue: a message is one file, written before Send returns, so it survives a
 // restart (or a crash) and is delivered by the node once it is back. Each file is sealed with the master key: the
 // messages carry single-use invitation and reset links. A file is removed once its message is delivered, or given up
-// on after the last retry.
+// on after the last retry. After a master key change the queue is re-sealed with the active key (Reseal) before the
+// node reports that key, so a rotation the cluster reports complete leaves no queued message needing a previous
+// key. A message sealed with a key that is not configured is kept (and sent once that key is configured again).
 type Mailer struct {
 	Cfg *config.Config
 	Log logger.Logger
@@ -73,6 +75,7 @@ type Mailer struct {
 
 	dir    string
 	sealer *secure.Sealer
+	fileMu sync.Mutex // one change to a queued message's file at a time: the worker's, or Reseal's
 	queued atomic.Int64
 	kick   chan struct{}
 	stop   chan struct{}
@@ -91,27 +94,20 @@ type queued struct {
 // only stops a flood of messages SMTP cannot take from filling it.
 const QueueSize = 10000
 
-// testTransport replaces the SMTP transport of mailers made while it is set (tests of a restart with messages
-// waiting, whose worker delivers before the caller could swap the transport).
-var testTransport Transport
-
 // queueBinding binds the sealed queue files to their purpose (secure.Sealer.SealFor).
 const queueBinding = "mail/queue"
 
 // New builds a mailer on the queue in cfg's data directory (made if missing) and starts its delivery worker, which
-// first delivers whatever a previous run left queued; call Close to stop it.
-func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer) (*Mailer, error) {
+// first delivers whatever a previous run left queued through tr; call Close to stop it.
+func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer, tr Transport) (*Mailer, error) {
 	dir := cfg.DataPath(config.DirMailQueue)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mail queue: %w", err)
 	}
-	m := &Mailer{Cfg: cfg, Log: log, Backoff: []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour},
+	m := &Mailer{Cfg: cfg, Log: log, Transport: tr, Backoff: []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour},
 		dir: dir, sealer: sealer, kick: make(chan struct{}, 1), stop: make(chan struct{})}
-	m.Transport = &SMTP{Cfg: cfg.Mail}
-	if testTransport != nil {
-		m.Transport = testTransport
-	}
 	m.removeTemp()
+	m.Reseal()
 	names, err := m.files()
 	if err != nil {
 		return nil, fmt.Errorf("mail queue: %w", err)
@@ -162,11 +158,52 @@ func (m *Mailer) write(name string, q *queued) error {
 	if err != nil {
 		return err
 	}
+	return m.writeSealed(name, m.sealer.SealFor(queueBinding, b))
+}
+
+func (m *Mailer) writeSealed(name, sealed string) error {
 	tmp := filepath.Join(m.dir, "."+name+".tmp")
-	if err := os.WriteFile(tmp, []byte(m.sealer.SealFor(queueBinding, b)), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(sealed), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(m.dir, name))
+}
+
+// Reseal re-seals every queued message with the active master key, and returns how many no configured key opens
+// (those stay queued, and are sent once their key is configured again). Call it after the master keys change, before
+// the node reports its new key (service.ReportMasterKey).
+func (m *Mailer) Reseal() (unopenable int) {
+	names, err := m.files()
+	if err != nil {
+		m.Log.Error("mail queue: cannot be read", "error", err)
+		return 0
+	}
+	for _, name := range names {
+		if err := m.reseal(name); err != nil {
+			unopenable++
+		}
+	}
+	if unopenable > 0 {
+		m.Log.Error("mail queue: messages sealed with a master key that is not configured are kept until it is "+
+			"(put it back in server.previous_master_keys)", "messages", unopenable)
+	}
+	return unopenable
+}
+
+func (m *Mailer) reseal(name string) error {
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+	b, err := os.ReadFile(filepath.Join(m.dir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // delivered meanwhile
+	} else if err != nil {
+		return err
+	}
+	sealed, err := m.sealer.Reseal(queueBinding, string(b))
+	if err != nil || sealed == string(b) {
+		return err
+	}
+	return m.writeSealed(name, sealed)
 }
 
 func (m *Mailer) read(name string) (*queued, error) {
@@ -253,46 +290,53 @@ func (m *Mailer) deliverDue(ctx context.Context) time.Time {
 		if ctx.Err() != nil {
 			return time.Time{}
 		}
-		q, err := m.read(name)
-		if err != nil {
-			// Not openable with the configured master keys (sealed under a key since removed) or damaged.
-			m.Log.Error("mail queue: message cannot be read, dropping it", "file", name, "error", err)
-			m.remove(name)
-			continue
-		}
-		if now := time.Now(); q.Next.After(now) {
-			if next.IsZero() || q.Next.Before(next) {
-				next = q.Next
-			}
-			continue
-		}
-		dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-		err = m.Transport.Deliver(dctx, q.Msg)
-		dcancel()
-		if err == nil {
-			m.remove(name)
-			continue
-		}
-		if ctx.Err() != nil { // stopping: the attempt does not count
-			return time.Time{}
-		}
-		if q.Attempt >= len(m.Backoff) {
-			m.Log.Error("mail delivery failed, giving up", "to", q.Msg.To, "subject", q.Msg.Subject, "error", err)
-			m.remove(name)
-			continue
-		}
-		delay := m.Backoff[q.Attempt]
-		q.Attempt++
-		q.Next = time.Now().Add(delay)
-		m.Log.Warn("mail delivery failed, will retry", "to", q.Msg.To, "attempt", q.Attempt, "in", delay, "error", err)
-		if err := m.write(name, q); err != nil {
-			m.Log.Error("mail queue: retry not recorded", "to", q.Msg.To, "error", err)
-		}
-		if next.IsZero() || q.Next.Before(next) {
-			next = q.Next
+		if due := m.deliverOne(ctx, name); !due.IsZero() && (next.IsZero() || due.Before(next)) {
+			next = due
 		}
 	}
 	return next
+}
+
+// deliverOne tries one queued message if it is due, and returns when it is next due (zero: no longer queued, cannot
+// be opened yet, or the worker is stopping).
+func (m *Mailer) deliverOne(ctx context.Context, name string) time.Time {
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+	q, err := m.read(name)
+	switch {
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, secure.ErrUnknownKey):
+		return time.Time{} // gone, or sealed with a key not configured now: kept for when it is (Reseal logs it)
+	case err != nil:
+		m.Log.Error("mail queue: message cannot be read, dropping it", "file", name, "error", err)
+		m.remove(name)
+		return time.Time{}
+	}
+	if q.Next.After(time.Now()) {
+		return q.Next
+	}
+	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
+	err = m.Transport.Deliver(dctx, q.Msg)
+	dcancel()
+	if err == nil {
+		m.remove(name)
+		return time.Time{}
+	}
+	if ctx.Err() != nil { // stopping: the attempt does not count
+		return time.Time{}
+	}
+	if q.Attempt >= len(m.Backoff) {
+		m.Log.Error("mail delivery failed, giving up", "to", q.Msg.To, "subject", q.Msg.Subject, "error", err)
+		m.remove(name)
+		return time.Time{}
+	}
+	delay := m.Backoff[q.Attempt]
+	q.Attempt++
+	q.Next = time.Now().Add(delay)
+	m.Log.Warn("mail delivery failed, will retry", "to", q.Msg.To, "attempt", q.Attempt, "in", delay, "error", err)
+	if err := m.write(name, q); err != nil {
+		m.Log.Error("mail queue: retry not recorded", "to", q.Msg.To, "error", err)
+	}
+	return q.Next
 }
 
 func randomHex(n int) string {

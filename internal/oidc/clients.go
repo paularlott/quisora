@@ -333,12 +333,11 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion st
 	if cl.Jti == "" || len(cl.Jti) > 256 {
 		return nil, errInvalidClient("assertion needs a jti")
 	}
-	window := max(time.Until(exp), 0) + 2*leeway
-	n, err := p.s.Eph.Incr(ctx, nsJTI, e.c.ID+"|"+cl.Jti, 1, window)
+	first, err := p.svc.UseOnce(ctx, "jti|"+e.c.ID+"|"+cl.Jti, time.Now().Add(max(time.Until(exp), 0)+2*leeway))
 	if err != nil {
 		return nil, &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable"}
 	}
-	if n != 1 {
+	if !first {
 		return nil, errInvalidClient("assertion already used")
 	}
 	return e, nil

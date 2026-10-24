@@ -129,9 +129,11 @@ func Write(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.Writ
 	return WriteWith(ctx, st, sealer, w, Options{})
 }
 
-// skipped reports whether a kind is left out of backups: short-lived sign-in state and cluster locks are
-// meaningless in a restored store.
-func skipped(k model.Kind) bool { return k == model.KindEphemeral || k == model.KindLock }
+// skipped reports whether a kind is left out of backups: short-lived sign-in state, cluster locks and single-use
+// values seen are meaningless in a restored store.
+func skipped(k model.Kind) bool {
+	return k == model.KindEphemeral || k == model.KindLock || k == model.KindReplay
+}
 
 // WriteWith streams every live record of st to w, read from a point-in-time view when the backend has one.
 func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.Writer, opt Options) (stats Stats, err error) {

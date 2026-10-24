@@ -31,6 +31,7 @@ const (
 	KindLink     Kind = "link"
 	KindSignIn   Kind = "signin" // a user's sign-in stamps (SignIn)
 	KindLock     Kind = "lock"   // cluster-wide locks (Lock)
+	KindReplay   Kind = "replay" // single-use values seen, until they expire (Replay)
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
 	// every node of a cluster without gossip sees it. Never backed up or replicated.
 	KindEphemeral Kind = "eph"
@@ -39,11 +40,12 @@ const (
 // QuorumCAS reports whether writes of kind k are security-sensitive: in a replicated cluster each one is a
 // cluster-wide compare-and-swap that a majority of the nodes must confirm before it succeeds (see
 // docs/REPLICATION.md, "Quorum compare-and-swap"), so a concurrent change made on another node from an older copy is
-// refused instead of overwriting it.
+// refused instead of overwriting it. Refresh grants are among them: rotating a refresh token advances the grant's
+// counter, and a node that had not seen the advance must not accept the old token.
 func QuorumCAS(k Kind) bool {
 	switch k {
 	case KindUser, KindPasskey, KindAPIToken, KindClient, KindProvider, KindTenant, KindAccess, KindOrg, KindMember,
-		KindSignIn, KindLock:
+		KindSignIn, KindLock, KindGrant, KindReplay:
 		return true
 	}
 	return false

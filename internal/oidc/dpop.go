@@ -30,7 +30,6 @@ import (
 // proof with every token request. An authorization request may name the key in advance (dpop_jkt, §10): the code is
 // then only redeemed with a proof of that key.
 const (
-	nsDPoPJTI      = "oauth.dpop"
 	dpopTyp        = "dpop+jwt"
 	dpopMaxAge     = 5 * time.Minute // how old a proof's iat may be
 	dpopNonceStep  = time.Minute
@@ -116,11 +115,11 @@ func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce, fa
 			desc: "use the nonce in the DPoP-Nonce header", nonce: p.dpopNonce(now)}
 	}
 	jkt := thumbprint(jwk)
-	n, err := p.s.Eph.Incr(r.Context(), nsDPoPJTI, jkt+"|"+cl.Jti, 1, dpopMaxAge+2*leeway)
+	first, err := p.svc.UseOnce(r.Context(), "dpop|"+jkt+"|"+cl.Jti, now.Add(dpopMaxAge+2*leeway))
 	if err != nil {
 		return "", &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable"}
 	}
-	if n != 1 {
+	if !first {
 		return "", dpopErr("the DPoP proof was already used")
 	}
 	return jkt, nil

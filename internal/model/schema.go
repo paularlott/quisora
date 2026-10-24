@@ -134,7 +134,8 @@ var Schemas = map[Kind]Schema{
 	KindSignIn: {KindSignIn, []Field{
 		{Name: "last_login", Type: FieldTime, Sort: true},
 	}},
-	KindLock: {KindLock, nil},
+	KindLock:   {KindLock, nil},
+	KindReplay: {KindReplay, nil},
 	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
 		{Name: "action", Type: FieldString, Sort: true},
@@ -149,7 +150,7 @@ var Schemas = map[Kind]Schema{
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindEphemeral}
+		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -191,6 +192,8 @@ func NewEntity(k Kind) Entity {
 		return &SignIn{}
 	case KindLock:
 		return &Lock{}
+	case KindReplay:
+		return &Replay{}
 	case KindEphemeral:
 		return &Ephemeral{}
 	}

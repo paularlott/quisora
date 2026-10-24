@@ -47,7 +47,15 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {
 		return err
 	}
+	// The mail queue is on this node's disk, where the leader's re-seal does not reach: it is re-sealed here, with the
+	// active key before a key is dropped and with the new one before this node reports it.
+	if a.mailer != nil {
+		a.mailer.Reseal()
+	}
 	cur.Replace(next)
+	if a.mailer != nil {
+		a.mailer.Reseal()
+	}
 	a.Log.Info("master keys reloaded", "key", cur.ActiveKeyID(), "previous", cur.KeyIDs()[1:])
 	if err := a.Svc.ReportMasterKey(ctx, a.Node.ID()); err != nil && !errors.Is(err, context.Canceled) {
 		a.Log.Warn("master key: reporting this node's key (retried)", "error", err)
