@@ -89,7 +89,7 @@ func (s *Store) write(rec *store.Record, index []string) {
 	}
 	rec = clone(rec)
 	if rec.Deleted {
-		rec.Data, rec.Fields, rec.Unique, rec.Scope, rec.Expires, rec.Epoch, rec.Created = nil, nil, nil, "", time.Time{}, 0, 0
+		rec.Data, rec.Fields, rec.Unique, rec.Scope, rec.Expires, rec.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch kept: a quorum tombstone's generation (store.Head.Rank)
 		index = nil
 	}
 	e := &entry{rec: rec, indexed: map[string]bool{}}

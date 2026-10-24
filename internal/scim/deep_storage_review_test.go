@@ -18,7 +18,7 @@ type deepSCIMGroupGate struct {
 }
 
 func (s *deepSCIMGroupGate) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
-	if r.Kind == model.KindGroup && s.armed.CompareAndSwap(true, false) {
+	if r.Kind == model.KindLock && s.armed.CompareAndSwap(true, false) { // the first request is about to take the group's lock
 		close(s.entered)
 		<-s.resume
 	}
@@ -34,6 +34,7 @@ func TestDeepConditionalSCIMRollbackPreservesConcurrentSuccess(t *testing.T) {
 	tag := e.do("GET", path, e.admA, nil).Header.Get("ETag")
 	gate := &deepSCIMGroupGate{Store: e.Svc.Groups.S, entered: make(chan struct{}), resume: make(chan struct{})}
 	e.Svc.Groups.S = gate
+	e.Svc.Locks.S = gate
 	gate.armed.Store(true)
 	done := make(chan resp, 1)
 	go func() {

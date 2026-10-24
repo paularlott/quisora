@@ -10,6 +10,8 @@
 //	seq/<20-digit seq>/<kind>/<id>     -> change feed (the record stores its current seq; the old entry is removed)
 //	exp/<unix-ms 15 digits>/<kind>/<id> -> expiry index, range-deleted by Purge
 //	tomb/<version 20 digits>/<kind>/<id> -> tombstone index, range-deleted by Purge
+//	fx/<kind>/<field>/<value>/<scope>/<id> -> field index (model.Field.Index): the records with that value, by scope
+//	due/<unix-ms 15 digits>/<kind>/<id>  -> due index (model.Due), range-scanned by ListDue
 //	meta/feed_id, meta/seq
 //
 // Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix in Badger, sorted sets
@@ -17,9 +19,13 @@
 // seq indexes, never the records.
 //
 // Listing: plain ID-ordered scans page through the scope index without loading the scope; the total is a count of
-// the index (key-only iteration in Badger, ZCARD arithmetic in Valkey) that excludes expired records, because the
-// index carries each member's expiry. Searched, filtered or sorted listings load every record of the scope
-// (O(scope size)); doing that without a scope is O(kind size) and should be avoided for large kinds.
+// the index (key-only iteration in Badger, ZLEXCOUNT arithmetic in Valkey) that excludes expired records, because
+// the index carries each member's expiry. An equality filter on an indexed field reads that field's index: the
+// records with the value (in the scope: a contiguous range of the bucket, in id order, so one such filter alone is
+// paged like a plain scan), or, for an indexed bool filtered on false, the scope paged with the records with true
+// skipped (the way an administrator's user listing leaves out the super admins). Other searched, filtered or sorted
+// listings load every record of the scope (O(scope size)); doing that without a scope is O(kind size) and should be
+// avoided for large kinds.
 package kvstore
 
 import (
@@ -48,6 +54,7 @@ type Store struct {
 var (
 	_ store.Store           = (*Store)(nil)
 	_ store.BatchReplicator = (*Store)(nil)
+	_ store.MultiGetter     = (*Store)(nil)
 )
 
 func newStore(ctx context.Context, eng engine, feedID string) *Store {
@@ -65,11 +72,12 @@ func (s *Store) FeedID() string {
 // recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock so that the processes
 // sharing a Valkey store do it once. A store written by a newer build, or by a pre-release build older than
 // formatBase, is refused. Never edit or remove a released migration: append one. There are none yet: nothing has
-// been released, and a layout change raises formatBase instead (3: the due and field indexes).
+// been released, and a layout change raises formatBase instead (3: the due and field indexes; 4: field index
+// members carry their scope).
 const (
 	metaFormat  = "meta/format"
 	metaMigrate = "meta/migrating" // the lock held while migrating: "<holder> <expiry unix ms>"
-	formatBase  = 3
+	formatBase  = 4
 )
 
 // formatMigration brings a store from one format to the next. It may run again after an interruption: make it
@@ -307,16 +315,34 @@ func indexEntries(r *store.Record) []indexEntry {
 	for _, f := range model.Schemas[r.Kind].Fields {
 		if f.Index {
 			if v, ok := fieldKey(r.Fields[f.Name]); ok {
-				out = append(out, indexEntry{fieldBucket(r.Kind, f.Name, v), r.ID, exp})
+				out = append(out, indexEntry{fieldBucket(r.Kind, f.Name, v), fieldMember(r.Scope, r.ID), exp})
 			}
 		}
 	}
 	return out
 }
 
-// fieldBucket holds the records of kind whose field (a model.Field marked Index) has value v (fieldKey).
+// fieldBucket holds the records of kind whose field (a model.Field marked Index) has value v (fieldKey), as
+// fieldMember members.
 func fieldBucket(kind model.Kind, field, v string) string {
 	return "fx/" + string(kind) + "/" + field + "/" + scopeEscaper.Replace(v)
+}
+
+// fieldMember is a record's member of a field index bucket: its scope (escaped, so it holds no '/') then its id. One
+// bucket so serves both the records of one scope with the value, a contiguous range of it in id order (scopeBounds),
+// and all of them.
+func fieldMember(scope, id string) string { return scopeEscaper.Replace(scope) + "/" + id }
+
+// fieldMemberID is the id of a field index member.
+func fieldMemberID(m string) string {
+	_, id, _ := strings.Cut(m, "/")
+	return id
+}
+
+// scopeBounds is the range [from, to) of a scope's members in a field index bucket.
+func scopeBounds(scope string) (from, to string) {
+	s := scopeEscaper.Replace(scope)
+	return s + "/", s + "0" // '0' follows '/'
 }
 
 // fieldKey is a field or filter value as an index bucket names it; false for values that are not indexed.
@@ -334,22 +360,29 @@ func fieldKey(v any) (string, bool) {
 	return "", false
 }
 
-// filterBucket returns the index bucket of the first equality filter of q on an indexed field: the records it can
-// match are only those, whatever the scope (the query is still applied to them in full).
-func filterBucket(kind model.Kind, q store.ListQuery) (string, bool) {
+// indexBuckets returns the field index buckets that serve the filters of q: in is the bucket of the first equality
+// filter on an indexed field (the records it can match are only those, whatever else the query asks), and out the
+// buckets of the records each filter on false of an indexed bool field leaves out (the records with true: the small
+// set such a field is indexed for; a filter on false is never served from the large "false" bucket). The two
+// classes are exclusive: when out covers every filter and in is "", the query is a plain page of the scope with
+// those records skipped.
+func indexBuckets(kind model.Kind, q store.ListQuery) (in string, out []string) {
 	for _, flt := range q.Filters {
 		if flt.Op != "" {
 			continue
 		}
 		for _, f := range model.Schemas[kind].Fields {
-			if f.Name == flt.Field && f.Index {
-				if v, ok := fieldKey(flt.Value); ok {
-					return fieldBucket(kind, f.Name, v), true
-				}
+			if f.Name != flt.Field || !f.Index {
+				continue
+			}
+			if f.Type == model.FieldBool && flt.Value == false {
+				out = append(out, fieldBucket(kind, f.Name, "true"))
+			} else if v, ok := fieldKey(flt.Value); ok && in == "" {
+				in = fieldBucket(kind, f.Name, v)
 			}
 		}
 	}
-	return "", false
+	return in, out
 }
 
 // dueBucket orders the records a housekeeping job must look at by when (model.Due, ListDue).
@@ -450,7 +483,7 @@ func conflicts(tx txn, rec *store.Record) (bool, []string, error) {
 func apply(tx txn, old *stored, rec *store.Record, index, keys []string) error {
 	r := *rec
 	if r.Deleted {
-		r.Data, r.Fields, r.Unique, r.Scope, r.Expires, r.Epoch, r.Created = nil, nil, nil, "", time.Time{}, 0, 0
+		r.Data, r.Fields, r.Unique, r.Scope, r.Expires, r.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch kept: a quorum tombstone's generation (store.Head.Rank)
 		index = nil
 	}
 	var oldSeq uint64
@@ -787,30 +820,43 @@ func (s *Store) loadMembers(ctx context.Context, kind model.Kind, ids []string) 
 	return out, nil
 }
 
+// GetMany returns the live records of kind among ids, in their order (store.MultiGetter): one engine read.
+func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	return s.loadMembers(ctx, kind, ids)
+}
+
 func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
 	if err := store.ValidateQuery(kind, q); err != nil {
 		return nil, err
 	}
 	bucket := listBucket(kind, q.Scope)
-	if store.IsPlainScan(q) && q.After != "" {
-		return s.listAfter(ctx, kind, bucket, q.After, q.Limit)
-	}
 	if store.IsPlainScan(q) {
-		offset := max(q.Offset, 0)
-		ids, total, err := s.eng.Page(ctx, bucket, q.Desc, offset, q.Limit, nowMs())
-		if err != nil {
-			return nil, err
+		if q.After != "" {
+			return s.listAfter(ctx, kind, bucket, q.After, q.Limit)
 		}
-		recs, err := s.loadMembers(ctx, kind, ids)
-		if err != nil {
-			return nil, err
+		return s.listPage(ctx, kind, bucket, pageQuery{Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}, false, false)
+	}
+	in, out := indexBuckets(kind, q)
+	unsorted := q.Sort == "" && q.Search == ""
+	switch {
+	case in != "" && unsorted && len(q.Filters) == 1 && q.Scope != "":
+		// One indexed filter: the scope's range of the bucket is the result, in id order; page it like a plain scan.
+		from, to := scopeBounds(q.Scope)
+		p := pageQuery{From: from, To: to, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+		if q.After != "" {
+			p.From, p.Offset = from+q.After+"\x00", 0
 		}
-		return &store.ListResult{Records: recs, Total: total}, nil
+		return s.listPage(ctx, kind, in, p, true, q.After != "")
+	case unsorted && in == "" && len(out) == len(q.Filters):
+		return s.listExcluding(ctx, kind, bucket, q, out)
 	}
-	if fb, ok := filterBucket(kind, q); ok {
-		bucket = fb // only the records the filter can match, not the whole kind or scope
+	var ids []string
+	var err error
+	if in != "" {
+		ids, err = s.indexedIDs(ctx, kind, in, q.Scope, nowMs()) // only the records the filter can match
+	} else {
+		ids, _, err = s.eng.Page(ctx, bucket, pageQuery{}, nowMs()) // the whole scope, or kind
 	}
-	ids, _, err := s.eng.Page(ctx, bucket, false, 0, 0, nowMs())
 	if err != nil {
 		return nil, err
 	}
@@ -819,6 +865,68 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		return nil, err
 	}
 	return store.ApplyQuery(kind, recs, q)
+}
+
+// listPage loads the page p selects from bucket; field says the bucket is a field index, whose members carry their
+// scope (fieldMember), and after that the query pages by key, so its total is the page length.
+func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p pageQuery, field, after bool) (*store.ListResult, error) {
+	members, total, err := s.eng.Page(ctx, bucket, p, nowMs())
+	if err != nil {
+		return nil, err
+	}
+	if field {
+		for i, m := range members {
+			members[i] = fieldMemberID(m)
+		}
+	}
+	recs, err := s.loadMembers(ctx, kind, members)
+	if err != nil {
+		return nil, err
+	}
+	if after {
+		total = len(recs)
+	}
+	return &store.ListResult{Records: recs, Total: total}, nil
+}
+
+// listExcluding serves a query whose every filter leaves out the records of an indexed set (buckets out: the super
+// admins of an organization, to the administrators who may not see them, on each of their user listings) by paging
+// the scope's index (bucket) with those records skipped. The page costs a plain page plus the excluded sets' ids,
+// however large the scope; loading the scope to filter it costs the scope.
+func (s *Store) listExcluding(ctx context.Context, kind model.Kind, bucket string, q store.ListQuery, out []string) (*store.ListResult, error) {
+	now := nowMs()
+	skip := map[string]struct{}{}
+	for _, b := range out {
+		ids, err := s.indexedIDs(ctx, kind, b, q.Scope, now)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			skip[id] = struct{}{}
+		}
+	}
+	p := pageQuery{Skip: skip, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+	if q.After != "" {
+		p.From, p.Offset = q.After+"\x00", 0
+	}
+	return s.listPage(ctx, kind, bucket, p, false, q.After != "")
+}
+
+// indexedIDs returns the ids of the live records of scope ("" = every scope) in field index bucket b, in id order
+// within each scope.
+func (s *Store) indexedIDs(ctx context.Context, kind model.Kind, b, scope string, now int64) ([]string, error) {
+	var p pageQuery
+	if scope != "" {
+		p.From, p.To = scopeBounds(scope)
+	}
+	members, _, err := s.eng.Page(ctx, b, p, now)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range members {
+		members[i] = fieldMemberID(m)
+	}
+	return members, nil
 }
 
 // listAfter returns up to limit live records with an ID greater than after, in ID order. Index members are the

@@ -108,9 +108,10 @@ type wireRecord struct {
 }
 
 func encodeRecord(r *store.Record) ([]byte, error) {
-	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted}
+	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted,
+		Epoch: uint64(r.Epoch)} // a tombstone's too: a quorum tombstone's generation (store.Head.Rank)
 	if !r.Deleted {
-		w.Scope, w.Unique, w.Data, w.Epoch, w.Created = r.Scope, r.Unique, r.Data, uint64(r.Epoch), uint64(r.Created)
+		w.Scope, w.Unique, w.Data, w.Created = r.Scope, r.Unique, r.Data, uint64(r.Created)
 		if !r.Expires.IsZero() {
 			w.Expires = r.Expires.UnixNano()
 		}
@@ -154,12 +155,13 @@ func decodeRecord(b []byte) (*store.Record, error) {
 	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
 		Created: hlc.Timestamp(w.Created)}
-	if !r.Deleted && (r.Epoch >= r.Version || r.Created > r.Version) {
-		// a generation cannot start at or after its own version: malformed or forged
+	if !r.Deleted && (r.Epoch >= r.Version || r.Created > r.Version) || r.Deleted && r.Epoch > r.Version {
+		// a generation cannot start at or after its own version (a tombstone's may be its own version): malformed
+		// or forged
 		return nil, fmt.Errorf("cluster: decode record %s/%s: bad generation", w.Kind, w.ID)
 	}
 	if r.Deleted {
-		r.Epoch, r.Created = 0, 0
+		r.Created = 0
 	}
 	if w.Expires != 0 {
 		r.Expires = time.Unix(0, w.Expires)

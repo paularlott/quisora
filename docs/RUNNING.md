@@ -44,7 +44,7 @@ share one between nodes or processes.
 | `tls/`               | The self-signed certificate, when `server.tls_cert` is not set.                                        |
 | `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
 | `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
-| `node_id`, `cluster-state.json`, `quorum-voter.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
+| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
 
 Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
 restoring a node without it gives it a new identity, and email or audit events still queued in it are lost.
@@ -368,7 +368,7 @@ key = "…"                 # quisora genkey, identical on every node
   database. A node that finds another node's database, or one shared with another node, refuses to serve. It never
   wipes it.
 - **Clocks** must be synchronised (NTP), within milliseconds; more than 5 s apart is a broken node
-  ([Clocks](REPLICATION.md#clocks)). A node that starts takes part in quorum writes, and reports ready, after 10 s. Gossip refuses
+  ([Clocks](REPLICATION.md#clocks)). A node that starts takes part in quorum writes, and reports ready, after 11 s. Gossip refuses
   packets more than two minutes off the receiver's clock.
 
 New cluster:

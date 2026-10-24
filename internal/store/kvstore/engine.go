@@ -17,9 +17,8 @@ type engine interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	// MGet returns the values of keys in order (nil for absent keys).
 	MGet(ctx context.Context, keys []string) ([][]byte, error)
-	// Page returns members of bucket that are live at nowMs, skipping offset and returning at most limit
-	// (limit <= 0: all), plus the number of live members.
-	Page(ctx context.Context, bucket string, reverse bool, offset, limit int, nowMs int64) (members []string, total int, err error)
+	// Page returns the members of bucket that p selects and that are live at nowMs, plus how many there are in all.
+	Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) (members []string, total int, err error)
 	// Count returns the number of members of bucket that are live at nowMs.
 	Count(ctx context.Context, bucket string, nowMs int64) (int, error)
 	// Range returns up to limit members (all when limit <= 0) with from <= member <= to in ascending order,
@@ -30,6 +29,19 @@ type engine interface {
 	// wipe removes every key of the store, restarts the sequence and stores newFeedID.
 	wipe(ctx context.Context, newFeedID string) error
 	Close() error
+}
+
+// pageQuery selects a page of an ordered set: the live members within [From, To) ("" = no bound on that side) that
+// are not in Skip, in byte order (Reverse: descending), leaving out the first Offset of them and returning at most
+// Limit (Limit <= 0: all). The total a page comes with counts every member selected, ignoring Offset and Limit. Skip
+// is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set pages the scope's
+// index with them skipped, instead of loading the scope.
+type pageQuery struct {
+	From, To string
+	Skip     map[string]struct{}
+	Reverse  bool
+	Offset   int
+	Limit    int
 }
 
 // grouper is implemented by engines that commit concurrent record writes together (group commit). Group has the

@@ -20,7 +20,7 @@ type deepGroupGate struct {
 }
 
 func (s *deepGroupGate) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
-	if r.Kind == model.KindGroup && s.armed.CompareAndSwap(true, false) {
+	if r.Kind == model.KindLock && s.armed.CompareAndSwap(true, false) {
 		close(s.entered)
 		<-s.resume
 	}
@@ -39,13 +39,14 @@ func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 	}
 	gate := &deepGroupGate{Store: e.svc.Groups.S, entered: make(chan struct{}), resume: make(chan struct{})}
 	e.svc.Groups.S = gate
+	e.svc.Locks.S = gate
 	gate.armed.Store(true)
 	done := make(chan error, 1)
 	go func() {
 		_, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{}, []string{u.ID}, nil)
 		done <- err
 	}()
-	<-gate.entered // the group's version write (the lock on the change) is pending; no member written yet
+	<-gate.entered // the first request is about to take the group's lock; nothing written yet
 	fresh, err := e.svc.Groups.Get(e.ctx, g.ID)
 	if err != nil {
 		close(gate.resume)

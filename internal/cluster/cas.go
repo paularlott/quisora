@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand/v2"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,10 +28,8 @@ import (
 //     its copy must not rank above the base the writer read (a voter that lags behind may grant; one holding anything
 //     newer answers stale, and sends its copy back so the writer repairs its own); a live write onto a deletion of a
 //     later generation is refused (deleted); the version must exceed everything the voter holds or has granted for
-//     the record (low: the writer witnesses the voter's floor and retries with a new stamp); a live write onto a
-//     record the voter granted a deletion of must be of a generation at least that deletion's version (low, with
-//     the epoch to take: the deletion may be in effect somewhere, and the later write must outrank it); a record
-//     another write holds an intent on answers busy. A voter that grants records an intent (exclusive, expiring
+//     the record (low: the writer witnesses the voter's floor and retries with a new stamp); a record another write
+//     holds an intent on answers busy. A voter that grants records an intent (exclusive, expiring
 //     after intentTTL) and raises its high-water mark for the record. Nothing is written. A voter that is catching
 //     up answers not ready and is not counted.
 //  3. Decide: grants from a quorum (this node included) commit the write. A stale or deleted answer before that fails
@@ -48,11 +45,12 @@ import (
 // other (busy while the first holds its intent, stale once it applied it). A write that fails in prepare is applied
 // nowhere. A write whose commit reached fewer than a quorum (a voter died mid-commit) is reported as failed
 // (store.ErrUnconfirmed) but may be in effect on some nodes; a later conflicting write must prepare at a quorum that
-// shares a voter with the first write's grants, whose high-water mark forces the later write to a higher version
-// (and, over a partial deletion, a generation at least the deletion's), so the later write ranks above the partial
-// one everywhere. That holds across a restart of the voter without anything on disk, because clocks are
-// synchronised: a voter grants nothing more than voteAhead ahead of its clock and votes again only restartPause after
-// it starts, past every version it granted before (see the voter type).
+// shares a voter with the first write's grants, whose high-water mark forces the later write to a higher version,
+// so the later write ranks above the partial one everywhere — a partial deletion too, as a tombstone of a quorum kind
+// ranks by version within the generation it deleted (store.Head.Rank). That holds across a restart of the voter
+// without anything on disk, because clocks are synchronised: a voter grants nothing more than voteAhead ahead of its
+// clock, and one that starts refuses every version up to voteAhead past its clock and votes only after restartPause,
+// so whatever it grants after the restart is above everything it granted before (see the voter type).
 
 // Write modes.
 const (
@@ -90,7 +88,6 @@ type prepareReq struct {
 type prepareResp struct {
 	St    uint8
 	Floor uint64 // stLow: the version the write must exceed
-	Epoch uint64 // stLow: the generation a live write must be at least (a deletion of the record was granted)
 	Cur   []byte // stStale, stDeleted: the voter's copy (read repair)
 }
 
@@ -130,31 +127,19 @@ type hwMark struct {
 	at time.Time
 }
 
-// voter is this node's side of quorum compare-and-swap: the intents it granted, the high-water marks of the versions
-// it granted, and the deletions it granted but has not applied. All live in memory, but for a deletion that stays
-// unapplied past intentTTL (its commit never came: voterstate.go). A restart is made safe by the clocks, which every
-// node keeps synchronised (NTP): a voter never grants a version more than voteAhead ahead of its own clock, and a
-// voter that starts takes part in no quorum write for restartPause, by when its clock has passed every version it
-// granted before. Its floor, the clock at start, then refuses all of them, with nothing on disk.
+// voter is this node's side of quorum compare-and-swap: the intents it granted and the high-water marks of the
+// versions it granted. Both live in memory only. A restart is made safe by the clocks, which every node keeps
+// synchronised (NTP): a voter never grants a version more than voteAhead ahead of its own clock, and a voter that
+// starts sets its floor voteAhead past its clock and takes part in no quorum write for restartPause (longer). Every version it
+// granted before the restart is below that floor, so every later grant outranks it, with nothing on disk.
 type voter struct {
-	n         *Node
-	stripes   [64]sync.Mutex // serialise prepare and commit of one record
-	mu        sync.Mutex     // guards the fields below
-	intents   map[string]*intent
-	hw        map[string]hwMark
-	floor     hlc.Timestamp
-	resumeAt  time.Time          // votes only from then on (restartPause after it started)
-	deletions map[string]delMark // deletions granted and not applied here, by record
-	broken    string             // the saved deletions could not be read: this node does not vote
-}
-
-// delMark is a deletion a voter granted and has not applied (yet).
-type delMark struct {
-	op    string
-	v     hlc.Timestamp
-	at    time.Time
-	saved bool // in voterFile
-	done  bool // applied here or aborted since it was saved: the prune loop forgets it and rewrites the file
+	n        *Node
+	stripes  [64]sync.Mutex // serialise prepare and commit of one record
+	mu       sync.Mutex     // guards the fields below
+	intents  map[string]*intent
+	hw       map[string]hwMark
+	floor    hlc.Timestamp
+	resumeAt time.Time // votes only from then on (restartPause after it started)
 }
 
 // voteAhead is how far ahead of the voter's clock a granted version may be. Versions come from the writers' clocks,
@@ -163,28 +148,19 @@ type delMark struct {
 // past it has a clock the cluster must not follow.
 var voteAhead = 2 * store.MaxSkew
 
-// restartPause is how long a voter takes no part in quorum writes after it starts: at least voteAhead, so every
-// version it granted before a restart is behind its clock when it votes again. Its peers form the quorum meanwhile;
-// a whole cluster that starts at once accepts quorum writes once it has passed.
-var restartPause = voteAhead
+// restartPause is how long a voter takes no part in quorum writes after it starts: by then its clock has reached the
+// floor it starts with (voteAhead past its clock), and writers' versions are past it. Its peers form the quorum
+// meanwhile, and the node reports not ready (Node.Ready).
+var restartPause = voteAhead + time.Second
 
 func newVoter(n *Node) *voter {
-	v := &voter{n: n, intents: map[string]*intent{}, hw: map[string]hwMark{}, floor: store.Clock.Now(),
-		resumeAt: time.Now().Add(restartPause), deletions: map[string]delMark{}}
-	if n.dir == "" {
-		return v
-	}
-	dels, err := loadVoterState(n.dir, n.maxDowntime())
-	if err != nil {
-		// It cannot know what it promised before: it takes no part in quorum writes (it answers not ready, and
-		// the others decide without it) until the file is repaired or removed.
-		v.broken = err.Error()
-		n.log.WithError(err).Error("quorum voter state unreadable: this node takes no part in quorum writes until "+
-			"the file is repaired or removed", "dir", n.dir)
-		return v
-	}
-	v.deletions = dels
-	return v
+	now := time.Now()
+	// The floor needs to be ahead only by as long as the voter pauses (restartPause exceeds voteAhead in service, so
+	// it is voteAhead): it is past every version granted before the restart, and the clock has reached it when the
+	// voter votes again.
+	return &voter{n: n, intents: map[string]*intent{}, hw: map[string]hwMark{},
+		floor:    max(store.Clock.Now(), hlc.FromTime(now.Add(min(voteAhead, restartPause)))),
+		resumeAt: now.Add(restartPause)}
 }
 
 func recKey(kind model.Kind, id string) string { return string(kind) + "/" + id }
@@ -205,7 +181,7 @@ func (n *Node) votes() bool {
 // intent (see the package comment above).
 func (v *voter) prepare(ctx context.Context, op string, rec *store.Record, mode uint8, base store.Rank) prepareResp {
 	n := v.n
-	if !n.votes() || v.broken != "" || time.Now().Before(v.resumeAt) {
+	if !n.votes() || time.Now().Before(v.resumeAt) {
 		return prepareResp{St: stNotReady}
 	}
 	k := recKey(rec.Kind, rec.ID)
@@ -248,17 +224,8 @@ func (v *voter) prepare(ctx context.Context, op string, rec *store.Record, mode 
 	if cur != nil {
 		floor = max(floor, cur.Version)
 	}
-	// A deletion this voter granted may be in effect somewhere even though it holds the record live (the deletion's
-	// commit reached fewer than a quorum): a later live write must outrank it, by its generation.
-	epoch := hlc.Timestamp(0)
-	if d, ok := v.deletions[k]; ok && !d.done && !rec.Deleted && rec.Epoch < d.v {
-		epoch = d.v
-	}
-	if rec.Version <= floor || epoch != 0 {
-		return prepareResp{St: stLow, Floor: uint64(floor), Epoch: uint64(epoch)}
-	}
-	if rec.Deleted {
-		v.deletions[k] = delMark{op: op, v: rec.Version, at: now} // until it is applied here (commit) or aborted
+	if rec.Version <= floor {
+		return prepareResp{St: stLow, Floor: uint64(floor)}
 	}
 	v.intents[k] = &intent{op: op, version: rec.Version, exp: now.Add(intentTTL)}
 	v.hw[k] = hwMark{v: rec.Version, at: now}
@@ -287,29 +254,12 @@ func (v *voter) commit(ctx context.Context, op string, rec *store.Record, local 
 	applied, err := n.st.applyCommitted(ctx, rec, local)
 	if err != nil {
 		n.log.WithError(err).Warn("apply a committed write", "kind", string(rec.Kind), "id", rec.ID)
-		return stFailed // a deletion's mark stays: it may be in effect elsewhere
+		return stFailed
 	}
 	if applied || n.holds(rec) {
-		if rec.Deleted {
-			v.forgetDeletion(k, op, rec.Version)
-		}
 		return stGrant
 	}
 	return stFailed
-}
-
-// forgetDeletion drops the mark of the deletion op granted at version, once it is applied here or aborted.
-func (v *voter) forgetDeletion(k, op string, version hlc.Timestamp) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if m, ok := v.deletions[k]; ok && m.op == op && m.v == version {
-		if m.saved {
-			m.done = true // the prune loop forgets it and rewrites the file
-			v.deletions[k] = m
-		} else {
-			delete(v.deletions, k)
-		}
-	}
 }
 
 // release drops the intents op holds for the stamp version (abort). An intent a later attempt of op was granted
@@ -322,22 +272,9 @@ func (v *voter) release(op string, version hlc.Timestamp) {
 			delete(v.intents, k)
 		}
 	}
-	// An aborted deletion was applied nowhere, or (a late grant released after the decision) by a quorum without
-	// this node: either way no later write needs to outrank it here.
-	for k, m := range v.deletions {
-		if m.op == op && m.v == version {
-			if m.saved {
-				m.done = true
-				v.deletions[k] = m
-			} else {
-				delete(v.deletions, k)
-			}
-		}
-	}
 }
 
-// pruneLoop drops expired intents, folds old high-water marks into the floor, and saves or forgets deletion marks
-// (pruneDeletions).
+// pruneLoop drops expired intents and folds old high-water marks into the floor.
 func (v *voter) pruneLoop() {
 	defer v.n.wg.Done()
 	t := time.NewTicker(10 * time.Second)
@@ -361,47 +298,7 @@ func (v *voter) pruneLoop() {
 				delete(v.hw, k)
 			}
 		}
-		v.pruneDeletions(now)
 		v.mu.Unlock()
-	}
-}
-
-// pruneDeletions (v.mu held) saves the deletion marks still unapplied past intentTTL — the deletion's commit never
-// came here, and it may be in effect on the nodes it did reach — and forgets those applied or aborted since, those
-// whose deletion has reached this node since (anti-entropy), and those older than a node may stay away (a partial
-// deletion older than that cannot come back). The file is rewritten only when that changes what it holds: rarely.
-func (v *voter) pruneDeletions(now time.Time) {
-	n, changed := v.n, false
-	for k, d := range v.deletions {
-		old := now.Sub(d.at) > intentTTL
-		if !d.done && (old || d.saved) { // once the deletion is here, nothing needs the mark
-			if kind, id, ok := strings.Cut(k, "/"); ok {
-				if cur, err := n.st.inner.Lookup(n.ctx, model.Kind(kind), id); err == nil && cur.Deleted && cur.Version >= d.v {
-					d.done = true // arrived since
-				}
-			}
-		}
-		switch {
-		case d.done || now.Sub(d.at) > n.maxDowntime():
-			delete(v.deletions, k)
-			changed = changed || d.saved
-		case !d.saved && old:
-			d.saved = true
-			v.deletions[k] = d
-			changed = true
-		}
-	}
-	if !changed || n.dir == "" {
-		return
-	}
-	if err := saveVoterState(n.dir, v.deletions); err != nil {
-		n.log.WithError(err).Error("quorum voter state not saved (retried)", "dir", n.dir)
-		for k, d := range v.deletions {
-			if d.saved {
-				d.saved = false // saved again at the next prune
-				v.deletions[k] = d
-			}
-		}
 	}
 }
 
@@ -495,7 +392,7 @@ func (s *Store) applyCommitted(ctx context.Context, rec *store.Record, local boo
 
 // stamp checks the local precondition of a quorum write, stamps rec (version, generation, Created) and returns the
 // base the write is validated against: the rank of the copy this node holds.
-func (s *Store) stamp(ctx context.Context, rec *store.Record, mode uint8, expect, epoch hlc.Timestamp) (store.Rank, error) {
+func (s *Store) stamp(ctx context.Context, rec *store.Record, mode uint8, expect hlc.Timestamp) (store.Rank, error) {
 	cur, err := s.inner.Lookup(ctx, rec.Kind, rec.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -529,9 +426,6 @@ func (s *Store) stamp(ctx context.Context, rec *store.Record, mode uint8, expect
 	if err := store.StampLocal(rec, head, !live); err != nil {
 		return base, err
 	}
-	if !rec.Deleted && rec.Epoch < epoch {
-		rec.Epoch = epoch // a voter granted a deletion of the record: this write must outrank it (prepare)
-	}
 	if !rec.Deleted {
 		for _, u := range rec.Unique {
 			if h, err := s.inner.GetByUnique(ctx, rec.Kind, u); err == nil && h.ID != rec.ID {
@@ -563,9 +457,8 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 	ctx = context.WithoutCancel(ctx) // a client that goes away mid-write must not leave intents or a half commit
 	op := model.NewID()
 	deadline := time.Now().Add(intentTTL + time.Second)
-	var epoch hlc.Timestamp // the generation a voter requires (it granted a deletion of the record)
 	for attempt := 1; ; attempt++ {
-		base, err := s.stamp(ctx, rec, mode, expect, epoch)
+		base, err := s.stamp(ctx, rec, mode, expect)
 		if err != nil {
 			return err
 		}
@@ -575,7 +468,6 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 		}
 		granted, outcome, low, repair := s.prepareAll(ctx, op, rec, b, mode, base)
 		floor := hlc.Timestamp(low.Floor)
-		epoch = max(epoch, hlc.Timestamp(low.Epoch))
 		switch outcome {
 		case stGrant:
 			return s.commitAll(ctx, op, rec, b, granted)
@@ -618,8 +510,8 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 
 // prepareAll asks this node and every alive peer to grant the write. It returns the voters that granted (nil member:
 // this node) and the outcome: stGrant once a quorum granted, stStale/stDeleted when such an answer came before
-// that (with the voters' copies for read repair), a retryable answer (stBusy, stLow — with the floor to exceed and
-// the generation to take in low —, stNotReady), or stFailed.
+// that (with the voters' copies for read repair), a retryable answer (stBusy, stLow — with the floor to exceed in
+// low —, stNotReady), or stFailed.
 func (s *Store) prepareAll(ctx context.Context, op string, rec *store.Record, b []byte, mode uint8,
 	base store.Rank) (granted []*member, outcome uint8, low prepareResp, repair []*store.Record) {
 	n := s.n
@@ -673,7 +565,6 @@ func (s *Store) prepareAll(ctx context.Context, op string, rec *store.Record, b 
 		case stLow:
 			retry = stLow
 			low.Floor = max(low.Floor, v.resp.Floor)
-			low.Epoch = max(low.Epoch, v.resp.Epoch)
 		case stBusy, stNotReady:
 			if retry == 0 {
 				retry = v.resp.St

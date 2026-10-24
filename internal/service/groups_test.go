@@ -140,7 +140,7 @@ func TestGroupValidationAndConflicts(t *testing.T) {
 	}
 }
 
-// An organization with more groups than UserGroups probes one by one takes the scan path; both give the same answer.
+// An organization with many groups: UserGroups answers from the user's own memberships, not the groups.
 func TestUserGroupsManyGroups(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)

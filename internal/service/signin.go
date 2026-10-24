@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -18,10 +17,26 @@ import (
 // record, so it can neither overwrite nor be overwritten by an administrator's change of the user. In a gossip
 // cluster both kinds are written with a quorum compare-and-swap (model.QuorumCAS).
 
-// WithSignIn fills in the users' LastLogin from their sign-in records.
+// WithSignIn fills in the users' LastLogin from their sign-in records (one batch read; a user without one, or a
+// failed read, keeps the zero value).
 func (s *Service) WithSignIn(ctx context.Context, users ...*model.User) {
+	if len(users) == 0 {
+		return
+	}
+	ids := make([]string, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	sis, err := s.SignIns.GetMany(ctx, ids)
+	if err != nil {
+		return
+	}
+	byUser := make(map[string]*model.SignIn, len(sis))
+	for _, si := range sis {
+		byUser[si.ID] = si
+	}
 	for _, u := range users {
-		if si, err := s.SignIns.Get(ctx, u.ID); err == nil {
+		if si, ok := byUser[u.ID]; ok {
 			u.LastLogin = si.LastLogin
 		}
 	}
@@ -158,53 +173,17 @@ func (s *Service) NoteTOTPStep(ctx context.Context, u *model.User, step int64) e
 // adminLockTTL bounds how long an organization's admin lock is held when its holder dies.
 const adminLockTTL = 30 * time.Second
 
-// lockAdmins takes the organization's admin lock: a lock record written with a compare-and-swap (a quorum one in a
-// gossip cluster), so changes that could remove a super admin the server needs are serialised across every node. It waits
-// up to ten seconds for another holder. The returned function releases it.
+// lockAdmins takes the organization's admin lock (a lease, lock.go), so changes that could remove a super admin the
+// server needs are serialised across every node. It waits up to ten seconds for another holder. The returned
+// function releases it.
 func (s *Service) lockAdmins(ctx context.Context, orgID string) (func(), error) {
-	id := "admins/" + orgID
-	holder := model.NewID()
-	deadline := time.Now().Add(10 * time.Second)
-	for attempt := 1; ; attempt++ {
-		now := time.Now()
-		l, err := s.Locks.Get(ctx, id)
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			err = s.Locks.Create(ctx, &model.Lock{Meta: model.Meta{ID: id}, Holder: holder, Until: now.Add(adminLockTTL)})
-		case err != nil:
-		case l.Holder != "" && l.Until.After(now):
-			err = errLockBusy
-		default:
-			l.Holder, l.Until = holder, now.Add(adminLockTTL)
-			err = s.Locks.Update(ctx, l)
-		}
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, errLockBusy) && !errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound) {
-			return nil, mapStore(err)
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("%w: another change of this organization's administrators is in progress", ErrUnavailable)
-		}
-		time.Sleep(time.Duration(10+rand.IntN(20*min(attempt, 10))) * time.Millisecond)
+	l, err := s.lock(ctx, "admins/"+orgID, adminLockTTL, 10*time.Second,
+		"another change of this organization's administrators is in progress")
+	if err != nil {
+		return nil, err
 	}
-	return func() {
-		ctx := context.WithoutCancel(ctx)
-		for range 8 {
-			l, err := s.Locks.Get(ctx, id)
-			if err != nil || l.Holder != holder {
-				return
-			}
-			l.Holder, l.Until = "", time.Time{}
-			if err := s.Locks.Update(ctx, l); !errors.Is(err, store.ErrStale) {
-				return
-			}
-		}
-	}, nil
+	return func() { l.release(ctx) }, nil
 }
-
-var errLockBusy = errors.New("lock held")
 
 // usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
 // a quorum's copies (store.QuorumReader) of the users this node lists with it: a demotion, disabling, end date or

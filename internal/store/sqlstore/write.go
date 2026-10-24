@@ -28,6 +28,7 @@ const maxAttempts = 30
 
 // stored is the metadata of an existing row.
 type stored struct {
+	kind    model.Kind
 	version hlc.Timestamp
 	epoch   hlc.Timestamp
 	created hlc.Timestamp
@@ -38,7 +39,7 @@ type stored struct {
 }
 
 func (o *stored) head() *store.Head {
-	return &store.Head{Version: o.version, Epoch: o.epoch, Created: o.created, Deleted: o.deleted, Origin: o.origin}
+	return &store.Head{Kind: o.kind, Version: o.version, Epoch: o.epoch, Created: o.created, Deleted: o.deleted, Origin: o.origin}
 }
 
 func (o *stored) live(now int64) bool {
@@ -214,7 +215,7 @@ func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, er
 	if err != nil {
 		return nil, err
 	}
-	o.version, o.epoch, o.created = hlc.Timestamp(v), hlc.Timestamp(epoch), hlc.Timestamp(created)
+	o.kind, o.version, o.epoch, o.created = t.kind, hlc.Timestamp(v), hlc.Timestamp(epoch), hlc.Timestamp(created)
 	store.Witness(o.version) // a write refused as stale succeeds when retried (see table.scan)
 	o.uniq = decodeUnique(uniq)
 	return &o, nil

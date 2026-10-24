@@ -14,8 +14,9 @@ const (
 // may be used to order a listing (strings compare case-insensitively); every field can be used as an equality filter.
 // Index fields are equality filters that must not read the whole kind: the key-value stores, which otherwise answer a
 // filter by reading every record of the kind (or scope), keep one index bucket per value of the field (an index write
-// per record write); the SQL backends index every field already. Mark one only where an unscoped filter on it runs
-// on a large kind.
+// per record write); the SQL backends index every field already. Mark one only where a filter on it runs on a large
+// kind or scope. An indexed bool field marks a small set (the records with true): a filter on false is served as the
+// scope with that set left out, so the field must be set on every record of the kind.
 type Field struct {
 	Name   string
 	Type   FieldType
@@ -64,9 +65,10 @@ var Schemas = map[Kind]Schema{
 		{Name: "expiring", Type: FieldBool},
 		{Name: "valid_until", Type: FieldTime, Sort: true},
 		// who may see the user (service.Visibility): super admins are hidden below them, administrators are a
-		// directory entry to managers
-		{Name: "super_admin", Type: FieldBool},
-		{Name: "admin_rank", Type: FieldBool},
+		// directory entry to managers. Indexed: every user listing of an ordinary administrator leaves the super
+		// admins out, and must not read the organization to do so.
+		{Name: "super_admin", Type: FieldBool, Index: true},
+		{Name: "admin_rank", Type: FieldBool, Index: true},
 	}},
 	KindGroup: {KindGroup, []Field{
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true},
@@ -75,8 +77,8 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindMember: {KindMember, []Field{
-		{Name: "group_id", Type: FieldString},
-		{Name: "user_id", Type: FieldString},
+		{Name: "group_id", Type: FieldString, Index: true}, // a group's members (SCIM, counts)
+		{Name: "user_id", Type: FieldString, Index: true},  // a user's groups (tokens, SCIM, admin views)
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindTenant: {KindTenant, []Field{

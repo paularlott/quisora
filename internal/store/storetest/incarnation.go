@@ -3,13 +3,16 @@ package storetest
 import (
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Generations (store.Record.Epoch): a tombstone beats every write of a generation started before it, whatever that
-// write's version; a record created again after a deletion takes the version of the tombstone its writer saw as its
+// Generations (store.Record.Epoch): a tombstone of a plainly replicated kind beats every write of a generation started
+// before it, whatever that write's version; one of a quorum kind ranks by version within the generation it deleted
+// (store.Head.Rank). A record created again after a deletion takes the version of the tombstone its writer saw as its
 // epoch, so it beats that tombstone but never a deletion its writer had not seen.
 
 // A local update can never replace a tombstone (Put: ErrDeleted, CompareAndPut: ErrNotFound); a create can, as a new
@@ -70,44 +73,59 @@ func testLocalWriteOverTombstone(t *testing.T, s store.Store) {
 	must(t, eph.Put(ctx, e))
 }
 
-// Replicated: a live write of a deleted generation loses to the tombstone even with a far newer version (the
-// resurrection a last-writer-wins merge allows); a re-creation wins over the tombstone it saw, and loses to a
-// deletion it had not seen even when its own version is newer (a re-creating node whose clock is fast): the causal
-// rule, never wall-clock order. Epoch and Created are kept as sent.
+// Replicated (a kind written by plain replication, sessions here): a live write of a deleted generation loses to the
+// tombstone even with a far newer version (the resurrection a last-writer-wins merge allows); a re-creation wins over
+// the tombstone it saw, and loses to a deletion it had not seen even when its own version is newer (a re-creating node
+// whose clock is fast): the causal rule, never wall-clock order. Epoch and Created are kept as sent.
 func testReplicatedTombstoneDominates(t *testing.T, s store.Store) {
-	u := newUser("org1", "inc-b")
-	u.ID = model.NewID()
+	id := model.NewID()
+	sess := func(note string, version hlc.Timestamp, origin string) *store.Record {
+		x := &model.Session{Meta: model.Meta{ID: id, Version: version}, UserID: "u-" + note, OrgID: "org1",
+			Expires: time.Now().Add(time.Hour)}
+		r, _ := store.EncodeAsIs(x)
+		r.Origin, r.Created = origin, version
+		return r
+	}
+	userOf := func() (string, error) {
+		r, err := s.Get(ctx, model.KindSession, id)
+		if err != nil {
+			return "", err
+		}
+		var x model.Session
+		if err := store.Decode(r, &x); err != nil {
+			return "", err
+		}
+		return x.UserID, nil
+	}
 	v := store.Clock.Now() + 1000
-	live := replica(u, v, "n1")
+	live := sess("first", v, "n1")
 	if ok, _, err := s.PutReplicated(ctx, live); err != nil || !ok {
 		t.Fatalf("first apply: %v %v", ok, err)
 	}
-	if r, _ := s.Get(ctx, model.KindUser, u.ID); r == nil || r.Epoch != 0 || r.Created != v {
+	if r, _ := s.Get(ctx, model.KindSession, id); r == nil || r.Epoch != 0 || r.Created != v {
 		t.Fatal("epoch and created not kept")
 	}
-	del := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 10, Origin: "n2", Deleted: true}
+	del := &store.Record{Kind: model.KindSession, ID: id, Version: v + 10, Origin: "n2", Deleted: true}
 	if ok, _, _ := s.PutReplicated(ctx, del); !ok {
 		t.Fatal("tombstone not applied")
 	}
-	u.GivenName = "update from a node that had not seen the deletion"
-	upd := replica(u, v+1_000_000, "n3") // far newer version, e.g. a fast clock
+	upd := sess("update from a node that had not seen the deletion", v+1_000_000, "n3") // e.g. a fast clock
 	upd.Created = v
 	if ok, _, _ := s.PutReplicated(ctx, upd); ok {
 		t.Fatal("an update of the deleted generation beat the tombstone")
 	}
-	if _, err := users(s).Get(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := userOf(); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("record resurrected")
 	}
 	ch, _, _ := s.Changes(ctx, 0, 0) // (a backend without a feed returns an error and no changes)
 	for _, c := range ch {
-		if c.Record.ID == u.ID && !c.Record.Deleted {
+		if c.Record.ID == id && !c.Record.Deleted {
 			t.Fatal("the feed carries the resurrected record")
 		}
 	}
 	// Re-created by a writer that saw the deletion: epoch = the tombstone's version. It wins, and keeps winning over
 	// writes of the deleted generation.
-	u.GivenName = "re-created"
-	re := replica(u, v+20, "n1")
+	re := sess("re-created", v+20, "n1")
 	re.Epoch = del.Version
 	if ok, _, _ := s.PutReplicated(ctx, re); !ok {
 		t.Fatal("a re-creation lost to the tombstone it superseded")
@@ -115,28 +133,78 @@ func testReplicatedTombstoneDominates(t *testing.T, s store.Store) {
 	if ok, _, _ := s.PutReplicated(ctx, upd); ok {
 		t.Fatal("an update of the deleted generation beat the re-created record")
 	}
-	got, err := users(s).Get(ctx, u.ID)
+	got, err := userOf()
 	must(t, err)
-	if got.GivenName != "re-created" {
-		t.Fatalf("got %q", got.GivenName)
+	if got != "u-re-created" {
+		t.Fatalf("got %q", got)
 	}
 	// Replaying the old tombstone changes nothing; a later deletion wins.
 	if ok, _, _ := s.PutReplicated(ctx, del); ok {
 		t.Fatal("the older tombstone deleted the re-created record")
 	}
-	del2 := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 30, Origin: "n2", Deleted: true}
+	del2 := &store.Record{Kind: model.KindSession, ID: id, Version: v + 30, Origin: "n2", Deleted: true}
 	if ok, _, _ := s.PutReplicated(ctx, del2); !ok {
 		t.Fatal("the re-created record's deletion was not applied")
 	}
 	// A re-creation from a node that had seen only the first deletion (epoch del), minted on a fast clock (version
 	// far beyond del2): the deletion it had not seen still wins.
-	u.GivenName = "re-added on a fast node"
-	fast := replica(u, v+5_000_000, "n9")
+	fast := sess("re-added on a fast node", v+5_000_000, "n9")
 	fast.Epoch = del.Version
 	if ok, _, _ := s.PutReplicated(ctx, fast); ok {
 		t.Fatal("a re-creation beat a deletion its writer had not seen (wall-clock order decided)")
 	}
-	if _, err := users(s).Get(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := userOf(); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("the later deletion was undone by an earlier re-creation")
+	}
+}
+
+// Quorum kinds (users here): a deletion of a live record keeps that generation's epoch and ranks by version within
+// it (store.Head.Rank). The voters order versions as writes are confirmed and a confirmed deletion's quorum refuses
+// later writes of its generation, so the rank settles only partial writes: a later write of the generation outranks
+// the deletion, an earlier one does not; a re-creation over the tombstone outranks it; a deletion over a tombstone
+// (nothing live seen) takes its own version as its epoch and outranks every generation created before it.
+func testQuorumTombstoneRanksByVersion(t *testing.T, s store.Store) {
+	u := newUser("org1", "inc-q")
+	u.ID = model.NewID()
+	v := store.Clock.Now() + 1000
+	live := replica(u, v, "n1")
+	if ok, _, err := s.PutReplicated(ctx, live); err != nil || !ok {
+		t.Fatalf("first apply: %v %v", ok, err)
+	}
+	del := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 10, Origin: "n2", Deleted: true}
+	must(t, store.StampLocal(del, live.Head(), false))
+	if ok, _, _ := s.PutReplicated(ctx, del); !ok {
+		t.Fatal("tombstone not applied")
+	}
+	if r, _ := s.Lookup(ctx, model.KindUser, u.ID); r == nil || !r.Deleted || r.Epoch != live.Epoch {
+		t.Fatalf("the tombstone does not keep the deleted generation's epoch: %+v", r)
+	}
+	earlier := replica(u, v+5, "n3")
+	earlier.Created = v
+	if ok, _, _ := s.PutReplicated(ctx, earlier); ok {
+		t.Fatal("an earlier write of the deleted generation beat the tombstone")
+	}
+	u.GivenName = "later confirmed"
+	later := replica(u, v+20, "n3")
+	later.Created = v
+	if ok, _, _ := s.PutReplicated(ctx, later); !ok {
+		t.Fatal("a later write of the deleted generation lost to a partial deletion")
+	}
+	got, err := users(s).Get(ctx, u.ID)
+	must(t, err)
+	if got.GivenName != "later confirmed" {
+		t.Fatalf("got %q", got.GivenName)
+	}
+	// Deleted again by a node that holds only a tombstone (it had not seen the record come back): its own version is
+	// its epoch, so it outranks the generation and a re-creation made before it, whatever their versions.
+	again := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 30, Origin: "n2", Deleted: true}
+	must(t, store.StampLocal(again, del.Head(), false))
+	if ok, _, _ := s.PutReplicated(ctx, again); !ok {
+		t.Fatal("a deletion over a tombstone did not outrank the generation before it")
+	}
+	fast := replica(u, v+5_000_000, "n9")
+	fast.Epoch = del.Version // re-created over the first deletion, on a fast clock
+	if ok, _, _ := s.PutReplicated(ctx, fast); ok {
+		t.Fatal("a re-creation beat a later deletion its writer had not seen")
 	}
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -129,6 +130,37 @@ func (t *Table[T, PT]) Get(ctx context.Context, id string) (PT, error) {
 		return nil, err
 	}
 	return t.decode(r)
+}
+
+// GetMany loads the live entities among ids, in their order, leaving out those that do not exist: one read on a
+// backend that reads many at once (MultiGetter), else one per id.
+func (t *Table[T, PT]) GetMany(ctx context.Context, ids []string) ([]PT, error) {
+	out := make([]PT, 0, len(ids))
+	if mg, ok := t.S.(MultiGetter); ok {
+		recs, err := mg.GetMany(ctx, t.Kind, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range recs {
+			v, err := t.decode(r)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	}
+	for _, id := range ids {
+		v, err := t.Get(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // GetByUnique loads a live entity by one of its unique values.

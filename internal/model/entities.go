@@ -872,7 +872,8 @@ func (s *SignIn) Index() Index {
 }
 
 // Lock is a cluster-wide lock record (written with QuorumCAS): Holder holds it until Until. Used to serialise
-// changes whose safety depends on more than one record (the super admins the server keeps).
+// changes whose safety depends on more than one record (the super admins the server keeps; a group and its
+// memberships).
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`

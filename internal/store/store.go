@@ -73,6 +73,7 @@ func (r *Record) Live(now time.Time) bool {
 
 // Head is the replication metadata of a stored record (backends keep it in their own form).
 type Head struct {
+	Kind                    model.Kind
 	Version, Epoch, Created hlc.Timestamp
 	Deleted                 bool
 	Origin                  string
@@ -80,7 +81,7 @@ type Head struct {
 
 // Head returns the record's replication metadata.
 func (r *Record) Head() *Head {
-	return &Head{Version: r.Version, Epoch: r.Epoch, Created: r.Created, Deleted: r.Deleted, Origin: r.Origin}
+	return &Head{Kind: r.Kind, Version: r.Version, Epoch: r.Epoch, Created: r.Created, Deleted: r.Deleted, Origin: r.Origin}
 }
 
 // Rank orders the stored states of one record: by epoch (generation), then version. The higher rank wins
@@ -97,9 +98,15 @@ func (r Rank) Less(o Rank) bool {
 	return r.Version < o.Version
 }
 
-// Rank returns the record's rank: a tombstone's epoch is its own version.
+// Rank returns the record's rank. A tombstone of a kind written by plain replication has its own version as its
+// epoch: it outranks every write of the generation it deleted, whatever the clocks, so a write that had not seen it
+// never brings the record back. A tombstone of a quorum kind (model.QuorumCAS) keeps the epoch of the generation it
+// deleted (StampLocal) and ranks by version within it, like the writes of that generation: there the quorum, not the
+// rank, keeps a confirmed deletion from being undone (a later write must win a quorum that holds the tombstone), and
+// the voters' versions order the writes as they were confirmed. So a later confirmed write outranks a deletion that
+// was only partly applied (its commit reached fewer than a quorum), as any later write outranks a partial one.
 func (h *Head) Rank() Rank {
-	if h.Deleted {
+	if h.Deleted && !model.QuorumCAS(h.Kind) {
 		return Rank{Epoch: h.Version, Version: h.Version}
 	}
 	return Rank{Epoch: h.Epoch, Version: h.Version}
@@ -129,6 +136,13 @@ type FieldRefresher interface {
 	// RefreshFields recomputes, from their data, the index fields of the live records of kind that q selects (q.Limit
 	// of them at most), without changing their version or replicating anything, and returns how many it rewrote.
 	RefreshFields(ctx context.Context, kind model.Kind, q ListQuery) (int, error)
+}
+
+// MultiGetter is optionally implemented by backends that read several records in one round trip. Table.GetMany uses
+// it where available and falls back to one Get per id.
+type MultiGetter interface {
+	// GetMany returns the live records of kind among ids, in the order of ids; ids with no live record are left out.
+	GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*Record, error)
 }
 
 // ListQuery selects records of one kind.
@@ -198,10 +212,20 @@ func (h *Head) Newer(o *Head) bool {
 // stored, not even a tombstone) and refuses a live write that would replace a tombstone (ErrDeleted), unless create
 // (CompareAndPut with expect 0) or the kind is node-local (KindEphemeral). A live write over a live record continues
 // its generation; a create over nothing starts generation 0; a create over a tombstone starts a generation whose
-// epoch is that tombstone's version (the deletion this writer has seen). Backends call it inside the write
-// transaction, after their version checks.
+// epoch is that tombstone's version (the deletion this writer has seen). A deletion of a quorum kind keeps the epoch of
+// the live generation it deletes, or takes its own version when there is none (Head.Rank); any other deletion has
+// none. Backends call it inside the write transaction, after their version checks.
 func StampLocal(rec *Record, old *Head, create bool) error {
 	switch {
+	case rec.Deleted && model.QuorumCAS(rec.Kind):
+		// The generation it deletes (Head.Rank): the live record's. A deletion of nothing live (over a tombstone, or
+		// nothing stored) deletes whatever generation there may be elsewhere: its own version is its epoch, so it
+		// outranks every generation created before it, as a replicated deletion does.
+		if old != nil && !old.Deleted {
+			rec.Epoch, rec.Created = old.Epoch, 0
+		} else {
+			rec.Epoch, rec.Created = rec.Version, 0
+		}
 	case rec.Deleted:
 		rec.Epoch, rec.Created = 0, 0
 	case old == nil:

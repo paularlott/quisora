@@ -53,6 +53,8 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ListSearch", testListSearch},
 		{"ListFilters", testListFilters},
 		{"ListFilterOperators", testListFilterOps},
+		{"ListIndexedFilters", testListIndexed},
+		{"GetMany", testGetMany},
 		{"RefreshFields", testRefreshFields},
 		{"ListSort", testListSort},
 		{"ListPaging", testListPaging},
@@ -65,6 +67,7 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ReplicatedLWW", testReplicatedLWW},
 		{"ReplicatedTombstoneWinsTie", testReplicatedTombstoneTie},
 		{"ReplicatedTombstoneDominates", testReplicatedTombstoneDominates},
+		{"QuorumTombstoneRanksByVersion", testQuorumTombstoneRanksByVersion},
 		{"LocalWriteOverTombstone", testLocalWriteOverTombstone},
 		{"ReplicatedOriginTie", testReplicatedOriginTie},
 		{"ReplicatedUniqueClash", testReplicatedUniqueClash},
@@ -745,6 +748,109 @@ func testCount(t *testing.T, s store.Store) {
 	if n != 0 {
 		t.Fatal("count other kind")
 	}
+}
+
+// testGetMany: the live entities among the ids, in the order asked, those missing or deleted left out.
+func testGetMany(t *testing.T, s store.Store) {
+	us := seedUsers(t, s, "org1", 5)
+	must(t, users(s).Delete(ctx, us[1].ID))
+	got, err := users(s).GetMany(ctx, []string{us[3].ID, "missing", us[1].ID, us[0].ID, us[3].ID})
+	must(t, err)
+	if want := names([]*model.User{us[3], us[0], us[3]}); names(got) != want {
+		t.Fatalf("got %s, want %s", names(got), want)
+	}
+	if got, err := users(s).GetMany(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("none: %v %v", got, err)
+	}
+}
+
+// testListIndexed: filters on indexed fields (model.Field.Index), which the key-value stores answer from their field
+// indexes in several ways (the records with the value, the scope less the records with true, one filter paged on its
+// own, filters combined with others, with a sort or search, without a scope), give exactly what applying the query to
+// every record gives: the same records in the same order, and the same total; expired records are left out of both.
+func testListIndexed(t *testing.T, s store.Store) {
+	for i, u := range seedUsers(t, s, "org1", 30) {
+		switch {
+		case i%11 == 4:
+			u.Role = model.RoleSuperAdmin
+		case i%5 == 2:
+			u.Role = model.RoleAdmin
+		}
+		if u.Role != model.RoleUser {
+			must(t, users(s).Update(ctx, u))
+		}
+	}
+	for i, u := range seedUsers(t, s, "org2", 10) {
+		if i == 3 {
+			u.Role = model.RoleSuperAdmin
+			must(t, users(s).Update(ctx, u))
+		}
+	}
+	grants := store.NewTable[model.Grant](s)
+	for i := range 40 {
+		g := &model.Grant{UserID: fmt.Sprintf("u%d", i%4), OrgID: "org1", ClientID: "app-a", Expires: time.Now().Add(time.Hour)}
+		if i%3 == 0 {
+			g.ClientID = "app-b"
+		}
+		if i%7 == 2 {
+			g.Expires = time.Now().Add(-time.Minute) // expired, still stored
+		}
+		must(t, grants.Put(ctx, g))
+	}
+	members := store.NewTable[model.Member](s)
+	for i := range 12 {
+		m := &model.Member{Meta: model.Meta{ID: model.MemberID(fmt.Sprintf("g%d", i%3), fmt.Sprintf("u%d", i%4))},
+			GroupID: fmt.Sprintf("g%d", i%3), UserID: fmt.Sprintf("u%d", i%4), OrgID: "org1"}
+		must(t, members.Put(ctx, m))
+	}
+	ids := func(recs []*store.Record) []string {
+		out := make([]string, len(recs))
+		for i, r := range recs {
+			out[i] = r.ID
+		}
+		return out
+	}
+	check := func(kind model.Kind, q store.ListQuery) {
+		t.Helper()
+		all, err := s.List(ctx, kind, store.ListQuery{})
+		must(t, err)
+		want, err := store.ApplyQuery(kind, all.Records, q)
+		must(t, err)
+		got, err := s.List(ctx, kind, q)
+		must(t, err)
+		if !slices.Equal(ids(got.Records), ids(want.Records)) || got.Total != want.Total {
+			t.Errorf("%s %+v:\n got %d %v\nwant %d %v", kind, q, got.Total, ids(got.Records), want.Total, ids(want.Records))
+		}
+	}
+	f := func(field string, v any) store.Filter { return store.Filter{Field: field, Value: v} }
+	org1, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org1"})
+	must(t, err)
+	after := org1.Records[12].ID
+	for _, desc := range []bool{false, true} {
+		for _, off := range []int{0, 7, 26, 40} {
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Desc: desc, Offset: off, Limit: 10})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true)}, Desc: desc, Offset: off, Limit: 3})
+			check(model.KindUser, store.ListQuery{Scope: "", Filters: []store.Filter{f("super_admin", false)}, Desc: desc, Offset: off, Limit: 10})
+		}
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false), f("admin_rank", false)}, Desc: desc})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false), f("active", true)}, Desc: desc, Limit: 5})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true), f("active", true)}, Desc: desc})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true), f("super_admin", false)}, Desc: desc})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: "username", Desc: desc, Limit: 8})
+		check(model.KindUser, store.ListQuery{Scope: "", Filters: []store.Filter{f("admin_rank", true)}, Desc: desc, Limit: 4})
+		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-a")}, Desc: desc, Offset: 1, Limit: 3})
+		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-b")}, Desc: desc})
+		check(model.KindGrant, store.ListQuery{Scope: "", Filters: []store.Filter{f("client_id", "app-a")}, Desc: desc, Limit: 6})
+		check(model.KindMember, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("group_id", "g1")}, Desc: desc, Limit: 1})
+		check(model.KindMember, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("user_id", "u2")}, Desc: desc})
+	}
+	check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Search: "user01"})
+	check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, After: after, Limit: 6})
+	check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true)}, After: after, Limit: 2})
+	check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", true)}})
+	check(model.KindUser, store.ListQuery{Scope: "org2", Filters: []store.Filter{f("super_admin", false)}, Limit: 4})
+	check(model.KindUser, store.ListQuery{Scope: "org3", Filters: []store.Filter{f("super_admin", false)}})
+	check(model.KindGrant, store.ListQuery{Scope: "u9", Filters: []store.Filter{f("client_id", "app-a")}})
 }
 
 // replica is u as another node would send it: written at version, by origin, created (generation 0) at version.

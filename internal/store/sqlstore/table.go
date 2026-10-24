@@ -157,9 +157,10 @@ func (t *table) args(rec *store.Record, seq int64) ([]any, error) {
 	}
 	var uniq any
 	var data []byte
-	var epoch, created int64
+	var created int64
+	epoch := int64(rec.Epoch) // kept on a tombstone too: a quorum tombstone's generation (store.Head.Rank)
 	if !rec.Deleted {
-		uniq, data, epoch, created = encodeUnique(rec.Unique), rec.Data, int64(rec.Epoch), int64(rec.Created)
+		uniq, data, created = encodeUnique(rec.Unique), rec.Data, int64(rec.Created)
 	}
 	a = append(a, rec.ID, int64(rec.Version), rec.Origin, rec.Deleted, scope, expires, seq, uniq, blobArg(data), epoch, created)
 	for _, f := range t.fields {

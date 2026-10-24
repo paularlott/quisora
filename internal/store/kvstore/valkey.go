@@ -230,37 +230,85 @@ func (e *valkeyEngine) Count(ctx context.Context, bucket string, nowMs int64) (i
 	return n - x, err
 }
 
-func (e *valkeyEngine) Page(ctx context.Context, bucket string, reverse bool, offset, limit int, nowMs int64) ([]string, int, error) {
-	n, x, err := e.card(ctx, bucket, nowMs)
+// lexBounds returns [from, to) as lexicographic range bounds ("" = unbounded).
+func lexBounds(from, to string) (lo, hi string) {
+	lo, hi = "-", "+"
+	if from != "" {
+		lo = "[" + from
+	}
+	if to != "" {
+		hi = "(" + to
+	}
+	return lo, hi
+}
+
+// Page selects p from bucket: the total is a count of the range (ZLEXCOUNT) less the members of it to leave out, then
+// one lexicographic range read serves the page. Expired members still sit in the index until purged, and skipped
+// ones are in it by definition, so when there are any (the x/ set lists the expired, ZMSCORE says which of p.Skip
+// the range holds) the window read is widened by their number and they are filtered out here.
+func (e *valkeyEngine) Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
+	lo, hi := lexBounds(p.From, p.To)
+	within := func(m string) bool { return (p.From == "" || m >= p.From) && (p.To == "" || m < p.To) }
+	res := e.c.DoMulti(ctx,
+		e.c.B().Zlexcount().Key(e.zkey(bucket)).Min(lo).Max(hi).Build(),
+		e.c.B().Zcount().Key(e.xkey(bucket)).Min("-inf").Max(strconv.FormatInt(nowMs, 10)).Build())
+	n64, err := res[0].AsInt64()
 	if err != nil {
 		return nil, 0, err
 	}
-	total := n - x
-	if total == 0 || offset >= total {
-		return []string{}, total, nil
+	x, err := res[1].AsInt64()
+	if err != nil {
+		return nil, 0, err
 	}
-	lo, hi := "-", "+"
-	cmd := "ZRANGEBYLEX"
-	if reverse {
-		lo, hi, cmd = "+", "-", "ZREVRANGEBYLEX"
-	}
-	args := []string{lo, hi}
-	skip := offset
-	count := limit
-	var expired map[string]struct{}
+	n := int(n64)
+	var gone map[string]struct{} // the members of the range to leave out
 	if x > 0 {
-		// Expired members still sit in the index (until purged): widen the window and filter them out.
 		exp, err := e.c.Do(ctx, e.c.B().Zrangebyscore().Key(e.xkey(bucket)).Min("-inf").Max(strconv.FormatInt(nowMs, 10)).Build()).AsStrSlice()
 		if err != nil {
 			return nil, 0, err
 		}
-		expired = make(map[string]struct{}, len(exp))
+		gone = make(map[string]struct{}, len(exp))
 		for _, m := range exp {
-			expired[m] = struct{}{}
+			if within(m) {
+				gone[m] = struct{}{}
+			}
 		}
+	}
+	if len(p.Skip) > 0 {
+		skip := make([]string, 0, len(p.Skip))
+		for m := range p.Skip {
+			if within(m) {
+				skip = append(skip, m)
+			}
+		}
+		if len(skip) > 0 {
+			scores, err := e.c.Do(ctx, e.c.B().Zmscore().Key(e.zkey(bucket)).Member(skip...).Build()).ToArray()
+			if err != nil {
+				return nil, 0, err
+			}
+			if gone == nil {
+				gone = make(map[string]struct{}, len(skip))
+			}
+			for i, sc := range scores {
+				if !sc.IsNil() {
+					gone[skip[i]] = struct{}{}
+				}
+			}
+		}
+	}
+	total := n - len(gone)
+	if total <= 0 || p.Offset >= total {
+		return []string{}, total, nil
+	}
+	cmd, args := "ZRANGEBYLEX", []string{lo, hi}
+	if p.Reverse {
+		cmd, args = "ZREVRANGEBYLEX", []string{hi, lo}
+	}
+	skip, count := p.Offset, p.Limit
+	if len(gone) > 0 {
 		skip = 0
-		if limit > 0 {
-			count = offset + limit + x
+		if p.Limit > 0 {
+			count = p.Offset + p.Limit + len(gone)
 		}
 	}
 	if skip > 0 || count > 0 {
@@ -273,21 +321,21 @@ func (e *valkeyEngine) Page(ctx context.Context, bucket string, reverse bool, of
 	if err != nil {
 		return nil, 0, err
 	}
-	if x > 0 {
+	if len(gone) > 0 {
 		live := members[:0]
 		for _, m := range members {
-			if _, gone := expired[m]; !gone {
+			if _, out := gone[m]; !out {
 				live = append(live, m)
 			}
 		}
 		members = live
-		if offset >= len(members) {
+		if p.Offset >= len(members) {
 			members = nil
 		} else {
-			members = members[offset:]
+			members = members[p.Offset:]
 		}
-		if limit > 0 && len(members) > limit {
-			members = members[:limit]
+		if p.Limit > 0 && len(members) > p.Limit {
+			members = members[:p.Limit]
 		}
 	}
 	if members == nil {

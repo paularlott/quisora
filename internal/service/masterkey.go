@@ -49,19 +49,30 @@ type NodeKeys struct {
 
 // MasterKeyNodes returns the master keys each live node reported, by node id.
 func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, error) {
-	l, _, err := s.Locks.List(ctx, store.ListQuery{})
-	if err != nil {
-		return nil, mapStore(err)
-	}
+	// Only the reports' range of ids, read in id order: other lock records (the admin lock, groups' locks) are not
+	// read at all.
 	now := time.Now()
 	out := map[string]NodeKeys{}
-	for _, r := range l {
-		if node, ok := strings.CutPrefix(r.ID, masterKeyReportPrefix); ok && r.Until.After(now) {
-			ids := strings.Split(r.Holder, ",")
-			out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...)}
+	for after := masterKeyReportPrefix; ; {
+		l, _, err := s.Locks.List(ctx, store.ListQuery{After: after, Limit: 100})
+		if err != nil {
+			return nil, mapStore(err)
 		}
+		for _, r := range l {
+			node, ok := strings.CutPrefix(r.ID, masterKeyReportPrefix)
+			if !ok {
+				return out, nil // past the reports
+			}
+			if r.Until.After(now) {
+				ids := strings.Split(r.Holder, ",")
+				out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...)}
+			}
+		}
+		if len(l) < 100 {
+			return out, nil
+		}
+		after = l[len(l)-1].ID
 	}
-	return out, nil
 }
 
 // MasterKeyAgreed reports whether every live node seals with this service's active master key, and the nodes that do

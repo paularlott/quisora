@@ -77,9 +77,12 @@ const (
 // 3: groups are written with a quorum compare-and-swap; an abort names the stamp it aborts, a low answer the
 // generation to take, and a quorum read whether a copy could not be read. A node of 2 would refuse group prepares
 // and release a retry's intent with a late abort.
+// 4: a tombstone of a quorum kind ranks by version within the generation it deleted (store.Head.Rank), and voters
+// keep no deletion marks (prepare answers no generation to take). Nodes of 3 would order partial deletions
+// differently.
 const (
-	compat    = 3
-	minCompat = 3
+	compat    = 4
+	minCompat = 4
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.

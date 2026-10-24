@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -118,6 +120,13 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	if !s.canAdminOrg(a, g.OrgID) {
 		return ErrForbidden
 	}
+	// The group's lock (see ChangeGroup): no change of the group runs while its members are removed, so none leaves
+	// a member under a deleted group, or re-adds one to it undoing a failed change.
+	lk, err := s.lockGroup(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer lk.release(ctx)
 	if err := s.clientMayAffectMembers(ctx, a, g); err != nil {
 		return err // deleting the group removes every member from it
 	}
@@ -217,10 +226,16 @@ func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID s
 
 // ChangeGroup changes group g (as read: a group changed since then is ErrStale) and its members as one change. It
 // is checked in full before anything is written, and a write that fails part-way undoes the writes before it, so a
-// refused or failed change leaves the group as it was (a SCIM PATCH is atomic, RFC 7644 §3.5.2). The group's record
-// is written first, also when only its members change: its version (a SCIM ETag) moves with its member list, and is
-// the lock on the change. A concurrent change made from the same copy fails there, before it has written a member,
-// so a failed change never has anything of its own to undo over a concurrent change that succeeded.
+// refused or failed change leaves the group as it was (a SCIM PATCH is atomic, RFC 7644 §3.5.2).
+//
+// The whole change — checks, the writes and any undo — holds the group's lock (lockGroup), a cluster-wide lease,
+// so no two changes of one group, on any node or backend, interleave: a change sees the members the one before it
+// left, and a failed change undoes only its own writes, never one that came after. A change from a stale copy is
+// ErrStale: g is checked against the group under the lock, and the group's record is written first with a version
+// compare-and-swap, also when only its members change (its version is a SCIM ETag and moves with its member list).
+// Neither isolates the member writes, which the version of a parent record cannot do; the lock does. A holder that
+// dies leaves at most a partial change behind for the lease's term (groupLockTTL); one that outlives its lease
+// stops where it is, and undoes nothing.
 func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in GroupInput, add, remove []string) (*model.Group, error) {
 	if !s.canAdminOrg(a, g.OrgID) {
 		return nil, ErrForbidden
@@ -229,6 +244,18 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 	next.Tags = slices.Clone(g.Tags)
 	if err := applyGroup(&next, in); err != nil {
 		return nil, err
+	}
+	lk, err := s.lockGroup(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer lk.release(ctx)
+	// Under the lock, g is current or the change is stale: the checks below (the members g has) then read the state
+	// the change is made from, and a change with nothing left to do is still refused when made from an old copy.
+	if cur, err := s.Groups.Get(ctx, g.ID); err != nil {
+		return nil, mapStore(err)
+	} else if cur.Version != g.Version {
+		return nil, ErrStale
 	}
 	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
 	if tagsChanged {
@@ -265,9 +292,15 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		return nil, s.groupConflict(ctx, err, &next)
 	}
 	for _, c := range changes {
+		if err := lk.extend(ctx); err != nil {
+			// This node stalled past the lease: another change may hold the lock and have moved on from these
+			// members, so neither going on nor undoing is safe. What was written stands, as after a holder died.
+			s.Log.Error("group change interrupted: its lock lapsed; the group may be partly changed", "group", g.ID)
+			return nil, fmt.Errorf("%w: this change of the group was interrupted", ErrUnavailable)
+		}
 		changed, err := s.putMembership(ctx, g, c.user, c.member)
 		if err != nil {
-			s.undoGroupChange(context.WithoutCancel(ctx), g, &next, done)
+			s.undoGroupChange(context.WithoutCancel(ctx), lk, g, &next, done)
 			return nil, err
 		}
 		if changed {
@@ -293,20 +326,44 @@ type memberChange struct {
 	member bool
 }
 
-// undoGroupChange reverses a change of g (written as next) whose member writes failed part-way: the group's record
-// goes back to g, and only then (no change of the group came after this one) are the members written (done) put
-// back. A change made since was based on this one's members, and stands with them.
-func (s *Service) undoGroupChange(ctx context.Context, g, next *model.Group, done []memberChange) {
+// undoGroupChange reverses a change of g (written as next) whose member writes failed part-way, under the group's
+// lock lk, which the change still holds: the group's record goes back to g and the members written (done) are put
+// back. Nothing else changes the group while the lock is held, so every write here undoes one of this change's own;
+// should the lease lapse part-way (a stalled node), the undo stops, as a newer holder may have changed the group
+// since, and what is left stands as a partial change. The restore of the group's record is still a compare-and-swap
+// on the version this change wrote: it can only fail on a store failure, or a lease lapsed on another node's clock.
+func (s *Service) undoGroupChange(ctx context.Context, lk *lease, g, next *model.Group, done []memberChange) {
+	lapsed := func() {
+		s.Log.Error("group change failed part-way and its lock lapsed before it was undone: the group may be partly changed",
+			"group", g.ID)
+	}
+	if err := lk.extend(ctx); err != nil {
+		lapsed()
+		return
+	}
 	back := *g
 	back.Version = next.Version
 	if err := s.Groups.Update(ctx, &back); err != nil {
-		s.Log.Warn("group change failed part-way and was changed again since: its member changes stand", "group",
-			g.ID, "error", err)
+		s.Log.Error("group change failed part-way and its record could not be restored: the group may be partly changed",
+			"group", g.ID, "error", err)
 		return
 	}
 	for _, c := range done {
+		if err := lk.extend(ctx); err != nil {
+			lapsed()
+			return
+		}
 		_, _ = s.putMembership(ctx, g, c.user, !c.member)
 	}
+}
+
+// groupLockTTL bounds how long a group's lock is held by a holder that died (a live one extends it as it works).
+const groupLockTTL = 30 * time.Second
+
+// lockGroup takes the lock of group id (a lease, lock.go), which every change of its members and its deletion hold;
+// a membership removed because its user is deleted (deleteUserData) needs none, see there.
+func (s *Service) lockGroup(ctx context.Context, id string) (*lease, error) {
+	return s.lock(ctx, "group/"+id, groupLockTTL, 10*time.Second, "another change of this group is in progress")
 }
 
 // isMember reports whether userID is a member of g.
@@ -391,30 +448,27 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 	return nil
 }
 
-// UserGroups returns the groups a user belongs to (no permission check: used to build tokens, SCIM and admin
-// views). A membership's id is deterministic (MemberID), so this pages through the organization's groups and probes
-// one key per group. Groups are far fewer than memberships, and a plain paged scan never loads a whole scope, where
-// filtering memberships by user loads every membership of the organization on the key-value backends.
+// UserGroups returns the groups a user belongs to, in id order (no permission check: used to build tokens, SCIM and
+// admin views). The user's memberships are one indexed read (user_id is indexed), their groups one batch load; a
+// membership whose group is gone (a group's deletion removes them afterwards) names no group.
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
-	out := []*model.Group{}
-	q := store.ListQuery{Scope: u.OrgID, Limit: 500}
-	for {
-		page, _, err := s.Groups.List(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		for _, g := range page {
-			if _, err := s.Members.Get(ctx, model.MemberID(g.ID, u.ID)); err == nil {
-				out = append(out, g)
-			} else if !errors.Is(err, store.ErrNotFound) {
-				return nil, err
-			}
-		}
-		if len(page) < q.Limit {
-			return out, nil
-		}
-		q.After = page[len(page)-1].ID
+	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+	if err != nil {
+		return nil, mapStore(err)
 	}
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
+		ids = append(ids, m.GroupID)
+	}
+	slices.Sort(ids) // (memberships list in id order: group id then user id, so this is already their order)
+	gs, err := s.Groups.GetMany(ctx, ids)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if gs == nil {
+		gs = []*model.Group{}
+	}
+	return gs, nil
 }
 
 // tagDetail is the audit detail recording a tag change.

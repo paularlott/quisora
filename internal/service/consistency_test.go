@@ -153,8 +153,8 @@ func TestLastAdminConcurrentDemotions(t *testing.T) {
 		if ok != 1 {
 			t.Fatalf("round %d: %d removals succeeded, want exactly 1", round, ok)
 		}
-		l, err := e.svc.Locks.Get(e.ctx, "admins/"+e.primary.ID)
-		if err != nil || l.Holder != "" {
+		// Released: the holder deletes the lock record (lease.release).
+		if l, err := e.svc.Locks.Get(e.ctx, "admins/"+e.primary.ID); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("round %d: the admin lock was not released: %+v %v", round, l, err)
 		}
 		for _, u := range []*model.User{a, b} { // back to the bootstrap super admin alone

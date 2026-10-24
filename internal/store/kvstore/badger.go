@@ -253,32 +253,57 @@ func expOf(it *badger.Item) (int64, error) {
 	return exp, err
 }
 
-func (e *badgerEngine) Page(_ context.Context, bucket string, reverse bool, offset, limit int, nowMs int64) ([]string, int, error) {
+func (e *badgerEngine) Page(_ context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
 	var out []string
 	var total int
 	err := e.view(func(t *badger.Txn) (err error) {
-		out, total, err = page(t, bucket, reverse, offset, limit, nowMs)
+		out, total, err = page(t, bucket, p, nowMs)
 		return
 	})
 	return out, total, err
 }
 
-func page(t *badger.Txn, bucket string, reverse bool, offset, limit int, nowMs int64) ([]string, int, error) {
+// page selects p from bucket in one key-only iteration (a value is read only to check a member's expiry): it starts
+// at the bound it iterates from, stops at the other, and counts every live member it passes that p does not skip.
+func page(t *badger.Txn, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
 	prefix := []byte(bucket + "/")
+	var lo, hi []byte // the bounds as keys; nil when unbounded
+	if p.From != "" {
+		lo = memberKey(bucket, p.From)
+	}
+	if p.To != "" {
+		hi = memberKey(bucket, p.To)
+	}
 	out := []string{}
 	total := 0
 	err := func() error {
 		o := badger.DefaultIteratorOptions
-		o.Prefix, o.Reverse, o.PrefetchValues = prefix, reverse, false
+		o.Prefix, o.Reverse, o.PrefetchValues = prefix, p.Reverse, false
 		it := t.NewIterator(o)
 		defer it.Close()
-		if reverse {
+		switch {
+		case p.Reverse && hi != nil:
+			it.Seek(hi) // at hi or the largest key below it; hi itself is outside the range
+			if it.ValidForPrefix(prefix) && bytes.Equal(it.Item().Key(), hi) {
+				it.Next()
+			}
+		case p.Reverse:
 			it.Seek(append(append([]byte{}, prefix...), 0xFF))
-		} else {
+		case lo != nil:
+			it.Seek(lo)
+		default:
 			it.Rewind()
 		}
 		for ; it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
+			key := item.Key()
+			if p.Reverse {
+				if lo != nil && bytes.Compare(key, lo) < 0 {
+					break
+				}
+			} else if hi != nil && bytes.Compare(key, hi) >= 0 {
+				break
+			}
 			exp, err := expOf(item)
 			if err != nil {
 				return err
@@ -286,8 +311,14 @@ func page(t *badger.Txn, bucket string, reverse bool, offset, limit int, nowMs i
 			if exp > 0 && nowMs >= exp {
 				continue
 			}
-			if total >= offset && (limit <= 0 || len(out) < limit) {
-				out = append(out, string(item.Key()[len(prefix):]))
+			m := key[len(prefix):]
+			if p.Skip != nil {
+				if _, skip := p.Skip[string(m)]; skip { // (the lookup's conversion does not allocate)
+					continue
+				}
+			}
+			if total >= p.Offset && (p.Limit <= 0 || len(out) < p.Limit) {
+				out = append(out, string(m))
 			}
 			total++
 		}
@@ -297,7 +328,7 @@ func page(t *badger.Txn, bucket string, reverse bool, offset, limit int, nowMs i
 }
 
 func (e *badgerEngine) Count(ctx context.Context, bucket string, nowMs int64) (int, error) {
-	_, n, err := e.Page(ctx, bucket, false, 0, 1, nowMs)
+	_, n, err := e.Page(ctx, bucket, pageQuery{Limit: 1}, nowMs)
 	return n, err
 }
 
@@ -343,11 +374,11 @@ func (b *badgerSnapshot) Get(_ context.Context, key string) ([]byte, error) { re
 func (b *badgerSnapshot) MGet(_ context.Context, keys []string) ([][]byte, error) {
 	return mget(b.t, keys)
 }
-func (b *badgerSnapshot) Page(_ context.Context, bucket string, reverse bool, offset, limit int, nowMs int64) ([]string, int, error) {
-	return page(b.t, bucket, reverse, offset, limit, nowMs)
+func (b *badgerSnapshot) Page(_ context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
+	return page(b.t, bucket, p, nowMs)
 }
 func (b *badgerSnapshot) Count(ctx context.Context, bucket string, nowMs int64) (int, error) {
-	_, n, err := b.Page(ctx, bucket, false, 0, 1, nowMs)
+	_, n, err := b.Page(ctx, bucket, pageQuery{Limit: 1}, nowMs)
 	return n, err
 }
 func (b *badgerSnapshot) Range(_ context.Context, bucket, from, to string, limit int) ([]string, error) {

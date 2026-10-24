@@ -21,6 +21,9 @@ build if needed).
    concurrent writes from the same copy at most one takes effect anywhere.
 2. **A deletion is never undone by a write that had not seen it.** Only an explicit re-creation by a writer that had
    seen the deletion brings an id back, and a deletion that writer had not seen still wins — whatever the clocks say.
+   For the quorum kinds this is the quorum's doing: a confirmed deletion is held by a majority, which refuses every
+   later write of the generation it deleted. A deletion that was only partly applied (its commit reached fewer than
+   a quorum, and was reported as failed) gives way to a later confirmed write, like any partial write.
 3. **Nothing is deleted to resolve a conflict.** Of two records claiming one unique value (an email address, a name)
    the one created first keeps it; the other is kept, without the value, flagged and audited.
 4. **A node that cannot know its data is current does not act on it.** A node that is copying the cluster's data,
@@ -67,13 +70,18 @@ Every record carries:
 ### Merge order (the causal convention)
 
 Every apply path (local commit, broadcast, durable push, anti-entropy, read repair) keeps the record of the higher
-**rank** = (epoch, version), where a tombstone's epoch is its own version (`store.Newer`; at equal rank a tombstone
-wins, then the higher origin). It is a total order, so every node that receives the same records, in any order, ends
+**rank** = (epoch, version), where a tombstone's epoch is its own version — except for a quorum kind, whose tombstone
+keeps the epoch of the generation it deleted (`store.Head.Rank`, `store.Newer`; at equal rank a tombstone wins, then
+the higher origin). It is a total order, so every node that receives the same records, in any order, ends
 with the same one. Consequences:
 
 - A tombstone with version *T* outranks every live record of an earlier generation (epoch < *T*), however new its
   version: an update made on a copy that had not seen the deletion (replication lag, a partition, a node catching
   up, a clock an hour ahead) can never bring the record back.
+- A tombstone of a quorum kind ranks by version among the writes of its generation instead. There the voters order
+  versions as writes are confirmed (each grant exceeds everything the voter granted before), and a confirmed
+  deletion is held by a majority that refuses any later write of that generation, so the rank only has to settle
+  partial writes: the later one wins, a deletion or not.
 - A re-creation takes the version of the tombstone its writer saw as its epoch: it outranks that tombstone (same
   epoch, newer version) but **not a deletion its writer had not seen** (that tombstone's epoch is its own, later
   version). A revocation made later in real time therefore beats an earlier re-addition even when the re-adding
@@ -169,24 +177,17 @@ caller read).
 - **`ErrUnconfirmed` after the commit** (a voter failed mid-commit and fewer than a quorum applied): the write *may* be
   in effect on some nodes; it is counted (`unconfirmed`) and logged. A later conflicting write must prepare at a
   quorum that shares a voter with this write's grants, whose high-water mark forces the later write to a higher
-  version (and, over a partial deletion, a generation at least the deletion's), so the later write ranks above the
-  partial one everywhere.
+  version, so the later write ranks above the partial one everywhere (a partial deletion too: its tombstone ranks by
+  version within the generation it deleted).
 
-A voter's high-water marks live in memory; after a minute they are folded into a per-node floor. A restart is made
-safe by the clocks, which must be synchronised ([Clocks](#clocks)), not by the disk: a voter grants no version more
-than 10 s (twice `store.MaxSkew`) ahead of its own clock, and a voter that starts takes part in no quorum write for
-those 10 s, after which its clock, and so its floor, is past every version it granted before the restart. Its peers
-form the quorum meanwhile, and the node reports not ready (`/readyz`) until the pause is over, so no traffic reaches
-it before it can vote; a whole cluster started at once becomes ready, and accepts quorum writes, 10 s after it
-starts.
-
-A deletion a voter granted is remembered (the generation rule above) from the grant until it is applied on that
-voter, normally milliseconds later, so nothing is kept for the ordinary case. Only a deletion whose commit never
-reached the voter (the writer failed mid-commit) is still unapplied after the 5 s intent lifetime: it is then written
-to `<data-dir>/quorum-voter.json`, kept until the deletion reaches the node or for the maximum downtime, and read back
-after a restart. That file is rewritten only when such a mark comes or goes, so quorum writes never wait for the disk.
-A voter that cannot read it takes no part in quorum writes, answering not ready and logging the file, until it is
-repaired or removed.
+A voter keeps nothing on disk: its intents and high-water marks live in memory (after a minute the marks are folded
+into a per-node floor). A restart, however abrupt, is made safe by the clocks, which must be synchronised
+([Clocks](#clocks)): a voter grants no version more than 10 s (twice `store.MaxSkew`) ahead of its own clock, and a
+voter that starts sets its floor 10 s past its clock and takes part in no quorum write for 11 s. Every version it
+granted before the restart is below that floor, so every write it grants afterwards outranks every write — or
+deletion — it granted before, whether or not that one was applied anywhere. Its peers form the quorum meanwhile, and
+the node reports not ready (`/readyz`) until the pause is over, so no traffic reaches it before it can vote; a whole
+cluster started at once becomes ready, and accepts quorum writes, 11 s after it starts.
 
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one says so
 (`Failed`) and is not counted, rather than answering as if it held none.
@@ -209,6 +210,19 @@ while another one without an end date remains) take the organization's **admin l
 quorum compare-and-swap, held for at most 30 s and waited for up to 10 s — and count the administrators from **a
 quorum's copies** (quorum read): a demotion confirmed by a majority anywhere is counted even before it has reached
 this node. Two demotions on two nodes are therefore serialised, and the second sees the first.
+
+### Groups and their members
+
+A change of a group and its members (a SCIM PATCH or PUT, an admin console change, a deletion) is several records:
+the group, whose version is the SCIM ETag and moves with the member list, and one membership record per user added
+or removed. The whole change — its checks, the writes and the undo of a change that failed part-way — holds the
+group's **lock**, the lock record `group/<group id>` (quorum compare-and-swap, a 30 s lease a working holder
+extends, waited for up to 10 s), so no two changes of one group interleave on any node or backend, and a failed
+change undoes only its own writes, never those of one that came after. A change made from a copy of the group that
+is no longer the newest is refused (`ErrStale`, HTTP 412 with `If-Match`) by the group record's compare-and-swap; a
+holder that dies leaves at most a partial change behind until its lease lapses, and one stalled past its lease stops
+where it is rather than undo over a newer holder's work. A deleted user's memberships are removed without the lock
+(they are those of a user who no longer exists, harmless and removable by anyone).
 
 ### Refresh grants and single-use values
 
@@ -329,8 +343,8 @@ Versions come from the writers' clocks; keep every node's clock synchronised (NT
   refuses to grant a quorum write whose version is more than 10 s ahead of its clock (see "What success and failure
   mean": that is what makes a voter's restart safe without anything on disk). With NTP the nodes are milliseconds
   apart; a node further out is broken, and its quorum writes fail until its clock is fixed.
-- Deletions are safe under any skew (generations), and so are quorum writes (voters force versions above what they
-  hold). Between concurrent upserts the later commit wins.
+- Deletions of replicated kinds are safe under any skew (generations), and so are quorum writes and deletions (voters
+  force versions above what they hold, within the 10 s bound). Between concurrent upserts the later commit wins.
 
 ## Cluster status
 
@@ -456,9 +470,11 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
 - Intents are in memory: a voter that restarts mid-write no longer holds the intent, and that write's commit fails
   there (its restart pause still forces any later conflicting write above it).
 - A voter's restart is safe only while clocks are synchronised (NTP): a voter granted nothing more than 10 s ahead of
-  its clock, and sits out 10 s after it starts.
+  its clock, and starts with its floor 10 s past its clock, sitting out 11 s.
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
-- The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.
+- The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder. A group lock's
+  holder extends its lease as it works and stops (undoing nothing) once it may have lapsed, but a change it had
+  made by then stays as a partial change, as after a holder that died.
 - Membership comes from the gossip library's failure detector; a node that is alive but cannot exchange data still
   counts as in view (writes then fail rather than being lost).

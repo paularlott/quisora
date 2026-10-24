@@ -920,6 +920,10 @@ func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
 			}
 		}
 	}
+	// The user's memberships go without their groups' locks (lockGroup): the user is gone, so a membership left or
+	// re-added by a change of the group running meanwhile is one of a user who no longer exists, which is harmless
+	// (members are looked up when read, and such a membership may be removed by anyone, checkMembership) and nothing
+	// a locked, serialised removal could prevent, as the user may be deleted right after the change checked them.
 	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 	if err != nil {
 		return err
