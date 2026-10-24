@@ -271,10 +271,18 @@ Refresh grants are quorum writes because rotating a refresh token advances the g
 yet received the advance must not accept the old token. Replay records (`model.Replay`, `service.UseOnce`) hold the
 single-use values seen — client assertion and DPoP proof `jti`s — until they expire, so a value accepted once is
 refused on every node, whichever nodes stop, restart or leave meanwhile. Invitation and reset links are quorum
-writes too, and an account has at most one of each (a new one replaces the record). One is used up by the commit
-of the change it makes, a quorum compare-and-swap of the user record that moves the account's security generation
-on (`service.UseSignInLink`): a link presented to two nodes at once is used once, and a failure before the commit
-leaves it usable.
+writes too, and an account has at most one of each (a new one replaces the record, and every try of the write judges
+the record it replaces). One is used up by the commit of the change it makes, a quorum compare-and-swap of the user
+record that moves the account's security generation on (`service.UseSignInLink`): a link presented to two nodes at
+once is used once, and a failure before the commit leaves it usable.
+
+The user record is also the one commit point for which of an account's credentials count. Every passkey, connected
+provider, API token, session and refresh grant carries the account's **credential epoch** it was made in
+(`model.User.CredEpoch`), and works only while that is the account's. An accepted invitation (or a reset of the
+account's sign-in) gives the account a new random epoch in its commit: every earlier credential stops at that write,
+on every node that has it, and the passkey the invitation stored for the new epoch beforehand starts. Of two
+acceptances racing, only the winner's epoch is committed; the loser's passkey never counts, and is tidied away.
+Removing the old credentials' records afterwards is tidying (the orphan sweep finishes it after a crash).
 
 ## Other writes
 
@@ -391,18 +399,19 @@ Versions come from the writers' clocks; keep every node's clock synchronised (NT
   force versions above what they hold, within the 10 s bound). Between concurrent upserts the later commit wins.
 - **Every node checks its clock against the others'** (`internal/cluster/clock.go`). Each change-feed reply carries
   the responder's time; the asker reads its offset from each peer as NTP does (against the midpoint of the request)
-  and keeps each peer's latest reading in memory, nothing on disk. If its clock is more than 5 s from the **median**
-  of the readings of the last 30 s, the node refuses to serve (not ready, no votes, no writes, no tokens) and logs
-  why; it serves again once it is within 2.5 s. One peer with a bad clock is outvoted by the median and stops only
-  itself. Feeds are pulled from every peer every 5 s, so a node whose time synchronisation fails while it runs is
+  and keeps each peer's latest reading in memory, nothing on disk. The cluster's clock is the **median** of its own
+  (offset 0) and the readings of the last 30 s, taken only once it has heard from enough peers to make a quorum with
+  itself. If its clock is more than 5 s from that, the node refuses to serve (not ready, no votes, no writes, no
+  tokens) and logs why; it serves again once it is within 2.5 s. A minority of bad clocks is outvoted: in three nodes,
+  one with a bad clock stops only itself, and the two healthy ones agree. Feeds are pulled from every peer every 5 s, so a node whose time synchronisation fails while it runs is
   caught within seconds, and a restarting node is checked during catch-up, before it votes. `/readyz` reports the
   offset (`clock_offset_ms`).
 - A restarting voter also takes its start floor from the cluster's time: until it votes, the floor it starts with
-  (10 s past its clock at start) is moved by the measured offset, to 10 s past the other nodes' clocks at that moment. So a clock stepped back across a restart (a VM restored from a snapshot, a manual
-  correction) cannot let it grant a version below one it granted before; and stepped back by more than 5 s, the node
+  (10 s past its clock at start) is moved by the measured offset, to 10 s past the cluster's clock at that moment. So
+  a clock stepped back across a restart (a VM restored from a snapshot, a manual correction) cannot let it grant a version below one it granted before; and stepped back by more than 5 s, the node
   refuses to serve at all until it is fixed.
-- In a two-node cluster each node has only the other to compare with: if they disagree by more than 5 s, both refuse
-  (quorum writes would fail between them anyway). If every node's clock is wrong by the same amount (a whole cluster
+- In a two-node cluster each node has only the other to compare with, and the median lies halfway: if they disagree
+  by more than 10 s, both refuse (quorum writes would fail between them anyway). If every node's clock is wrong by the same amount (a whole cluster
   restored from one snapshot), they agree, and writes of records stored with later versions fail as stale until the
   clocks catch up.
 

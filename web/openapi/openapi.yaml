@@ -241,6 +241,7 @@ paths:
             type: string
         - name: tag
           in: query
+          description: only the users with this tag (the whole tag, ignoring case)
           schema:
             type: string
       responses:
@@ -1045,7 +1046,7 @@ paths:
         - {$ref: "#/components/parameters/Limit"}
         - name: tag
           in: query
-          description: only the groups with exactly this tag
+          description: only the groups with this tag (the whole tag, ignoring case)
           schema:
             type: string
       responses:

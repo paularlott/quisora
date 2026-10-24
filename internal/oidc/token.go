@@ -263,7 +263,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: u.CredEpoch, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
 		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -501,7 +501,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	if err != nil && !gone(err) {
 		return nil, serverError(unavailable(err))
 	}
-	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID {
+	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.Holds(g.Epoch) {
 		return nil, invalid
 	}
 	org, err := p.org(ctx, g.OrgID)

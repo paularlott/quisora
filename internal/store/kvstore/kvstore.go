@@ -396,7 +396,7 @@ func indexEntries(r *store.Record) []indexEntry {
 	for _, f := range model.Schemas[r.Kind].Fields {
 		if f.Index && f.Words { // one entry per word
 			s, _ := r.Fields[f.Name].(string)
-			words := strings.Fields(s)
+			words := strings.Fields(strings.ToLower(s)) // a filter on a word ignores case (indexBuckets)
 			slices.Sort(words)
 			for _, w := range slices.Compact(words) {
 				if v, ok := fieldKey(w); ok { // as a filter on the word names its bucket (indexBuckets)
@@ -617,9 +617,13 @@ func indexBuckets(kind model.Kind, q store.ListQuery) (in string, out []string) 
 			if f.Name != flt.Field || !f.Index {
 				continue
 			}
+			v, ok := fieldKey(flt.Value)
+			if f.Words {
+				v = strings.ToLower(v)
+			}
 			if f.Type == model.FieldBool && flt.Value == false {
 				out = append(out, fieldBucket(kind, f.Name, "true"))
-			} else if v, ok := fieldKey(flt.Value); ok && in == "" {
+			} else if ok && in == "" {
 				in = fieldBucket(kind, f.Name, v)
 			}
 		}
@@ -1393,7 +1397,16 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 		}
 		matched++
 	}
-	var run []*store.Record        // the matches of the current run of equal values (ties)
+	// A run of equal values read backwards comes by id descending and is taken ascending, so only its last matches
+	// (the lowest ids) can be on the page: the run keeps as many as the page still needs and counts the rest.
+	var run []*store.Record // the kept matches of the current run of equal values (ties)
+	skipped := 0            // matches of the run left out (higher ids than those kept: after them, past the page)
+	keepRun := func() int { // how many of a run the page can need (-1: every one)
+		if q.Limit <= 0 {
+			return -1
+		}
+		return max(offset+q.Limit-matched, 0)
+	}
 	var unordered *store.Collector // without an index in the result's order: every match goes through it
 	if !ordered {
 		var err error
@@ -1402,11 +1415,22 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 		}
 	}
 	var runKey string
+	trim := func(keep int) {
+		if keep >= 0 && len(run) > keep {
+			n := len(run) - keep
+			skipped += n
+			copy(run, run[n:])
+			clear(run[keep:])
+			run = run[:keep]
+		}
+	}
 	flush := func() {
+		trim(keepRun())
 		for i := len(run) - 1; i >= 0; i-- {
 			take(run[i])
 		}
-		run = run[:0]
+		matched += skipped
+		run, skipped = run[:0], 0
 	}
 	now := nowMs()
 	for {
@@ -1444,6 +1468,9 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 				}
 				runKey = k
 				run = append(run, r)
+				if keep := keepRun(); keep >= 0 && len(run) > 2*keep {
+					trim(keep) // now and then: at most twice what the page needs is held
+				}
 			default:
 				take(r)
 			}

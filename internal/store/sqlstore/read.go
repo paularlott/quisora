@@ -89,10 +89,11 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 				b.WriteString(" AND 1 = 0") // not a word
 				continue
 			}
-			w := likeEscape.Replace(v.(string))
-			b.WriteString(" AND (" + col + " = ? OR " + col + " LIKE ? ESCAPE '!' OR " + col + " LIKE ? ESCAPE '!' OR " +
-				col + " LIKE ? ESCAPE '!')")
-			args = append(args, v, w+" %", "% "+w, "% "+w+" %")
+			low := strings.ToLower(v.(string)) // ignoring case, as on every backend
+			w, lc := likeEscape.Replace(low), "LOWER("+col+")"
+			b.WriteString(" AND (" + lc + " = ? OR " + lc + " LIKE ? ESCAPE '!' OR " + lc + " LIKE ? ESCAPE '!' OR " +
+				lc + " LIKE ? ESCAPE '!')")
+			args = append(args, low, w+" %", "% "+w, "% "+w+" %")
 			continue
 		}
 		switch f.Op {

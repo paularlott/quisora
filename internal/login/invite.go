@@ -129,19 +129,17 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// An invitation starts the account afresh. Everything up to the commit (UseSignInLink) can be done again: the
-	// link keeps working until then, so a failure here is a "try again", not a burnt link. First whatever else could
-	// sign in as this user goes (sessions, other passkeys, connected providers, API tokens), then the new passkey is
-	// stored; the commit then sets the password (or none), removes the authenticator app and recovery codes, and moves
-	// the account's security generation on, which uses the link up.
-	if err := m.s.Svc.ClearCredentials(ctx, u.ID, ""); err != nil {
-		m.internalError(w, r, "clear credentials", err)
-		return
-	}
+	// An invitation starts the account afresh, in one commit (UseSignInLink): a compare-and-swap of the user record
+	// that sets the password (or none), removes the authenticator app and recovery codes, gives the account a new
+	// credential epoch — every earlier passkey, connected provider, API token and session stops counting — and moves
+	// the security generation on, which uses the link up. The new passkey is stored first, in the epoch the commit
+	// will set: it counts only once that commit lands, so an acceptance that loses a race leaves nothing usable, and
+	// a failure before the commit is simply tried again with the same link.
+	epoch := service.NewCredEpoch()
 	var pk *model.Passkey
 	if reg != nil {
 		var err error
-		if pk, err = m.Passkeys.StoreForInvite(ctx, u, reg); err != nil {
+		if pk, err = m.Passkeys.StoreForInvite(ctx, u, reg, epoch); err != nil {
 			m.internalError(w, r, "store passkey", err)
 			return
 		}
@@ -150,11 +148,14 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	if wantPassword {
 		password = in.Password
 	}
-	_, u, err := m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkInvite, password)
+	_, u, err := m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkInvite, password, epoch)
 	if err != nil {
 		if errors.Is(err, service.ErrLink) {
+			if pk != nil { // another acceptance committed: this passkey's epoch never will, tidy it away
+				_ = m.s.Svc.Passkeys.Delete(ctx, pk.ID)
+			}
 			writeErr(w, http.StatusGone, msgBadInvite, "")
-		} else {
+		} else { // (a commit not known to have failed may be in effect: its passkey stays; the sweep tidies orphans)
 			web.WriteError(w, err)
 		}
 		return

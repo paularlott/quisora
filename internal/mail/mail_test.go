@@ -129,7 +129,7 @@ func TestTemplatesAndLinks(t *testing.T) {
 				_, _, err := m.Svc.RedeemLink(ctx, tok)
 				return err
 			}
-			_, _, err := m.Svc.UseSignInLink(ctx, tok, tc.purpose, "a fresh long passphrase")
+			_, _, err := m.Svc.UseSignInLink(ctx, tok, tc.purpose, "a fresh long passphrase", service.NewCredEpoch())
 			return err
 		}
 		if err := use(); err != nil {

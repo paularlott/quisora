@@ -100,7 +100,7 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	now := time.Now().UTC()
 	ttl, idle := m.lifetime(org, u)
 	raw := secure.RandomToken(32)
-	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr,
+	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr, Epoch: u.CredEpoch,
 		AuthTime: now, Expires: now.Add(time.Duration(ttl) * time.Second), IdleTTL: idle, LastSeen: now, Provider: opt.Provider, Passkey: opt.Passkey,
 		IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
 	stamp, err := m.svc.SessionStamp(ctx, u.OrgID)
@@ -269,8 +269,8 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		set[id] = struct{}{}
 		m.mu.Unlock()
 	}
-	if !cs.sess.Valid(now) || !cs.user.Enabled(time.Now()) {
-		return nil, nil
+	if !cs.sess.Valid(now) || !cs.user.Enabled(time.Now()) || !cs.user.Holds(cs.sess.Epoch) {
+		return nil, nil // (a session from before the account's sign-in was reset counts no more: model.User.CredEpoch)
 	}
 	if !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
 		return nil, nil

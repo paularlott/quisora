@@ -635,18 +635,24 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 	return nil
 }
 
-// UserGroups returns the groups a user belongs to, in id order (no permission check: used to build tokens, SCIM and
-// admin views). The user's memberships are one indexed read (user_id is indexed), their groups one batch load; a
-// membership whose group is gone names no group. The groups' pending changes (committed, not yet materialized) are
-// applied: a committed removal is never granted, a committed addition is seen before its membership record exists
-// (the organization's groups with pending changes are one indexed read, normally empty).
+// UserGroups returns the groups a user belongs to (no permission check: used to build tokens, SCIM and admin
+// views): the user's membership records, with the pending changes of the organization's groups applied over them,
+// and each group as it is. A membership and its group must come from the same moment, or a result could pair a
+// membership from before a change with the group from after it (a user removed from a group that was given a tag
+// in the same change, with the tag). A group's change numbers (Group.Seq) say when: a membership record written by
+// the group's latest change, or one the group's pending log still decides, matches the group read; one the group
+// has moved past may be older than the group (this node has the group's later change but not yet, or not as read,
+// the membership it wrote), so it is read again from a quorum's copies, which hold every change the group lists as
+// done (a change is materialized, its membership records confirmed, before it leaves the pending log).
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
 	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}
+	seq := make(map[string]uint64, len(ms)) // group id -> the change that wrote the membership
 	ids := make([]string, 0, len(ms))
 	for _, m := range ms {
+		seq[m.GroupID] = m.Seq
 		ids = append(ids, m.GroupID)
 	}
 	pending, _, err := s.Groups.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "pending", Value: true}}})
@@ -658,19 +664,64 @@ func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group
 			ids = append(ids, g.ID)
 		}
 	}
-	slices.Sort(ids) // (memberships list in id order: group id then user id, so this is already their order)
+	slices.Sort(ids)
 	gs, err := s.Groups.GetMany(ctx, ids)
 	if err != nil {
 		return nil, mapStore(err)
 	}
+	var recheck []string // memberships the group has moved past: read again
 	gs = slices.DeleteFunc(gs, func(g *model.Group) bool {
-		member, decided := g.PendingMember(u.ID)
-		return decided && !member
+		if member, decided := g.PendingMember(u.ID); decided {
+			return !member
+		}
+		if seq[g.ID] < g.Seq {
+			recheck = append(recheck, model.MemberID(g.ID, u.ID))
+		}
+		return false
 	})
+	if len(recheck) > 0 {
+		current, err := s.currentMembers(ctx, recheck)
+		if err != nil {
+			return nil, err
+		}
+		gs = slices.DeleteFunc(gs, func(g *model.Group) bool {
+			id := model.MemberID(g.ID, u.ID)
+			return slices.Contains(recheck, id) && !current[id]
+		})
+	}
 	if gs == nil {
 		gs = []*model.Group{}
 	}
 	return gs, nil
+}
+
+// currentMembers reads memberships by id from a quorum's copies (store.QuorumReader; this store's own without a
+// cluster) and reports which are live, active memberships.
+func (s *Service) currentMembers(ctx context.Context, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	qr, ok := s.Store.(store.QuorumReader)
+	if !ok {
+		ms, err := s.Members.GetMany(ctx, ids)
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		for _, m := range ms {
+			out[m.ID] = m.Active()
+		}
+		return out, nil
+	}
+	recs, err := qr.Fresh(ctx, model.KindMember, ids)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	now := time.Now()
+	for id, r := range recs {
+		var m model.Member
+		if r.Live(now) && store.Decode(r, &m) == nil {
+			out[id] = m.Active()
+		}
+	}
+	return out, nil
 }
 
 // dedupe returns ids without repeats, in their first order.

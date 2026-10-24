@@ -165,7 +165,18 @@ type User struct {
 	// racing to set a first factor cannot both succeed. (The role, address and end date are not credentials: each
 	// step judges them afresh from the live user.)
 	SecurityGen uint64 `msgpack:"sg,omitempty" json:"-"`
+	// CredEpoch says which of the account's credentials count: a passkey, connected provider, API token, session or
+	// refresh grant works only while its own Epoch is this one (Holds). Every one is made with the account's epoch;
+	// replacing every way in at once (an accepted invitation, a reset of the account's sign-in) gives the account a
+	// new random epoch in the same compare-and-swap of this record that sets its password, so all the old ones stop
+	// working at that very write, and a passkey stored for the new epoch beforehand starts working at it, whatever
+	// happens to the records themselves (removing them afterwards is only tidying). The user record is the one
+	// commit point for which credentials are valid.
+	CredEpoch uint64 `msgpack:"ce,omitempty" json:"-"`
 }
+
+// Holds reports whether a credential made in epoch still counts for the account (CredEpoch).
+func (u *User) Holds(epoch uint64) bool { return epoch == u.CredEpoch }
 
 // BumpSecurity moves the account on to its next security generation (SecurityGen); the caller writes the user.
 func (u *User) BumpSecurity() { u.SecurityGen++ }
@@ -633,6 +644,8 @@ func (p *Provider) Index() Index {
 
 type Passkey struct {
 	Meta
+	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	Epoch          uint64    `msgpack:"ep,omitempty" json:"-"`
 	UserID         string    `msgpack:"ui" json:"user_id"`
 	OrgID          string    `msgpack:"o" json:"org_id"`
 	Name           string    `msgpack:"n" json:"name"`
@@ -674,6 +687,8 @@ func PasskeyCredentialKey(id []byte) string { return b64(id) }
 
 type Identity struct {
 	Meta
+	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	Epoch      uint64 `msgpack:"ep,omitempty" json:"-"`
 	UserID     string `msgpack:"ui" json:"user_id"`
 	OrgID      string `msgpack:"o" json:"org_id"`
 	ProviderID string `msgpack:"p" json:"provider_id"`
@@ -702,7 +717,7 @@ func ProviderAuthority(p *Provider) string {
 // NewIdentity links subject at provider p to user u.
 func NewIdentity(u *User, p *Provider, subject, email, via string) *Identity {
 	return &Identity{UserID: u.ID, OrgID: u.OrgID, ProviderID: p.ID, Subject: subject, Email: email,
-		Authority: ProviderAuthority(p), Via: via}
+		Authority: ProviderAuthority(p), Via: via, Epoch: u.CredEpoch}
 }
 
 func (i *Identity) Kind() Kind { return KindIdentity }
@@ -721,6 +736,8 @@ func IdentityKey(providerID, subject string) string { return providerID + "/" + 
 
 type Session struct {
 	Meta
+	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
 	UserID    string    `msgpack:"ui" json:"user_id"`
 	OrgID     string    `msgpack:"o" json:"org_id"`
 	AMR       []string  `msgpack:"amr" json:"amr"`
@@ -769,6 +786,8 @@ func (s *Session) Valid(now time.Time) bool {
 
 type Grant struct {
 	Meta
+	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
 	ClientID  string    `msgpack:"ci" json:"client_id"`
 	UserID    string    `msgpack:"ui" json:"user_id"`
 	OrgID     string    `msgpack:"o" json:"org_id"`
@@ -811,6 +830,8 @@ func (g *Grant) Index() Index {
 
 type APIToken struct {
 	Meta
+	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	Epoch      uint64   `msgpack:"ep,omitempty" json:"-"`
 	UserID     string   `msgpack:"ui" json:"user_id"`
 	OrgID      string   `msgpack:"o" json:"org_id"`
 	Name       string   `msgpack:"n" json:"name"`

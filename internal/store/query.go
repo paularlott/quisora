@@ -174,7 +174,8 @@ func matchFilters(r *Record, filters []Filter) bool {
 		default:
 			if fld, _ := model.Schemas[r.Kind].Field(f.Field); fld.Words {
 				sv, _ := v.(string)
-				if want, _ := f.Value.(string); !slices.Contains(strings.Fields(sv), want) {
+				want, _ := f.Value.(string)
+				if !slices.ContainsFunc(strings.Fields(sv), func(w string) bool { return strings.EqualFold(w, want) }) {
 					return false
 				}
 			} else if !EqualValues(v, f.Value) {

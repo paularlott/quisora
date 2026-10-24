@@ -28,7 +28,8 @@ New users get an **invitation link** (shown to the administrator, or emailed whe
 days and once, with which they set a password, create a passkey, or both. A user has one invitation at a time: a new
 one replaces the last. The link keeps working until the set-up completes, so a failure part-way (a network error, a
 password the policy refuses) is simply tried again. An accepted invitation replaces every way the user signed in
-before, so it is also how someone who lost everything gets back in.
+before, all at once (a passkey, connected provider, API token or session from before stops working at the moment it
+is accepted), so it is also how someone who lost everything gets back in.
 
 ## Second factors
 

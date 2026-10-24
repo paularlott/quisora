@@ -31,7 +31,8 @@ type Field struct {
 	Index     bool
 	SortIndex bool
 	// Words marks a string field holding a space-separated list (tags): an equality filter matches a record holding
-	// the value as one of its words, and an Index field is indexed once per word.
+	// the value as one of its words, ignoring case (the same on every backend), and an Index field is indexed once per
+	// word.
 	Words bool
 }
 

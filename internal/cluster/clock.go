@@ -13,8 +13,10 @@ import (
 // not vote or write: a voter restarted with its clock stepped back (a VM restored from a snapshot, a manual
 // correction) could otherwise grant a version below one it granted before the restart. Every change feed reply
 // carries the responder's time (feedResp.Now); the asker reads its offset from each peer as NTP does (the peer's time
-// against the midpoint of the request), keeps each peer's latest reading in memory, and compares its clock with the
-// median of the fresh ones, so one peer with a bad clock is outvoted. Off by more than clockLimit, the node refuses
+// against the midpoint of the request), keeps each peer's latest reading in memory, and takes the median of its own
+// clock (offset 0) and the fresh readings: the cluster's clock as its majority keeps it, so a minority of bad clocks,
+// this node's or a peer's, is outvoted. It decides only once it has heard from enough peers to make a quorum with
+// itself; until then nothing changes. Off by more than clockLimit, the node refuses
 // to serve (clockOff) until it is back within clockOK. Feeds are pulled from every peer every few seconds, and at
 // start-up during catch-up, before the node votes. Nothing is kept on disk.
 const (
@@ -48,18 +50,18 @@ func (n *Node) clockReading(peer string, sent, got time.Time, peerNow int64) {
 	n.checkClock()
 }
 
-// clockOffset returns the median of the fresh readings (how far the cluster's clock is ahead of this node's), and
-// false without any.
+// clockOffset returns how far the cluster's clock is ahead of this node's: the median of this node's own (0) and the
+// fresh readings of its peers; false until fresh readings from at least quorum-1 peers make a quorum with it.
 func (n *Node) clockOffset() (time.Duration, bool) {
 	n.clocks.mu.Lock()
 	defer n.clocks.mu.Unlock()
-	var offs []time.Duration
+	offs := []time.Duration{0} // this node's own clock
 	for _, r := range n.clocks.last {
 		if time.Since(r.at) < clockFresh {
 			offs = append(offs, r.offset)
 		}
 	}
-	if len(offs) == 0 {
+	if len(offs) < max(n.Quorum(), 2) {
 		return 0, false
 	}
 	slices.Sort(offs)

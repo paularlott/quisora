@@ -70,7 +70,7 @@ func TestSecurityGenerationMoves(t *testing.T) {
 		}
 	})
 	step("credentials reset", true, func() {
-		if err := e.svc.ResetCredentials(e.ctx, u.ID, ""); err != nil {
+		if err := e.svc.ResetCredentials(e.ctx, u.ID); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -109,7 +109,7 @@ func TestLinksBoundToSecurityGeneration(t *testing.T) {
 	if _, _, err := e.svc.PeekLink(e.ctx, reset, service.LinkReset); !errors.Is(err, service.ErrLink) {
 		t.Errorf("reset link after a password change: %v", err)
 	}
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(invite), service.LinkInvite, ""); !errors.Is(err, service.ErrLink) {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(invite), service.LinkInvite, "", service.NewCredEpoch()); !errors.Is(err, service.ErrLink) {
 		t.Errorf("invitation after a password change: %v", err)
 	}
 	if _, _, err := e.svc.RedeemLink(e.ctx, verify); err != nil {

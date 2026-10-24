@@ -61,25 +61,21 @@ func (s *Service) mayResetSignIn(ctx context.Context, a *Actor, u *model.User, f
 	return nil
 }
 
-// mayReplaceInvite refuses a (not a super admin) issuing an invitation for a privileged account that is not set up yet
-// but holds a live invitation from someone else: the new one would revoke it, and its issuer could accept it as the
-// user. The issuer (or a super admin) issues the next one.
-func (s *Service) mayReplaceInvite(ctx context.Context, a *Actor, u *model.User) error {
-	if a == System || a.IsSuper() || !privileged(u) {
-		return nil
-	}
-	links, _, err := s.Links.List(ctx, store.ListQuery{Scope: u.ID, Filters: []store.Filter{{Field: "purpose", Value: LinkInvite}}})
-	if err != nil {
-		return mapStore(err)
-	}
-	now := time.Now()
-	for _, l := range links {
-		if !l.Used && now.Before(l.Expires) && l.IssuedBy != a.UserID {
+// mayReplaceInvite returns the check of the invitation a new one by a would replace (issueLink runs it on the very
+// record it overwrites, on every try): a, not a super admin, may not replace the live invitation of a privileged
+// account from someone else, or its issuer could accept it as the user. The issuer (or a super admin) issues the next
+// one.
+func mayReplaceInvite(a *Actor, u *model.User) func(cur *model.LinkToken) error {
+	return func(cur *model.LinkToken) error {
+		if a == System || a.IsSuper() || !privileged(u) {
+			return nil
+		}
+		if !cur.Used && time.Now().Before(cur.Expires) && cur.IssuedBy != a.UserID {
 			return Invalid("user", "this account has an invitation from someone else that has not been used yet: "+
 				"only they or a super admin can issue a new one")
 		}
+		return nil
 	}
-	return nil
 }
 
 // CanResetSignIn reports whether a may issue an invitation for u or remove its password (for what to show).

@@ -14,7 +14,8 @@ import (
 // removed with it, but some removals are best effort (a store failure part-way through deleting a user, a node that
 // was away, a stalled group writer materializing a membership after its group went), and a record that does not
 // expire would then stay for ever. The sweep finds them: housekeeping reads every record of the kinds that do not
-// expire on their own, a batch at a time, and removes those whose owner is gone. Kinds that expire (sessions,
+// expire on their own, a batch at a time, and removes those whose owner is gone, and the credentials of a credential
+// epoch their account has moved past (model.User.CredEpoch: they count for nothing). Kinds that expire (sessions,
 // refresh grants, links, keys, audit entries, replay records, removed memberships) need nothing more, and are read
 // only when their owner can go before they expire.
 
@@ -113,6 +114,13 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 		if now.Sub(e.GetMeta().Updated) < sweepMinAge {
 			continue
 		}
+		if s.epochPassed(ctx, e) { // a credential of an earlier credential epoch of its account: counts for nothing
+			if err := s.removeOrphan(ctx, e); err != nil {
+				return removed, err
+			}
+			removed++
+			continue
+		}
 		for _, o := range owners(e) {
 			if known[o] {
 				continue
@@ -134,6 +142,29 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 		}
 	}
 	return removed, nil
+}
+
+// epochPassed reports whether e is a credential made in a credential epoch its account has moved past
+// (model.User.CredEpoch: its sign-in was reset, or an invitation acceptance that lost stored it).
+func (s *Service) epochPassed(ctx context.Context, e model.Entity) bool {
+	var userID string
+	var epoch uint64
+	switch c := e.(type) {
+	case *model.Passkey:
+		userID, epoch = c.UserID, c.Epoch
+	case *model.Identity:
+		userID, epoch = c.UserID, c.Epoch
+	case *model.APIToken:
+		userID, epoch = c.UserID, c.Epoch
+	case *model.Session:
+		userID, epoch = c.UserID, c.Epoch
+	case *model.Grant:
+		userID, epoch = c.UserID, c.Epoch
+	default:
+		return false
+	}
+	u, err := s.FreshUser(ctx, userID) // a quorum's copy: an epoch this node has not received yet is not missed
+	return err == nil && !u.Holds(epoch)
 }
 
 // ownerGone reports whether o no longer exists: missing here, and missing or deleted in a quorum's copies (a record

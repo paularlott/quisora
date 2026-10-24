@@ -384,12 +384,12 @@ func testListFilters(t *testing.T, s store.Store) {
 			t.Errorf("case %d: got %d want %d", i, total, c.want)
 		}
 	}
-	// A word of a word-list field (tags): exactly that word, wherever it is in the list.
+	// A word of a word-list field (tags): that word, ignoring case, wherever it is in the list.
 	for i, u := range users3(t, s) {
-		u.Tags = [][]string{{"red", "x/y"}, {"blue", "red"}, {"x/y"}}[i]
+		u.Tags = [][]string{{"red", "x/y"}, {"blue", "Red"}, {"x/y"}}[i]
 		must(t, users(s).Put(ctx, u))
 	}
-	for tag, want := range map[string]int{"red": 2, "x/y": 2, "blue": 1, "re": 0, "x": 0, "red x/y": 0} {
+	for tag, want := range map[string]int{"red": 2, "RED": 2, "x/y": 2, "blue": 1, "re": 0, "x": 0, "red x/y": 0} {
 		_, total, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Filters: []store.Filter{{Field: "tags", Value: tag}}})
 		must(t, err)
 		if total != want {

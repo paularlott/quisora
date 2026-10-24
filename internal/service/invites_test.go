@@ -42,7 +42,7 @@ func TestInviteSingleUseExpiryAndRevocation(t *testing.T) {
 		}
 	}
 	// Wrong purpose never redeems.
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkReset, "a fresh long passphrase"); !errors.Is(err, service.ErrLink) {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkReset, "a fresh long passphrase", 0); !errors.Is(err, service.ErrLink) {
 		t.Fatalf("wrong purpose: %v", err)
 	}
 	// A newer invitation revokes the older one.
@@ -55,10 +55,10 @@ func TestInviteSingleUseExpiryAndRevocation(t *testing.T) {
 	}
 	// Single use.
 	tok2 := tokenFrom(second)
-	if _, got, err := e.svc.UseSignInLink(e.ctx, tok2, service.LinkInvite, ""); err != nil || got.ID != u.ID {
+	if _, got, err := e.svc.UseSignInLink(e.ctx, tok2, service.LinkInvite, "", service.NewCredEpoch()); err != nil || got.ID != u.ID {
 		t.Fatalf("redeem: %v", err)
 	}
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tok2, service.LinkInvite, ""); !errors.Is(err, service.ErrLink) {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tok2, service.LinkInvite, "", service.NewCredEpoch()); !errors.Is(err, service.ErrLink) {
 		t.Fatalf("second redeem: %v", err)
 	}
 	// Expiry.
@@ -120,10 +120,10 @@ func TestInviteLinksSurviveRestart(t *testing.T) {
 	if _, u, err := svc2.PeekLink(ctx, tokenFrom(link), service.LinkInvite); err != nil || u.ID != admin.ID {
 		t.Fatalf("invitation lost across restart: %v", err)
 	}
-	if _, _, err := svc2.UseSignInLink(ctx, reset, service.LinkReset, "a fresh long passphrase"); err != nil {
+	if _, _, err := svc2.UseSignInLink(ctx, reset, service.LinkReset, "a fresh long passphrase", 0); err != nil {
 		t.Fatalf("reset link lost across restart: %v", err)
 	}
-	if _, _, err := svc.UseSignInLink(ctx, reset, service.LinkReset, "a fresh long passphrase"); !errors.Is(err, service.ErrLink) {
+	if _, _, err := svc.UseSignInLink(ctx, reset, service.LinkReset, "a fresh long passphrase", 0); !errors.Is(err, service.ErrLink) {
 		t.Fatal("link redeemed on two services")
 	}
 	// A second bootstrap creates nothing.
@@ -197,7 +197,7 @@ func TestOneSignInLinkPerAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(second), service.LinkInvite, ""); err != nil {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(second), service.LinkInvite, "", service.NewCredEpoch()); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(second), service.LinkInvite); !errors.Is(err, service.ErrLink) {
@@ -211,8 +211,8 @@ func TestOneSignInLinkPerAccount(t *testing.T) {
 	}
 }
 
-// Until its commit an invitation can be tried again: clearing the account's other credentials (what the flow does
-// first) leaves the link working, and a failed commit (a password the policy refuses) uses nothing up.
+// Until its commit an invitation can be tried again: a failed commit (a password the policy refuses) changes nothing
+// and uses nothing up.
 func TestInviteRecoverableUntilCommit(t *testing.T) {
 	e := newEnv(t)
 	u := e.user(e.primary.ID, "retry", model.RoleUser)
@@ -221,22 +221,17 @@ func TestInviteRecoverableUntilCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	tok := tokenFrom(link)
-	for range 2 { // the flow's first step, done twice (a retry after a failure)
-		if err := e.svc.ClearCredentials(e.ctx, u.ID, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "short"); err == nil {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "short", service.NewCredEpoch()); err == nil {
 		t.Fatal("a refused password was accepted")
 	}
 	if _, _, err := e.svc.PeekLink(e.ctx, tok, service.LinkInvite); err != nil {
 		t.Fatalf("a failure before the commit used the link up: %v", err)
 	}
-	_, got, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "a fresh long passphrase")
+	_, got, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "a fresh long passphrase", service.NewCredEpoch())
 	if err != nil || got.PasswordHash == "" || got.SecurityGen == u.SecurityGen {
 		t.Fatalf("commit: %v", err)
 	}
-	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "another long passphrase"); !errors.Is(err, service.ErrLink) {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "another long passphrase", service.NewCredEpoch()); !errors.Is(err, service.ErrLink) {
 		t.Fatalf("used twice: %v", err)
 	}
 }
@@ -267,7 +262,7 @@ func TestInviteRecheckedAgainstIssuer(t *testing.T) {
 		if _, _, err := e.svc.PeekLink(e.ctx, tok, service.LinkInvite); !errors.Is(err, service.ErrLink) {
 			t.Errorf("%s: page shown: %v", name, err)
 		}
-		if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, ""); !errors.Is(err, service.ErrLink) {
+		if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "", service.NewCredEpoch()); !errors.Is(err, service.ErrLink) {
 			t.Errorf("%s: redeemed: %v", name, err)
 		}
 		if links, _, _ := e.svc.Links.List(e.ctx, store.ListQuery{Scope: u.ID}); len(links) > 0 {
@@ -276,7 +271,7 @@ func TestInviteRecheckedAgainstIssuer(t *testing.T) {
 	}
 	redeems := func(name, tok string) {
 		t.Helper()
-		if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, ""); err != nil {
+		if _, _, err := e.svc.UseSignInLink(e.ctx, tok, service.LinkInvite, "", service.NewCredEpoch()); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

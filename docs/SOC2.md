@@ -30,18 +30,30 @@ VictoriaLogs has taken it ([Spool](RUNNING.md#spool)). An event VictoriaLogs wil
 long outage, a disk that fails) is written in full to the structured log as `audit.undelivered`.
 
 Every event carries `node`, `boot` (random, new at each start of the process) and `seq` (1, 2, 3… within that boot,
-in the order the node accepted the events). So for each node and boot the sequence has no gaps unless an event is
-missing from VictoriaLogs, and a missing one is either in the structured log (`audit.undelivered`, with the same
-`boot` and `seq`) or was removed from VictoriaLogs. To check, over a window that covers whole boots:
+in the order the node accepted the events). Delivery is at least once (a batch can arrive twice), so an event's `seq`
+may appear more than once; count each once. For each node and boot, every number from 1 up to the highest that
+VictoriaLogs holds should be there:
 
 ```
-app:quisora | stats by (node, boot) count() events, min(seq) first, max(seq) last
-            | math (last - first + 1 - events) missing
-            | filter missing:>0
+app:quisora | stats by (node, boot) count_uniq(seq) as held, min(seq) as first, max(seq) as last
+            | math (last - held) as missing
+            | filter missing:>0 or first:>1
 ```
 
-An empty result means nothing is missing. A boot that started before the window or ended after it shows its edges
-as missing: widen the window. Keep the query and its result for the period (monthly is common).
+Run it over a window that covers whole boots (a boot that started before the window shows its start as missing:
+widen the window). A row is a boot with events missing between its first and its last held: each missing one is in
+the structured log as `audit.undelivered` (with the same `boot` and `seq`), or was removed from VictoriaLogs.
+
+What the query cannot see on its own:
+
+- **Events after the last one held.** A node logs `audit writer stopped` with its `boot` and `last_seq` when it stops
+  cleanly: compare that number with the boot's `last`. After a crash there is no such line; the events accepted
+  before it are in the node's spool and are sent after its next start, so check again once the node is back.
+- **A boot none of whose events arrived.** Every start logs `audit events from this start are numbered` with its
+  `boot`: every boot in the structured log should have a row in VictoriaLogs (`app:quisora | uniq by (node, boot)`).
+
+So the check needs the structured log alongside VictoriaLogs, kept as long. Keep the queries and their results for
+the period (monthly is common).
 
 The shipped structured log is the other half: alert on `audit.undelivered` and keep those lines as long as the audit
 log itself.
@@ -106,7 +118,7 @@ read through the `auditor` vmauth user with LogsQL.
 | Change management (CC8.1) | Configuration changes, each matched to an approved change request | `action:org.update OR action:tenant.* OR action:client.* OR action:provider.* OR action:cluster.reload OR action:keys.*`; your change tickets |
 | Security events (CC7.2, CC7.3) | Alerts raised and how each was handled | Alerts on `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `passkey.clone`, `apitoken.refused` ([alerts](RUNNING.md#metrics)); your incident tickets |
 | Incident response (CC7.4) | Emergency sign-outs and what followed | `action:org.signout OR action:server.signout OR action:signout.sweep`; [emergency-sign-out.md](emergency-sign-out.md) |
-| Audit log completeness (CC7.2) | The sequence check above, each month; no `audit.undelivered` lines, or each one explained | The query above; your log pipeline |
+| Audit log completeness (CC7.2) | The sequence check above, each month, with the boots and last numbers from the structured log; no `audit.undelivered` lines, or each one explained | The queries above; your log pipeline |
 | Backups and recovery (A1.2, A1.3) | Backups made on schedule; a restore tested each period | `action:backup.download`, `action:backup.restore`; the record of the restore test |
 | Key management (CC6.1) | Master key and signing key rotations | `action:keys.rotate OR action:keys.create`; `quisora_master_key_rotation` |
 | Time (CC7.2) | Clocks synchronised | NTP monitoring; `clock_offset_ms` in `/readyz` stays within milliseconds, `clock_skewed` and `skew_refused` stay at 0; a node more than 5 s off refuses to serve and logs it |

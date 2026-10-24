@@ -31,7 +31,7 @@ func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason stri
 	if u, err = s.UpdateUser(ctx, a, userID, UserInput{Active: ptrBool(false), StatusReason: &reason}); err != nil {
 		return nil, err
 	}
-	errs := []error{s.ResetCredentials(ctx, userID, "")}
+	errs := []error{s.ResetCredentials(ctx, userID)}
 	links, _, lerr := s.Links.List(ctx, store.ListQuery{Scope: userID})
 	errs = append(errs, lerr)
 	for _, l := range links {

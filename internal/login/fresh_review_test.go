@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -19,16 +20,19 @@ type freshInviteGate struct {
 	release chan struct{}
 }
 
-func (s *freshInviteGate) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
-	if kind == model.KindSession && q.Scope == s.userID && s.armed.CompareAndSwap(true, false) {
+// CompareAndPut pauses the first acceptance as it stores its passkey: the last step before its commit (the flow
+// stores the new passkey, then commits the account change). (It paused at clearing the old credentials when the flow
+// did that before its commit.)
+func (s *freshInviteGate) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindPasskey && r.Scope == s.userID && s.armed.CompareAndSwap(true, false) {
 		close(s.entered)
 		select {
 		case <-s.release:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 	}
-	return s.Store.List(ctx, kind, q)
+	return s.Store.CompareAndPut(ctx, r, expect)
 }
 
 // The losing acceptance must neither replace the winner's passkey nor register a usable credential.
@@ -54,13 +58,14 @@ func TestFreshReviewRejectedInviteCompletionCannotReplaceWinnerPasskey(t *testin
 		}
 	}()
 	e.Svc.Store = gate
+	e.Svc.Passkeys.S = gate
 	gate.armed.Store(true)
 	done := make(chan int, 1)
 	go func() { res, _ := a.post("/api-internal/invite/complete", bodyA); done <- res.StatusCode }()
 	select {
 	case <-gate.entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("request A did not reach credential clearing")
+		t.Fatal("request A did not reach storing its passkey")
 	}
 	res, out := b.post("/api-internal/invite/complete", bodyB)
 	wantStatus(t, res, out, 200)

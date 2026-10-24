@@ -81,7 +81,7 @@ func TestUnconfirmedWritesStillTakeEffect(t *testing.T) {
 		t.Fatal("sessions survived an unconfirmed disable")
 	}
 	session()
-	if err := svc.ResetCredentials(ctx, u.ID, ""); err != nil {
+	if err := svc.ResetCredentials(ctx, u.ID); err != nil {
 		t.Fatalf("reset with unconfirmed writes: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestResetCredentialsRetriesConcurrentChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc = service.New(cfg, &staleOnce{Store: inner}, sealer)
-	if err := svc.ResetCredentials(ctx, u.ID, ""); err != nil {
+	if err := svc.ResetCredentials(ctx, u.ID); err != nil {
 		t.Fatalf("reset with a concurrent change: %v", err)
 	}
 	if fresh, _ := svc.Users.Get(ctx, u.ID); fresh.PasswordHash != "" {

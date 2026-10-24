@@ -109,6 +109,9 @@ func New(base, node string, log logger.Logger) (*Client, error) {
 // Start runs the background writer (with a spool, the spooler and the deliverer) until Close.
 func (c *Client) Start() {
 	c.started = true
+	// The structured log records every boot, independently of VictoriaLogs: a boot none of whose events reached it,
+	// or whose last events did not, shows there (docs/SOC2.md, completeness).
+	c.log.Info("audit events from this start are numbered", "node", c.node, "boot", c.boot)
 	if c.spool == nil {
 		go c.run()
 		return
@@ -136,6 +139,7 @@ func (c *Client) Close() {
 		c.cancel()
 		if c.started {
 			<-c.done
+			c.log.Info("audit writer stopped", "node", c.node, "boot", c.boot, "last_seq", c.seq.Load())
 		}
 	})
 }

@@ -88,7 +88,7 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 		return nil, badToken("user inactive")
 	}
 	if cl.GID != "" {
-		alive, err := p.grantAlive(ctx, cl.GID)
+		alive, err := p.grantAlive(ctx, cl.GID, u)
 		if err != nil {
 			return nil, err
 		}
@@ -485,7 +485,7 @@ func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, 
 	if err != nil && !gone(err) {
 		return nil, unavailable(err)
 	}
-	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID {
+	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.Holds(g.Epoch) {
 		return inactive, nil
 	}
 	app, err := p.appAccess(ctx, caller, nil, u)

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"net/url"
 	"slices"
@@ -37,11 +38,14 @@ func linkID(token string) string {
 // IssueLink creates a single-use link token for u. An account has at most one invitation and one reset link: issuing
 // one replaces the record of the earlier one, whose token then finds nothing.
 func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration) (string, *model.LinkToken, error) {
-	return s.issueLink(ctx, u, purpose, email, ttl, "")
+	return s.issueLink(ctx, u, purpose, email, ttl, "", nil)
 }
 
-// issueLink is IssueLink recording who issued it (an invitation's issuer: see mayResetSignIn).
-func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string, edit ...func(*model.LinkToken)) (string, *model.LinkToken, error) {
+// issueLink is IssueLink recording who issued it (an invitation's issuer: see mayResetSignIn). replace, when set,
+// judges the live link the new one would overwrite, on every try: a write that conflicts and retries meets the record
+// that won, and is judged against it.
+func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string,
+	replace func(cur *model.LinkToken) error, edit ...func(*model.LinkToken)) (string, *model.LinkToken, error) {
 	// The link is bound to the account as it is now (its security generation), not to the caller's copy: a link
 	// issued from a stale copy would open nothing.
 	cur, err := s.Users.Get(ctx, u.ID)
@@ -70,6 +74,11 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 			l.Version = 0
 			err = s.Links.Create(Durable(ctx), l)
 		case err == nil:
+			if replace != nil {
+				if rerr := replace(cur); rerr != nil {
+					return "", nil, rerr
+				}
+			}
 			l.Version, l.Created = cur.Version, time.Time{}
 			err = s.Links.Update(Durable(ctx), l)
 		}
@@ -140,14 +149,26 @@ func (s *Service) RedeemLink(ctx context.Context, token string) (*model.LinkToke
 	return l, u, nil
 }
 
+// NewCredEpoch returns a fresh credential epoch (model.User.CredEpoch): random, so two acceptances of one invitation
+// racing never pick the same one, and only the one whose commit wins counts.
+func NewCredEpoch() uint64 {
+	for {
+		if e := binary.BigEndian.Uint64(secure.RandomBytes(8)); e != 0 {
+			return e
+		}
+	}
+}
+
 // UseSignInLink accepts an invitation or a password reset (purpose) with token: it is the commit of the whole change,
 // one compare-and-swap of the user record that sets the new password (none: "", an invitation that sets up a passkey
-// instead), for an invitation also removes the authenticator app and the recovery codes, proves the address the link
-// was sent to, re-enables the account of a break-glass invitation, and moves the account's security generation on.
-// That move is what uses the link up, and every other invitation or reset link of the account with it (they are
-// bound to the generation: PeekLink). Until then the link works: what the flow does before (ClearCredentials,
-// storing the new passkey) is done again when the user retries after a failure, and nothing is lost but time.
-func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password string) (*model.LinkToken, *model.User, error) {
+// instead), for an invitation also gives the account the credential epoch epoch (NewCredEpoch: every earlier passkey,
+// connected provider, API token, session and refresh grant stops counting, and the passkey the flow stored for epoch
+// starts), removes the authenticator app and the recovery codes, proves the address the link was sent to,
+// re-enables the account of a break-glass invitation, and moves the account's security generation on. That move is
+// what uses the link up, and every other invitation or reset link of the account with it (they are bound to the
+// generation: PeekLink). Until then nothing of the account has changed and the link works: a failure before it is
+// tried again with the same link. Of two acceptances racing, one commits; the other changes nothing that counts.
+func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password string, epoch uint64) (*model.LinkToken, *model.User, error) {
 	if purpose == LinkReset && password == "" {
 		return nil, nil, Invalid("password", "required")
 	}
@@ -172,6 +193,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 		u.PasswordHash = hash
 		if purpose == LinkInvite {
 			u.TOTPSecret, u.MFAEnrolledAt, u.RecoveryCodes, u.RecoveryCreated = "", nil, nil, nil
+			u.CredEpoch = epoch
 		}
 		if l.Email != "" && strings.EqualFold(l.Email, u.Email) {
 			u.EmailVerified = true // the link went to this address: it is proven
@@ -191,8 +213,13 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 		if !store.Applied(err) {
 			return nil, nil, mapStore(err)
 		}
-		_ = s.endUserSessions(ctx, u.ID, nil) // the old credentials' sessions, also any made since the flow began
-		_ = s.Links.Delete(ctx, l.ID)         // tidying only: the generation has moved past it
+		if purpose == LinkInvite {
+			// Tidying: the old credentials count no more (their epoch has passed); their records go.
+			_ = s.ClearCredentials(ctx, u.ID, u.CredEpoch)
+		} else {
+			_ = s.endUserSessions(ctx, u.ID, nil) // a new password ends the account's sessions and refresh grants
+		}
+		_ = s.Links.DeleteIf(ctx, l.ID, l.Version) // tidying only, and only this link: a newer one issued since stays
 		return l, u, nil
 	}
 	return nil, nil, ErrStale
@@ -228,7 +255,7 @@ func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string) (st
 	if err != nil {
 		return "", time.Time{}, mapStore(err)
 	}
-	token, l, err := s.issueLink(ctx, u, LinkInvite, "", BreakGlassTTL, "", func(l *model.LinkToken) { l.BreakGlass = true })
+	token, l, err := s.issueLink(ctx, u, LinkInvite, "", BreakGlassTTL, "", nil, func(l *model.LinkToken) { l.BreakGlass = true })
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -256,9 +283,6 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	if err := s.mayResetSignIn(ctx, a, u, "user"); err != nil {
 		return "", time.Time{}, err
 	}
-	if err := s.mayReplaceInvite(ctx, a, u); err != nil {
-		return "", time.Time{}, err
-	}
 	if !u.Enabled(time.Now()) {
 		return "", time.Time{}, Invalid("active", "the account is disabled")
 	}
@@ -266,7 +290,7 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	if a != System {
 		by = a.UserID
 	}
-	token, l, err := s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by)
+	token, l, err := s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by, mayReplaceInvite(a, u))
 	if err != nil {
 		return "", time.Time{}, err
 	}

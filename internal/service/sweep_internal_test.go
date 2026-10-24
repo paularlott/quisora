@@ -89,3 +89,43 @@ func TestSweepOrphans(t *testing.T) {
 		t.Fatalf("a second pass removed %d", n)
 	}
 }
+
+// The sweep removes the credentials of an epoch the account has moved past (a passkey stored by an invitation
+// acceptance that lost, those from before a reset), once old enough, and keeps those of the current epoch.
+func TestSweepPassedEpoch(t *testing.T) {
+	ctx := context.Background()
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	st := memstore.New()
+	defer st.Close()
+	s := New(config.Default(), st, sealer)
+	org := &model.Org{Name: "epochs"}
+	if err := s.Orgs.Create(ctx, org); err != nil {
+		t.Fatal(err)
+	}
+	u := &model.User{OrgID: org.ID, Username: "e", Email: "e@example.com", Role: model.RoleUser, Active: true, CredEpoch: 7}
+	if err := s.Users.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	cur := &model.Passkey{UserID: u.ID, OrgID: org.ID, Name: "current", CredentialID: []byte("a"), Epoch: 7}
+	lost := &model.Passkey{UserID: u.ID, OrgID: org.ID, Name: "lost", CredentialID: []byte("b"), Epoch: 8}
+	for _, pk := range []*model.Passkey{cur, lost} {
+		if err := s.Passkeys.Create(ctx, pk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := sweepMinAge
+	sweepMinAge = -time.Hour
+	defer func() { sweepMinAge = saved }()
+	var sw Sweep
+	for range 2 * len(sweepKinds) {
+		if _, err := s.SweepOrphans(ctx, &sw, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Passkeys.Get(ctx, cur.ID); err != nil {
+		t.Fatal("removed the passkey of the current epoch")
+	}
+	if _, err := s.Passkeys.Get(ctx, lost.ID); err == nil {
+		t.Fatal("kept a passkey of another epoch")
+	}
+}

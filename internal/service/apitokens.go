@@ -162,8 +162,12 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if err != nil {
 		return nil, "", err
 	}
+	owner, err := s.Users.Get(ctx, a.UserID)
+	if err != nil {
+		return nil, "", mapStore(err)
+	}
 	t := &model.APIToken{Meta: model.Meta{ID: model.NewID()}, UserID: a.UserID, OrgID: a.OrgID, Name: name,
-		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes}
+		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes, Epoch: owner.CredEpoch}
 	if days > 0 {
 		t.Expires = time.Now().Add(time.Duration(days) * 24 * time.Hour)
 	}
@@ -425,6 +429,9 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	}
 	if err != nil || !u.Enabled(time.Now()) {
 		return refuse("the owner is disabled or gone")
+	}
+	if !u.Holds(t.Epoch) {
+		return refuse("the owner's sign-in was reset since the token was made")
 	}
 	if u.Role.Rank() < model.RoleManager.Rank() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
 		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {

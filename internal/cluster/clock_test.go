@@ -72,7 +72,11 @@ func TestClockRaisesRestartFloor(t *testing.T) {
 	for _, p := range []string{"x1", "x2", "x3"} { // the other nodes' clocks 3 s ahead of this one's
 		n.clockReading(p, now, now, now.Add(3*time.Second).UnixNano())
 	}
-	if want := hlc.FromTime(v.started.Add(3*time.Second + startLead())); floor() < want {
+	off, ok := n.clockOffset()
+	if !ok || off < time.Second { // three of its peers say 3 s ahead (the real two, if heard from yet, ~0)
+		t.Fatalf("offset %s %v", off, ok)
+	}
+	if want := hlc.FromTime(v.started.Add(off + startLead())); floor() < want {
 		t.Fatalf("restart floor %v, want the start floor by the cluster's clock (%v)", floor(), want)
 	}
 }

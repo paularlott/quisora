@@ -445,7 +445,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	}
 	// One commit sets the password and uses the link up (with any invitation of the account); a password the
 	// policy refuses, or a failure, leaves the link usable. Every session and refresh grant of the account ends.
-	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password)
+	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password, 0)
 	if err != nil {
 		if errors.Is(err, service.ErrLink) {
 			writeErr(w, http.StatusGone, msgBadLink, "")

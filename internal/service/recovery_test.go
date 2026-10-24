@@ -90,7 +90,7 @@ func TestRecoveryCodes(t *testing.T) {
 	}
 
 	// an invitation or a lock-out starts the account afresh: no codes
-	if err := e.svc.ResetCredentials(e.ctx, u.ID, ""); err != nil {
+	if err := e.svc.ResetCredentials(e.ctx, u.ID); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = e.svc.Users.Get(e.ctx, u.ID)

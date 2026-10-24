@@ -911,54 +911,47 @@ func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
 	return mapStore(s.Users.Delete(ctx, u.ID))
 }
 
-// ResetCredentials leaves a user with no way in but what an accepted invitation is about to set: every session and
-// refresh grant ends (relying parties are told), and every passkey but keepPasskey, connected provider, API token,
-// the authenticator app and the password go. Re-inviting a compromised account therefore evicts whoever had it.
-func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey string) error {
+// ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap
+// of the user record is the change: it removes the password, the authenticator app and the recovery codes, gives the
+// account a new credential epoch (model.User.CredEpoch: every passkey, connected provider, API token, session and
+// refresh grant stops counting at that write) and moves the security generation on (every sign-in step, set-up or
+// link in flight ends). Removing the old records follows (ClearCredentials), as tidying: relying parties are told of
+// the ended sessions. Re-inviting a compromised account therefore evicts whoever had it, at once.
+func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 	ctx = Durable(ctx)
-	u, err := s.Users.Get(ctx, userID)
-	if err != nil {
-		return mapStore(err)
-	}
-	var errs []error
-	fail := func(err error) {
-		if !store.Applied(err) {
-			errs = append(errs, err)
-		}
-	}
-	fail(s.ClearCredentials(ctx, userID, keepPasskey))
-	// The user record is cleared last, re-read and retried when a concurrent change (a profile edit, a sign-in's
-	// last-login stamp) got there first: that change must not keep the old password or authenticator app. The
-	// security generation moves on whether or not the record held anything: the passkeys and providers just removed
-	// were ways in too, and every sign-in step, set-up or link in flight for the account must end here.
+	var epoch uint64
 	for attempt := 0; ; attempt++ {
+		u, err := s.Users.Get(ctx, userID)
+		if err != nil {
+			return mapStore(err)
+		}
 		if u.PasswordHash != "" {
 			now := time.Now().UTC()
 			u.PasswordChangedAt = &now
 		}
 		u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil
+		u.CredEpoch = NewCredEpoch()
 		u.BumpSecurity()
-		err := s.Users.Update(ctx, u)
-		if !errors.Is(err, store.ErrStale) || attempt == 9 {
-			fail(err)
+		err = s.Users.Update(ctx, u)
+		if store.Applied(err) {
+			epoch = u.CredEpoch
 			break
 		}
-		if u, err = s.Users.Get(ctx, userID); err != nil {
-			fail(err)
-			break
+		// re-read and retried when a concurrent change (a profile edit, a sign-in's stamp) got there first
+		if !errors.Is(err, store.ErrStale) || attempt == 9 {
+			return mapStore(err)
 		}
 	}
-	return mapStore(errors.Join(errs...))
+	return s.ClearCredentials(ctx, userID, epoch)
 }
 
-// ClearCredentials removes every way into the account but its password and authenticator app: its sessions and
-// refresh grants end (relying parties are told), and every passkey but keepPasskey, connected provider and API token
-// goes. The user record is not changed (the security generation stays): an invitation does this before its commit
-// (UseSignInLink), so a failure part-way leaves the link usable, and doing it again is harmless. Every removal is
-// tried even when one fails (a failure must not leave the rest in place); the errors are returned together. A write
-// that is applied but not yet confirmed by a peer is no failure.
-func (s *Service) ClearCredentials(ctx context.Context, userID, keepPasskey string) error {
+// ClearCredentials removes the records of the account's credentials made in any epoch but epoch (model.User.CredEpoch)
+// — passkeys, connected providers, API tokens — and ends every session and refresh grant (relying parties are
+// told). Those of another epoch count for nothing already; this tidies them away, and doing it again is harmless.
+// Every removal is tried even when one fails; the errors are returned together. A write that is applied but not yet
+// confirmed by a peer is no failure.
+func (s *Service) ClearCredentials(ctx context.Context, userID string, epoch uint64) error {
 	ctx = Durable(ctx)
 	var errs []error
 	fail := func(err error) {
@@ -967,6 +960,21 @@ func (s *Service) ClearCredentials(ctx context.Context, userID, keepPasskey stri
 		}
 	}
 	fail(s.endUserSessions(ctx, userID, nil))
+	stale := func(r *store.Record) bool {
+		e := model.NewEntity(r.Kind)
+		if store.Decode(r, e) != nil {
+			return true
+		}
+		switch c := e.(type) {
+		case *model.Passkey:
+			return c.Epoch != epoch
+		case *model.Identity:
+			return c.Epoch != epoch
+		case *model.APIToken:
+			return c.Epoch != epoch
+		}
+		return true
+	}
 	for _, k := range []model.Kind{model.KindPasskey, model.KindIdentity, model.KindAPIToken} {
 		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: userID})
 		if err != nil {
@@ -974,7 +982,7 @@ func (s *Service) ClearCredentials(ctx context.Context, userID, keepPasskey stri
 			continue
 		}
 		for _, r := range res.Records {
-			if k == model.KindPasskey && r.ID == keepPasskey {
+			if !stale(r) {
 				continue
 			}
 			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); !errors.Is(err, store.ErrStale) {

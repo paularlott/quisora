@@ -130,6 +130,9 @@ func (s *Service) loadUser(ctx context.Context, u *model.User) (*waUser, []*mode
 	if err != nil {
 		return nil, nil, err
 	}
+	// Only the passkeys of the account's credential epoch count (model.User.CredEpoch): one made before its sign-in
+	// was reset, or stored by an invitation acceptance that lost, is not offered and does not sign in.
+	pks = slices.DeleteFunc(pks, func(p *model.Passkey) bool { return !u.Holds(p.Epoch) })
 	w := &waUser{u: u, creds: make([]webauthn.Credential, 0, len(pks))}
 	for _, p := range pks {
 		w.creds = append(w.creds, toCredential(p))
@@ -293,21 +296,23 @@ func (s *Service) StoreRegistration(ctx context.Context, u *model.User, reg *Reg
 		u.SecurityGen--
 		return nil, err
 	}
-	return s.createPasskey(ctx, reg)
+	return s.createPasskey(ctx, reg, u.CredEpoch)
 }
 
-// StoreForInvite stores the passkey of an invitation being accepted without moving the account's security
-// generation: the invitation's own commit (service.UseSignInLink) moves it, right after, and until then the link
-// still works, so a failure in between is retried with it (the retry removes this passkey and stores a new one).
-func (s *Service) StoreForInvite(ctx context.Context, u *model.User, reg *Registration) (*model.Passkey, error) {
+// StoreForInvite stores the passkey of an invitation being accepted, in the credential epoch the invitation's commit
+// (service.UseSignInLink) will give the account: it counts for nothing until that commit, and only if it is the
+// commit that wins (a concurrent acceptance commits its own epoch, and this passkey never counts). The account is not
+// changed here: until the commit the link still works, so a failure in between is tried again with it.
+func (s *Service) StoreForInvite(ctx context.Context, u *model.User, reg *Registration, epoch uint64) (*model.Passkey, error) {
 	if reg.Passkey.UserID != u.ID {
 		return nil, ErrChallenge
 	}
-	return s.createPasskey(ctx, reg)
+	return s.createPasskey(ctx, reg, epoch)
 }
 
-func (s *Service) createPasskey(ctx context.Context, reg *Registration) (*model.Passkey, error) {
+func (s *Service) createPasskey(ctx context.Context, reg *Registration, epoch uint64) (*model.Passkey, error) {
 	pk := *reg.Passkey
+	pk.Epoch = epoch
 	if err := s.svc.Passkeys.Create(ctx, &pk); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return nil, fmt.Errorf("%w: credential already registered", ErrVerify)

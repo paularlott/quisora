@@ -275,7 +275,7 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 // grantAlive reports whether a refresh grant still exists (not revoked, not expired). An error means it could not
 // be read (the grant, or the sign-out counters its stamp is compared with): the caller answers 503, never "alive"
 // on a guess nor "ended" for a token that may well be good. Only an answer is cached: a failed read is asked again.
-func (p *Provider) grantAlive(ctx context.Context, id string) (bool, error) {
+func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bool, error) {
 	st, ok := p.grants.get(id)
 	if !ok {
 		g, err := p.svc.Grants.Get(ctx, id)
@@ -283,11 +283,11 @@ func (p *Provider) grantAlive(ctx context.Context, id string) (bool, error) {
 			return false, unavailable(err)
 		}
 		if err == nil && !g.Revoked {
-			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp}
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
 		}
 		p.grants.put(id, st)
 	}
-	if !st.alive {
+	if !st.alive || !u.Holds(st.epoch) { // (a grant from before the user's sign-in was reset: model.User.CredEpoch)
 		return false, nil
 	}
 	// The stamp is compared on every use, cached or not: an emergency sign-out ends the grant's tokens at once.
@@ -304,6 +304,7 @@ type grantState struct {
 	alive bool
 	org   string
 	stamp model.SignOutStamp
+	epoch uint64 // the user's credential epoch it was made in
 }
 
 // ---------------------------------------------------------------------------------------------------------------

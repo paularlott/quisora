@@ -44,7 +44,10 @@ func TestReviewInviteCleanupPreservesNewGenerationLink(t *testing.T) {
 		}
 	})
 	done := make(chan error, 1)
-	go func() { _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(old), service.LinkInvite, ""); done <- err }()
+	go func() {
+		_, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(old), service.LinkInvite, "", service.NewCredEpoch())
+		done <- err
+	}()
 	select { // The user CAS has committed; only tidying the old link remains.
 	case <-g.entered:
 	case <-time.After(5 * time.Second):
