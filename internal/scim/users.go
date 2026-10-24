@@ -649,6 +649,9 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 		if in.Role != nil && *in.Role != u.Role && in.Role.Rank() >= model.RoleAdmin.Rank() {
 			return errNeedsSession("granting an administrator role")
 		}
+		// The change was worked out from this copy (and If-Match checked against it): it applies to this copy only.
+		// A user changed since is stale: retried from fresh data, or 412 with If-Match.
+		in.IfVersion = u.Version
 		result, err = rq.m.srv.Svc.UpdateUser(rq.ctx, rq.actor, id, in)
 		return err
 	})

@@ -379,3 +379,62 @@ func TestAPITokenAppScopes(t *testing.T) {
 		t.Errorf("someone else edited it: %v", err)
 	}
 }
+
+type auditSink struct{ events []*model.Audit }
+
+func (s *auditSink) WriteAudit(e *model.Audit) { s.events = append(s.events, e) }
+
+func (s *auditSink) find(action string) *model.Audit {
+	for _, e := range s.events {
+		if e.Action == action {
+			return e
+		}
+	}
+	return nil
+}
+
+// A refused token that exists is audited in its organization, and what a token does names the token.
+func TestAPITokenRefusalAndUseAudited(t *testing.T) {
+	c := newCast(t)
+	sink := &auditSink{}
+	c.svc.AuditWriter = sink
+	tok, plain, err := c.svc.CreateAPIToken(c.ctx, actor(c.aAdmin), service.APITokenInput{Name: "deploy", Scopes: []string{"admin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := plain[:len(plain)-1] + map[bool]string{true: "A", false: "B"}[!strings.HasSuffix(plain, "A")]
+	for range 20 { // repeated at will by whoever knows the token's id: recorded once
+		if _, _, err := c.svc.ValidateAPIToken(c.ctx, wrong); !errors.Is(err, service.ErrBadToken) {
+			t.Fatalf("wrong secret: %v", err)
+		}
+	}
+	refusals := 0
+	for _, e := range sink.events {
+		if e.Action == "apitoken.refused" {
+			refusals++
+		}
+	}
+	if refusals != 1 {
+		t.Fatalf("%d apitoken.refused events for 20 attempts in a minute, want 1", refusals)
+	}
+	e := sink.find("apitoken.refused")
+	if e == nil || e.OrgID != c.a.ID || e.Target != "deploy" || e.Outcome != "failure" || e.Detail["reason"] != "wrong secret" ||
+		e.Detail["token_id"] != tok.ID {
+		t.Fatalf("refusal audit: %+v", e)
+	}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, "qsr_nosuchtoken_secret"); !errors.Is(err, service.ErrBadToken) {
+		t.Fatalf("unknown token: %v", err)
+	}
+	_, u, err := c.svc.ValidateAPIToken(c.ctx, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := c.next("tk")
+	if _, err := c.svc.CreateUser(c.ctx, service.ActorForToken(tok, u, ""), c.a.ID, service.UserInput{GivenName: gn("T"),
+		Username: &n, Email: ptr(n + "@example.com")}); err != nil {
+		t.Fatal(err)
+	}
+	if e := sink.find("user.create"); e == nil || e.Detail["token_id"] != tok.ID {
+		t.Fatalf("an action with a token does not name it: %+v", e)
+	}
+}

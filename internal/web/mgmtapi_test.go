@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
@@ -98,5 +99,57 @@ func TestAPIVersions(t *testing.T) {
 	}
 	if !strings.Contains(string(js), "export const API_VERSION = '"+web.APIVersionLatest+"'") {
 		t.Errorf("web/src/js/lib/api.js does not send API version %s", web.APIVersionLatest)
+	}
+}
+
+type auditCapture struct{ actions chan string }
+
+func (c auditCapture) WriteAudit(e *model.Audit) {
+	c.actions <- e.Action + " " + e.Target + " " + e.Detail["reason"]
+}
+
+// Failed bearer authentications are limited per address: past the limit every bearer request from it is refused
+// before its token is looked at, the right one too. Refusals of a known actor are audited.
+func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
+	audit := auditCapture{actions: make(chan string, 16)}
+	env.Svc.AuditWriter = audit
+	do := func(c *http.Client, hdr map[string]string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/probe", nil)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	anon := env.Client()
+	if r := do(anon, map[string]string{"Authorization": "Bearer scim"}); r.StatusCode != 403 {
+		t.Fatalf("wrong scope: %d", r.StatusCode)
+	}
+	if got := <-audit.actions; !strings.HasPrefix(got, "api.request.refused POST /api/probe") || !strings.Contains(got, "admin scope") {
+		t.Errorf("wrong-scope refusal audited as %q", got)
+	}
+	sess, _ := env.ConsoleSession(env.Admin)
+	if r := do(sess, nil); r.StatusCode != 403 {
+		t.Fatalf("session without CSRF: %d", r.StatusCode)
+	}
+	if got := <-audit.actions; !strings.Contains(got, "CSRF") {
+		t.Errorf("CSRF refusal audited as %q", got)
+	}
+	for i := range web.BearerFailuresPerIPMin {
+		if r := do(anon, map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 401 {
+			t.Fatalf("failure %d: %d", i+1, r.StatusCode)
+		}
+	}
+	r := do(anon, map[string]string{"Authorization": "Bearer admin"})
+	if r.StatusCode != http.StatusTooManyRequests || r.Header.Get("Retry-After") == "" {
+		t.Fatalf("valid token after the limit: %d, want 429 with Retry-After", r.StatusCode)
+	}
+	if r := do(sess, nil); r.StatusCode == http.StatusTooManyRequests {
+		t.Error("a session request was limited: only bearer authentication counts")
 	}
 }

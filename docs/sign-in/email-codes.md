@@ -36,7 +36,8 @@ Everyone else signs in as before.
 
 - **Second factor required, and they have none of their own.** Instead of being asked to set up an authenticator app
   after their password, they get a code by email straight away: *"We emailed a 6-digit code to a•••@example.com. It
-  expires in 10 minutes."* They type it, and they are in.
+  expires in 10 minutes."* They type it, and they are in. The code is only in the message itself, never in its
+  subject, which phones and mail clients show in notifications and on the lock screen.
 - **They have an authenticator app or a passkey.** Nothing changes, except that **Try another way** at the
   second-factor step also offers **Email a code to a•••@example.com**.
 

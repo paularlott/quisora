@@ -281,6 +281,7 @@ func TestIDTokenValidation(t *testing.T) {
 		"expired":                  {"exp": time.Now().Add(-time.Hour).Unix()},
 		"no exp":                   {"exp": nil},
 		"future iat":               {"iat": time.Now().Add(time.Hour).Unix()},
+		"not valid yet (nbf)":      {"nbf": time.Now().Add(10 * time.Minute).Unix()},
 		"no subject":               {"sub": ""},
 		"alg none":                 {"_alg": "none"},
 		"alg HS256":                {"_alg": "HS256"},

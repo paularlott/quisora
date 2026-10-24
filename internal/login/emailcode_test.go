@@ -41,6 +41,9 @@ func codeFrom(t *testing.T, e *env) string {
 	if g == nil {
 		t.Fatalf("no code in %q", m.Text)
 	}
+	if strings.Contains(m.Subject, g[1]) {
+		t.Fatalf("the code is in the subject (shown in notification previews): %q", m.Subject)
+	}
 	return g[1]
 }
 

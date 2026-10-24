@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
@@ -62,6 +63,9 @@ type UserInput struct {
 	// never by users themselves: see setLinked); the user's own unverified addresses are kept as they are. Nil leaves
 	// them unchanged.
 	LinkedEmails *[]string `json:"-"`
+	// IfVersion, when set, applies the update only to the user as read at that version (a read-modify-write, a SCIM
+	// If-Match): a user changed since is ErrStale, and nothing is written.
+	IfVersion hlc.Timestamp `json:"-"`
 }
 
 // applyTags validates and normalizes (deduplicated, sorted) the tags in in and stores them in dst; nil leaves dst
@@ -592,6 +596,17 @@ func dropUnchanged(u *model.User, in *UserInput) {
 	}
 }
 
+// CurbsAdmin reports whether in demotes or disables u, an administrator or super admin. Like granting the role, that
+// takes a recently re-authenticated console session in the management API (a stolen token or an unattended session
+// must not lock the other administrators out). SCIM does not ask for it: a directory offboarding an administrator
+// (disabling or deleting them) must work with its token, and the service's own guards (the last super admins) apply.
+func CurbsAdmin(u *model.User, in UserInput) bool {
+	if !isAdminRank(u) {
+		return false
+	}
+	return in.Role != nil && in.Role.Rank() < u.Role.Rank() || in.Active != nil && !*in.Active && u.Active
+}
+
 func isAdminRank(u *model.User) bool {
 	return u.Role == model.RoleAdmin || u.Role == model.RoleSuperAdmin
 }
@@ -600,6 +615,9 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	u, err := s.Users.Get(ctx, id)
 	if err != nil {
 		return nil, mapStore(err)
+	}
+	if in.IfVersion != 0 && u.Version != in.IfVersion {
+		return nil, ErrStale
 	}
 	self := a.UserID == id
 	if self {
@@ -644,6 +662,13 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		(in.PhoneVerified != nil && *in.PhoneVerified && !u.PhoneVerified)) {
 		// Applications trust these claims: your own address or number is verified only by proving you receive it.
 		return nil, Invalid("email_verified", "your own email address is verified by the link mailed to it, not by marking it")
+	}
+	if !self && in.LinkedEmails != nil && addsVerifiedLinked(u, *in.LinkedEmails) {
+		// Linked addresses set here count as verified, and a verified address links sign-ins from providers to the
+		// account: as AddLinkedEmail with verified, for an established privileged account that is a sign-in reset.
+		if err := s.mayResetSignIn(ctx, a, u, "emails"); err != nil {
+			return nil, err
+		}
 	}
 	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || strings.EqualFold(strings.TrimSpace(*in.Email), u.Email)) {
 		// A verified address links sign-ins from providers to the account, as changing it does (just above).
@@ -1116,6 +1141,9 @@ func (s *Service) clearManagerOf(ctx context.Context, u *model.User) {
 	}
 	for _, r := range reports {
 		for range 3 {
+			if r.Work.ManagerID != u.ID {
+				break // reassigned meanwhile (the re-read below): that change stands
+			}
 			r.Work.ManagerID = ""
 			if err := s.Users.Update(ctx, r); !errors.Is(err, store.ErrStale) {
 				break

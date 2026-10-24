@@ -100,9 +100,10 @@ By default audit events are kept in the database for 7 days (`audit.retention_da
 keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing.
 
 **Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
-(typically a year or more). Each node writes every event to a disk spool in its data directory before sending it, and
-removes it once VictoriaLogs has taken it, so an outage of VictoriaLogs, a restart or a crash loses no event, unless
-an outage outlasts the spool's space (the oldest events then leave it, each written in full to the structured log).
+(typically a year or more). Each node writes every event to a disk spool in its data directory, synced before the
+action that recorded it completes, and removes it once VictoriaLogs has taken it, so an outage of VictoriaLogs, a
+restart or a crash loses no event, unless an outage outlasts the spool's space (the oldest events then leave it, each
+written in full to the structured log).
 Every node's audit page then reads from VictoriaLogs:
 
 ```toml

@@ -1,10 +1,11 @@
 // Package vlogs sends audit events to VictoriaLogs and reads them back for the audit pages.
 //
 // Events are JSON lines posted to /insert/jsonline in batches by a background writer (a sign-in never waits for
-// VictoriaLogs). With a spool (Spool, as the server runs) every batch is written to disk before it is sent and
-// removed once VictoriaLogs has taken it, so neither an outage nor a shutdown or crash loses an accepted event. Without
-// one (commands) a batch VictoriaLogs does not take is retried a few times and then written in full to the structured
-// log (audit.undelivered).
+// VictoriaLogs). With a spool (Spool, as the server runs) WriteAudit returns only once the event is fsynced to disk
+// (writes arriving together share one fsync), and a separate deliverer sends spooled segments and removes each once
+// VictoriaLogs has taken it, so neither an outage nor a shutdown or crash loses an accepted event. Without one
+// (commands) a batch VictoriaLogs does not take is retried a few times and then written in full to the structured log
+// (audit.undelivered).
 // Each event carries app="quisora" and the organization id as stream fields, so a page reads one
 // organization's events by stream. Reads use LogsQL over /select/logsql/query: every value taken from a request goes
 // into the query quoted (strconv.Quote) and searches are regular expressions of the escaped text.
@@ -47,20 +48,22 @@ type Client struct {
 	http *http.Client
 	log  logger.Logger
 
-	queue   chan *model.Audit
+	queue   chan *model.Audit // without a spool: events for the writer
+	commits chan commit       // with a spool: events waiting to be fsynced
 	done    chan struct{}
 	ctx     context.Context // cancelled by Close: ends a request to VictoriaLogs still in flight
 	cancel  context.CancelFunc
 	stopped sync.Once
+	started bool
 	dropped int64
 	mu      sync.Mutex
 
-	// The spool and the delivery state below belong to the writer goroutine.
+	// The delivery state below belongs to the writer (without a spool) or the deliverer (with one).
 	spool    *spool
 	retryAt  time.Time     // VictoriaLogs failed: until then the spool is not replayed
 	backoff  time.Duration // the wait after the next failure
 	spooling bool          // VictoriaLogs is not taking events (logged once per outage)
-	closing  bool          // shutting down: the last batch is spooled, or (no spool) tried once briefly
+	closing  bool          // shutting down (no spool): the last batch is tried once briefly
 }
 
 const (
@@ -68,16 +71,16 @@ const (
 	maxBackoff = 30 * time.Second
 )
 
-// Spool writes every batch to dir before sending it and keeps it there, at most maxMB megabytes (0 = 256), until
-// VictoriaLogs takes it: an outage, a shutdown or a crash then loses no audit events unless an outage outlasts the
-// space (the oldest go first, logged as undelivered). Call before Start. dir must belong to this process alone (one
-// per node).
+// Spool writes every event to dir before WriteAudit returns and keeps it there, at most maxMB megabytes (0 = 256),
+// until VictoriaLogs takes it: an outage, a shutdown or a crash then loses no accepted audit event unless an outage
+// outlasts the space (the oldest go first, logged as undelivered). Call before Start. dir must belong to this process
+// alone (one per node).
 func (c *Client) Spool(dir string, maxMB int) error {
 	s, err := newSpool(dir, maxMB)
 	if err != nil {
 		return err
 	}
-	c.spool = s
+	c.spool, c.commits = s, make(chan commit, queueSize)
 	if !s.empty() {
 		c.log.Info("audit events spooled before a restart will be sent to VictoriaLogs", "dir", dir)
 	}
@@ -96,27 +99,49 @@ func New(base, node string, log logger.Logger) (*Client, error) {
 		queue: make(chan *model.Audit, queueSize), done: make(chan struct{}), ctx: ctx, cancel: cancel}, nil
 }
 
-// Start runs the background writer until Close.
-func (c *Client) Start() { go c.run() }
+// Start runs the background writer (with a spool, the spooler and the deliverer) until Close.
+func (c *Client) Start() {
+	c.started = true
+	if c.spool == nil {
+		go c.run()
+		return
+	}
+	stopped := make(chan struct{})
+	go func() { c.spooler(); close(stopped) }()
+	go func() { c.deliver(); <-stopped; close(c.done) }()
+}
 
 // Close stops the writer once every accepted event is on disk (with a spool, which sends the rest after the next
 // start) or sent to VictoriaLogs or the structured log (without one, waiting for VictoriaLogs at most closeWait).
 func (c *Client) Close() {
 	c.stopped.Do(func() {
-		close(c.queue)
-		if c.spool == nil {
-			select {
-			case <-c.done:
-			case <-time.After(closeWait):
+		if c.spool != nil {
+			close(c.commits) // the spooler fsyncs what is left, then stops
+		} else {
+			close(c.queue)
+			if c.started {
+				select {
+				case <-c.done:
+				case <-time.After(closeWait):
+				}
 			}
 		}
 		c.cancel()
-		<-c.done
+		if c.started {
+			<-c.done
+		}
 	})
 }
 
-// WriteAudit queues an event (service.AuditWriter). An event the queue has no room for (VictoriaLogs unreachable
-// for long, without a spool), or that comes after Close, is logged in full instead (audit.undelivered).
+// commit is an event waiting for the spooler; done is closed once it is on disk (or logged as undelivered).
+type commit struct {
+	line []byte
+	done chan struct{}
+}
+
+// WriteAudit queues an event (service.AuditWriter). With a spool it returns once the event is fsynced to disk, so a
+// crash right after loses nothing. An event the queue has no room for (VictoriaLogs unreachable for long, without a
+// spool), or that comes after Close, is logged in full instead (audit.undelivered).
 func (c *Client) WriteAudit(e *model.Audit) {
 	defer func() {
 		if recover() != nil { // queue closed at shutdown
@@ -124,11 +149,63 @@ func (c *Client) WriteAudit(e *model.Audit) {
 			c.undelivered("the audit writer has shut down", [][]byte{b})
 		}
 	}()
+	if c.spool != nil {
+		b, _ := json.Marshal(c.row(e))
+		cm := commit{line: append(b, '\n'), done: make(chan struct{})}
+		select {
+		case c.commits <- cm:
+			<-cm.done
+		default:
+			c.undelivered("the audit spool queue is full", [][]byte{b})
+		}
+		return
+	}
 	select {
 	case c.queue <- e:
 	default:
 		b, _ := json.Marshal(c.row(e))
 		c.undelivered("the VictoriaLogs queue is full", [][]byte{b})
+	}
+}
+
+// spooler writes queued events to the spool: every event waiting when it starts a write goes into that one write
+// and fsync (group commit), and each writer is released once its event is on disk. It stops once Close has closed
+// the queue and the rest is written.
+func (c *Client) spooler() {
+	var body []byte
+	var waiting []chan struct{}
+	for cm := range c.commits {
+		body, waiting = append(body[:0], cm.line...), append(waiting[:0], cm.done)
+	more:
+		for len(waiting) < batchSize {
+			select {
+			case cm, ok := <-c.commits:
+				if !ok {
+					break more
+				}
+				body, waiting = append(body, cm.line...), append(waiting, cm.done)
+			default:
+				break more
+			}
+		}
+		c.toSpool(body)
+		for _, w := range waiting {
+			close(w)
+		}
+	}
+}
+
+// deliver sends spooled segments to VictoriaLogs every flushEvery until Close.
+func (c *Client) deliver() {
+	t := time.NewTicker(flushEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			c.replay()
+		}
 	}
 }
 
@@ -154,6 +231,7 @@ func (c *Client) undelivered(reason string, lines [][]byte) {
 		"events", len(lines), "undelivered_total", n)
 }
 
+// run is the writer without a spool: it batches queued events and posts them.
 func (c *Client) run() {
 	defer close(c.done)
 	t := time.NewTicker(flushEvery)
@@ -178,7 +256,6 @@ func (c *Client) run() {
 			}
 		case <-t.C:
 			flush()
-			c.replay()
 		}
 	}
 }
@@ -213,13 +290,6 @@ func (c *Client) send(batch []*model.Audit) {
 		_ = enc.Encode(c.row(e))
 	}
 	body := buf.Bytes()
-	if c.spool != nil {
-		c.toSpool(body) // on disk first: from here on a shutdown or crash loses nothing
-		if !c.closing {
-			c.replay()
-		}
-		return
-	}
 	if c.closing { // Close waits only so long: one short try, then the structured log
 		if err := c.postTimeout(c.insertURL(), body, closeTimeout); err != nil {
 			c.undelivered("VictoriaLogs did not take them at shutdown: "+err.Error(), jsonLines(body))

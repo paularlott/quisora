@@ -2994,3 +2994,21 @@ func outcomeOf(err error) string {
 	}
 	return err.Error()
 }
+
+// Authorization requests that start a sign-in flow are limited per address: each holds a flow in memory.
+func TestAuthorizeLimitedPerAddress(t *testing.T) {
+	h := setup(t, nil)
+	cl, _ := h.newClient(nil)
+	c, _ := h.session(h.user)
+	_, ch := pkce()
+	for i := range authorizePerIPMin {
+		resp := h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+		if u := loc(t, resp); u.Query().Get("error") != "" {
+			t.Fatalf("request %d refused: %s", i+1, u)
+		}
+	}
+	u := loc(t, h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()))
+	if u.Query().Get("error") != "temporarily_unavailable" || u.Query().Get("state") != "st1" {
+		t.Fatalf("over the limit: %s", u)
+	}
+}

@@ -24,6 +24,21 @@ func linkedAddrs(u *model.User) []string {
 	return out
 }
 
+// addsVerifiedLinked reports whether setLinked(u, list) would add a verified address u does not have verified yet
+// (an address that does not parse is left to setLinked to refuse).
+func addsVerifiedLinked(u *model.User, list []string) bool {
+	for _, raw := range list {
+		a, err := normEmail(raw)
+		if err != nil || strings.EqualFold(a, u.Email) {
+			continue
+		}
+		if cur, ok := u.LinkedEmail(a); !ok || !cur.Verified {
+			return true
+		}
+	}
+	return false
+}
+
 // setLinked replaces u's verified linked addresses with the addresses in list. It is how administrators and
 // provisioning clients (SCIM) set a user's addresses, so every address in list is verified (they vouch for it),
 // keeping the details of one that was already linked. Verified addresses not in list are unlinked. The addresses the

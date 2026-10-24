@@ -4,8 +4,8 @@ package vlogs
 // the JSON lines they would have been posted as, to segment files of about segmentMax bytes, and replayed oldest
 // segment first once VictoriaLogs answers again; a segment is removed only after VictoriaLogs accepted it, so a crash
 // mid-replay sends it again (VictoriaLogs then holds the events twice, never not at all). The spool is bounded: past
-// maxBytes the oldest segments go, and every event in them is logged in full (audit.undelivered). Only the writer
-// goroutine uses it.
+// maxBytes the oldest segments go, and every event in them is logged in full (audit.undelivered). The spooler
+// appends and the deliverer replays concurrently: mu orders them.
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ const (
 )
 
 type spool struct {
+	mu       sync.Mutex
 	dir      string
 	maxBytes int64
 	active   string // segment being appended to; "" starts a new one
@@ -58,6 +60,12 @@ type segment struct {
 
 // segments lists the spool's segments, oldest first, and their total size.
 func (s *spool) segments() ([]segment, int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.list()
+}
+
+func (s *spool) list() ([]segment, int64) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, 0
@@ -83,6 +91,8 @@ func (s *spool) segments() ([]segment, int64) {
 // store appends body (JSON lines) to the active segment, starting a new one when it would grow past segmentMax, and
 // evicts the oldest segments while the spool is over its size. It returns the events (JSON lines) evicted.
 func (s *spool) store(body []byte) (evicted [][]byte, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.active != "" {
 		if info, err := os.Stat(filepath.Join(s.dir, s.active)); err != nil || info.Size()+int64(len(body)) > segmentMax {
 			s.active = ""
@@ -106,7 +116,7 @@ func (s *spool) store(body []byte) (evicted [][]byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	segs, total := s.segments()
+	segs, total := s.list()
 	for len(segs) > 1 && total > s.maxBytes { // the newest segment (just written) always stays
 		data, _ := os.ReadFile(filepath.Join(s.dir, segs[0].name))
 		if os.Remove(filepath.Join(s.dir, segs[0].name)) == nil {
@@ -122,8 +132,10 @@ func (s *spool) store(body []byte) (evicted [][]byte, err error) {
 // while it was written is left out), or "" when the spool is empty. The segment is sealed: nothing more is appended
 // to it. Remove it once VictoriaLogs has taken it.
 func (s *spool) oldest() (string, []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for {
-		segs, _ := s.segments()
+		segs, _ := s.list()
 		if len(segs) == 0 {
 			return "", nil
 		}
@@ -157,7 +169,11 @@ func jsonLines(data []byte) [][]byte {
 	return out
 }
 
-func (s *spool) remove(name string) { os.Remove(filepath.Join(s.dir, name)) }
+func (s *spool) remove(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	os.Remove(filepath.Join(s.dir, name))
+}
 
 // empty reports whether nothing is spooled.
 func (s *spool) empty() bool {

@@ -390,19 +390,32 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 		return nil, nil, ErrBadToken
 	}
 	t, err := s.APITokens.Get(ctx, id)
-	if err != nil || !secure.EqualSecret(secret, t.SecretHash) {
+	if err != nil {
+		return nil, nil, ErrBadToken // no such token: nobody to record it for (the caller counts the failure)
+	}
+	// A refusal of a token that exists is audited in its organization: a wrong secret for a real token id, or a
+	// token that still circulates after it was ended, is worth an administrator's attention. Once per token and
+	// reason per minute on each node (auditRefusal): anyone who learns a token's id can repeat it at will.
+	refuse := func(reason string) (*model.APIToken, *model.User, error) {
+		s.auditRefusal("token|"+t.ID+"|"+reason, func(detail map[string]string) {
+			detail["reason"] = reason
+			s.Audit(ctx, &Actor{Name: "unauthenticated", TokenID: t.ID}, t.OrgID, "apitoken.refused", t.Name, detail)
+		})
 		return nil, nil, ErrBadToken
 	}
+	if !secure.EqualSecret(secret, t.SecretHash) {
+		return refuse("wrong secret")
+	}
 	if !s.APITokenCurrent(ctx, t.OrgID, t.Stamp) {
-		return nil, nil, ErrBadToken // ended by an emergency sign-out
+		return refuse("ended by an emergency sign-out")
 	}
 	u, err := s.Users.Get(ctx, t.UserID)
 	if err != nil || !u.Enabled(time.Now()) {
-		return nil, nil, ErrBadToken
+		return refuse("the owner is disabled or gone")
 	}
 	if u.Role.Rank() < model.RoleManager.Rank() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
 		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {
-		return nil, nil, ErrBadToken // the owner was demoted since the token was made
+		return refuse("the owner's role no longer allows the token's scopes") // demoted since the token was made
 	}
 	s.touchAPIToken(ctx, t)
 	return t, u, nil
@@ -427,7 +440,7 @@ func (s *Service) touchAPIToken(ctx context.Context, t *model.APIToken) {
 
 // ActorForToken builds the actor for a request authenticated with an API token.
 func ActorForToken(t *model.APIToken, u *model.User, ip string) *Actor {
-	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, Scopes: t.Scopes, IP: ip}
+	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, Scopes: t.Scopes, TokenID: t.ID, IP: ip}
 }
 
 // ActorForUser builds the actor for an interactive session (no scope limits).

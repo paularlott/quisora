@@ -209,7 +209,7 @@ func htmlShell(intro, button, outro string) string {
 
 // codeTpl is the sign-in code: no link (a code is typed where the sign-in asked for it), the code itself large.
 var codeTpl = &tpl{
-	subject: "{{.Code}} is your {{.Site}} sign-in code",
+	subject: "Your {{.Site}} sign-in code", // not the code: subjects show in lock-screen previews and notifications
 	text: texttemplate.Must(texttemplate.New("t").Parse(`Hello {{.Name}},
 
 Your code to finish signing in to {{.Site}}:

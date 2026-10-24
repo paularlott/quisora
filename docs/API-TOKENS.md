@@ -38,6 +38,17 @@ at `/api/openapi.json` (SCIM is in it too), which every server also renders as a
 pins the version; without it you get the oldest supported version. Versions are dates: the release that introduced
 them, and a new one comes only with a change that would break existing callers.
 
+Every audit event of a change made with a token names it (`token_id`), so a misused token can be found and deleted.
+A token that exists but is refused (a wrong secret, or used after an emergency sign-out, or after its owner was
+disabled or lost the role its scopes need) is audited as `apitoken.refused` in its organization; a request a valid
+token may not make is audited as `api.request.refused`. Both are recorded at most once a minute per token (or
+caller) and reason on each node, with `suppressed` counting the repeats held back since the last one: a refusal can be
+repeated at will, and must not flood the audit log. Failed bearer authentications (management API and SCIM
+together) are limited to 60 per address and minute: past that, every bearer request from the address gets
+`429 Too Many Requests` with `Retry-After` for the rest of the minute, before its token is looked at. Successful
+requests never count, so a busy integration is not slowed; behind a proxy set `server.trust_proxy`, or every caller
+shares the proxy's address.
+
 ```bash
 # find a user
 curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users?q=alan"

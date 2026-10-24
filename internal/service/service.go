@@ -85,6 +85,7 @@ type Actor struct {
 	Unscoped bool
 	Scopes   []string // the scopes of a token-authenticated actor (ignored when Unscoped)
 	ClientID string   // set when acting as an OAuth client (client_credentials)
+	TokenID  string   // the personal API token the actor authenticated with: recorded with every audit event
 	IP       string
 }
 
@@ -118,10 +119,11 @@ func (a *Actor) IsSuper() bool { return a != nil && a.Role == model.RoleSuperAdm
 
 // Service is the business layer.
 type Service struct {
-	Cfg    *config.Config
-	Store  store.Store
-	Hasher *secure.Hasher
-	Sealer *secure.Sealer
+	refusals refusalLimiter // throttles refusal audit events (auditlimit.go)
+	Cfg      *config.Config
+	Store    store.Store
+	Hasher   *secure.Hasher
+	Sealer   *secure.Sealer
 	// Log receives every audit event (group "audit") as well as the store, and any failure to store one.
 	Log logger.Logger
 	// AuditReader serves the audit pages (nil: this node's store) and AuditWriter takes audit events instead of the
@@ -240,6 +242,17 @@ func RequestFrom(ctx context.Context) *RequestInfo {
 	return ri
 }
 
+// AuditRefused records an API request (management API or SCIM) refused for the authenticated actor a: what it asked
+// for and why it was refused. At most one per caller and reason per minute on each node (auditRefusal): a caller can
+// repeat a refused request as fast as it likes.
+func (s *Service) AuditRefused(ctx context.Context, a *Actor, method, path, reason string) {
+	who := a.UserID + "|" + a.TokenID + "|" + a.ClientID
+	s.auditRefusal("api|"+who+"|"+reason, func(detail map[string]string) {
+		detail["reason"] = reason
+		s.Audit(ctx, a, a.OrgID, "api.request.refused", method+" "+path, detail)
+	})
+}
+
 // Audit records a security event. Failures are not fatal to the operation.
 func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) {
 	if a == nil {
@@ -251,6 +264,12 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 		Detail: detail, Expires: time.Now().Add(time.Duration(s.Cfg.Audit.RetentionDays) * 24 * time.Hour)}
 	if a.ClientID != "" && e.Actor == "" {
 		e.Actor = "client:" + a.ClientID
+	}
+	if a.TokenID != "" { // which of the owner's tokens did it (revoking that one is the answer to a misuse)
+		d := make(map[string]string, len(detail)+1)
+		maps.Copy(d, detail)
+		d["token_id"] = a.TokenID
+		e.Detail, detail = d, d
 	}
 	metrics.AuditEvents.Inc(e.Action, e.Outcome)
 	if ri := RequestFrom(ctx); ri != nil {

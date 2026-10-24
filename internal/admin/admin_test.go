@@ -1826,7 +1826,19 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 	settings := primary.Settings
 	settings.SessionIdle = 600
 	victim := w.users["manager"].ID
+	peer := func(name string) string { // an administrator of acme to demote, disable or delete
+		u, err := w.env.Svc.CreateUser(context.Background(), service.System, w.acme.ID, service.UserInput{GivenName: gn("P"),
+			Username: ptr(name), Email: ptr(name + "@x.example"), Role: ptr(model.RoleAdmin)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	demoted, disabled, deleted := peer("demoted"), peer("disabled"), peer("deleted")
 	for name, call := range map[string]func(c *caller) resp{
+		"demote an administrator":       func(c *caller) resp { return c.patch(AU+"/"+demoted, map[string]any{"role": "user"}) },
+		"disable an administrator":      func(c *caller) resp { return c.patch(AU+"/"+disabled, map[string]any{"active": false}) },
+		"delete an administrator":       func(c *caller) resp { return c.delete(AU + "/" + deleted) },
 		"delete an organization":        func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
 		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
 		"remove a signing key":          func(c *caller) resp { return c.delete("/api/keys/old") },
@@ -1859,6 +1871,8 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 	// ordinary changes need none
 	fresh = false
 	want(t, su.patch("/api/orgs/acme", map[string]any{"display_name": "Acme Ltd"}), 200)
+	want(t, su.patch(AU+"/"+w.users["admin"].ID, map[string]any{"given_name": "Ada"}), 200) // editing an administrator
+	want(t, su.patch(AU+"/"+w.users["user"].ID, map[string]any{"active": false}), 200)      // disabling a user
 }
 
 // A tenant is addressed by its id or by its name (the console shows and links by name); another organization's

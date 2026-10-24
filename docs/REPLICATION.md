@@ -8,7 +8,7 @@ rule `KeepsUnique`) and the storage backends. The shared-database mode (no gossi
 
 **Pre-release data format.** Quisora has not been released: there is no migration from, and no compatibility with,
 data written by earlier builds. A store written by an earlier build is refused when it is opened (BadgerDB and Valkey
-carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 3,
+carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 3 or 4,
 and a `cluster-state.json` must name its store (`self`). **Wipe and start clean** (restore from a backup made by this
 build if needed).
 
@@ -112,15 +112,17 @@ prepare has no effect anywhere and there is no compensation step to race with.
 
 | message | type | content | answer |
 |---|---|---|---|
-| prepare | `UserMsg+6`, request/response | `prepareReq{Op, Rec, Mode, BaseEpoch, BaseVersion}` | `prepareResp{St, Floor, Cur}` |
+| prepare | `UserMsg+6`, request/response | `prepareReq{Op, Rec, Mode, BaseEpoch, BaseVersion}` | `prepareResp{St, Floor, Epoch, Cur}` |
 | commit | `UserMsg+7`, request/response | `commitReq{Op, Rec}` | `commitResp{St}` |
-| abort | `UserMsg+8`, one way | `abortReq{Op}` | — |
-| quorum read | `UserMsg+9`, request/response | `readReq{Kind, IDs}` | `readResp{NotReady, Recs}` |
+| abort | `UserMsg+8`, one way | `abortReq{Op, Version}` | — |
+| quorum read | `UserMsg+9`, request/response | `readReq{Kind, IDs}` | `readResp{NotReady, Failed, Recs}` |
 
-`Op` is the write's identity (a retry keeps it, so it supersedes its own earlier intent); `Rec` is the encoded,
+`Op` is the write's identity (a retry keeps it, so it supersedes its own earlier intent; an abort names the stamp it
+aborts, so a late abort of one attempt never releases the next attempt's intent); `Rec` is the encoded,
 stamped record; the base is the rank of the copy the writer based the write on (0, 0: none). Modes: **match** (an
 update or create: `CompareAndPut`, `Table.Update`, `Table.Create`), **upsert** (a whole-record `Put` over whatever
-the writer holds) and **blind** (a deletion).
+the writer holds) and **blind** (a deletion; a conditional deletion, `DeleteIf`, is a match against the version the
+caller read).
 
 ### Steps
 
@@ -132,7 +134,10 @@ the writer holds) and **blind** (a deletion).
      live copy. It sends its copy back: the writer applies it (read repair), so a retry from fresh data works at once;
    - **deleted** for a live write onto a tombstone of a later generation (a deletion the writer had not seen);
    - **low** when the version does not exceed what it holds or has granted for the record (its high-water mark, or
-     its floor): the writer witnesses that value (bounded by `store.MaxSkew`) and retries with a new stamp;
+     its floor): the writer witnesses that value (bounded by `store.MaxSkew`) and retries with a new stamp. Also
+     low (with `Epoch`) for a live write onto a record it granted a deletion of, when the write's generation is below
+     that deletion's version: the writer retries with that generation, so it outranks the deletion should the
+     deletion be in effect anywhere;
    - **busy** when another write holds an intent on the record;
    - **not ready** when it is copying, catching up, out of date or misconfigured (it takes no part);
    - otherwise it **grants**: it records an intent on the record (exclusive, expiring after 5 s) and raises its
@@ -164,10 +169,18 @@ the writer holds) and **blind** (a deletion).
 - **`ErrUnconfirmed` after the commit** (a voter failed mid-commit and fewer than a quorum applied): the write *may* be
   in effect on some nodes; it is counted (`unconfirmed`) and logged. A later conflicting write must prepare at a
   quorum that shares a voter with this write's grants, whose high-water mark forces the later write to a higher
-  version, so the later write ranks above the partial one everywhere.
+  version (and, over a partial deletion, a generation at least the deletion's), so the later write ranks above the
+  partial one everywhere.
 
-High-water marks live in memory; after a minute they are folded into a per-node floor, and at start the floor is the
-node's clock, so a restarted voter still refuses versions older than its restart.
+High-water marks live in memory; after a minute they are folded into a per-node floor. What a restart must not lose
+is in `<data-dir>/quorum-voter.json`, written and synced before the grant that needs it: a ceiling 2 s above the
+highest version granted (rewritten about once every 2 s under load), and the deletions granted (kept for the maximum
+downtime). A restarted voter refuses versions up to that ceiling, so a version granted before the restart by a node
+whose clock runs ahead still bounds every later grant. A voter that cannot write the file refuses to grant; one that
+finds it unreadable refuses until it is fixed or removed.
+
+A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one says so
+(`Failed`) and is not counted, rather than answering as if it held none.
 
 ### Sign-in stamps
 
@@ -428,7 +441,8 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
 - Of two concurrent whole-record writes (upserts) of one record, the later commit wins; of two concurrent updates
   from one copy, one fails as stale.
 - A quorum write whose commit reached fewer than a quorum is reported as failed but may be in effect on some nodes.
-- High-water marks are in memory: a voter that restarts relies on its clock floor.
+- Intents are in memory: a voter that restarts mid-write no longer holds the intent, and that write's commit fails
+  there (its persisted ceiling still forces any later conflicting write above it).
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
 - The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.

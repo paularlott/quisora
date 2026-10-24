@@ -44,7 +44,7 @@ share one between nodes or processes.
 | `tls/`               | The self-signed certificate, when `server.tls_cert` is not set.                                        |
 | `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
 | `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
-| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
+| `node_id`, `cluster-state.json`, `quorum-voter.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
 
 Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
 restoring a node without it gives it a new identity, and email or audit events still queued in it are lost.
@@ -453,6 +453,7 @@ VictoriaLogs:
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
+| API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
 
@@ -467,6 +468,7 @@ Every event has:
 - `request_id`: the request's id, also sent as the `X-Request-ID` response header (a trusted proxy's
   `X-Request-ID` is kept, so its logs and the audit log name a request alike);
 - `user_agent` and `session_id` (the browser session the request was made in, or the one a sign-in created);
+- `detail.token_id` when a personal API token made the change (or was refused);
 - `ip`.
 
 Commands (`bootstrap`, `invite`, `set-primary`, `sign-out`, `restore`) record who ran them: the actor is
@@ -487,8 +489,9 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 ```
 
 - Every node sends events in batches, and so do `bootstrap` and `invite`. A sign-in never waits for VictoriaLogs:
-  events are queued and sent in the background.
-- An event that finds the in-memory queue full, because the node writes faster than the spool keeps up, is given up.
+  events are sent in the background (on a node, from the spool below; a sign-in waits only for its event to reach the
+  local disk).
+- An event that finds the queue full, because the node writes faster than the spool's disk keeps up, is given up.
 - An event VictoriaLogs will never receive is written to the structured log in full, at error level, with the message
   `audit.undelivered`, a `reason`, and the event under `event` (the same fields VictoriaLogs would have stored). That
   is the last place it goes: ship the structured log, or such events are lost.
@@ -500,11 +503,12 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 victorialogs_spool_max_mb = 256          # default 256
 ```
 
-With VictoriaLogs, every batch is written to the spool, `<data-dir>/auditspool` (and synced to disk), before it is
-sent, and leaves it only once VictoriaLogs has taken it; a batch VictoriaLogs does not take (unreachable, or answering
-an error) stays there and is sent when VictoriaLogs answers again, oldest first. A shutdown does not wait for
-VictoriaLogs: what is still queued goes to the spool, and the next start sends it. So neither an outage of
-VictoriaLogs nor a restart or crash of the node loses an event while the spool has room.
+With VictoriaLogs, every event is written to the spool, `<data-dir>/auditspool`, and synced to disk before the action
+that recorded it goes on (events recorded at the same moment share one sync). A separate sender posts the spool to
+VictoriaLogs about once a second, and an event leaves the spool only once VictoriaLogs has taken it; what VictoriaLogs
+does not take (unreachable, or answering an error) stays there and is sent when VictoriaLogs answers again, oldest
+first. A shutdown does not wait for VictoriaLogs, and the next start sends what is spooled. So neither an outage of
+VictoriaLogs nor a restart or crash of the node loses an accepted event while the spool has room.
 
 - The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
 - It is part of the node's data directory, so it is one per node, on that node's own disk.

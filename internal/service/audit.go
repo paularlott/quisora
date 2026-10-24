@@ -41,7 +41,8 @@ type AuditReader interface {
 	ReadAudit(ctx context.Context, q AuditQuery) (AuditPage, error)
 }
 
-// AuditWriter takes audit events in place of the store (VictoriaLogs). It must not block.
+// AuditWriter takes audit events in place of the store (VictoriaLogs). It may wait for a local disk write (the
+// spool) but never for the network.
 type AuditWriter interface {
 	WriteAudit(e *model.Audit)
 }

@@ -218,7 +218,9 @@ func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID s
 // ChangeGroup changes group g (as read: a group changed since then is ErrStale) and its members as one change. It
 // is checked in full before anything is written, and a write that fails part-way undoes the writes before it, so a
 // refused or failed change leaves the group as it was (a SCIM PATCH is atomic, RFC 7644 §3.5.2). The group's record
-// is written last, also when only its members change, so its version (a SCIM ETag) moves with its member list.
+// is written first, also when only its members change: its version (a SCIM ETag) moves with its member list, and is
+// the lock on the change. A concurrent change made from the same copy fails there, before it has written a member,
+// so a failed change never has anything of its own to undo over a concurrent change that succeeded.
 func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in GroupInput, add, remove []string) (*model.Group, error) {
 	if !s.canAdminOrg(a, g.OrgID) {
 		return nil, ErrForbidden
@@ -236,44 +238,41 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 			return nil, err
 		}
 	}
-	type change struct {
-		user   string
-		member bool
-	}
-	var changes, done []change
+	var requested, changes, done []memberChange
 	for _, uid := range add {
-		changes = append(changes, change{uid, true})
+		requested = append(requested, memberChange{uid, true})
 	}
 	for _, uid := range remove {
-		changes = append(changes, change{uid, false})
+		requested = append(requested, memberChange{uid, false})
 	}
-	for _, c := range changes {
+	for _, c := range requested {
 		if err := s.checkMembership(ctx, a, g, c.user, c.member); err != nil {
 			return nil, err
 		}
-	}
-	undo := func() {
-		for _, c := range done {
-			_, _ = s.putMembership(context.WithoutCancel(ctx), g, c.user, !c.member)
+		member, err := s.isMember(ctx, g, c.user)
+		if err != nil {
+			return nil, err
 		}
+		if member != c.member {
+			changes = append(changes, c)
+		}
+	}
+	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
+	if !fieldsChanged && len(changes) == 0 {
+		return g, nil
+	}
+	if err := s.Groups.Update(ctx, &next); err != nil {
+		return nil, s.groupConflict(ctx, err, &next)
 	}
 	for _, c := range changes {
 		changed, err := s.putMembership(ctx, g, c.user, c.member)
 		if err != nil {
-			undo()
+			s.undoGroupChange(context.WithoutCancel(ctx), g, &next, done)
 			return nil, err
 		}
 		if changed {
 			done = append(done, c)
 		}
-	}
-	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
-	if !fieldsChanged && len(done) == 0 {
-		return g, nil
-	}
-	if err := s.Groups.Update(ctx, &next); err != nil {
-		undo()
-		return nil, s.groupConflict(ctx, err, &next)
 	}
 	if fieldsChanged {
 		s.Audit(ctx, a, g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next))
@@ -286,6 +285,37 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		s.Audit(ctx, a, g.OrgID, action, next.DisplayName, map[string]string{"user": c.user})
 	}
 	return &next, nil
+}
+
+// memberChange is one user's membership a group change sets.
+type memberChange struct {
+	user   string
+	member bool
+}
+
+// undoGroupChange reverses a change of g (written as next) whose member writes failed part-way: the group's record
+// goes back to g, and only then (no change of the group came after this one) are the members written (done) put
+// back. A change made since was based on this one's members, and stands with them.
+func (s *Service) undoGroupChange(ctx context.Context, g, next *model.Group, done []memberChange) {
+	back := *g
+	back.Version = next.Version
+	if err := s.Groups.Update(ctx, &back); err != nil {
+		s.Log.Warn("group change failed part-way and was changed again since: its member changes stand", "group",
+			g.ID, "error", err)
+		return
+	}
+	for _, c := range done {
+		_, _ = s.putMembership(ctx, g, c.user, !c.member)
+	}
+}
+
+// isMember reports whether userID is a member of g.
+func (s *Service) isMember(ctx context.Context, g *model.Group, userID string) (bool, error) {
+	_, err := s.Members.Get(ctx, model.MemberID(g.ID, userID))
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, mapStore(err)
 }
 
 // checkMembership refuses a change to a user's membership of g that a may not make.

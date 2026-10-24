@@ -145,6 +145,9 @@ func writeError(w http.ResponseWriter, e *Error) {
 	if e.Status == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="scim"`)
 	}
+	if e.Status == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", "60")
+	}
 	write(w, e.Status, errorBody{Schemas: []string{schemaError}, Status: strconv.Itoa(e.Status), ScimType: e.Type, Detail: e.Detail})
 }
 
@@ -313,12 +316,40 @@ func bearerToken(r *http.Request) (tok, scheme string) {
 	return "", ""
 }
 
-// authenticate resolves the bearer token to an actor holding the scim scope.
+// authenticate resolves the bearer token to an actor holding the scim scope. Failed authentications count against
+// the address (web.BearerFailuresPerIPMin, shared with the management API); a refusal of an authenticated actor is
+// audited.
 func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 	tok, scheme := bearerToken(r)
 	if tok == "" {
 		return nil, errf(401, "", "A bearer token is required")
 	}
+	if m.srv.BearerLimited(r) {
+		return nil, errf(429, "", "Too many failed authentications from this address; try again in a minute")
+	}
+	actor, e := m.resolve(r, tok, scheme)
+	if e != nil {
+		if e.Status == 401 {
+			m.srv.BearerFailed(r)
+		}
+		return nil, e
+	}
+	if !actor.HasScope(service.ScopeSCIM) {
+		m.refused(r, actor, "the token does not have the scim scope")
+		return nil, errf(403, "", "The token does not have the scim scope")
+	}
+	return actor, nil
+}
+
+// refused audits a SCIM request refused for the authenticated actor a.
+func (m *Module) refused(r *http.Request, a *service.Actor, reason string) {
+	if m.srv.Svc != nil {
+		m.srv.Svc.AuditRefused(r.Context(), a, r.Method, r.URL.Path, reason)
+	}
+}
+
+// resolve turns the token into its actor: a personal API token, or an OAuth access token of a provisioning client.
+func (m *Module) resolve(r *http.Request, tok, scheme string) (*service.Actor, *Error) {
 	var actor *service.Actor
 	if service.IsAPIToken(tok) && scheme == "Bearer" {
 		t, u, err := m.srv.Svc.ValidateAPIToken(r.Context(), tok)
@@ -327,6 +358,7 @@ func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 		}
 		actor = service.ActorForToken(t, u, web.ClientIP(r))
 		if actor.Role.Rank() < model.RoleManager.Rank() {
+			m.refused(r, actor, "the token's owner no longer has a role that may use SCIM")
 			return nil, errf(403, "", "The token's owner no longer has a role that may use SCIM")
 		}
 	} else if m.TokenVerifier != nil {
@@ -339,9 +371,6 @@ func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 		actor = &cp
 	} else {
 		return nil, errf(401, "", "The token is invalid or has expired")
-	}
-	if !actor.HasScope(service.ScopeSCIM) {
-		return nil, errf(403, "", "The token does not have the scim scope")
 	}
 	return actor, nil
 }

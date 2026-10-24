@@ -251,6 +251,9 @@ func (s *Service) verifyIDToken(ctx context.Context, d *discovery, p *model.Prov
 	if iat, ok := c["iat"].(float64); ok && time.Unix(int64(iat), 0).After(now.Add(5*time.Minute)) {
 		return nil, errors.New("id token issued in the future")
 	}
+	if nbf, ok := c["nbf"].(float64); ok && time.Unix(int64(nbf), 0).After(now.Add(clockLeeway)) {
+		return nil, errors.New("id token not valid yet")
+	}
 	if n, _ := c["nonce"].(string); n == "" || subtle.ConstantTimeCompare([]byte(n), []byte(nonce)) != 1 {
 		return nil, errors.New("id token nonce mismatch")
 	}

@@ -10,6 +10,8 @@ info:
 
     With a browser session, managers and above must have signed in with a second factor; otherwise every call answers 403 with field "mfa".
 
+    Failed bearer authentications (this API and SCIM together) are limited to 60 per address and minute: past that every bearer request from the address answers 429 with Retry-After for the rest of the minute, before its token is checked. Successful requests never count.
+
     SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).
 
     Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api-internal/account (the signed-in user, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).

@@ -139,7 +139,8 @@ configuration and the key as protected as the break-glass step they enable. A us
 attempts needs nothing: the lock ends after `limits.lockout_minutes` (default 15).
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
-`oauth.client_auth.limited`; any `oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the
+`oauth.client_auth.limited`, `api.request.refused`; any `apitoken.refused` with reason `wrong secret`,
+`oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the
 target and the address. Reuse and replay have already revoked the grant concerned; a cloned passkey has already been
 disabled and its sessions ended. Block the address upstream if the attack continues, and follow the account steps
 above for the targets.

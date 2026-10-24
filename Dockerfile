@@ -8,17 +8,23 @@
 #
 # Every setting is an QUISORA_* environment variable, a flag after "serve", or /etc/quisora/quisora.toml (mount it).
 
+# Base images are pinned by digest (the multi-platform index), so a build uses exactly the images that were reviewed
+# even if a tag is moved. With a tag and a digest the digest decides: change a version and its digest together, e.g.
+#   skopeo inspect --raw docker://docker.io/library/golang:1.27.3-alpine | shasum -a 256
 ARG NODE_VERSION=24.15.0
+ARG NODE_DIGEST=sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
 ARG GO_VERSION=1.27.3
+ARG GO_DIGEST=sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c
+ARG DISTROLESS_DIGEST=sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-FROM node:${NODE_VERSION}-alpine AS web
+FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY web/ ./
 RUN npm run build
 
-FROM golang:${GO_VERSION}-alpine AS build
+FROM golang:${GO_VERSION}-alpine@${GO_DIGEST} AS build
 ARG VERSION=dev
 # "onepassword" links the 1Password SDK for service accounts (secrets.onepassword.service_account_token)
 ARG GO_TAGS=
@@ -32,7 +38,7 @@ RUN CGO_ENABLED=0 go build -trimpath -tags "${GO_TAGS}" \
       -o /out/quisora . \
  && mkdir -p /out/data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@${DISTROLESS_DIGEST}
 COPY --from=build /out/quisora /usr/local/bin/quisora
 COPY --from=build --chown=nonroot:nonroot /out/data /data
 WORKDIR /data

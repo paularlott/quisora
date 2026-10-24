@@ -130,11 +130,29 @@ func (p *Provider) loadPushed(ctx context.Context, clientID, uri string) (q url.
 		return nil, "", false, errPushed
 	}
 	if !pr.Started && !pr.Used {
-		pr.Started = true
-		b, _ := json.Marshal(pr)
-		_ = p.s.Eph.Set(ctx, nsPAR, id, b, flowTTL)
+		pr.Used = p.startPushed(ctx, id)
 	}
 	return q, id, pr.Used, nil
+}
+
+// startPushed marks the pushed request id as started (lasting flowTTL) and reports whether it was used meanwhile.
+// It takes the current value rather than writing over the copy read before: a flow of the same request_uri that
+// completed in between (usePushed) must stay used. While it is taken a concurrent visit or completion is refused.
+func (p *Provider) startPushed(ctx context.Context, id string) bool {
+	raw, err := p.s.Eph.Take(ctx, nsPAR, id)
+	if err != nil {
+		return true // gone (taken by a concurrent flow): treat as used
+	}
+	var pr pushedRequest
+	if json.Unmarshal(raw, &pr) != nil {
+		return true
+	}
+	if !pr.Used {
+		pr.Started = true
+		raw, _ = json.Marshal(pr)
+	}
+	_ = p.s.Eph.Set(ctx, nsPAR, id, raw, flowTTL)
+	return pr.Used
 }
 
 // usePushed marks the pushed request id as decided. It reports false when it was already used (or is gone): the

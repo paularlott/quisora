@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func TestBackupVersionWindow(t *testing.T) {
 	}
 	zr, _ := gzip.NewReader(&plain)
 	raw, _ := io.ReadAll(zr)
-	newer := bytes.Replace(raw, []byte(`"version":3`), []byte(`"version":99`), 1)
+	newer := bytes.Replace(raw, []byte(fmt.Sprintf(`"version":%d`, version)), []byte(`"version":99`), 1)
 	var gz bytes.Buffer
 	zw := gzip.NewWriter(&gz)
 	_, _ = zw.Write(newer)

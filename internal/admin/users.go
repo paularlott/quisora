@@ -259,7 +259,9 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := in.input()
-	if input.Role != nil && *input.Role != u.Role && input.Role.Rank() >= model.RoleAdmin.Rank() && !m.stepUp(w, r) {
+	// Changes to yourself are left to the service, which refuses demoting or disabling yourself.
+	curbs := u.ID != a.UserID && service.CurbsAdmin(u, input)
+	if (input.Role != nil && *input.Role != u.Role && input.Role.Rank() >= model.RoleAdmin.Rank() || curbs) && !m.stepUp(w, r) {
 		return
 	}
 	upd, err := m.s.Svc.UpdateUser(r.Context(), a, u.ID, input)
@@ -284,6 +286,9 @@ func (m *Module) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u, found := m.userFor(w, r, org, a)
 	if !found {
+		return
+	}
+	if u.Role.Rank() >= model.RoleAdmin.Rank() && u.ID != a.UserID && !m.stepUp(w, r) { // as demoting them
 		return
 	}
 	if err := m.s.Svc.DeleteUser(r.Context(), a, u.ID); err != nil {
@@ -634,7 +639,8 @@ func (m *Module) connectionsUser(w http.ResponseWriter, r *http.Request) (*model
 
 // stepUp lets a dangerous change go ahead only after a recent re-authentication of the acting browser session
 // (signed in or confirmed within the last 5 minutes): deleting an organization, rotating the signing keys, changing
-// the primary organization's sign-in settings, making someone an administrator, removing another user's password. An
+// the primary organization's sign-in settings, making someone an administrator or demoting, disabling or deleting
+// one (service.CurbsAdmin), removing another user's password. An
 // API token is refused: whoever holds one has not proven anything recently. It writes the response itself; the
 // console answers a 403 with field "reauth" with its re-authentication dialog and retries.
 func (m *Module) stepUp(w http.ResponseWriter, r *http.Request) bool {

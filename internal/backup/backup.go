@@ -1,8 +1,9 @@
 // Package backup writes every live record of a store to a portable stream and restores such a stream into an
 // empty store of any backend.
 //
-// The stream is gzip-compressed JSON lines: a header, one line per record, and a trailer with the record count and
-// an HMAC of every line before it under a key derived from the master key. A truncated, altered or forged backup is
+// The stream is gzip-compressed JSON lines: a header, one line per record, and a trailer with the record count, the
+// master keys the sealed secrets need and an HMAC, under a key derived from the master key, of every line before it
+// and of the trailer's count and keys. A truncated, altered or forged backup (or one with anything after its end) is
 // refused as a whole before anything is written. Records keep their ids, versions, generations (Epoch, Created) and
 // origins, so a restored node rejoins a cluster without its data looking newer than it is. Secrets stay sealed with
 // the master key: the header carries a check value derived from it, and a restore with a different key is refused
@@ -18,8 +19,8 @@
 // page by page: every record that existed throughout the backup is in it, records written meanwhile may or may not
 // be.
 //
-// The format has no compatibility with backups made by earlier pre-release builds (version 3; older versions are
-// refused).
+// The format has no compatibility with backups made by earlier pre-release builds older than version 3 (they are
+// refused). Version 3 differs only in that its MAC does not cover the trailer.
 package backup
 
 import (
@@ -49,15 +50,29 @@ import (
 // Backup format versions. version is what this build writes; a restore reads every version from minVersion up,
 // bringing each record line of an older backup up to this build's through upgrades[v] (from v to v+1, in order),
 // so a backup made before an upgrade restores after it. When the format changes: raise version, add the upgrade
-// from the previous one, and keep minVersion at the previous release's version (or lower). Nothing has been released
-// yet, so there are none: minVersion is version.
+// from the previous one, and keep minVersion at the previous release's version (or lower).
 const (
-	minVersion = version
-	version    = 3
+	minVersion = 3
+	version    = 4
 )
 
 // upgrades[v] brings a record line of a version v backup to version v+1.
-var upgrades = map[int]func(*line) error{}
+var upgrades = map[int]func(*line) error{
+	3: func(*line) error { return nil }, // record lines are unchanged: version 4 MACs the trailer too (macTrailer)
+}
+
+// trailerMACFrom is the first version whose MAC covers the trailer's count and keys (macTrailer).
+const trailerMACFrom = 4
+
+// macTrailer adds the trailer's count and the keys its secrets need to mac: a backup whose trailer was altered to
+// hide a key its secrets need fails the integrity check rather than restoring secrets that cannot be opened.
+func macTrailer(mac hash.Hash, records int, sealed []string) {
+	b, _ := json.Marshal(struct {
+		Records int      `json:"records"`
+		Sealed  []string `json:"sealed"`
+	}{records, sealed})
+	mac.Write(append([]byte("trailer "), b...))
+}
 
 const (
 	format   = "quisora-backup"
@@ -214,8 +229,10 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 			}
 		}
 	}
+	sealed := slices.Sorted(maps.Keys(need))
+	macTrailer(mac, stats.Total(), sealed)
 	trailer, _ := json.Marshal(line{End: true, Records: stats.Total(),
-		MAC: base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), Sealed: slices.Sorted(maps.Keys(need))})
+		MAC: base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), Sealed: sealed})
 	if _, err := bw.Write(append(trailer, '\n')); err != nil {
 		return stats, err
 	}
@@ -396,6 +413,9 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 				return stats, fmt.Errorf("%w: %d records read, the trailer says %d", ErrFormat, stats.Total(), l.Records)
 			}
 			if mac != nil {
+				if h.Version >= trailerMACFrom {
+					macTrailer(mac, l.Records, l.Sealed)
+				}
 				want, err := base64.RawURLEncoding.DecodeString(l.MAC)
 				if err != nil || !hmac.Equal(want, mac.Sum(nil)) {
 					return stats, fmt.Errorf("%w: its integrity check failed (altered, or not made with this master key)", ErrFormat)
@@ -406,6 +426,11 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 				}); len(missing) > 0 {
 					return stats, fmt.Errorf("%w: %s", ErrKeyMissing, strings.Join(missing, ", "))
 				}
+			}
+			// Nothing may follow the trailer, and the stream must end as written: reading to the end checks the gzip
+			// footer (checksum and length) and, for an encrypted backup, that nothing follows the final chunk.
+			if n, err := io.Copy(io.Discard, br); err != nil || n > 0 {
+				return stats, fmt.Errorf("%w: damaged or extended after its end", ErrFormat)
 			}
 			return stats, nil
 		}

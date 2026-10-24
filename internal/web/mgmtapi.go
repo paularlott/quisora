@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -33,6 +35,53 @@ func APIVersion(r *http.Request) string {
 
 const ctxAPIVersion ctxKey = 100
 
+// BearerFailuresPerIPMin bounds failed bearer-token authentications (management API and SCIM together) per IP
+// address and minute. Tokens cannot be guessed, but every attempt costs store reads: past the limit every bearer
+// request from the address is refused (429) for the rest of the minute, before its token is looked at, the right
+// one too. Only a failure counts, so a busy integration with a valid token is never slowed. Behind a proxy set
+// server.trust_proxy, or every caller shares the proxy's address.
+const BearerFailuresPerIPMin = 60
+
+const nsBearer = "web.bearer" // failed bearer authentications per IP address
+
+// BearerLimited reports whether r's address has used up its failed bearer authentications for this minute (true
+// also when the counter cannot be read: fail closed).
+func (s *Server) BearerLimited(r *http.Request) bool {
+	if s.Eph == nil {
+		return false
+	}
+	n, err := s.Eph.Incr(r.Context(), nsBearer, ClientIP(r), 0, time.Minute)
+	return err != nil || n >= BearerFailuresPerIPMin
+}
+
+// BearerFailed counts a failed bearer authentication from r's address.
+func (s *Server) BearerFailed(r *http.Request) {
+	if s.Eph == nil {
+		return
+	}
+	n, err := s.Eph.Incr(r.Context(), nsBearer, ClientIP(r), 1, time.Minute)
+	if err == nil && n == BearerFailuresPerIPMin && s.Log != nil {
+		s.Log.Warn("too many failed bearer-token authentications: refusing the address for a minute", "ip", ClientIP(r),
+			"failures_per_minute", BearerFailuresPerIPMin)
+	}
+}
+
+// WriteBearerLimited answers a bearer request refused by BearerLimited.
+func WriteBearerLimited(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(60))
+	WriteJSON(w, http.StatusTooManyRequests, ErrorBody{Error: "Too many failed authentications from this address; try again in a minute."})
+}
+
+// auditRefused records a management API request refused for an authenticated actor (a token without the scope, a
+// request without the CSRF header, a console session without a second factor): the attempt is an access-control
+// event (SOC 2 CC6.1). Requests nobody can be named for (no session, an unknown token) are counted, not audited.
+func (s *Server) auditRefused(r *http.Request, a *service.Actor, reason string) {
+	if s.Svc == nil || a == nil {
+		return
+	}
+	s.Svc.AuditRefused(r.Context(), a, r.Method, r.URL.Path, reason)
+}
+
 // BearerFunc resolves a bearer token to an actor. The app sets Server.Bearer to accept personal API tokens and
 // OAuth access tokens.
 type BearerFunc func(ctx context.Context, r *http.Request, token string) (*service.Actor, error)
@@ -60,8 +109,13 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "Bearer tokens are not accepted."})
 				return
 			}
+			if s.BearerLimited(r) {
+				WriteBearerLimited(w)
+				return
+			}
 			a, err := s.Bearer(r.Context(), r, tok)
 			if err != nil || a == nil {
+				s.BearerFailed(r)
 				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "The access token is invalid or has expired."})
 				return
@@ -73,6 +127,7 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				if backup {
 					scope = service.ScopeBackup
 				}
+				s.auditRefused(r, a, "the token does not have the "+scope+" scope")
 				w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+scope+`"`)
 				WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "The token does not have the " + scope + " scope."})
 				return
@@ -85,10 +140,12 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 			return
 		}
 		if !s.CheckCSRF(r, Session(r).CSRF) {
+			s.auditRefused(r, service.ActorForUser(User(r), ClientIP(r)), "missing or wrong CSRF header")
 			WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "The request could not be verified. Reload the page."})
 			return
 		}
 		if !ConsoleMFA(r) {
+			s.auditRefused(r, service.ActorForUser(User(r), ClientIP(r)), "console session without a second factor")
 			WriteJSON(w, http.StatusForbidden, ErrorBody{Error: MsgConsoleMFA, Field: "mfa"})
 			return
 		}

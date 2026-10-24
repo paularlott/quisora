@@ -85,6 +85,10 @@ the screen, for applications you run yourselves.
 | `/oauth/device_authorization`, `/device` | Device sign-in (RFC 8628) |
 | `/oauth/register` | Dynamic client registration (RFC 7591), for [self-registered apps](../MCP.md) |
 
+An authorization request that starts a sign-in holds a little state for up to 20 minutes, so each address may start
+at most 300 a minute; past that the client gets `error=temporarily_unavailable` for the rest of the minute. Behind a
+proxy set `server.trust_proxy`, or every user shares the proxy's address and its budget.
+
 ## Tokens
 
 | Token | Lifetime (setting) |

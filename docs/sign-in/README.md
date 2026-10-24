@@ -66,6 +66,8 @@ its **Confirm it is you** dialog), and an API token can never make them, through
 - rotating the signing keys;
 - changing the primary organization's sign-in settings;
 - making someone an administrator or super admin, or creating one;
+- demoting, disabling or deleting another administrator or super admin (management API only: a directory offboarding
+  an administrator through SCIM still can, within the service's guards on the last super admins);
 - removing another user's password;
 - issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
 
