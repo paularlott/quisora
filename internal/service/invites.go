@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -33,33 +34,53 @@ func linkID(token string) string {
 	return base64.RawURLEncoding.EncodeToString(secure.HashSecret(token))
 }
 
-// IssueLink creates a single-use link token for u. Issuing an invitation or reset revokes the user's earlier
-// unused links of the same purpose, so only the newest one works.
+// IssueLink creates a single-use link token for u. An account has at most one invitation and one reset link: issuing
+// one replaces the record of the earlier one, whose token then finds nothing.
 func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration) (string, *model.LinkToken, error) {
 	return s.issueLink(ctx, u, purpose, email, ttl, "")
 }
 
 // issueLink is IssueLink recording who issued it (an invitation's issuer: see mayResetSignIn).
 func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration, by string, edit ...func(*model.LinkToken)) (string, *model.LinkToken, error) {
-	if purpose == LinkInvite || purpose == LinkReset {
-		old, _, err := s.Links.List(ctx, store.ListQuery{Scope: u.ID, Filters: []store.Filter{{Field: "purpose", Value: purpose}}})
-		if err != nil {
-			return "", nil, err
-		}
-		for _, l := range old {
-			_ = s.Links.Delete(ctx, l.ID)
-		}
+	// The link is bound to the account as it is now (its security generation), not to the caller's copy: a link
+	// issued from a stale copy would open nothing.
+	cur, err := s.Users.Get(ctx, u.ID)
+	if err != nil {
+		return "", nil, mapStore(err)
 	}
+	u = cur
 	token := secure.RandomToken(32)
-	l := &model.LinkToken{Meta: model.Meta{ID: linkID(token)}, UserID: u.ID, OrgID: u.OrgID, Purpose: purpose,
-		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen}
+	l := &model.LinkToken{UserID: u.ID, OrgID: u.OrgID, Purpose: purpose, Email: email, Expires: time.Now().Add(ttl),
+		UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen, TokenHash: linkID(token)}
 	for _, e := range edit {
 		e(l)
 	}
-	if err := s.Links.Create(Durable(ctx), l); err != nil {
-		return "", nil, mapStore(err)
+	if purpose != LinkInvite && purpose != LinkReset {
+		l.ID = l.TokenHash
+		if err := s.Links.Create(Durable(ctx), l); err != nil {
+			return "", nil, mapStore(err)
+		}
+		return token, l, nil
 	}
-	return token, l, nil
+	l.ID = purpose + ":" + u.ID
+	for range 8 {
+		cur, err := s.Links.Get(ctx, l.ID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			l.Version = 0
+			err = s.Links.Create(Durable(ctx), l)
+		case err == nil:
+			l.Version, l.Created = cur.Version, time.Time{}
+			err = s.Links.Update(Durable(ctx), l)
+		}
+		if store.Applied(err) {
+			return token, l, nil
+		}
+		if !errors.Is(err, store.ErrStale) {
+			return "", nil, mapStore(err)
+		}
+	}
+	return "", nil, ErrStale
 }
 
 // PeekLink returns a live, unused link of one of the purposes without using it (to render the page behind it).
@@ -67,7 +88,7 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	if token == "" || len(token) > 128 {
 		return nil, nil, ErrLink
 	}
-	l, err := s.Links.Get(ctx, linkID(token))
+	l, err := s.Links.GetByUnique(ctx, model.LinkTokenKey(linkID(token)))
 	if err != nil || l.Used || !slices.Contains(purposes, l.Purpose) || time.Now().After(l.Expires) {
 		return nil, nil, ErrLink
 	}
@@ -105,9 +126,10 @@ func (s *Service) issuerMayInvite(ctx context.Context, issuerID string, u *model
 	return s.canManageUser(a, u) && s.mayResetSignIn(ctx, a, u, "user") == nil
 }
 
-// RedeemLink uses the link: exactly one caller succeeds (compare-and-put on the record).
-func (s *Service) RedeemLink(ctx context.Context, token string, purposes ...string) (*model.LinkToken, *model.User, error) {
-	l, u, err := s.PeekLink(ctx, token, purposes...)
+// RedeemLink uses a verification link: exactly one caller succeeds (compare-and-put on the record). Invitations and
+// resets are used by UseSignInLink.
+func (s *Service) RedeemLink(ctx context.Context, token string) (*model.LinkToken, *model.User, error) {
+	l, u, err := s.PeekLink(ctx, token, LinkVerify)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -115,38 +137,65 @@ func (s *Service) RedeemLink(ctx context.Context, token string, purposes ...stri
 	if err := s.Links.Update(Durable(ctx), l); err != nil {
 		return nil, nil, ErrLink
 	}
-	if l.Purpose == LinkInvite || l.Purpose == LinkReset {
-		s.revokeOtherSignInLinks(ctx, l)
-	}
-	if l.BreakGlass && !u.Enabled(time.Now()) {
-		reason, noEnd := "break-glass invitation used", ""
-		in := UserInput{Active: ptrBool(true), StatusReason: &reason}
-		if u.ValidUntil != nil && !time.Now().Before(*u.ValidUntil) {
-			in.ValidUntil = &noEnd // ended: the account must be usable again to be recovered
-		}
-		fresh, err := s.UpdateUser(Durable(ctx), System, u.ID, in)
-		if err != nil {
-			return nil, nil, err
-		}
-		u = fresh
-	}
 	return l, u, nil
 }
 
-// revokeOtherSignInLinks deletes the user's other unused invitation and reset links once one is used: the account
-// now has the credentials that link set, so no older link may reset them. Issuing a link already revokes earlier
-// ones, but two issued at once (or on two nodes before either replicated) can both survive that; without this,
-// the second would still open the account after its owner set it up (see mayReplaceInvite).
-func (s *Service) revokeOtherSignInLinks(ctx context.Context, used *model.LinkToken) {
-	others, _, err := s.Links.List(ctx, store.ListQuery{Scope: used.UserID})
-	if err != nil {
-		return
+// UseSignInLink accepts an invitation or a password reset (purpose) with token: it is the commit of the whole change,
+// one compare-and-swap of the user record that sets the new password (none: "", an invitation that sets up a passkey
+// instead), for an invitation also removes the authenticator app and the recovery codes, proves the address the link
+// was sent to, re-enables the account of a break-glass invitation, and moves the account's security generation on.
+// That move is what uses the link up, and every other invitation or reset link of the account with it (they are
+// bound to the generation: PeekLink). Until then the link works: what the flow does before (ClearCredentials,
+// storing the new passkey) is done again when the user retries after a failure, and nothing is lost but time.
+func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password string) (*model.LinkToken, *model.User, error) {
+	if purpose == LinkReset && password == "" {
+		return nil, nil, Invalid("password", "required")
 	}
-	for _, o := range others {
-		if o.ID != used.ID && !o.Used && (o.Purpose == LinkInvite || o.Purpose == LinkReset) {
-			_ = s.Links.Delete(ctx, o.ID)
+	hash := ""
+	for range 8 {
+		l, u, err := s.PeekLink(ctx, token, purpose)
+		if err != nil {
+			return nil, nil, err
 		}
+		if password != "" && hash == "" { // hashed once: a retry after a concurrent change reuses it
+			if err := s.CheckPassword(ctx, u, password); err != nil {
+				return nil, nil, err
+			}
+			if hash, err = s.HashPassword(ctx, u.ID, password); err != nil {
+				return nil, nil, err
+			}
+		}
+		now := time.Now().UTC()
+		if hash != "" || u.PasswordHash != "" {
+			u.PasswordChangedAt = &now
+		}
+		u.PasswordHash = hash
+		if purpose == LinkInvite {
+			u.TOTPSecret, u.MFAEnrolledAt, u.RecoveryCodes, u.RecoveryCreated = "", nil, nil, nil
+		}
+		if l.Email != "" && strings.EqualFold(l.Email, u.Email) {
+			u.EmailVerified = true // the link went to this address: it is proven
+		}
+		if l.BreakGlass && !u.Enabled(now) {
+			u.Active = true
+			if u.ValidUntil != nil && !now.Before(*u.ValidUntil) {
+				u.ValidUntil = nil // ended: the account must be usable again to be recovered
+			}
+			noteStatus(u, System, "break-glass invitation used")
+		}
+		u.BumpSecurity()
+		err = s.Users.Update(Durable(ctx), u)
+		if errors.Is(err, store.ErrStale) {
+			continue // changed meanwhile: read again (the link may no longer be good)
+		}
+		if !store.Applied(err) {
+			return nil, nil, mapStore(err)
+		}
+		_ = s.endUserSessions(ctx, u.ID, nil) // the old credentials' sessions, also any made since the flow began
+		_ = s.Links.Delete(ctx, l.ID)         // tidying only: the generation has moved past it
+		return l, u, nil
 	}
+	return nil, nil, ErrStale
 }
 
 // MarkLinkSent records that the link with this URL (or token) was emailed to email: using it then proves the
@@ -156,7 +205,7 @@ func (s *Service) MarkLinkSent(ctx context.Context, link, email string) error {
 	if u, err := url.Parse(link); err == nil && u.Query().Get("token") != "" {
 		token = u.Query().Get("token")
 	}
-	l, err := s.Links.Get(ctx, linkID(token))
+	l, err := s.Links.GetByUnique(ctx, model.LinkTokenKey(linkID(token)))
 	if err != nil {
 		return mapStore(err)
 	}

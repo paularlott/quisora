@@ -140,6 +140,7 @@ type voter struct {
 	hw       map[string]hwMark
 	floor    hlc.Timestamp
 	resumeAt time.Time // votes only from then on (restartPause after it started)
+	started  time.Time // when it started: its floor starts from then (startFrom)
 }
 
 // voteAhead is how far ahead of the voter's clock a granted version may be. Versions come from the writers' clocks,
@@ -159,8 +160,21 @@ func newVoter(n *Node) *voter {
 	// it is voteAhead): it is past every version granted before the restart, and the clock has reached it when the
 	// voter votes again.
 	return &voter{n: n, intents: map[string]*intent{}, hw: map[string]hwMark{},
-		floor:    max(store.Clock.Now(), hlc.FromTime(now.Add(min(voteAhead, restartPause)))),
-		resumeAt: now.Add(restartPause)}
+		floor:    max(store.Clock.Now(), hlc.FromTime(now.Add(startLead()))),
+		resumeAt: now.Add(restartPause), started: now}
+}
+
+// startLead is how far past the clock at start a voter's floor starts.
+func startLead() time.Duration { return min(voteAhead, restartPause) }
+
+// startFrom moves the start floor by off, the other nodes' clocks ahead of this one's (the peer clock check), so it
+// is what it would have been by their clock: past every version granted before the restart even if this node's
+// clock was stepped back. It never lowers the floor.
+func (v *voter) startFrom(off time.Duration) {
+	f := hlc.FromTime(v.started.Add(off + startLead()))
+	v.mu.Lock()
+	v.floor = max(v.floor, f)
+	v.mu.Unlock()
 }
 
 func recKey(kind model.Kind, id string) string { return string(kind) + "/" + id }

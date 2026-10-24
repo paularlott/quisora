@@ -5,6 +5,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -34,7 +35,11 @@ func (m *Module) listGroups(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	items, total, err := m.s.Svc.ListGroups(r.Context(), a, org.ID, listQuery(r))
+	q := listQuery(r)
+	if tag := r.URL.Query().Get("tag"); tag != "" { // exactly this tag (search matches names, not tags)
+		q.Filters = append(q.Filters, store.Filter{Field: "tags", Value: tag})
+	}
+	items, total, err := m.s.Svc.ListGroups(r.Context(), a, org.ID, q)
 	if err != nil {
 		web.WriteError(w, err)
 		return

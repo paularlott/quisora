@@ -109,10 +109,10 @@ func TestLinksBoundToSecurityGeneration(t *testing.T) {
 	if _, _, err := e.svc.PeekLink(e.ctx, reset, service.LinkReset); !errors.Is(err, service.ErrLink) {
 		t.Errorf("reset link after a password change: %v", err)
 	}
-	if _, _, err := e.svc.RedeemLink(e.ctx, tokenFrom(invite), service.LinkInvite); !errors.Is(err, service.ErrLink) {
+	if _, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(invite), service.LinkInvite, ""); !errors.Is(err, service.ErrLink) {
 		t.Errorf("invitation after a password change: %v", err)
 	}
-	if _, _, err := e.svc.RedeemLink(e.ctx, verify, service.LinkVerify); err != nil {
+	if _, _, err := e.svc.RedeemLink(e.ctx, verify); err != nil {
 		t.Errorf("verification link after a password change: %v", err)
 	}
 	// a link issued now (for the user as it is now) is good until the next change

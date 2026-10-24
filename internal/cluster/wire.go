@@ -71,6 +71,8 @@ type feedResp struct {
 	// than a quorum of nodes are ready). A node that started empty has caught up once it has copied everything from
 	// it: this is how a new cluster forms around its first node.
 	Origin bool
+	// Now is the responder's clock (unix nanos) as it answered: the asker checks its own against it (clock.go).
+	Now int64
 }
 
 // Field type tags.

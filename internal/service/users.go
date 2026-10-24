@@ -326,17 +326,14 @@ func (s *Service) GetUser(ctx context.Context, a *Actor, id string) (*model.User
 	return u, nil
 }
 
-// ListUsers lists users of an org, with their last sign-in. Sorting by "last_login" (kept on the users' sign-in
-// records, not on the users) loads the organization's users and sorts them in memory, like ListUsersTagged.
+// ListUsers lists users of an org, with their last sign-in (shown, not sortable: it is kept on the users' sign-in
+// records, so sorting on it would read the whole organization).
 func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store.ListQuery) ([]*model.User, int, error) {
 	if !s.canManageUsers(a, orgID) {
 		return nil, 0, ErrForbidden
 	}
 	q.Scope = orgID
 	q = visibleQuery(a, q)
-	if q.Sort == "last_login" {
-		return s.listByLastLogin(ctx, a, q)
-	}
 	leaks, err := s.searchLeaks(ctx, a, q)
 	if err != nil {
 		return nil, 0, err
@@ -405,40 +402,11 @@ func (s *Service) listByPresented(ctx context.Context, a *Actor, q store.ListQue
 	return all, total, nil
 }
 
-// ListUsersTagged lists the users of an org carrying exactly the tag (the store cannot filter inside a list, so the
-// org's matches are filtered in memory — organizations hold on the order of a thousand users — then paged).
+// ListUsersTagged lists the users of an org carrying exactly the tag: ListUsers with a filter on the tag, which the
+// key-value stores answer from the tag's index (the users carrying it), not by reading the organization.
 func (s *Service) ListUsersTagged(ctx context.Context, a *Actor, orgID string, q store.ListQuery, tag string) ([]*model.User, int, error) {
-	if !s.canManageUsers(a, orgID) {
-		return nil, 0, ErrForbidden
-	}
-	offset, limit := q.Offset, q.Limit
-	byLogin, desc := q.Sort == "last_login", q.Desc
-	if byLogin {
-		q.Sort, q.Desc = "", false
-	}
-	q.Scope, q.Offset, q.Limit = orgID, 0, 0
-	q = visibleQuery(a, q)
-	all, _, err := s.Users.List(ctx, q)
-	if err != nil {
-		return nil, 0, mapStore(err)
-	}
-	out := all[:0]
-	for _, u := range all {
-		// the tags of someone a sees only as a directory entry are not theirs to see: no match on them either
-		if slices.Contains(u.Tags, tag) && s.Visibility(a, u) == Full {
-			out = append(out, u)
-		}
-	}
-	s.WithSignIn(ctx, out...)
-	if byLogin {
-		sortByLastLogin(out, desc)
-	}
-	total := len(out)
-	out = out[min(offset, total):]
-	if limit > 0 && limit < len(out) {
-		out = out[:limit]
-	}
-	return out, total, nil
+	q.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "tags", Value: tag})
+	return s.ListUsers(ctx, a, orgID, q)
 }
 
 // CreateUser creates a user in orgID.
@@ -952,31 +920,13 @@ func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey stri
 	if err != nil {
 		return mapStore(err)
 	}
-	sessErr := s.endUserSessions(ctx, userID, nil)
-	// Every credential is removed even when one removal fails (a failure must not leave the rest in place); the
-	// errors are reported together at the end. A write that is applied but not yet confirmed by a peer is no failure.
 	var errs []error
 	fail := func(err error) {
 		if !store.Applied(err) {
 			errs = append(errs, err)
 		}
 	}
-	fail(sessErr)
-	for _, k := range []model.Kind{model.KindPasskey, model.KindIdentity, model.KindAPIToken} {
-		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: userID})
-		if err != nil {
-			fail(err)
-			continue
-		}
-		for _, r := range res.Records {
-			if k == model.KindPasskey && r.ID == keepPasskey {
-				continue
-			}
-			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); !errors.Is(err, store.ErrStale) {
-				fail(err)
-			}
-		}
-	}
+	fail(s.ClearCredentials(ctx, userID, keepPasskey))
 	// The user record is cleared last, re-read and retried when a concurrent change (a profile edit, a sign-in's
 	// last-login stamp) got there first: that change must not keep the old password or authenticator app. The
 	// security generation moves on whether or not the record held anything: the passkeys and providers just removed
@@ -997,6 +947,39 @@ func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey stri
 		if u, err = s.Users.Get(ctx, userID); err != nil {
 			fail(err)
 			break
+		}
+	}
+	return mapStore(errors.Join(errs...))
+}
+
+// ClearCredentials removes every way into the account but its password and authenticator app: its sessions and
+// refresh grants end (relying parties are told), and every passkey but keepPasskey, connected provider and API token
+// goes. The user record is not changed (the security generation stays): an invitation does this before its commit
+// (UseSignInLink), so a failure part-way leaves the link usable, and doing it again is harmless. Every removal is
+// tried even when one fails (a failure must not leave the rest in place); the errors are returned together. A write
+// that is applied but not yet confirmed by a peer is no failure.
+func (s *Service) ClearCredentials(ctx context.Context, userID, keepPasskey string) error {
+	ctx = Durable(ctx)
+	var errs []error
+	fail := func(err error) {
+		if !store.Applied(err) {
+			errs = append(errs, err)
+		}
+	}
+	fail(s.endUserSessions(ctx, userID, nil))
+	for _, k := range []model.Kind{model.KindPasskey, model.KindIdentity, model.KindAPIToken} {
+		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: userID})
+		if err != nil {
+			fail(err)
+			continue
+		}
+		for _, r := range res.Records {
+			if k == model.KindPasskey && r.ID == keepPasskey {
+				continue
+			}
+			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); !errors.Is(err, store.ErrStale) {
+				fail(err)
+			}
 		}
 	}
 	return mapStore(errors.Join(errs...))

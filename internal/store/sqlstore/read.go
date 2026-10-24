@@ -84,6 +84,17 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 			return "", nil, fmt.Errorf("%w: %v", store.ErrBadQuery, err)
 		}
 		col, op := s.d.quote(fld.Name), " = ?"
+		if fld.Words && f.Op == "" { // one of the space-separated words: alone, first, last or in between
+			if strings.ContainsAny(v.(string), " \t\n") {
+				b.WriteString(" AND 1 = 0") // not a word
+				continue
+			}
+			w := likeEscape.Replace(v.(string))
+			b.WriteString(" AND (" + col + " = ? OR " + col + " LIKE ? ESCAPE '!' OR " + col + " LIKE ? ESCAPE '!' OR " +
+				col + " LIKE ? ESCAPE '!')")
+			args = append(args, v, w+" %", "% "+w, "% "+w+" %")
+			continue
+		}
 		switch f.Op {
 		case store.OpPrefix:
 			col, op, v = "LOWER("+col+")", " LIKE ? ESCAPE '!'", likeEscape.Replace(strings.ToLower(f.Value.(string)))+"%"
@@ -97,7 +108,7 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 	}
 	if q.Search != "" {
 		var terms []string
-		pat := "%" + likeEscape.Replace(strings.ToLower(q.Search)) + "%"
+		pat := likeEscape.Replace(strings.ToLower(q.Search)) + "%" // a prefix match, as on every backend
 		for _, f := range schema.Fields {
 			if f.Search {
 				terms = append(terms, "LOWER("+s.d.quote(f.Name)+") LIKE ? ESCAPE '!'")

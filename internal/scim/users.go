@@ -783,8 +783,9 @@ func (rq *request) narrow(f node) (unique string, q store.ListQuery) {
 			if r := model.Role(strings.ToLower(s)); r.Valid() {
 				q.Filters = append(q.Filters, store.Filter{Field: "role", Value: string(r)})
 			}
-		case isStr && s != "" && q.Search == "" && p.URN == "" && cn.op != "ne" && cn.op != "gt" && cn.op != "ge" &&
-			cn.op != "lt" && cn.op != "le" &&
+		// The store's search is a prefix match on the username, address and names: it narrows "eq" and "sw" (the
+		// filter itself decides).
+		case isStr && s != "" && q.Search == "" && p.URN == "" && (cn.op == "eq" || cn.op == "sw") &&
 			((p.Sub == "" && (name == "username" || name == "displayname")) || (name == "emails" && strings.EqualFold(p.Sub, "value"))):
 			q.Search = s
 		}

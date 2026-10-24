@@ -32,7 +32,8 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users?limit=10"
 ## The management API (`admin`)
 
 Organizations are named in the path (`acme` below). Lists answer `{"items": [...], "total": n}` and take
-`?q=` (search), `sort=`, `desc=1`, `offset=` and `limit=` (at most 100). The full reference is the OpenAPI document
+`?q=` (search: a case-insensitive prefix of a user's username, email address, full name or family name, or of a
+group's or organization's name), `sort=`, `desc=1`, `offset=` and `limit=` (at most 100). The full reference is the OpenAPI document
 at `/api/openapi.json` (SCIM is in it too), which every server also renders as a browsable reference at `/api-docs/`
 (it works without internet access: nothing loads from outside the server). An `Api-Version: 2026-10-20` header
 pins the version; without it you get the oldest supported version. Versions are dates: the release that introduced

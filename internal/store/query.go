@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -66,26 +67,64 @@ func IsPlainScan(q ListQuery) bool {
 // ApplyQuery filters, searches, sorts and pages live records in memory. Backends without a query engine (and the
 // in-memory store) use it over the records of a scope. recs must contain only records of the queried kind.
 func ApplyQuery(kind model.Kind, recs []*Record, q ListQuery) (*ListResult, error) {
+	c, err := NewCollector(kind, q)
+	if err != nil {
+		return nil, err
+	}
+	c.Add(recs)
+	return c.Result(), nil
+}
+
+// Collector is ApplyQuery over records offered a batch at a time: it keeps only what the page can need (the first
+// Offset+Limit matches in the query's order; every match without a limit) and counts the rest, so a backend that
+// must read many records to answer a query holds a page's worth of them, not all.
+type Collector struct {
+	kind  model.Kind
+	q     ListQuery
+	keep  int // how many matches the page can need (0: all)
+	recs  []*Record
+	total int
+}
+
+// NewCollector validates q and returns a collector for it.
+func NewCollector(kind model.Kind, q ListQuery) (*Collector, error) {
 	if err := ValidateQuery(kind, q); err != nil {
 		return nil, err
 	}
-	out := make([]*Record, 0, len(recs))
+	c := &Collector{kind: kind, q: q}
+	if q.Limit > 0 {
+		c.keep = q.Limit
+		if q.After == "" {
+			c.keep += max(q.Offset, 0)
+		}
+	}
+	return c, nil
+}
+
+// Add offers records; those q selects are counted, and kept while they may be on the page.
+func (c *Collector) Add(recs []*Record) {
 	for _, r := range recs {
-		if !Match(kind, r, q) {
+		if !Match(c.kind, r, c.q) || c.q.After != "" && r.ID <= c.q.After {
 			continue
 		}
-		if q.After != "" && r.ID <= q.After {
-			continue
+		c.total++
+		c.recs = append(c.recs, r)
+		if c.keep > 0 && len(c.recs) >= 2*c.keep { // sorted now and then, so at most twice the page is held
+			sortRecords(c.recs, c.q.Sort, c.q.Desc)
+			clear(c.recs[c.keep:])
+			c.recs = c.recs[:c.keep]
 		}
-		out = append(out, r)
 	}
-	sortRecords(out, q.Sort, q.Desc)
-	if q.After != "" {
-		page := Page(out, 0, q.Limit)
-		return &ListResult{Records: page, Total: len(page)}, nil
+}
+
+// Result returns the page and the total.
+func (c *Collector) Result() *ListResult {
+	sortRecords(c.recs, c.q.Sort, c.q.Desc)
+	if c.q.After != "" {
+		page := Page(c.recs, 0, c.q.Limit)
+		return &ListResult{Records: page, Total: len(page)}
 	}
-	total := len(out)
-	return &ListResult{Records: Page(out, q.Offset, q.Limit), Total: total}, nil
+	return &ListResult{Records: Page(c.recs, c.q.Offset, c.q.Limit), Total: c.total}
 }
 
 // Match reports whether r (a live record of kind) is selected by q's scope, filters and search; the order and paging
@@ -133,7 +172,12 @@ func matchFilters(r *Record, filters []Filter) bool {
 				return false
 			}
 		default:
-			if !EqualValues(v, f.Value) {
+			if fld, _ := model.Schemas[r.Kind].Field(f.Field); fld.Words {
+				sv, _ := v.(string)
+				if want, _ := f.Value.(string); !slices.Contains(strings.Fields(sv), want) {
+					return false
+				}
+			} else if !EqualValues(v, f.Value) {
 				return false
 			}
 		}
@@ -146,7 +190,7 @@ func matchSearch(r *Record, s model.Schema, needle string) bool {
 		if !f.Search {
 			continue
 		}
-		if v, ok := r.Fields[f.Name].(string); ok && strings.Contains(strings.ToLower(v), needle) {
+		if v, ok := r.Fields[f.Name].(string); ok && strings.HasPrefix(strings.ToLower(v), needle) {
 			return true
 		}
 	}

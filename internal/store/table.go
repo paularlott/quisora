@@ -228,6 +228,21 @@ func (t *Table[T, PT]) DeleteIf(ctx context.Context, id string, expect hlc.Times
 	return t.S.CompareAndPut(ctx, Tombstone(t.Kind, id), expect)
 }
 
+// IDs returns the ids of a page of matches and the total number of matches (ListQuery.IDsOnly): for a listing by one
+// indexed filter, the key-value stores read no record.
+func (t *Table[T, PT]) IDs(ctx context.Context, q ListQuery) ([]string, int, error) {
+	q.IDsOnly = true
+	res, err := t.S.List(ctx, t.Kind, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	ids := make([]string, len(res.Records))
+	for i, r := range res.Records {
+		ids[i] = r.ID
+	}
+	return ids, res.Total, nil
+}
+
 // List returns a page of entities and the total number of matches.
 func (t *Table[T, PT]) List(ctx context.Context, q ListQuery) ([]PT, int, error) {
 	res, err := t.S.List(ctx, t.Kind, q)

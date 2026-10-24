@@ -118,3 +118,16 @@ func httpClient(caFile string) (*http.Client, error) {
 func errNotConfigured(store, section string) error {
 	return errors.New("no " + store + " is configured: set " + section)
 }
+
+// PlainHTTP returns the settings of c that reach a secret store over plain http (allowed, for a store on the same
+// host or a private network, but the keys then cross the network readable by anyone on it): the server warns of them.
+func PlainHTTP(c config.Secrets) []string {
+	var out []string
+	if strings.HasPrefix(strings.ToLower(c.Vault.Address), "http://") {
+		out = append(out, "secrets.vault.address")
+	}
+	if strings.HasPrefix(strings.ToLower(c.OnePassword.ConnectURL), "http://") {
+		out = append(out, "secrets.onepassword.connect_url")
+	}
+	return out
+}

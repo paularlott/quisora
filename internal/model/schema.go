@@ -10,7 +10,9 @@ const (
 	FieldTime // time.Time, stored with at least millisecond precision
 )
 
-// Field is a queryable column of a kind. Search fields take part in case-insensitive substring search; Sort fields
+// Field is a queryable column of a kind. Search fields take part in search: a case-insensitive prefix match on any of
+// them (the key-value stores answer it from the fields' sort indexes when every Search field of the kind has one,
+// reading only the matches, not the scope); Sort fields
 // may be used to order a listing (strings compare case-insensitively); every field can be used as an equality filter.
 // Index fields are equality filters that must not read the whole kind: the key-value stores, which otherwise answer a
 // filter by reading every record of the kind (or scope), keep one index bucket per value of the field (an index write
@@ -28,6 +30,9 @@ type Field struct {
 	Sort      bool
 	Index     bool
 	SortIndex bool
+	// Words marks a string field holding a space-separated list (tags): an equality filter matches a record holding
+	// the value as one of its words, and an Index field is indexed once per word.
+	Words bool
 }
 
 // Schema lists a kind's queryable fields. Backends create their columns/indexes from it.
@@ -60,13 +65,14 @@ var Schemas = map[Kind]Schema{
 		{Name: "username", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "email", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "family_name", Type: FieldString, Search: true, Sort: true, SortIndex: true}, // "Smith" finds John Smith
 		{Name: "external_id", Type: FieldString},
-		{Name: "tags", Type: FieldString, Search: true},
+		{Name: "tags", Type: FieldString, Index: true, Words: true}, // the console's tag filter, without reading the org
 		{Name: "role", Type: FieldString, Sort: true, SortIndex: true},
 		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "user_type", Type: FieldString, Sort: true},
-		{Name: "department", Type: FieldString, Search: true, Sort: true},
+		{Name: "department", Type: FieldString, Sort: true},
 		{Name: "manager_id", Type: FieldString},
 		{Name: "employee_number", Type: FieldString},
 		{Name: "expiring", Type: FieldBool},
@@ -80,7 +86,7 @@ var Schemas = map[Kind]Schema{
 	KindGroup: {KindGroup, []Field{
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "external_id", Type: FieldString},
-		{Name: "tags", Type: FieldString, Search: true},
+		{Name: "tags", Type: FieldString, Words: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "pending", Type: FieldBool, Index: true}, // groups with committed member changes not yet materialized
 	}},

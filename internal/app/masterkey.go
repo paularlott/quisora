@@ -7,6 +7,16 @@ import (
 	"slices"
 )
 
+// resealQueues re-seals this node's queues on disk (mail, back-channel logouts) with the active master key.
+func (a *App) resealQueues() {
+	if a.mailer != nil {
+		a.mailer.Reseal()
+	}
+	if a.logoutQueue != nil {
+		a.logoutQueue.Reseal()
+	}
+}
+
 // ReloadMasterKeys switches the running server to the master keys master and previous (server.master_key and
 // server.previous_master_keys, as a configuration reload reads them again on SIGHUP), without a restart: the keyring
 // every part of the server uses is replaced in place. It refuses keys that do not include the key in use now (a
@@ -47,15 +57,11 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {
 		return err
 	}
-	// The mail queue is on this node's disk, where the leader's re-seal does not reach: it is re-sealed here, with the
+	// The queues are on this node's disk, where the leader's re-seal does not reach: they are re-sealed here, with the
 	// active key before a key is dropped and with the new one before this node reports it.
-	if a.mailer != nil {
-		a.mailer.Reseal()
-	}
+	a.resealQueues()
 	cur.Replace(next)
-	if a.mailer != nil {
-		a.mailer.Reseal()
-	}
+	a.resealQueues()
 	a.Log.Info("master keys reloaded", "key", cur.ActiveKeyID(), "previous", cur.KeyIDs()[1:])
 	if err := a.Svc.ReportMasterKey(ctx, a.Node.ID()); err != nil && !errors.Is(err, context.Canceled) {
 		a.Log.Warn("master key: reporting this node's key (retried)", "error", err)

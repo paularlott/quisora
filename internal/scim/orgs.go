@@ -273,7 +273,7 @@ func (rq *request) listOrgs() {
 				if s, isStr := cn.val.(string); isStr && s != "" && q.Search == "" {
 					switch strings.ToLower(cn.path.Name) {
 					case "name", "displayname":
-						if cn.op == "eq" || cn.op == "co" || cn.op == "sw" || cn.op == "ew" {
+						if cn.op == "eq" || cn.op == "sw" { // a prefix match: it narrows these only
 							q.Search = s
 						}
 					}

@@ -34,11 +34,16 @@
 // otherwise from a count of the index that excludes the expired members (key-only iteration in Badger, ZLEXCOUNT
 // arithmetic in Valkey), as the index carries each member's expiry.
 //
-// Other listings (a search, a filter on an unindexed field, a sort on an unindexed field, a sorted listing without
-// a scope of a scoped kind) stream the scope in batches through the index that gives the result's order when there
-// is one (the sort index, or the id index), matching records as they go and keeping only the page: O(scope size)
-// in time and in record decoding, O(page) in memory. Without such an index the matches are collected and ordered
-// in memory. Doing any of that without a scope is O(kind size) and should be avoided for large kinds.
+// A search (a prefix of the Search fields) of a kind whose Search fields all have sort indexes reads, keys only, the
+// range of each index that starts with it: only the matching records are read. A word-list field (tags) is indexed
+// once per word, so a filter on a tag reads only the records carrying it.
+//
+// Other listings (a filter on an unindexed field, a sort on an unindexed field, a sorted listing without a scope of a
+// scoped kind) stream the scope in batches through the index that gives the result's order when there is one (the
+// sort index, or the id index), matching records as they go and keeping only the page: O(scope size) in time and in
+// record decoding, O(page) in memory. Wherever records are read for matching (these, a search, an indexed filter),
+// they are read a batch at a time and only the page's worth is kept (store.Collector), so memory stays O(page).
+// Doing any of that without a scope is O(kind size) and should be avoided for large kinds.
 package kvstore
 
 import (
@@ -84,13 +89,14 @@ func (s *Store) FeedID() string {
 // migrations; a store at an older format is brought up to this build's at open, one migration after the other, each
 // recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock so that the processes
 // sharing a Valkey store do it once. A store written by a newer build, or by a pre-release build older than
-// formatBase, is refused. Never edit or remove a released migration: append one. There are none yet: nothing has
-// been released, and a layout change raises formatBase instead (3: the due and field indexes; 4: field index
-// members carry their scope; 5: sort indexes and range counters, no index of an indexed bool's false records).
+// formatBase, is refused. Never edit or remove a released migration: append one. Format 1 is the first release's;
+// until that release the layout changes in place, and stores from earlier development builds are wiped, not
+// migrated. A migration that rewrites records uses rewriteRecords (TestMigrationScale runs one over five million
+// users).
 const (
 	metaFormat  = "meta/format"
 	metaMigrate = "meta/migrating" // the lock held while migrating: "<holder> <expiry unix ms>"
-	formatBase  = 5
+	formatBase  = 1
 )
 
 // formatMigration brings a store from one format to the next. It may run again after an interruption: make it
@@ -161,6 +167,65 @@ func (s *Store) migrateFormat(ctx context.Context) error {
 		if err := s.markFormat(ctx, have+1); err != nil {
 			return err
 		}
+	}
+}
+
+// rewriteBatch is how many records rewriteRecords changes in one write transaction.
+const rewriteBatch = 1000
+
+// rewriteRecords is for format migrations: it passes every live or expired record of kind to fn, a batch at a time
+// in id order, and stores those fn changed in place, in one write transaction per batch: the same version and change
+// feed position (nothing is replicated: every node migrates its own store), with the stored index fields and the
+// index entries rebuilt from the new data. fn may change the data, not the id or the unique values, and must be
+// idempotent (an interrupted migration runs again from the start). Tombstones hold no data and are left alone. It
+// returns how many records it changed.
+func (s *Store) rewriteRecords(ctx context.Context, kind model.Kind, fn func(r *store.Record) (bool, error)) (int, error) {
+	bucket, from, n := allBucket(kind), "", 0
+	for {
+		ids, err := s.eng.Range(ctx, bucket, from, "", rewriteBatch)
+		if err != nil || len(ids) == 0 {
+			return n, err
+		}
+		err = s.eng.Update(ctx, func(tx txn) error {
+			for _, id := range ids {
+				k := recKey(kind, id)
+				b, err := tx.Get(k)
+				if err != nil || b == nil {
+					return err
+				}
+				old, err := decodeRecord(b)
+				if err != nil {
+					return err
+				}
+				if old.rec.Deleted {
+					continue
+				}
+				rec := *old.rec
+				changed, err := fn(&rec)
+				if err != nil || !changed {
+					return err
+				}
+				if rec.Fields, err = store.IndexFields(&rec); err != nil {
+					return err
+				}
+				body, err := encodeRecord(&rec)
+				if err != nil {
+					return err
+				}
+				copy(body[:seqHeader], b[:seqHeader]) // the same feed position
+				tx.Set(k, body)
+				reindex(tx, indexEntries(old.rec), indexEntries(&rec))
+				n++
+			}
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
+		from = ids[len(ids)-1] + "\x00"
 	}
 }
 
@@ -329,7 +394,17 @@ func indexEntries(r *store.Record) []indexEntry {
 		out = append(out, indexEntry{dueBucket, indexMember(dueMs(due), 15, r.Kind, r.ID), 0, ""})
 	}
 	for _, f := range model.Schemas[r.Kind].Fields {
-		if f.Index && (f.Type != model.FieldBool || r.Fields[f.Name] == true) { // a bool's false records: never read
+		if f.Index && f.Words { // one entry per word
+			s, _ := r.Fields[f.Name].(string)
+			words := strings.Fields(s)
+			slices.Sort(words)
+			for _, w := range slices.Compact(words) {
+				if v, ok := fieldKey(w); ok { // as a filter on the word names its bucket (indexBuckets)
+					b := fieldBucket(r.Kind, f.Name, v)
+					out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, fieldRange(b, r.Scope)})
+				}
+			}
+		} else if f.Index && (f.Type != model.FieldBool || r.Fields[f.Name] == true) { // a bool's false records: never read
 			if v, ok := fieldKey(r.Fields[f.Name]); ok {
 				b := fieldBucket(r.Kind, f.Name, v)
 				out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, fieldRange(b, r.Scope)})
@@ -990,7 +1065,16 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 			return s.listAfter(ctx, kind, bucket, q.After, q.Limit)
 		}
 		p := pageQuery{Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
-		return s.listPage(ctx, kind, bucket, p, nil, bucket, false)
+		return s.listPage(ctx, kind, bucket, p, nil, bucket, false, q.IDsOnly)
+	}
+	if q.Search != "" {
+		ids, ok, err := s.searchIDs(ctx, kind, q)
+		if err != nil {
+			return nil, err
+		}
+		if ok { // only the matches are read; the rest of the query applies to them
+			return s.collect(ctx, kind, ids, q)
+		}
 	}
 	in, out := indexBuckets(kind, q)
 	unsorted := q.Sort == "" && q.Search == ""
@@ -1003,7 +1087,7 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		if q.After != "" {
 			p.From, p.Offset = from+q.After+"\x00", 0
 		}
-		return s.listPage(ctx, kind, in, p, fieldMemberID, fieldRange(in, q.Scope), q.After != "")
+		return s.listPage(ctx, kind, in, p, fieldMemberID, fieldRange(in, q.Scope), q.After != "", q.IDsOnly)
 	case unsorted && excluding:
 		return s.listExcluding(ctx, kind, bucket, q, out)
 	case q.Search == "" && excluding && (q.Scope != "" || model.Unscoped(kind)):
@@ -1012,26 +1096,78 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		}
 	}
 	if in != "" {
-		// An indexed equality filter: only the records with the value can match; they are loaded (there are as many
-		// as the filter selects, not as the scope holds) and searched, filtered further, sorted and paged in memory.
+		// An indexed equality filter: only the records with the value can match; they are read (as many as the
+		// filter selects, not as the scope holds) and searched, filtered further, sorted and paged.
 		ids, err := s.indexedIDs(ctx, kind, in, q.Scope, nowMs())
 		if err != nil {
 			return nil, err
 		}
-		recs, err := s.loadMembers(ctx, kind, ids)
+		return s.collect(ctx, kind, ids, q)
+	}
+	return s.listStreaming(ctx, kind, q)
+}
+
+// collect reads the records ids names a batch at a time, through a store.Collector for q: what is held at once is a
+// batch and the page, however many there are.
+func (s *Store) collect(ctx context.Context, kind model.Kind, ids []string, q store.ListQuery) (*store.ListResult, error) {
+	c, err := store.NewCollector(kind, q)
+	if err != nil {
+		return nil, err
+	}
+	for len(ids) > 0 {
+		n := min(len(ids), streamBatch)
+		recs, err := s.loadMembers(ctx, kind, ids[:n])
 		if err != nil {
 			return nil, err
 		}
-		return store.ApplyQuery(kind, recs, q)
+		c.Add(recs)
+		ids = ids[n:]
 	}
-	return s.listStreaming(ctx, kind, q)
+	return c.Result(), nil
+}
+
+// searchIDs returns the ids of the records whose Search fields start with q.Search, read from the fields' sort
+// indexes (a range of each per field, keys only); false when the kind cannot be searched that way (a Search field
+// without a sort index, or a scoped kind searched across every scope), and the caller reads the scope.
+func (s *Store) searchIDs(ctx context.Context, kind model.Kind, q store.ListQuery) ([]string, bool, error) {
+	if q.Scope == "" && !model.Unscoped(kind) {
+		return nil, false, nil
+	}
+	var fields []model.Field
+	for _, f := range model.Schemas[kind].Fields {
+		if f.Search {
+			if !f.SortIndex || f.Type != model.FieldString {
+				return nil, false, nil
+			}
+			fields = append(fields, f)
+		}
+	}
+	if len(fields) == 0 {
+		return nil, false, nil
+	}
+	from := scopeEscaper.Replace(q.Scope) + "/" + string(appendSortKey(nil, fields[0], q.Search))
+	seen := map[string]bool{}
+	var ids []string
+	for _, f := range fields {
+		members, _, err := s.eng.Page(ctx, sortBucket(kind, f.Name), pageQuery{From: from, To: from + "\xff", NoTotal: true}, nowMs())
+		if err != nil {
+			return nil, false, err
+		}
+		for _, m := range members {
+			if id := sortMemberID(m); !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, true, nil
 }
 
 // listPage loads the page p selects from bucket. idOf maps a member to its record id (nil: members are ids). rng is
 // the counted range (counterKey) the page selects from, "" when there is none: when no member of it carries an
 // expiry its counter, less the members p skips (every one a live member of the range), is the total, and the
 // engine stops at the end of the page. A query paged by key (after: by After) has the page length as its total.
-func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p pageQuery, idOf func(string) string, rng string, after bool) (*store.ListResult, error) {
+func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p pageQuery, idOf func(string) string, rng string, after, idsOnly bool) (*store.ListResult, error) {
 	total := -1
 	switch {
 	case after:
@@ -1056,6 +1192,16 @@ func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p 
 		for i, m := range members {
 			members[i] = idOf(m)
 		}
+	}
+	if idsOnly { // the index holds only live members (Page leaves the expired out): no record need be read
+		recs := make([]*store.Record, len(members))
+		for i, id := range members {
+			recs[i] = &store.Record{Kind: kind, ID: id}
+		}
+		if after {
+			total = len(recs)
+		}
+		return &store.ListResult{Records: recs, Total: max(total, 0)}, nil
 	}
 	recs, err := s.loadMembers(ctx, kind, members)
 	if err != nil {
@@ -1084,7 +1230,7 @@ func (s *Store) listExcluding(ctx context.Context, kind model.Kind, bucket strin
 	if q.After != "" {
 		p.From, p.Offset = q.After+"\x00", 0
 	}
-	return s.listPage(ctx, kind, bucket, p, nil, bucket, q.After != "")
+	return s.listPage(ctx, kind, bucket, p, nil, bucket, q.After != "", false)
 }
 
 // excluded returns the ids of the live records of scope ("" = every scope) in the field index buckets out: the
@@ -1133,7 +1279,7 @@ func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQue
 	}
 	p := pageQuery{From: from, To: to, Skip: skip, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
 	if !q.Desc {
-		return s.listPage(ctx, kind, bucket, p, sortMemberID, rng, false)
+		return s.listPage(ctx, kind, bucket, p, sortMemberID, rng, false, false)
 	}
 	total := -1
 	n, expiring, err := s.counts(ctx, rng)
@@ -1247,7 +1393,14 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 		}
 		matched++
 	}
-	var all, run []*store.Record // every match (unordered); the matches of the current run of equal values (ties)
+	var run []*store.Record        // the matches of the current run of equal values (ties)
+	var unordered *store.Collector // without an index in the result's order: every match goes through it
+	if !ordered {
+		var err error
+		if unordered, err = store.NewCollector(kind, q); err != nil {
+			return nil, err
+		}
+	}
 	var runKey string
 	flush := func() {
 		for i := len(run) - 1; i >= 0; i-- {
@@ -1283,7 +1436,7 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 			}
 			switch {
 			case !ordered:
-				all = append(all, r)
+				unordered.Add([]*store.Record{r})
 			case ties:
 				k := string(appendSortKey(nil, f, r.Fields[f.Name]))
 				if k != runKey && len(run) > 0 {
@@ -1301,7 +1454,7 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 	}
 	flush()
 	if !ordered {
-		return store.ApplyQuery(kind, all, q)
+		return unordered.Result(), nil
 	}
 	if q.After != "" {
 		matched = len(page)

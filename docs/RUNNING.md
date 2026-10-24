@@ -44,6 +44,7 @@ share one between nodes or processes.
 | `tls/`               | The self-signed certificate, when `server.tls_cert` is not set.                                        |
 | `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
 | `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
+| `logoutqueue/`       | Back-channel logouts an application did not take, waiting to be retried, sealed with the master key.  |
 | `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
 
 Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
@@ -441,9 +442,10 @@ node loses its events; and it has no protection against someone with write acces
 VictoriaLogs:
 
 - set its retention to cover the audit period (`-retentionPeriod=1y` or more);
-- make it the tamper-evident copy: Quisora does not sign or chain its events, so only Quisora may write to that
-  VictoriaLogs, nobody may delete from or rewrite it during the retention period, and its storage is backed up to
-  write-once (immutable) storage;
+- make it the protected copy: only Quisora may write to that VictoriaLogs, nobody may delete from or rewrite it during
+  the retention period, and its storage is backed up to write-once (immutable) storage. [SOC2.md](SOC2.md) shows how
+  (vmauth in front of it) and how to check that no event is missing (every event is numbered per node: `boot`,
+  `seq`);
 - give every node room for the spool (below) in its data directory;
 - ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
   never receive, logged in full so it can still be captured from the log.
@@ -471,7 +473,10 @@ Every event has:
   `X-Request-ID` is kept, so its logs and the audit log name a request alike);
 - `user_agent` and `session_id` (the browser session the request was made in, or the one a sign-in created);
 - `detail.token_id` when a personal API token made the change (or was refused);
-- `ip`.
+- `ip`;
+- with VictoriaLogs, `node`, `boot` and `seq`: the node that recorded it, that process start's random id, and the
+  event's number in that start's sequence (1, 2, 3…), so a gap is an event VictoriaLogs does not hold
+  ([SOC2.md](SOC2.md#completeness)).
 
 Commands (`bootstrap`, `invite`, `set-primary`, `sign-out`, `restore`) record who ran them: the actor is
 `cli:<os user>@<host>`, with `detail.os_user`, `detail.host`, `detail.pid` and `detail.command`. A restore (offline,
@@ -709,6 +714,8 @@ endpoint. Every node serves its own.
 | `quisora_audit_undelivered_total` | Audit events VictoriaLogs will never receive |
 | `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
 | `quisora_mail_queued` | Emails waiting to be sent |
+| `quisora_backchannel_logout_queued` | Back-channel logouts waiting to be retried (growing: an application is not taking them) |
+| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
 | `quisora_master_key_rotation` | 1 while previous master keys are configured |

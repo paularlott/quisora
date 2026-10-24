@@ -162,12 +162,9 @@ func TestListUsersTagged(t *testing.T) {
 	if total != 3 || len(got) != 1 || got[0].Username != "tl4" {
 		t.Fatalf("page 2: total=%d %v", total, got)
 	}
-	// exact match only; the search field also finds users by tag
+	// exact match only (the search box finds users by name, username or address, not by tag)
 	if _, total, _ = c.svc.ListUsersTagged(c.ctx, adm, c.a.ID, store.ListQuery{}, "eve"); total != 0 {
 		t.Errorf("substring matched: %d", total)
-	}
-	if _, total, _ = c.svc.ListUsers(c.ctx, adm, c.a.ID, store.ListQuery{Search: "even"}); total != 3 {
-		t.Errorf("search by tag: %d", total)
 	}
 	if _, _, err := c.svc.ListUsersTagged(c.ctx, actor(c.aUser), c.a.ID, store.ListQuery{}, "even"); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("plain user: %v", err)

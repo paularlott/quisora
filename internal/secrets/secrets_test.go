@@ -250,3 +250,11 @@ func TestApplyRules(t *testing.T) {
 		t.Fatalf("plain: %v", err)
 	}
 }
+
+func TestPlainHTTP(t *testing.T) {
+	var c config.Secrets
+	c.Vault.Address, c.OnePassword.ConnectURL = "HTTP://vault:8200", "https://connect"
+	if got := PlainHTTP(c); len(got) != 1 || got[0] != "secrets.vault.address" {
+		t.Fatalf("got %v", got)
+	}
+}

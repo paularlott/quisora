@@ -272,13 +272,13 @@ func (s *Service) GroupMembers(ctx context.Context, a *Actor, groupID string) ([
 // memberIDs returns the ids of g's committed members, in id order: the materialized memberships (one indexed read)
 // with g's pending changes applied over them, so a committed change is seen whether or not it is materialized yet.
 func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, error) {
-	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
+	// Ids only: the key-value stores answer from the group_id index without reading a membership record.
+	ids, _, err := s.Members.IDs(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	ids := make([]string, 0, len(ms))
-	for _, m := range ms {
-		ids = append(ids, m.UserID)
+	for i, id := range ids {
+		ids[i] = strings.TrimPrefix(id, g.ID+":") // model.MemberID
 	}
 	return CommittedMembers(g, ids), nil
 }

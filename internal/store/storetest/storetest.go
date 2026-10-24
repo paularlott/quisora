@@ -347,11 +347,14 @@ func testListScope(t *testing.T, s store.Store) {
 
 func testListSearch(t *testing.T, s store.Store) {
 	seedUsers(t, s, "org1", 20)
-	u := newUser("org1", "zed")
-	u.GivenName = "Zebra O'Hara 100%_x"
+	seedUsers(t, s, "org2", 12) // another scope: never matched
+	u := newUser("org1", "100%_x")
+	u.GivenName, u.FamilyName = "Zebra", "O'Hara"
 	must(t, users(s).Put(ctx, u))
-	cases := map[string]int{"user01": 10, "USER01": 10, "zebra": 1, "o'hara": 1, "100%": 1, "%": 1, "_x": 1, "nothing": 0,
-		"example.com": 21}
+	// A case-insensitive prefix of the username, the address, the full name or the family name; LIKE wildcards in
+	// the search are literal characters.
+	cases := map[string]int{"user01": 10, "USER01": 10, "user010@": 1, "name 00": 10, "zebra": 1, "zebra o'": 1,
+		"o'hara": 1, "100%": 1, "100%_": 1, "%": 0, "_": 0, "100_": 0, "nothing": 0, "example.com": 0, "ser01": 0}
 	for q, want := range cases {
 		_, total, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Search: q})
 		must(t, err)
@@ -381,13 +384,38 @@ func testListFilters(t *testing.T, s store.Store) {
 			t.Errorf("case %d: got %d want %d", i, total, c.want)
 		}
 	}
+	// A word of a word-list field (tags): exactly that word, wherever it is in the list.
+	for i, u := range users3(t, s) {
+		u.Tags = [][]string{{"red", "x/y"}, {"blue", "red"}, {"x/y"}}[i]
+		must(t, users(s).Put(ctx, u))
+	}
+	for tag, want := range map[string]int{"red": 2, "x/y": 2, "blue": 1, "re": 0, "x": 0, "red x/y": 0} {
+		_, total, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Filters: []store.Filter{{Field: "tags", Value: tag}}})
+		must(t, err)
+		if total != want {
+			t.Errorf("tag %q: got %d want %d", tag, total, want)
+		}
+	}
+	// Ids only (Table.IDs): the same matches.
+	ids, total, err := users(s).IDs(ctx, store.ListQuery{Scope: "org1", Filters: []store.Filter{{Field: "tags", Value: "red"}}})
+	must(t, err)
+	if total != 2 || len(ids) != 2 {
+		t.Errorf("ids only: %v (total %d)", ids, total)
+	}
 	// Filters combine with search.
-	_, total, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Search: "user00",
+	_, total, err = users(s).List(ctx, store.ListQuery{Scope: "org1", Search: "user00",
 		Filters: []store.Filter{{Field: "active", Value: true}}})
 	must(t, err)
 	if total != 5 { // user000,002,004,006,008
 		t.Errorf("search+filter: %d", total)
 	}
+}
+
+// users3 returns the first three users of org1 (by id).
+func users3(t testing.TB, s store.Store) []*model.User {
+	l, _, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Limit: 3})
+	must(t, err)
+	return l
 }
 
 func audits(s store.Store) *store.Table[model.Audit, *model.Audit] {

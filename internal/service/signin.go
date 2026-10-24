@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"slices"
 	"strings"
 	"time"
 
@@ -40,45 +39,6 @@ func (s *Service) WithSignIn(ctx context.Context, users ...*model.User) {
 			u.LastLogin = si.LastLogin
 		}
 	}
-}
-
-func sortByLastLogin(users []*model.User, desc bool) {
-	slices.SortStableFunc(users, func(a, b *model.User) int {
-		c := a.LastLogin.Compare(b.LastLogin)
-		if c == 0 {
-			c = strings.Compare(a.ID, b.ID)
-		}
-		if desc {
-			return -c
-		}
-		return c
-	})
-}
-
-// listByLastLogin is ListUsers sorted by last sign-in: the organization's matching users are loaded, stamped and
-// sorted in memory, then paged.
-func (s *Service) listByLastLogin(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.User, int, error) {
-	offset, limit, desc := q.Offset, q.Limit, q.Desc
-	leaks, err := s.searchLeaks(ctx, a, q)
-	if err != nil {
-		return nil, 0, err
-	}
-	q.Sort, q.Desc, q.Offset, q.Limit = "", false, 0, 0
-	all, _, err := s.Users.List(ctx, q)
-	if err != nil {
-		return nil, 0, mapStore(err)
-	}
-	all = slices.DeleteFunc(all, func(u *model.User) bool { return leaks[u.ID] })
-	s.WithSignIn(ctx, all...)
-	// directory entries carry no last sign-in, so they sort as never signed in: their order reveals nothing either
-	all = s.present(a, all)
-	sortByLastLogin(all, desc)
-	total := len(all)
-	all = all[min(max(offset, 0), total):]
-	if limit > 0 && limit < len(all) {
-		all = all[:limit]
-	}
-	return all, total, nil
 }
 
 // updateSignIn applies fn to the user's sign-in record (created when the user has none) and writes it with a
@@ -185,14 +145,38 @@ func (s *Service) lockAdmins(ctx context.Context, orgID string) (func(), error) 
 	return func() { l.release(ctx) }, nil
 }
 
+// FreshUser reads user id from a quorum's copies (store.QuorumReader; a local read without a cluster): a change of
+// the account that a majority confirmed anywhere is seen, even before it has reached this node.
+func (s *Service) FreshUser(ctx context.Context, id string) (*model.User, error) {
+	qr, ok := s.Store.(store.QuorumReader)
+	if !ok {
+		u, err := s.Users.Get(ctx, id)
+		return u, mapStore(err)
+	}
+	recs, err := qr.Fresh(ctx, model.KindUser, []string{id})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	r, ok := recs[id]
+	if !ok || !r.Live(time.Now()) {
+		return nil, ErrNotFound
+	}
+	u := &model.User{}
+	if err := store.Decode(r, u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 // usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
 // a quorum's copies (store.QuorumReader) of the users this node lists with it: a demotion, disabling, end date or
 // deletion confirmed by a majority anywhere is counted, even if it has not reached this node yet. (A promotion that
 // has not reached this node is missed: the count can only be too low, which refuses a change rather than allowing a
 // wrong one.)
 func (s *Service) usableAdmins(ctx context.Context, orgID string, role model.Role) ([]*model.User, error) {
-	l, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{
-		{Field: "role", Value: string(role)}, {Field: "active", Value: true}}})
+	// admin_rank is indexed (administrators and super admins: a handful), so this reads only them, not the
+	// organization; role and active are checked on each below.
+	l, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "admin_rank", Value: true}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}

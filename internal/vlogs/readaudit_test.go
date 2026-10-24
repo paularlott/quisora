@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/paularlott/logger"
-	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -217,7 +216,7 @@ func TestWriteAuditWithoutRoomOrWriterIsLogged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.queue = make(chan *model.Audit, 1) // no writer running: the second event finds no room
+	c.queue = make(chan []byte, 1) // no writer running: the second event finds no room
 	c.WriteAudit(event(0))
 	c.WriteAudit(event(1))
 	if ids := log.undeliveredIDs(); ids["ev-00000"] || !ids["ev-00001"] {
@@ -289,5 +288,18 @@ func TestRowOptionalFields(t *testing.T) {
 	r = c.row(e)
 	if r["request_id"] != "r" || r["user_agent"] != "ua" || r["session_id"] != "s" || r["detail.k"] != "v" {
 		t.Fatalf("row %v", r)
+	}
+}
+
+// Every event a process accepts is numbered in turn within its boot, delivered or not, so a gap in VictoriaLogs is an
+// event it does not hold.
+func TestRowSequence(t *testing.T) {
+	c := newReader(t, "http://127.0.0.1:1")
+	a, b := c.row(event(1)), c.row(event(2))
+	if a["boot"] != c.boot || a["boot"] == "" || a["seq"] != uint64(1) || b["seq"] != uint64(2) {
+		t.Fatalf("rows %v %v", a, b)
+	}
+	if d, _ := New("http://127.0.0.1:1", "n1", logger.NewNullLogger()); d.boot == c.boot {
+		t.Fatal("two starts share a boot id")
 	}
 }

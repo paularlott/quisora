@@ -153,8 +153,8 @@ type MultiGetter interface {
 
 // ListQuery selects records of one kind.
 //
-// Scope restricts the listing to one scope ("" lists every record of the kind). Search is a case-insensitive
-// substring match over the schema's Search fields (any field matching selects the record). Filters must all match.
+// Scope restricts the listing to one scope ("" lists every record of the kind). Search is a case-insensitive prefix
+// match over the schema's Search fields (any field starting with it selects the record). Filters must all match.
 // Sort names a Sort field (strings compare case-insensitively); "" sorts by ID. Ties always break by ID ascending.
 // Limit <= 0 means no limit.
 //
@@ -174,6 +174,9 @@ type ListQuery struct {
 	// created or deleted between pages cannot shift later pages, so a scan of a live store sees every record that
 	// existed throughout it.
 	After string
+	// IDsOnly says only the records' ids are wanted: a backend that can answer from an index without loading the
+	// records (the key-value stores, for one indexed filter) returns records holding only Kind and ID. Use Table.IDs.
+	IDsOnly bool
 }
 
 // ListResult holds one page of a listing; Total counts every match ignoring Offset and Limit.

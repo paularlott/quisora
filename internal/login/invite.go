@@ -2,6 +2,7 @@ package login
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -12,8 +13,9 @@ import (
 )
 
 // Invitation sign-up. An invitation link (service.LinkInvite) lets its user finish setting up an account without a
-// session: set a password and/or create a passkey, whichever the organization allows. The link is single use; the
-// passkey ceremony is authorised by the link token (purpose "invite") and nothing is stored until the final call.
+// session: set a password and/or create a passkey, whichever the organization allows. The passkey ceremony is
+// authorised by the link token (purpose "invite"). The link works until the account change commits
+// (service.UseSignInLink): a failure before that leaves it usable for another try; the commit uses it up.
 
 const msgBadInvite = "This invitation is invalid, has already been used or has expired."
 
@@ -120,8 +122,6 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	var reg *passkey.Registration
 	if wantPasskey {
-		// Verified now, stored only once the link is redeemed and the account reset below: the link is bound to the
-		// account's security generation, which storing a passkey moves on.
 		var err error
 		reg, err = m.Passkeys.VerifyRegistrationAs(ctx, purposeInvite, u, in.Challenge, in.Credential, strings.TrimSpace(in.Name))
 		if err != nil {
@@ -129,42 +129,35 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	link, _, err := m.s.Svc.RedeemLink(ctx, in.Token, service.LinkInvite)
-	if err != nil {
-		writeErr(w, http.StatusGone, msgBadInvite, "")
+	// An invitation starts the account afresh. Everything up to the commit (UseSignInLink) can be done again: the
+	// link keeps working until then, so a failure here is a "try again", not a burnt link. First whatever else could
+	// sign in as this user goes (sessions, other passkeys, connected providers, API tokens), then the new passkey is
+	// stored; the commit then sets the password (or none), removes the authenticator app and recovery codes, and moves
+	// the account's security generation on, which uses the link up.
+	if err := m.s.Svc.ClearCredentials(ctx, u.ID, ""); err != nil {
+		m.internalError(w, r, "clear credentials", err)
 		return
-	}
-	// An invitation starts the account afresh: whatever else could sign in as this user (sessions, other passkeys,
-	// connected providers, API tokens, an authenticator app, an old password) goes.
-	if err := m.s.Svc.ResetCredentials(ctx, u.ID, ""); err != nil {
-		m.internalError(w, r, "reset credentials", err)
-		return
-	}
-	if fresh, err := m.s.Svc.Users.Get(ctx, u.ID); err == nil {
-		u = fresh
 	}
 	var pk *model.Passkey
 	if reg != nil {
-		if pk, err = m.Passkeys.StoreRegistration(ctx, u, reg); err != nil {
+		var err error
+		if pk, err = m.Passkeys.StoreForInvite(ctx, u, reg); err != nil {
 			m.internalError(w, r, "store passkey", err)
 			return
 		}
 	}
-	var upd service.UserInput
+	password := ""
 	if wantPassword {
-		upd.Password = &in.Password
+		password = in.Password
 	}
-	if !u.EmailVerified && link.Email != "" && strings.EqualFold(link.Email, u.Email) {
-		t := true // the invitation was emailed to this address: it is proven
-		upd.Verified = &t
-	}
-	if upd.Password != nil || upd.Verified != nil {
-		fresh, err := m.s.Svc.UpdateUser(ctx, service.System, u.ID, upd)
-		if err != nil {
+	_, u, err := m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkInvite, password)
+	if err != nil {
+		if errors.Is(err, service.ErrLink) {
+			writeErr(w, http.StatusGone, msgBadInvite, "")
+		} else {
 			web.WriteError(w, err)
-			return
 		}
-		u = fresh
+		return
 	}
 	m.clearLocks(ctx, u.ID)
 	m.s.Sessions.Evict("", u.ID)

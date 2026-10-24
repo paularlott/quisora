@@ -25,11 +25,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -45,11 +47,15 @@ const (
 type Client struct {
 	base *url.URL
 	node string
+	// boot and seq number this process's events (boot is random per start, seq counts from 1): a gap in a node's
+	// sequence of one boot is an event VictoriaLogs does not hold (see docs/SOC2.md).
+	boot string
+	seq  atomic.Uint64
 	http *http.Client
 	log  logger.Logger
 
-	queue   chan *model.Audit // without a spool: events for the writer
-	commits chan commit       // with a spool: events waiting to be fsynced
+	queue   chan []byte // without a spool: events (JSON lines) for the writer
+	commits chan commit // with a spool: events waiting to be fsynced
 	done    chan struct{}
 	ctx     context.Context // cancelled by Close: ends a request to VictoriaLogs still in flight
 	cancel  context.CancelFunc
@@ -96,7 +102,8 @@ func New(base, node string, log logger.Logger) (*Client, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{base: u, node: node, http: &http.Client{Timeout: 10 * time.Second}, log: log.WithGroup("victorialogs"),
-		queue: make(chan *model.Audit, queueSize), done: make(chan struct{}), ctx: ctx, cancel: cancel}, nil
+		queue: make(chan []byte, queueSize), done: make(chan struct{}), ctx: ctx, cancel: cancel,
+		boot: secure.RandomToken(6)}, nil
 }
 
 // Start runs the background writer (with a spool, the spooler and the deliverer) until Close.
@@ -147,14 +154,13 @@ type commit struct {
 // replayed) is logged in full by the spooler. An event the queue has no room for (VictoriaLogs unreachable for long,
 // without a spool), or that comes after Close, is logged in full instead.
 func (c *Client) WriteAudit(e *model.Audit) {
+	b, _ := json.Marshal(c.row(e)) // numbered here: every event accepted has its place in the sequence
 	defer func() {
 		if recover() != nil { // queue closed at shutdown
-			b, _ := json.Marshal(c.row(e))
 			c.undelivered("the audit writer has shut down", [][]byte{b})
 		}
 	}()
 	if c.spool != nil {
-		b, _ := json.Marshal(c.row(e))
 		cm := commit{line: append(b, '\n'), done: make(chan struct{})}
 		select {
 		case c.commits <- cm:
@@ -172,9 +178,8 @@ func (c *Client) WriteAudit(e *model.Audit) {
 		return
 	}
 	select {
-	case c.queue <- e:
+	case c.queue <- b:
 	default:
-		b, _ := json.Marshal(c.row(e))
 		c.undelivered("the VictoriaLogs queue is full", [][]byte{b})
 	}
 }
@@ -247,7 +252,7 @@ func (c *Client) run() {
 	defer close(c.done)
 	t := time.NewTicker(flushEvery)
 	defer t.Stop()
-	batch := make([]*model.Audit, 0, batchSize)
+	batch := make([][]byte, 0, batchSize)
 	flush := func() {
 		if len(batch) > 0 {
 			c.send(batch)
@@ -271,10 +276,10 @@ func (c *Client) run() {
 	}
 }
 
-// row is one event as stored in VictoriaLogs.
+// row is one event as stored in VictoriaLogs, given the next number of this process's sequence.
 func (c *Client) row(e *model.Audit) map[string]any {
 	r := map[string]any{"_time": e.Created.UTC().Format(time.RFC3339Nano), "_msg": "audit " + e.Action, "app": app,
-		"node": c.node, "id": e.ID, "org": e.OrgID, "action": e.Action, "actor": e.Actor, "actor_id": e.ActorID,
+		"node": c.node, "boot": c.boot, "seq": c.seq.Add(1), "id": e.ID, "org": e.OrgID, "action": e.Action, "actor": e.Actor, "actor_id": e.ActorID,
 		"target": e.Target, "ip": e.IP, "outcome": e.Outcome}
 	for k, v := range map[string]string{"request_id": e.RequestID, "user_agent": e.UserAgent, "session_id": e.SessionID} {
 		if v != "" {
@@ -294,13 +299,8 @@ func (c *Client) insertURL() string {
 	return u.String()
 }
 
-func (c *Client) send(batch []*model.Audit) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	for _, e := range batch {
-		_ = enc.Encode(c.row(e))
-	}
-	body := buf.Bytes()
+func (c *Client) send(batch [][]byte) {
+	body := append(bytes.Join(batch, []byte("\n")), '\n')
 	if c.closing { // Close waits only so long: one short try, then the structured log
 		if err := c.postTimeout(c.insertURL(), body, closeTimeout); err != nil {
 			c.undelivered("VictoriaLogs did not take them at shutdown: "+err.Error(), jsonLines(body))

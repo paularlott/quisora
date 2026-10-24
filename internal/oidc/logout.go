@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/paularlott/quisora/internal/store"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/queue"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -348,12 +351,56 @@ func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
 // Back-channel logouts are sent from a bounded queue by at most bcWorkersMax senders, started as the queue fills and
 // gone when it is empty: an emergency sign-out of a whole server (or a bulk expiry) with hundreds of thousands of
 // sessions queues targets, not goroutines. A logout that finds the queue full is not sent (logged with the count):
-// the sessions and grants end on this server either way; the relying party is only not told at once.
+// the sessions and grants end on this server either way; the relying party is only not told at once. A logout the
+// relying party does not take goes to the retry queue on disk (OpenLogoutQueue), tried again after each delay of
+// logoutBackoff, then given up on with a warning (quisora_backchannel_logout_failed_total). Only failures are written
+// to disk, so a burst of logouts that succeed costs no disk writes.
 const (
 	bcWorkersMax   = 32
 	bcQueueMax     = 10_000
 	bcShutdownWait = 10 * time.Second
+	logoutQueueMax = 10_000
 )
+
+// logoutBackoff are the delays before each retry of a failed back-channel logout, the first after the attempt made
+// at once.
+var logoutBackoff = []time.Duration{5 * time.Second, 30 * time.Second, 5 * time.Minute, 15 * time.Minute, time.Hour}
+
+// LogoutRetry is a back-channel logout waiting in the retry queue: the client is read again for each attempt (one
+// since disabled, deleted, or without a back-channel URI any more is not told).
+type LogoutRetry struct {
+	ClientID string `json:"c"`
+	Sub      string `json:"s"`
+	SID      string `json:"i,omitempty"`
+}
+
+// OpenLogoutQueue opens the retry queue of failed back-channel logouts in dir (see dispatch). Without one a failed
+// logout is logged and not retried.
+func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error) {
+	q, err := queue.Open(dir, queue.Options[LogoutRetry]{
+		Name: "back-channel logout queue", Log: p.log, Sealer: p.svc.Sealer, Binding: "oidc/logout-queue",
+		Backoff: logoutBackoff, Max: logoutQueueMax,
+		Deliver: func(ctx context.Context, r LogoutRetry) error {
+			ce, err := p.client(ctx, r.ClientID)
+			if errors.Is(err, store.ErrNotFound) || err == nil && (!ce.c.Enabled || ce.c.BackchannelURI == "") {
+				return nil // nobody to tell any more
+			} else if err != nil {
+				return err
+			}
+			return p.sendLogoutToken(bcTarget{client: ce.c, sub: r.Sub, sid: r.SID})
+		},
+		Failed: func(r LogoutRetry, attempt int, retry time.Duration, err error) {
+			if retry == 0 {
+				metrics.BackchannelFailed.Inc()
+				p.log.Warn("oidc: back-channel logout failed, giving up", "client", r.ClientID, "attempts", attempt+1, "error", err)
+			}
+		}})
+	if err != nil {
+		return nil, err
+	}
+	p.bcRetry = q
+	return q, nil
+}
 
 func (p *Provider) dispatch(targets []bcTarget) {
 	dropped := 0
@@ -384,7 +431,7 @@ func (p *Provider) bcWorker() {
 		select {
 		case t := <-p.bcQueue:
 			if err := p.sendLogoutToken(t); err != nil {
-				p.log.Warn("oidc: back-channel logout failed", "client", t.client.ID, "uri", t.client.BackchannelURI, "error", err)
+				p.retryLogout(t, err)
 			}
 			p.bcWG.Done()
 		default:
@@ -397,6 +444,19 @@ func (p *Provider) bcWorker() {
 			p.bcMu.Unlock()
 		}
 	}
+}
+
+// retryLogout queues a logout that failed for retrying (see dispatch).
+func (p *Provider) retryLogout(t bcTarget, err error) {
+	if p.bcRetry != nil {
+		qerr := p.bcRetry.Add(LogoutRetry{ClientID: t.client.ID, Sub: t.sub, SID: t.sid}, logoutBackoff[0], 1)
+		if qerr == nil {
+			return
+		}
+		err = fmt.Errorf("%w (not queued for retrying: %v)", err, qerr)
+	}
+	metrics.BackchannelFailed.Inc()
+	p.log.Warn("oidc: back-channel logout failed", "client", t.client.ID, "uri", t.client.BackchannelURI, "error", err)
 }
 
 func (p *Provider) sendLogoutToken(t bcTarget) error {

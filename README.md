@@ -44,9 +44,9 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 **Every node's clock must be synchronised with NTP** (chrony, systemd-timesyncd, or the cloud provider's time
 service), keeping the nodes within milliseconds of each other. SOC 2 requires it anyway (consistent audit
 timestamps), and Quisora relies on it: record versions come from the writers' clocks, and a cluster stays consistent
-across restarts because no node's clock is more than 5 seconds off (`store.MaxSkew`). A node whose clock is further
-out is refused as a voter in quorum writes, has its versions logged and counted (`clock_skewed`) and not followed,
-and should be treated as broken until its clock is fixed. Details: [docs/REPLICATION.md](docs/REPLICATION.md#clocks).
+across restarts because no node's clock is more than 5 seconds off (`store.MaxSkew`). Every node compares its clock
+with the others' every few seconds: one more than 5 seconds off refuses to serve, and logs why, until its clock is
+fixed (`clock_offset_ms` in `/readyz` shows the offset). Details: [docs/REPLICATION.md](docs/REPLICATION.md#clocks).
 
 ## Install
 
@@ -128,7 +128,8 @@ victorialogs_url = "http://victorialogs:9428"
 victorialogs_spool_max_mb = 256           # the spool is <data_dir>/auditspool, one per node
 ```
 
-Details: [docs/RUNNING.md](docs/RUNNING.md#audit-log).
+Details: [docs/RUNNING.md](docs/RUNNING.md#audit-log). Controls, evidence and the VictoriaLogs set-up for SOC 2 (vmauth,
+retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
 
 ## Development
 

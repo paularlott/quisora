@@ -223,7 +223,7 @@ func (m *Module) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	result, frag := "invalid", "profile"
 	if m.allowed(r, "link", known{any: true}) {
-		if l, u, err := m.s.Svc.RedeemLink(ctx, r.URL.Query().Get("token"), service.LinkVerify); err == nil {
+		if l, u, err := m.s.Svc.RedeemLink(ctx, r.URL.Query().Get("token")); err == nil {
 			// The link names the address it was mailed to: the primary one, or a linked one (verified in place).
 			// An address that has since been removed or replaced verifies nothing.
 			if l.Email == "" {

@@ -50,11 +50,11 @@ import (
 // Backup format versions. version is what this build writes; a restore reads every version from minVersion up,
 // bringing each record line of an older backup up to this build's through upgrades[v] (from v to v+1, in order),
 // so a backup made before an upgrade restores after it. When the format changes: raise version, add the upgrade
-// from the previous one, and keep minVersion at the previous release's version (or lower). Nothing has been released
-// yet, so there are none: minVersion is version.
+// from the previous one, and keep minVersion at the previous release's version (or lower). Version 1 is the first
+// release's; until that release the format changes in place, so there are no upgrades yet: minVersion is version.
 const (
 	minVersion = version
-	version    = 4
+	version    = 1
 )
 
 // upgrades[v] brings a record line of a version v backup to version v+1.

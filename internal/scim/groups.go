@@ -401,7 +401,7 @@ func (rq *request) listGroups() {
 			case "displayname":
 				if cn.op == "eq" {
 					unique = model.GroupNameKey(rq.org.ID, s)
-				} else if cn.op == "co" || cn.op == "sw" || cn.op == "ew" {
+				} else if cn.op == "sw" { // the store's search is a prefix match: it narrows "sw" only (the filter decides)
 					q.Search = s
 				}
 			case "externalid":

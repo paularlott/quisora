@@ -82,6 +82,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var lastResult service.ResealResult
 	var lastOthers string
 	var lastRing string
+	var sweep service.Sweep
 	every := housekeepingEvery // read once: the closure below runs on its own goroutine
 	a.background(func() {
 		a.Node.RunHousekeeping(ctx, every, func(ctx context.Context) {
@@ -148,6 +149,13 @@ func modules(ctx context.Context, a *App) []web.Module {
 				a.Log.Error("finishing group changes", "error", err)
 			} else if n > 0 {
 				a.Log.Info("group changes left unfinished by their writer were finished", "count", n)
+			}
+			// Records whose owner is gone (left by a removal that failed part-way) are found a batch a minute: a pass over
+			// every record of the kinds that do not expire takes about a day at five million users.
+			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); err != nil {
+				a.Log.Error("orphan sweep", "error", err)
+			} else if n > 0 {
+				a.Log.Info("removed records whose owner is gone", "count", n)
 			}
 			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
 			if time.Since(lastSelfReg) >= time.Hour {

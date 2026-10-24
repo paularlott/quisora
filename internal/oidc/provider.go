@@ -20,6 +20,7 @@ import (
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -79,10 +80,11 @@ type Provider struct {
 	jwksMu    sync.Mutex
 	remoteKey map[string]*remoteJWKS
 
-	bcWG      sync.WaitGroup // back-channel logouts queued or being sent
-	bcQueue   chan bcTarget  // waiting to be sent (bcQueueMax)
-	bcMu      sync.Mutex     // guards bcWorkers
-	bcWorkers int            // senders running (at most bcWorkersMax; none while nothing waits)
+	bcWG      sync.WaitGroup            // back-channel logouts queued or being sent
+	bcQueue   chan bcTarget             // waiting to be sent (bcQueueMax)
+	bcMu      sync.Mutex                // guards bcWorkers
+	bcWorkers int                       // senders running (at most bcWorkersMax; none while nothing waits)
+	bcRetry   *queue.Queue[LogoutRetry] // failed logouts waiting to be tried again (OpenLogoutQueue; nil: none)
 
 	discovery []byte
 	issuer    string

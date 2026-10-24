@@ -107,11 +107,12 @@ func (s *Service) present(a *Actor, users []*model.User) []*model.User {
 	return out
 }
 
-// searchLeaks returns the users that a listing's search finds (with its filters) but that a sees only as directory
-// entries and that match it other than by name: their email address, username or tags would be confirmed by the
-// match, so they are left out of the results.
+// searchLeaks returns the users that a listing's search or tag filter finds (with its other filters) but that a sees
+// only as directory entries and that match it other than by name: their email address, username or tags would be
+// confirmed by the match, so they are left out of the results.
 func (s *Service) searchLeaks(ctx context.Context, a *Actor, q store.ListQuery) (map[string]bool, error) {
-	if q.Search == "" || seesSuperAdmins(a) || viewerRank(a) >= model.RoleAdmin.Rank() {
+	byTag := slices.ContainsFunc(q.Filters, func(f store.Filter) bool { return f.Field == "tags" })
+	if q.Search == "" && !byTag || seesSuperAdmins(a) || viewerRank(a) >= model.RoleAdmin.Rank() {
 		return nil, nil // nobody is a directory entry to them
 	}
 	aq := q
@@ -124,7 +125,10 @@ func (s *Service) searchLeaks(ctx context.Context, a *Actor, q store.ListQuery) 
 	needle := strings.ToLower(strings.TrimSpace(q.Search))
 	var leaks map[string]bool
 	for _, u := range above {
-		if s.Visibility(a, u) == Directory && !strings.Contains(strings.ToLower(u.FullName()), needle) {
+		// matched by a field the directory entry does not show (the username, the address, a tag)?
+		shown := !byTag && (strings.HasPrefix(strings.ToLower(u.FullName()), needle) ||
+			strings.HasPrefix(strings.ToLower(u.FamilyName), needle))
+		if s.Visibility(a, u) == Directory && !shown {
 			if leaks == nil {
 				leaks = map[string]bool{}
 			}

@@ -144,6 +144,8 @@ var (
 		"action", "outcome")
 	AuditUndelivered = Default.NewCounter("quisora_audit_undelivered_total",
 		"Audit events VictoriaLogs will never receive (logged in full as audit.undelivered).")
+	BackchannelFailed = Default.NewCounter("quisora_backchannel_logout_failed_total",
+		"Back-channel logouts given up on: the relying party did not take them after every retry (or none could be queued).")
 )
 
 // Write writes every metric in the Prometheus text exposition format (0.0.4).

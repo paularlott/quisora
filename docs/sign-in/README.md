@@ -25,8 +25,10 @@ tenant can narrow them for its applications, never widen them:
   [More](providers.md).
 
 New users get an **invitation link** (shown to the administrator, or emailed when the server sends email), valid for 7
-days and once, with which they set a password, create a passkey, or both. An accepted invitation replaces every way
-the user signed in before, so it is also how someone who lost everything gets back in.
+days and once, with which they set a password, create a passkey, or both. A user has one invitation at a time: a new
+one replaces the last. The link keeps working until the set-up completes, so a failure part-way (a network error, a
+password the policy refuses) is simply tried again. An accepted invitation replaces every way the user signed in
+before, so it is also how someone who lost everything gets back in.
 
 ## Second factors
 

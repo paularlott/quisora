@@ -1577,9 +1577,6 @@ func TestTagsAPI(t *testing.T) {
 	if r = ad.get(AU + "?tag=" + url.QueryEscape("dept:finance") + "&limit=1"); r.total() != 1 || len(r.items()) != 1 {
 		t.Fatalf("namespaced tag: %s", r.Raw)
 	}
-	if r = ad.get(AU + "?q=dept:fin"); r.total() != 1 {
-		t.Fatalf("search by tag: %s", r.Raw)
-	}
 	if r = ad.get(AU + "?tag=sales&offset=1"); r.total() != 1 || len(r.items()) != 0 {
 		t.Fatalf("offset past the matches: %s", r.Raw)
 	}
@@ -1613,8 +1610,8 @@ func TestTagsAPI(t *testing.T) {
 	for _, it := range r.items() {
 		strs(it.(map[string]any)) // never null
 	}
-	if ad.get(A+"/groups?q=only").total() != 1 {
-		t.Fatal("group search by tag")
+	if ad.get(A+"/groups?tag=only").total() != 1 || ad.get(A+"/groups?tag=onl").total() != 0 {
+		t.Fatal("group tag filter")
 	}
 }
 

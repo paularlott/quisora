@@ -53,7 +53,7 @@ func TestInviteThroughRunningServer(t *testing.T) {
 	if _, _, err := a.Svc.PeekLink(ctx, tok, service.LinkInvite); err != nil {
 		t.Fatalf("break-glass link does not open for the disabled account: %v", err)
 	}
-	if _, u, err := a.Svc.RedeemLink(ctx, tok, service.LinkInvite); err != nil || !u.Enabled(time.Now()) {
+	if _, u, err := a.Svc.UseSignInLink(ctx, tok, service.LinkInvite, ""); err != nil || !u.Enabled(time.Now()) {
 		t.Fatalf("redeeming did not enable the account: %v", err)
 	}
 

@@ -471,10 +471,12 @@ func (n *Node) fetchPages(ctx context.Context, mb *member, cur cursor, out chan<
 		req := feedReq{FeedID: cur.Feed, Since: cur.Seq, Limit: n.opt.PageSize, Fresh: n.bootstrap.Load()}
 		var resp feedResp
 		pg := feedPage{}
+		sent := time.Now()
 		if err := n.gc.SendToWithResponse(mb.node, msgFeed, &req, &resp); err != nil {
 			pg.err = err
 		} else {
 			pg.resp = resp
+			n.clockReading(mb.id, sent, time.Now(), resp.Now)
 		}
 		select {
 		case out <- pg:
@@ -617,8 +619,16 @@ func (n *Node) syncPeer(mb *member, p *peerState) error {
 	return n.ctx.Err()
 }
 
-// handleFeed serves a page of the local change feed.
+// handleFeed serves a page of the local change feed, with this node's time (feedResp.Now) on every reply.
 func (n *Node) handleFeed(from *gossip.Node, pkt *gossip.Packet) (any, error) {
+	resp, err := n.feedPage(from, pkt)
+	if resp != nil {
+		resp.Now = time.Now().UnixNano()
+	}
+	return resp, err
+}
+
+func (n *Node) feedPage(from *gossip.Node, pkt *gossip.Packet) (*feedResp, error) {
 	var req feedReq
 	if err := pkt.Unmarshal(&req); err != nil {
 		return nil, err

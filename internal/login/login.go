@@ -45,6 +45,7 @@ import (
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/upstream"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -444,11 +445,13 @@ func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bo
 }
 
 // ticketUser loads the user and organization of a ticket's sign-in, as they are now, if the ticket still binds to
-// them (ticketCurrent). The user is read afresh here, so a step that commits a change to it (setting a factor) does
+// them (ticketCurrent). The user is read afresh here, from a quorum's copies (a step that only checks a code writes
+// nothing to the user, so no compare-and-swap would catch a password change this node has not received yet), so a
+// step that commits a change to it (setting a factor) does
 // so with a compare-and-swap on this very version: a change made between this read and that write — another
 // completion of the same sign-in, the owner setting up a factor — makes the write stale, and the step refuses.
 func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, bool) {
-	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
+	u, err := m.s.Svc.FreshUser(ctx, t.UserID)
 	if err != nil || !m.ticketCurrent(ctx, t, u) {
 		return nil, nil, false
 	}
@@ -546,8 +549,10 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 				m.s.Log.Warn("session upgrade failed; starting a new session", "error", err)
 			}
 		}
-		if !upgraded {
-			_ = m.s.Sessions.Delete(ctx, old.ID) // another user (or no upgrade possible): the old session ends
+		if !upgraded { // another user (or no upgrade possible): the old session ends, or the sign-in fails
+			if err := m.s.Sessions.Delete(ctx, old.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+				return "", err
+			}
 		}
 	}
 	if !upgraded {

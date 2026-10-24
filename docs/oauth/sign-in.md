@@ -208,7 +208,10 @@ redirect URI) with your `state`.
 
 **Back-channel logout.** Give a client a back-channel logout URI and Quisora posts a signed `logout_token` (with `sid`)
 to it whenever one of its users' sessions ends: sign-out, a session revoked, a password reset, an account disabled
-or deleted, an emergency sign-out. The application ends its own session for that `sid` or `sub`.
+or deleted, an emergency sign-out. The application ends its own session for that `sid` or `sub`. A logout your
+application does not take (unreachable, or answering with an error) is retried after 5 s, 30 s, 5 min, 15 min and
+1 h, then given up on and logged; the retries wait on disk, so a restart does not lose them. Answer quickly and
+idempotently: the same logout can arrive twice.
 
 ## Tokens for an API (resource indicators)
 

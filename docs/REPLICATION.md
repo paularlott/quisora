@@ -8,7 +8,7 @@ rule `KeepsUnique`) and the storage backends. The shared-database mode (no gossi
 
 **Pre-release data format.** Quisora has not been released: there is no migration from, and no compatibility with,
 data written by earlier builds. A store written by an earlier build is refused when it is opened (BadgerDB and Valkey
-carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 4,
+carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 1 (as this build writes them),
 and a `cluster-state.json` must name its store (`self`). **Wipe and start clean** (restore from a backup made by this
 build if needed).
 
@@ -16,7 +16,8 @@ build if needed).
 
 1. **A confirmed write is never lost to a concurrent or stale write.** Security-sensitive records (users and their
    sign-in records, passkeys, API tokens, OAuth clients, upstream providers, organizations and their settings,
-   tenants, tenant access, groups and their memberships, cluster locks) are written with a **quorum compare-and-swap**: a write
+   tenants, tenant access, groups and their memberships, refresh grants, invitation and reset links, single-use values
+   seen, cluster locks) are written with a **quorum compare-and-swap**: a write
    based on a copy that is no longer the newest is refused by the majority that holds the newer one, and of two
    concurrent writes from the same copy at most one takes effect anywhere.
 2. **A deletion is never undone by a write that had not seen it.** Only an explicit re-creation by a writer that had
@@ -114,7 +115,8 @@ separately bootstrapped cluster are refused by comparing the records' own creati
 ## Quorum compare-and-swap
 
 Writes of the kinds listed in `model.QuorumCAS` (user, sign-in, passkey, API token, client, provider, organization, group,
-tenant, tenant access, group membership, lock, refresh grant, replay record) are two-phase commits validated by a majority
+tenant, tenant access, group membership, lock, refresh grant, replay record, invitation and reset link) are two-phase
+commits validated by a majority
 (`internal/cluster/cas.go`). Nothing is applied before a quorum has granted the write, so a write that fails in
 prepare has no effect anywhere and there is no compensation step to race with.
 
@@ -122,7 +124,7 @@ prepare has no effect anywhere and there is no compensation step to race with.
 
 | message | type | content | answer |
 |---|---|---|---|
-| prepare | `UserMsg+6`, request/response | `prepareReq{Op, Rec, Mode, BaseEpoch, BaseVersion}` | `prepareResp{St, Floor, Epoch, Cur}` |
+| prepare | `UserMsg+6`, request/response | `prepareReq{Op, Rec, Mode, BaseEpoch, BaseVersion}` | `prepareResp{St, Floor, Cur}` |
 | commit | `UserMsg+7`, request/response | `commitReq{Op, Rec}` | `commitResp{St}` |
 | abort | `UserMsg+8`, one way | `abortReq{Op, Version}` | — |
 | quorum read | `UserMsg+9`, request/response | `readReq{Kind, IDs}` | `readResp{NotReady, Failed, Recs}` |
@@ -144,10 +146,9 @@ caller read).
      live copy. It sends its copy back: the writer applies it (read repair), so a retry from fresh data works at once;
    - **deleted** for a live write onto a tombstone of a later generation (a deletion the writer had not seen);
    - **low** when the version does not exceed what it holds or has granted for the record (its high-water mark, or
-     its floor): the writer witnesses that value (bounded by `store.MaxSkew`) and retries with a new stamp. Also
-     low (with `Epoch`) for a live write onto a record it granted a deletion of, when the write's generation is below
-     that deletion's version: the writer retries with that generation, so it outranks the deletion should the
-     deletion be in effect anywhere;
+     its floor): the writer moves its clock past that value — up to 11 s ahead of its own clock (the 10 s a voter
+     may grant ahead of its clock, plus a second for NTP); further, the write fails as a clock problem — and retries
+     with a new stamp;
    - **busy** when another write holds an intent on the record;
    - **not ready** when it is copying, catching up, out of date or misconfigured (it takes no part);
    - otherwise it **grants**: it records an intent on the record (exclusive, expiring after 5 s) and raises its
@@ -188,8 +189,14 @@ into a per-node floor). A restart, however abrupt, is made safe by the clocks, w
 voter that starts sets its floor 10 s past its clock and takes part in no quorum write for 11 s. Every version it
 granted before the restart is below that floor, so every write it grants afterwards outranks every write — or
 deletion — it granted before, whether or not that one was applied anywhere. Its peers form the quorum meanwhile, and
-the node reports not ready (`/readyz`) until the pause is over, so no traffic reaches it before it can vote; a whole
-cluster started at once becomes ready, and accepts quorum writes, 11 s after it starts.
+the node reports not ready (`/readyz`) until the pause is over, so no traffic reaches it before it can vote.
+
+A **whole cluster started at once** (every node restarted together) accepts no quorum write for its first 11 s: no
+voter votes yet, and a writer retries for 6 s before it gives up. Load balancers that route on `/readyz` send nothing
+until then. A client that reaches a node directly in that window gets 503 `temporarily_unavailable` for anything
+that writes a quorum kind — a sign-in (its sign-in record), a code exchange or rotating refresh (refresh grants), a
+client assertion or DPoP proof (replay records), an administrative change — and retries. Restart nodes one at a time
+to avoid the window altogether.
 
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one says so
 (`Failed`) and is not counted, rather than answering as if it held none.
@@ -263,12 +270,15 @@ is refused (`ErrStale`, HTTP 412 with `If-Match`). A deleted user's memberships 
 Refresh grants are quorum writes because rotating a refresh token advances the grant's counter: a node that had not
 yet received the advance must not accept the old token. Replay records (`model.Replay`, `service.UseOnce`) hold the
 single-use values seen — client assertion and DPoP proof `jti`s — until they expire, so a value accepted once is
-refused on every node, whichever nodes stop, restart or leave meanwhile.
+refused on every node, whichever nodes stop, restart or leave meanwhile. Invitation and reset links are quorum
+writes too, and an account has at most one of each (a new one replaces the record). One is used up by the commit
+of the change it makes, a quorum compare-and-swap of the user record that moves the account's security generation
+on (`service.UseSignInLink`): a link presented to two nodes at once is used once, and a failure before the commit
+leaves it usable.
 
 ## Other writes
 
-Records of other kinds (sessions, upstream identities, groups, signing keys, invitation and reset
-links, audit entries) are applied locally, broadcast, and replicated by anti-entropy. Security-relevant ones are
+Records of other kinds (sessions, upstream identities, signing keys, audit entries) are applied locally, broadcast, and replicated by anti-entropy. Security-relevant ones are
 **durable** (`store.WithDurable`): the writer pushes the record to every alive peer and waits until enough peers to
 make a majority with it **have applied exactly that version**. A peer that holds something newer does not apply it
 and answers "superseded": that is not an acknowledgement, and it is counted in `refused`. A peer that has not caught
@@ -379,11 +389,27 @@ Versions come from the writers' clocks; keep every node's clock synchronised (NT
   apart; a node further out is broken, and its quorum writes fail until its clock is fixed.
 - Deletions of replicated kinds are safe under any skew (generations), and so are quorum writes and deletions (voters
   force versions above what they hold, within the 10 s bound). Between concurrent upserts the later commit wins.
+- **Every node checks its clock against the others'** (`internal/cluster/clock.go`). Each change-feed reply carries
+  the responder's time; the asker reads its offset from each peer as NTP does (against the midpoint of the request)
+  and keeps each peer's latest reading in memory, nothing on disk. If its clock is more than 5 s from the **median**
+  of the readings of the last 30 s, the node refuses to serve (not ready, no votes, no writes, no tokens) and logs
+  why; it serves again once it is within 2.5 s. One peer with a bad clock is outvoted by the median and stops only
+  itself. Feeds are pulled from every peer every 5 s, so a node whose time synchronisation fails while it runs is
+  caught within seconds, and a restarting node is checked during catch-up, before it votes. `/readyz` reports the
+  offset (`clock_offset_ms`).
+- A restarting voter also takes its start floor from the cluster's time: until it votes, the floor it starts with
+  (10 s past its clock at start) is moved by the measured offset, to 10 s past the other nodes' clocks at that moment. So a clock stepped back across a restart (a VM restored from a snapshot, a manual
+  correction) cannot let it grant a version below one it granted before; and stepped back by more than 5 s, the node
+  refuses to serve at all until it is fixed.
+- In a two-node cluster each node has only the other to compare with: if they disagree by more than 5 s, both refuse
+  (quorum writes would fail between them anyway). If every node's clock is wrong by the same amount (a whole cluster
+  restored from one snapshot), they agree, and writes of records stored with later versions fail as stale until the
+  clocks catch up.
 
 ## Cluster status
 
 `/readyz` (unauthenticated) reports, ready or not, `{"status": "ready" | "unavailable", "cluster": {"size", "quorum",
-"alive", "unconfirmed", "refused", "clock_skewed", "skew_refused"}}` — counts only; the reason for not being ready
+"alive", "unconfirmed", "refused", "clock_skewed", "skew_refused", "clock_offset_ms"}}` — counts only; the reason for not being ready
 stays in the log. `GET /api/cluster` (super administrators) returns the full status (node id, members, leader,
 ready, writable, catching up, sync point, forced start), and the console's organization settings page shows it to
 super administrators. The Docker `HEALTHCHECK` (`quisora healthcheck`) is a **liveness** probe (`/healthz`): a node that
@@ -503,8 +529,12 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
 - A quorum write whose commit reached fewer than a quorum is reported as failed but may be in effect on some nodes.
 - Intents are in memory: a voter that restarts mid-write no longer holds the intent, and that write's commit fails
   there (its restart pause still forces any later conflicting write above it).
-- A voter's restart is safe only while clocks are synchronised (NTP): a voter granted nothing more than 10 s ahead of
-  its clock, and starts with its floor 10 s past its clock, sitting out 11 s.
+- A voter's restart relies on the clocks: it granted nothing more than 10 s ahead of its clock, and starts with its
+  floor 10 s past the later of its clock and the other nodes' (Clocks), sitting out 11 s. A clock stepped back across
+  the restart is caught by the peer clock check; a whole cluster restarted with every clock stepped back alike is
+  not (nothing then disagrees), but its records' later versions make writes of them fail as stale, not reorder.
+- A whole cluster restarted at once accepts no quorum writes for its first 11 s (see "What success and failure
+  mean").
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
 - The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.

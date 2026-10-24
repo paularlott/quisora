@@ -214,11 +214,12 @@ type Log struct {
 // The layout of server.data_dir: everything a node keeps on disk lives under it, so one setting (one volume, one
 // backup exclusion, one permission check) covers it all. Each node of a cluster has its own.
 const (
-	DirBadgerDB   = "badgerdb"   // storage.backend badgerdb
-	FileSQLite    = "quisora.db" // storage.backend sqlite
-	DirTLS        = "tls"        // the self-signed certificate, when no tls_cert is configured
-	DirMailQueue  = "mailqueue"  // outgoing email waiting for (re)delivery, sealed with the master key
-	DirAuditSpool = "auditspool" // audit events VictoriaLogs has not taken yet
+	DirBadgerDB    = "badgerdb"    // storage.backend badgerdb
+	FileSQLite     = "quisora.db"  // storage.backend sqlite
+	DirTLS         = "tls"         // the self-signed certificate, when no tls_cert is configured
+	DirMailQueue   = "mailqueue"   // outgoing email waiting for (re)delivery, sealed with the master key
+	DirLogoutQueue = "logoutqueue" // back-channel logouts waiting to be retried, sealed with the master key
+	DirAuditSpool  = "auditspool"  // audit events VictoriaLogs has not taken yet
 )
 
 // DataPath is name inside server.data_dir.

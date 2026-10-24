@@ -72,16 +72,10 @@ const (
 // (0) and are refused. A node that sees an incompatible peer drops its messages and refuses to serve (Ready) until
 // the peer is upgraded or gone, as for a cluster.size mismatch.
 //
-// 2: refresh grants are written with a quorum compare-and-swap (model.QuorumCAS); a node of 1 refuses their prepares
-// and writes them without one.
-// 3: groups are written with a quorum compare-and-swap; an abort names the stamp it aborts, a low answer the
-// generation to take, and a quorum read whether a copy could not be read. A node of 2 would refuse group prepares
-// and release a retry's intent with a late abort.
-// 4: voters keep no deletion marks (prepare answers no generation to take).
-// 5: a quorum kind ranks by version alone (store.Head.Rank). Nodes of 4 would order partial writes differently.
+// 1 is the first release's; until that release what nodes exchange changes in place.
 const (
-	compat    = 5
-	minCompat = 5
+	compat    = 1
+	minCompat = 1
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.
@@ -216,6 +210,8 @@ type Node struct {
 	misconfig atomic.Pointer[string] // gossip peers on one database: not while it lasts (sameDatabase)
 	sizeOff   atomic.Pointer[string] // a member advertises another cluster.size: not while it lasts (checkSizes)
 	compatOff atomic.Pointer[string] // a member runs an incompatible build: not while it lasts
+	clockOff  atomic.Pointer[string] // this node's clock is off from the other nodes': not while it lasts (clock.go)
+	clocks    peerClocks             // the latest reading of each peer's clock (clock.go)
 	sameAs    string                 // the peer that caused misconfig (guarded by peersMu)
 	mixed     atomic.Pointer[string] // gossip and non-gossip nodes on one database: not while it lasts (mixedDatabase)
 	foreign   atomic.Pointer[string] // the database belongs to another node id: not while it lasts (checkOwner)
@@ -845,7 +841,7 @@ func (n *Node) trackWritable() {
 // (a user or client disabled, access removed) cannot reach this node and it would keep honouring what was revoked.
 func (n *Node) ServesTokens() bool {
 	if n.misconfig.Load() != nil || n.mixed.Load() != nil || n.foreign.Load() != nil || n.restoredInto.Load() != nil ||
-		n.behind.Load() != nil || n.sizeOff.Load() != nil || n.compatOff.Load() != nil {
+		n.behind.Load() != nil || n.sizeOff.Load() != nil || n.compatOff.Load() != nil || n.clockOff.Load() != nil {
 		return false
 	}
 	if n.gc == nil {
@@ -930,7 +926,7 @@ func (n *Node) Size() int { return int(n.nodes.Load()) }
 // node is neither catching up, out of date nor misconfigured.
 func (n *Node) Writable() bool {
 	if n.misconfig.Load() != nil || n.mixed.Load() != nil || n.foreign.Load() != nil || n.restoredInto.Load() != nil ||
-		n.sizeOff.Load() != nil || n.compatOff.Load() != nil {
+		n.sizeOff.Load() != nil || n.compatOff.Load() != nil || n.clockOff.Load() != nil {
 		return false
 	}
 	if n.gc == nil {
@@ -944,7 +940,7 @@ func (n *Node) Writable() bool {
 // or it is misconfigured.
 func (n *Node) refusal() string {
 	for _, p := range []*atomic.Pointer[string]{&n.behind, &n.misconfig, &n.mixed, &n.foreign, &n.restoredInto,
-		&n.collision, &n.sizeOff, &n.compatOff} {
+		&n.collision, &n.sizeOff, &n.compatOff, &n.clockOff} {
 		if m := p.Load(); m != nil {
 			return *m
 		}
@@ -1036,6 +1032,9 @@ func (n *Node) Ready() (bool, string) {
 	if m := n.compatOff.Load(); m != nil {
 		return false, *m
 	}
+	if m := n.clockOff.Load(); m != nil {
+		return false, *m
+	}
 	if n.gc == nil {
 		if n.lease != nil && !n.lease.reachable() {
 			return false, "the database is not answering"
@@ -1095,6 +1094,9 @@ type Status struct {
 	// SkewRefused counts versions this node's clock refused to follow (store.Witness).
 	ClockSkewed int64 `json:"clock_skewed"`
 	SkewRefused int64 `json:"skew_refused"`
+	// ClockOffsetMs is how far the other nodes' clocks are ahead of this one's (the median of their latest readings,
+	// milliseconds; negative: behind). Omitted until a peer has answered.
+	ClockOffsetMs *int64 `json:"clock_offset_ms,omitempty"`
 	// ClusterKeys are this node's gossip keys (ids), the one that encrypts first (a rotation shows more than one).
 	ClusterKeys []string `json:"cluster_keys,omitempty"`
 	// Nodes is every cluster member this node knows of, as it sees them (replicated clusters only).
@@ -1153,6 +1155,10 @@ func (n *Node) Status() Status {
 		SkewRefused: store.SkewRefused()}
 	if n.gc != nil {
 		s.ClusterKeys = n.ClusterKeyIDs()
+	}
+	if off, ok := n.clockOffset(); ok {
+		ms := off.Milliseconds()
+		s.ClockOffsetMs = &ms
 	}
 	if t := n.lastSync.Load(); t != 0 {
 		s.LastSync = time.Unix(0, t)

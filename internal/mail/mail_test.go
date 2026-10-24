@@ -9,12 +9,9 @@ import (
 	"net"
 	"net/http/httptest"
 	"net/mail"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,7 +23,7 @@ import (
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
-func newMailer(t *testing.T, mut func(*config.Config)) *Mailer {
+func newMailer(t *testing.T, mut func(*config.Config), tr Transport) *Mailer {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Server.PublicURL = "https://quisora.example.test"
@@ -39,7 +36,7 @@ func newMailer(t *testing.T, mut func(*config.Config)) *Mailer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(cfg, logger.NewNullLogger(), sealer, &SMTP{Cfg: cfg.Mail})
+	m, err := New(cfg, logger.NewNullLogger(), sealer, tr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +72,8 @@ func (c *capture) wait(t *testing.T) Message {
 }
 
 func TestTemplatesAndLinks(t *testing.T) {
-	m := newMailer(t, nil)
 	cap := newCapture()
-	m.Transport = cap
+	m := newMailer(t, nil, cap)
 	ctx := context.Background()
 	org, err := m.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: ptr("widgets"), DisplayName: ptr("Widgets")})
 	if err != nil {
@@ -128,10 +124,18 @@ func TestTemplatesAndLinks(t *testing.T) {
 		if tc.purpose == service.LinkVerify && l.Email != "ann@example.com" {
 			t.Fatalf("verification link lost the address: %q", l.Email)
 		}
-		if _, _, err := m.Svc.RedeemLink(ctx, tok, tc.purpose); err != nil {
+		use := func() error {
+			if tc.purpose == service.LinkVerify {
+				_, _, err := m.Svc.RedeemLink(ctx, tok)
+				return err
+			}
+			_, _, err := m.Svc.UseSignInLink(ctx, tok, tc.purpose, "a fresh long passphrase")
+			return err
+		}
+		if err := use(); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := m.Svc.RedeemLink(ctx, tok, tc.purpose); !errors.Is(err, service.ErrLink) {
+		if err := use(); !errors.Is(err, service.ErrLink) {
 			t.Fatal("link reusable")
 		}
 	}
@@ -144,9 +148,8 @@ func TestTemplatesAndLinks(t *testing.T) {
 }
 
 func TestSendInviteLinkAndExpiry(t *testing.T) {
-	m := newMailer(t, nil)
 	cap := newCapture()
-	m.Transport = cap
+	m := newMailer(t, nil, cap)
 	ctx := context.Background()
 	org, _ := m.Svc.PrimaryOrg(ctx)
 	if org == nil {
@@ -182,7 +185,7 @@ func TestSendInviteLinkAndExpiry(t *testing.T) {
 	// No service: link mails are refused rather than sent without a token.
 	bareCfg := config.Default()
 	bareCfg.Server.DataDir = t.TempDir()
-	bare, err := New(bareCfg, logger.NewNullLogger(), m.sealer, &SMTP{Cfg: bareCfg.Mail})
+	bare, err := New(bareCfg, logger.NewNullLogger(), m.Svc.Sealer, &SMTP{Cfg: bareCfg.Mail})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,35 +203,6 @@ func TestHumanTTL(t *testing.T) {
 		if got := humanTTL(d); got != want {
 			t.Errorf("%v: %q want %q", d, got, want)
 		}
-	}
-}
-
-func TestRetryQueue(t *testing.T) {
-	m := newMailer(t, nil)
-	m.Backoff = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
-	var tries atomic.Int32
-	cap := newCapture()
-	m.Transport = TransportFunc(func(ctx context.Context, msg Message) error {
-		if tries.Add(1) < 3 {
-			return errors.New("temporary failure")
-		}
-		return cap.Deliver(ctx, msg)
-	})
-	if err := m.Send(context.Background(), Message{To: "a@example.com", Subject: "s", Text: "t"}); err != nil {
-		t.Fatal(err)
-	}
-	cap.wait(t)
-	if tries.Load() != 3 {
-		t.Fatalf("tries %d", tries.Load())
-	}
-
-	// Gives up after the last backoff.
-	var n atomic.Int32
-	m.Transport = TransportFunc(func(context.Context, Message) error { n.Add(1); return errors.New("down") })
-	_ = m.Send(context.Background(), Message{To: "a@example.com"})
-	time.Sleep(300 * time.Millisecond)
-	if n.Load() != 3 {
-		t.Fatalf("expected 3 attempts then give up, got %d", n.Load())
 	}
 }
 
@@ -396,162 +370,4 @@ func TestSMTPModes(t *testing.T) {
 			t.Fatal("sent in clear although STARTTLS is required")
 		}
 	})
-}
-
-// The queue is on disk: a message not yet delivered when the mailer stops goes out from the next one on the same
-// data directory. The files are sealed (no address or link readable on disk), and one that cannot be opened (sealed
-// under a master key since removed) is dropped rather than retried for ever.
-func TestQueueSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
-	sealer, err := secure.NewSealer(secure.RandomBytes(32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Default()
-	cfg.Server.DataDir = dir
-	m, err := New(cfg, logger.NewNullLogger(), sealer, TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.Backoff = []time.Duration{time.Hour} // the first attempt fails, the retry is far off
-	secret := "https://quisora.example.test/reset?token=s3cr3t"
-	if err := m.Send(context.Background(), Message{To: "ann@example.com", Subject: "Reset", Text: secret}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return queuedAttempts(t, m) == 1 })
-	m.Close()
-
-	files, _ := os.ReadDir(cfg.DataPath(config.DirMailQueue))
-	if len(files) != 1 {
-		t.Fatalf("queue holds %d files", len(files))
-	}
-	raw, _ := os.ReadFile(filepath.Join(cfg.DataPath(config.DirMailQueue), files[0].Name()))
-	if strings.Contains(string(raw), "ann@example.com") || strings.Contains(string(raw), "s3cr3t") {
-		t.Fatal("queued message readable on disk")
-	}
-
-	// The next start delivers it once its retry is due (made due here), and removes the file.
-	q, _ := m.read(files[0].Name())
-	q.Next = time.Time{}
-	if err := m.write(files[0].Name(), q); err != nil {
-		t.Fatal(err)
-	}
-	cap := newCapture()
-	m2, err := newWith(cfg, sealer, cap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m2.Close()
-	if got := cap.wait(t); got.To != "ann@example.com" || got.Text != secret {
-		t.Fatalf("delivered %+v", got)
-	}
-	waitFor(t, func() bool { return m2.Queued() == 0 })
-
-}
-
-// A master key rotation re-seals the queue, so the previous key can go without losing queued mail; a message sealed
-// with a key that is not configured is kept, not dropped.
-func TestQueueSurvivesKeyRotation(t *testing.T) {
-	cfg := config.Default()
-	cfg.Server.DataDir = t.TempDir()
-	oldKey, newKey := secure.RandomBytes(32), secure.RandomBytes(32)
-	oldOnly, _ := secure.NewKeyring(oldKey)
-	down := TransportFunc(func(context.Context, Message) error { return errors.New("smtp down") })
-	m, err := New(cfg, logger.NewNullLogger(), oldOnly, down)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.Backoff = []time.Duration{time.Hour}
-	if err := m.Send(context.Background(), Message{To: "ann@example.com", Subject: "Invite"}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return queuedAttempts(t, m) == 1 })
-	m.Close()
-
-	// Started with the new key only (the old one removed too early): the message is kept.
-	newOnly, _ := secure.NewKeyring(newKey)
-	m2, err := New(cfg, logger.NewNullLogger(), newOnly, down)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := m2.Reseal(); n != 1 || m2.Queued() != 1 {
-		t.Fatalf("unopenable %d, queued %d", n, m2.Queued())
-	}
-	m2.Close()
-
-	// The rotation's keys, the old key as a previous one, re-seal it with the new key, so the old key can go.
-	dir := cfg.DataPath(config.DirMailQueue)
-	rotating, _ := secure.NewKeyring(newKey, oldKey)
-	if n := (&Mailer{dir: dir, sealer: rotating, Log: logger.NewNullLogger()}).Reseal(); n != 0 {
-		t.Fatalf("unopenable during rotation: %d", n)
-	}
-	names, _ := (&Mailer{dir: dir}).files()
-	if q, err := (&Mailer{dir: dir, sealer: newOnly}).read(names[0]); err != nil || q.Msg.To != "ann@example.com" {
-		t.Fatalf("after the re-seal: %v %+v", err, q)
-	}
-}
-
-func newWith(cfg *config.Config, sealer *secure.Sealer, tr Transport) (*Mailer, error) {
-	return New(cfg, logger.NewNullLogger(), sealer, tr)
-}
-
-func queuedAttempts(t *testing.T, m *Mailer) int {
-	names, _ := m.files()
-	if len(names) != 1 {
-		return -1
-	}
-	q, err := m.read(names[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return q.Attempt
-}
-
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func TestQueueFull(t *testing.T) {
-	m := newMailer(t, nil)
-	m.queued.Store(QueueSize)
-	if err := m.Send(context.Background(), Message{To: "a@example.com"}); !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("full queue: %v", err)
-	}
-}
-
-// Messages sent while the worker reads the queue are never lost to it, and a temporary file a crash left behind is
-// cleared at the next start.
-func TestQueueConcurrentSends(t *testing.T) {
-	m := newMailer(t, nil)
-	cap := newCapture()
-	cap.ch = make(chan Message, 200)
-	m.Transport = cap
-	_ = os.WriteFile(filepath.Join(m.dir, ".leftover.mail.tmp"), []byte("x"), 0o600)
-	var wg sync.WaitGroup
-	for i := range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := m.Send(context.Background(), Message{To: "a@example.com", Subject: strconv.Itoa(i)}); err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	wg.Wait()
-	waitFor(t, func() bool { cap.mu.Lock(); defer cap.mu.Unlock(); return len(cap.msgs) == 100 })
-	m2, err := New(m.Cfg, logger.NewNullLogger(), m.sealer, cap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2.Close()
-	if _, err := os.Stat(filepath.Join(m.dir, ".leftover.mail.tmp")); !os.IsNotExist(err) {
-		t.Fatal("a crash's temporary file was not cleared at start")
-	}
 }

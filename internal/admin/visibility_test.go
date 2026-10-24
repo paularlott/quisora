@@ -94,8 +94,8 @@ func TestVisibility(t *testing.T) {
 	if found, _ := rows(mgr, "&tag=vip"); found[boss.ID] != nil || found[pu.ID] == nil {
 		t.Errorf("manager: tag filter: %v", found)
 	}
-	if found, _ := rows(mgr, "&sort=last_login&desc=1"); found[boss.ID] == nil || found[super.ID] != nil {
-		t.Errorf("manager: sorted by last sign-in: %v", found)
+	if found, _ := rows(mgr, "&sort=username&desc=1"); found[boss.ID] == nil || found[super.ID] != nil {
+		t.Errorf("manager: sorted by username: %v", found)
 	}
 	members := mgr.get(api + "/groups/" + g.ID + "/members")
 	want(t, members, 200)

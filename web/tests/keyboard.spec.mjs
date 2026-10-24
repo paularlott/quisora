@@ -785,7 +785,7 @@ test('tags can be edited in the user dialog and saved', async ({ page }) => {
   await dlg.getByRole('button', { name: 'Create user' }).click()
   await page.getByRole('dialog', { name: 'Invitation link' }).waitFor()
   await page.keyboard.press('Escape')
-  await page.getByRole('searchbox', { name: 'Search users' }).fill('a-tag') // the search finds users by tag
+  await page.getByRole('searchbox', { name: 'Search users' }).fill(id) // the search finds users by family name
   const row = page.getByRole('row', { name: new RegExp('Tag ' + id) })
   await expect(row).toBeVisible()
   await expect(row.getByRole('button', { name: /Show users tagged/ })).toHaveText(['a-tag', 'b-tag'])

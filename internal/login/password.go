@@ -443,24 +443,15 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusGone, msgBadLink, "")
 		return
 	}
-	// Validate before redeeming so a too-short password does not burn the link.
-	if err := m.s.Svc.CheckPassword(ctx, u, in.Password); err != nil {
-		web.WriteError(w, err)
-		return
-	}
-	l, u, err := m.s.Svc.RedeemLink(ctx, in.Token, service.LinkReset)
+	// One commit sets the password and uses the link up (with any invitation of the account); a password the
+	// policy refuses, or a failure, leaves the link usable. Every session and refresh grant of the account ends.
+	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password)
 	if err != nil {
-		writeErr(w, http.StatusGone, msgBadLink, "")
-		return
-	}
-	in2 := service.UserInput{Password: &in.Password}
-	if strings.EqualFold(l.Email, u.Email) { // the link went to the address on file, so it is now proven
-		t := true
-		in2.Verified = &t
-	}
-	// Acting as the system (not as the user) so every existing session and refresh grant is ended.
-	if _, err := m.s.Svc.UpdateUser(ctx, service.System, u.ID, in2); err != nil {
-		web.WriteError(w, err)
+		if errors.Is(err, service.ErrLink) {
+			writeErr(w, http.StatusGone, msgBadLink, "")
+		} else {
+			web.WriteError(w, err)
+		}
 		return
 	}
 	m.clearLocks(ctx, u.ID)

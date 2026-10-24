@@ -227,7 +227,7 @@ paths:
           description: sort field
           schema:
             type: string
-            enum: [username, email, name, role, active, created, last_login]
+            enum: [username, email, name, role, active, created]
         - {$ref: "#/components/parameters/Desc"}
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
@@ -1043,6 +1043,11 @@ paths:
         - {$ref: "#/components/parameters/Desc"}
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
+        - name: tag
+          in: query
+          description: only the groups with exactly this tag
+          schema:
+            type: string
       responses:
         "200":
           description: Success
@@ -2754,7 +2759,7 @@ components:
     Q:
       name: q
       in: query
-      description: case-insensitive substring search
+      description: case-insensitive prefix search (a user's username, email, full name or family name; a group's or organization's name)
       schema:
         type: string
     AuditFrom:

@@ -25,7 +25,7 @@ func TestFormatMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	set("1") // a pre-release format older than formatBase
+	set("0") // a pre-release format older than formatBase
 	s.Close()
 	if _, err := open(); err == nil || !strings.Contains(err.Error(), "pre-release") {
 		t.Fatalf("an old pre-release store: %v", err)

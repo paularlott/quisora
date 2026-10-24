@@ -37,6 +37,9 @@ connect_token_file = "/etc/quisora/op-connect-token"
 # service_account_token = "ops_…"         # a service account instead of Connect: needs the 1Password build (below)
 ```
 
+Use `https` (with `ca_file` for a private CA). Plain `http` works, for a store on the same host or a sidecar, but the
+keys then cross the network unencrypted, and `serve` logs a warning naming the setting at every start.
+
 In a KV version 2 mount the API path has `data/` after the mount name: the secret the Vault CLI calls
 `secret/quisora` is `vault://secret/data/quisora#master_key`.
 

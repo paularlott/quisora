@@ -227,8 +227,9 @@ func (u *User) Index() Index {
 		Scope:  u.OrgID,
 		Unique: uq,
 		Fields: map[string]any{
-			"username": u.Username, "email": u.Email, "name": u.FullName(), "external_id": u.ExternalID,
-			"role": string(u.Role), "active": u.Active, "created": u.Created,
+			"username": u.Username, "email": u.Email, "name": u.FullName(), "family_name": u.FamilyName,
+			"external_id": u.ExternalID,
+			"role":        string(u.Role), "active": u.Active, "created": u.Created,
 			"tags": strings.Join(u.Tags, " "), "user_type": u.UserType, "department": u.Work.Department,
 			"manager_id": u.Work.ManagerID, "employee_number": u.Work.EmployeeNumber,
 			"expiring": u.ValidUntil != nil, "valid_until": validUntilField(u.ValidUntil),
@@ -456,7 +457,7 @@ type TenantAccess struct {
 	Roles       []string  `msgpack:"r" json:"roles"`
 	Tags        []string  `msgpack:"tg" json:"tags"`
 	AllClients  bool      `msgpack:"ac" json:"all_clients"`
-	Clients     []string  `msgpack:"c" json:"clients"` // client ids, when AllClients is false
+	Clients     []string  `msgpack:"cl" json:"clients"` // client ids, when AllClients is false
 	Expires     time.Time `msgpack:"e" json:"expires,omitzero"`
 }
 
@@ -683,7 +684,7 @@ type Identity struct {
 	Authority string `msgpack:"au" json:"-"`
 	// Via says how it was linked: "email" (linking by verified email), "provision" (an account created at first
 	// sign-in), "connect" (the user connected it, signed in) or "admin".
-	Via string `msgpack:"v" json:"via,omitempty"`
+	Via string `msgpack:"vi" json:"via,omitempty"`
 	// Refresh is the provider's refresh token from the latest sign-in through it (sealed), when the provider gave
 	// one. While the user has sessions signed in through the provider it is replayed on a schedule: a provider that
 	// refuses it (invalid_grant: the account was removed or blocked there) ends the user's sessions here too.
@@ -927,12 +928,19 @@ type LinkToken struct {
 	// opens only while it is still the account's (service.PeekLink), so a password changed, a factor set up or an
 	// account disabled after the link went out leaves it dead.
 	Gen uint64 `msgpack:"g,omitempty" json:"-"`
+	// TokenHash is the hash of the link's token, by which it is found (LinkTokenKey). An invitation or reset link's
+	// id is its purpose and user (one of each per account: a new one replaces the record, and the token it held no
+	// longer finds it); a verification link's id is its token hash.
+	TokenHash string `msgpack:"th" json:"-"`
 }
+
+// LinkTokenKey is the unique value a link is found by: the hash of its token.
+func LinkTokenKey(hash string) string { return "t/" + hash }
 
 func (l *LinkToken) Kind() Kind { return KindLink }
 func (l *LinkToken) Index() Index {
-	return Index{Scope: l.UserID, Fields: map[string]any{"purpose": l.Purpose, "created": l.Created},
-		Expires: l.Expires}
+	return Index{Scope: l.UserID, Unique: []string{LinkTokenKey(l.TokenHash)},
+		Fields: map[string]any{"purpose": l.Purpose, "created": l.Created}, Expires: l.Expires}
 }
 
 // SignIn holds a user's sign-in stamps, kept apart from the user record (ID is the user's id). A sign-in writes
@@ -959,7 +967,7 @@ func (s *SignIn) Index() Index {
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`
-	Until  time.Time `msgpack:"u" json:"until"`
+	Until  time.Time `msgpack:"ut" json:"until"`
 }
 
 func (l *Lock) Kind() Kind   { return KindLock }

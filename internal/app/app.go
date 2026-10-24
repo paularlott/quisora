@@ -21,6 +21,8 @@ import (
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
+	"github.com/paularlott/quisora/internal/queue"
+	"github.com/paularlott/quisora/internal/secrets"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -43,6 +45,8 @@ type App struct {
 
 	closers []func()
 	mailer  *mail.Mailer // nil without an SMTP server
+	// logoutQueue holds the back-channel logouts to retry (nil without the OIDC provider).
+	logoutQueue *queue.Queue[oidc.LogoutRetry]
 
 	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
 	// cancels their context and waits for them before it closes anything they use.
@@ -73,6 +77,10 @@ func masterKey(c *config.Config) ([]byte, error) {
 // work and waits for it before closing the store.
 func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, error) {
 	a := &App{Cfg: c, Log: log}
+	for _, setting := range secrets.PlainHTTP(c.Secrets) {
+		log.Warn("a secret store is reached over plain http: the keys read from it cross the network unencrypted; "+
+			"use https unless the store is on this host", "setting", setting)
+	}
 	if err := os.MkdirAll(c.Server.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -173,9 +181,18 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.closers = append(a.closers, func() { stop(); a.bg.Wait() })
 	srv.Use(modules(bg, a)...)
 	if a.OIDC != nil {
-		// Back-channel logouts still being delivered finish before the audit writer, the mailer and the store close
-		// (closers run in reverse: after the server has stopped taking requests).
-		a.closers = append(a.closers, a.OIDC.Wait)
+		// Back-channel logouts a relying party did not take are retried from disk, also across restarts.
+		q, err := a.OIDC.OpenLogoutQueue(c.DataPath(config.DirLogoutQueue))
+		if err != nil {
+			a.Close()
+			return nil, err
+		}
+		a.logoutQueue = q
+		metrics.Default.Gauge("quisora_backchannel_logout_queued", "Back-channel logouts waiting to be retried.",
+			nil, metrics.Value(func() float64 { return float64(q.Queued()) }))
+		// Back-channel logouts still being delivered finish (or go to the retry queue) before the queue, the audit
+		// writer, the mailer and the store close (closers run in reverse: after the server has stopped taking requests).
+		a.closers = append(a.closers, q.Close, a.OIDC.Wait)
 	}
 	if err := srv.Start(ctx); err != nil {
 		a.Close()
@@ -297,11 +314,13 @@ type readyzCluster struct {
 	Refused     int64 `json:"refused"`
 	ClockSkewed int64 `json:"clock_skewed"`
 	SkewRefused int64 `json:"skew_refused"`
+	// ClockOffsetMs: the other nodes' clocks against this one's (cluster.Status.ClockOffsetMs).
+	ClockOffsetMs *int64 `json:"clock_offset_ms,omitempty"`
 }
 
 func readyzStatus(st cluster.Status) readyzCluster {
 	return readyzCluster{Size: st.Size, Quorum: st.Quorum, Alive: st.Alive, Unconfirmed: st.Unconfirmed,
-		Refused: st.Refused, ClockSkewed: st.ClockSkewed, SkewRefused: st.SkewRefused}
+		Refused: st.Refused, ClockSkewed: st.ClockSkewed, SkewRefused: st.SkewRefused, ClockOffsetMs: st.ClockOffsetMs}
 }
 
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the

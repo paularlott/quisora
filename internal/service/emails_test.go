@@ -152,7 +152,7 @@ func TestLinkedEmailVerifyAndPrimary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, lu, err := c.svc.RedeemLink(c.ctx, tok, service.LinkVerify)
+	l, lu, err := c.svc.RedeemLink(c.ctx, tok)
 	if err != nil || l.Email != "gh@example.org" {
 		t.Fatalf("redeem: %v %+v", err, l)
 	}

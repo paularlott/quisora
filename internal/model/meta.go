@@ -41,14 +41,15 @@ const (
 // cluster-wide compare-and-swap that a majority of the nodes must confirm before it succeeds (see
 // docs/REPLICATION.md, "Quorum compare-and-swap"), so a concurrent change made on another node from an older copy is
 // refused instead of overwriting it. Refresh grants are among them: rotating a refresh token advances the grant's
-// counter, and a node that had not seen the advance must not accept the old token. Groups and memberships are too: a
+// counter, and a node that had not seen the advance must not accept the old token. Invitation and reset links are
+// redeemed with one: a link is used once, whichever nodes it is presented to at once. Groups and memberships are too: a
 // group's record is the commit point of every change of its members (service.ChangeGroup), and its version is a
 // SCIM ETag that moves with its member list; the membership records are written with a sequence fence that must
 // hold across the cluster.
 func QuorumCAS(k Kind) bool {
 	switch k {
 	case KindUser, KindPasskey, KindAPIToken, KindClient, KindProvider, KindTenant, KindAccess, KindOrg, KindMember,
-		KindGroup, KindSignIn, KindLock, KindGrant, KindReplay:
+		KindGroup, KindSignIn, KindLock, KindGrant, KindReplay, KindLink:
 		return true
 	}
 	return false

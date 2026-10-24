@@ -293,6 +293,20 @@ func (s *Service) StoreRegistration(ctx context.Context, u *model.User, reg *Reg
 		u.SecurityGen--
 		return nil, err
 	}
+	return s.createPasskey(ctx, reg)
+}
+
+// StoreForInvite stores the passkey of an invitation being accepted without moving the account's security
+// generation: the invitation's own commit (service.UseSignInLink) moves it, right after, and until then the link
+// still works, so a failure in between is retried with it (the retry removes this passkey and stores a new one).
+func (s *Service) StoreForInvite(ctx context.Context, u *model.User, reg *Registration) (*model.Passkey, error) {
+	if reg.Passkey.UserID != u.ID {
+		return nil, ErrChallenge
+	}
+	return s.createPasskey(ctx, reg)
+}
+
+func (s *Service) createPasskey(ctx context.Context, reg *Registration) (*model.Passkey, error) {
 	pk := *reg.Passkey
 	if err := s.svc.Passkeys.Create(ctx, &pk); err != nil {
 		if errors.Is(err, store.ErrConflict) {

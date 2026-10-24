@@ -255,18 +255,18 @@ func lexBounds(from, to string) (lo, hi string) {
 func (e *valkeyEngine) Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
 	lo, hi := lexBounds(p.From, p.To)
 	within := func(m string) bool { return (p.From == "" || m >= p.From) && (p.To == "" || m < p.To) }
-	res := e.c.DoMulti(ctx,
-		e.c.B().Zlexcount().Key(e.zkey(bucket)).Min(lo).Max(hi).Build(),
-		e.c.B().Zcount().Key(e.xkey(bucket)).Min("-inf").Max(strconv.FormatInt(nowMs, 10)).Build())
-	n64, err := res[0].AsInt64()
+	x, err := e.c.Do(ctx, e.c.B().Zcount().Key(e.xkey(bucket)).Min("-inf").Max(strconv.FormatInt(nowMs, 10)).Build()).AsInt64()
 	if err != nil {
 		return nil, 0, err
 	}
-	x, err := res[1].AsInt64()
-	if err != nil {
-		return nil, 0, err
+	n := 0 // the members of the range, counted only when the caller wants the total
+	if !p.NoTotal {
+		n64, err := e.c.Do(ctx, e.c.B().Zlexcount().Key(e.zkey(bucket)).Min(lo).Max(hi).Build()).AsInt64()
+		if err != nil {
+			return nil, 0, err
+		}
+		n = int(n64)
 	}
-	n := int(n64)
 	var gone map[string]struct{} // the members of the range to leave out
 	if x > 0 {
 		exp, err := e.c.Do(ctx, e.c.B().Zrangebyscore().Key(e.xkey(bucket)).Min("-inf").Max(strconv.FormatInt(nowMs, 10)).Build()).AsStrSlice()
@@ -303,7 +303,7 @@ func (e *valkeyEngine) Page(ctx context.Context, bucket string, p pageQuery, now
 		}
 	}
 	total := n - len(gone)
-	if total <= 0 || p.Offset >= total {
+	if !p.NoTotal && (total <= 0 || p.Offset >= total) {
 		return []string{}, total, nil
 	}
 	cmd, args := "ZRANGEBYLEX", []string{lo, hi}
@@ -319,7 +319,7 @@ func (e *valkeyEngine) Page(ctx context.Context, bucket string, p pageQuery, now
 	}
 	if skip > 0 || count > 0 {
 		if count <= 0 {
-			count = n
+			count = -1 // the rest of the range
 		}
 		args = append(args, "LIMIT", strconv.Itoa(skip), strconv.Itoa(count))
 	}
