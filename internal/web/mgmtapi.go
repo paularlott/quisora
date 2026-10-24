@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -50,7 +51,7 @@ func (s *Server) BearerLimited(r *http.Request) bool {
 	if s.Eph == nil {
 		return false
 	}
-	n, err := s.Eph.Incr(r.Context(), nsBearer, ClientIP(r), 0, time.Minute)
+	n, err := s.Eph.Incr(r.Context(), nsBearer, RateKeyIP(r), 0, time.Minute)
 	return err != nil || n >= BearerFailuresPerIPMin
 }
 
@@ -59,7 +60,7 @@ func (s *Server) BearerFailed(r *http.Request) {
 	if s.Eph == nil {
 		return
 	}
-	n, err := s.Eph.Incr(r.Context(), nsBearer, ClientIP(r), 1, time.Minute)
+	n, err := s.Eph.Incr(r.Context(), nsBearer, RateKeyIP(r), 1, time.Minute)
 	if err == nil && n == BearerFailuresPerIPMin && s.Log != nil {
 		s.Log.Warn("too many failed bearer-token authentications: refusing the address for a minute", "ip", ClientIP(r),
 			"failures_per_minute", BearerFailuresPerIPMin)
@@ -114,6 +115,10 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				return
 			}
 			a, err := s.Bearer(r.Context(), r, tok)
+			if errors.Is(err, service.ErrUnavailable) { // the store failed, not the caller: not counted
+				WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "The token could not be checked right now; try again shortly."})
+				return
+			}
 			if err != nil || a == nil {
 				s.BearerFailed(r)
 				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)

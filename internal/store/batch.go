@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 )
@@ -29,6 +30,18 @@ var ErrNoSnapshot = errors.New("store: no snapshot available")
 // read through it when available.
 type Snapshotter interface {
 	Snapshot(ctx context.Context) (Reader, error)
+}
+
+// ErrNoDueIndex is returned by ListDue when the backend keeps no due index.
+var ErrNoDueIndex = errors.New("store: no due index")
+
+// DueLister is implemented by backends that index records by when a housekeeping job must look at them (model.Due):
+// the key-value stores, whose filtered queries read a whole kind. A job then reads only the records due, not every
+// record (every user, every minute). The SQL backends answer the job's own query from their indexes and need none.
+type DueLister interface {
+	// ListDue returns up to limit live records of kind due at or before before, earliest first (ErrNoDueIndex: none
+	// kept; use a query).
+	ListDue(ctx context.Context, kind model.Kind, before time.Time, limit int) ([]*Record, error)
 }
 
 // QuorumReader is implemented by the cluster layer's store: Fresh returns the newest copies of records held by a

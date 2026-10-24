@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -112,9 +113,10 @@ func OutboundClient(allowPrivate func() bool, roots *x509.CertPool, log logger.L
 
 // guardWarner logs a warning when the address guard refuses a request, at most once per host per warnEvery.
 type guardWarner struct {
-	base http.RoundTripper
-	log  logger.Logger
-	last sync.Map // host -> time.Time of the last warning
+	base  http.RoundTripper
+	log   logger.Logger
+	last  sync.Map     // host -> time.Time of the last warning
+	swept atomic.Int64 // unix nanos of the last pruning of last
 }
 
 func (g *guardWarner) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -128,6 +130,16 @@ func (g *guardWarner) RoundTrip(r *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 	g.last.Store(r.URL.Host, now)
+	if s := g.swept.Load(); now.UnixNano()-s > int64(warnEvery) && g.swept.CompareAndSwap(s, now.UnixNano()) {
+		// Hosts warned about more than warnEvery ago would be warned about again anyway: forgotten, so made-up
+		// hosts (a client_id metadata URL can name any) do not pile up.
+		g.last.Range(func(k, v any) bool {
+			if now.Sub(v.(time.Time)) >= warnEvery {
+				g.last.Delete(k)
+			}
+			return true
+		})
+	}
 	if de.Private {
 		g.log.Warn("outbound call blocked: the host resolves to a private address and private networks are not allowed; "+
 			"set server.allow_private_networks (QUISORA_ALLOW_PRIVATE_NETWORKS, --allow-private-networks) if it is meant to be reachable",

@@ -48,6 +48,10 @@ func (n *Node) reload(ctx context.Context, apply bool, want int) ReloadReport {
 	if fn == nil {
 		return ReloadReport{Node: n.id, Size: n.Size(), Error: "this node cannot reload its configuration"}
 	}
+	// A SIGHUP and a reload asked by a peer can arrive together: the reloader checks, then changes (the master keys,
+	// the cluster size), so one runs at a time.
+	n.applyMu.Lock()
+	defer n.applyMu.Unlock()
 	r := (*fn)(ctx, apply, want)
 	r.Node = n.id
 	return r

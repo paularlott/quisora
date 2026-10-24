@@ -417,8 +417,15 @@ func (c *tcluster) waitReady(nodes ...*tnode) {
 	})
 }
 
+// The tests write as soon as their nodes are ready: voters take part at once (restartPause has tests of its own).
+func init() { restartPause = 0 }
+
+// dataKind is the kind of the plain data records the tests write (newRec): replicated, and not a quorum kind
+// (model.QuorumCAS), so its writes are local writes pushed to the peers (durable or not).
+const dataKind = model.KindIdentity
+
 func newRec(id, uniq string) *store.Record {
-	r := &store.Record{Kind: model.KindGroup, ID: id, Version: store.Clock.Now(), Scope: "org1",
+	r := &store.Record{Kind: dataKind, ID: id, Version: store.Clock.Now(), Scope: "org1",
 		Fields: map[string]any{"display_name": "group " + id, "created": time.Now().UTC().Truncate(time.Microsecond), "n": int64(7), "b": true},
 		Data:   []byte("data-" + id)}
 	if uniq != "" {
@@ -430,11 +437,11 @@ func newRec(id, uniq string) *store.Record {
 func newID() string { return uuid.Must(uuid.NewV7()).String() }
 
 func has(s store.Store, id string) bool {
-	_, err := s.Get(bg, model.KindGroup, id)
+	_, err := s.Get(bg, dataKind, id)
 	return err == nil
 }
 
 func countAll(s store.Store) int {
-	n, _ := s.Count(bg, model.KindGroup, "")
+	n, _ := s.Count(bg, dataKind, "")
 	return n
 }

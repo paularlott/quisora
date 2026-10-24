@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -222,17 +223,17 @@ func (s *Service) SweepSignOut(ctx context.Context, a *Actor, orgID string, apiT
 			after = page[len(page)-1].ID
 		}
 	}
-	var errs []error
+	var errs sweepErrs
 	for _, id := range orgs {
 		n, err := s.sweepOrg(ctx, id, apiTokens)
 		total.Sessions += n.Sessions
 		total.Grants += n.Grants
 		total.APITokens += n.APITokens
 		if err != nil {
-			errs = append(errs, err)
+			errs.add(err)
 		}
 	}
-	err := errors.Join(errs...)
+	err := errs.err()
 	detail := map[string]string{"sessions": strconv.Itoa(total.Sessions), "grants": strconv.Itoa(total.Grants),
 		"api_tokens": strconv.Itoa(total.APITokens)}
 	if err != nil {
@@ -262,10 +263,10 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 	if err != nil {
 		return n, err
 	}
-	var errs []error
+	var errs sweepErrs
 	tomb := func(k model.Kind, id string) bool {
 		if err := s.Store.Put(Durable(ctx), store.Tombstone(k, id)); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
-			errs = append(errs, err)
+			errs.add(err)
 			return false
 		}
 		return true
@@ -273,12 +274,13 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 	for after := ""; ; {
 		users, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, After: after, Limit: 500})
 		if err != nil {
-			return n, errors.Join(append(errs, err)...)
+			errs.add(err)
+			return n, errs.err()
 		}
 		for _, u := range users {
 			sessions, err := s.Sessions.All(ctx, u.ID)
 			if err != nil {
-				errs = append(errs, err)
+				errs.add(err)
 				continue
 			}
 			var ended []string
@@ -297,7 +299,7 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 			}
 			grants, err := s.Grants.All(ctx, u.ID)
 			if err != nil {
-				errs = append(errs, err)
+				errs.add(err)
 			}
 			for _, g := range grants {
 				if !g.Stamp.Current(sess) && tomb(model.KindGrant, g.ID) {
@@ -307,7 +309,7 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 			if apiTokens {
 				tokens, err := s.APITokens.All(ctx, u.ID)
 				if err != nil {
-					errs = append(errs, err)
+					errs.add(err)
 				}
 				for _, t := range tokens {
 					if !t.Stamp.Current(tok) && tomb(model.KindAPIToken, t.ID) {
@@ -321,7 +323,34 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 		}
 		after = users[len(users)-1].ID
 	}
-	return n, errors.Join(errs...)
+	return n, errs.err()
+}
+
+// sweepErrs counts a sweep's failures and keeps the first few: a store failing every write of a sweep over a
+// million records must not become a million-error message (and audit detail).
+type sweepErrs struct {
+	n     int
+	first []error
+}
+
+func (e *sweepErrs) add(err error) {
+	if err == nil {
+		return
+	}
+	e.n++
+	if len(e.first) < 5 {
+		e.first = append(e.first, err)
+	}
+}
+
+func (e *sweepErrs) err() error {
+	if e.n == 0 {
+		return nil
+	}
+	if e.n > len(e.first) {
+		return fmt.Errorf("%d failures, the first %d: %w", e.n, len(e.first), errors.Join(e.first...))
+	}
+	return errors.Join(e.first...)
 }
 
 // Background runs f on its own goroutine with a context that outlives the request; WaitBackground waits for every

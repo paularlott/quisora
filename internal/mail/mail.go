@@ -152,7 +152,8 @@ func (m *Mailer) Send(_ context.Context, msg Message) error {
 	return nil
 }
 
-// write stores q as name, atomically: a crash leaves the old file or the new one, never part of one.
+// write stores q as name, atomically and durably: a crash or a power loss leaves the old file or the new one, never
+// part of one, and a message accepted for sending is on disk.
 func (m *Mailer) write(name string, q *queued) error {
 	b, err := json.Marshal(q)
 	if err != nil {
@@ -163,10 +164,30 @@ func (m *Mailer) write(name string, q *queued) error {
 
 func (m *Mailer) writeSealed(name, sealed string) error {
 	tmp := filepath.Join(m.dir, "."+name+".tmp")
-	if err := os.WriteFile(tmp, []byte(sealed), 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(m.dir, name))
+	_, err = f.WriteString(sealed)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, filepath.Join(m.dir, name))
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	d, err := os.Open(m.dir) // the new name too
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // Reseal re-seals every queued message with the active master key, and returns how many no configured key opens

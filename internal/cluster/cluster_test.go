@@ -14,7 +14,6 @@ import (
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
-	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
@@ -52,7 +51,7 @@ func TestConvergence(t *testing.T) {
 			return true
 		})
 		// Fields keep their types across the wire.
-		got, err := c.nodes[2].st().Get(bg, model.KindGroup, ids[0])
+		got, err := c.nodes[2].st().Get(bg, dataKind, ids[0])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,12 +68,12 @@ func TestConvergence(t *testing.T) {
 		if err := c.nodes[1].st().Put(bg, upd); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.nodes[2].st().Put(bg, store.Tombstone(model.KindGroup, ids[1])); err != nil {
+		if err := c.nodes[2].st().Put(bg, store.Tombstone(dataKind, ids[1])); err != nil {
 			t.Fatal(err)
 		}
 		waitFor(t, 15*time.Second, "update and delete everywhere", func() bool {
 			for _, tn := range c.nodes {
-				r, err := tn.st().Get(bg, model.KindGroup, ids[0])
+				r, err := tn.st().Get(bg, dataKind, ids[0])
 				if err != nil || string(r.Data) != "changed" || has(tn.st(), ids[1]) {
 					return false
 				}
@@ -111,7 +110,7 @@ func TestUniqueConflictConverges(t *testing.T) {
 		waitFor(t, 15*time.Second, "one holder of the value everywhere, every record kept", func() bool {
 			var winner string
 			for _, tn := range c.nodes {
-				r, err := tn.st().GetByUnique(bg, model.KindGroup, "o|same-name")
+				r, err := tn.st().GetByUnique(bg, dataKind, "o|same-name")
 				if err != nil {
 					return false
 				}
@@ -130,9 +129,9 @@ func TestUniqueConflictConverges(t *testing.T) {
 			t.Fatal("OnConflict never fired")
 		}
 		// The holder is the record created first (lowest Created), the same on every node.
-		w, _ := c.nodes[0].st().GetByUnique(bg, model.KindGroup, "o|same-name")
+		w, _ := c.nodes[0].st().GetByUnique(bg, dataKind, "o|same-name")
 		for _, id := range ids {
-			r, _ := c.nodes[0].st().Get(bg, model.KindGroup, id)
+			r, _ := c.nodes[0].st().Get(bg, dataKind, id)
 			if r == nil {
 				t.Fatalf("record %s was deleted over a unique clash", id)
 			}
@@ -172,7 +171,7 @@ func TestRestartCatchesUpViaFeed(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := c.nodes[1].st().Put(bg, store.Tombstone(model.KindGroup, first)); err != nil {
+		if err := c.nodes[1].st().Put(bg, store.Tombstone(dataKind, first)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -226,7 +225,7 @@ func TestEmptyReplacementReceivesEverything(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		_ = c.nodes[0].st().Put(bg, store.Tombstone(model.KindGroup, ids[0]))
+		_ = c.nodes[0].st().Put(bg, store.Tombstone(dataKind, ids[0]))
 		waitFor(t, 15*time.Second, "replicated", func() bool { return countAll(c.nodes[2].st()) == 59 })
 		stop(c.nodes[2])
 		c.nodes[2] = c.build(2, "", nil) // a new data directory: empty
@@ -384,7 +383,7 @@ func TestOldRecordsMerge(t *testing.T) {
 	if _, err := s.applyReplica(bg, &stale); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := s.Get(bg, model.KindGroup, old.ID); string(r.Data) == "older" {
+	if r, _ := s.Get(bg, dataKind, old.ID); string(r.Data) == "older" {
 		t.Fatal("an older version replaced a newer one")
 	}
 }

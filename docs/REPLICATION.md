@@ -8,7 +8,7 @@ rule `KeepsUnique`) and the storage backends. The shared-database mode (no gossi
 
 **Pre-release data format.** Quisora has not been released: there is no migration from, and no compatibility with,
 data written by earlier builds. A store written by an earlier build is refused when it is opened (BadgerDB and Valkey
-carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 3 or 4,
+carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 4,
 and a `cluster-state.json` must name its store (`self`). **Wipe and start clean** (restore from a backup made by this
 build if needed).
 
@@ -16,7 +16,7 @@ build if needed).
 
 1. **A confirmed write is never lost to a concurrent or stale write.** Security-sensitive records (users and their
    sign-in records, passkeys, API tokens, OAuth clients, upstream providers, organizations and their settings,
-   tenants, tenant access, group memberships, cluster locks) are written with a **quorum compare-and-swap**: a write
+   tenants, tenant access, groups and their memberships, cluster locks) are written with a **quorum compare-and-swap**: a write
    based on a copy that is no longer the newest is refused by the majority that holds the newer one, and of two
    concurrent writes from the same copy at most one takes effect anywhere.
 2. **A deletion is never undone by a write that had not seen it.** Only an explicit re-creation by a writer that had
@@ -103,7 +103,7 @@ separately bootstrapped cluster are refused by comparing the records' own creati
 
 ## Quorum compare-and-swap
 
-Writes of the kinds listed in `model.QuorumCAS` (user, sign-in, passkey, API token, client, provider, organization,
+Writes of the kinds listed in `model.QuorumCAS` (user, sign-in, passkey, API token, client, provider, organization, group,
 tenant, tenant access, group membership, lock, refresh grant, replay record) are two-phase commits validated by a majority
 (`internal/cluster/cas.go`). Nothing is applied before a quorum has granted the write, so a write that fails in
 prepare has no effect anywhere and there is no compensation step to race with.
@@ -172,12 +172,21 @@ caller read).
   version (and, over a partial deletion, a generation at least the deletion's), so the later write ranks above the
   partial one everywhere.
 
-High-water marks live in memory; after a minute they are folded into a per-node floor. What a restart must not lose
-is in `<data-dir>/quorum-voter.json`, written and synced before the grant that needs it: a ceiling 2 s above the
-highest version granted (rewritten about once every 2 s under load), and the deletions granted (kept for the maximum
-downtime). A restarted voter refuses versions up to that ceiling, so a version granted before the restart by a node
-whose clock runs ahead still bounds every later grant. A voter that cannot write the file refuses to grant; one that
-finds it unreadable refuses until it is fixed or removed.
+A voter's high-water marks live in memory; after a minute they are folded into a per-node floor. A restart is made
+safe by the clocks, which must be synchronised ([Clocks](#clocks)), not by the disk: a voter grants no version more
+than 10 s (twice `store.MaxSkew`) ahead of its own clock, and a voter that starts takes part in no quorum write for
+those 10 s, after which its clock, and so its floor, is past every version it granted before the restart. Its peers
+form the quorum meanwhile, and the node reports not ready (`/readyz`) until the pause is over, so no traffic reaches
+it before it can vote; a whole cluster started at once becomes ready, and accepts quorum writes, 10 s after it
+starts.
+
+A deletion a voter granted is remembered (the generation rule above) from the grant until it is applied on that
+voter, normally milliseconds later, so nothing is kept for the ordinary case. Only a deletion whose commit never
+reached the voter (the writer failed mid-commit) is still unapplied after the 5 s intent lifetime: it is then written
+to `<data-dir>/quorum-voter.json`, kept until the deletion reaches the node or for the maximum downtime, and read back
+after a restart. That file is rewritten only when such a mark comes or goes, so quorum writes never wait for the disk.
+A voter that cannot read it takes no part in quorum writes, answering not ready and logging the file, until it is
+repaired or removed.
 
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one says so
 (`Failed`) and is not counted, rather than answering as if it held none.
@@ -312,11 +321,14 @@ data but its cluster state is missing, when its database was replaced (the store
 Versions come from the writers' clocks; keep every node's clock synchronised (NTP).
 
 - A node **refuses to start** when its clock reads before 1 January 2025 (the version clock's epoch).
-- A version read or received is witnessed into the node's clock only when it is at most `store.MaxSkew` (30 s) ahead
+- A version read or received is witnessed into the node's clock only when it is at most `store.MaxSkew` (5 s) ahead
   of the machine's clock (`hlc.Clock.WitnessBounded`); one further ahead is applied by the merge rules but not
   followed (counted as `skew_refused`), so one bad clock cannot drag every node's versions — and age-based cut-offs —
   into the future. A later local write of such a record fails as stale until the clocks agree.
-- Received versions more than 30 s ahead are logged (hourly per origin) and counted (`clock_skewed`).
+- Received versions more than 5 s ahead are logged (hourly per origin) and counted (`clock_skewed`), and a voter
+  refuses to grant a quorum write whose version is more than 10 s ahead of its clock (see "What success and failure
+  mean": that is what makes a voter's restart safe without anything on disk). With NTP the nodes are milliseconds
+  apart; a node further out is broken, and its quorum writes fail until its clock is fixed.
 - Deletions are safe under any skew (generations), and so are quorum writes (voters force versions above what they
   hold). Between concurrent upserts the later commit wins.
 
@@ -442,7 +454,9 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
   from one copy, one fails as stale.
 - A quorum write whose commit reached fewer than a quorum is reported as failed but may be in effect on some nodes.
 - Intents are in memory: a voter that restarts mid-write no longer holds the intent, and that write's commit fails
-  there (its persisted ceiling still forces any later conflicting write above it).
+  there (its restart pause still forces any later conflicting write above it).
+- A voter's restart is safe only while clocks are synchronised (NTP): a voter granted nothing more than 10 s ahead of
+  its clock, and sits out 10 s after it starts.
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
 - The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.

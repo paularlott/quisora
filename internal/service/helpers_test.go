@@ -9,6 +9,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
@@ -24,14 +25,20 @@ type env struct {
 
 func newEnv(t testing.TB) *env {
 	t.Helper()
+	st := memstore.New()
+	t.Cleanup(func() { _ = st.Close() })
+	return newEnvOn(t, st)
+}
+
+// newEnvOn is newEnv over the store st.
+func newEnvOn(t testing.TB, st store.Store) *env {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Limits.PasswordWorkers = 4
 	sealer, err := secure.NewSealer(secure.RandomBytes(32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := memstore.New()
-	t.Cleanup(func() { _ = st.Close() })
 	svc := service.New(cfg, st, sealer)
 	ctx := context.Background()
 	super, _, err := svc.Bootstrap(ctx, "root@example.com")

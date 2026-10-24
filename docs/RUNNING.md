@@ -367,7 +367,9 @@ key = "…"                 # quisora genkey, identical on every node
 - **Each node keeps its id** in its data directory (or set `cluster.node_id`). Keep the data directory with the
   database. A node that finds another node's database, or one shared with another node, refuses to serve. It never
   wipes it.
-- **Clocks** must be synchronised (NTP). Gossip refuses packets more than two minutes off the receiver's clock.
+- **Clocks** must be synchronised (NTP), within milliseconds; more than 5 s apart is a broken node
+  ([Clocks](REPLICATION.md#clocks)). A node that starts takes part in quorum writes, and reports ready, after 10 s. Gossip refuses
+  packets more than two minutes off the receiver's clock.
 
 New cluster:
 
@@ -504,7 +506,9 @@ victorialogs_spool_max_mb = 256          # default 256
 ```
 
 With VictoriaLogs, every event is written to the spool, `<data-dir>/auditspool`, and synced to disk before the action
-that recorded it goes on (events recorded at the same moment share one sync). A separate sender posts the spool to
+that recorded it goes on (events recorded at the same moment share one sync). A disk that does not answer within 2
+seconds does not hold the action up: the event is then also written in full to the structured log
+(`audit.undelivered`), and still spooled once the disk answers. A separate sender posts the spool to
 VictoriaLogs about once a second, and an event leaves the spool only once VictoriaLogs has taken it; what VictoriaLogs
 does not take (unreachable, or answering an error) stays there and is sent when VictoriaLogs answers again, oldest
 first. A shutdown does not wait for VictoriaLogs, and the next start sends what is spooled. So neither an outage of
@@ -673,6 +677,9 @@ error. Watch `quisora_mail_queued`: growing means SMTP is not taking mail.
   writes, refusals and clock skew.
 - `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
+- Short-lived sign-in state (flows, codes, pushed requests, challenges) is held in each node's memory up to
+  `limits.ephemeral_mb` (default 1024 MiB); past it, requests that would add to it get 503 until expiries make room.
+  Rate-limit counters are never refused. With a shared database this state lives in the database instead.
 
 ### Metrics
 
@@ -729,7 +736,16 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
   far outside these (over 256 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
-- Tested at 5,000 organizations × 1,000 users (6M records); lookups and token traffic do not slow down at that size.
+- Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 7.5 GB on disk);
+  lookups and token traffic do not slow down at that size. Memory per node: about 160 MB of Go heap idle and at most
+  450 MB under full load (every scenario at 64 concurrent clients), plus the store's own caches (BadgerDB: about
+  0.5 GB of block, index and memtable memory), plus `limits.ephemeral_mb` at most for short-lived sign-in state (1 GiB
+  by default, a few MB in normal use). Plan 2 GB per node. BadgerDB also maps its files into memory: the operating
+  system shows them as resident (several GB at this size), but they are file pages it can drop at any time, not
+  allocations. Housekeeping never reads a whole collection: the end-date sweep and filtered queries on large kinds
+  use indexes (`model.Due`, `model.Field.Index`).
+- At this size send audit events to VictoriaLogs ([Audit log](#audit-log)): the built-in trail's pages read through
+  every event they search.
 - A new gossip node catches up at ~86,000 records/s.
 - The load test tool reproduces these. It is a development tool, not part of the `quisora` binary: build it with
   `task loadtest` (or `go build -o bin/loadtest ./tools/loadtest`), then use `bin/loadtest seed` and

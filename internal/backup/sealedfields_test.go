@@ -34,10 +34,19 @@ var sealedBy = map[string]struct {
 	"refreshBinding":        {model.KindIdentity, "Refresh"},
 }
 
+// notBackedUp names bindings that seal values only short-lived state holds (KindEphemeral, which backups skip):
+// nothing in a backup needs their key.
+var notBackedUp = map[string]string{
+	"pendingTOTPBinding": "an authenticator-app secret being set up, in a sign-in step or a session's pending slot",
+}
+
 func TestSealedKeysCoversEverySealedField(t *testing.T) {
 	bindings := sealingBindings(t)
 	t.Logf("sealed by %d bindings: %v", len(bindings), bindings)
 	for _, b := range bindings {
+		if _, ok := notBackedUp[b]; ok {
+			continue
+		}
 		want, ok := sealedBy[b]
 		if !ok {
 			t.Errorf("%s seals a field sealedKeys does not know: add it here and a case in sealedKeys (backup.go), "+

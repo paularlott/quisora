@@ -69,7 +69,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	// Sessions signed in through an upstream provider are checked with the provider's refresh token every
 	// session.upstream_check_minutes (leaver detection); the identities due are looked for every few minutes.
 	// Every node reports the master key it seals with (renewed well within service.MasterKeyReportTTL).
-	go a.reportMasterKey(ctx)
+	a.background(func() { a.reportMasterKey(ctx) })
 
 	// Secrets sealed with anything but the active master key (a rotation, or values from before sealed values named
 	// their key) are re-sealed by the leader in passes, but only once every live node seals with the leader's key: a
@@ -82,79 +82,82 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var lastResult service.ResealResult
 	var lastOthers string
 	var lastRing string
-	go a.Node.RunHousekeeping(ctx, housekeepingEvery, func(ctx context.Context) {
-		if ring := strings.Join(a.Svc.Sealer.KeyIDs(), ","); ring != lastRing { // started, or keys reloaded (SIGHUP)
-			lastRing, resealed, resealEvery, lastRemind, lastOthers = ring, false, 0, time.Time{}, ""
-		}
-		if !(resealed && !a.Svc.Sealer.Previous()) && time.Since(lastReseal) >= resealEvery {
-			lastReseal, resealEvery = time.Now(), housekeepingEvery
-			agreed, others, err := a.Svc.MasterKeyAgreed(ctx)
-			switch {
-			case err != nil:
-				a.Log.Error("master key: reading the nodes' keys", "error", err)
-			case !agreed:
-				if o := fmt.Sprint(others); o != lastOthers {
-					lastOthers = o
-					a.Log.Warn("master key rotation: waiting for every node to seal with the same master key as this "+
-						"one before re-sealing (finish the step on every node)", "key", a.Svc.Sealer.ActiveKeyID(),
-						"other_nodes", others)
-				}
-				resealed = false
-			default:
-				lastOthers = ""
-				r, err := a.Svc.ResealSecrets(ctx, 1000)
-				if err != nil {
-					a.Log.Error("master key: re-sealing secrets", "error", err)
-					break
-				}
-				if r.Resealed > 0 || r.Pending > 0 {
-					a.Log.Info("master key: secrets re-sealed with the active key", "key", a.Svc.Sealer.ActiveKeyID(),
-						"resealed", r.Resealed, "left", r.Pending)
-				}
-				if r.Failed > 0 && r.Failed != lastResult.Failed {
-					a.Log.Error("master key: secrets that no configured master key opens (sealed with a key that is "+
-						"not in server.previous_master_keys, or damaged)", "count", r.Failed)
-				}
-				if r.Legacy > 0 && r.Legacy != lastResult.Legacy {
-					a.Log.Warn("master key rotation: refresh grants from an earlier version are converted only when "+
-						"next used; removing the previous master keys ends the rest (their users sign in again)",
-						"grants", r.Legacy)
-				}
-				if r.Resealed == 0 {
-					resealEvery = 10 * housekeepingEvery
-				}
-				lastResult, resealed = r, r.Done()
+	every := housekeepingEvery // read once: the closure below runs on its own goroutine
+	a.background(func() {
+		a.Node.RunHousekeeping(ctx, every, func(ctx context.Context) {
+			if ring := strings.Join(a.Svc.Sealer.KeyIDs(), ","); ring != lastRing { // started, or keys reloaded (SIGHUP)
+				lastRing, resealed, resealEvery, lastRemind, lastOthers = ring, false, 0, time.Time{}, ""
 			}
-		}
-		if resealed && a.Svc.Sealer.Previous() && time.Since(lastRemind) >= time.Hour {
-			lastRemind = time.Now()
-			a.Log.Warn("master key rotation complete: every node seals with the active key and every stored secret is "+
-				"sealed with it; nothing needs the previous keys any more: remove server.previous_master_keys now on "+
-				"every node (keep the old keys only with backups made before the rotation)", "key", a.Svc.Sealer.ActiveKeyID())
-		}
-		if err := op.EnsureKeys(ctx); err != nil {
-			a.Log.Error("signing key rotation", "error", err)
-		}
-		if n, err := a.Svc.ExpireUsers(ctx); err != nil {
-			a.Log.Error("user end dates", "error", err)
-		} else if n > 0 {
-			a.Log.Info("users past their end date disabled", "count", n)
-		}
-		// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
-		if time.Since(lastSelfReg) >= time.Hour {
-			lastSelfReg = time.Now()
-			if n := a.Svc.PurgeSelfRegistered(ctx, time.Now()); n > 0 {
-				a.Log.Info("removed unused self-registered applications", "count", n)
+			if !(resealed && !a.Svc.Sealer.Previous()) && time.Since(lastReseal) >= resealEvery {
+				lastReseal, resealEvery = time.Now(), every
+				agreed, others, err := a.Svc.MasterKeyAgreed(ctx)
+				switch {
+				case err != nil:
+					a.Log.Error("master key: reading the nodes' keys", "error", err)
+				case !agreed:
+					if o := fmt.Sprint(others); o != lastOthers {
+						lastOthers = o
+						a.Log.Warn("master key rotation: waiting for every node to seal with the same master key as this "+
+							"one before re-sealing (finish the step on every node)", "key", a.Svc.Sealer.ActiveKeyID(),
+							"other_nodes", others)
+					}
+					resealed = false
+				default:
+					lastOthers = ""
+					r, err := a.Svc.ResealSecrets(ctx, 1000)
+					if err != nil {
+						a.Log.Error("master key: re-sealing secrets", "error", err)
+						break
+					}
+					if r.Resealed > 0 || r.Pending > 0 {
+						a.Log.Info("master key: secrets re-sealed with the active key", "key", a.Svc.Sealer.ActiveKeyID(),
+							"resealed", r.Resealed, "left", r.Pending)
+					}
+					if r.Failed > 0 && r.Failed != lastResult.Failed {
+						a.Log.Error("master key: secrets that no configured master key opens (sealed with a key that is "+
+							"not in server.previous_master_keys, or damaged)", "count", r.Failed)
+					}
+					if r.Legacy > 0 && r.Legacy != lastResult.Legacy {
+						a.Log.Warn("master key rotation: refresh grants from an earlier version are converted only when "+
+							"next used; removing the previous master keys ends the rest (their users sign in again)",
+							"grants", r.Legacy)
+					}
+					if r.Resealed == 0 {
+						resealEvery = 10 * every
+					}
+					lastResult, resealed = r, r.Done()
+				}
 			}
-		}
-		if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 && time.Since(lastLeaverRun) >= min(every, 5*time.Minute) {
-			lastLeaverRun = time.Now()
-			if r, err := lm.Upstream.CheckSessions(ctx, every); err != nil {
-				a.Log.Error("upstream session check", "error", err)
-			} else if r.Ended > 0 || r.Failed > 0 {
-				a.Log.Info("upstream session check", "checked", r.Checked, "ended", r.Ended, "failed", r.Failed)
+			if resealed && a.Svc.Sealer.Previous() && time.Since(lastRemind) >= time.Hour {
+				lastRemind = time.Now()
+				a.Log.Warn("master key rotation complete: every node seals with the active key and every stored secret is "+
+					"sealed with it; nothing needs the previous keys any more: remove server.previous_master_keys now on "+
+					"every node (keep the old keys only with backups made before the rotation)", "key", a.Svc.Sealer.ActiveKeyID())
 			}
-		}
+			if err := op.EnsureKeys(ctx); err != nil {
+				a.Log.Error("signing key rotation", "error", err)
+			}
+			if n, err := a.Svc.ExpireUsers(ctx); err != nil {
+				a.Log.Error("user end dates", "error", err)
+			} else if n > 0 {
+				a.Log.Info("users past their end date disabled", "count", n)
+			}
+			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
+			if time.Since(lastSelfReg) >= time.Hour {
+				lastSelfReg = time.Now()
+				if n := a.Svc.PurgeSelfRegistered(ctx, time.Now()); n > 0 {
+					a.Log.Info("removed unused self-registered applications", "count", n)
+				}
+			}
+			if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 && time.Since(lastLeaverRun) >= min(every, 5*time.Minute) {
+				lastLeaverRun = time.Now()
+				if r, err := lm.Upstream.CheckSessions(ctx, every); err != nil {
+					a.Log.Error("upstream session check", "error", err)
+				} else if r.Ended > 0 || r.Failed > 0 {
+					a.Log.Info("upstream session check", "checked", r.Checked, "ended", r.Ended, "failed", r.Failed)
+				}
+			}
+		})
 	})
 
 	hub := events.NewHub()

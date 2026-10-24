@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -390,8 +391,11 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 		return nil, nil, ErrBadToken
 	}
 	t, err := s.APITokens.Get(ctx, id)
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil, ErrBadToken // no such token: nobody to record it for (the caller counts the failure)
+	}
+	if err != nil { // not the caller's failure: it must not count against their address
+		return nil, nil, fmt.Errorf("%w: the token could not be checked: %v", ErrUnavailable, err)
 	}
 	// A refusal of a token that exists is audited in its organization: a wrong secret for a real token id, or a
 	// token that still circulates after it was ended, is worth an administrator's attention. Once per token and
@@ -410,6 +414,9 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 		return refuse("ended by an emergency sign-out")
 	}
 	u, err := s.Users.Get(ctx, t.UserID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, nil, fmt.Errorf("%w: the token's owner could not be read: %v", ErrUnavailable, err)
+	}
 	if err != nil || !u.Enabled(time.Now()) {
 		return refuse("the owner is disabled or gone")
 	}

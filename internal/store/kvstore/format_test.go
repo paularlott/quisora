@@ -3,12 +3,14 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // A store at an older format is migrated at open, once, step by step; one from a newer build, or from before
-// formatBase, is refused. (There are no real migrations yet: this test adds two.)
+// formatBase, is refused. (This test adds two migrations after the real ones.)
 func TestFormatMigrations(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -35,7 +37,7 @@ func TestFormatMigrations(t *testing.T) {
 	t.Cleanup(func() { formatMigrations = saved })
 	var ran []string
 	failOnce := true
-	formatMigrations = []formatMigration{
+	formatMigrations = append(slices.Clone(saved), []formatMigration{
 		{"first", func(ctx context.Context, s *Store) error { ran = append(ran, "first"); return nil }},
 		{"second", func(ctx context.Context, s *Store) error {
 			if failOnce {
@@ -45,7 +47,7 @@ func TestFormatMigrations(t *testing.T) {
 			ran = append(ran, "second")
 			return nil
 		}},
-	}
+	}...)
 	s.Close()
 	if _, err := open(); err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("an interrupted migration: %v", err)
@@ -57,7 +59,7 @@ func TestFormatMigrations(t *testing.T) {
 	if strings.Join(ran, ",") != "first,second" {
 		t.Fatalf("migrations run: %v", ran)
 	}
-	if b, _ := s.eng.Get(ctx, metaFormat); string(b) != "4" {
+	if b, _ := s.eng.Get(ctx, metaFormat); string(b) != strconv.Itoa(formatBase+len(saved)+2) {
 		t.Fatalf("format after migrating: %s", b)
 	}
 	s.Close()

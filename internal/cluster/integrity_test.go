@@ -263,7 +263,7 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 	check("minority, within the grace", lone, []try{
 		{"data update", edit, false},
 		{"new data", newRec(newID(), ""), false},
-		{"data deletion", tomb(model.KindGroup, ids[1]), false},
+		{"data deletion", tomb(dataKind, ids[1]), false},
 		{"session", sess("s1"), false},
 		{"session deletion", tomb(model.KindSession, "s1"), false},
 		{"audit entry", audit(), true}, // node-local: each node keeps its own audit events
@@ -280,7 +280,7 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 	c.heal()
 	time.Sleep(2 * time.Second)
 	for i, tn := range c.nodes[:2] {
-		if r, err := tn.st().Get(bg, model.KindGroup, ids[0]); err != nil || string(r.Data) != "data-"+ids[0] {
+		if r, err := tn.st().Get(bg, dataKind, ids[0]); err != nil || string(r.Data) != "data-"+ids[0] {
 			t.Fatalf("node %d: the refused edit arrived (%v)", i, err)
 		}
 		if !has(tn.st(), ids[1]) {
@@ -659,7 +659,7 @@ func TestStrictDurability(t *testing.T) {
 		t.Fatal("an unconfirmed strict create stands")
 	}
 	for i, tn := range c.nodes {
-		if r, err := tn.st().Get(bg, model.KindGroup, kept.ID); err != nil || string(r.Data) != string(kept.Data) {
+		if r, err := tn.st().Get(bg, dataKind, kept.ID); err != nil || string(r.Data) != string(kept.Data) {
 			t.Fatalf("node %d: an unconfirmed strict update stands (%v)", i, err)
 		}
 	}

@@ -228,3 +228,14 @@ func TestCancelSignIn(t *testing.T) {
 		}
 	}
 }
+
+// A pushed request is kept in memory until it is used: one larger than parMaxParams is refused, not kept.
+func TestPushedRequestTooLarge(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	_, ch := pkce()
+	q := authzQuery(cl, ch, url.Values{"x_padding": {strings.Repeat("x", parMaxParams)}})
+	if r := h.push(cl, secret, q); r.status != 400 || r.m["error"] != "invalid_request" {
+		t.Fatalf("oversized push: %d %v", r.status, r.m)
+	}
+}

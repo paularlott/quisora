@@ -266,12 +266,20 @@ func repeated(v url.Values) string {
 	return ""
 }
 
-// authorizePerIPMin bounds the authorization requests that start a sign-in flow per IP address and minute (each holds
+// authorizePerIPMin bounds the authorization requests per IP address and minute (one that starts a sign-in flow holds
 // about 1-2 KB for up to flowTTL). Far above what people signing in behind one address make; behind a proxy, set
 // server.trust_proxy, or every user shares the proxy's address and its budget.
 const authorizePerIPMin = 300
 
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	// Counted first, whatever the request: one that names no real client still costs a store read, and one that does
+	// holds a flow in memory for flowTTL. Nothing is known yet to redirect to, so a refusal is a page.
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > authorizePerIPMin {
+		w.Header().Set("Retry-After", "60")
+		p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-in requests",
+			"Too many sign-in requests came from your network. Wait a minute, then try again.")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		p.message(w, r, http.StatusBadRequest, "Invalid request", "This request could not be read", "")
@@ -351,12 +359,6 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	c, e := p.checkAuthz(r.Context(), q, c, f)
 	if e != nil {
 		p.redirectError(w, r, f, e.code, e.desc)
-		return
-	}
-	// Every request that gets this far holds a flow in memory for flowTTL: a ceiling per address keeps one client from
-	// filling it. Counted only here, so malformed requests (which hold nothing) do not use it up.
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.ClientIP(r), 1, time.Minute); err != nil || n > authorizePerIPMin {
-		p.redirectError(w, r, f, "temporarily_unavailable", "too many sign-in requests from this address; try again in a minute")
 		return
 	}
 	secret, bind := newFlowSecret()

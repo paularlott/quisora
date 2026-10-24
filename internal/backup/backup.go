@@ -19,8 +19,8 @@
 // page by page: every record that existed throughout the backup is in it, records written meanwhile may or may not
 // be.
 //
-// The format has no compatibility with backups made by earlier pre-release builds older than version 3 (they are
-// refused). Version 3 differs only in that its MAC does not cover the trailer.
+// The format has no compatibility with backups made by earlier pre-release builds (version 4; older versions are
+// refused).
 package backup
 
 import (
@@ -50,19 +50,15 @@ import (
 // Backup format versions. version is what this build writes; a restore reads every version from minVersion up,
 // bringing each record line of an older backup up to this build's through upgrades[v] (from v to v+1, in order),
 // so a backup made before an upgrade restores after it. When the format changes: raise version, add the upgrade
-// from the previous one, and keep minVersion at the previous release's version (or lower).
+// from the previous one, and keep minVersion at the previous release's version (or lower). Nothing has been released
+// yet, so there are none: minVersion is version.
 const (
-	minVersion = 3
+	minVersion = version
 	version    = 4
 )
 
 // upgrades[v] brings a record line of a version v backup to version v+1.
-var upgrades = map[int]func(*line) error{
-	3: func(*line) error { return nil }, // record lines are unchanged: version 4 MACs the trailer too (macTrailer)
-}
-
-// trailerMACFrom is the first version whose MAC covers the trailer's count and keys (macTrailer).
-const trailerMACFrom = 4
+var upgrades = map[int]func(*line) error{}
 
 // macTrailer adds the trailer's count and the keys its secrets need to mac: a backup whose trailer was altered to
 // hide a key its secrets need fails the integrity check rather than restoring secrets that cannot be opened.
@@ -413,9 +409,7 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 				return stats, fmt.Errorf("%w: %d records read, the trailer says %d", ErrFormat, stats.Total(), l.Records)
 			}
 			if mac != nil {
-				if h.Version >= trailerMACFrom {
-					macTrailer(mac, l.Records, l.Sealed)
-				}
+				macTrailer(mac, l.Records, l.Sealed)
 				want, err := base64.RawURLEncoding.DecodeString(l.MAC)
 				if err != nil || !hmac.Equal(want, mac.Sum(nil)) {
 					return stats, fmt.Errorf("%w: its integrity check failed (altered, or not made with this master key)", ErrFormat)

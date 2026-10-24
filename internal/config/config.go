@@ -200,6 +200,7 @@ type Limits struct {
 	LockoutAttempts int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
 	LockoutMinutes  int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
 	PasswordWorkers int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs)"`
+	EphemeralMB     int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 }
 
 type Log struct {
@@ -237,7 +238,7 @@ func Default() *Config {
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
-		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15},
+		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024},
 		Log:     Log{Level: "info", Format: "console", Access: true},
 	}
 }

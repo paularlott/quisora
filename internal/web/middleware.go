@@ -44,6 +44,19 @@ func SetTrustedProxies(list []string) {
 }
 
 // ClientIP returns the caller's address, honouring X-Forwarded-For only from trusted proxies.
+// RateKeyIP is the client address as rate limits count it: an IPv4 address, or an IPv6 address's /64 prefix. One
+// IPv6 client is usually given a whole /64 and can send from any address in it: counted one by one, it would get a
+// fresh budget (and a fresh counter in memory) for every address. Audit records keep the full ClientIP.
+func RateKeyIP(r *http.Request) string {
+	ip := ClientIP(r)
+	if a, err := netip.ParseAddr(ip); err == nil && a.Is6() && !a.Is4In6() {
+		if p, err := a.Prefix(64); err == nil {
+			return p.String()
+		}
+	}
+	return ip
+}
+
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -81,12 +94,25 @@ func trusted(a netip.Addr) bool {
 	return false
 }
 
-// contentSecurityPolicy forbids inline scripts and eval; Alpine runs as its CSP build.
-const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"font-src 'self'; connect-src 'self'; form-action 'self' https:; frame-ancestors 'none'; base-uri 'none'; " +
-	"object-src 'none'"
+// contentSecurityPolicy forbids inline scripts and eval; Alpine runs as its CSP build. Images come from this server
+// and data: URIs (QR codes), plus the origin of a logo configured as an https URL (/branding/ redirects to it):
+// nothing else, so markup that ever renders an outside URL as an image cannot send data anywhere with it.
+func contentSecurityPolicy(logos ...string) string {
+	img := "'self' data:"
+	seen := map[string]bool{}
+	for _, l := range logos {
+		if u, err := url.Parse(l); err == nil && u.Scheme == "https" && u.Host != "" && !seen[u.Host] {
+			seen[u.Host] = true
+			img += " https://" + u.Host
+		}
+	}
+	return "default-src 'self'; script-src 'self'; style-src 'self'; img-src " + img + "; font-src 'self'; " +
+		"connect-src 'self'; form-action 'self' https:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+}
 
-func securityHeaders(next http.Handler) http.Handler {
+// securityHeaders sets the headers every response carries; csp is the Content-Security-Policy of a response that
+// sets none of its own (one(contentSecurityPolicy(...)), made once).
+func securityHeaders(csp []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		// Shared, read-only value slices (len == cap, so a later Add copies rather than writing into them): no
@@ -95,7 +121,7 @@ func securityHeaders(next http.Handler) http.Handler {
 			h[sh.key] = sh.val
 		}
 		if _, ok := h["Content-Security-Policy"]; !ok {
-			h["Content-Security-Policy"] = cspValue
+			h["Content-Security-Policy"] = csp
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -118,7 +144,6 @@ var (
 		{"Cross-Origin-Opener-Policy", one("same-origin")},
 		{"Permissions-Policy", one("camera=(), microphone=(), geolocation=(), interest-cohort=()")},
 	}
-	cspValue = one(contentSecurityPolicy)
 )
 
 func recoverer(log logger.Logger, next http.Handler) http.Handler {

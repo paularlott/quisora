@@ -61,10 +61,15 @@ func (s *Service) CheckSessions(ctx context.Context, every time.Duration) (Leave
 	var res LeaverResult
 	now := s.Now()
 	down := map[string]bool{} // providers whose check failed this run: their other identities wait for the next run
-	for offset := 0; ; offset += identityPage {
-		ids, _, err := s.Svc.Identities.List(ctx, store.ListQuery{Offset: offset, Limit: identityPage})
+	// Paged by id (After), not by offset: every page is a range read from where the last one ended, where an offset
+	// would walk past every earlier identity again (and miss or repeat some when identities come and go meanwhile).
+	for after := ""; ; {
+		ids, _, err := s.Svc.Identities.List(ctx, store.ListQuery{After: after, Limit: identityPage})
 		if err != nil {
 			return res, err
+		}
+		if len(ids) > 0 {
+			after = ids[len(ids)-1].ID
 		}
 		for _, id := range ids {
 			if ctx.Err() != nil {

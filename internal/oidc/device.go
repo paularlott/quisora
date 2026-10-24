@@ -128,7 +128,7 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ctx := r.Context()
-	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "device-start|"+web.ClientIP(r), 1, time.Minute); err != nil || n > deviceStartsPerIP {
+	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "device-start|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > deviceStartsPerIP {
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down",
 			desc: "too many device sign-ins from this address; try again in a minute", retry: true})
 		return
@@ -290,7 +290,7 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	guessKey := "device-code|" + web.ClientIP(r)
+	guessKey := "device-code|" + web.RateKeyIP(r)
 	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 0, deviceGuessWindow); err != nil || n >= deviceGuessesPerIP {
 		render(http.StatusTooManyRequests, "Too many codes were tried from here. Wait 15 minutes, then try again.")
 		return

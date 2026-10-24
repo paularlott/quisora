@@ -41,11 +41,12 @@ const (
 // cluster-wide compare-and-swap that a majority of the nodes must confirm before it succeeds (see
 // docs/REPLICATION.md, "Quorum compare-and-swap"), so a concurrent change made on another node from an older copy is
 // refused instead of overwriting it. Refresh grants are among them: rotating a refresh token advances the grant's
-// counter, and a node that had not seen the advance must not accept the old token.
+// counter, and a node that had not seen the advance must not accept the old token. Groups are too: a group's version
+// is the lock on a change of its members (service.ChangeGroup), which must hold across the cluster.
 func QuorumCAS(k Kind) bool {
 	switch k {
 	case KindUser, KindPasskey, KindAPIToken, KindClient, KindProvider, KindTenant, KindAccess, KindOrg, KindMember,
-		KindSignIn, KindLock, KindGrant, KindReplay:
+		KindGroup, KindSignIn, KindLock, KindGrant, KindReplay:
 		return true
 	}
 	return false
@@ -72,6 +73,18 @@ type Index struct {
 	Unique  []string
 	Fields  map[string]any // values: string, int64, bool or time.Time
 	Expires time.Time
+}
+
+// Due reports when a housekeeping job must look at a record of kind k with index fields f, and whether it must at
+// all. Backends whose filtered queries read a whole kind index records by it (store.DueLister). Users: an active
+// account with an end date is disabled then (Service.ExpireUsers).
+func Due(k Kind, f map[string]any) (time.Time, bool) {
+	if k == KindUser && f["expiring"] == true && f["active"] == true {
+		if t, ok := f["valid_until"].(time.Time); ok {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // Entity is implemented by every stored type.

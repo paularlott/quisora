@@ -153,7 +153,7 @@ const clientAuthFailuresPerIPMin = 10 * clientAuthFailuresPerMin
 
 // authenticateClient is checkClient with a ceiling on failures.
 func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
-	ip := web.ClientIP(r)
+	ip := web.RateKeyIP(r)
 	key := "client-auth|" + authClientID(r) + "|" + ip
 	ipKey := "client-auth-ip|" + ip
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",

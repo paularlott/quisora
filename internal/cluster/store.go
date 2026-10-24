@@ -65,6 +65,14 @@ func (s *Store) quorumKind(rec *store.Record) bool {
 	return s.n.gc != nil && model.QuorumCAS(rec.Kind) && !model.IsBootstrapRecord(rec.Kind, rec.ID, rec.Version)
 }
 
+// ListDue lists the records due from the wrapped store's due index (store.DueLister), or ErrNoDueIndex.
+func (s *Store) ListDue(ctx context.Context, kind model.Kind, before time.Time, limit int) ([]*store.Record, error) {
+	if dl, ok := s.inner.(store.DueLister); ok {
+		return dl.ListDue(ctx, kind, before, limit)
+	}
+	return nil, store.ErrNoDueIndex
+}
+
 // Lookup returns the stored record whatever its state (store.Store).
 func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
 	return s.inner.Lookup(ctx, kind, id)

@@ -216,7 +216,7 @@ func TestSelfInPeersByAnotherName(t *testing.T) {
 // deleteRec deletes a group record through the cluster store (a replicated tombstone).
 func deleteRec(t *testing.T, tn *tnode, id string) {
 	t.Helper()
-	if err := tn.st().Put(bg, store.Tombstone(model.KindGroup, id)); err != nil {
+	if err := tn.st().Put(bg, store.Tombstone(dataKind, id)); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -69,7 +69,7 @@ func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret := secure.NewTOTPSecret()
-	t.Pending = m.s.Svc.Sealer.Seal([]byte(secret))
+	t.Pending = m.s.Svc.Sealer.SealFor(pendingTOTPBinding("ticket", in.Ticket), []byte(secret))
 	b, _ := json.Marshal(t)
 	if err := m.s.Eph.Set(r.Context(), nsTicket, in.Ticket, b, enrolTTL); err != nil {
 		m.internalError(w, r, "ticket", err)
@@ -110,7 +110,7 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
-	secret, err := m.s.Svc.Sealer.Open(t.Pending)
+	secret, err := m.s.Svc.Sealer.OpenFor(pendingTOTPBinding("ticket", in.Ticket), t.Pending)
 	if err != nil {
 		m.internalError(w, r, "open pending secret", err)
 		return
@@ -220,3 +220,7 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
 }
+
+// pendingTOTPBinding binds an authenticator-app secret being set up to the sign-in step (ticket) or session it was
+// made for: a sealed secret copied into another one's pending slot does not open there.
+func pendingTOTPBinding(kind, id string) string { return "pending totp|" + kind + "|" + id }

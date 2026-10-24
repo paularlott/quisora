@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -436,5 +437,24 @@ func TestAPITokenRefusalAndUseAudited(t *testing.T) {
 	}
 	if e := sink.find("user.create"); e == nil || e.Detail["token_id"] != tok.ID {
 		t.Fatalf("an action with a token does not name it: %+v", e)
+	}
+}
+
+type failingTokenStore struct{ store.Store }
+
+func (failingTokenStore) Get(context.Context, model.Kind, string) (*store.Record, error) {
+	return nil, errors.New("disk on fire")
+}
+
+// A store failure while a token is checked is the server's, not the caller's: ErrUnavailable, never ErrBadToken.
+func TestAPITokenStoreFailureIsUnavailable(t *testing.T) {
+	c := newCast(t)
+	_, plain, err := c.svc.CreateAPIToken(c.ctx, actor(c.aAdmin), service.APITokenInput{Name: "t", Scopes: []string{"admin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.svc.APITokens.S = failingTokenStore{c.svc.APITokens.S}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, plain); !errors.Is(err, service.ErrUnavailable) || errors.Is(err, service.ErrBadToken) {
+		t.Fatalf("store failure: %v, want ErrUnavailable", err)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/paularlott/quisora/internal/ephemeral"
 )
 
 // Pushed authorization requests (RFC 9126). The client posts the parameters of an authorization request to
@@ -25,6 +27,7 @@ const (
 	nsPAR        = "oauth.par"
 	parURNPrefix = "urn:ietf:params:oauth:request_uri:"
 	parTTL       = 60 * time.Second
+	parMaxParams = 16 << 10 // the largest authorization request a push may keep (form-encoded)
 )
 
 // pushedRequest is a pushed authorization request waiting for the browser (ephemeral, ns "oauth.par", single use).
@@ -97,8 +100,18 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	params.Set("client_id", c.ID) // a client using Basic authentication need not repeat it in the body
-	b, _ := json.Marshal(pushedRequest{ClientID: c.ID, Params: params.Encode()})
+	enc := params.Encode()
+	if len(enc) > parMaxParams { // kept in memory until used: a real request is a fraction of this
+		writeOAuthError(w, oerr("invalid_request", "the authorization request is too large"))
+		return
+	}
+	b, _ := json.Marshal(pushedRequest{ClientID: c.ID, Params: enc})
 	id, err := p.s.Eph.New(r.Context(), nsPAR, b, parTTL)
+	if errors.Is(err, ephemeral.ErrFull) {
+		writeOAuthError(w, &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
+			desc: "the server is busy; try again shortly", retry: true})
+		return
+	}
 	if err != nil {
 		writeOAuthError(w, serverError(err))
 		return

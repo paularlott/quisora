@@ -39,6 +39,15 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Audit log.** In the database, or in VictoriaLogs for real deployments. Every event also goes to the structured log.
 - **Backups.** Online, encrypted with a password by default, verified before restore, into any backend.
 
+## Requirements
+
+**Every node's clock must be synchronised with NTP** (chrony, systemd-timesyncd, or the cloud provider's time
+service), keeping the nodes within milliseconds of each other. SOC 2 requires it anyway (consistent audit
+timestamps), and Quisora relies on it: record versions come from the writers' clocks, and a cluster stays consistent
+across restarts because no node's clock is more than 5 seconds off (`store.MaxSkew`). A node whose clock is further
+out is refused as a voter in quorum writes, has its versions logged and counted (`clock_skewed`) and not followed,
+and should be treated as broken until its clock is fixed. Details: [docs/REPLICATION.md](docs/REPLICATION.md#clocks).
+
 ## Install
 
 Build from source (Go 1.27, Node 24 and [Task](https://taskfile.dev)):
@@ -97,7 +106,8 @@ Keys and passwords in Vault or 1Password: [docs/secret-stores.md](docs/secret-st
 ## Audit log and VictoriaLogs
 
 By default audit events are kept in the database for 7 days (`audit.retention_days`). In a gossip cluster each node
-keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing.
+keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing:
+its pages read through every event they search (fine for thousands of users, not for millions).
 
 **Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
 (typically a year or more). Each node writes every event to a disk spool in its data directory, synced before the

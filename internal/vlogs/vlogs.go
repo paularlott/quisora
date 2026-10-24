@@ -140,8 +140,10 @@ type commit struct {
 }
 
 // WriteAudit queues an event (service.AuditWriter). With a spool it returns once the event is fsynced to disk, so a
-// crash right after loses nothing. An event the queue has no room for (VictoriaLogs unreachable for long, without a
-// spool), or that comes after Close, is logged in full instead (audit.undelivered).
+// crash right after loses nothing, or after spoolWait at most: a slow or hung disk must not stall every audited
+// request, so the event is then also logged in full (audit.undelivered) and still spooled once the disk answers
+// (VictoriaLogs may then hold it as well: every event has its id). An event the queue has no room for (VictoriaLogs
+// unreachable for long, without a spool), or that comes after Close, is logged in full instead.
 func (c *Client) WriteAudit(e *model.Audit) {
 	defer func() {
 		if recover() != nil { // queue closed at shutdown
@@ -154,7 +156,14 @@ func (c *Client) WriteAudit(e *model.Audit) {
 		cm := commit{line: append(b, '\n'), done: make(chan struct{})}
 		select {
 		case c.commits <- cm:
-			<-cm.done
+			t := time.NewTimer(spoolWait)
+			defer t.Stop()
+			select {
+			case <-cm.done:
+			case <-t.C:
+				c.undelivered("the audit spool disk did not answer in time (the event is spooled once it does)",
+					[][]byte{b})
+			}
 		default:
 			c.undelivered("the audit spool queue is full", [][]byte{b})
 		}
@@ -360,6 +369,9 @@ func (c *Client) failed(err error) {
 		c.log.WithError(err).Warn("VictoriaLogs is not taking audit events: spooling them to disk", "dir", c.spool.dir)
 	}
 }
+
+// spoolWait is how long WriteAudit waits for the spool's fsync before it logs the event instead and returns.
+var spoolWait = 2 * time.Second
 
 const (
 	closeTimeout = 2 * time.Second // the one try of a last batch without a spool

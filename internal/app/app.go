@@ -167,13 +167,20 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		}
 		a.closers = append(a.closers, a.mailer.Close)
 	}
-	srv.Use(modules(ctx, a)...)
+	// Background work (housekeeping, purges, reports) runs until Close, which cancels it and waits for it: after the
+	// server stops taking requests, before the mailer, the audit writer and the store close.
+	bg, stop := context.WithCancel(ctx)
+	a.closers = append(a.closers, func() { stop(); a.bg.Wait() })
+	srv.Use(modules(bg, a)...)
+	if a.OIDC != nil {
+		// Back-channel logouts still being delivered finish before the audit writer, the mailer and the store close
+		// (closers run in reverse: after the server has stopped taking requests).
+		a.closers = append(a.closers, a.OIDC.Wait)
+	}
 	if err := srv.Start(ctx); err != nil {
 		a.Close()
 		return nil, err
 	}
-	bg, stop := context.WithCancel(ctx)
-	a.closers = append(a.closers, func() { stop(); a.bg.Wait() }) // the first to run (closers run in reverse)
 	a.background(func() { node.RunPurge(bg, 10*time.Minute) })
 	a.background(func() { a.auditForcedStart(bg) })
 	a.background(func() { a.auditRestore(bg) })
@@ -308,7 +315,13 @@ func (h *health) Ready() (bool, string) {
 	if ok, why := h.node.Ready(); !ok {
 		return ok, why
 	}
-	if _, err := h.svc.PrimaryOrg(context.Background()); err != nil { // cached once found
+	// Cached once found; until then a store read, bounded: a database that hangs makes the node unready, not the probe.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := h.svc.PrimaryOrg(ctx); err != nil {
+		if ctx.Err() != nil {
+			return false, "the database did not answer"
+		}
 		return false, "not set up: run \"quisora bootstrap\""
 	}
 	return true, ""

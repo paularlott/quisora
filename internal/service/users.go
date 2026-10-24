@@ -596,7 +596,7 @@ func dropUnchanged(u *model.User, in *UserInput) {
 	}
 }
 
-// CurbsAdmin reports whether in demotes or disables u, an administrator or super admin. Like granting the role, that
+// CurbsAdmin reports whether in demotes or disables u, an administrator or super admin, or ends their account sooner. Like granting the role, that
 // takes a recently re-authenticated console session in the management API (a stolen token or an unattended session
 // must not lock the other administrators out). SCIM does not ask for it: a directory offboarding an administrator
 // (disabling or deleting them) must work with its token, and the service's own guards (the last super admins) apply.
@@ -604,7 +604,17 @@ func CurbsAdmin(u *model.User, in UserInput) bool {
 	if !isAdminRank(u) {
 		return false
 	}
-	return in.Role != nil && in.Role.Rank() < u.Role.Rank() || in.Active != nil && !*in.Active && u.Active
+	if in.Role != nil && in.Role.Rank() < u.Role.Rank() || in.Active != nil && !*in.Active && u.Active {
+		return true
+	}
+	// An end date that comes sooner ends the account as surely as disabling it, only later. (The console shows the
+	// end as a date: the same day is the same end; a value that does not parse is refused by the update itself.)
+	if in.ValidUntil != nil && *in.ValidUntil != "" {
+		t, err := parseEndDate(*in.ValidUntil)
+		return err == nil && (u.ValidUntil == nil ||
+			t.Format(time.DateOnly) < u.ValidUntil.UTC().Format(time.DateOnly))
+	}
+	return false
 }
 
 func isAdminRank(u *model.User) bool {
@@ -1163,8 +1173,7 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 	now := time.Now()
 	n := 0
 	for {
-		due, _, err := s.Users.List(ctx, store.ListQuery{Sort: "valid_until", Limit: 200, Filters: []store.Filter{
-			{Field: "expiring", Value: true}, {Field: "active", Value: true}}})
+		due, err := s.dueUsers(ctx, now, 200)
 		if err != nil {
 			return n, mapStore(err)
 		}
@@ -1184,6 +1193,32 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 			return n, nil
 		}
 	}
+}
+
+// dueUsers returns up to limit active users with an end date, earliest end first: from the store's due index where it
+// keeps one (the key-value stores, whose filtered queries would read every user), else by a query (SQL answers it
+// from its indexes).
+func (s *Service) dueUsers(ctx context.Context, now time.Time, limit int) ([]*model.User, error) {
+	if dl, ok := s.Users.S.(store.DueLister); ok {
+		recs, err := dl.ListDue(ctx, model.KindUser, now, limit)
+		if !errors.Is(err, store.ErrNoDueIndex) {
+			if err != nil {
+				return nil, err
+			}
+			out := make([]*model.User, 0, len(recs))
+			for _, r := range recs {
+				var u model.User
+				if err := store.Decode(r, &u); err != nil {
+					return nil, err
+				}
+				out = append(out, &u)
+			}
+			return out, nil
+		}
+	}
+	due, _, err := s.Users.List(ctx, store.ListQuery{Sort: "valid_until", Limit: limit, Filters: []store.Filter{
+		{Field: "expiring", Value: true}, {Field: "active", Value: true}}})
+	return due, err
 }
 
 func ptrBool(b bool) *bool { return &b }

@@ -307,8 +307,10 @@ func (s *Service) selfRegUsers(ctx context.Context, clientID, orgID string) ([]s
 		return nil, mapStore(err)
 	}
 	var users []string
+	seen := map[string]bool{}
 	for _, g := range gs {
-		if g.OrgID == orgID && !slices.Contains(users, g.UserID) {
+		if g.OrgID == orgID && !seen[g.UserID] {
+			seen[g.UserID] = true
 			users = append(users, g.UserID)
 		}
 	}

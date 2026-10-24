@@ -49,17 +49,20 @@ func TestDeepReviewQuorumReadFailsClosedOnPeerStorageError(t *testing.T) {
 	failing.fail.Store(true)
 	defer failing.fail.Store(false)
 	c.drop(1, 0, true, msgRead)
+	// Node 0 cannot be reached and node 2 cannot read the record: only node 1 itself answers, short of a quorum.
 	recs, err := c.nodes[1].st().Fresh(bg, model.KindUser, []string{u.ID})
-	if err != nil {
+	if errors.Is(err, store.ErrUnconfirmed) {
 		return
+	}
+	if err != nil {
+		t.Fatalf("quorum read: %v, want ErrUnconfirmed", err)
 	}
 	got := &model.User{}
 	if err := store.Decode(recs[u.ID], got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Active {
-		t.Fatal("quorum read certified stale active user after intersecting voter could not read its disabled copy")
-	}
+	t.Fatalf("quorum read succeeded without a quorum of answers (active=%v): a voter that could not read its copy "+
+		"was counted", got.Active)
 }
 
 // quorumWrite keeps one operation id across retries. An abort emitted while
@@ -142,10 +145,14 @@ func TestDeepReviewLastAdminGuardFailsClosedOnPeerStorageError(t *testing.T) {
 	}
 }
 
-// Nodes in these tests normally share the process HLC. This test supplies the
-// independent normal-clock stamps a restarted process and a third writer would
-// use, while the first writer is 20 seconds fast (inside store.MaxSkew).
+// Nodes in these tests normally share the process HLC. This test supplies the independent clocks of a restarted
+// process and a third writer, while the first writer's clock runs ahead (as far as a voter allows, voteAhead). The
+// voter that granted the fast partial write restarts with nothing on disk: its restart pause (restartPause, at least
+// voteAhead) must keep it out until its clock is past the partial version, so the later confirmed write outranks it.
+// Timings are scaled down from seconds to milliseconds.
 func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
+	defer func(a, p time.Duration) { voteAhead, restartPause = a, p }(voteAhead, restartPause)
+	voteAhead, restartPause = 300*time.Millisecond, 0
 	var ns []*Node
 	for range 3 {
 		n, err := New(tempConfig(t), memstore.New(), Options{})
@@ -169,9 +176,15 @@ func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
 		}
 	}
 	base := initial.Rank()
+	// A version further ahead than voteAhead is granted nowhere.
+	tooFast := *initial
+	tooFast.Version = hlc.FromTime(time.Now().Add(2 * voteAhead))
+	if r := ns[1].voter.prepare(bg, "too-fast", &tooFast, modeMatch, base); r.St == stGrant {
+		t.Fatal("granted a version further ahead than voteAhead")
+	}
+	// A fast writer within the bound prepares at A and B, and only A commits before it fails.
 	old := *initial
-	old.Version = max(hlc.FromTime(time.Now().Add(20*time.Second)), initial.Version+2)
-	// First operation prepares a majority but only A commits before failure.
+	old.Version = max(hlc.FromTime(time.Now().Add(voteAhead*9/10)), initial.Version+2)
 	for _, i := range []int{0, 1} {
 		if r := ns[i].voter.prepare(bg, "partial", &old, modeMatch, base); r.St != stGrant {
 			t.Fatalf("old prepare %d: %d", i, r.St)
@@ -180,8 +193,8 @@ func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
 	if st := ns[0].voter.commit(bg, "partial", &old, true); st != stGrant {
 		t.Fatalf("partial commit: %d", st)
 	}
-	// B restarts; its durable store still has the base. It can catch up from C,
-	// which also has the base. A process restart loses the witnessed HLC and hw map.
+	// B restarts: its high-water marks and its clock's memory are gone, and nothing about the grant is on disk.
+	restartPause = voteAhead
 	ns[1].voter = newVoter(ns[1])
 	ns[1].voter.floor = hlc.NewClock().Now()
 	disabled := *u
@@ -190,31 +203,21 @@ func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer.Version = max(initial.Version+1, hlc.NewClock().Now())
 	newer.Created = initial.Created
-	if newer.Version >= old.Version {
-		t.Fatal("test requires fast partial version above normal new version")
+	newer.Version = max(initial.Version+1, hlc.NewClock().Now())
+	if r := ns[1].voter.prepare(bg, "confirmed", newer, modeMatch, base); r.St != stNotReady {
+		t.Fatalf("a voter in its restart pause answered %d, want not ready", r.St)
 	}
-	// The restarted voter may refuse the stamp as low (its persisted ceiling covers the version it granted before
-	// the restart); the writer then stamps past the floor and prepares again, as quorumWrite does.
-	for attempt := 0; ; attempt++ {
-		var floor uint64
-		for _, i := range []int{1, 2} {
-			switch r := ns[i].voter.prepare(bg, "confirmed", newer, modeMatch, base); r.St {
-			case stGrant:
-			case stLow:
-				floor = max(floor, r.Floor)
-			default:
-				t.Fatalf("new prepare %d: %d", i, r.St)
-			}
+	time.Sleep(restartPause)
+	// A writer's fresh clock now mints a version past the partial one; B and C confirm it.
+	newer.Version = max(initial.Version+1, hlc.NewClock().Now())
+	if newer.Version <= old.Version {
+		t.Fatalf("after the restart pause a fresh clock (%d) is still behind the partial version (%d)", newer.Version, old.Version)
+	}
+	for _, i := range []int{1, 2} {
+		if r := ns[i].voter.prepare(bg, "confirmed", newer, modeMatch, base); r.St != stGrant {
+			t.Fatalf("new prepare %d: %d", i, r.St)
 		}
-		if floor == 0 {
-			break
-		}
-		if attempt > 0 {
-			t.Fatalf("new prepare still low after re-stamping past floor %d", floor)
-		}
-		newer.Version = hlc.Timestamp(floor) + 1
 	}
 	for _, i := range []int{1, 2} {
 		if st := ns[i].voter.commit(bg, "confirmed", newer, true); st != stGrant {
@@ -230,6 +233,6 @@ func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Active {
-		t.Fatal("old fast-clock partial write overwrote quorum-confirmed disable after intersecting voter restarted and lost its granted version floor")
+		t.Fatal("old fast-clock partial write overwrote quorum-confirmed disable after intersecting voter restarted")
 	}
 }

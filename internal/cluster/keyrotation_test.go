@@ -3,8 +3,6 @@ package cluster
 import (
 	"testing"
 	"time"
-
-	"github.com/paularlott/quisora/internal/model"
 )
 
 // A cluster key rotation on a running cluster, in the three documented rounds (every node: add the new key as a
@@ -24,7 +22,7 @@ func TestClusterKeyRotation(t *testing.T) {
 		}
 		waitFor(t, 15*time.Second, step+": replication", func() bool {
 			for _, tn := range c.nodes {
-				if r, err := tn.st().Get(bg, model.KindGroup, id); err != nil || r == nil {
+				if r, err := tn.st().Get(bg, dataKind, id); err != nil || r == nil {
 					return false
 				}
 			}

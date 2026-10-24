@@ -358,13 +358,8 @@ func (n *Node) saveState() {
 		}
 	}
 	b, _ := json.Marshal(ps)
-	tmp := n.stateFile + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err == nil {
-		err = os.Rename(tmp, n.stateFile)
-		if err != nil {
-			n.log.WithError(err).Warn("save cluster state")
-		}
-	} else {
+	if err := writeSynced(n.stateFile, b); err != nil { // a power loss must not lose "formed" or the cursors
+		n.dirty.Store(true)
 		n.log.WithError(err).Warn("save cluster state")
 	}
 }

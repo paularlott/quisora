@@ -84,7 +84,7 @@ func (m commandModule) Register(s *web.Server) {
 func (m commandModule) invite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	refuse := func(status int, msg string) { web.WriteJSON(w, status, web.ErrorBody{Error: msg}) }
-	n, err := m.a.Eph.Incr(ctx, nsCommand, "ip|"+web.ClientIP(r), 1, time.Minute)
+	n, err := m.a.Eph.Incr(ctx, nsCommand, "ip|"+web.RateKeyIP(r), 1, time.Minute)
 	if err != nil || n > commandRequestsPerMin {
 		refuse(http.StatusTooManyRequests, "too many requests: try again in a minute")
 		return

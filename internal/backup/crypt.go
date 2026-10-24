@@ -228,8 +228,10 @@ func newPasswordDecReader(br *bufio.Reader, password string) (*decReader, error)
 		return nil, err
 	}
 	t, m, p := binary.BigEndian.Uint32(kdf[saltLen:]), binary.BigEndian.Uint32(kdf[saltLen+4:]), kdf[saltLen+8]
-	// Bounded, so a crafted file cannot make a restore spend unbounded memory or time before anything is checked.
-	if t < 1 || t > 16 || m < 8*1024 || m > 1024*1024 || p < 1 || p > 32 {
+	// Bounded to twice what the writer uses, so a crafted file cannot make a verify or restore spend much more memory
+	// or time than a real backup does before anything is checked. (A build that raises the writer's cost raises
+	// these with it.)
+	if t < 1 || t > 2*kdfTime || m < 8*1024 || m > 2*kdfMemory || p < 1 || p > 2*kdfThreads {
 		return nil, fmt.Errorf("%w: key derivation parameters out of range", ErrFormat)
 	}
 	aead, err := passwordKey(password, kdf[:saltLen], t, m, p)

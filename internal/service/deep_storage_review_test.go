@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 		_, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{}, []string{u.ID}, nil)
 		done <- err
 	}()
-	<-gate.entered // membership already written; parent group update is pending
+	<-gate.entered // the group's version write (the lock on the change) is pending; no member written yet
 	fresh, err := e.svc.Groups.Get(e.ctx, g.ID)
 	if err != nil {
 		close(gate.resume)
@@ -63,5 +64,42 @@ func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 	}
 	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, u.ID)); err != nil {
 		t.Fatalf("successful concurrent change lost its requested membership during another request's rollback: %v", err)
+	}
+}
+
+type failMemberFor struct {
+	store.Store
+	userID string
+}
+
+func (s failMemberFor) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindMember && strings.HasSuffix(r.ID, s.userID) {
+		return errors.New("disk on fire")
+	}
+	return s.Store.CompareAndPut(ctx, r, expect)
+}
+
+// A change whose member writes fail part-way is undone: the members written so far go, and the group's record goes
+// back to what it was.
+func TestGroupChangeFailingPartWayIsUndone(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("undo-group")
+	ok := e.user(org.ID, "ok", model.RoleUser)
+	bad := e.user(org.ID, "bad", model.RoleUser)
+	name := "Before"
+	g, err := e.svc.CreateGroup(e.ctx, service.System, org.ID, service.GroupInput{DisplayName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.Members.S = failMemberFor{Store: e.svc.Members.S, userID: bad.ID}
+	renamed := "After"
+	if _, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{DisplayName: &renamed}, []string{ok.ID, bad.ID}, nil); err == nil {
+		t.Fatal("a change whose member write failed succeeded")
+	}
+	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, ok.ID)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the member written before the failure stayed: %v", err)
+	}
+	if cur, err := e.svc.Groups.Get(e.ctx, g.ID); err != nil || cur.DisplayName != "Before" {
+		t.Errorf("the group's record was not put back: %v %+v", err, cur)
 	}
 }

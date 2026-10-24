@@ -271,7 +271,7 @@ func (m *Module) allow(r *http.Request, orgKey string, k known) (ok bool, trippe
 		n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-dev|"+uid, 1, time.Minute)
 		return err == nil && n <= limit, tripIf(n == limit+1, "device"), uid
 	}
-	ip := web.ClientIP(r)
+	ip := web.RateKeyIP(r)
 	// An IP-only ceiling (three times the per-org limit) bounds what one client can spend across organizations,
 	// whatever names it sends.
 	// Counters fail closed: a counter that cannot be read or updated refuses rather than allows.

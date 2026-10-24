@@ -98,7 +98,8 @@ func (s *spool) store(body []byte) (evicted [][]byte, err error) {
 			s.active = ""
 		}
 	}
-	if s.active == "" {
+	created := s.active == ""
+	if created {
 		s.seq++
 		s.active = fmt.Sprintf("%s%020d-%06d%s", segmentPrefix, time.Now().UnixNano(), s.seq, segmentExt)
 	}
@@ -112,6 +113,11 @@ func (s *spool) store(body []byte) (evicted [][]byte, err error) {
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil && created {
+		// A new segment's name must be on disk too, or a power loss can drop the whole file the caller was told is
+		// durable.
+		err = syncDir(s.dir)
 	}
 	if err != nil {
 		return nil, err
@@ -167,6 +173,16 @@ func jsonLines(data []byte) [][]byte {
 		}
 	}
 	return out
+}
+
+// syncDir syncs directory dir, making the names created in it durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func (s *spool) remove(name string) {

@@ -1834,11 +1834,14 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 		}
 		return u.ID
 	}
-	demoted, disabled, deleted := peer("demoted"), peer("disabled"), peer("deleted")
+	demoted, disabled, deleted, ended := peer("demoted"), peer("disabled"), peer("deleted"), peer("ended")
 	for name, call := range map[string]func(c *caller) resp{
-		"demote an administrator":       func(c *caller) resp { return c.patch(AU+"/"+demoted, map[string]any{"role": "user"}) },
-		"disable an administrator":      func(c *caller) resp { return c.patch(AU+"/"+disabled, map[string]any{"active": false}) },
-		"delete an administrator":       func(c *caller) resp { return c.delete(AU + "/" + deleted) },
+		"demote an administrator":  func(c *caller) resp { return c.patch(AU+"/"+demoted, map[string]any{"role": "user"}) },
+		"disable an administrator": func(c *caller) resp { return c.patch(AU+"/"+disabled, map[string]any{"active": false}) },
+		"delete an administrator":  func(c *caller) resp { return c.delete(AU + "/" + deleted) },
+		"end an administrator's account": func(c *caller) resp {
+			return c.patch(AU+"/"+ended, map[string]any{"valid_until": time.Now().Add(48 * time.Hour).Format(time.DateOnly)})
+		},
 		"delete an organization":        func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
 		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
 		"remove a signing key":          func(c *caller) resp { return c.delete("/api/keys/old") },

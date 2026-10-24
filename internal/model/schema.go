@@ -12,11 +12,16 @@ const (
 
 // Field is a queryable column of a kind. Search fields take part in case-insensitive substring search; Sort fields
 // may be used to order a listing (strings compare case-insensitively); every field can be used as an equality filter.
+// Index fields are equality filters that must not read the whole kind: the key-value stores, which otherwise answer a
+// filter by reading every record of the kind (or scope), keep one index bucket per value of the field (an index write
+// per record write); the SQL backends index every field already. Mark one only where an unscoped filter on it runs
+// on a large kind.
 type Field struct {
 	Name   string
 	Type   FieldType
 	Search bool
 	Sort   bool
+	Index  bool
 }
 
 // Schema lists a kind's queryable fields. Backends create their columns/indexes from it.
@@ -88,9 +93,9 @@ var Schemas = map[Kind]Schema{
 	KindClient: {KindClient, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},
 		{Name: "tenant_id", Type: FieldString},
-		{Name: "auth_method", Type: FieldString, Sort: true},
+		{Name: "auth_method", Type: FieldString, Sort: true, Index: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
-		{Name: "self_registered", Type: FieldBool},
+		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (cap, purge)
 	}},
 	KindProvider: {KindProvider, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},
@@ -104,7 +109,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "last_used", Type: FieldTime, Sort: true},
 	}},
 	KindIdentity: {KindIdentity, []Field{
-		{Name: "provider_id", Type: FieldString},
+		{Name: "provider_id", Type: FieldString, Index: true}, // a provider's links, when it is deleted
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindSession: {KindSession, []Field{
@@ -113,7 +118,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "last_seen", Type: FieldTime, Sort: true},
 	}},
 	KindGrant: {KindGrant, []Field{
-		{Name: "client_id", Type: FieldString},
+		{Name: "client_id", Type: FieldString, Index: true}, // an application's users (self-registered apps)
 		{Name: "session_id", Type: FieldString},
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},

@@ -95,7 +95,7 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, id string,
 		return nil
 	}
 	if unstored && r != nil {
-		if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.ClientIP(r), 1, time.Minute); err != nil || n > metadataPerIPMin {
+		if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > metadataPerIPMin {
 			return nil
 		}
 	}
@@ -119,7 +119,7 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, id string,
 // per address and capped in total; see service.RegisterClient.
 func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "register|"+web.ClientIP(r), 1, time.Minute); err != nil || n > registerPerIPMin {
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "register|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > registerPerIPMin {
 		w.Header().Set("Retry-After", "60")
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down", desc: "too many registrations from this address"})
 		return

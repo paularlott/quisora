@@ -64,6 +64,7 @@ type Provider struct {
 	jwksCache     atomic.Pointer[jwksSnapshot]
 	shortKeys     atomic.Bool // ShortCaches: re-read signing keys every few seconds
 	origins       atomic.Pointer[originSet]
+	originsMu     sync.Mutex  // one re-read of the public clients' origins at a time
 	shortOrigins  atomic.Bool // origins are re-read after shortTTL, not a minute (ShortCaches)
 
 	clients *ttlCache[*clientEntry]
@@ -78,8 +79,10 @@ type Provider struct {
 	jwksMu    sync.Mutex
 	remoteKey map[string]*remoteJWKS
 
-	bcWG  sync.WaitGroup
-	bcSem chan struct{}
+	bcWG      sync.WaitGroup // back-channel logouts queued or being sent
+	bcQueue   chan bcTarget  // waiting to be sent (bcQueueMax)
+	bcMu      sync.Mutex     // guards bcWorkers
+	bcWorkers int            // senders running (at most bcWorkersMax; none while nothing waits)
 
 	discovery []byte
 	issuer    string
@@ -91,7 +94,7 @@ func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log, issuer: s.Cfg.Issuer(),
 		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), users: newTTLCache[*model.User](shortTTL, 200_000),
 		orgs: newTTLCache[*model.Org](shortTTL, 20_000), tenants: newTTLCache[*model.Tenant](shortTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](shortTTL, 200_000),
-		remoteKey: map[string]*remoteJWKS{}, bcSem: make(chan struct{}, 32)}
+		remoteKey: map[string]*remoteJWKS{}, bcQueue: make(chan bcTarget, bcQueueMax)}
 	p.tokenURL = p.issuer + "/oauth/token"
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
@@ -158,8 +161,17 @@ func (p *Provider) InvalidateMembership(orgID string) {
 	v.(*atomic.Uint64).Add(1)
 }
 
-// Wait blocks until in-flight back-channel logout deliveries finish (shutdown, tests).
-func (p *Provider) Wait() { p.bcWG.Wait() }
+// Wait blocks until the back-channel logouts queued or being sent are done (tests, shutdown), for at most
+// bcShutdownWait: a shutdown is not held up for long by relying parties that do not answer.
+func (p *Provider) Wait() {
+	done := make(chan struct{})
+	go func() { p.bcWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(bcShutdownWait):
+		p.log.Warn("oidc: back-channel logouts still queued at shutdown were not sent", "queued", len(p.bcQueue))
+	}
+}
 
 // Register mounts the routes.
 func (p *Provider) Register(s *web.Server) {
@@ -291,10 +303,11 @@ type ttlItem[T any] struct {
 }
 
 type ttlCache[T any] struct {
-	mu  sync.RWMutex
-	m   map[string]ttlItem[T]
-	ttl time.Duration
-	max int
+	mu    sync.RWMutex
+	m     map[string]ttlItem[T]
+	ttl   time.Duration
+	max   int
+	swept int64 // unix nanos of the last sweep of expired entries (mu)
 }
 
 func newTTLCache[T any](ttl time.Duration, max int) *ttlCache[T] {
@@ -313,8 +326,10 @@ func (c *ttlCache[T]) get(k string) (v T, ok bool) {
 
 func (c *ttlCache[T]) put(k string, v T) {
 	c.mu.Lock()
-	if len(c.m) >= c.max {
-		now := time.Now().UnixNano()
+	now := time.Now().UnixNano()
+	// Expired entries go once a ttl period (and when full), so the cache holds what is in use, not max entries.
+	if len(c.m) >= c.max || now-c.swept > int64(c.ttl) {
+		c.swept = now
 		for key, it := range c.m {
 			if now > it.exp {
 				delete(c.m, key)

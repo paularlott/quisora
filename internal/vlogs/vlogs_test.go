@@ -321,3 +321,27 @@ func TestUndeliveredEventsAreLoggedInFull(t *testing.T) {
 		t.Fatalf("evicted and logged: %d (oldest %v, newest %v)", len(ids), ids["ev-00000"], ids["ev-01999"])
 	}
 }
+
+// A spool disk that does not answer must not stall the request writing the event: after spoolWait the event is
+// logged in full instead, and WriteAudit returns.
+func TestWriteAuditWaitIsBounded(t *testing.T) {
+	defer func(d time.Duration) { spoolWait = d }(spoolWait)
+	spoolWait = 50 * time.Millisecond
+	log := newCapture()
+	c, err := New("http://example.invalid", "n1", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Spool(t.TempDir(), 1); err != nil {
+		t.Fatal(err)
+	}
+	// Not started: nothing takes the event to disk, as with a hung disk.
+	start := time.Now()
+	c.WriteAudit(event(7))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("WriteAudit waited %s", d)
+	}
+	if !log.undeliveredIDs()[event(7).ID] {
+		t.Fatal("the event was neither spooled nor logged")
+	}
+}

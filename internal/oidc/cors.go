@@ -48,8 +48,20 @@ func (p *Provider) publicOrigins(r *http.Request) *originSet {
 	if p.shortOrigins.Load() {
 		ttl = shortTTL
 	}
-	if s := p.origins.Load(); s != nil && time.Since(s.at) < ttl {
+	s := p.origins.Load()
+	if s != nil && time.Since(s.at) < ttl {
 		return s
+	}
+	// One request re-reads the clients; the others meanwhile use the set they have (or wait for the first one).
+	if s != nil && !p.originsMu.TryLock() {
+		return s
+	}
+	if s == nil {
+		p.originsMu.Lock()
+	}
+	defer p.originsMu.Unlock()
+	if s := p.origins.Load(); s != nil && time.Since(s.at) < ttl {
+		return s // read by the request that held the lock
 	}
 	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}, at: time.Now()}
 	cs, _, err := p.svc.Clients.List(r.Context(), store.ListQuery{Filters: []store.Filter{{Field: "auth_method", Value: model.AuthMethodNone}}})

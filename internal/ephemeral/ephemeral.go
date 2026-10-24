@@ -9,12 +9,20 @@ import (
 	"hash/maphash"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/quisora/internal/secure"
 )
 
 var ErrNotFound = errors.New("ephemeral: not found or expired")
+
+// ErrFull is returned by Set and New when the node's short-lived state has reached its budget (Local.Budget): the
+// request that wanted to keep something is refused (503) rather than the node running out of memory.
+var ErrFull = errors.New("ephemeral: this node's short-lived state is full")
+
+// DefaultBudget is a Local's budget when none is set: 1 GiB of values.
+const DefaultBudget = 1 << 30
 
 // Store is implemented by the local store and by the cluster router.
 type Store interface {
@@ -50,9 +58,14 @@ type item struct {
 
 const shards = 64
 
-// Local is an in-memory Store for one node. Prefix is the node's short id embedded in ids.
+// Local is an in-memory Store for one node. Prefix is the node's short id embedded in ids. Values (flows, codes,
+// pushed requests, challenges) count against Budget bytes (0: DefaultBudget), keys included; past it Set refuses
+// (ErrFull) until expiries make room. Counters (Incr, the rate limits) are small and never refused: a limit must not
+// fail open, nor refuse everyone because the store is full; reading one (delta 0) creates nothing.
 type Local struct {
 	Prefix string
+	Budget int64
+	used   atomic.Int64
 	seed   maphash.Seed
 	shard  [shards]struct {
 		mu sync.Mutex
@@ -94,6 +107,7 @@ func (l *Local) reap() {
 				for k, v := range s.m {
 					if now.After(v.expires) {
 						delete(s.m, k)
+						l.used.Add(-v.size(k))
 					}
 				}
 				s.mu.Unlock()
@@ -110,14 +124,38 @@ func (l *Local) New(ctx context.Context, ns string, value []byte, ttl time.Durat
 	return id, l.Set(ctx, ns, id, value, ttl)
 }
 
+// itemOverhead approximates what an entry costs beyond its key and value (map slot, item, slice header).
+const itemOverhead = 96
+
+func (v *item) size(k string) int64 { return int64(len(k)+len(v.val)) + itemOverhead }
+
+func (l *Local) budget() int64 {
+	if l.Budget > 0 {
+		return l.Budget
+	}
+	return DefaultBudget
+}
+
 func (l *Local) Set(_ context.Context, ns, id string, value []byte, ttl time.Duration) error {
 	k := ns + "/" + id
+	it := &item{val: value, expires: time.Now().Add(ttl)}
 	s := l.sh(k)
 	s.mu.Lock()
-	s.m[k] = &item{val: value, expires: time.Now().Add(ttl)}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	grow := it.size(k)
+	if old, ok := s.m[k]; ok {
+		grow -= old.size(k)
+	}
+	if grow > 0 && l.used.Load()+grow > l.budget() {
+		return ErrFull
+	}
+	s.m[k] = it
+	l.used.Add(grow)
 	return nil
 }
+
+// Used is the memory the values and counters take, by the estimate Budget is checked against.
+func (l *Local) Used() int64 { return l.used.Load() }
 
 func (l *Local) get(ns, id string, take bool) ([]byte, error) {
 	k := ns + "/" + id
@@ -126,11 +164,15 @@ func (l *Local) get(ns, id string, take bool) ([]byte, error) {
 	defer s.mu.Unlock()
 	v, ok := s.m[k]
 	if !ok || time.Now().After(v.expires) {
-		delete(s.m, k)
+		if ok {
+			delete(s.m, k)
+			l.used.Add(-v.size(k))
+		}
 		return nil, ErrNotFound
 	}
 	if take {
 		delete(s.m, k)
+		l.used.Add(-v.size(k))
 	}
 	return v.val, nil
 }
@@ -142,7 +184,10 @@ func (l *Local) Delete(_ context.Context, ns, id string) error {
 	k := ns + "/" + id
 	s := l.sh(k)
 	s.mu.Lock()
-	delete(s.m, k)
+	if v, ok := s.m[k]; ok {
+		delete(s.m, k)
+		l.used.Add(-v.size(k))
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -155,6 +200,16 @@ func (l *Local) Incr(_ context.Context, ns, key string, delta int64, window time
 	now := time.Now()
 	v, ok := s.m[k]
 	if !ok || now.After(v.expires) {
+		if delta == 0 { // a read: nothing to count yet, and nothing to keep
+			if ok {
+				delete(s.m, k)
+				l.used.Add(-v.size(k))
+			}
+			return 0, nil
+		}
+		if !ok {
+			l.used.Add((&item{}).size(k))
+		}
 		v = &item{expires: now.Add(window)}
 		s.m[k] = v
 	}

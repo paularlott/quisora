@@ -75,11 +75,11 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 	waitFor(t, 5*time.Second, "b hears of both", func() bool { mu.Lock(); defer mu.Unlock(); return len(got[b]) >= 2 })
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"group:" + rec.ID + ":org1:remote", "user:" + gone.ID + ":org1:deleted:remote"}
+	want := []string{string(dataKind) + ":" + rec.ID + ":org1:remote", "user:" + gone.ID + ":org1:deleted:remote"}
 	if len(got[b]) != 2 || got[b][0] != want[0] || got[b][1] != want[1] {
 		t.Errorf("b got %v, want %v", got[b], want)
 	}
-	if len(got[a]) != 2 || got[a][0] != "group:"+rec.ID+":org1:local" {
+	if len(got[a]) != 2 || got[a][0] != string(dataKind)+":"+rec.ID+":org1:local" {
 		t.Errorf("a (the writer) got %v", got[a])
 	}
 
@@ -90,10 +90,10 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, "b hears of the deletion", func() bool { mu.Lock(); defer mu.Unlock(); return len(got[b]) >= 3 })
 	mu.Lock()
-	if g := got[b][2]; g != "group:"+rec.ID+":org1:deleted:remote" {
+	if g := got[b][2]; g != string(dataKind)+":"+rec.ID+":org1:deleted:remote" {
 		t.Errorf("b got %q for the deletion", g)
 	}
-	if g := got[a][2]; g != "group:"+rec.ID+":org1:deleted:local" {
+	if g := got[a][2]; g != string(dataKind)+":"+rec.ID+":org1:deleted:local" {
 		t.Errorf("a got %q for its deletion", g)
 	}
 

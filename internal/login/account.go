@@ -872,7 +872,7 @@ func (m *Module) totpBegin(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	secret := secure.NewTOTPSecret()
-	if err := m.s.Eph.Set(ctx, nsPending, a.sess.ID, []byte(m.s.Svc.Sealer.Seal([]byte(secret))), 10*time.Minute); err != nil {
+	if err := m.s.Eph.Set(ctx, nsPending, a.sess.ID, []byte(m.s.Svc.Sealer.SealFor(pendingTOTPBinding("session", a.sess.ID), []byte(secret))), 10*time.Minute); err != nil {
 		m.internalError(w, r, "pending totp", err)
 		return
 	}
@@ -904,7 +904,7 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 		writeErr(w, http.StatusConflict, "Start the Authenticator App set-up again.", "")
 		return
 	}
-	secret, err := m.s.Svc.Sealer.Open(string(sealed))
+	secret, err := m.s.Svc.Sealer.OpenFor(pendingTOTPBinding("session", a.sess.ID), string(sealed))
 	if err != nil {
 		m.internalError(w, r, "open pending secret", err)
 		return

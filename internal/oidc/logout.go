@@ -335,17 +335,57 @@ func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
 	p.dispatch(p.collect(ctx, userID, nil))
 }
 
+// Back-channel logouts are sent from a bounded queue by at most bcWorkersMax senders, started as the queue fills and
+// gone when it is empty: an emergency sign-out of a whole server (or a bulk expiry) with hundreds of thousands of
+// sessions queues targets, not goroutines. A logout that finds the queue full is not sent (logged with the count):
+// the sessions and grants end on this server either way; the relying party is only not told at once.
+const (
+	bcWorkersMax   = 32
+	bcQueueMax     = 10_000
+	bcShutdownWait = 10 * time.Second
+)
+
 func (p *Provider) dispatch(targets []bcTarget) {
+	dropped := 0
 	for _, t := range targets {
 		p.bcWG.Add(1)
-		go func() {
-			defer p.bcWG.Done()
-			p.bcSem <- struct{}{}
-			defer func() { <-p.bcSem }()
+		select {
+		case p.bcQueue <- t:
+		default:
+			p.bcWG.Done()
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		p.log.Warn("oidc: back-channel logout queue full: logouts not sent (the sessions ended here all the same)",
+			"dropped", dropped, "queue", bcQueueMax)
+	}
+	p.bcMu.Lock()
+	for p.bcWorkers < bcWorkersMax && p.bcWorkers < len(p.bcQueue) {
+		p.bcWorkers++
+		go p.bcWorker()
+	}
+	p.bcMu.Unlock()
+}
+
+// bcWorker sends queued logouts until the queue is empty.
+func (p *Provider) bcWorker() {
+	for {
+		select {
+		case t := <-p.bcQueue:
 			if err := p.sendLogoutToken(t); err != nil {
 				p.log.Warn("oidc: back-channel logout failed", "client", t.client.ID, "uri", t.client.BackchannelURI, "error", err)
 			}
-		}()
+			p.bcWG.Done()
+		default:
+			p.bcMu.Lock()
+			if len(p.bcQueue) == 0 { // checked under bcMu: dispatch starts a sender for anything queued after
+				p.bcWorkers--
+				p.bcMu.Unlock()
+				return
+			}
+			p.bcMu.Unlock()
+		}
 	}
 }
 

@@ -27,6 +27,8 @@ func (probe) Register(s *web.Server) {
 			return &service.Actor{Name: "tok", Scopes: []string{service.ScopeAdmin}}, nil
 		case "scim":
 			return &service.Actor{Name: "tok", Scopes: []string{service.ScopeSCIM}}, nil
+		case "down": // the store failed while the token was checked
+			return nil, service.ErrUnavailable
 		}
 		return nil, errors.New("bad")
 	}
@@ -139,6 +141,11 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 	}
 	if got := <-audit.actions; !strings.Contains(got, "CSRF") {
 		t.Errorf("CSRF refusal audited as %q", got)
+	}
+	for range web.BearerFailuresPerIPMin + 5 { // a store failure is not the caller's: never counted
+		if r := do(anon, map[string]string{"Authorization": "Bearer down"}); r.StatusCode != 503 {
+			t.Fatalf("store failure: %d, want 503", r.StatusCode)
+		}
 	}
 	for i := range web.BearerFailuresPerIPMin {
 		if r := do(anon, map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 401 {

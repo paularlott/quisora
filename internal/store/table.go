@@ -18,7 +18,8 @@ var Clock = hlc.NewClock()
 // MaxSkew is how far ahead of this machine's clock a version read or received may be and still move the clock
 // (Witness). A version further ahead comes from a node whose clock is badly wrong (or is corrupt): following it
 // would make every version minted here inherit the error, and age-based cut-offs (tombstone purging) with it.
-const MaxSkew = 30 * time.Second
+// Every node's clock is synchronised (NTP: milliseconds apart), so 5 s is far above any healthy skew.
+const MaxSkew = 5 * time.Second
 
 var skewRefused atomic.Int64
 

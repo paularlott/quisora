@@ -95,6 +95,12 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		return nil, err
 	}
 	r.Log = log
+	if len(r.manifest) == 0 {
+		// A binary built without "task webassets" (npm run build) serves its pages without their scripts and styles:
+		// the admin console and the sign-in pages do not work. Said at start, not found out by the first user.
+		log.Warn("this binary was built without its web assets (run \"task webassets\" before go build): the sign-in " +
+			"pages and the admin console will not work")
+	}
 	skin, err := LoadSkin(cfg.UI.Skin)
 	if err != nil {
 		return nil, err
@@ -120,7 +126,7 @@ func (s *Server) Use(mods ...Module) {
 func (s *Server) Handler() http.Handler {
 	// recoverer inside observe: a request that panics is answered 500 and is still logged and counted as one.
 	return requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
-		securityHeaders(shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))))
+		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold

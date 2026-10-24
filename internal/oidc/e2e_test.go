@@ -3007,8 +3007,18 @@ func TestAuthorizeLimitedPerAddress(t *testing.T) {
 			t.Fatalf("request %d refused: %s", i+1, u)
 		}
 	}
-	u := loc(t, h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()))
-	if u.Query().Get("error") != "temporarily_unavailable" || u.Query().Get("state") != "st1" {
-		t.Fatalf("over the limit: %s", u)
+	resp := h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+	body(resp)
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Location") != "" {
+		t.Fatalf("over the limit: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Requests naming no real client count too (each costs a store read).
+	h2 := setup(t, nil)
+	c2, _ := h2.session(h2.user)
+	for range authorizePerIPMin {
+		body(h2.get(c2, "/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"))
+	}
+	if resp := h2.get(c2, "/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("unknown-client flood not limited: %d", resp.StatusCode)
 	}
 }

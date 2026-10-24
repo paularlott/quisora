@@ -45,6 +45,7 @@ type Sessions struct {
 	mu       sync.RWMutex
 	cache    map[string]*cachedSession
 	byUser   map[string]map[string]struct{} // user id -> cached session ids, so evicting a user is O(their sessions)
+	swept    time.Time                      // when entries past CacheTTL were last dropped (mu)
 }
 
 func NewSessions(svc *service.Service) *Sessions {
@@ -239,6 +240,16 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		}
 		cs = &cachedSession{sess: s, user: u, fetched: now}
 		m.mu.Lock()
+		if now.Sub(m.swept) > m.CacheTTL {
+			// Entries past CacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
+			// use, not sessionCacheLimit of them.
+			m.swept = now
+			for k, c := range m.cache {
+				if now.Sub(c.fetched) > m.CacheTTL {
+					m.drop(k)
+				}
+			}
+		}
 		if len(m.cache) >= sessionCacheLimit {
 			for k := range m.cache { // drop an arbitrary tenth; cheap and bounded
 				m.drop(k)

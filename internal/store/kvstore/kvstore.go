@@ -65,11 +65,11 @@ func (s *Store) FeedID() string {
 // recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock so that the processes
 // sharing a Valkey store do it once. A store written by a newer build, or by a pre-release build older than
 // formatBase, is refused. Never edit or remove a released migration: append one. There are none yet: nothing has
-// been released.
+// been released, and a layout change raises formatBase instead (3: the due and field indexes).
 const (
 	metaFormat  = "meta/format"
 	metaMigrate = "meta/migrating" // the lock held while migrating: "<holder> <expiry unix ms>"
-	formatBase  = 2
+	formatBase  = 3
 )
 
 // formatMigration brings a store from one format to the next. It may run again after an interruption: make it
@@ -301,7 +301,98 @@ func indexEntries(r *store.Record) []indexEntry {
 	if exp > 0 {
 		out = append(out, indexEntry{"exp", indexMember(uint64(exp), 15, r.Kind, r.ID), 0})
 	}
+	if due, ok := model.Due(r.Kind, r.Fields); ok {
+		out = append(out, indexEntry{dueBucket, indexMember(dueMs(due), 15, r.Kind, r.ID), 0})
+	}
+	for _, f := range model.Schemas[r.Kind].Fields {
+		if f.Index {
+			if v, ok := fieldKey(r.Fields[f.Name]); ok {
+				out = append(out, indexEntry{fieldBucket(r.Kind, f.Name, v), r.ID, exp})
+			}
+		}
+	}
 	return out
+}
+
+// fieldBucket holds the records of kind whose field (a model.Field marked Index) has value v (fieldKey).
+func fieldBucket(kind model.Kind, field, v string) string {
+	return "fx/" + string(kind) + "/" + field + "/" + scopeEscaper.Replace(v)
+}
+
+// fieldKey is a field or filter value as an index bucket names it; false for values that are not indexed.
+func fieldKey(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case bool:
+		return strconv.FormatBool(x), true
+	case int64:
+		return strconv.FormatInt(x, 10), true
+	case int:
+		return strconv.Itoa(x), true
+	}
+	return "", false
+}
+
+// filterBucket returns the index bucket of the first equality filter of q on an indexed field: the records it can
+// match are only those, whatever the scope (the query is still applied to them in full).
+func filterBucket(kind model.Kind, q store.ListQuery) (string, bool) {
+	for _, flt := range q.Filters {
+		if flt.Op != "" {
+			continue
+		}
+		for _, f := range model.Schemas[kind].Fields {
+			if f.Name == flt.Field && f.Index {
+				if v, ok := fieldKey(flt.Value); ok {
+					return fieldBucket(kind, f.Name, v), true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// dueBucket orders the records a housekeeping job must look at by when (model.Due, ListDue).
+const dueBucket = "due"
+
+// dueMs is a due time as an index position (milliseconds; before the epoch: 0).
+func dueMs(t time.Time) uint64 { return uint64(max(t.UnixMilli(), 0)) }
+
+// ListDue returns up to limit live records of kind due at or before before, earliest first (store.DueLister): a range
+// of the due index, not a read of the whole kind.
+func (s *Store) ListDue(ctx context.Context, kind model.Kind, before time.Time, limit int) ([]*store.Record, error) {
+	to := string(appendPadded(nil, dueMs(before), 15)) + "/\xff"
+	var out []*store.Record
+	from := ""
+	for limit <= 0 || len(out) < limit {
+		members, err := s.eng.Range(ctx, dueBucket, from, to, 512)
+		if err != nil {
+			return nil, err
+		}
+		if len(members) == 0 {
+			return out, nil
+		}
+		from = members[len(members)-1] + "\x00"
+		var ids []string
+		for _, m := range members {
+			if parts := strings.SplitN(m, "/", 3); len(parts) == 3 && parts[1] == string(kind) {
+				ids = append(ids, parts[2])
+			}
+		}
+		recs, err := s.loadMembers(ctx, kind, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range recs {
+			if due, ok := model.Due(kind, r.Fields); ok && !due.After(before) {
+				out = append(out, r)
+				if limit > 0 && len(out) == limit {
+					break
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 // ---- transactional helpers ----
@@ -716,6 +807,9 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		}
 		return &store.ListResult{Records: recs, Total: total}, nil
 	}
+	if fb, ok := filterBucket(kind, q); ok {
+		bucket = fb // only the records the filter can match, not the whole kind or scope
+	}
 	ids, _, err := s.eng.Page(ctx, bucket, false, 0, 0, nowMs())
 	if err != nil {
 		return nil, err
@@ -928,6 +1022,18 @@ func (s *Store) RefreshFields(ctx context.Context, kind model.Kind, q store.List
 			}
 			copy(body[:seqHeader], b[:seqHeader]) // the same feed position
 			tx.Set(k, body)
+			// Index entries that follow the fields (the due index, field indexes) follow them here too.
+			oldEntries, newEntries := indexEntries(old.rec), indexEntries(&rec)
+			for _, e := range oldEntries {
+				if !hasEntry(newEntries, e) {
+					tx.SetDel(e.bucket, e.member)
+				}
+			}
+			for _, e := range newEntries {
+				if !hasEntry(oldEntries, e) {
+					tx.SetAdd(e.bucket, e.member, e.exp)
+				}
+			}
 			changed = true
 			return nil
 		})

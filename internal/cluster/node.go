@@ -74,9 +74,12 @@ const (
 //
 // 2: refresh grants are written with a quorum compare-and-swap (model.QuorumCAS); a node of 1 refuses their prepares
 // and writes them without one.
+// 3: groups are written with a quorum compare-and-swap; an abort names the stamp it aborts, a low answer the
+// generation to take, and a quorum read whether a copy could not be read. A node of 2 would refuse group prepares
+// and release a retry's intent with a late abort.
 const (
-	compat    = 2
-	minCompat = 2
+	compat    = 3
+	minCompat = 3
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.
@@ -180,6 +183,7 @@ type Node struct {
 	nodes     atomic.Int64             // cluster.size: the number of nodes the cluster is made of (changed only by Resize)
 	reloader  atomic.Pointer[Reloader] // re-reads the configuration (SetReloader)
 	reloadMu  sync.Mutex               // one ReloadCluster at a time
+	applyMu   sync.Mutex               // one reload of this node's configuration at a time (SIGHUP, a peer, ReloadCluster)
 	seedMu    sync.Mutex
 	seeds     []string // the configured peers other than this node (seedPeers; replaced by Resize)
 	seedsSet  bool
@@ -288,6 +292,7 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 	n.replicate = cfg.Replicate()
 	n.st = &Store{n: n, inner: st}
 	n.eph = &Ephemeral{n: n, local: ephemeral.NewLocal(n.prefix)}
+	n.eph.local.Budget = int64(cfg.Limits.EphemeralMB) << 20
 	n.mem.Store(n.selfOnly())
 
 	if cfg.Cluster.Bind == "" {
@@ -1036,6 +1041,13 @@ func (n *Node) Ready() (bool, string) {
 	}
 	if c := n.collision.Load(); c != nil {
 		return false, "node id prefix collision: " + *c
+	}
+	if v := n.voter; v != nil {
+		if wait := time.Until(v.resumeAt); wait > 0 {
+			// A voter sits out quorum writes for restartPause after it starts (see the voter): a node serving meanwhile
+			// would have its peers' votes only, and a cluster started all at once none.
+			return false, fmt.Sprintf("starting: takes part in quorum writes in %s (restart pause)", wait.Round(time.Second))
+		}
 	}
 	if m := n.behind.Load(); m != nil {
 		return false, *m

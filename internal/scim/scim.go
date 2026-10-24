@@ -353,6 +353,9 @@ func (m *Module) resolve(r *http.Request, tok, scheme string) (*service.Actor, *
 	var actor *service.Actor
 	if service.IsAPIToken(tok) && scheme == "Bearer" {
 		t, u, err := m.srv.Svc.ValidateAPIToken(r.Context(), tok)
+		if errors.Is(err, service.ErrUnavailable) { // the store failed, not the caller: not counted
+			return nil, errf(503, "", "The token could not be checked right now; try again shortly")
+		}
 		if err != nil {
 			return nil, errf(401, "", "The token is invalid or has expired")
 		}
