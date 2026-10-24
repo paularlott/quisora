@@ -636,6 +636,12 @@ func (m *Module) reauthPasskeyFinish(w http.ResponseWriter, r *http.Request, a a
 		return
 	}
 	res, err := m.Passkeys.FinishLoginAs(r.Context(), in.Challenge, in.Credential, purposeReauth)
+	if errors.Is(err, passkey.ErrCloneDetected) && res != nil {
+		// Disabled, and its sessions ended, by FinishLoginAs: recorded as at sign-in.
+		org, _ := m.s.Svc.Orgs.Get(r.Context(), res.User.OrgID)
+		m.audit(r, "passkey.clone", org, res.User, res.User.Username,
+			map[string]string{"passkey": res.Passkey.Name, "during": "reauth"})
+	}
 	if err != nil || res.User.ID != a.u.ID || res.Extra["reauth"] != a.sess.ID {
 		writeErr(w, http.StatusUnprocessableEntity, msgBadPasskey, "")
 		return

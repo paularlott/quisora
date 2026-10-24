@@ -1,0 +1,63 @@
+# Pushed authorization requests
+
+With a pushed authorization request (PAR, RFC 9126) the application sends the parameters of its sign-in request to
+Quisora directly, server to server and authenticated, and the browser carries only a short reference to them. The
+parameters cannot be read or changed on the way, never appear in browser history or logs, and are checked before
+the user sees anything. FAPI 2.0 requires it; any confidential client can use it.
+
+```bash
+export QUISORA=https://id.example.com
+```
+
+## 1. Push the request
+
+Everything that would go in the authorization URL, posted to `/oauth/par` with the client's authentication
+([client authentication](client-authentication.md)). The PKCE values are made as in [the sign-in
+guide](sign-in.md#1-send-the-browser-to-quisora).
+
+```bash
+curl -s "$QUISORA/oauth/par" -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
+  -d response_type=code -d redirect_uri="$REDIRECT_URI" -d scope="openid profile" \
+  -d state="$STATE" -d nonce="$NONCE" -d code_challenge="$CHALLENGE" -d code_challenge_method=S256
+```
+
+```json
+{"request_uri": "urn:ietf:params:oauth:request_uri:a1.mR3x…", "expires_in": 60}
+```
+
+The answer is `201 Created`. Anything wrong with the request is answered here, as an OAuth error
+(`invalid_request`, `invalid_scope`…), instead of on a page in the user's browser.
+
+## 2. Send the browser with the reference
+
+```bash
+echo "$QUISORA/oauth/authorize?client_id=$CLIENT_ID&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Aa1.mR3x…"
+```
+
+Only `client_id` and `request_uri`: any other parameter in the URL is ignored, the pushed ones count. The rest is the
+usual sign-in: the browser comes back to the redirect URI with a `code`, which the application [exchanges for
+tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
+
+## The request_uri
+
+- **60 seconds** to start: the browser must reach `/oauth/authorize` within a minute of the push. Once it has, the
+  request lasts as long as any sign-in flow, so a user who takes their time signing in is fine.
+- **Once.** It is used up when the request is decided (a code is issued, or the user denies or cancels), not on its
+  first visit, so reloading the sign-in page works. Presented again after that, it goes back to the application as
+  `invalid_request_uri`.
+- **One client.** Only the client that pushed it can use it; with another `client_id`, or once expired, the browser
+  gets an error page (nothing in such a request can be trusted to send the browser anywhere).
+
+## Requiring it
+
+**Require pushed authorization requests** on the client (`require_pushed_authorization_requests`) refuses its
+authorization requests made any other way (`invalid_request`, sent back to the application). The FAPI 2.0 profile
+turns it on.
+
+## With DPoP
+
+A [DPoP](dpop.md) proof sent with the push (header `DPoP`, for `POST` and the PAR endpoint's URL) binds the code to
+that key, as `dpop_jkt` would: the code is then exchanged only with a proof made with the same key. Proofs at the PAR
+endpoint need a nonce from this server, like those at the token endpoint.
+
+Request objects (JAR, signed `request` parameters) are not supported, pushed or not.

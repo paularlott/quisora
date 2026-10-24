@@ -1,0 +1,124 @@
+# Upstream sign-in providers
+
+An organization can let its users sign in with an account they already have elsewhere: the company's own single
+sign-on, Google, Microsoft Entra ID, GitHub, GitLab, Auth0, or any OpenID Connect provider. Each appears on the
+sign-in page as **Continue with …**. Quisora stays the identity provider of your applications: the upstream sign-in
+signs the user in to Quisora, and Quisora signs them in to the application, with its own rules (tenants, access lists,
+second factors) on top.
+
+## Adding a provider
+
+Organization → **Providers** → **New provider**. Providers belong to one organization; its tenants choose
+which of them their applications offer.
+
+| Type | What it needs |
+| --- | --- |
+| **OpenID Connect** | The **Issuer URL** (https); Quisora reads its discovery document. |
+| **Google** | Nothing more: the issuer is `https://accounts.google.com`. |
+| **Microsoft (Entra ID)** | **Directory (tenant)**: your tenant's ID, or `organizations` with a list of **Allowed tenants** (IDs). Personal Microsoft accounts are not supported. Add the optional claim `xms_edov` to the app registration's ID token, or Quisora cannot tell whether an address is verified. |
+| **GitHub** | Nothing more (an OAuth app on github.com). |
+| **GitLab** | **GitLab address**: empty for gitlab.com, or your self-managed server. |
+| **Auth0** | **Auth0 domain**, such as `acme.eu.auth0.com` (or your custom domain). |
+
+Every type needs a **Client ID** and **Client secret** from the provider. The dialog shows the provider's **Callback
+URL** from the start: register it at the provider as the redirect URI (the dialog says where for each type), then
+paste the client ID and secret back. It is `https://id.example.com/login/callback/<provider id>`; each provider has
+its own, so a response meant for one provider cannot be passed off as another's.
+
+The other settings:
+
+| Setting | |
+| --- | --- |
+| **Button label** | What the sign-in page shows after "Continue with". Defaults to the type's name. |
+| **Scopes** | `openid profile email` by default (GitHub: `read:user user:email`). Add `offline_access` for [leaver detection](#leavers). |
+| **Allowed email domains** | Only people with a verified address at one of these domains can use it. Empty: anyone. |
+| **Link existing users by verified email** | On by default. See [who signs in](#who-signs-in-as-whom). |
+| **Create accounts automatically** | Off by default. |
+| **Sign-in through this provider counts as a second factor** | Off by default; super admins only. See [second factors](#second-factors). |
+| **Provider is enabled** | Off: its button goes, and nobody can sign in through it. |
+
+The client secret is stored sealed with the master key and never shown again; leave it blank when editing to keep it.
+Pointing a provider at another issuer, Microsoft tenant or type needs the new provider's secret, and unlinks everyone
+who had signed in through it (their links were with the old provider).
+
+Through the management API (an API token with the `admin` scope):
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"oidc","name":"Company SSO","issuer":"https://login.example.com",
+       "client_id":"quisora","client_secret":"…","scopes":["openid","profile","email","offline_access"],
+       "allowed_domains":["example.com"],"link_by_email":true,"auto_provision":false,"enabled":true}' \
+  "$QUISORA/api/orgs/acme/providers"
+```
+
+The answer includes `callback_url`. To register the callback URL before the provider has issued the client ID and
+secret, choose the provider's ID yourself: send `"id"` (a lower-case UUID) when creating it, as the console does.
+`GET`, `PATCH` and `DELETE /api/orgs/acme/providers/{id}` read, change and remove one.
+
+## Which applications offer it
+
+Each tenant's **Sign-in rules** choose its providers: **All of the organization's providers** (the default, which
+includes ones added later) or a chosen list. Only enabled providers count, whatever is ticked. A sign-in through a
+provider the application's tenant does not offer is refused, even with a session from elsewhere.
+
+## Who signs in as whom
+
+The first time someone signs in through a provider, Quisora decides which account they are:
+
+1. **Already linked**: the provider's user id was linked to an account before. The email address no longer matters:
+   it can change at the provider without breaking the link.
+2. **Link by email** (when on): the provider says the address is verified, and it is the verified address (primary or
+   linked) of exactly one user in the organization. The two are linked from then on (`identity.link.email`). Managers
+   and administrators are never linked this way (`identity.link.refused`): they sign in the usual way and connect the
+   provider themselves on their account page.
+3. **Create accounts automatically** (when on): a new user with the provider's verified address and name, the `user`
+   role (`user.provision`). Refused if a user already has that address.
+4. Otherwise the sign-in is refused: *the account is not linked*.
+
+**Allowed email domains** apply at every step, also to accounts already linked.
+
+Users can connect and disconnect providers themselves: **Your account → Sign-in providers** (after confirming it is
+them). Disconnecting is refused when it is their only way to sign in. Administrators see a user's linked providers on
+their page and can disconnect them (`GET`/`DELETE /api/orgs/acme/users/<id>/providers`).
+
+## Second factors
+
+A sign-in through a provider is a first factor, like a password: Quisora never trusts what the provider says about its
+own second factors. Where a second factor is required, or for managers and administrators, Quisora asks for the
+user's own (authenticator app, passkey, or a code by email) after the provider, as after a password. The session's
+`amr` is `["fed", …]`.
+
+**Sign-in through this provider counts as a second factor** changes that for plain users: Quisora asks them for no
+second factor after this provider, even where one is required, and the session's `amr` is `["fed","mfa"]`. Turn it on
+only when the provider itself makes everyone use a second factor (your company SSO enforcing MFA). Managers and
+administrators always give their own. Only super admins can change it.
+
+## Leavers
+
+When someone leaves, their account at the provider is disabled, but a Quisora session they started through it would
+otherwise carry on. With `offline_access` in the provider's scopes, Quisora keeps the refresh token the provider gives
+at sign-in (sealed) and replays it every `session.upstream_check_minutes` (60 by default; 0 turns it off) while the user
+has a session that came through that provider. If the provider refuses it (`invalid_grant`), Quisora ends all of that
+user's sessions and refresh grants, and applications are told (`identity.refresh.refused`). The account is not
+disabled: lock it out or end-date it in Quisora for that. GitHub gives no refresh tokens, so this does not apply to it.
+
+## Network
+
+Quisora calls the provider's discovery, token and key endpoints from the server, over https only, without following
+redirects. Addresses on private networks (and loopback) are refused unless `server.allow_private_networks` is set: set
+it for a provider on your own network. A provider whose certificate comes from an internal CA needs that CA in
+`server.extra_ca_file`.
+
+## Audit
+
+| Event | When |
+| --- | --- |
+| `provider.create`, `provider.update`, `provider.delete` | Providers changed (a new secret shows as `client_secret: replaced`, never the value) |
+| `identity.link.email` | An account was linked by its verified email |
+| `identity.link.refused` | A manager or administrator was not linked by email |
+| `user.provision` | An account was created automatically |
+| `identity.unlink` | Links removed because the provider changed |
+| `identity.refresh.refused` | A leaver: the provider refused the refresh token, sessions ended |
+| `account.provider.connect`, `account.provider.connect_refused`, `account.provider.disconnect` | A user connected or disconnected a provider |
+| `user.provider.disconnect` | An administrator disconnected one |
+| `login.failure` with reason `upstream …` | A provider sign-in was refused (`not_linked`, `unverified`, `domain`, `exists`, `disabled`…) |

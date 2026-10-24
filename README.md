@@ -16,13 +16,14 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Sign-in.** Passkeys (as the whole sign-in or a second factor), password plus authenticator app (TOTP), recovery
   codes for a lost second factor, codes by email as a second factor where an organization allows it, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0
   and any OpenID Connect provider. Invitation links instead of admin-set passwords. Per-organization and per-tenant
-  MFA.
+  MFA. Guides: [docs/sign-in](docs/sign-in/README.md).
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
   revocation, userinfo, RP-initiated and back-channel logout, resource indicators, pushed authorization requests
   (RFC 9126), token exchange (RFC 8693), device sign-in for CLIs and TVs (RFC 8628), DPoP-bound tokens (RFC 9449), `claims` and `acr_values`. JWT
   access tokens signed with ES256, EdDSA, RS256 or PS256, and keys rotate automatically. The FAPI 2.0 Security
   Profile can be turned on per application. Passes the OpenID Foundation
-  certification plans ([docs/conformance.md](docs/conformance.md)).
+  certification plans ([docs/conformance.md](docs/conformance.md)). A guide for each, with curl examples:
+  [docs/oauth](docs/oauth/README.md).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
   document, and personal API tokens with scopes. Keys and passwords can be read from HashiCorp Vault or 1Password
   (Connect, or a service account in the 1Password build) and rotated without a restart.
@@ -84,7 +85,11 @@ and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it se
 response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md). Scripts and tools with personal API tokens:
 [docs/API-TOKENS.md](docs/API-TOKENS.md). MCP servers and AI clients that register themselves:
 [docs/MCP.md](docs/MCP.md).
-Reporting a vulnerability: [SECURITY.md](SECURITY.md).
+Connecting applications (sign-in, client credentials, device sign-in, token exchange, PAR, DPoP, FAPI 2.0):
+[docs/oauth](docs/oauth/README.md). How people sign in (passkeys, upstream providers, recovery codes, codes by email):
+[docs/sign-in](docs/sign-in/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md).
+Keys and passwords in Vault or 1Password: [docs/secret-stores.md](docs/secret-stores.md). Reporting a vulnerability:
+[SECURITY.md](SECURITY.md).
 
 ## Audit log and VictoriaLogs
 

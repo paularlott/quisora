@@ -14,8 +14,9 @@
 //
 // Organizations that require MFA (OrgSettings.RequireMFA) hold a password-verified user without a second factor at an
 // enrolment step until they register an authenticator app or a passkey; a user with a passkey and no TOTP must use
-// the passkey as the second factor; a passkey sign-in on its own satisfies the requirement. Upstream (federated)
-// sign-ins are not asked for a second factor here: the upstream provider is responsible for it.
+// the passkey as the second factor; a passkey sign-in on its own satisfies the requirement. An upstream (federated)
+// sign-in is a first factor like a password and gets the same second-factor step, unless its provider is trusted for
+// the second factor (Provider.TrustMFA, plain users only: ["fed","mfa"]).
 //
 // So a password-only sign-in is ["pwd"], password+TOTP is ["pwd","otp","mfa"], a passkey is ["hwk","user"] or
 // ["swk","user"], and a password followed by a passkey (an org that requires MFA) is ["pwd","swk","user","mfa"].

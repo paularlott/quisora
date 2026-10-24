@@ -29,7 +29,7 @@ holds it; reads, listings and searches still withhold the account.
 
 Before production:
 
-1. **Master key** (`server.master_key`): best read from Vault or 1Password ([references](RUNNING.md#secrets-in-vault-or-1password),
+1. **Master key** (`server.master_key`): best read from Vault or 1Password ([references](secret-stores.md),
    with read access to Quisora's items only), else an environment variable or a config file only Quisora's user can
    read; never on the command line or in the data directory. Kept apart from the data and from the backups.
    [Rotate it](RUNNING.md#rotating-the-master-key) on a schedule.
@@ -62,7 +62,7 @@ introspection), and with the API-token option every personal API token too. Your
 told (back-channel logout); ones that check access tokens themselves accept those already issued until they expire
 (`tokens.access_ttl`, 10 minutes by default). Applications acting for themselves (client credentials) are not
 affected: rotate their secrets, and disable a client to end the tokens it already holds. It is audited as `org.signout` / `server.signout`, then `signout.sweep`. See
-[emergency sign-out](RUNNING.md#emergency-sign-out).
+[emergency sign-out](emergency-sign-out.md).
 
 **An administrator's account may be compromised.**
 1. Lock it out: the user's page, **Lock out** (`POST /api/orgs/{org}/users/{id}/lock-out`). It disables the account,

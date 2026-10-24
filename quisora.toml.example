@@ -132,7 +132,7 @@ access = true                             # log every HTTP request (never its qu
 # token = ""                              # bearer token Prometheus sends to GET /metrics; empty = no metrics endpoint
 
 # Secret stores: any secret setting above may name its value instead of holding it, "vault://<path>#<field>" or
-# "op://<vault>/<item>/<field>" (docs/RUNNING.md, Secrets in Vault or 1Password). Read at start; master and cluster
+# "op://<vault>/<item>/<field>" (docs/secret-stores.md). Read at start; master and cluster
 # keys again on a reload (SIGHUP, or "Read secret stores now" on the system page).
 # [secrets.vault]
 # address = "https://vault.internal:8200"

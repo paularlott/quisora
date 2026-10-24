@@ -18,7 +18,7 @@ which beats the file. The public URL, for example, is `--public-url`, `QUISORA_P
   file or the environment. Given as flags they are accepted, but anyone on the machine can read them in the process
   list (`ps`), so every command prints a warning naming the variable and key to use instead. (The Taskfile's
   development tasks pass a development key as a flag on purpose.) Any of them can instead name a value in HashiCorp
-  Vault or 1Password: [Secrets in Vault or 1Password](#secrets-in-vault-or-1password).
+  Vault or 1Password: [secret stores](secret-stores.md).
 
 Settings every deployment sets:
 
@@ -103,227 +103,28 @@ Super admins have **System overview** at the bottom of the console's menu: one p
 shows the counts of organizations, users and sessions; the cluster, when nodes replicate over gossip (every node with
 its state and role, the quorum, and this node's own view, refreshed every 5 seconds); the signing keys (rotate, and
 remove an old one); whether a master key rotation is in progress (with a link to where it stands); and the
-server-wide [emergency sign-out](#emergency-sign-out). The menu keeps the organization you were last administering,
+server-wide [emergency sign-out](emergency-sign-out.md). The menu keeps the organization you were last administering,
 so it is one click back. `GET /api/system`, `GET /api/cluster` and `GET /api/keys` have the same figures. Each
 organization has an **Overview** page too, for its administrators and super admins, with its own emergency sign-out.
 
-## Sessions, tokens and sensitive changes
+## Sign-in, applications and incidents
 
-**Browser sessions** last `session.ttl` from sign-in (7 days) and end after `session.idle` unused (24 hours). An
-organization may set shorter ones on its settings page, never longer. Managers and above get
-`session.privileged_ttl` (12 hours) and `session.privileged_idle` (1 hour) when those are shorter. The primary
-organization's sign-in settings (methods, second factor, session lifetimes) cover the super admins, so only super
-admins change them.
+These have guides of their own:
 
-**Refresh tokens** of a new confidential client rotate (one use each): a copy used after the client has used the
-token is detected, and the whole grant ends (`oauth.refresh.reuse` in the audit log). A client that cannot keep the
-latest token can turn it off ("Rotate refresh tokens"). Public clients always rotate.
+- **How people sign in**, and the rules that protect accounts (session lifetimes, re-authentication for sensitive
+  changes, protecting administrators): [sign-in/](sign-in/README.md), with [passkeys](sign-in/passkeys.md),
+  [upstream providers](sign-in/providers.md), [recovery codes](sign-in/recovery-codes.md) and
+  [codes by email](sign-in/email-codes.md).
+- **Applications** (OAuth 2 and OpenID Connect): [oauth/](oauth/README.md).
+- **Emergency sign-out and lock-out**: [emergency-sign-out.md](emergency-sign-out.md).
+- **Secrets in Vault or 1Password**: [secret-stores.md](secret-stores.md).
+- **Personal API tokens**: [API-TOKENS.md](API-TOKENS.md).
 
-**Introspection** answers `active` for an access token only to a client the token was issued for (its audience).
-A resource server that serves several applications of the organization needs "May introspect every token of the
-organization" on its client; so does one that applications name as a resource (RFC 8707), since a resource is in a
-token's audience as its URI, not as a client.
-
-**Pushed authorization requests** (RFC 9126, `POST /oauth/par`): a client posts its authorization request there,
-authenticated as at the token endpoint, and sends the browser to `/oauth/authorize` with only `client_id` and the
-`request_uri` it got back. The request is checked before the user sees anything, its parameters never pass through
-the browser, and the `request_uri` works once, for 60 seconds. "Require pushed authorization requests" on a client
-refuses its authorization requests made any other way. A `request_uri` is used up when the
-request is decided (a code is issued, or the user denies or cancels), not on its first visit, so reloading the
-sign-in page works; presented again after that, it goes back to the application as `invalid_request_uri`.
-The sign-in page of an application's request has "Cancel and return to the application", which sends `access_denied`
-back to it. Request objects (JAR) are still not supported, pushed or not.
-
-**Token exchange** (RFC 8693, grant type `urn:ietf:params:oauth:grant-type:token-exchange`, confidential clients
-only): a client trades a user's access token (`subject_token`, type `urn:ietf:params:oauth:token-type:access_token`)
-for an access token of its own that acts for the user, to call another API with the user's identity. The client must
-be in the subject token's audience, or have "May introspect every token of the organization"; the user must have
-access to the client, as for a sign-in. The new token has at most the subject token's scopes (and the client's), only
-resources registered for the client (`resource` or `audience`), the subject token's expiry at the latest, and an
-`act` claim naming the client (and any actor before it, up to four). It is bound to the user's original grant:
-signing out ends it, but revoking it does not end that grant. There is no refresh or ID token, and no `actor_token`.
-Every exchange is audited (`oauth.token_exchange`).
-
-**Device sign-in** (RFC 8628, grant type `urn:ietf:params:oauth:grant-type:device_code`): for CLIs, TVs and other
-devices without a browser. Off by default; tick "Device sign-in" on the client (public or confidential, never with
-the FAPI 2.0 profile). The device posts to `POST /oauth/device_authorization` (`client_id`, or the client's usual
-authentication; optional `scope` and `resource`) and gets a `device_code`, a `user_code` such as `WDJB-MJHT`, the
-address `/device` (and `verification_uri_complete` with the code in it, for a QR code), `expires_in` 600 and
-`interval` 5. It shows the code and polls the token endpoint with `grant_type` and `device_code`: the answer is
-`authorization_pending`, `slow_down` (polling faster than the interval, which grows by five seconds each time),
-`access_denied`, `expired_token`, or once, the tokens: an ID token with `openid`, a refresh token with the refresh
-grant, and DPoP binding as at any token request. On `/device` the user types the code, signs in as for any
-application of the client's tenant (its sign-in methods, second factor and access lists apply), and always sees a
-consent screen warning them not to approve a code someone else sent: that is how device sign-in is phished. Managers
-and administrators can approve only on clients with "Managers and administrators may approve device sign-ins". A code
-works once, for 10 minutes, and an address may get 20 codes wrong per 15 minutes. As with a code exchange, the
-grant lasts as long as the approving browser's session unless `offline_access` was granted. Approvals are audited
-(`oauth.device.approve`; denials as `oauth.consent`), and so is the grant (`oauth.grant` with `grant_type`
-`device_code`).
-
-**DPoP** (RFC 9449, sender-constrained tokens): a client that sends a DPoP proof (header `DPoP`) with a token request
-gets an access token bound to the proof's key (`token_type` `DPoP`, `cnf.jkt` in the token and in introspection),
-accepted at userinfo and SCIM only with the `DPoP` authorization scheme and a fresh proof of that key. Proofs at the
-token and PAR endpoints need a nonce from this server: the first request fails with `use_dpop_nonce`, and every
-response carries the nonce for the next one in `DPoP-Nonce` (nonces last two to three minutes, on every node). Each
-proof works once. A public client's refresh tokens are bound to the key it first used; a confidential client's stay
-bound to its client authentication. An authorization request can name the key in advance (`dpop_jkt`, or a proof
-sent with a pushed request), and its code is then redeemed only with that key. "Require DPoP-bound tokens" on a
-client (`dpop_bound_access_tokens`) refuses its token requests without a proof. APIs that verify Quisora's access
-tokens themselves must check `cnf.jkt` against the request's proof; introspection reports it.
-
-**FAPI 2.0 Security Profile** ("FAPI 2.0 Security Profile" on a client, `fapi2_security_profile`): for APIs that need
-it, such as open banking. The client must use `private_key_jwt`, and the profile turns on "Require pushed
-authorization requests" and "Require DPoP-bound tokens" and turns off refresh token rotation (the profile asks for
-refresh tokens that do not rotate). Its client assertions must have the issuer alone, as a string, as their `aud`
-(not the token endpoint, not an array), and no RS256 is accepted from it or used for it: PS256, ES256 or EdDSA for
-assertions, DPoP proofs and ID tokens. Its authorization codes last at most 60 seconds whatever `tokens.code_ttl`
-says. Over TLS 1.2 the server offers only the forward-secret AES-GCM cipher suites (RFC 9325), for every client;
-TLS 1.3 is unaffected. Behind a proxy that ends TLS, the proxy's configuration decides.
-
-**`acr`**: the values a request names (an `acr` claim request first, then `acr_values`) are in order of preference,
-and the first one Quisora knows (`urn:quisora:acr:basic`, `urn:quisora:acr:mfa`) decides whether a second factor is a
-condition of the sign-in. An `acr` claim requested as essential with values none of which Quisora knows fails with
-`unmet_authentication_requirements`; requested as essential without values, it is simply returned.
-
-**Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks
-with its "Confirm it is you" dialog), and an API token can never make them, through the management API or SCIM:
-
-- deleting an organization;
-- rotating the signing keys;
-- changing the primary organization's sign-in settings;
-- making someone an administrator or super admin, or creating one;
-- removing another user's password;
-- issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
-
-Resetting the sign-in of an established manager or administrator (an invitation, removing their password, lowering
-their role, or changing their primary email address, where password resets go) is a super admin's change. A manager
-or administrator who has not signed in yet gets the next invitation only from whoever issued the current one, or from
-a super admin.
-
-**Super admins the server keeps.** Demoting, disabling, deleting or end-dating a super admin is refused when fewer
-usable super admins than the server needs would remain: one on a single node or nodes sharing a database, two in a
-gossip cluster (a change one node made but the majority has not confirmed yet must never leave none). Make someone
-else a super admin first. Organizations need no administrator of their own: super admins administer every one, so an
-organization's last administrator can be demoted or removed.
-
-**Recovery codes** stand in for the second factor (the authenticator app, or a passkey after the password) when it
-is not at hand: a lost phone, a broken security key. A user with a second factor makes ten from the account page
-(after confirming it is them) and sees them once; each signs in once, typed loosely (lower case, without dashes, O
-for 0). The second-factor step's **Try another way** lists what the account has instead: its passkey in place of the
-authenticator code, and its recovery codes while some are left; with neither, it says to ask an administrator for a
-new invitation. Using one is audited (`login.recovery_code`) and emailed to the user with the number left, so a code someone
-else got hold of is noticed at its first use. Making new codes ends the old ones; removing the last second factor,
-an invitation or a lock-out removes them. They are stored as hashes, and a used one is refused on every node. They do
-not replace a forgotten password: that is a reset or an invitation.
-
-**Codes by email** are a second factor an organization can allow (the organization dialog, "Allow codes by email as
-a second factor"; off by default, and it needs `mail.smtp_host`). Where a second factor is required, a user without
-an authenticator app or passkey gets a 6-digit code emailed to their verified address instead of being asked to set
-one up; users with one see "Email me a code" under **Try another way**. A code lasts 10 minutes, works once, and
-only for the sign-in it was sent for; a new one ends the last, at most every 30 seconds and five times per
-sign-in. Wrong codes count towards the lock-out like wrong authenticator codes. Sending is audited
-(`login.email_code.sent`), and the session's `amr` is `pwd otp mfa`. Managers and above never get it, and neither do
-addresses that are not verified. It is weaker than an app or a passkey: whoever can read the mailbox (and reset the
-password with it, where resets are on) has both factors, so allow it only where that is acceptable.
-
-**Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
-provider, an API token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second factor: a
-sign-in through a provider trusted as a second factor does not count when the account has one of its own.
-
-**Personal API tokens** never expire unless their owner gives a lifetime when making one (at most 10 years). Set
-`tokens.api_token_max_days` to require one: tokens then last at most that many days, and a token made without a
-lifetime gets the maximum. Tokens with the backup scope always expire within 30 days. Its owner can give a token a new secret from the
-account page (after confirming): the old secret stops working at once, and the name, access and expiry stay the same,
-so a new secret never extends a token's life.
-
-## Emergency sign-out
-
-Break glass: end every session of an organization, or of every organization, at once, on every node, when an attacker
-may hold sessions or tokens and you do not know whose.
-
-- **Console:** an organization's **Overview** page (its administrators and super admins), or the **System overview**
-  for every organization (super admins: **System overview**). It asks for a reason and for the organization's name (or `everyone`) to be
-  typed, and a re-authentication if you have not signed in or confirmed it is you in the last 5 minutes.
-- **API:** `POST /api/orgs/{org}/sign-out` or `POST /api/sign-out` with `{"reason": "…", "api_tokens": false}`, from a
-  browser session (an API token cannot pull it).
-- **Command line**, when the console cannot be used: `quisora sign-out --org acme --reason "…"` or
-  `quisora sign-out --all --reason "…"` (add `--api-tokens` to end personal API tokens too). It needs the master key and
-  the same settings as `serve`. On a shared database it works while the servers run; on BadgerDB or SQLite stop the
-  server first; in a gossip cluster stop one node, run it there and start the node again.
-
-What ends: every browser session and refresh grant (so the access tokens issued from them stop working through
-userinfo and introspection), and with the option every personal API token. The session you pulled it from stays.
-Applications are told (back-channel logout), and the ended records are deleted in the background. Signing in again
-works at once. Not ended: tokens of applications acting for themselves (client credentials; rotate the client's
-secret or disable the client), and access tokens already in the hands of applications that check them themselves
-rather than through introspection, until they expire (`tokens.access_ttl`, 10 minutes by default).
-
-How it works: each organization, and the server, keep sign-out counters, and every session, grant and API token is
-stamped with them when it is made. Pulling the lever increments a counter in one write, which the cluster confirms
-like any other; from then on everything stamped before it is refused. It does not depend on the nodes' clocks, and it
-cannot be half done. The counters are part of backups, and move with the primary organization (`quisora
-set-primary`), so nothing a sign-out ended comes back.
-
-To lock out one person instead (a compromised account, or a leaver), use **Lock out** on their user page
-(`POST /api/orgs/{org}/users/{id}/lock-out`): it disables the account, signs them out everywhere and removes every way
-they had to sign in. Enabling the account again brings none of that back; send a new invitation.
-
-## Secrets in Vault or 1Password
-
-Any secret setting (the list above) can name its value in a secret store instead of holding it:
-
-| Reference                               | Store                                                                                   |
-| --------------------------------------- | --------------------------------------------------------------------------------------- |
-| `op://<vault>/<item>/<field>`           | 1Password: the field of an item, by name (or id).                                       |
-| `op://<vault>/<item>/<section>/<field>` | 1Password: a field in a section of the item.                                            |
-| `vault://<path>#<field>`                | HashiCorp Vault (or OpenBao): the API path after `/v1/`, KV version 1 or 2; field `value` when none is named. |
-
-Every other value is the value itself, as before, so references and plain values mix freely.
-
-```toml
-[server]
-master_key = "vault://secret/data/quisora#master_key"            # a KV version 2 mount called "secret"
-previous_master_keys = ["vault://secret/data/quisora#previous_master_key"]
-
-[storage.postgres]
-dsn = "op://Infra/Quisora PostgreSQL/dsn"
-
-[secrets.vault]
-address = "https://vault.internal:8200"
-token_file = "/etc/quisora/vault-token"   # or token = "…"; or AppRole: role_id, secret_id or secret_id_file
-# namespace = "admin/quisora"             # Vault Enterprise
-# ca_file = "/etc/quisora/internal-ca.pem"
-
-[secrets.onepassword]
-connect_url = "https://op-connect.internal:8080"   # 1Password Connect
-connect_token_file = "/etc/quisora/op-connect-token"
-# service_account_token = "ops_…"         # a service account instead of Connect: needs the 1Password build (below)
-```
-
-- **When they are read.** Every command that runs against the server reads the references it needs when it starts;
-  `serve` refuses to start if a store cannot be read. The values are kept in memory only: nothing is written to disk.
-- **Reloading.** A configuration reload reads the master keys and the cluster keys from their stores again and
-  switches to them: SIGHUP on one node, or **Read secret stores now** on the console's system page (super admins,
-  after confirming it is them), which every node runs, checking first and changing nothing unless all can. Nodes
-  sharing a database are reached through `cluster.notify`; without it, reload each node (SIGHUP). A store that cannot
-  be read fails the reload and leaves the keys in use as they were. Other settings (DSNs, the SMTP password, the
-  BadgerDB encryption key) are read at start-up only, like their plain values.
-- **Rotating the master key** is the [usual two steps](#rotating-the-master-key), each an edit in the store and a
-  reload: put the new key in the previous key's field (keeping the old one as the master key), read; then swap them,
-  read; once the status says `complete`, empty the previous key's field, read. An empty field means "no key": a
-  previous key's field can stay in the configuration between rotations. Removing the old key before every secret is
-  re-sealed is refused, as with keys in the config file.
-- **The stores' own credentials** go in the config file, in a file it names (`*_file`, its first line) or in the
-  environment (`QUISORA_VAULT_TOKEN`, `QUISORA_ONEPASSWORD_CONNECT_TOKEN`…). Keep those files, and a config file that
-  holds a secret, readable by the user Quisora runs as only (`chmod 600`): every command warns about one that others
-  can read. Prefer Vault AppRole, with a short token lifetime, to a long-lived token; give the token, or the 1Password
-  service account or Connect token, read access to Quisora's items only.
-- **1Password service accounts** use 1Password's SDK, which talks to 1Password's servers over the internet. Builds
-  include it only with the `onepassword` build tag (`task build-1password`, the `quisora-1password-…` release
-  binaries, or `docker build --build-arg GO_TAGS=onepassword`), about 15 MB larger. Any other build reads 1Password
-  through a Connect server you run, and refuses a service account token with a message saying so. Vault and Connect
-  can both run on your own network.
+Settings the guides refer to: `session.ttl`, `session.idle`, `session.privileged_ttl` and `session.privileged_idle`
+(session lifetimes); `session.upstream_check_minutes` (leaver detection); `tokens.*` (token lifetimes and signing);
+`tokens.api_token_max_days`; `[secrets.vault]` and `[secrets.onepassword]`. TLS 1.2 connections are offered only the
+forward-secret AES-GCM cipher suites (RFC 9325, as FAPI 2.0 requires); TLS 1.3 is unaffected. Behind a proxy that ends
+TLS, the proxy's configuration decides.
 
 ## Rotating the master key
 
@@ -541,7 +342,7 @@ Run `quisora bootstrap` once, against the database, before the first node starts
 
 Every node has its own database (BadgerDB is the usual choice) and the nodes replicate every write.
 A gossip cluster keeps at least two super admins: make a second one before you rely on the cluster (see
-[sensitive changes](#sessions-tokens-and-sensitive-changes)).
+[protecting administrators](sign-in/README.md#protecting-administrators)).
 
 ```toml
 [server]
@@ -649,11 +450,11 @@ VictoriaLogs:
 
 | Area | Events |
 | --- | --- |
-| Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone`, `password.forgot`, `password.reset`, `invite.accept` |
+| Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
-| Account self-service | `account.*`: passkeys, authenticator app, sessions, applications, connected providers, email verification |
+| Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
 
 Updates record what changed, field by field, as `changed.<field>` = `old → new` (`changed.role`, `changed.email`,
 `changed.email_verified`, `changed.settings.require_mfa`, …). Fields that hold secrets never appear; a replaced

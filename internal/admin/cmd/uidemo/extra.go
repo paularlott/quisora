@@ -10,6 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/mail"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -26,6 +27,22 @@ func extraModules(s *web.Server, adm *admin.Module) {
 	adm.Mailer = demoMailer{m}
 	op := oidc.New(s) // the OAuth pages: consent, device sign-in
 	s.Use(op)
+	demoEvict = func(rec *store.Record) {
+		switch rec.Kind {
+		case model.KindClient:
+			op.InvalidateClient(rec.ID)
+		case model.KindUser:
+			op.InvalidateUser(rec.ID)
+		case model.KindOrg:
+			op.InvalidateOrg(rec.ID)
+		case model.KindTenant:
+			op.InvalidateTenant(rec.ID)
+		case model.KindGrant:
+			op.InvalidateGrant(rec.ID)
+		case model.KindMember, model.KindGroup:
+			op.InvalidateMembership(rec.Scope)
+		}
+	}
 	s.Use(login.New(s, login.Options{Mail: m, StepUp: op.FlowWantsMFA}))
 }
 

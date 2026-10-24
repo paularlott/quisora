@@ -359,3 +359,50 @@ func TestSecondFactorAlternatives(t *testing.T) {
 		t.Fatalf("no two-factor session: %+v", sess)
 	}
 }
+
+// A copied authenticator caught while confirming it is the user (re-authentication) is refused, its passkey disabled,
+// and recorded as passkey.clone, as at sign-in.
+func TestReauthPasskeyClone(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	setup := e.signedIn(t, pat)
+	setup.fresh()
+	cred := setup.registerPasskey("Key")
+	c := e.signedIn(t, pat) // another browser, signed in an hour ago
+	c.auth = setup.auth
+	reauth := func(stale bool) (int, map[string]any) {
+		res, begin := c.api("POST", "/api-internal/account/reauth/passkey/begin", nil)
+		wantStatus(t, res, begin, 200)
+		opts, _ := json.Marshal(begin["options"])
+		var assertion []byte
+		var err error
+		if stale {
+			assertion, err = c.auth.GetWith(opts, cred, 1, e.Cfg.Server.PublicURL)
+		} else {
+			assertion, _, err = c.auth.Get(opts)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, out := c.api("POST", "/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": begin["challenge"],
+			"credential": json.RawMessage(assertion)})
+		return res.StatusCode, out
+	}
+	for range 2 {
+		if status, out := reauth(false); status != 200 {
+			t.Fatalf("confirming: %d %v", status, out)
+		}
+	}
+	if status, out := reauth(true); status != 422 {
+		t.Fatalf("a copied authenticator confirmed: %d %v", status, out)
+	}
+	audits := e.audits(t, "passkey.clone")
+	if len(audits) != 1 || audits[0].Detail["passkey"] != "Key" || audits[0].Detail["during"] != "reauth" {
+		t.Fatalf("clone audits %+v", audits)
+	}
+	list, _ := e.Svc.Passkeys.All(context.Background(), pat.ID)
+	if len(list) != 1 || !list[0].Disabled {
+		t.Fatalf("the passkey is not disabled: %+v", list)
+	}
+}

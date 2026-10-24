@@ -340,10 +340,21 @@ type publishing struct {
 	hub *events.Hub
 }
 
+// demoEvict clears the OAuth module's cached copy of a changed record (set by extraModules), as the server's own
+// change hooks do: a rotated client secret, say, stops working at once.
+var demoEvict func(*store.Record)
+
+func (p *publishing) publish(rec *store.Record) {
+	p.hub.Publish(rec)
+	if demoEvict != nil {
+		demoEvict(rec)
+	}
+}
+
 func (p *publishing) Put(ctx context.Context, rec *store.Record) error {
 	err := p.Store.Put(ctx, rec)
 	if err == nil {
-		p.hub.Publish(rec)
+		p.publish(rec)
 	}
 	return err
 }
@@ -351,7 +362,7 @@ func (p *publishing) Put(ctx context.Context, rec *store.Record) error {
 func (p *publishing) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
 	err := p.Store.CompareAndPut(ctx, rec, expect)
 	if err == nil {
-		p.hub.Publish(rec)
+		p.publish(rec)
 	}
 	return err
 }
@@ -359,7 +370,7 @@ func (p *publishing) CompareAndPut(ctx context.Context, rec *store.Record, expec
 func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool, []string, error) {
 	applied, losers, err := p.Store.PutReplicated(ctx, rec)
 	if applied {
-		p.hub.Publish(rec)
+		p.publish(rec)
 	}
 	return applied, losers, err
 }

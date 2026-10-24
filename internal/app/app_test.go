@@ -448,3 +448,42 @@ var lastBootstrapLink string
 
 // bootstrapNext makes the next startAppWith bootstrap a gossip node too (the first node of a new cluster).
 var bootstrapNext bool
+
+// A rotated client secret is refused at once by the running server: the client cached by the OAuth module goes when
+// the client record changes (docs/oauth/client-authentication.md).
+func TestRotatedClientSecretRefused(t *testing.T) {
+	a, hc, base := startApp(t, "badgerdb")
+	ctx := context.Background()
+	primary, err := a.Svc.PrimaryOrg(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl, secret, err := a.Svc.CreateClient(ctx, service.System, primary.ID, service.ClientInput{Name: ptr("sync"),
+		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{"reports:read"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := func(secret string) int {
+		form := url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}
+		code, _ := doJSON(t, hc, "POST", base+"/oauth/token",
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, strings.NewReader(form.Encode()))
+		return code
+	}
+	if code := token(secret); code != 200 { // the client is now cached
+		t.Fatalf("first secret: %d", code)
+	}
+	fresh, err := a.Svc.RotateClientSecret(ctx, service.System, cl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for token(secret) != 401 {
+		if time.Now().After(deadline) {
+			t.Fatal("the old secret still works after rotation")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if code := token(fresh); code != 200 {
+		t.Fatalf("new secret: %d", code)
+	}
+}
