@@ -271,11 +271,12 @@ func TestUniqueClashKeepsFirstClaim(t *testing.T) {
 	}
 }
 
-// A3: a membership is revoked on node 0 (durable) at a later real time than it was re-added on node 2, but node 2's
-// clock is fast so its re-addition carries the newer version. The re-addition's generation is the deletion it had
-// seen (the earlier one): the revocation it had not seen wins on every node, whatever the versions say. (The nodes of
-// this test share one process clock, so node 2's skew is made larger than MaxSkew — 40 s rather than the 5 s
-// reported — to keep the shared clock from following it; the rule does not depend on the size of the skew.)
+// A2 (revocation vs a fast node's re-addition): the member is removed everywhere; node 2, whose clock runs ahead,
+// re-adds it, but its re-addition reaches only node 2 (granted by a quorum, applied there alone); later in real
+// time node 0, which has not seen it, revokes the member. The revocation wins on every node. A re-addition far
+// ahead (past voteAhead) is granted by no voter at all; one within it is granted by a voter the revocation must also
+// win, whose high-water mark forces the revocation to a later version — and a quorum kind ranks by version
+// (store.Head.Rank), so the later revocation outranks it however the generations compare.
 func TestRevocationBeatsReAddFromFastNode(t *testing.T) {
 	c := newTCluster(t, 3, memBackend)
 	c.startAll()
@@ -301,29 +302,50 @@ func TestRevocationBeatsReAddFromFastNode(t *testing.T) {
 		}
 		return true
 	})
-	// Node 2, its clock fast, adds the member again: a re-creation of the deletion it saw.
-	c.dropData(2, true)
-	readd := *m
-	readd.Version = hlc.FromTime(time.Now().Add(40 * time.Second))
-	rec, _ := store.EncodeAsIs(&readd)
-	rec.Origin, rec.Epoch, rec.Created = c.nodes[2].n.ID(), first.Version, readd.Version
-	if _, err := c.nodes[2].st().applyReplica(bg, rec); err != nil {
-		t.Fatal(err)
+	readd := func(ahead time.Duration) *store.Record {
+		x := *m
+		x.Version = hlc.FromTime(time.Now().Add(ahead))
+		rec, _ := store.EncodeAsIs(&x)
+		rec.Origin, rec.Epoch, rec.Created = c.nodes[2].n.ID(), first.Version, x.Version
+		return rec
 	}
+	// Far ahead: no voter grants it, so it can take effect nowhere.
+	far := readd(40 * time.Second)
+	for _, i := range []int{1, 2} {
+		if r := c.nodes[i].n.voter.prepare(bg, "far", far, modeMatch, first.Rank()); r.St == stGrant {
+			t.Fatalf("node %d granted a version 40 s ahead", i)
+		}
+	}
+	// Within the bound: granted by nodes 1 and 2, applied on node 2 only.
+	c.dropData(2, true)
+	near := readd(3 * time.Second) // ahead, within the bound (and within MaxSkew: the tests share one clock)
+	for _, i := range []int{1, 2} {
+		if r := c.nodes[i].n.voter.prepare(bg, "near", near, modeMatch, first.Rank()); r.St != stGrant {
+			t.Fatalf("node %d: re-addition within the bound: %d", i, r.St)
+		}
+	}
+	if st := c.nodes[2].n.voter.commit(bg, "near", near, true); st != stGrant {
+		t.Fatalf("partial re-addition commit: %d", st)
+	}
+	c.nodes[1].n.voter.release("near", near.Version) // its writer died before committing there
 	if _, err := members(c.nodes[2]).Get(bg, m.ID); err != nil {
 		t.Fatal("test set-up: node 2 holds the re-added member")
 	}
-	time.Sleep(50 * time.Millisecond)
-	// Later in real time, node 0 (which has not seen the re-addition) revokes it.
+	// Later in real time, node 0 (which has not seen the re-addition) revokes it; nodes 0 and 1 confirm.
 	if err := members(c.nodes[0]).Delete(store.WithDurable(bg), m.ID); err != nil {
 		t.Fatal(err)
 	}
 	revoke, _ := c.nodes[0].st().Lookup(bg, model.KindMember, m.ID)
-	if revoke.Version >= rec.Version {
-		t.Fatal("test set-up: the revocation must carry the older version")
+	if revoke.Version <= near.Version {
+		t.Fatalf("the revocation (%d) did not go past the re-addition node 1 granted (%d)", revoke.Version, near.Version)
+	}
+	// Healing: the re-addition reaches nodes 0 and 1, the revocation node 2.
+	for _, i := range []int{0, 1} {
+		if _, err := c.nodes[i].st().applyReplica(bg, near); err != nil {
+			t.Fatal(err)
+		}
 	}
 	c.dropData(2, false)
-	time.Sleep(time.Second)
 	waitFor(t, 15*time.Second, "revocation everywhere", func() bool {
 		for _, tn := range c.nodes {
 			if _, err := members(tn).Get(bg, m.ID); err == nil {

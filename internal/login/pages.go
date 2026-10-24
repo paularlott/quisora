@@ -286,8 +286,15 @@ func (m *Module) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := web.User(r)
-	m.s.Sessions.End(r.Context(), w, r)
 	org, _ := m.s.Svc.Orgs.Get(r.Context(), u.OrgID)
+	if _, err := m.s.Sessions.End(r.Context(), w, r); err != nil {
+		// The cookie is cleared, but the session (or a refresh grant of it) is still in the store, so whoever else
+		// holds it is not signed out: say so, instead of "signed out" and a logout in the audit log.
+		m.s.Log.Warn("logout: the session could not be ended", "user", u.ID, "error", err)
+		m.audit(r, "logout", org, u, u.Username, map[string]string{"result": "incomplete", "error": err.Error()})
+		writeErr(w, http.StatusServiceUnavailable, "You could not be fully signed out right now. Please try again shortly.", "")
+		return
+	}
 	m.audit(r, "logout", org, u, u.Username, nil)
 	// Back to the organization's sign-in page, so signing in again needs no org picker.
 	dest := "/"

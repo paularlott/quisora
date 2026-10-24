@@ -142,6 +142,13 @@ func modules(ctx context.Context, a *App) []web.Module {
 			} else if n > 0 {
 				a.Log.Info("users past their end date disabled", "count", n)
 			}
+			// A change of a group's members whose writer died after committing it is finished here (it is visible
+			// to every reader meanwhile): its membership records are written and the entry cleared.
+			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); err != nil {
+				a.Log.Error("finishing group changes", "error", err)
+			} else if n > 0 {
+				a.Log.Info("group changes left unfinished by their writer were finished", "count", n)
+			}
 			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
 			if time.Since(lastSelfReg) >= time.Hour {
 				lastSelfReg = time.Now()

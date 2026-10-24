@@ -44,6 +44,8 @@ func WriteError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: "That already exists."})
 	case errors.Is(err, service.ErrStale):
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: "Someone else changed this. Reload and try again."})
+	case errors.Is(err, service.ErrTooLarge):
+		WriteJSON(w, http.StatusRequestEntityTooLarge, ErrorBody{Error: capitalise(err.Error()) + "."})
 	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: capitalise(err.Error()) + "."})

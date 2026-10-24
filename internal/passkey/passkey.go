@@ -145,6 +145,11 @@ type ceremony struct {
 	Session webauthn.SessionData `json:"s"`
 	UserID  string               `json:"u,omitempty"`
 	Extra   map[string]string    `json:"x,omitempty"`
+	// Gen is the user's security generation (model.User.SecurityGen) when a ceremony for a known user began: the
+	// finish refuses the ceremony once the account's has moved on (a credential set, changed or removed meanwhile),
+	// so a response to a challenge issued against the account as it was does not register or sign in against the
+	// account as it is. A discoverable sign-in names no user and has nothing to bind to until it is finished.
+	Gen uint64 `json:"g,omitempty"`
 }
 
 func (s *Service) save(ctx context.Context, c *ceremony) (string, error) {
@@ -185,7 +190,7 @@ func (s *Service) BeginRegistration(ctx context.Context, u *model.User, extra ma
 	if err != nil {
 		return "", nil, err
 	}
-	id, err := s.save(ctx, &ceremony{Kind: "reg", Session: *sd, UserID: u.ID, Extra: extra})
+	id, err := s.save(ctx, &ceremony{Kind: "reg", Session: *sd, UserID: u.ID, Extra: extra, Gen: u.SecurityGen})
 	return id, creation, err
 }
 
@@ -200,32 +205,57 @@ func (s *Service) FinishRegistration(ctx context.Context, u *model.User, id stri
 const PurposeKey = "purpose"
 
 // FinishRegistrationAs is FinishRegistration for a ceremony begun with Extra[PurposeKey] == purpose; any other
-// purpose is ErrChallenge and nothing is stored. An empty purpose accepts any.
+// purpose is ErrChallenge and nothing is stored. An empty purpose accepts any. It is VerifyRegistrationAs followed
+// by StoreRegistration: u must be the user as just read by the caller (see StoreRegistration).
 func (s *Service) FinishRegistrationAs(ctx context.Context, purpose string, u *model.User, id string, credential []byte, name string) (*model.Passkey, map[string]string, error) {
-	c, err := s.take(ctx, id, "reg")
+	reg, err := s.VerifyRegistrationAs(ctx, purpose, u, id, credential, name)
 	if err != nil {
 		return nil, nil, err
 	}
-	if purpose != "" && c.Extra[PurposeKey] != purpose {
-		return nil, nil, ErrChallenge
+	pk, err := s.StoreRegistration(ctx, u, reg)
+	if err != nil {
+		return nil, nil, err
 	}
-	if c.UserID != u.ID {
-		return nil, nil, ErrChallenge
+	return pk, reg.Extra, nil
+}
+
+// Registration is a verified passkey registration not yet stored (VerifyRegistrationAs): StoreRegistration writes
+// it. Between the two the caller commits whatever the registration was the proof for (uses up a sign-in ticket, or
+// redeems an invitation link), so that a response that does not verify costs it nothing, and nothing is stored
+// before the caller's own commit succeeds.
+type Registration struct {
+	Passkey *model.Passkey
+	Extra   map[string]string
+}
+
+// VerifyRegistrationAs takes the challenge and verifies the authenticator's attestation response for u (the ceremony
+// must have been begun for u, for purpose, and at u's current security generation: a ceremony begun before the
+// account changed is ErrChallenge). Nothing is stored.
+func (s *Service) VerifyRegistrationAs(ctx context.Context, purpose string, u *model.User, id string, credential []byte, name string) (*Registration, error) {
+	c, err := s.take(ctx, id, "reg")
+	if err != nil {
+		return nil, err
+	}
+	if purpose != "" && c.Extra[PurposeKey] != purpose {
+		return nil, ErrChallenge
+	}
+	if c.UserID != u.ID || c.Gen != u.SecurityGen {
+		return nil, ErrChallenge
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBytes(credential)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrVerify, err)
+		return nil, fmt.Errorf("%w: %v", ErrVerify, err)
 	}
 	w, _, err := s.loadUser(ctx, u)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	cred, err := s.wa.CreateCredential(w, c.Session, parsed)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrVerify, err)
+		return nil, fmt.Errorf("%w: %v", ErrVerify, err)
 	}
 	if !cred.Flags.UserVerified { // belt and braces: sign-in requires user verification, so must registration
-		return nil, nil, fmt.Errorf("%w: the authenticator did not verify the user (set up a PIN or biometrics on it)", ErrVerify)
+		return nil, fmt.Errorf("%w: the authenticator did not verify the user (set up a PIN or biometrics on it)", ErrVerify)
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -244,13 +274,33 @@ func (s *Service) FinishRegistrationAs(ctx context.Context, purpose string, u *m
 		Transports: tr, BackupEligible: cred.Flags.BackupEligible, BackupState: cred.Flags.BackupState,
 		UserVerified: cred.Flags.UserVerified,
 	}
-	if err := s.svc.Passkeys.Create(ctx, pk); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			return nil, nil, fmt.Errorf("%w: credential already registered", ErrVerify)
-		}
-		return nil, nil, err
+	return &Registration{Passkey: pk, Extra: c.Extra}, nil
+}
+
+// StoreRegistration stores a verified registration as a passkey of u, which must be the user as just read by the
+// caller (not a cached copy). A passkey is a way into the account, so the write moves the account's security
+// generation on first, with a compare-and-swap on u's version — store.ErrStale when the account changed since the
+// caller read it (another completion set a factor, the owner changed the password), and nothing is stored — and
+// only then writes the credential. Two completions racing to give an account its first factor therefore end with
+// exactly one. A failure between the two writes leaves a moved-on generation and no passkey, which only makes people
+// start again, never a passkey the generation does not account for.
+func (s *Service) StoreRegistration(ctx context.Context, u *model.User, reg *Registration) (*model.Passkey, error) {
+	if reg.Passkey.UserID != u.ID {
+		return nil, ErrChallenge
 	}
-	return pk, c.Extra, nil
+	u.BumpSecurity()
+	if err := s.svc.Users.Update(service.Durable(ctx), u); !store.Applied(err) {
+		u.SecurityGen--
+		return nil, err
+	}
+	pk := *reg.Passkey
+	if err := s.svc.Passkeys.Create(ctx, &pk); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return nil, fmt.Errorf("%w: credential already registered", ErrVerify)
+		}
+		return nil, err
+	}
+	return &pk, nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -289,7 +339,11 @@ func (s *Service) BeginLogin(ctx context.Context, u *model.User, extra map[strin
 	if err != nil {
 		return "", nil, err
 	}
-	id, err := s.save(ctx, &ceremony{Kind: "login", Session: *sd, UserID: uid, Extra: extra})
+	c := &ceremony{Kind: "login", Session: *sd, UserID: uid, Extra: extra}
+	if u != nil {
+		c.Gen = u.SecurityGen
+	}
+	id, err := s.save(ctx, c)
 	return id, assertion, err
 }
 
@@ -349,6 +403,9 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		if !user.Enabled(time.Now()) {
 			return nil, ErrInactive
 		}
+		if user.SecurityGen != c.Gen { // the account changed since the challenge was issued against it
+			return nil, ErrChallenge
+		}
 		var w *waUser
 		if w, pks, err = s.loadUser(ctx, user); err != nil {
 			return nil, err
@@ -407,7 +464,9 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		// deletes it and adds their authenticator again (the account page says why), and every session it signed in
 		// ends — the copy's holder may be one of them.
 		s.disable(ctx, pk)
-		s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID)
+		if _, err := s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID); err != nil {
+			s.svc.Log.WithError(err).Error("passkey clone detected; not every session it signed in could be ended", "user", pk.UserID, "passkey", pk.ID)
+		}
 		return &LoginResult{User: user, Passkey: pk}, ErrCloneDetected
 	}
 	s.touch(ctx, pk, cred)
@@ -416,9 +475,11 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		BackupEligible: flags.HasBackupEligible()}, nil
 }
 
-// disable marks a passkey disabled (durably; retried on a concurrent update).
+// disable marks a passkey disabled (durably; retried on a concurrent update) and moves the account's security
+// generation on: a passkey that no longer signs in is a factor removed, so whatever is in flight for the account ends.
 func (s *Service) disable(ctx context.Context, pk *model.Passkey) {
 	ctx = service.Durable(context.WithoutCancel(ctx))
+	defer func() { _, _ = s.svc.AdvanceSecurity(ctx, pk.UserID) }()
 	for range 3 {
 		pk.Disabled = true
 		if err := s.svc.Passkeys.Update(ctx, pk); !errors.Is(err, store.ErrStale) {

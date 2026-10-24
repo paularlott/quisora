@@ -235,7 +235,13 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 		return nil, expired
 	}
 	_ = p.s.Eph.Delete(ctx, nsDevicePoll, deviceCode)
-	if u, err := p.user(ctx, d.UserID); err == nil && u.Role.Privileged() && !c.DevicePrivileged {
+	// The approver's role is checked on the user as they are now (userGrant then checks the rest about them); a
+	// user that cannot be read decides nothing, and a user that is gone is refused by userGrant.
+	u, err := p.user(ctx, d.UserID)
+	if err != nil && !gone(err) {
+		return nil, serverError(unavailable(err))
+	}
+	if err == nil && u.Role.Privileged() && !c.DevicePrivileged {
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,

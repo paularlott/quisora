@@ -190,16 +190,27 @@ func (p *Provider) userTags(ctx context.Context, u *model.User, app *service.App
 }
 
 // groupInfo returns the ids, names and merged tags of the user's groups from the per-node cache (one store lookup
-// serves the claims and the access check).
+// serves the claims and the access check). When the groups cannot be read the claims go out without them (logged);
+// the access check uses groupsRead instead, which reports the failure: a user allowed through a group would
+// otherwise be refused, and told their access was taken away, by a store hiccup.
 func (p *Provider) groupInfo(ctx context.Context, u *model.User) groupEntry {
-	gen := p.membershipGen(u.OrgID)
-	if e, ok := p.groups.get(u.ID); ok && e.gen == gen {
-		return e
-	}
-	gs, err := p.svc.UserGroups(ctx, u)
+	e, err := p.groupsRead(ctx, u)
 	if err != nil {
 		p.log.Warn("oidc: loading groups", "user", u.ID, "error", err)
 		return groupEntry{names: []string{}}
+	}
+	return e
+}
+
+// groupsRead is groupInfo with the read's failure instead of an empty answer.
+func (p *Provider) groupsRead(ctx context.Context, u *model.User) (groupEntry, error) {
+	gen := p.membershipGen(u.OrgID)
+	if e, ok := p.groups.get(u.ID); ok && e.gen == gen {
+		return e, nil
+	}
+	gs, err := p.svc.UserGroups(ctx, u)
+	if err != nil {
+		return groupEntry{}, err
 	}
 	e := groupEntry{ids: make([]string, 0, len(gs)), names: make([]string, 0, len(gs)), gen: gen}
 	var lists [][]string
@@ -211,13 +222,15 @@ func (p *Provider) groupInfo(ctx context.Context, u *model.User) groupEntry {
 	slices.Sort(e.names)
 	e.tags = model.MergeTags(lists...)
 	p.groups.put(u.ID, e)
-	return e
+	return e, nil
 }
 
 // errNoAccess: the user may not use the application (its tenant is members-only and no live access covers it).
 var errNoAccess = errors.New("the user has no access to this application")
 
-// appAccess decides a user's access to client c (tenant t, resolved when nil): see service.ClientAccess.
+// appAccess decides a user's access to client c (tenant t, resolved when nil): see service.ClientAccess. An error
+// is a read that failed (the tenant, the user's groups or their access entries): no decision, which every caller
+// answers as such (503), never as "allowed" nor as "taken away". A tenant that is gone is service.ErrNotFound.
 func (p *Provider) appAccess(ctx context.Context, c *model.Client, t *model.Tenant, u *model.User) (*service.AppAccess, error) {
 	if t == nil {
 		var err error
@@ -225,7 +238,11 @@ func (p *Provider) appAccess(ctx context.Context, c *model.Client, t *model.Tena
 			return nil, err
 		}
 	}
-	return p.svc.ClientAccess(ctx, t, c, u, p.groupInfo(ctx, u).ids)
+	groups, err := p.groupsRead(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return p.svc.ClientAccess(ctx, t, c, u, groups.ids)
 }
 
 // idToken mints the OIDC ID token (claims by scope).

@@ -131,7 +131,10 @@ curl -s "$QUISORA/oauth/userinfo" -H "Authorization: Bearer $(jq -r .access_toke
 ```
 
 The same claims as the ID token, read fresh: a name changed since the sign-in shows here. A token whose user lost
-access to the application since is refused.
+access to the application since is refused (401 `invalid_token`), as it is at introspection: the two make the same
+decision. When Quisora cannot make it (a store read failed), the answer is 503 `temporarily_unavailable` with
+`Retry-After` and no `WWW-Authenticate` challenge: the token is not known to be bad, so keep it and try again; the
+profile is never released on an undecided check.
 
 ## Refreshing
 
@@ -141,7 +144,9 @@ curl -s "$QUISORA/oauth/token" -d grant_type=refresh_token -d refresh_token="$(j
 ```
 
 `scope` may ask for fewer scopes than were granted, `resource` for fewer resources. Every refresh checks again that
-the user is enabled and still has access.
+the user is enabled and still has access. `invalid_grant` means the grant has ended (revoked, signed out, access
+taken away): discard the token and sign the user in again. A check Quisora could not make (a store read failed)
+answers 503 `temporarily_unavailable` instead: the token may be good, keep it and retry.
 
 - **Rotation.** By default each refresh returns a new refresh token and the old one stops working; presenting an old
   one again ends the whole grant (`oauth.refresh.reuse` in the audit log), since only a copy would do that. Public
@@ -170,6 +175,12 @@ Only confidential clients introspect, and a client sees `active: true` only for 
 on **May introspect every token of the organization** on its client. Refresh tokens can be introspected by the client
 they belong to; [personal API tokens](../API-TOKENS.md#your-own-applications-api) with the `api` scope too.
 
+A user's token is `active` only while the user may still use the application: the same checks as userinfo (user
+enabled, grant not revoked or signed out, access to a members-only tenant's application still held, a
+self-registered application's resource still accepting it). `active: false` is a verdict; when Quisora cannot reach
+one (a store read failed) it answers 503 `temporarily_unavailable` rather than either, so an API neither serves a
+token that may have been revoked nor refuses a user whose token is fine.
+
 ## Revoking tokens
 
 ```bash
@@ -179,7 +190,9 @@ curl -s "$QUISORA/oauth/revoke" -d token="$(jq -r .refresh_token tokens.json)" \
 
 Revoking a refresh token, or one of the client's access tokens, ends the grant: every token from that sign-in stops
 working (access tokens through introspection and userinfo; an API checking signatures itself accepts them until they
-expire). The answer is 200 whether or not the token was valid (RFC 7009).
+expire). The answer is 200 whether or not the token was valid (RFC 7009). When the grant could not be ended (the
+deletion did not persist), the answer is 503 `temporarily_unavailable` with `Retry-After` (RFC 7009 §2.2.1): the
+token still works, nothing is recorded as revoked, and the client retries.
 
 ## Signing out
 

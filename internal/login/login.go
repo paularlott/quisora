@@ -417,6 +417,69 @@ type ticket struct {
 	Tenant  string   `json:"t,omitempty"` // tenant name the sign-in is for
 	// Provider is the upstream provider of a federated first factor (recorded on the session it ends in).
 	Provider string `json:"pv,omitempty"`
+	// Gen is the account's security generation (model.User.SecurityGen) when the first factor was verified, and Stamp
+	// the sign-out counters then (model.SignOutStamp). Every later step checks both against the account as it is now
+	// (ticketCurrent): a ticket whose password has since been changed, whose account set up a second factor
+	// meanwhile, was disabled, re-enabled or given another role, or whose organization pulled the emergency
+	// sign-out lever, is dead, and the browser holding it starts again with the account's current credentials.
+	Gen   uint64             `json:"g"`
+	Stamp model.SignOutStamp `json:"st"`
+}
+
+// bind records on t the account state its first factor was verified against (see ticket.Gen).
+func (m *Module) bind(ctx context.Context, t *ticket, u *model.User) error {
+	st, err := m.s.Svc.SessionStamp(ctx, u.OrgID)
+	if err != nil {
+		return err
+	}
+	t.UserID, t.Gen, t.Stamp = u.ID, u.SecurityGen, st
+	return nil
+}
+
+// ticketCurrent reports whether t still binds to u as the account is now: the one it was issued for, enabled, at the
+// same security generation, and not signed out by the emergency lever since. u must be freshly read.
+func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bool {
+	return t.UserID == u.ID && u.Enabled(time.Now()) && u.SecurityGen == t.Gen &&
+		m.s.Svc.SessionCurrent(ctx, u.OrgID, t.Stamp)
+}
+
+// ticketUser loads the user and organization of a ticket's sign-in, as they are now, if the ticket still binds to
+// them (ticketCurrent). The user is read afresh here, so a step that commits a change to it (setting a factor) does
+// so with a compare-and-swap on this very version: a change made between this read and that write — another
+// completion of the same sign-in, the owner setting up a factor — makes the write stale, and the step refuses.
+func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, bool) {
+	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
+	if err != nil || !m.ticketCurrent(ctx, t, u) {
+		return nil, nil, false
+	}
+	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	if err != nil {
+		return nil, nil, false
+	}
+	return u, org, true
+}
+
+const msgExpired = "Your sign-in has expired. Start again."
+
+// step loads the sign-in a request continues: a ticket at one of the steps, its user and organization (ticketUser),
+// within the organization's rate limit for the account. On failure it has written the answer (401 for a dead ticket,
+// 429 when limited) and the handler returns.
+func (m *Module) step(w http.ResponseWriter, r *http.Request, id string, steps ...string) (*ticket, *model.User, *model.Org, bool) {
+	ctx := r.Context()
+	t, ok := m.getTicket(ctx, id, steps...)
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+		return nil, nil, nil, false
+	}
+	u, org, ok := m.ticketUser(ctx, t)
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+		return nil, nil, nil, false
+	}
+	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+		return nil, nil, nil, false
+	}
+	return t, u, org, true
 }
 
 func (m *Module) putTicket(ctx context.Context, t *ticket, ttl time.Duration) (string, error) {

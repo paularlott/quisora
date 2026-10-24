@@ -487,10 +487,13 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 		case stBusy, stLow, stNotReady:
 			s.abort(op, rec.Version, granted)
 			if floor > 0 {
-				store.Witness(floor)
+				// A voter's floor is a version it granted, which it checked against voteAhead: the writer follows it
+				// that far (plus NTP's margin), further than store.Witness follows a version merely received, or a
+				// record granted a version ahead of this clock could not be written again until the clocks caught up.
+				store.Clock.WitnessBounded(floor, voteAhead+time.Second)
 				if store.Clock.Now() <= floor {
 					return fmt.Errorf("%w: a peer's version is more than %s ahead of this node's clock (keep every "+
-						"node's clock in sync)", store.ErrUnconfirmed, store.MaxSkew)
+						"node's clock in sync)", store.ErrUnconfirmed, voteAhead)
 				}
 			}
 			if time.Now().After(deadline) {

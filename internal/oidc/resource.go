@@ -20,13 +20,19 @@ func isAccessTokenTyp(typ string) bool {
 
 // VerifyAccessToken validates an access token issued by this provider: signature (kid lookup, algorithm bound to
 // the key), RFC 9068 typ, issuer, expiry, and that the subject is still allowed (user active, refresh grant not
-// revoked, client enabled). SCIM and other resource servers in this process call it directly.
+// revoked and not ended by an emergency sign-out, client enabled). SCIM and other resource servers in this process
+// call it directly.
 //
 // It does not check the audience (aud): which token a caller may accept is the caller's decision, and each one
 // makes it. Userinfo takes any user token with the openid scope (OIDC: the token is the client's, not userinfo's);
 // introspection answers only for an audience or an introspect_org client; revocation only for the client the token
 // was issued to; SCIM only for client_credentials tokens with the scim scope from a provisioning client. A new caller
-// must check aud (or the client) itself.
+// must check aud (or the client) itself. Nor does it decide the user's access to the application (a members-only
+// tenant, a self-registered application's resource): tokenAccess does, for userinfo and introspection alike.
+//
+// An error that is service.ErrUnavailable means a read the verdict depends on failed (the client, the user, the
+// grant or the sign-out counters): the token is neither good nor bad, and the caller answers 503, never 401 (which
+// would make the client discard a token that may be good) and never as verified. Every other error is a refusal.
 func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, error) {
 	now := time.Now()
 	k := tokenKey(tok)
@@ -64,24 +70,65 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 		cl.Iat != 0 && time.Unix(int64(cl.Iat), 0).After(now.Add(leeway)) || cl.Sub == "" || cl.ClientID == "" {
 		return nil, badToken("claims")
 	}
-	if cl.Sub == cl.ClientID { // client_credentials token
-		ce, err := p.client(ctx, cl.ClientID)
-		if err != nil || !ce.c.Enabled {
-			return nil, badToken("client disabled")
-		}
-		return cl, nil
+	ce, err := p.client(ctx, cl.ClientID)
+	if err != nil && !gone(err) {
+		return nil, unavailable(err)
 	}
-	if ce, err := p.client(ctx, cl.ClientID); err != nil || !ce.c.Enabled {
+	if err != nil || !ce.c.Enabled {
 		return nil, badToken("client disabled") // a disabled or deleted application's tokens stop working at once
 	}
+	if cl.Sub == cl.ClientID { // client_credentials token: the client is the subject, and there is no grant
+		return cl, nil
+	}
 	u, err := p.user(ctx, cl.Sub)
+	if err != nil && !gone(err) {
+		return nil, unavailable(err)
+	}
 	if err != nil || !u.Enabled(time.Now()) {
 		return nil, badToken("user inactive")
 	}
-	if cl.GID != "" && !p.grantAlive(ctx, cl.GID) {
-		return nil, badToken("session ended")
+	if cl.GID != "" {
+		alive, err := p.grantAlive(ctx, cl.GID)
+		if err != nil {
+			return nil, err
+		}
+		if !alive {
+			return nil, badToken("session ended")
+		}
 	}
 	return cl, nil
+}
+
+// tokenAccess decides whether the user of access token cl may still use the application it was issued to, as a
+// sign-in to it now would: the resource still accepts the application (a self-registered one, placed in the
+// tenant that owns the resources in aud) and the user still has access to it in its tenant (members-only). Userinfo
+// and introspection make the decision here, so a token one refuses the other reports inactive, and a token
+// exchange, a refresh and the token endpoint's grants make the same one through appAccess. ok is false when the
+// user may not (access taken away or expired, the client gone, the resource closed); app is their access when they
+// may. An error is a read that failed: no decision, which the caller answers as 503 and never as either verdict.
+func (p *Provider) tokenAccess(ctx context.Context, cl *Claims, u *model.User) (app *service.AppAccess, ok bool, err error) {
+	ce, err := p.client(ctx, cl.ClientID)
+	if err != nil {
+		if gone(err) {
+			return nil, false, nil
+		}
+		return nil, false, unavailable(err)
+	}
+	c, _, err := p.forResources(ctx, ce.c, slices.DeleteFunc(slices.Clone([]string(cl.Aud)), func(a string) bool { return a == cl.ClientID }))
+	if err != nil {
+		if gone(err) {
+			return nil, false, nil // the resource no longer accepts the application
+		}
+		return nil, false, unavailable(err)
+	}
+	app, err = p.appAccess(ctx, c, nil, u)
+	if err != nil {
+		if gone(err) {
+			return nil, false, nil // the client's tenant is gone
+		}
+		return nil, false, unavailable(err)
+	}
+	return app, app.Allowed, nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -129,6 +176,14 @@ func bearerError(w http.ResponseWriter, status int, code string) {
 	w.WriteHeader(status)
 }
 
+// bearerUnavailable answers a bearer request whose authorization could not be decided because a read failed: 503
+// with Retry-After and the token endpoint's error body (temporarily_unavailable), and no WWW-Authenticate challenge,
+// since the token is not known to be bad (RFC 6750 §3 has no code for "not now", and a client given invalid_token
+// discards the token and signs the user in again). The profile is never released on an undecided authorization.
+func bearerUnavailable(w http.ResponseWriter, err error) {
+	writeOAuthError(w, serverError(unavailable(err)))
+}
+
 func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	p.corsActual(w, r)
 	tok, scheme, ok := bearer(r)
@@ -145,6 +200,9 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrDPoPProof):
 		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_dpop_proof")
 		return
+	case errors.Is(err, service.ErrUnavailable):
+		bearerUnavailable(w, err) // the token could not be checked: not refused, not served
+		return
 	case err != nil && scheme == "DPoP":
 		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_token")
 		return
@@ -159,20 +217,24 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := p.user(r.Context(), cl.Sub)
 	if err != nil {
+		if !gone(err) {
+			bearerUnavailable(w, err)
+			return
+		}
 		bearerError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	var app *service.AppAccess
-	if ce, err := p.client(r.Context(), cl.ClientID); err == nil {
-		c, _, ferr := p.forResources(r.Context(), ce.c, slices.DeleteFunc(slices.Clone([]string(cl.Aud)), func(a string) bool { return a == cl.ClientID }))
-		if ferr != nil {
-			bearerError(w, http.StatusUnauthorized, "invalid_token") // the resource no longer accepts the application
-			return
-		}
-		if app, err = p.appAccess(r.Context(), c, nil, u); err == nil && !app.Allowed {
-			bearerError(w, http.StatusUnauthorized, "invalid_token") // access taken away since the token was issued
-			return
-		}
+	// The user's access to the application, as it is now (tokenAccess: the same decision introspection makes). An
+	// access that cannot be read is not released on: the profile waits for the decision (503), it is not served
+	// because the check could not be made.
+	app, ok, err := p.tokenAccess(r.Context(), cl, u)
+	if err != nil {
+		bearerUnavailable(w, err)
+		return
+	}
+	if !ok {
+		bearerError(w, http.StatusUnauthorized, "invalid_token") // access taken away since the token was issued
+		return
 	}
 	is := &issue{scopes: cl.Scopes()}
 	o := newObj(384)
@@ -218,21 +280,36 @@ func (p *Provider) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("invalid_request", "token is required"))
 		return
 	}
-	body := p.introspect(r.Context(), ce.c, tok)
+	body, oe := p.introspect(r.Context(), ce.c, tok)
+	if oe != nil {
+		writeOAuthError(w, oe)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = w.Write(body)
 }
 
 var inactive = []byte(`{"active":false}`)
 
-func (p *Provider) introspect(ctx context.Context, caller *model.Client, tok string) []byte {
+// introspect answers for a token of any of the three kinds. "active": false is a verdict: the token is not one the
+// caller may see, or it has ended. A read the verdict needs that failed is no verdict, and is answered as 503
+// (temporarily_unavailable) instead: a resource server told "inactive" would refuse the user, who would then be
+// signed in again for a store hiccup, and told "active" it would serve a token that may have been revoked.
+func (p *Provider) introspect(ctx context.Context, caller *model.Client, tok string) ([]byte, *oauthError) {
+	var body []byte
+	var err error
 	switch {
 	case service.IsAPIToken(tok):
-		return p.introspectAPIToken(ctx, caller, tok)
+		body, err = p.introspectAPIToken(ctx, caller, tok)
 	case strings.HasPrefix(tok, "ey") && strings.Count(tok, ".") == 2:
-		return p.introspectJWT(ctx, caller, tok)
+		body, err = p.introspectJWT(ctx, caller, tok)
+	default:
+		body, err = p.introspectRefresh(ctx, caller, tok)
 	}
-	return p.introspectRefresh(ctx, caller, tok)
+	if err != nil {
+		return nil, serverError(unavailable(err))
+	}
+	return body, nil
 }
 
 // introspectAPIToken answers for a personal API token made for the user's own applications (the api scope), and
@@ -243,15 +320,21 @@ func (p *Provider) introspect(ctx context.Context, caller *model.Client, tok str
 // The caller is the application the token is used with, so the answer carries what a sign-in to it would: the
 // user's application roles for it and their access's tags (their own entry and their groups', in its tenant). A user
 // without access to a members-only tenant's application could not sign in to it, so the token is inactive there too.
-func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client, tok string) []byte {
+func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client, tok string) ([]byte, error) {
 	t, u, err := p.svc.ValidateAPIToken(ctx, tok)
+	if errors.Is(err, service.ErrUnavailable) {
+		return nil, err
+	}
 	if err != nil || u.OrgID != caller.OrgID || !slices.Contains(t.Scopes, service.ScopeAPI) ||
 		(len(t.Audience) > 0 && !slices.Contains(t.Audience, caller.ID)) {
-		return inactive
+		return inactive, nil
 	}
 	app, err := p.appAccess(ctx, caller, nil, u)
+	if err != nil && !gone(err) {
+		return nil, err
+	}
 	if err != nil || !app.Allowed {
-		return inactive
+		return inactive, nil
 	}
 	// A token narrowed to application scopes reports those of the caller's; one narrowed to none of the caller's is
 	// not for it (else "api" alone, which means full access, would be all it saw).
@@ -265,7 +348,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 			}
 		}
 		if len(mine) == 0 {
-			return inactive
+			return inactive, nil
 		}
 		scope += " " + strings.Join(mine, " ")
 	}
@@ -296,28 +379,40 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 		o.num("exp", t.Expires.Unix())
 	}
 	o.num("iat", t.Created.Unix())
-	return o.bytes()
+	return o.bytes(), nil
 }
 
 // introspectJWT answers for an access token only if the caller is an audience of it, or is allowed to introspect
 // every token of the token's organization (introspect_org).
-func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok string) []byte {
+func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok string) ([]byte, error) {
 	cl, err := p.VerifyAccessToken(ctx, tok)
 	if err != nil {
-		return inactive
+		if errors.Is(err, service.ErrUnavailable) {
+			return nil, err
+		}
+		return inactive, nil
 	}
 	// Active for the client the token was issued to (its id is in aud), or for a client allowed to introspect every
 	// token of its organization (introspect_org). The RFC 8707 resources a token names are in aud as URIs, not client
 	// ids: a resource server that introspects tokens issued to other clients needs introspect_org.
 	if !slices.Contains(cl.Aud, caller.ID) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
-		return inactive
+		return inactive, nil
 	}
-	// A self-registered application's token is active only while its resource still accepts it: the tenant's
-	// switch turned off (or the resource removed) ends it here at once, not when it expires.
-	if ce, err := p.client(ctx, cl.ClientID); err == nil && ce.c.SelfRegistered {
-		res := slices.DeleteFunc(slices.Clone([]string(cl.Aud)), func(a string) bool { return a == cl.ClientID })
-		if _, _, err := p.forResources(ctx, ce.c, res); err != nil {
-			return inactive
+	// A user's token is active only while the user may still use the application (tokenAccess, as userinfo decides
+	// it): access to a members-only tenant's application taken away, or a self-registered application's resource
+	// closed to it, ends it here at once, not when it expires. A client_credentials token has no user to decide for.
+	if cl.Sub != cl.ClientID {
+		u, err := p.user(ctx, cl.Sub)
+		if err != nil {
+			if gone(err) {
+				return inactive, nil
+			}
+			return nil, unavailable(err)
+		}
+		if _, ok, err := p.tokenAccess(ctx, cl, u); err != nil {
+			return nil, err
+		} else if !ok {
+			return inactive, nil
 		}
 	}
 	o := newObj(512)
@@ -369,22 +464,36 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 			o.strs("roles", cl.Roles)
 		}
 	}
-	return o.bytes()
+	return o.bytes(), nil
 }
 
 // introspectRefresh answers for a refresh token; only the client the token was issued to may ask.
-func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, tok string) []byte {
-	g, ok := p.readRefresh(ctx, caller, tok)
-	if !ok || !p.grantLive(ctx, g) {
-		return inactive
+func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, tok string) ([]byte, error) {
+	g, ok, err := p.readRefresh(ctx, caller, tok)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return inactive, nil
+	}
+	if live, err := p.grantLive(ctx, g); err != nil {
+		return nil, err
+	} else if !live {
+		return inactive, nil
 	}
 	u, err := p.user(ctx, g.UserID)
+	if err != nil && !gone(err) {
+		return nil, unavailable(err)
+	}
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID {
-		return inactive
+		return inactive, nil
 	}
 	app, err := p.appAccess(ctx, caller, nil, u)
+	if err != nil && !gone(err) {
+		return nil, unavailable(err)
+	}
 	if err != nil || !app.Allowed {
-		return inactive
+		return inactive, nil
 	}
 	o := newObj(256)
 	o.boolean("active", true)
@@ -405,26 +514,30 @@ func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, 
 	if len(app.Roles) > 0 {
 		o.strs("roles", app.Roles)
 	}
-	return o.bytes()
+	return o.bytes(), nil
 }
 
-// readRefresh loads and authenticates a refresh token's grant without changing anything.
-func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok string) (*model.Grant, bool) {
+// readRefresh loads and authenticates a refresh token's grant without changing anything. ok is false for a token
+// that is not the caller's live, authentic one; an error means the grant could not be read, which is neither.
+func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok string) (*model.Grant, bool, error) {
 	pr, ok := parseRefresh(tok)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	g, err := p.svc.Grants.Get(ctx, pr.gid)
+	if err != nil && !gone(err) {
+		return nil, false, unavailable(err)
+	}
 	if err != nil || g.ClientID != caller.ID || g.Revoked || time.Now().After(g.Expires) {
-		return nil, false
+		return nil, false, nil
 	}
 	if ok, _ := p.authentic(pr, g); !ok { // (a legacy grant is converted when it is next refreshed)
-		return nil, false
+		return nil, false, nil
 	}
 	if pr.counted && pr.counter != g.Counter || !pr.counted && g.Counter != 0 {
-		return nil, false
+		return nil, false, nil
 	}
-	return g, true
+	return g, true, nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -460,13 +573,29 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// A JWT cannot be recalled, but revoking one of this client's user tokens ends the grant it came from,
 		// which stops refreshing and makes introspection report it inactive. A token from a token exchange carries
 		// the grant of the application the user signed in to: its holder (acting for the user) cannot end that.
-		if cl, err := p.VerifyAccessToken(ctx, tok); err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {
-			p.revokeGrant(ctx, cl.GID)
+		cl, err := p.VerifyAccessToken(ctx, tok)
+		if errors.Is(err, service.ErrUnavailable) {
+			writeOAuthError(w, serverError(err)) // whether there is a grant to end could not be read
+			return
+		}
+		if err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {
+			if err := p.revokeGrant(ctx, cl.GID); err != nil {
+				writeOAuthError(w, serverError(err)) // RFC 7009 §2.2.1: the client retries; nothing is audited as done
+				return
+			}
 			p.auditClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"})
 		}
 	default:
-		if g, ok := p.readRefresh(ctx, ce.c, tok); ok {
-			p.revokeGrant(ctx, g.ID)
+		g, ok, err := p.readRefresh(ctx, ce.c, tok)
+		if err != nil {
+			writeOAuthError(w, serverError(err))
+			return
+		}
+		if ok {
+			if err := p.revokeGrant(ctx, g.ID); err != nil {
+				writeOAuthError(w, serverError(err))
+				return
+			}
 			target := g.UserID
 			if u, err := p.user(ctx, g.UserID); err == nil {
 				target = u.Username
@@ -475,5 +604,8 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				"token": "refresh"})
 		}
 	}
+	// 200 for a token that was revoked here, and for one there was nothing to revoke for (unknown, expired, another
+	// client's: RFC 7009 §2.2): either way the client's token is dead. A revocation that could not be made is
+	// answered above, never here.
 	w.WriteHeader(http.StatusOK)
 }

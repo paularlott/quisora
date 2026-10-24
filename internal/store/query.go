@@ -69,17 +69,9 @@ func ApplyQuery(kind model.Kind, recs []*Record, q ListQuery) (*ListResult, erro
 	if err := ValidateQuery(kind, q); err != nil {
 		return nil, err
 	}
-	schema := model.Schemas[kind]
-	search := strings.ToLower(q.Search)
 	out := make([]*Record, 0, len(recs))
 	for _, r := range recs {
-		if q.Scope != "" && r.Scope != q.Scope {
-			continue
-		}
-		if !matchFilters(r, q.Filters) {
-			continue
-		}
-		if search != "" && !matchSearch(r, schema, search) {
+		if !Match(kind, r, q) {
 			continue
 		}
 		if q.After != "" && r.ID <= q.After {
@@ -94,6 +86,18 @@ func ApplyQuery(kind model.Kind, recs []*Record, q ListQuery) (*ListResult, erro
 	}
 	total := len(out)
 	return &ListResult{Records: Page(out, q.Offset, q.Limit), Total: total}, nil
+}
+
+// Match reports whether r (a live record of kind) is selected by q's scope, filters and search; the order and paging
+// of q play no part. A backend that streams a scope in the order the result asks for pages with it.
+func Match(kind model.Kind, r *Record, q ListQuery) bool {
+	if q.Scope != "" && r.Scope != q.Scope {
+		return false
+	}
+	if !matchFilters(r, q.Filters) {
+		return false
+	}
+	return q.Search == "" || matchSearch(r, model.Schemas[kind], strings.ToLower(q.Search))
 }
 
 // Page slices recs by offset and limit.

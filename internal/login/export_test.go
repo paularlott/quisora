@@ -5,15 +5,34 @@ import (
 	"encoding/json"
 )
 
-// MarkReauth records a fresh re-authentication for a session (tests in package login_test cannot reach the
-// ephemeral namespace).
+// MarkReauth records a fresh re-authentication for a session, at its user's current security generation (tests in
+// package login_test cannot reach the ephemeral namespace).
 func (m *Module) MarkReauth(sessionID string) {
-	_ = m.s.Eph.Set(context.Background(), nsReauth, sessionID, []byte("1"), reauthTTL)
+	ctx := context.Background()
+	sess, err := m.s.Svc.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	u, err := m.s.Svc.Users.Get(ctx, sess.UserID)
+	if err != nil {
+		return
+	}
+	m.markReauth(ctx, sessionID, u.SecurityGen)
 }
 
-// PutEnrolTicket creates a sign-in ticket at the enrol step for a user (as a verified password would).
+// PutEnrolTicket creates a sign-in ticket at the enrol step for a user (as a verified password would), bound to the
+// account as it is now.
 func (m *Module) PutEnrolTicket(userID string) (string, error) {
-	return m.putTicket(context.Background(), &ticket{Step: "enrol", UserID: userID, AMR: []string{"pwd"}}, enrolTTL)
+	ctx := context.Background()
+	u, err := m.s.Svc.Users.Get(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	t := &ticket{Step: "enrol", AMR: []string{"pwd"}}
+	if err := m.bind(ctx, t, u); err != nil {
+		return "", err
+	}
+	return m.putTicket(ctx, t, enrolTTL)
 }
 
 // ClearReauth forgets a session's re-authentication (as if its window had passed).

@@ -444,6 +444,12 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 			"reason": "privileged account"})
 		return nil, ErrPrivileged
 	}
+	// A new way into an existing account, as connecting a provider from the account page: what is in flight for the
+	// account (sign-in steps, enrolment, links) ends first (the security generation), then the link is made.
+	u, err = s.Svc.AdvanceSecurity(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
 	id := model.NewIdentity(u, p, c.Subject, c.Email, "email")
 	if err := s.Svc.Identities.Create(ctx, id); err != nil {
 		return nil, err

@@ -13,25 +13,22 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
+// round3GroupRollbackGate fails every write of one membership (failedMemberID) and pauses the first request once
+// its commit (the first write of the group's record) has succeeded, before it writes any membership.
+//
+// Written against the lease design, where the pause came after the second group write (the undo of a failed
+// change). A change now commits on the group's record and is never undone, so the request paused here is committed
+// and the later, successful request must materialize it first; the invariant is unchanged: nothing the later
+// request explicitly set is erased by the earlier one finishing (or not).
 type round3GroupRollbackGate struct {
 	store.Store
 	groupID, failedMemberID string
 	groupWrites             atomic.Int32
 	entered, resume         chan struct{}
-	paused                  atomic.Bool
 	resumeOnce              sync.Once
 }
 
 func (g *round3GroupRollbackGate) letResume() { g.resumeOnce.Do(func() { close(g.resume) }) }
-
-// Get lets the failed request resume as soon as the concurrent one is seen waiting for the group's lock: the failed
-// request holds it through its undo, so the concurrent one cannot finish (as it would have, unisolated) until it does.
-func (g *round3GroupRollbackGate) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	if kind == model.KindLock && id == "group/"+g.groupID && g.paused.Load() {
-		g.letResume()
-	}
-	return g.Store.Get(ctx, kind, id)
-}
 
 func (g *round3GroupRollbackGate) Put(ctx context.Context, r *store.Record) error {
 	if r.Kind == model.KindMember && r.ID == g.failedMemberID {
@@ -45,8 +42,7 @@ func (g *round3GroupRollbackGate) CompareAndPut(ctx context.Context, r *store.Re
 		return errors.New("review: membership storage failure")
 	}
 	err := g.Store.CompareAndPut(ctx, r, expected)
-	if r.Kind == model.KindGroup && r.ID == g.groupID && err == nil && g.groupWrites.Add(1) == 2 {
-		g.paused.Store(true)
+	if r.Kind == model.KindGroup && r.ID == g.groupID && err == nil && g.groupWrites.Add(1) == 1 {
 		close(g.entered)
 		<-g.resume
 	}
@@ -87,7 +83,6 @@ func round3GroupRollback(t *testing.T, adding bool) {
 	gate := &round3GroupRollbackGate{Store: e.svc.Store, groupID: group.ID, failedMemberID: model.MemberID(group.ID, second.ID), entered: make(chan struct{}), resume: make(chan struct{})}
 	e.svc.Groups.S = gate
 	e.svc.Members.S = gate
-	e.svc.Locks.S = gate
 	done := make(chan error, 1)
 	go func() {
 		add, remove := []string{first.ID, second.ID}, []string(nil)
@@ -97,7 +92,7 @@ func round3GroupRollback(t *testing.T, adding bool) {
 		_, err := e.svc.ChangeGroup(e.ctx, service.System, group, service.GroupInput{}, add, remove)
 		done <- err
 	}()
-	<-gate.entered // failed request restored the group; its membership undo is still pending
+	<-gate.entered // the first request is committed; none of its memberships is written yet
 	fresh, err := e.svc.Groups.Get(e.ctx, group.ID)
 	if err != nil {
 		gate.letResume()
@@ -115,14 +110,38 @@ func round3GroupRollback(t *testing.T, adding bool) {
 	if concurrentErr != nil {
 		t.Fatal(concurrentErr)
 	}
-	if failedErr == nil {
-		t.Fatal("fault injection did not fail the first request")
+	if failedErr != nil {
+		t.Fatalf("the first request was committed before its membership write failed; it must not report failure: %v", failedErr)
 	}
-	_, err = e.svc.Members.Get(e.ctx, model.MemberID(group.ID, first.ID))
-	if adding && err != nil {
-		t.Fatalf("rollback erased membership explicitly retained by later successful update: %v", err)
+	m, err := e.svc.Members.Get(e.ctx, model.MemberID(group.ID, first.ID))
+	if adding && (err != nil || !m.Active()) {
+		t.Fatalf("membership explicitly retained by later successful update was erased: %v", err)
 	}
-	if !adding && err == nil {
-		t.Fatal("rollback restored membership explicitly revoked by later successful update")
+	if !adding && err == nil && m.Active() {
+		t.Fatal("membership explicitly revoked by later successful update was restored")
 	}
+	ids, err := e.svc.GroupMembers(e.ctx, service.System, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{}; adding {
+		want = sortedIDs(first.ID, second.ID) // second is committed, seen until materialized
+		if !equalIDs(ids, want) {
+			t.Fatalf("members %v, want %v", ids, want)
+		}
+	} else if len(ids) != 0 {
+		t.Fatalf("members %v, want none", ids)
+	}
+}
+
+func equalIDs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

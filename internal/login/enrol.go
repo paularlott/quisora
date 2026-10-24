@@ -2,7 +2,7 @@ package login
 
 import (
 	"encoding/json"
-	"github.com/paularlott/quisora/internal/service"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +10,8 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -36,24 +38,36 @@ func (m *Module) totpDetails(u *model.User, secret string) (totpBeginResp, error
 	return totpBeginResp{Secret: secret, URI: uri, QR: qr}, err
 }
 
-// enrolTicket validates a ticket at the enrol step and loads its user and org.
+// enrolTicket validates a ticket at the enrol step and loads its user and org (step: the ticket still bound to the
+// account as it is now, so a password changed or a factor set up since the ticket was issued ends it). The step
+// exists only for an account with no second factor at all, and that is checked again here against the account as it
+// is now, not as it was when the ticket was issued: whoever holds a first factor may choose the second only for an
+// account that never had one. An account that has one meanwhile (its owner set it up from another browser) sends
+// this browser back to sign in and use it; the first-factor-only ticket must never replace it.
 func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) (*ticket, *model.User, *model.Org, bool) {
-	ctx := r.Context()
-	t, ok := m.getTicket(ctx, id, "enrol")
-	if ok {
-		u, err := m.s.Svc.Users.Get(ctx, t.UserID)
-		if err == nil && u.Enabled(time.Now()) {
-			if org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
-				if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
-					return nil, nil, nil, false
-				}
-				return t, u, org, true
-			}
-		}
+	t, u, org, ok := m.step(w, r, id, "enrol")
+	if !ok {
+		return nil, nil, nil, false
 	}
-	writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-	return nil, nil, nil, false
+	established := u.HasTOTP()
+	if !established {
+		n, err := m.s.Svc.Passkeys.Count(r.Context(), u.ID) // any passkey, usable or not (see secondFactor)
+		if err != nil {
+			m.internalError(w, r, "count passkeys", err)
+			return nil, nil, nil, false
+		}
+		established = n > 0
+	}
+	if established {
+		writeErr(w, http.StatusConflict, "A second factor is already set up on this account. Sign in again and use it.", "")
+		return nil, nil, nil, false
+	}
+	return t, u, org, true
 }
+
+// msgChanged answers a step whose commit found the account changed under it (a stale compare-and-swap): another
+// completion of the sign-in, or its owner, got there first.
+const msgChanged = "Your account changed while you were signing in. Start again."
 
 // enrolTOTPBegin handles POST /api-internal/login/enrol/totp/begin: {ticket} -> {secret, uri, qr}.
 func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
@@ -121,12 +135,22 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
 		return
 	}
+	// The commit: a compare-and-swap on the version of the user enrolTicket read and validated this request (no
+	// factor, same generation as the ticket), moving the security generation on. Two completions for the same
+	// account — this ticket twice, or two tickets issued from the same password — both read the same version, and
+	// the store lets exactly one write it (a quorum of the cluster confirms which); the other finds it stale and
+	// sends its browser back to sign in, where the factor that won now stands between it and a session.
 	now := time.Now().UTC()
 	u.TOTPSecret, u.MFAEnrolledAt = m.s.Svc.Sealer.SealFor(service.TOTPBinding(u.ID), secret), &now
-	if err := m.s.Svc.Users.Update(ctx, u); err != nil {
+	u.BumpSecurity()
+	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); !store.Applied(err) {
+		if errors.Is(err, store.ErrStale) {
+			writeErr(w, http.StatusConflict, msgChanged, "")
+			return
+		}
 		m.internalError(w, r, "save totp", err)
 		return
 	}
@@ -194,13 +218,26 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Passkey"
 	}
-	pk, _, err := m.Passkeys.FinishRegistrationAs(ctx, purposeEnrol, u, in.Challenge, in.Credential, name)
+	// Verify first (a response that does not verify leaves the ticket for another try), then use the ticket up, then
+	// commit: StoreRegistration moves the account's security generation on with a compare-and-swap on the version
+	// enrolTicket read this request — a concurrent completion, or the owner's own set-up, makes this one stale and
+	// nothing is stored — and then writes the passkey (as the authenticator-app commit above).
+	reg, err := m.Passkeys.VerifyRegistrationAs(ctx, purposeEnrol, u, in.Challenge, in.Credential, name)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, "The passkey could not be registered. Try again.", "")
 		return
 	}
 	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+		return
+	}
+	pk, err := m.Passkeys.StoreRegistration(ctx, u, reg)
+	if errors.Is(err, store.ErrStale) {
+		writeErr(w, http.StatusConflict, msgChanged, "")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, "The passkey could not be registered. Try again.", "")
 		return
 	}
 	m.audit(r, "account.passkey.add", org, u, u.Username, map[string]string{"during": "sign-in", "name": pk.Name})

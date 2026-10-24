@@ -3,6 +3,14 @@
 //
 // Every change goes through the service layer, so SCIM callers get exactly the RBAC and business rules of the admin
 // UI.
+//
+// A Group change (POST with members, PUT, PATCH, DELETE) is atomic (RFC 7644 §3.5.2): the service commits it with
+// one compare-and-swap of the group's record and materializes the memberships from it (service.ChangeGroup; see
+// docs/REPLICATION.md, "Groups and their members"), so a refused or failed change leaves the group exactly as it was
+// and a committed one is seen whole by every reader. The group's ETag is its record's version: it moves with every
+// change, members included, and If-Match is checked against it (a change racing another is 412). One PATCH or PUT may
+// add and remove at most service.MaxMembersPerChange (1,000) members; a larger one is refused with 413 and should be
+// split.
 package scim
 
 import (
@@ -116,6 +124,9 @@ func (m *Module) fromService(err error) *Error {
 		return errf(409, "uniqueness", "A resource with that value already exists")
 	case errors.Is(err, service.ErrStale):
 		return errf(409, "", "The resource was changed by someone else, retry the request")
+	case errors.Is(err, service.ErrTooLarge):
+		// RFC 7644 §3.12: 413, the request is larger than the server processes; the client splits it.
+		return errf(413, "", "%s", capitalise(err.Error()))
 	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg):
 		return errf(409, "", "%s", capitalise(err.Error()))
 	case errors.Is(err, service.ErrInvalid):
@@ -366,6 +377,9 @@ func (m *Module) resolve(r *http.Request, tok, scheme string) (*service.Actor, *
 		}
 	} else if m.TokenVerifier != nil {
 		a, err := m.TokenVerifier(r, scheme, tok)
+		if errors.Is(err, service.ErrUnavailable) { // the store failed, not the caller: not counted, and not "invalid"
+			return nil, errf(503, "", "The token could not be checked right now; try again shortly")
+		}
 		if err != nil || a == nil {
 			return nil, errf(401, "", "The token is invalid or has expired")
 		}

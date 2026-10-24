@@ -77,12 +77,11 @@ const (
 // 3: groups are written with a quorum compare-and-swap; an abort names the stamp it aborts, a low answer the
 // generation to take, and a quorum read whether a copy could not be read. A node of 2 would refuse group prepares
 // and release a retry's intent with a late abort.
-// 4: a tombstone of a quorum kind ranks by version within the generation it deleted (store.Head.Rank), and voters
-// keep no deletion marks (prepare answers no generation to take). Nodes of 3 would order partial deletions
-// differently.
+// 4: voters keep no deletion marks (prepare answers no generation to take).
+// 5: a quorum kind ranks by version alone (store.Head.Rank). Nodes of 4 would order partial writes differently.
 const (
-	compat    = 4
-	minCompat = 4
+	compat    = 5
+	minCompat = 5
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.
@@ -280,6 +279,7 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 			return nil, fmt.Errorf("cluster: data dir: %w", err)
 		}
 		n.stateFile = filepath.Join(n.dir, "cluster-state.json")
+		os.Remove(n.stateFile + ".tmp") // a save a crash cut short: never read, and the next save would replace it
 	}
 	id, err := loadNodeID(n.dir, cfg.Cluster.NodeID)
 	if err != nil {

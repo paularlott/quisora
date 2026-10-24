@@ -47,6 +47,36 @@ account.
 Applications can also ask for a second factor for one sign-in (`acr_values=urn:quisora:acr:mfa`): see [signing users
 in](../oauth/sign-in.md#requiring-a-second-factor).
 
+## A credential change ends what is in flight
+
+Every account has a **security generation**: a counter that moves on whenever a way into the account changes — the
+password is set, changed, removed or reset; an authenticator app is set up, replaced or removed; a passkey is added,
+removed or disabled (a suspected copy); recovery codes are made or dropped; a sign-in provider is connected or
+disconnected; the account is disabled or enabled again (a lock-out, an accepted invitation). Everything in progress
+for the account is bound to the generation it started under and stops working when the generation moves on; the
+person starts again, with the account's credentials as they are now:
+
+- **a sign-in between its steps** — a password verified and the authenticator code, passkey, emailed code or recovery
+  code still to come, or the second-factor set-up for an account without one. The emergency sign-out lever ends these
+  too. A code that is right for a sign-in that has died is refused all the same;
+- **a second-factor set-up** begun at sign-in or on the account page: an authenticator secret shown before the change
+  is not confirmed against the account after it;
+- **a passkey ceremony** begun for the account (adding one, confirming with one);
+- **a re-authentication** ("Confirm it is you"), unless the change was this very browser's own: setting up an
+  authenticator app from one browser makes every other browser's confirmation ask again, now for the code;
+- **an invitation or password reset link**: a reset link mailed before the password was changed, or an invitation
+  issued before the user set up a passkey, opens nothing. (A verification link only proves an address, and works
+  while that address is still on the account.)
+
+Setting up a second factor at sign-in is only ever for an account that has none. Two browsers holding the same
+password cannot each set one up: the first to finish moves the generation on, and the second is sent back to sign in,
+where the factor that won now stands between it and a session. The write that sets a factor is a compare-and-swap on
+the user (confirmed by a majority of the cluster), so two finishing at the same moment still end with exactly one.
+
+A change of role, address or end date is not a credential change: each step judges those afresh from the account as
+it is (whether a second factor is required, whether codes by email are allowed, whether the account is still enabled),
+so an invitation for someone who was promoted after it went out is judged on the invitation rules, not simply dead.
+
 ## Sessions
 
 Browser sessions last `session.ttl` from sign-in (7 days) and end after `session.idle` unused (24 hours). An

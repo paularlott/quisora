@@ -142,8 +142,10 @@ type commit struct {
 // WriteAudit queues an event (service.AuditWriter). With a spool it returns once the event is fsynced to disk, so a
 // crash right after loses nothing, or after spoolWait at most: a slow or hung disk must not stall every audited
 // request, so the event is then also logged in full (audit.undelivered) and still spooled once the disk answers
-// (VictoriaLogs may then hold it as well: every event has its id). An event the queue has no room for (VictoriaLogs
-// unreachable for long, without a spool), or that comes after Close, is logged in full instead.
+// (the event is then in the log and in VictoriaLogs, never in neither: every event has its id, and duplicates are
+// accepted, never silent loss). A batch the spool cannot write (store undoes the failed append, so nothing of it is
+// replayed) is logged in full by the spooler. An event the queue has no room for (VictoriaLogs unreachable for long,
+// without a spool), or that comes after Close, is logged in full instead.
 func (c *Client) WriteAudit(e *model.Audit) {
 	defer func() {
 		if recover() != nil { // queue closed at shutdown
@@ -323,6 +325,8 @@ func (c *Client) send(batch []*model.Audit) {
 	}
 }
 
+// toSpool stores a batch; one the spool could not write (a full or failing disk) is logged in full instead, and
+// since store keeps nothing of a failed append the log is that batch's one place.
 func (c *Client) toSpool(body []byte) {
 	evicted, err := c.spool.store(body)
 	if err != nil {

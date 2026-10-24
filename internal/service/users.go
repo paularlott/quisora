@@ -702,6 +702,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
 	before := u.Role
 	was := snapshot(u)
+	secWas := stateOf(u) // the security generation moves on below if the change touches what signs the account in
 	if in.Role != nil && *in.Role != u.Role {
 		org, err := s.Orgs.Get(ctx, u.OrgID)
 		if err != nil {
@@ -749,6 +750,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if statusChange {
 		noteStatus(u, a, reason)
 	}
+	noteSecurity(secWas, u)
 	if critical {
 		ctx = Durable(ctx)
 	}
@@ -920,10 +922,10 @@ func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
 			}
 		}
 	}
-	// The user's memberships go without their groups' locks (lockGroup): the user is gone, so a membership left or
-	// re-added by a change of the group running meanwhile is one of a user who no longer exists, which is harmless
-	// (members are looked up when read, and such a membership may be removed by anyone, checkMembership) and nothing
-	// a locked, serialised removal could prevent, as the user may be deleted right after the change checked them.
+	// The user's memberships are tombstoned outside their groups' commit points (ChangeGroup): the user is gone, so
+	// a membership a change of the group materializes meanwhile is one of a user who no longer exists, which is
+	// harmless (members are looked up when read, and such a membership may be removed by anyone, checkMembership)
+	// and nothing a serialised removal could prevent, as the user may be deleted right after the change checked them.
 	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 	if err != nil {
 		return err
@@ -934,7 +936,9 @@ func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
 	if err := s.SignIns.Delete(ctx, u.ID); err != nil && !store.Applied(err) && !errors.Is(err, store.ErrStale) {
 		return mapStore(err)
 	}
-	s.deleteAccessWhere(ctx, u.OrgID, "subject_id", u.ID)
+	if err := s.deleteAccessWhere(ctx, u.OrgID, "subject_id", u.ID); err != nil {
+		return err
+	}
 	s.clearManagerOf(ctx, u)
 	return mapStore(s.Users.Delete(ctx, u.ID))
 }
@@ -974,7 +978,9 @@ func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey stri
 		}
 	}
 	// The user record is cleared last, re-read and retried when a concurrent change (a profile edit, a sign-in's
-	// last-login stamp) got there first: that change must not keep the old password or authenticator app.
+	// last-login stamp) got there first: that change must not keep the old password or authenticator app. The
+	// security generation moves on whether or not the record held anything: the passkeys and providers just removed
+	// were ways in too, and every sign-in step, set-up or link in flight for the account must end here.
 	for attempt := 0; ; attempt++ {
 		if u.PasswordHash != "" {
 			now := time.Now().UTC()
@@ -982,6 +988,7 @@ func (s *Service) ResetCredentials(ctx context.Context, userID, keepPasskey stri
 		}
 		u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil
+		u.BumpSecurity()
 		err := s.Users.Update(ctx, u)
 		if !errors.Is(err, store.ErrStale) || attempt == 9 {
 			fail(err)
@@ -1027,12 +1034,13 @@ func (s *Service) endUserSessions(ctx context.Context, userID string, a *Actor) 
 
 // RevokeAppAccess removes everything a user granted one application (the account page's "remove access"): its
 // refresh grants and remembered consent, once the OnAppAccessEnding hook has told the application to sign the user
-// out (back-channel logout). It returns how many grants it removed; 0 means the user had granted that application
-// nothing.
+// out (back-channel logout). It returns how many grants it removed; 0 with no error means the user had granted that
+// application nothing. Every grant is tried even when one fails, and the failures are returned together with the
+// count of those that did go, so the caller can say the removal is partly done (a grant left behind still refreshes).
 func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) (int, error) {
 	grants, err := s.Grants.All(ctx, userID)
 	if err != nil {
-		return 0, err
+		return 0, mapStore(err)
 	}
 	var mine []*model.Grant
 	for _, g := range grants {
@@ -1046,12 +1054,16 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 	if s.OnAppAccessEnding != nil {
 		s.OnAppAccessEnding(ctx, userID, clientID)
 	}
+	n := 0
+	var errs []error
 	for _, g := range mine {
-		if err := s.Grants.Delete(Durable(ctx), g.ID); err != nil {
-			return 0, err
+		if err := s.Grants.Delete(Durable(ctx), g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, mapStore(err))
+			continue
 		}
+		n++
 	}
-	return len(mine), nil
+	return n, errors.Join(errs...)
 }
 
 // RevokeSessions ends every session and refresh grant of a user (admin action or "sign out everywhere").
@@ -1229,12 +1241,14 @@ func ptrBool(b bool) *bool { return &b }
 
 // EndPasskeySessions ends every session that was signed in with the passkey (and the refresh grants made in them),
 // telling the applications (back-channel logout). Used when a passkey turns out to be compromised: whoever holds the
-// copy is signed out too. Returns how many sessions ended.
-func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID string) int {
+// copy is signed out too. Returns how many sessions ended, and the failures together: a session or refresh grant
+// that could not be deleted still works (for the copy's holder too), so the caller records that the sign-out did not
+// finish rather than only how many did.
+func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID string) (int, error) {
 	ctx = Durable(ctx)
 	sessions, err := s.Sessions.All(ctx, userID)
 	if err != nil {
-		return 0
+		return 0, mapStore(err)
 	}
 	var ids []string
 	for _, ss := range sessions {
@@ -1243,21 +1257,28 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID stri
 		}
 	}
 	if len(ids) == 0 {
-		return 0
+		return 0, nil
 	}
 	s.sessionsEnding(ctx, userID, ids)
-	if grants, err := s.Grants.All(ctx, userID); err == nil {
-		for _, g := range grants {
-			if slices.Contains(ids, g.SessionID) {
-				_ = s.Grants.Delete(ctx, g.ID)
+	var errs []error
+	grants, err := s.Grants.All(ctx, userID)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list refresh grants: %w", mapStore(err)))
+	}
+	for _, g := range grants {
+		if slices.Contains(ids, g.SessionID) {
+			if err := s.Grants.Delete(ctx, g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
 			}
 		}
 	}
 	n := 0
 	for _, id := range ids {
-		if err := s.Sessions.Delete(ctx, id); store.Applied(err) {
-			n++
+		if err := s.Sessions.Delete(ctx, id); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, fmt.Errorf("end session %s: %w", id, mapStore(err)))
+			continue
 		}
+		n++
 	}
-	return n
+	return n, errors.Join(errs...)
 }

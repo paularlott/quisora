@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -105,9 +106,32 @@ func serverError(err error) *oauthError {
 		// This node cannot write now (cut off from the majority of its cluster, within the grace that keeps the
 		// token endpoint answering what needs no write): the client retries, here or elsewhere.
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
-			desc: "this server cannot make changes now; try again shortly"}
+			desc: "this server cannot make changes now; try again shortly", retry: true}
+	}
+	if errors.Is(err, service.ErrUnavailable) {
+		// A read that an authorization decision needs failed (unavailable): the answer is neither "allowed" nor
+		// "revoked" but "not now", so the client keeps its tokens and retries, rather than discarding them as an
+		// invalid_grant would make it, or going on as a 200 would.
+		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
+			desc: "this server cannot check the request now; try again shortly", retry: true}
 	}
 	return &oauthError{status: http.StatusInternalServerError, code: "server_error", desc: "temporary failure (" + errString(err) + ")"}
+}
+
+// unavailable marks a store read that an authorization, liveness or revocation decision depends on as failed: the
+// decision cannot be made, and every caller answers with that (serverError: 503 temporarily_unavailable; userinfo
+// and SCIM the same in their own shape), never with the answer it would have given had the read succeeded. Only a
+// failed read qualifies: a read that found nothing is an answer (the grant, user or client is gone), kept as it is.
+func unavailable(err error) error {
+	if err == nil || gone(err) || errors.Is(err, service.ErrUnavailable) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", service.ErrUnavailable, err)
+}
+
+// gone reports whether a lookup's error says the record does not exist (as opposed to the read having failed).
+func gone(err error) bool {
+	return errors.Is(err, store.ErrNotFound) || errors.Is(err, service.ErrNotFound)
 }
 
 func errString(err error) string {
@@ -151,9 +175,10 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		if errors.Is(err, ephemeral.ErrNotFound) {
 			// A code presented twice: everything issued from the first use must die (RFC 6749 §4.1.2).
 			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
-				p.revokeGrant(ctx, string(gid))
-				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid))
-				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": "true"})
+				// The replay is refused either way; whether the grant could be ended is recorded as it happened.
+				rerr := p.revokeGrant(ctx, string(gid))
+				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid), "revoke_error", rerr)
+				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": strconv.FormatBool(rerr == nil)})
 			}
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 		}
@@ -191,6 +216,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		return nil, oerr("invalid_target", "resource was not part of the authorization request")
 	}
 	if c, _, err = p.forResources(ctx, c, cd.Resources); err != nil {
+		if !gone(err) {
+			return nil, serverError(unavailable(err))
+		}
 		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
 	}
 	tr, gid, oe := p.userGrant(ctx, c, &cd, res, jkt, "")
@@ -204,21 +232,32 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 // naming its grant type) and issues its tokens for res, checking again that the user, their session and their access
 // to the application are still there. It returns the grant's id.
 func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res []string, jkt, via string) (*tokenResponse, string, *oauthError) {
+	// Each of these is a decision: a read that fails (as opposed to one that finds the record gone) makes none, and
+	// says so (503), rather than telling the client the user, session or organization is gone.
 	u, err := p.user(ctx, cd.UserID)
+	if err != nil && !gone(err) {
+		return nil, "", serverError(unavailable(err))
+	}
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != cd.OrgID {
 		return nil, "", oerr("invalid_grant", "the user is no longer active")
 	}
 	if s, err := p.svc.Sessions.Get(ctx, cd.SessionID); err != nil || !s.Valid(time.Now()) {
+		if err != nil && !gone(err) {
+			return nil, "", serverError(unavailable(err))
+		}
 		return nil, "", oerr("invalid_grant", "the user's session has ended")
 	}
 	org, err := p.org(ctx, cd.OrgID)
 	if err != nil {
+		if !gone(err) {
+			return nil, "", serverError(unavailable(err))
+		}
 		return nil, "", oerr("invalid_grant", "the organization no longer exists")
 	}
 	// Access is checked again: it may have been taken away (or expired) since the user was sent back with the code.
 	app, err := p.appAccess(ctx, c, nil, u)
 	if err != nil {
-		return nil, "", serverError(err)
+		return nil, "", serverError(unavailable(err))
 	}
 	if !app.Allowed {
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
@@ -262,24 +301,43 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 
 // grantLive: a grant made without the offline_access scope lasts only as long as the user's browser session (OIDC
 // Core §11: refreshing while the user is away needs offline_access); with it, it outlives the session's expiry.
-// Either way, ending the session (sign-out, revocation) deletes the grant.
-func (p *Provider) grantLive(ctx context.Context, g *model.Grant) bool {
-	if !p.svc.SessionCurrent(ctx, g.OrgID, g.Stamp) { // ended by an emergency sign-out
-		return false
+// Either way, ending the session (sign-out, revocation) deletes the grant. An error means the answer could not be
+// read (the sign-out counters or the session): the caller answers 503, not "ended".
+func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (bool, error) {
+	want, err := p.svc.SessionStamp(ctx, g.OrgID)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	if !g.Stamp.Current(want) { // ended by an emergency sign-out
+		return false, nil
 	}
 	if slices.Contains(g.Scopes, "offline_access") {
-		return true
+		return true, nil
 	}
 	s, err := p.svc.Sessions.Get(ctx, g.SessionID)
-	return err == nil && s.Valid(time.Now())
+	if err != nil {
+		if gone(err) {
+			return false, nil
+		}
+		return false, unavailable(err)
+	}
+	return s.Valid(time.Now()), nil
 }
 
-// revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it.
-func (p *Provider) revokeGrant(ctx context.Context, id string) {
+// revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it. The error is the deletion's: a
+// revocation that did not persist is reported to whoever asked for it (RFC 7009 §2.2.1: 503, the client retries),
+// never answered or audited as done. The cache is told "gone" before the deletion (a check racing it must not keep
+// the grant alive on a copy read just before), and emptied when the deletion fails: the grant is still in the
+// store, and the retry must find it there to end it, not answer 200 to a cached "nothing to revoke".
+func (p *Provider) revokeGrant(ctx context.Context, id string) error {
 	p.grants.put(id, grantState{})
-	if err := p.svc.Grants.Delete(service.Durable(context.WithoutCancel(ctx)), id); err != nil {
+	err := p.svc.Grants.Delete(service.Durable(context.WithoutCancel(ctx)), id)
+	if err != nil && !store.Applied(err) {
+		p.grants.del(id)
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
+		return unavailable(err)
 	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -399,13 +457,21 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, invalid
 		}
-		return nil, serverError(err)
+		return nil, serverError(unavailable(err)) // not known to be revoked: the client keeps the token and retries
 	}
 	ok, legacy := p.authentic(pr, g)
-	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok || !p.grantLive(ctx, g) {
+	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok {
+		return nil, invalid
+	}
+	if live, err := p.grantLive(ctx, g); err != nil {
+		return nil, serverError(err) // not known to have ended: the client keeps the token and retries
+	} else if !live {
 		return nil, invalid
 	}
 	if c, _, err = p.forResources(ctx, c, g.Resources); err != nil {
+		if !gone(err) {
+			return nil, serverError(unavailable(err))
+		}
 		return nil, invalid // a self-registered application whose resource no longer accepts it
 	}
 	if g.DPoPJKT != "" && g.DPoPJKT != jkt { // checked before any counter moves: a stolen token alone does nothing
@@ -425,24 +491,31 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	// Authentic token for this client. A static token only works while the grant has never rotated.
 	if !pr.counted && g.Counter != 0 {
 		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
-			p.revokeGrant(ctx, g.ID)
-			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
-			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again")
+			rerr := p.revokeGrant(ctx, g.ID)
+			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
+			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", rerr == nil)
 		}
 		return nil, invalid
 	}
 	u, err := p.user(ctx, g.UserID)
+	if err != nil && !gone(err) {
+		return nil, serverError(unavailable(err))
+	}
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID {
 		return nil, invalid
 	}
 	org, err := p.org(ctx, g.OrgID)
 	if err != nil {
+		if !gone(err) {
+			return nil, serverError(unavailable(err))
+		}
 		return nil, invalid
 	}
-	// Access that was taken away or has expired ends the application's refresh tokens.
+	// Access that was taken away or has expired ends the application's refresh tokens; access that cannot be read
+	// now ends nothing, and issues nothing (503).
 	app, err := p.appAccess(ctx, c, nil, u)
 	if err != nil {
-		return nil, serverError(err)
+		return nil, serverError(unavailable(err))
 	}
 	if !app.Allowed {
 		return nil, oerr("invalid_grant", errNoAccess.Error())
@@ -477,9 +550,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	case c.RotateRefresh || c.Public():
 		if pr.counted && pr.counter != g.Counter {
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
-				p.revokeGrant(ctx, g.ID)
-				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID)
-				p.auditReuse(ctx, c, g, "an old refresh token was presented again")
+				rerr := p.revokeGrant(ctx, g.ID)
+				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
+				p.auditReuse(ctx, c, g, "an old refresh token was presented again", rerr == nil)
 			}
 			return nil, invalid
 		}
@@ -500,9 +573,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				return nil, invalid
 			}
 			if fresh.Counter > pr.counter {
-				p.revokeGrant(ctx, g.ID)
-				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID)
-				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once")
+				rerr := p.revokeGrant(ctx, g.ID)
+				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "revoke_error", rerr)
+				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once", rerr == nil)
 				return nil, invalid
 			}
 			if attempt == 3 {
@@ -560,6 +633,9 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	}
 	org, err := p.org(ctx, c.OrgID)
 	if err != nil {
+		if !gone(err) {
+			return nil, serverError(unavailable(err))
+		}
 		return nil, oerr("invalid_client", "the client's organization no longer exists")
 	}
 	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res, jkt: jkt}, false)
@@ -584,12 +660,13 @@ func (p *Provider) auditClient(ctx context.Context, c *model.Client, target, act
 	p.svc.Audit(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail)
 }
 
-// auditReuse records a refresh token presented after it was replaced: someone kept a copy, and the grant is revoked.
-func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why string) {
+// auditReuse records a refresh token presented after it was replaced: someone kept a copy, and the grant is revoked
+// (revoked says whether that deletion persisted; a failed one is logged, and the token is refused either way).
+func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why string, revoked bool) {
 	target := g.UserID
 	if u, err := p.user(ctx, g.UserID); err == nil {
 		target = u.Username
 	}
 	p.auditClient(ctx, c, target, "oauth.refresh.reuse", map[string]string{"grant": g.ID, "user_id": g.UserID,
-		"grant_revoked": "true", "reason": why})
+		"grant_revoked": strconv.FormatBool(revoked), "reason": why})
 }

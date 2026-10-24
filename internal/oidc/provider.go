@@ -270,20 +270,30 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 	return t, nil
 }
 
-// grantAlive reports whether a refresh grant still exists (not revoked, not expired).
-func (p *Provider) grantAlive(ctx context.Context, id string) bool {
+// grantAlive reports whether a refresh grant still exists (not revoked, not expired). An error means it could not
+// be read (the grant, or the sign-out counters its stamp is compared with): the caller answers 503, never "alive"
+// on a guess nor "ended" for a token that may well be good. Only an answer is cached: a failed read is asked again.
+func (p *Provider) grantAlive(ctx context.Context, id string) (bool, error) {
 	st, ok := p.grants.get(id)
 	if !ok {
 		g, err := p.svc.Grants.Get(ctx, id)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return false, unavailable(err)
+		}
 		if err == nil && !g.Revoked {
 			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp}
 		}
-		if err == nil || errors.Is(err, store.ErrNotFound) {
-			p.grants.put(id, st)
-		}
+		p.grants.put(id, st)
+	}
+	if !st.alive {
+		return false, nil
 	}
 	// The stamp is compared on every use, cached or not: an emergency sign-out ends the grant's tokens at once.
-	return st.alive && p.svc.SessionCurrent(ctx, st.org, st.stamp)
+	want, err := p.svc.SessionStamp(ctx, st.org)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return st.stamp.Current(want), nil
 }
 
 // grantState is what the grant cache knows of a grant: whether it exists (not revoked), and its organization and

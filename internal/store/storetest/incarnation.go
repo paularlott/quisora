@@ -11,8 +11,7 @@ import (
 )
 
 // Generations (store.Record.Epoch): a tombstone of a plainly replicated kind beats every write of a generation started
-// before it, whatever that write's version; one of a quorum kind ranks by version within the generation it deleted
-// (store.Head.Rank). A record created again after a deletion takes the version of the tombstone its writer saw as its
+// before it, whatever that write's version; quorum kinds rank by version alone (store.Head.Rank). A record created again after a deletion takes the version of the tombstone its writer saw as its
 // epoch, so it beats that tombstone but never a deletion its writer had not seen.
 
 // A local update can never replace a tombstone (Put: ErrDeleted, CompareAndPut: ErrNotFound); a create can, as a new
@@ -158,11 +157,9 @@ func testReplicatedTombstoneDominates(t *testing.T, s store.Store) {
 	}
 }
 
-// Quorum kinds (users here): a deletion of a live record keeps that generation's epoch and ranks by version within
-// it (store.Head.Rank). The voters order versions as writes are confirmed and a confirmed deletion's quorum refuses
-// later writes of its generation, so the rank settles only partial writes: a later write of the generation outranks
-// the deletion, an earlier one does not; a re-creation over the tombstone outranks it; a deletion over a tombstone
-// (nothing live seen) takes its own version as its epoch and outranks every generation created before it.
+// Quorum kinds (users here) rank by version alone (store.Head.Rank): the voters order versions as writes are granted,
+// and a confirmed deletion's quorum refuses later writes that had not seen it, so the rank settles only partial
+// writes, and the later one wins — a deletion or not, whatever generation it belongs to.
 func testQuorumTombstoneRanksByVersion(t *testing.T, s store.Store) {
 	u := newUser("org1", "inc-q")
 	u.ID = model.NewID()
@@ -172,39 +169,43 @@ func testQuorumTombstoneRanksByVersion(t *testing.T, s store.Store) {
 		t.Fatalf("first apply: %v %v", ok, err)
 	}
 	del := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 10, Origin: "n2", Deleted: true}
-	must(t, store.StampLocal(del, live.Head(), false))
 	if ok, _, _ := s.PutReplicated(ctx, del); !ok {
 		t.Fatal("tombstone not applied")
-	}
-	if r, _ := s.Lookup(ctx, model.KindUser, u.ID); r == nil || !r.Deleted || r.Epoch != live.Epoch {
-		t.Fatalf("the tombstone does not keep the deleted generation's epoch: %+v", r)
 	}
 	earlier := replica(u, v+5, "n3")
 	earlier.Created = v
 	if ok, _, _ := s.PutReplicated(ctx, earlier); ok {
-		t.Fatal("an earlier write of the deleted generation beat the tombstone")
+		t.Fatal("an earlier write beat a later deletion")
 	}
 	u.GivenName = "later confirmed"
 	later := replica(u, v+20, "n3")
 	later.Created = v
 	if ok, _, _ := s.PutReplicated(ctx, later); !ok {
-		t.Fatal("a later write of the deleted generation lost to a partial deletion")
+		t.Fatal("a later write lost to an earlier (partial) deletion")
 	}
 	got, err := users(s).Get(ctx, u.ID)
 	must(t, err)
 	if got.GivenName != "later confirmed" {
 		t.Fatalf("got %q", got.GivenName)
 	}
-	// Deleted again by a node that holds only a tombstone (it had not seen the record come back): its own version is
-	// its epoch, so it outranks the generation and a re-creation made before it, whatever their versions.
 	again := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 30, Origin: "n2", Deleted: true}
-	must(t, store.StampLocal(again, del.Head(), false))
 	if ok, _, _ := s.PutReplicated(ctx, again); !ok {
-		t.Fatal("a deletion over a tombstone did not outrank the generation before it")
+		t.Fatal("a later deletion did not outrank the record")
 	}
-	fast := replica(u, v+5_000_000, "n9")
-	fast.Epoch = del.Version // re-created over the first deletion, on a fast clock
-	if ok, _, _ := s.PutReplicated(ctx, fast); ok {
-		t.Fatal("a re-creation beat a later deletion its writer had not seen")
+	re := replica(u, v+25, "n9")
+	re.Epoch = del.Version // a re-creation, earlier than the deletion above
+	if ok, _, _ := s.PutReplicated(ctx, re); ok {
+		t.Fatal("an earlier re-creation beat a later deletion")
+	}
+	// A deletion of an absent record (its own version as epoch) gives way to a later create of the id.
+	w := newUser("org1", "inc-q2")
+	w.ID = model.NewID()
+	blind := &store.Record{Kind: model.KindUser, ID: w.ID, Version: v + 40, Origin: "n1", Deleted: true}
+	if ok, _, _ := s.PutReplicated(ctx, blind); !ok {
+		t.Fatal("blind tombstone not applied")
+	}
+	created := replica(w, v+50, "n2")
+	if ok, _, _ := s.PutReplicated(ctx, created); !ok {
+		t.Fatal("a later create lost to an earlier deletion of the absent record")
 	}
 }

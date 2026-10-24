@@ -7,42 +7,45 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 )
 
-// A tombstone of a plainly replicated kind outranks every write of the generation it deleted, whatever its version;
-// one of a quorum kind ranks by version within that generation, so a later (confirmed) write outranks it, and a
-// re-creation (a new generation, epoch = the tombstone's version) outranks it either way. A quorum deletion of nothing
-// live deletes whatever generation there may be: it outranks every generation created before it.
-func TestTombstoneRank(t *testing.T) {
+// A plainly replicated kind ranks by generation, then version: a tombstone outranks every write of the generation it
+// deleted, whatever that write's version, and a re-creation over it (epoch = its version) outranks it. A quorum kind
+// ranks by version alone (the voters order versions as writes are granted): the later write wins, a deletion or not,
+// whatever generation it belongs to — a confirmed create over a partial deletion of an absent record included.
+func TestRank(t *testing.T) {
 	gen, del, later := hlc.Timestamp(100), hlc.Timestamp(200), hlc.Timestamp(300)
-	for _, tc := range []struct {
-		kind      model.Kind
-		laterWins bool
-	}{
-		{model.KindSession, false}, // plain replication: a deletion always wins over its generation
-		{model.KindUser, true},     // quorum kind: the later write wins
-	} {
-		tomb := &Record{Kind: tc.kind, ID: "x", Version: del, Deleted: true}
-		if err := StampLocal(tomb, &Head{Kind: tc.kind, Version: 150, Epoch: gen}, false); err != nil {
+	tomb := func(k model.Kind) *Record {
+		r := &Record{Kind: k, ID: "x", Version: del, Deleted: true}
+		if err := StampLocal(r, &Head{Kind: k, Version: 150, Epoch: gen}, false); err != nil {
 			t.Fatal(err)
 		}
-		live := &Record{Kind: tc.kind, ID: "x", Version: later, Epoch: gen}
-		if got := Newer(live, tomb); got != tc.laterWins {
-			t.Errorf("%s: a later write of the deleted generation outranks the tombstone: %v, want %v", tc.kind, got, tc.laterWins)
-		}
-		if Newer(&Record{Kind: tc.kind, ID: "x", Version: 150, Epoch: gen}, tomb) {
-			t.Errorf("%s: an earlier write of the deleted generation outranks the tombstone", tc.kind)
-		}
-		again := &Record{Kind: tc.kind, ID: "x", Version: later, Epoch: del} // re-created over the tombstone
-		if !Newer(again, tomb) {
-			t.Errorf("%s: a re-creation does not outrank the tombstone it was created over", tc.kind)
-		}
+		return r
 	}
-
-	blind := &Record{Kind: model.KindMember, ID: "m", Version: 500, Deleted: true}
-	if err := StampLocal(blind, &Head{Kind: model.KindMember, Version: 200, Deleted: true}, false); err != nil {
+	// plain replication
+	pt := tomb(model.KindSession)
+	if Newer(&Record{Kind: model.KindSession, ID: "x", Version: later, Epoch: gen}, pt) {
+		t.Error("session: a later write of the deleted generation outranks the tombstone")
+	}
+	if !Newer(&Record{Kind: model.KindSession, ID: "x", Version: later, Epoch: del}, pt) {
+		t.Error("session: a re-creation does not outrank the tombstone it was created over")
+	}
+	// quorum kinds
+	qt := tomb(model.KindUser)
+	if !Newer(&Record{Kind: model.KindUser, ID: "x", Version: later, Epoch: gen}, qt) {
+		t.Error("user: a later write does not outrank an earlier deletion")
+	}
+	if Newer(&Record{Kind: model.KindUser, ID: "x", Version: 150, Epoch: gen}, qt) {
+		t.Error("user: an earlier write outranks a later deletion")
+	}
+	blind := &Record{Kind: model.KindUser, ID: "y", Version: del, Deleted: true} // deleted where absent
+	if err := StampLocal(blind, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	readd := &Record{Kind: model.KindMember, ID: "m", Version: 900, Epoch: 200} // re-created elsewhere, unseen
-	if Newer(readd, blind) {
-		t.Error("a re-creation the deletion had not seen outranks a later deletion over a tombstone")
+	if !Newer(&Record{Kind: model.KindUser, ID: "y", Version: later}, blind) {
+		t.Error("user: a later create does not outrank an earlier deletion of the absent record")
+	}
+	readd := &Record{Kind: model.KindMember, ID: "m", Version: later, Epoch: 150}  // re-created, earlier than...
+	again := &Record{Kind: model.KindMember, ID: "m", Version: 400, Deleted: true} // ...a later deletion
+	if Newer(readd, again) || !Newer(again, readd) {
+		t.Error("member: a re-creation outranks a later deletion")
 	}
 }

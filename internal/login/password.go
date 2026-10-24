@@ -136,7 +136,9 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 // federated sign-in is a first factor like a password.
 func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignInMethods, t ticket) (stepResp, error) {
 	ctx := r.Context()
-	t.UserID = u.ID
+	if err := m.bind(ctx, &t, u); err != nil {
+		return stepResp{}, err
+	}
 	ttl := ticketTTL
 	switch {
 	case u.HasTOTP():
@@ -256,22 +258,12 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	t, ok := m.getTicket(ctx, in.Ticket, "totp")
+	t, u, org, ok := m.step(w, r, in.Ticket, "totp")
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
 		return
 	}
-	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
-	if err != nil || !u.Enabled(time.Now()) || !u.HasTOTP() {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-		return
-	}
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-		return
-	}
-	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+	if !u.HasTOTP() { // (unreachable while the ticket is current: removing the app moves the generation on)
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
@@ -323,22 +315,8 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	t, ok := m.getTicket(ctx, in.Ticket, "totp", "passkey")
+	t, u, org, ok := m.step(w, r, in.Ticket, "totp", "passkey")
 	if !ok {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-		return
-	}
-	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
-	if err != nil || !u.Enabled(time.Now()) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-		return
-	}
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-		return
-	}
-	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)

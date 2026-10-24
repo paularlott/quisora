@@ -16,13 +16,18 @@ const (
 // filter by reading every record of the kind (or scope), keep one index bucket per value of the field (an index write
 // per record write); the SQL backends index every field already. Mark one only where a filter on it runs on a large
 // kind or scope. An indexed bool field marks a small set (the records with true): a filter on false is served as the
-// scope with that set left out, so the field must be set on every record of the kind.
+// scope with that set left out, so the field must be set on every record of the kind (only the records with true are
+// indexed). SortIndex fields are Sort fields that listings of a large kind order by: the key-value stores keep an
+// ordered index per (kind, field) so such a listing pages without reading its scope (one more index write per record
+// write); the SQL backends index every Sort field already. Mark the sort fields the consoles and APIs use on kinds
+// that grow with the number of users or organizations, not those of small or write-heavy kinds.
 type Field struct {
-	Name   string
-	Type   FieldType
-	Search bool
-	Sort   bool
-	Index  bool
+	Name      string
+	Type      FieldType
+	Search    bool
+	Sort      bool
+	Index     bool
+	SortIndex bool
 }
 
 // Schema lists a kind's queryable fields. Backends create their columns/indexes from it.
@@ -44,20 +49,22 @@ func (s Schema) Field(name string) (Field, bool) {
 // Schemas is the registry of every kind the store must handle.
 var Schemas = map[Kind]Schema{
 	KindOrg: {KindOrg, []Field{
-		{Name: "name", Type: FieldString, Search: true, Sort: true},
-		{Name: "display_name", Type: FieldString, Search: true, Sort: true},
+		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "display_name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "primary", Type: FieldBool},
-		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 	}},
+	// Sort indexes: the user console's columns (username, role, active; last sign-in lives on the sign-in records),
+	// SCIM's sortBy attributes (userName, displayName, emails, active, meta.created) and the management API's sorts.
 	KindUser: {KindUser, []Field{
-		{Name: "username", Type: FieldString, Search: true, Sort: true},
-		{Name: "email", Type: FieldString, Search: true, Sort: true},
-		{Name: "name", Type: FieldString, Search: true, Sort: true},
+		{Name: "username", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "email", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "external_id", Type: FieldString},
 		{Name: "tags", Type: FieldString, Search: true},
-		{Name: "role", Type: FieldString, Sort: true},
-		{Name: "active", Type: FieldBool, Sort: true},
-		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "role", Type: FieldString, Sort: true, SortIndex: true},
+		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true},
+		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "user_type", Type: FieldString, Sort: true},
 		{Name: "department", Type: FieldString, Search: true, Sort: true},
 		{Name: "manager_id", Type: FieldString},
@@ -71,10 +78,11 @@ var Schemas = map[Kind]Schema{
 		{Name: "admin_rank", Type: FieldBool, Index: true},
 	}},
 	KindGroup: {KindGroup, []Field{
-		{Name: "display_name", Type: FieldString, Search: true, Sort: true},
+		{Name: "display_name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "external_id", Type: FieldString},
 		{Name: "tags", Type: FieldString, Search: true},
-		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
+		{Name: "pending", Type: FieldBool, Index: true}, // groups with committed member changes not yet materialized
 	}},
 	KindMember: {KindMember, []Field{
 		{Name: "group_id", Type: FieldString, Index: true}, // a group's members (SCIM, counts)
@@ -93,9 +101,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindClient: {KindClient, []Field{
-		{Name: "name", Type: FieldString, Search: true, Sort: true},
+		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "tenant_id", Type: FieldString},
-		{Name: "auth_method", Type: FieldString, Sort: true, Index: true}, // public clients' origins (CORS)
+		{Name: "auth_method", Type: FieldString, Sort: true, Index: true, SortIndex: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
 		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (cap, purge)
 	}},
@@ -145,14 +153,21 @@ var Schemas = map[Kind]Schema{
 	KindReplay: {KindReplay, nil},
 	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
-		{Name: "action", Type: FieldString, Sort: true},
+		{Name: "action", Type: FieldString, Sort: true, SortIndex: true},
 		{Name: "actor", Type: FieldString, Search: true},
 		{Name: "target", Type: FieldString, Search: true},
-		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "outcome", Type: FieldString},
 		{Name: "ip", Type: FieldString, Search: true},
 	}},
 }
+
+// unscopedKinds are the kinds whose records have no scope (Index.Scope ""): a query with Scope "" selects the whole
+// kind, which is also the empty scope.
+var unscopedKinds = map[Kind]bool{KindOrg: true, KindKey: true, KindLock: true, KindReplay: true, KindEphemeral: true}
+
+// Unscoped reports whether every record of kind k has Scope "".
+func Unscoped(k Kind) bool { return unscopedKinds[k] }
 
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {

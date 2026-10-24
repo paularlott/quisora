@@ -53,7 +53,10 @@ Everyone else signs in as before.
 | Wrong codes | Count towards the account's lock-out, as wrong authenticator codes do |
 | The session | `amr` is `pwd otp mfa`: it counts as a second factor for applications and for `acr_values=urn:quisora:acr:mfa` |
 
-Codes are kept only as hashes, tied to the sign-in they were sent for.
+Codes are kept only as hashes, tied to the sign-in they were sent for. The sign-in itself is bound to the account's
+[security generation](README.md#a-credential-change-ends-what-is-in-flight): a password changed, or a factor set up,
+after the code was sent ends it, and the code is refused. Whether the account may still use codes by email (the
+setting, the verified address, the role) is checked again at every step.
 
 ## Audit
 

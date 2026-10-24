@@ -70,18 +70,20 @@ Every record carries:
 ### Merge order (the causal convention)
 
 Every apply path (local commit, broadcast, durable push, anti-entropy, read repair) keeps the record of the higher
-**rank** = (epoch, version), where a tombstone's epoch is its own version — except for a quorum kind, whose tombstone
-keeps the epoch of the generation it deleted (`store.Head.Rank`, `store.Newer`; at equal rank a tombstone wins, then
-the higher origin). It is a total order, so every node that receives the same records, in any order, ends
+**rank** = (epoch, version), where a tombstone's epoch is its own version — except for a quorum kind, whose rank is
+its version alone (`store.Head.Rank`, `store.Newer`; at equal rank a tombstone wins, then the higher origin). It is a total order, so every node that receives the same records, in any order, ends
 with the same one. Consequences:
 
 - A tombstone with version *T* outranks every live record of an earlier generation (epoch < *T*), however new its
   version: an update made on a copy that had not seen the deletion (replication lag, a partition, a node catching
   up, a clock an hour ahead) can never bring the record back.
-- A tombstone of a quorum kind ranks by version among the writes of its generation instead. There the voters order
-  versions as writes are confirmed (each grant exceeds everything the voter granted before), and a confirmed
-  deletion is held by a majority that refuses any later write of that generation, so the rank only has to settle
-  partial writes: the later one wins, a deletion or not.
+- A quorum kind ranks by version alone. There the voters order a record's versions as its writes are granted (any
+  two grants share a voter, whose high-water mark forces the later one higher; no voter grants a version more than
+  10 s ahead of its clock; a restarted voter starts above everything it granted), and a confirmed deletion is held
+  by a majority that refuses any later write that had not seen it. So the rank only settles partial writes (a commit
+  that reached fewer than a quorum), and the later write wins — a deletion or not, of whatever generation: a
+  confirmed create of an id outranks an earlier partial deletion of it, as a confirmed update outranks an earlier
+  partial deletion. Generations still decide what the voters refuse, only not the merge.
 - A re-creation takes the version of the tombstone its writer saw as its epoch: it outranks that tombstone (same
   epoch, newer version) but **not a deletion its writer had not seen** (that tombstone's epoch is its own, later
   version). A revocation made later in real time therefore beats an earlier re-addition even when the re-adding
@@ -177,8 +179,8 @@ caller read).
 - **`ErrUnconfirmed` after the commit** (a voter failed mid-commit and fewer than a quorum applied): the write *may* be
   in effect on some nodes; it is counted (`unconfirmed`) and logged. A later conflicting write must prepare at a
   quorum that shares a voter with this write's grants, whose high-water mark forces the later write to a higher
-  version, so the later write ranks above the partial one everywhere (a partial deletion too: its tombstone ranks by
-  version within the generation it deleted).
+  version, so the later write ranks above the partial one everywhere (a partial deletion too: quorum kinds rank by
+  version alone).
 
 A voter keeps nothing on disk: its intents and high-water marks live in memory (after a minute the marks are folded
 into a per-node floor). A restart, however abrupt, is made safe by the clocks, which must be synchronised
@@ -213,15 +215,47 @@ this node. Two demotions on two nodes are therefore serialised, and the second s
 
 ### Groups and their members
 
-A change of a group and its members (a SCIM PATCH or PUT, an admin console change, a deletion) is several records:
-the group, whose version is the SCIM ETag and moves with the member list, and one membership record per user added
-or removed. The whole change — its checks, the writes and the undo of a change that failed part-way — holds the
-group's **lock**, the lock record `group/<group id>` (quorum compare-and-swap, a 30 s lease a working holder
-extends, waited for up to 10 s), so no two changes of one group interleave on any node or backend, and a failed
-change undoes only its own writes, never those of one that came after. A change made from a copy of the group that
-is no longer the newest is refused (`ErrStale`, HTTP 412 with `If-Match`) by the group record's compare-and-swap; a
-holder that dies leaves at most a partial change behind until its lease lapses, and one stalled past its lease stops
-where it is rather than undo over a newer holder's work. A deleted user's memberships are removed without the lock
+A change of a group and its members (a SCIM PATCH or PUT, an admin console change, a creation with members, a
+deletion) touches several records: the group, and one membership record per user added or removed. **The group's
+record is the single commit point.** Every change is committed by one compare-and-swap of that record (a quorum one
+in a gossip cluster), on the version the change was made from: it writes the group's fields and appends a *change
+entry* — the operation id, the users added and removed, a per-group sequence number — to the record's pending log
+(`model.Group.Pending`). If that write fails nothing has happened; once it succeeds the change is committed and is
+never rolled back. There is no lock and no compensating write.
+
+The membership records are a **materialized view** of the committed entries. After the commit the writer applies
+the record's entries in sequence order: each membership record stores the sequence of the change that last wrote
+it, and a write carrying an older sequence is refused (the record is read, compared and written with a
+compare-and-swap on its version), so a writer that stalled — for any length of time, on any node — can never
+overwrite what a later change wrote. That is the fence; it needs no clock. A removal does not delete the membership
+record: the record is marked removed, leaves the `group_id` and `user_id` indexes (so it is never listed) and is kept
+for 7 days (`model.RemovedMemberRetention`, as long as tombstones are) to fence stalled writers before it expires.
+The writer then removes the applied entries from the group's record with another compare-and-swap. A writer that
+dies after the commit leaves its entry in the record; the next change of the group applies it first, and the
+housekeeping leader finishes entries older than 30 s (`service.FinishGroupChanges`, found by the indexed `pending`
+field, so it costs nothing when there are none). A change that cannot be materialized (a store refusing the
+membership writes) stays pending and is carried forward by later commits; a record with 8 such entries refuses
+further changes (`ErrUnavailable`) until they are applied.
+
+Field changes (a rename, tags, the external id) commit on the same record with the same compare-and-swap, so they
+serialise with changes of the members without a lock and preserve the pending log. A deletion first commits an entry
+removing every member (`Clear`) — from that moment nobody is a member of the group, whatever is materialized — then
+materializes it and removes the group's record with a compare-and-swap on the version that commit gave it (then
+tombstones the membership records); a deleter that dies in between leaves an empty group, never memberships of a
+group that is gone. Creating a group with members
+creates the record carrying the first entry: the group exists with every member or not at all. One change may add
+and remove at most 1,000 memberships (`service.MaxMembersPerChange`), which keeps the log small; SCIM refuses a
+larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
+
+**What readers see.** Every reader of memberships (the groups of a user for tokens and tenant access, a group's
+members, member counts, SCIM resources) reads the group's record and applies its pending entries over the
+membership records, so it observes exactly the committed changes: never one that failed (nothing of it was written)
+and never a committed one in part. A committed removal is in force the moment the commit succeeds, materialized or
+not; a committed addition is seen the same way (a user's groups include the organization's groups with pending
+entries, one indexed read, normally empty). A membership of a group that no longer exists names no group and grants
+nothing. The group's version, its SCIM ETag, moves at the commit and once more when the entry is cleared (normally
+within the same request, which returns the final version); a change made from a copy that is no longer the newest
+is refused (`ErrStale`, HTTP 412 with `If-Match`). A deleted user's memberships are tombstoned outside this protocol
 (they are those of a user who no longer exists, harmless and removable by anyone).
 
 ### Refresh grants and single-use values
@@ -473,8 +507,10 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
   its clock, and starts with its floor 10 s past its clock, sitting out 11 s.
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
-- The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder. A group lock's
-  holder extends its lease as it works and stops (undoing nothing) once it may have lapsed, but a change it had
-  made by then stays as a partial change, as after a holder that died.
+- The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.
+- A group change's sequence fence rests on the removed membership record being kept: a writer stalled for longer than
+  7 days (`model.RemovedMemberRetention`) could re-create a membership removed since, as any write that old could
+  undo a purged tombstone. A membership a stalled writer materializes for a group or user deleted meanwhile is inert
+  (readers resolve the group and user) but stays until its removal expires.
 - Membership comes from the gossip library's failure detector; a node that is alive but cannot exchange data still
   counts as in view (writes then fail rather than being lost).

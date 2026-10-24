@@ -107,24 +107,12 @@ func (m *Module) checkEmailCode(ctx context.Context, ticketID, code string) (boo
 	return true, nil
 }
 
-// emailStep loads the sign-in a request continues: its ticket (a second-factor step), user and organization, with
-// email codes allowed for them. It writes the error answer itself.
+// emailStep loads the sign-in a request continues: its ticket (a second-factor step), user and organization (step:
+// the ticket still bound to the account, within its rate limit), with email codes allowed for them. It writes the
+// error answer itself.
 func (m *Module) emailStep(w http.ResponseWriter, r *http.Request, ticketID string) (*ticket, *model.User, *model.Org, bool) {
-	ctx := r.Context()
-	expired := func() { writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "") }
-	t, ok := m.getTicket(ctx, ticketID, "email_code", "totp", "passkey")
+	t, u, org, ok := m.step(w, r, ticketID, "email_code", "totp", "passkey")
 	if !ok {
-		expired()
-		return nil, nil, nil, false
-	}
-	u, err := m.s.Svc.Users.Get(ctx, t.UserID)
-	if err != nil || !u.Enabled(time.Now()) {
-		expired()
-		return nil, nil, nil, false
-	}
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
-		expired()
 		return nil, nil, nil, false
 	}
 	if !m.emailOK(u, org.Settings.EmailCodes) {
@@ -149,7 +137,7 @@ func (m *Module) emailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, u, org, ok := m.emailStep(w, r, in.Ticket)
-	if !ok || !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+	if !ok {
 		return
 	}
 	if err := m.sendEmailCode(r.Context(), in.Ticket, u, org); err != nil {
@@ -183,7 +171,7 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	t, u, org, ok := m.emailStep(w, r, in.Ticket)
-	if !ok || !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+	if !ok {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)

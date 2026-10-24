@@ -165,7 +165,9 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 		p.s.Render.Render(w, http.StatusOK, "oauth-logout", pg)
 		return
 	}
-	p.endSession(ctx, w, r, sess)
+	if !p.endSession(ctx, w, r, sess) {
+		return
+	}
 	p.finishLogout(w, r, redirect)
 }
 
@@ -179,9 +181,17 @@ func (p *Provider) finishLogout(w http.ResponseWriter, r *http.Request, redirect
 }
 
 // endSession ends the browser session (and its refresh grants). The clients that had one are notified through
-// the service's OnSessionsEnding hook, which the session manager calls for every ended session.
-func (p *Provider) endSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sess *model.Session) {
-	p.s.Sessions.End(ctx, w, r)
+// the service's OnSessionsEnding hook, which the session manager calls for every ended session. It reports false
+// when the session could not be ended: the user has then been told (503), not sent on to the relying party's
+// signed-out page as though they were, since the session (or a refresh grant of it) still works in the store.
+func (p *Provider) endSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sess *model.Session) bool {
+	if _, err := p.s.Sessions.End(ctx, w, r); err != nil {
+		p.log.Warn("oidc: logout: the session could not be ended", "session", sess.ID, "error", err)
+		p.message(w, r, http.StatusServiceUnavailable, "Sign-out incomplete", "You could not be fully signed out",
+			"This server could not end your session just now. Please try again shortly.")
+		return false
+	}
+	return true
 }
 
 // handleLogoutConfirm handles POST /oauth/logout/confirm, the confirmation page's plain form (it works without
@@ -209,8 +219,8 @@ func (p *Provider) handleLogoutConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	var lr logoutReq
 	_ = json.Unmarshal(raw, &lr)
-	if sess != nil {
-		p.endSession(r.Context(), w, r, sess)
+	if sess != nil && !p.endSession(r.Context(), w, r, sess) {
+		return
 	}
 	if lr.Redirect != "" {
 		w.Header().Set("Cache-Control", "no-store")

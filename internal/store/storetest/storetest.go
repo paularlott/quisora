@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -54,6 +55,7 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ListFilters", testListFilters},
 		{"ListFilterOperators", testListFilterOps},
 		{"ListIndexedFilters", testListIndexed},
+		{"ListSortIndexes", testListSortIndexes},
 		{"GetMany", testGetMany},
 		{"RefreshFields", testRefreshFields},
 		{"ListSort", testListSort},
@@ -837,6 +839,24 @@ func testListIndexed(t *testing.T, s store.Store) {
 		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true), f("active", true)}, Desc: desc})
 		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true), f("super_admin", false)}, Desc: desc})
 		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: "username", Desc: desc, Limit: 8})
+		// Sorted pages (the sort indexes of the key-value stores): every sort field of the user console and of
+		// SCIM, both directions, at offsets, with the visibility exclusions, with ties (role, active) and without.
+		for _, sort := range []string{"username", "name", "email", "created", "role", "active", "department"} {
+			for _, off := range []int{0, 5, 23, 30} {
+				check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: sort, Desc: desc, Offset: off, Limit: 7})
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 7})
+			}
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false), f("admin_rank", false)}, Sort: sort, Desc: desc, Offset: 3, Limit: 4})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false), f("active", true)}, Sort: sort, Desc: desc, Offset: 2, Limit: 5})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("admin_rank", true)}, Sort: sort, Desc: desc, Limit: 3})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: sort, Desc: desc, Search: "user01", Offset: 1, Limit: 4})
+			check(model.KindUser, store.ListQuery{Scope: "", Sort: sort, Desc: desc, Offset: 4, Limit: 9})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc})
+		}
+		check(model.KindUser, store.ListQuery{Scope: "org1", Search: "user0", Desc: desc, Offset: 2, Limit: 5})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("role", "manager")}, Desc: desc, Offset: 1, Limit: 3})
+		check(model.KindGrant, store.ListQuery{Scope: "u1", Sort: "created", Desc: desc, Offset: 1, Limit: 3})
+		check(model.KindMember, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("group_id", "g1")}, Sort: "created", Desc: desc, Limit: 2})
 		check(model.KindUser, store.ListQuery{Scope: "", Filters: []store.Filter{f("admin_rank", true)}, Desc: desc, Limit: 4})
 		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-a")}, Desc: desc, Offset: 1, Limit: 3})
 		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-b")}, Desc: desc})
@@ -851,6 +871,98 @@ func testListIndexed(t *testing.T, s store.Store) {
 	check(model.KindUser, store.ListQuery{Scope: "org2", Filters: []store.Filter{f("super_admin", false)}, Limit: 4})
 	check(model.KindUser, store.ListQuery{Scope: "org3", Filters: []store.Filter{f("super_admin", false)}})
 	check(model.KindGrant, store.ListQuery{Scope: "u9", Filters: []store.Filter{f("client_id", "app-a")}})
+}
+
+// testListSortIndexes: listings sorted on the fields the key-value stores keep sort indexes for (model.Field.SortIndex)
+// give exactly what applying the query to every record gives, where the index order is put to the test: runs of
+// equal values longer than a page (ties break by id ascending in both directions), empty and missing values (which
+// sort first), case folding, a kind without scopes (organizations), time fields, and after the records move in the
+// order (updates) or leave it (deletions).
+func testListSortIndexes(t *testing.T, s store.Store) {
+	ids := func(recs []*store.Record) []string {
+		out := make([]string, len(recs))
+		for i, r := range recs {
+			out[i] = r.ID
+		}
+		return out
+	}
+	check := func(kind model.Kind, q store.ListQuery) {
+		t.Helper()
+		all, err := s.List(ctx, kind, store.ListQuery{})
+		must(t, err)
+		want, err := store.ApplyQuery(kind, all.Records, q)
+		must(t, err)
+		got, err := s.List(ctx, kind, q)
+		must(t, err)
+		if !slices.Equal(ids(got.Records), ids(want.Records)) || got.Total != want.Total {
+			t.Errorf("%s %+v:\n got %d %v\nwant %d %v", kind, q, got.Total, ids(got.Records), want.Total, ids(want.Records))
+		}
+	}
+	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	us := make([]*model.User, 0, 40)
+	for i := range 40 {
+		u := newUser("org1", fmt.Sprintf("u%02d", i))
+		if i%4 == 1 {
+			u.Username = strings.ToUpper(u.Username) // folds to the same order as the others
+		}
+		u.GivenName, u.FamilyName = []string{"Ann", "bob", "Ann", ""}[i%4], "" // three runs of equal names; "" names fall back to the username
+		u.Work.Department = ""
+		if i%5 == 0 {
+			u.Work.Department = "Ops" // most departments are empty: a long run of empty values first
+		}
+		u.Created = base.Add(time.Duration(i%6) * time.Minute).Add(time.Duration(i%3) * time.Nanosecond) // ties at the second, apart by nanoseconds
+		u.Active = i%3 != 0
+		switch {
+		case i%13 == 2:
+			u.Role = model.RoleSuperAdmin
+		case i%7 == 3:
+			u.Role = model.RoleAdmin
+		}
+		must(t, users(s).Put(ctx, u))
+		us = append(us, u)
+	}
+	orgs := store.NewTable[model.Org](s)
+	for i, n := range []string{"zeta", "Alpha", "beta", "alpha2", "Beta2", "gamma"} {
+		o := &model.Org{Name: n, DisplayName: []string{"Same", "Same", "Other", "", "Same", "other"}[i]}
+		o.Created = base.Add(time.Duration(i%2) * time.Hour)
+		must(t, orgs.Put(ctx, o))
+	}
+	groups := store.NewTable[model.Group](s)
+	for _, n := range []string{"Team", "alpha", "ZEBRA", "beta", "Crew", "delta", "Echo", "", "gamma"} { // (names are unique)
+		must(t, groups.Put(ctx, &model.Group{OrgID: "org1", DisplayName: n}))
+	}
+	visible := []store.Filter{{Field: "super_admin", Value: false}}
+	for _, desc := range []bool{false, true} {
+		for _, sort := range []string{"username", "name", "department", "created", "active", "role", "email"} {
+			for _, off := range []int{0, 3, 11, 38, 45} {
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5})
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5, Filters: visible})
+			}
+			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Limit: 1})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Filters: visible})
+			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Filters: []store.Filter{{Field: "active", Value: false}}, Offset: 2, Limit: 4})
+		}
+		for _, sort := range []string{"name", "display_name", "created"} {
+			for _, off := range []int{0, 2, 5} {
+				check(model.KindOrg, store.ListQuery{Sort: sort, Desc: desc, Offset: off, Limit: 2})
+			}
+			check(model.KindGroup, store.ListQuery{Scope: "org1", Sort: "display_name", Desc: desc, Offset: 1, Limit: 4})
+			check(model.KindGroup, store.ListQuery{Scope: "org1", Sort: "created", Desc: desc, Limit: 3})
+		}
+	}
+	// The order follows the records: a renamed user moves, a deleted one leaves.
+	u := us[7]
+	u.Username, u.GivenName = "aaa", "Zoe"
+	must(t, users(s).Update(ctx, u))
+	must(t, users(s).Delete(ctx, us[0].ID))
+	must(t, users(s).Delete(ctx, us[2].ID)) // a super admin
+	for _, desc := range []bool{false, true} {
+		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "username", Desc: desc, Limit: 3})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "name", Desc: desc, Offset: 1, Limit: 6, Filters: visible})
+	}
+	if n, err := s.Count(ctx, model.KindUser, "org1"); err != nil || n != 38 {
+		t.Errorf("count %d %v", n, err)
+	}
 }
 
 // replica is u as another node would send it: written at version, by origin, created (generation 0) at version.

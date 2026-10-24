@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -299,19 +300,36 @@ func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
 	m.mu.Unlock()
 }
 
-// End deletes the request's session and clears the cookie.
-func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Request) *model.Session {
-	sess, _ := m.Current(r)
-	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	if sess == nil {
-		return nil
+// End deletes the request's session and clears the cookie. The error is Delete's: a session (or a refresh grant of
+// it) that could not be deleted still works for whoever holds it, so the caller tells the user the sign-out did not
+// finish rather than that they are signed out. The cookie then stays while the session record does: the user is
+// told to try again, and the retry needs it to find the session to end (a cookie cleared over a session left alive
+// would leave it, and its grants, running until they expire with no way to end them from this browser).
+func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Request) (*model.Session, error) {
+	clear := func() {
+		http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
+			SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	}
-	_ = m.Delete(ctx, sess.ID)
-	return sess
+	sess, _ := m.Current(r)
+	if sess == nil {
+		clear()
+		return nil, nil
+	}
+	err := m.Delete(ctx, sess.ID)
+	if err == nil {
+		clear()
+		return sess, nil
+	}
+	if _, gerr := m.svc.Sessions.Get(ctx, sess.ID); errors.Is(gerr, store.ErrNotFound) {
+		clear() // the session itself went; only a refresh grant of it did not (reported)
+	}
+	return sess, err
 }
 
-// Delete ends a session by id, with its refresh grants.
+// Delete ends a session by id, with its refresh grants. Every deletion is attempted even when one fails, and the
+// failures are returned together: a grant made with offline_access outlives its session, so one left behind keeps
+// refreshing after a sign-out that reported success. (A grant without it dies with the session, grantLive; a
+// deletion applied here but not yet confirmed by a peer is no failure.)
 func (m *Sessions) Delete(ctx context.Context, id string) error {
 	s, err := m.svc.Sessions.Get(ctx, id)
 	if err != nil {
@@ -319,18 +337,23 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 	}
 	m.Evict(id, "")
 	m.svc.SessionsEnding(ctx, s.UserID, id)
+	var errs []error
 	grants, err := m.svc.Grants.All(ctx, s.UserID)
-	if err == nil {
-		for _, g := range grants {
-			if g.SessionID == id {
-				_ = m.svc.Grants.Delete(service.Durable(ctx), g.ID)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list refresh grants: %w", err))
+	}
+	for _, g := range grants {
+		if g.SessionID == id {
+			if err := m.svc.Grants.Delete(service.Durable(ctx), g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, err))
 			}
 		}
 	}
-	if err := m.svc.Sessions.Delete(service.Durable(ctx), id); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	if err := m.svc.Sessions.Delete(service.Durable(ctx), id); !store.Applied(err) && !errors.Is(err, store.ErrStale) &&
+		!errors.Is(err, context.Canceled) {
+		errs = append(errs, fmt.Errorf("end session: %w", err))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // SessionHandle is the opaque name a session is shown and ended by (a session's id is its secret's key, so it is never

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
@@ -42,23 +41,10 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		extra = map[string]string{}
 	)
 	if in.Ticket != "" {
-		t, ok := m.getTicket(ctx, in.Ticket, "passkey", "totp") // a passkey in place of the authenticator code, too
+		// a passkey in place of the authenticator code, too; the organization's bucket (by name, as every other
+		// step of its sign-ins), and its audit log when limited
+		_, u, _, ok := m.step(w, r, in.Ticket, "passkey", "totp")
 		if !ok {
-			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-			return
-		}
-		u, err := m.s.Svc.Users.Get(ctx, t.UserID)
-		if err != nil || !u.Enabled(time.Now()) {
-			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-			return
-		}
-		org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-		if err != nil {
-			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
-			return
-		}
-		// the organization's bucket (by name, as every other step of its sign-ins), and its audit log when limited
-		if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
 			return
 		}
 		user = u
@@ -171,10 +157,11 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	provider := ""
 
 	if tid := res.Extra["ticket"]; tid != "" {
-		// Second factor after a verified password.
+		// Second factor after a verified password: the ticket must still bind to the account the passkey just
+		// signed in (ticketCurrent; u was read by the ceremony a moment ago).
 		t, ok := m.getTicket(ctx, tid, "passkey", "totp")
-		if !ok || t.UserID != u.ID || !m.useTicket(ctx, tid) {
-			writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+		if !ok || !m.ticketCurrent(ctx, t, u) || !m.useTicket(ctx, tid) {
+			writeErr(w, http.StatusUnauthorized, msgExpired, "")
 			return
 		}
 		amr = append(append(append([]string{}, t.AMR...), amr...), "mfa")

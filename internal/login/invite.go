@@ -118,10 +118,12 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var pk *model.Passkey
+	var reg *passkey.Registration
 	if wantPasskey {
+		// Verified now, stored only once the link is redeemed and the account reset below: the link is bound to the
+		// account's security generation, which storing a passkey moves on.
 		var err error
-		pk, _, err = m.Passkeys.FinishRegistrationAs(ctx, purposeInvite, u, in.Challenge, in.Credential, strings.TrimSpace(in.Name))
+		reg, err = m.Passkeys.VerifyRegistrationAs(ctx, purposeInvite, u, in.Challenge, in.Credential, strings.TrimSpace(in.Name))
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, "The passkey could not be registered. Try again.", "")
 			return
@@ -129,24 +131,24 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	link, _, err := m.s.Svc.RedeemLink(ctx, in.Token, service.LinkInvite)
 	if err != nil {
-		if pk != nil { // lost a race for the link: do not leave the credential behind
-			_ = m.s.Svc.Passkeys.Delete(ctx, pk.ID)
-		}
 		writeErr(w, http.StatusGone, msgBadInvite, "")
 		return
 	}
 	// An invitation starts the account afresh: whatever else could sign in as this user (sessions, other passkeys,
 	// connected providers, API tokens, an authenticator app, an old password) goes.
-	keep := ""
-	if pk != nil {
-		keep = pk.ID
-	}
-	if err := m.s.Svc.ResetCredentials(ctx, u.ID, keep); err != nil {
+	if err := m.s.Svc.ResetCredentials(ctx, u.ID, ""); err != nil {
 		m.internalError(w, r, "reset credentials", err)
 		return
 	}
 	if fresh, err := m.s.Svc.Users.Get(ctx, u.ID); err == nil {
 		u = fresh
+	}
+	var pk *model.Passkey
+	if reg != nil {
+		if pk, err = m.Passkeys.StoreRegistration(ctx, u, reg); err != nil {
+			m.internalError(w, r, "store passkey", err)
+			return
+		}
 	}
 	var upd service.UserInput
 	if wantPassword {

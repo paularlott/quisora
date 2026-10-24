@@ -169,6 +169,8 @@ func TestDeepReviewRestartCannotLoseGrantedVersionFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// From the wall clock, not the process clock other tests may have moved ahead: the bounds below are wall-clock.
+	initial.Version = hlc.FromTime(time.Now())
 	initial.Created = initial.Version
 	for _, n := range ns {
 		if _, _, err := n.st.inner.PutReplicated(bg, initial); err != nil {

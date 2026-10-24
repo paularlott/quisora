@@ -321,6 +321,9 @@ func page(t *badger.Txn, bucket string, p pageQuery, nowMs int64) ([]string, int
 				out = append(out, string(m))
 			}
 			total++
+			if p.NoTotal && p.Limit > 0 && len(out) >= p.Limit {
+				break // the page is full and nobody wants the rest counted
+			}
 		}
 		return nil
 	}()
@@ -446,6 +449,7 @@ type badgerBatch struct {
 	feeds  []feedOp
 	undo   []undoEntry // writes of the running operation, newest last
 	mark   int         // len(feeds) when the running operation began
+	rerr   error       // a read error met by an operation that could not return it (Add); fails the commit
 }
 
 func (e *badgerEngine) newBatch() *badgerBatch {
@@ -521,6 +525,21 @@ func (b *badgerBatch) SetDel(bucket, member string) {
 	b.put(memberStr(bucket, member), bwrite{del: true})
 }
 
+// Add reads the counter (through Get: a buffered write of this batch, or the snapshot, which registers the key for
+// conflict detection) and buffers its new value, 8 bytes big endian; a counter back at 0 is deleted.
+func (b *badgerBatch) Add(key string, delta int64) {
+	cur, err := b.Get(key)
+	if err != nil && b.rerr == nil {
+		b.rerr = err // fails the commit
+	}
+	n := counterOf(cur) + delta
+	if n <= 0 {
+		b.put(key, bwrite{del: true})
+		return
+	}
+	b.put(key, bwrite{val: binary.BigEndian.AppendUint64(make([]byte, 0, 8), uint64(n))})
+}
+
 // Feed buffers the record (readable by later operations, with a pending sequence number) and its feed entry. A key
 // written through Feed must not also be written with Set or Delete.
 func (b *badgerBatch) Feed(recKey string, body []byte, entry string, oldSeq uint64) {
@@ -559,6 +578,10 @@ func (b *badgerBatch) fedSet() func(string) bool {
 // then it waits until the commit is durable (fsync with SyncWrites). The Badger transaction is always finished.
 func (b *badgerBatch) commit() error {
 	t, e := b.t, b.e
+	if b.rerr != nil {
+		t.Discard()
+		return b.rerr
+	}
 	if b.empty() {
 		t.Discard()
 		return nil

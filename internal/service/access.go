@@ -299,15 +299,22 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 	return nil
 }
 
-// deleteAccessWhere removes the access records of an org matching one field (a deleted user, group or tenant).
-func (s *Service) deleteAccessWhere(ctx context.Context, orgID, field, value string) {
+// deleteAccessWhere removes the access records of an org matching one field (a deleted user, group or tenant). It
+// is cleanup: an entry left behind names a subject or tenant that no longer exists, so no access decision reads it
+// (ClientAccess looks entries up by the user and their current groups, in the client's tenant). Failures are
+// returned so the caller can record that the deletion did not finish.
+func (s *Service) deleteAccessWhere(ctx context.Context, orgID, field, value string) error {
 	l, _, err := s.Access.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: field, Value: value}}})
 	if err != nil {
-		return
+		return mapStore(err)
 	}
+	var errs []error
 	for _, acc := range l {
-		_ = s.Access.Delete(ctx, acc.ID)
+		if err := s.Access.Delete(ctx, acc.ID); err != nil && !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, mapStore(err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // AppAccess is what a user gets for one application: whether they may sign in to it, and the roles and tags that

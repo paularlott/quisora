@@ -14,7 +14,9 @@ import (
 // A lease is a cluster-wide lock this request holds: a lock record (model.Lock) written with a compare-and-swap (a
 // quorum one in a gossip cluster), so whatever it guards is serialised across every node, on every backend. It lasts
 // ttl unless released or extended, so a holder that dies blocks the others for at most ttl; a holder is sure of it
-// only while held reports so, and a long change calls extend as it goes.
+// only while held reports so, and a long change calls extend as it goes. It guards a decision that needs more than
+// one record read consistently (the admin lock, signin.go); a change of several records is not made under one, as a
+// lease fences no write: see ChangeGroup for how a group and its members commit on one record instead.
 type lease struct {
 	s      *Service
 	id     string

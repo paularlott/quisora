@@ -13,7 +13,10 @@ signed in within the last 5 minutes, then shows ten codes once, with **Copy** an
 away. **I have saved them** closes the dialog; the codes are not shown again.
 
 The row then shows how many are left (a warning when three or fewer are), and **Create new codes…** replaces them:
-the old ones stop working at once, used or not.
+the old ones stop working at once, used or not. Making or dropping codes is a credential change: it moves the
+account's [security generation](README.md#a-credential-change-ends-what-is-in-flight) on, so a sign-in waiting for
+a second factor when the codes were remade starts again, even with one of the new codes. Using a code is not: it
+finishes the sign-in it was typed into and is marked used, nothing more.
 
 Quisora keeps only hashes of the codes, and a code used on one node is refused on every other.
 

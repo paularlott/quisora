@@ -46,6 +46,11 @@ func (s *Service) InvalidateSignOut() {
 
 // signOutCounters returns the organization's and the server's counters, from the cache when fresh. On a read error
 // the last values read are used if there are any: a store hiccup must not sign everyone out.
+// signOutMaxStale bounds how long counters read before keep serving while they cannot be read again: a short store
+// blip does not fail every token check, but an emergency sign-out made meanwhile is never ignored for longer than
+// this. Past it the check fails (the caller answers 503), as the grant and session reads it goes with do.
+const signOutMaxStale = 30 * time.Second
+
 func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, server model.SignOutCounters, err error) {
 	now := time.Now()
 	c := &s.signOut
@@ -65,7 +70,7 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 			}
 			c.orgs[orgID] = co
 			c.mu.Unlock()
-		case !okOrg:
+		case !okOrg || now.Sub(co.fetched) > signOutMaxStale:
 			return org, server, gerr
 		}
 	}
@@ -77,7 +82,7 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 			c.mu.Lock()
 			c.server, c.hasSrv, c.fetched = srv, true, now
 			c.mu.Unlock()
-		case !okSrv:
+		case !okSrv || now.Sub(srvAt) > signOutMaxStale:
 			return org, server, perr
 		}
 	}

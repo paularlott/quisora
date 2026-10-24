@@ -81,7 +81,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	back := func(result string) {
 		http.Redirect(w, r, "/account?provider="+result+"#providers", http.StatusSeeOther)
 	}
-	_, u := m.s.Sessions.Current(r)
+	sess, u := m.s.Sessions.Current(r)
 	if u == nil || u.ID != res.Connect || u.OrgID != res.Org.ID {
 		back("failed")
 		return
@@ -125,6 +125,12 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		m.internalError(w, r, "identity", err)
 		return
 	}
+	// A connected provider is a new way in: the account's security generation moves on (ending what was in flight
+	// for it), and the re-authentication this session gave to connect it carries over to the new generation.
+	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, u.ID); err == nil {
+		m.refreshReauth(ctx, sess.ID, fresh.SecurityGen)
+	}
+	m.changed(acct{u: u})
 	m.audit(r, "account.provider.connect", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name})
 	back("connected")
 }
@@ -162,6 +168,7 @@ func (m *Module) disconnectProvider(w http.ResponseWriter, r *http.Request, a ac
 			return
 		}
 	}
+	m.credentialChanged(ctx, a, u.ID) // a way in is gone
 	name := pid
 	if p, err := m.s.Svc.Providers.Get(ctx, pid); err == nil {
 		name = p.Name

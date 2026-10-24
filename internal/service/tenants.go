@@ -107,12 +107,16 @@ func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInp
 
 // TenantForResources returns the tenant that owns the resources (all of them one tenant's), for a self-registered
 // application: ErrNotFound when none is named, one is no tenant's, they span tenants, or the tenant does not allow
-// self-registered applications.
+// self-registered applications. A read that fails is returned as such (not ErrNotFound): whether a resource still
+// accepts an application is an authorization decision, and its callers must not take "could not read" for "no".
 func (s *Service) TenantForResources(ctx context.Context, resources []string) (*model.Tenant, error) {
 	var t *model.Tenant
 	for _, r := range resources {
 		got, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(r))
-		if err != nil || (t != nil && got.ID != t.ID) {
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		if t != nil && got.ID != t.ID {
 			return nil, ErrNotFound
 		}
 		t = got
@@ -201,7 +205,10 @@ func (s *Service) DeleteTenant(ctx context.Context, a *Actor, id string) error {
 	if err := s.Tenants.Delete(ctx, id); err != nil {
 		return mapStore(err)
 	}
-	s.deleteAccessWhere(ctx, t.OrgID, "tenant_id", t.ID)
+	if err := s.deleteAccessWhere(ctx, t.OrgID, "tenant_id", t.ID); err != nil {
+		// Cleanup: a deleted tenant has no clients (ErrTenantInUse above), so nothing decides access from its entries.
+		s.Log.WithError(err).Warn("tenant deleted; some of its access entries were not removed", "tenant", t.ID)
+	}
 	s.Audit(ctx, a, t.OrgID, "tenant.delete", t.Name, nil)
 	return nil
 }
@@ -221,11 +228,16 @@ func (s *Service) DefaultTenant(ctx context.Context, orgID string) (*model.Tenan
 	return t, mapStore(err)
 }
 
-// ClientTenant returns the tenant of a client.
+// ClientTenant returns the tenant of a client: ErrNotFound when it is gone (or, which cannot happen, another
+// organization's: every client is created with a tenant of its own org), the read's own error when it failed, so
+// that an access decision made from the tenant is not made from its absence.
 func (s *Service) ClientTenant(ctx context.Context, c *model.Client) (*model.Tenant, error) {
 	t, err := s.Tenants.Get(ctx, c.TenantID)
-	if err != nil || t.OrgID != c.OrgID {
-		return nil, ErrNotFound // every client is created with a tenant of its own org
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if t.OrgID != c.OrgID {
+		return nil, ErrNotFound
 	}
 	return t, nil
 }

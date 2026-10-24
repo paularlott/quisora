@@ -80,6 +80,7 @@ func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.Us
 	now := time.Now().UTC()
 	for attempt := 0; ; attempt++ {
 		u.RecoveryCodes, u.RecoveryCreated = hashes, &now
+		u.BumpSecurity() // a new set of codes is a new credential: what was in flight under the old one ends
 		err := s.Users.Update(Durable(ctx), u)
 		if err == nil {
 			break
@@ -110,6 +111,7 @@ func (s *Service) DropRecoveryCodes(ctx context.Context, userID string) error {
 			return err
 		}
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil
+		u.BumpSecurity()
 		err = s.Users.Update(Durable(ctx), u)
 		if !errors.Is(err, store.ErrStale) || attempt == 4 {
 			return mapStore(err)

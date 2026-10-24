@@ -106,16 +106,19 @@ func (s *Service) emailActor(ctx context.Context, a *Actor, u *model.User) (self
 	return false, nil
 }
 
-// modifyUser re-reads and updates a user until the write is not stale.
+// modifyUser re-reads and updates a user until the write is not stale. A change f makes to what signs the account in
+// (securityState: the primary address made primary or verified, say) moves the security generation on with it.
 func (s *Service) modifyUser(ctx context.Context, id string, f func(u *model.User) error) (*model.User, error) {
 	for range 4 {
 		u, err := s.Users.Get(ctx, id)
 		if err != nil {
 			return nil, mapStore(err)
 		}
+		was := stateOf(u)
 		if err := f(u); err != nil {
 			return nil, err
 		}
+		noteSecurity(was, u)
 		err = s.Users.Update(Durable(ctx), u)
 		switch {
 		case err == nil:

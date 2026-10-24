@@ -182,6 +182,9 @@ func (s *Service) DisconnectProvider(ctx context.Context, a *Actor, userID, prov
 	if n == 0 {
 		return 0, nil
 	}
+	if _, err := s.AdvanceSecurity(ctx, u.ID); err != nil { // a way in is gone: what is in flight for the account ends
+		return n, err
+	}
 	name := providerID
 	if p, err := s.Providers.Get(ctx, providerID); err == nil {
 		name = p.Name
@@ -231,8 +234,17 @@ func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID
 	if err := s.Passkeys.Delete(Durable(ctx), p.ID); err != nil {
 		return 0, mapStore(err)
 	}
-	ended := s.EndPasskeySessions(ctx, u.ID, p.ID)
-	s.Audit(ctx, a, u.OrgID, "user.passkey.remove", u.Username, map[string]string{"name": p.Name,
-		"sessions_ended": strconv.Itoa(ended)})
-	return ended, nil
+	if _, err := s.AdvanceSecurity(ctx, u.ID); err != nil { // a way in is gone: what is in flight for the account ends
+		return 0, err
+	}
+	// The passkey is gone; the sessions it signed in are ended best effort after it, and a failure there is recorded
+	// with the removal (and returned: the caller says the sign-outs did not all happen), not hidden by it.
+	ended, err := s.EndPasskeySessions(ctx, u.ID, p.ID)
+	detail := map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)}
+	if err != nil {
+		detail["sessions_result"] = "incomplete"
+		detail["error"] = err.Error()
+	}
+	s.Audit(ctx, a, u.OrgID, "user.passkey.remove", u.Username, detail)
+	return ended, err
 }

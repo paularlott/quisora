@@ -111,12 +111,15 @@ its pages read through every event they search (fine for thousands of users, not
 
 **Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
 (typically a year or more). Each node writes every event to a disk spool in its data directory, synced before the
-action that recorded it completes, and removes it once VictoriaLogs has taken it, so an outage of VictoriaLogs, a
-restart or a crash loses no event, unless an outage outlasts the spool's space (the oldest events then leave it, each
-written in full to the structured log). A spool disk that does not answer within 2 seconds, or that cannot be
-written, does not hold requests up: the event is then written in full to the structured log (`audit.undelivered`),
-and a crash before the disk recovers can lose it from VictoriaLogs — ship the structured log and alert on
-`audit.undelivered`.
+action that recorded it completes, and removes it once VictoriaLogs has taken it. The guarantee: an event whose
+write to the spool succeeded is on disk, complete, and will reach VictoriaLogs, through an outage of VictoriaLogs, a
+restart or a crash (a write a crash or disk error cuts short is undone or left as a segment's last line, so it can
+never corrupt an event written after it), unless an outage outlasts the spool's space (the oldest events then leave
+it, each written in full to the structured log). The structured log (`audit.undelivered`, the event in full) is the
+fallback whenever the spool does not take an event: the disk did not answer within 2 seconds (the event is still
+spooled once it does, and then reaches VictoriaLogs as well), or the write failed (a full or failing disk: the log is
+then its only copy). Delivery is at least once — VictoriaLogs may hold an event twice, by `id`, never not at all — so
+ship the structured log and alert on `audit.undelivered`.
 Every node's audit page then reads from VictoriaLogs:
 
 ```toml

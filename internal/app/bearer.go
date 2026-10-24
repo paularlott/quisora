@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -38,6 +41,11 @@ func scimVerifier(a *App) func(r *http.Request, scheme, tok string) (*service.Ac
 			return nil, service.ErrBadToken // user tokens and tokens without the scim scope are not provisioning tokens
 		}
 		c, err := a.Svc.Clients.Get(ctx, cl.ClientID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			// The read failed, not the token: SCIM answers 503 (as for a personal API token), not 401, so the
+			// provisioning client retries instead of treating its token as revoked.
+			return nil, fmt.Errorf("%w: the client could not be read: %v", service.ErrUnavailable, err)
+		}
 		if err != nil || !c.Enabled || !c.SCIM {
 			return nil, service.ErrBadToken
 		}

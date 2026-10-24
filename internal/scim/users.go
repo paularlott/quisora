@@ -179,8 +179,16 @@ func (rq *request) groupIndex(users []*model.User) (map[string][]*model.Group, e
 	if probes := len(users) * len(groups); probes <= maxProbe && (probes <= 16 || rq.fewerThanMembers(probes)) {
 		for _, u := range users {
 			for _, g := range groups {
-				if _, err := svc.Members.Get(rq.ctx, model.MemberID(g.ID, u.ID)); err == nil {
-					idx[u.ID] = append(idx[u.ID], g)
+				if member, decided := g.PendingMember(u.ID); decided { // committed, perhaps not materialized yet
+					if member {
+						idx[u.ID] = append(idx[u.ID], g)
+					}
+					continue
+				}
+				if m, err := svc.Members.Get(rq.ctx, model.MemberID(g.ID, u.ID)); err == nil {
+					if m.Active() {
+						idx[u.ID] = append(idx[u.ID], g)
+					}
 				} else if !errors.Is(err, store.ErrNotFound) {
 					return nil, err
 				}
@@ -196,9 +204,15 @@ func (rq *request) groupIndex(users []*model.User) (map[string][]*model.Group, e
 	if err != nil {
 		return nil, err
 	}
+	members := map[string][]string{} // group id -> materialized member ids
 	for _, m := range ms {
-		if g := byID[m.GroupID]; g != nil {
-			idx[m.UserID] = append(idx[m.UserID], g)
+		if m.Active() {
+			members[m.GroupID] = append(members[m.GroupID], m.UserID)
+		}
+	}
+	for _, g := range groups {
+		for _, uid := range service.CommittedMembers(g, members[g.ID]) {
+			idx[uid] = append(idx[uid], byID[g.ID])
 		}
 	}
 	return idx, nil

@@ -33,15 +33,18 @@ type engine interface {
 
 // pageQuery selects a page of an ordered set: the live members within [From, To) ("" = no bound on that side) that
 // are not in Skip, in byte order (Reverse: descending), leaving out the first Offset of them and returning at most
-// Limit (Limit <= 0: all). The total a page comes with counts every member selected, ignoring Offset and Limit. Skip
-// is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set pages the scope's
-// index with them skipped, instead of loading the scope.
+// Limit (Limit <= 0: all). The total a page comes with counts every member selected, ignoring Offset and Limit,
+// unless NoTotal says the caller has no use for it (the store keeps counters: see counterKey): the engine then
+// stops at the end of the page instead of visiting the rest of the range, and the total it returns means nothing.
+// Skip is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set pages the
+// scope's index with them skipped, instead of loading the scope.
 type pageQuery struct {
 	From, To string
 	Skip     map[string]struct{}
 	Reverse  bool
 	Offset   int
 	Limit    int
+	NoTotal  bool
 }
 
 // grouper is implemented by engines that commit concurrent record writes together (group commit). Group has the
@@ -58,6 +61,10 @@ type txn interface {
 	Delete(key string)
 	SetAdd(bucket, member string, expMs int64)
 	SetDel(bucket, member string)
+	// Add adds delta to the integer counter at key (absent: 0), deleting it when it reaches 0. Badger reads the key
+	// (so concurrent transactions adding to one counter conflict and one retries); Valkey increments it in place
+	// without a read. A counter is not read in the transaction that adds to it. counterOf decodes one.
+	Add(key string, delta int64)
 	// Feed writes the record at recKey and registers it in the change feed under a fresh sequence number assigned
 	// in commit order: body must start with seqHeader reserved bytes, which are overwritten with the sequence
 	// number (big endian). The feed entry of the record's previous sequence (oldSeq, 0 if none) is removed. A nil

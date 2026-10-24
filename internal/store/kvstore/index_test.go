@@ -4,22 +4,37 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// countingReads counts the records an engine loads (the keys of its MGet calls): what a listing costs beyond its
-// index reads.
+// countingReads counts the records an engine loads (the record keys of its MGet calls; the two counter keys a total
+// reads are not records) and the scope-wide ranges it is asked to count (Page calls without NoTotal over a whole
+// bucket or scope range, whose From is empty or a scope prefix: a count of a run of equal sort values, bounded by
+// the offset, is not one): what a listing costs beyond its index reads.
 type countingReads struct {
 	engine
 	records int
+	counted int
 }
 
 func (e *countingReads) MGet(ctx context.Context, keys []string) ([][]byte, error) {
-	e.records += len(keys)
+	for _, k := range keys {
+		if strings.HasPrefix(k, "rec/") {
+			e.records++
+		}
+	}
 	return e.engine.MGet(ctx, keys)
+}
+
+func (e *countingReads) Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
+	if !p.NoTotal && (p.From == "" || strings.HasSuffix(p.From, "/")) {
+		e.counted++
+	}
+	return e.engine.Page(ctx, bucket, p, nowMs)
 }
 
 // A user listing that leaves the super admins out (every listing of an ordinary administrator) loads only the

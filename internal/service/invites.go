@@ -52,7 +52,7 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	}
 	token := secure.RandomToken(32)
 	l := &model.LinkToken{Meta: model.Meta{ID: linkID(token)}, UserID: u.ID, OrgID: u.OrgID, Purpose: purpose,
-		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created, IssuedBy: by}
+		Email: email, Expires: time.Now().Add(ttl), UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen}
 	for _, e := range edit {
 		e(l)
 	}
@@ -75,6 +75,15 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	// The account must be the one the link was issued for: in a cluster a second "quisora bootstrap" on a new node
 	// issues a link for a first administrator with the same fixed id, and that link must not open the real one.
 	if err != nil || !(u.Enabled(time.Now()) || l.BreakGlass) || !u.Created.Equal(l.UserCreated) {
+		return nil, nil, ErrLink
+	}
+	// An invitation or reset link sets the account's credentials, so it is bound to the account's security
+	// generation (model.User.SecurityGen) as it was when the link was issued: once a credential has changed since —
+	// its owner changed the password a reset was asked for, set up a second factor, a passkey was added or removed,
+	// the account was disabled — the link opens nothing, and whoever wants one asks again. A verification link only
+	// proves an address, and checks that the address is still on the account; a change of role or address is judged
+	// below and by the caller, not here.
+	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && l.Gen != u.SecurityGen {
 		return nil, nil, ErrLink
 	}
 	if l.Purpose == LinkInvite && l.IssuedBy != "" && !s.issuerMayInvite(ctx, l.IssuedBy, u) {
@@ -237,6 +246,7 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 	}
 	now := time.Now().UTC()
 	u.PasswordHash, u.PasswordChangedAt = "", &now
+	u.BumpSecurity()
 	err = s.Users.Update(Durable(ctx), u)
 	if !store.Applied(err) {
 		return mapStore(err)

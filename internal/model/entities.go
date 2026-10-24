@@ -152,7 +152,23 @@ type User struct {
 	RecoveryCreated *time.Time `msgpack:"rct,omitempty" json:"-"`
 	// StatusChanged records the last time the account was disabled or enabled again (Active says which).
 	StatusChanged *StatusChange `msgpack:"stc,omitempty" json:"status_changed"`
+	// SecurityGen is the account's security generation: a counter that moves on with every change of what signs the
+	// account in — the password (set, changed, removed or reset), the authenticator app (set up, replaced or
+	// removed), a passkey (added, removed or disabled), the recovery codes (made or dropped), a connected sign-in
+	// provider, and the account being disabled or enabled again (service: securityState, AdvanceSecurity). Every
+	// sign-in or set-up in flight — a ticket between the steps of a sign-in, an authenticator secret being confirmed,
+	// a passkey ceremony, a re-authentication, a reset or invitation link — records the generation it started under
+	// and is refused once the account's has moved on: whoever holds it must start again with the account's
+	// credentials as they are now, so a step passed with a password that has since been changed, or a set-up begun
+	// before the owner set up their own second factor, grants nothing. Written with the user, so it changes exactly
+	// when the record it describes does; the write is a compare-and-swap on the user's version, so two completions
+	// racing to set a first factor cannot both succeed. (The role, address and end date are not credentials: each
+	// step judges them afresh from the live user.)
+	SecurityGen uint64 `msgpack:"sg,omitempty" json:"-"`
 }
+
+// BumpSecurity moves the account on to its next security generation (SecurityGen); the caller writes the user.
+func (u *User) BumpSecurity() { u.SecurityGen++ }
 
 // StatusChange is who disabled or re-enabled an account, when, and why.
 type StatusChange struct {
@@ -231,12 +247,35 @@ func (u *User) HasTOTP() bool { return u.TOTPSecret != "" }
 // ---------------------------------------------------------------------------------------------------------------
 // Groups
 
+// A Group's record is the single commit point of every change of the group, its member list included (see
+// docs/REPLICATION.md, "Groups and their members"). A change of members is committed by one compare-and-swap of this
+// record that appends a GroupChange to Pending; the Member records are a materialized view of the changes so
+// committed, written afterwards (service.ChangeGroup) and finished by any later writer or by housekeeping should
+// the writer die. Readers of memberships apply Pending over the Member records, so a committed change is visible to
+// them whether or not it has been materialized yet.
 type Group struct {
 	Meta
 	OrgID       string   `msgpack:"o" json:"org_id"`
 	DisplayName string   `msgpack:"dn" json:"display_name"`
 	ExternalID  string   `msgpack:"x" json:"external_id,omitempty"`
 	Tags        []string `msgpack:"tg" json:"tags"`
+	// Seq is the sequence number of the last member change committed on this group; every GroupChange carries the
+	// one it was committed with, and every Member record the one that last wrote it (Member.Seq).
+	Seq uint64 `msgpack:"sq,omitempty" json:"-"`
+	// Pending holds the committed member changes not yet known to be materialized, oldest first; a writer removes
+	// the entries it has applied with another compare-and-swap. It is normally empty, or one entry for the
+	// milliseconds a change takes to materialize; only a writer that died leaves one behind.
+	Pending []GroupChange `msgpack:"pc,omitempty" json:"-"`
+}
+
+// GroupChange is one committed change of a group's members (Group.Pending).
+type GroupChange struct {
+	Op     string    `msgpack:"op"`           // id of the operation, for logs
+	Seq    uint64    `msgpack:"s"`            // the group's Seq when committed: materialized writes carry it
+	At     time.Time `msgpack:"t"`            // when it was committed (housekeeping finishes old ones)
+	Add    []string  `msgpack:"a,omitempty"`  // user ids made members
+	Remove []string  `msgpack:"r,omitempty"`  // user ids removed
+	Clear  bool      `msgpack:"cl,omitempty"` // every member is removed (the group is being deleted)
 }
 
 func (g *Group) Kind() Kind { return KindGroup }
@@ -249,22 +288,62 @@ func (g *Group) Index() Index {
 		Scope:  g.OrgID,
 		Unique: uq,
 		Fields: map[string]any{"display_name": g.DisplayName, "external_id": g.ExternalID, "created": g.Created,
-			"tags": strings.Join(g.Tags, " ")},
+			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0},
 	}
+}
+
+// PendingMember reports what the group's pending (committed, perhaps not yet materialized) changes say about
+// userID's membership: decided is false when none mentions the user, and the Member record alone decides.
+func (g *Group) PendingMember(userID string) (member, decided bool) {
+	for _, c := range g.Pending { // oldest first: the last word wins
+		if c.Clear {
+			member, decided = false, true
+		}
+		if slices.Contains(c.Remove, userID) {
+			member, decided = false, true
+		}
+		if slices.Contains(c.Add, userID) {
+			member, decided = true, true
+		}
+	}
+	return member, decided
 }
 
 // Member is one user's membership of a group. Each membership is its own record so concurrent adds and removes on
 // different nodes never overwrite each other. ID is MemberID(groupID, userID). Scoped by organization so both "members
 // of a group" and "groups of a user" are org-bounded filters.
+//
+// A membership is a materialized view of its group's committed changes (Group.Pending): every write of it carries
+// the Seq of the change it applies, and a write with an older Seq is refused (service.materializeMember), so a writer
+// that stalled can never overwrite a newer state. A removal therefore does not delete the record: it sets Removed and
+// keeps the record, out of the group_id and user_id indexes, for RemovedMemberRetention (then it expires), so the
+// Seq fence outlasts any stalled writer. Only the deletion of the user, group or organization tombstones it.
 type Member struct {
 	Meta
 	GroupID string `msgpack:"g" json:"group_id"`
 	UserID  string `msgpack:"ui" json:"user_id"`
 	OrgID   string `msgpack:"o" json:"org_id"`
+	// Seq is the Group.Seq of the change that last wrote this record (0: written before changes were sequenced).
+	Seq uint64 `msgpack:"s,omitempty" json:"-"`
+	// Removed is when the membership was removed; zero while the user is a member.
+	Removed time.Time `msgpack:"rm" json:"-"`
 }
+
+// RemovedMemberRetention is how long a removed membership's record is kept to fence stalled writers (as long as
+// tombstones are kept for replication).
+const RemovedMemberRetention = 7 * 24 * time.Hour
+
+// Active reports whether the record is a current membership (not removed).
+func (m *Member) Active() bool { return m.Removed.IsZero() }
 
 func (m *Member) Kind() Kind { return KindMember }
 func (m *Member) Index() Index {
+	if !m.Active() {
+		// Out of both membership indexes, so "members of a group" and "groups of a user" never list it, and it
+		// expires once no writer could still be stalled on an older change.
+		return Index{Scope: m.OrgID, Fields: map[string]any{"group_id": "", "user_id": "", "created": m.Created},
+			Expires: m.Removed.Add(RemovedMemberRetention)}
+	}
 	return Index{
 		Scope:  m.OrgID,
 		Fields: map[string]any{"group_id": m.GroupID, "user_id": m.UserID, "created": m.Created},
@@ -844,6 +923,10 @@ type LinkToken struct {
 	// BreakGlass marks an invitation issued with "quisora invite --break-glass": it opens even for an account that is
 	// disabled (locked out, or past its end date), and using it enables the account again.
 	BreakGlass bool `msgpack:"bg,omitempty" json:"-"`
+	// Gen is the user's security generation (User.SecurityGen) when the link was issued: an invitation or reset link
+	// opens only while it is still the account's (service.PeekLink), so a password changed, a factor set up or an
+	// account disabled after the link went out leaves it dead.
+	Gen uint64 `msgpack:"g,omitempty" json:"-"`
 }
 
 func (l *LinkToken) Kind() Kind { return KindLink }
@@ -872,8 +955,7 @@ func (s *SignIn) Index() Index {
 }
 
 // Lock is a cluster-wide lock record (written with QuorumCAS): Holder holds it until Until. Used to serialise
-// changes whose safety depends on more than one record (the super admins the server keeps; a group and its
-// memberships).
+// decisions that read more than one record (the super admins the server keeps).
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`

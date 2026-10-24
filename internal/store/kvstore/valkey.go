@@ -31,11 +31,12 @@ type ValkeyConfig struct {
 // commitScript validates the keys a transaction read (by SHA-1 of their value, "" = absent) and applies its
 // operations atomically. ARGV: prefix, ncheck, (key, digest)*, nops, ops... where each op is
 //
-//	S key value | D key | A bucket member exp | R bucket member | F recKey body entry oldSeq
+//	S key value | D key | A bucket member exp | R bucket member | I key delta | F recKey body entry oldSeq
 //
 // It returns -1 on a validation failure (the caller retries) and otherwise the last sequence number assigned.
 // F bumps meta/seq, stamps the sequence into the first 8 bytes of body, stores the record and feed entry and
-// removes the previous feed entry; an empty body deletes the record and its feed entry instead.
+// removes the previous feed entry; an empty body deletes the record and its feed entry instead. I adds delta to a
+// counter (INCRBY: no read, so counters never make transactions conflict) and deletes it at 0.
 const commitScript = `
 local p = ARGV[1]
 local i = 2
@@ -67,6 +68,11 @@ for o = 1, no do
   elseif c == 'R' then
     redis.call('ZREM', p .. 'z/' .. ARGV[i], ARGV[i + 1])
     redis.call('ZREM', p .. 'x/' .. ARGV[i], ARGV[i + 1])
+    i = i + 2
+  elseif c == 'I' then
+    if redis.call('INCRBY', p .. ARGV[i], ARGV[i + 1]) <= 0 then
+      redis.call('DEL', p .. ARGV[i])
+    end
     i = i + 2
   elseif c == 'F' then
     local rk, body, entry, old = ARGV[i], ARGV[i + 1], ARGV[i + 2], tonumber(ARGV[i + 3])
@@ -429,6 +435,8 @@ func (v *valkeyTxn) SetAdd(bucket, member string, expMs int64) {
 }
 
 func (v *valkeyTxn) SetDel(bucket, member string) { v.op("R", bucket, member) }
+
+func (v *valkeyTxn) Add(key string, delta int64) { v.op("I", key, strconv.FormatInt(delta, 10)) }
 
 func (v *valkeyTxn) Feed(recKey string, body []byte, entry string, oldSeq uint64) {
 	v.op("F", recKey, string(body), entry, strconv.FormatUint(oldSeq, 10))

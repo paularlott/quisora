@@ -98,15 +98,21 @@ func (r Rank) Less(o Rank) bool {
 	return r.Version < o.Version
 }
 
-// Rank returns the record's rank. A tombstone of a kind written by plain replication has its own version as its
-// epoch: it outranks every write of the generation it deleted, whatever the clocks, so a write that had not seen it
-// never brings the record back. A tombstone of a quorum kind (model.QuorumCAS) keeps the epoch of the generation it
-// deleted (StampLocal) and ranks by version within it, like the writes of that generation: there the quorum, not the
-// rank, keeps a confirmed deletion from being undone (a later write must win a quorum that holds the tombstone), and
-// the voters' versions order the writes as they were confirmed. So a later confirmed write outranks a deletion that
-// was only partly applied (its commit reached fewer than a quorum), as any later write outranks a partial one.
+// Rank returns the record's rank. For a kind written by plain replication it is (epoch, version), a tombstone's epoch
+// being its own version: a deletion outranks every write of the generation it deleted, whatever the clocks, so a
+// write that had not seen it never brings the record back. For a quorum kind (model.QuorumCAS) it is the version
+// alone: the voters already order the versions of a record as its writes are granted (any two grants share a voter,
+// whose high-water mark forces the later one higher; no voter grants a version far ahead of its clock; a restarted
+// voter starts above everything it granted), and the quorum, not the rank, keeps a confirmed deletion from being
+// undone (a later write must win a quorum that holds the tombstone, which refuses a write that had not seen it). So
+// the later write always wins: a confirmed write over a partly applied one (a commit that reached fewer than a
+// quorum), deletion or not, whatever generations they belong to. Generations still order what the voters check
+// (cluster prepare), only not the merge.
 func (h *Head) Rank() Rank {
-	if h.Deleted && !model.QuorumCAS(h.Kind) {
+	switch {
+	case model.QuorumCAS(h.Kind):
+		return Rank{Version: h.Version}
+	case h.Deleted:
 		return Rank{Epoch: h.Version, Version: h.Version}
 	}
 	return Rank{Epoch: h.Epoch, Version: h.Version}
@@ -212,20 +218,10 @@ func (h *Head) Newer(o *Head) bool {
 // stored, not even a tombstone) and refuses a live write that would replace a tombstone (ErrDeleted), unless create
 // (CompareAndPut with expect 0) or the kind is node-local (KindEphemeral). A live write over a live record continues
 // its generation; a create over nothing starts generation 0; a create over a tombstone starts a generation whose
-// epoch is that tombstone's version (the deletion this writer has seen). A deletion of a quorum kind keeps the epoch of
-// the live generation it deletes, or takes its own version when there is none (Head.Rank); any other deletion has
-// none. Backends call it inside the write transaction, after their version checks.
+// epoch is that tombstone's version (the deletion this writer has seen). A deletion has none. Backends call it inside
+// the write transaction, after their version checks.
 func StampLocal(rec *Record, old *Head, create bool) error {
 	switch {
-	case rec.Deleted && model.QuorumCAS(rec.Kind):
-		// The generation it deletes (Head.Rank): the live record's. A deletion of nothing live (over a tombstone, or
-		// nothing stored) deletes whatever generation there may be elsewhere: its own version is its epoch, so it
-		// outranks every generation created before it, as a replicated deletion does.
-		if old != nil && !old.Deleted {
-			rec.Epoch, rec.Created = old.Epoch, 0
-		} else {
-			rec.Epoch, rec.Created = rec.Version, 0
-		}
 	case rec.Deleted:
 		rec.Epoch, rec.Created = 0, 0
 	case old == nil:

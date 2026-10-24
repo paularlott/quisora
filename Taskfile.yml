@@ -139,10 +139,16 @@ tasks:
       - go test -race ./...
       - go test -tags onepassword ./internal/secrets/
 
+  cover:
+    desc: Statement coverage of the production code across packages; fails below the floor in scripts/coverage-floor
+    cmds:
+      - scripts/cover.sh
+
   check:
-    desc: "Release gate: vet and every Go test with the race detector, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
+    desc: "Release gate: vet and every Go test with the race detector, production coverage at or above its floor, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
     cmds:
       - task: test
+      - task: cover
       - task: apidocs-lint
       - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - cd web && node audit.mjs  # npm audit, high and above, with the accepted advisories it lists

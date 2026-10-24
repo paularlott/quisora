@@ -31,6 +31,11 @@ Every passkey must verify the user (a PIN, fingerprint or face): a security key 
 authenticator did not verify the user (set up a PIN or biometrics on it)*. The same authenticator cannot be added
 twice to one account. Quisora asks for no attestation: it does not restrict which makes of authenticator can be used.
 
+Adding or removing a passkey moves the account's [security generation](README.md#a-credential-change-ends-what-is-in-flight)
+on: a sign-in step, set-up, re-authentication or link begun before it stops working. The set-up step at sign-in is
+only for an account with no second factor: once one passkey is added, every other browser holding the password is
+sent back to sign in with it, and a ceremony begun before the account changed does not finish.
+
 The account page lists each passkey with its kind (a **synced** passkey, kept in a password manager or a platform's
 keychain and on every device of the user's; or a **device-bound** one, such as a security key), when it was added
 and when it was last used. Users can rename one, or delete it (after confirming it is them): deleting ends the

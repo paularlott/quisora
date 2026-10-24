@@ -3,12 +3,14 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 )
 
 // Token exchange (RFC 8693). A confidential client with the token exchange grant trades a user's access token for a
@@ -46,6 +48,9 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	invalid := oerr("invalid_grant", "the subject token is invalid, expired or revoked")
 	cl, err := p.VerifyAccessToken(ctx, st)
 	if err != nil {
+		if errors.Is(err, service.ErrUnavailable) {
+			return nil, serverError(err) // not known to be bad: the caller keeps the subject token and retries
+		}
 		return nil, invalid
 	}
 	if cl.Sub == cl.ClientID {
@@ -55,17 +60,23 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 		return nil, oerr("invalid_grant", "the subject token was not issued for this client")
 	}
 	u, err := p.user(ctx, cl.Sub)
+	if err != nil && !gone(err) {
+		return nil, serverError(unavailable(err))
+	}
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != c.OrgID {
 		return nil, invalid
 	}
 	org, err := p.org(ctx, u.OrgID)
 	if err != nil {
+		if !gone(err) {
+			return nil, serverError(unavailable(err))
+		}
 		return nil, invalid
 	}
 	// The user's access to the calling client, as a sign-in to it would need.
 	app, err := p.appAccess(ctx, c, nil, u)
 	if err != nil {
-		return nil, serverError(err)
+		return nil, serverError(unavailable(err))
 	}
 	if !app.Allowed {
 		return nil, oerr("invalid_grant", errNoAccess.Error())

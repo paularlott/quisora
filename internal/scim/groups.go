@@ -47,21 +47,25 @@ func (rq *request) groupResource(g *model.Group, members []memberRef, withMember
 	return res
 }
 
-// memberIndex returns the member user ids of every group of the org, in one pass.
-func (rq *request) memberIndex() (map[string][]string, error) {
+// memberIndex returns the member user ids of each of groups, in one pass over the org's memberships (the records
+// of removed memberships are skipped, and each group's committed-but-unmaterialized changes applied).
+func (rq *request) memberIndex(groups []*model.Group) (map[string][]string, error) {
 	ms, _, err := rq.m.srv.Svc.Members.List(rq.ctx, store.ListQuery{Scope: rq.org.ID})
 	if err != nil {
 		return nil, err
 	}
 	idx := map[string][]string{}
-	unseen := rq.unseenUsers()
 	for _, m := range ms {
-		if !unseen[m.UserID] {
+		if m.Active() {
 			idx[m.GroupID] = append(idx[m.GroupID], m.UserID)
 		}
 	}
-	for _, ids := range idx {
+	unseen := rq.unseenUsers()
+	for _, g := range groups {
+		ids := service.CommittedMembers(g, idx[g.ID])
+		ids = slices.DeleteFunc(ids, func(id string) bool { return unseen[id] })
 		sort.Strings(ids)
+		idx[g.ID] = ids
 	}
 	return idx, nil
 }
@@ -244,19 +248,12 @@ func (rq *request) createGroup() {
 		writeError(rq.w, e)
 		return
 	}
-	svc := rq.m.srv.Svc
-	g, err := svc.CreateGroup(rq.ctx, rq.actor, rq.org.ID, in)
+	// The group and its first members are one commit: a refused create leaves nothing behind.
+	g, err := rq.m.srv.Svc.CreateGroupWithMembers(rq.ctx, rq.actor, rq.org.ID, in, ids)
 	if err != nil {
 		rq.fail(err)
 		return
 	}
-	withMembers, err := svc.ChangeGroup(rq.ctx, rq.actor, g, service.GroupInput{}, ids, nil)
-	if err != nil {
-		_ = svc.DeleteGroup(rq.ctx, rq.actor, g.ID) // roll back: a failed create leaves nothing behind
-		rq.fail(err)
-		return
-	}
-	g = withMembers
 	attrs, excl := rq.getParams()
 	rq.respond(http.StatusCreated, rq.groupResource(g, rq.refs(ids), true), attrs, excl, groupSchemas)
 }
@@ -438,7 +435,7 @@ func (rq *request) listGroups() {
 	var idx map[string][]string
 	if allMembers {
 		var err error
-		if idx, err = rq.memberIndex(); err != nil {
+		if idx, err = rq.memberIndex(groups); err != nil {
 			rq.fail(err)
 			return
 		}
@@ -457,17 +454,11 @@ func (rq *request) listGroups() {
 	if needMembers && !allMembers {
 		for _, it := range page {
 			g := byID[it["id"].(string)]
-			ms, _, err := svc.Members.List(rq.ctx, store.ListQuery{Scope: rq.org.ID,
-				Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
+			ids, err := svc.GroupMembers(rq.ctx, rq.actor, g.ID)
 			if err != nil {
 				rq.fail(err)
 				return
 			}
-			ids := make([]string, len(ms))
-			for i, m := range ms {
-				ids[i] = m.UserID
-			}
-			sort.Strings(ids)
 			it["members"] = rq.groupResource(g, rq.refs(ids), true)["members"]
 		}
 	} else if allMembers && needMembers {

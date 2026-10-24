@@ -506,23 +506,36 @@ victorialogs_spool_max_mb = 256          # default 256
 ```
 
 With VictoriaLogs, every event is written to the spool, `<data-dir>/auditspool`, and synced to disk before the action
-that recorded it goes on (events recorded at the same moment share one sync). A disk that does not answer within 2
-seconds does not hold the action up: the event is then also written in full to the structured log
-(`audit.undelivered`), and still spooled once the disk answers. A separate sender posts the spool to
+that recorded it goes on (events recorded at the same moment share one sync). A separate sender posts the spool to
 VictoriaLogs about once a second, and an event leaves the spool only once VictoriaLogs has taken it; what VictoriaLogs
 does not take (unreachable, or answering an error) stays there and is sent when VictoriaLogs answers again, oldest
-first. A shutdown does not wait for VictoriaLogs, and the next start sends what is spooled. So neither an outage of
-VictoriaLogs nor a restart or crash of the node loses an accepted event while the spool has room.
+first. A shutdown does not wait for VictoriaLogs, and the next start sends what is spooled.
+
+What is guaranteed: **an event whose write to the spool succeeded is on disk, complete, and is sent to
+VictoriaLogs**, through an outage of VictoriaLogs and through a restart or crash of the node, while the spool has
+room. The spool is append-only segment files of JSON lines, and only ever appends after its last complete line: a
+write that fails part-way (a full or failing disk) is cut back off the segment and the batch reported failed; a
+write a crash cut short, or that was written but not yet synced, stays as the last line of its segment, which is
+never appended to again after a restart. Replay keeps every complete line (terminated and valid JSON) and leaves a
+torn one out by itself, so a torn line can never take a complete event with it.
+
+When the structured log is the fallback (`audit.undelivered`, the event in full — ship the log and alert on it):
+
+- The spool disk did not answer within 2 seconds. The action goes on, the event is logged, and it is still spooled
+  once the disk answers, so it then reaches VictoriaLogs as well (a duplicate, by `id`; never a loss).
+- The spool could not be written (a full or failing disk, a failed sync of the file or of the directory). The failed
+  write is undone, so the log is that event's only copy; a crash before the log is shipped loses it from VictoriaLogs.
+- The spool had to make room (below), or the spool queue was full.
+- The spool held a batch VictoriaLogs took, and the node crashed before the batch left the spool: it is sent again.
+  Delivery is at least once, and every event has a unique `id` for removing duplicates when reading.
 
 - The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
 - It is part of the node's data directory, so it is one per node, on that node's own disk.
-- Past `victorialogs_spool_max_mb` the oldest events leave the spool first, each logged as `audit.undelivered`. Size
-  it for the longest outage you must ride out; each event takes roughly 300–500 bytes. So does a batch the spool
-  cannot be written to (a full or failing disk).
+- Past `victorialogs_spool_max_mb` the oldest events leave the spool first, each logged as `audit.undelivered` (a
+  segment being sent at that moment may also reach VictoriaLogs). Size it for the longest outage you must ride out;
+  each event takes roughly 300–500 bytes.
 - The log says when spooling starts (`VictoriaLogs is not taking audit events: spooling them to disk`) and when the
   backlog has been sent (`spooled audit events sent to VictoriaLogs`).
-- Delivery is at least once: a crash just after VictoriaLogs took a batch, before it left the spool, sends it again.
-  Every event has a unique `id` for removing duplicates when reading.
 - Commands (`bootstrap`, `invite`, offline `restore`) do not use the spool: they retry, then log `audit.undelivered`,
   as without one.
 - Each event has the stream fields `app` (`quisora`) and `org` (organization id), and the fields `action`, `outcome`,

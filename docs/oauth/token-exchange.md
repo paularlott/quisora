@@ -101,5 +101,6 @@ asked for it.
 | `invalid_target` | A `resource` or `audience` not registered on the calling client. |
 | `invalid_scope` | A scope beyond the subject token's or the calling client's. |
 | `unauthorized_client` | The client lacks the grant, or is a public client (token exchange is for confidential clients only). |
+| `temporarily_unavailable` (503) | A check the exchange depends on could not be made (a store read failed). The subject token is not known to be bad: keep it and retry. |
 
 Every exchange is audited (`oauth.token_exchange`, with the user, the subject token's client, scopes and resources).

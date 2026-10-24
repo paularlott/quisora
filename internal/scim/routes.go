@@ -20,7 +20,7 @@ var Routes = []Route{
 	{"POST", "/scim/v2/{org}/Groups", "Group", "Create a group (administrator's token)", false},
 	{"GET", "/scim/v2/{org}/Groups/{id}", "Group", "Get a group", false},
 	{"PUT", "/scim/v2/{org}/Groups/{id}", "Group", "Replace a group", false},
-	{"PATCH", "/scim/v2/{org}/Groups/{id}", "Group", "Change a group, members included (PatchOp)", false},
+	{"PATCH", "/scim/v2/{org}/Groups/{id}", "Group", "Change a group, members included (PatchOp; atomic, at most 1,000 members per request)", false},
 	{"DELETE", "/scim/v2/{org}/Groups/{id}", "Group", "Delete a group", false},
 	{"GET", "/scim/v2/Organizations", "Organization", "List organizations (super admins)", false},
 	{"POST", "/scim/v2/Organizations", "Organization", "Create an organization (super admins)", false},

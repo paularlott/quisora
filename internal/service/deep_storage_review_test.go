@@ -13,6 +13,8 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
+// deepGroupGate pauses the first write of a group's record (the commit of a change; written against the lease
+// design it paused the taking of the group's lock, the equivalent point: nothing is written yet).
 type deepGroupGate struct {
 	store.Store
 	armed           atomic.Bool
@@ -20,14 +22,15 @@ type deepGroupGate struct {
 }
 
 func (s *deepGroupGate) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
-	if r.Kind == model.KindLock && s.armed.CompareAndSwap(true, false) {
+	if r.Kind == model.KindGroup && s.armed.CompareAndSwap(true, false) {
 		close(s.entered)
 		<-s.resume
 	}
 	return s.Store.CompareAndPut(ctx, r, expect)
 }
 
-// A failed request must not roll back membership a concurrent successful request explicitly retains.
+// A request that loses the commit to a concurrent successful request fails as stale and touches nothing the
+// successful request set.
 func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 	e := newEnv(t)
 	org := e.org("deep-group")
@@ -39,14 +42,13 @@ func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 	}
 	gate := &deepGroupGate{Store: e.svc.Groups.S, entered: make(chan struct{}), resume: make(chan struct{})}
 	e.svc.Groups.S = gate
-	e.svc.Locks.S = gate
 	gate.armed.Store(true)
 	done := make(chan error, 1)
 	go func() {
 		_, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{}, []string{u.ID}, nil)
 		done <- err
 	}()
-	<-gate.entered // the first request is about to take the group's lock; nothing written yet
+	<-gate.entered // the first request is about to commit; nothing written yet
 	fresh, err := e.svc.Groups.Get(e.ctx, g.ID)
 	if err != nil {
 		close(gate.resume)
@@ -63,25 +65,30 @@ func TestDeepGroupRollbackPreservesConcurrentSuccess(t *testing.T) {
 	if !errors.Is(firstErr, service.ErrStale) {
 		t.Fatalf("first update should be stale: %v", firstErr)
 	}
-	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, u.ID)); err != nil {
-		t.Fatalf("successful concurrent change lost its requested membership during another request's rollback: %v", err)
+	if m, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, u.ID)); err != nil || !m.Active() {
+		t.Fatalf("successful concurrent change lost its requested membership to a stale request: %v", err)
+	}
+	if cur, _ := e.svc.Groups.Get(e.ctx, g.ID); cur.DisplayName != renamed || len(cur.Pending) != 0 {
+		t.Fatalf("group: %+v", cur)
 	}
 }
 
-type failMemberFor struct {
+// failRecord fails every compare-and-swap of records whose id ends in suffix.
+type failRecord struct {
 	store.Store
-	userID string
+	suffix string
 }
 
-func (s failMemberFor) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
-	if r.Kind == model.KindMember && strings.HasSuffix(r.ID, s.userID) {
+func (s failRecord) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if strings.HasSuffix(r.ID, s.suffix) {
 		return errors.New("disk on fire")
 	}
 	return s.Store.CompareAndPut(ctx, r, expect)
 }
 
-// A change whose member writes fail part-way is undone: the members written so far go, and the group's record goes
-// back to what it was.
+// A change that fails leaves the group as it was: it can only fail at its commit, the group record's
+// compare-and-swap, before which nothing is written (written against the lease design, this failed a membership
+// write and checked the undo; a membership write no longer fails a change, see below).
 func TestGroupChangeFailingPartWayIsUndone(t *testing.T) {
 	e := newEnv(t)
 	org := e.org("undo-group")
@@ -92,15 +99,61 @@ func TestGroupChangeFailingPartWayIsUndone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.svc.Members.S = failMemberFor{Store: e.svc.Members.S, userID: bad.ID}
+	e.svc.Groups.S = failRecord{Store: e.svc.Groups.S, suffix: g.ID}
 	renamed := "After"
 	if _, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{DisplayName: &renamed}, []string{ok.ID, bad.ID}, nil); err == nil {
-		t.Fatal("a change whose member write failed succeeded")
+		t.Fatal("a change whose commit failed succeeded")
 	}
-	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, ok.ID)); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the member written before the failure stayed: %v", err)
+	for _, u := range []*model.User{ok, bad} {
+		if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, u.ID)); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("a membership was written by a change that failed: %v", err)
+		}
 	}
-	if cur, err := e.svc.Groups.Get(e.ctx, g.ID); err != nil || cur.DisplayName != "Before" {
-		t.Errorf("the group's record was not put back: %v %+v", err, cur)
+	if cur, err := e.svc.Groups.Get(e.ctx, g.ID); err != nil || cur.DisplayName != "Before" || len(cur.Pending) != 0 {
+		t.Errorf("the group's record changed: %v %+v", err, cur)
+	}
+}
+
+// A change whose membership write fails after its commit is committed: every reader sees it whole from the record,
+// and the membership is written later (the next change of the group, or housekeeping).
+func TestGroupChangeCommittedDespiteMembershipWriteFailure(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("commit-group")
+	ok := e.user(org.ID, "ok", model.RoleUser)
+	bad := e.user(org.ID, "bad", model.RoleUser)
+	name := "Before"
+	g, err := e.svc.CreateGroup(e.ctx, service.System, org.ID, service.GroupInput{DisplayName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := e.svc.Members.S
+	e.svc.Members.S = failRecord{Store: inner, suffix: bad.ID}
+	renamed := "After"
+	res, err := e.svc.ChangeGroup(e.ctx, service.System, g, service.GroupInput{DisplayName: &renamed}, []string{ok.ID, bad.ID}, nil)
+	if err != nil {
+		t.Fatalf("a committed change reported failure: %v", err)
+	}
+	if res.DisplayName != renamed || len(res.Pending) != 1 {
+		t.Fatalf("returned group: %+v", res)
+	}
+	if ids, err := e.svc.GroupMembers(e.ctx, service.System, g.ID); err != nil || !equalIDs(ids, sortedIDs(ok.ID, bad.ID)) {
+		t.Fatalf("members seen: %v %v", ids, err)
+	}
+	if gs, err := e.svc.UserGroups(e.ctx, bad); err != nil || len(gs) != 1 {
+		t.Fatalf("bad's groups: %v %v", gs, err)
+	}
+	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, bad.ID)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("bad's membership record: %v", err)
+	}
+	// The next change of the group finishes it.
+	e.svc.Members.S = inner
+	if err := e.svc.SetMembership(e.ctx, service.System, g.ID, ok.ID, true); err != nil { // a no-op change
+		t.Fatal(err)
+	}
+	if m, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, bad.ID)); err != nil || !m.Active() {
+		t.Fatalf("bad's membership not materialized by the next change: %v", err)
+	}
+	if cur, _ := e.svc.Groups.Get(e.ctx, g.ID); len(cur.Pending) != 0 {
+		t.Fatalf("still pending: %+v", cur.Pending)
 	}
 }

@@ -330,7 +330,7 @@ func MarkSynced(dataDir, feedID string) error {
 		return err
 	}
 	b, _ := json.Marshal(persisted{LastSync: time.Now().UnixNano(), Cursors: map[string]cursor{}, Self: feedID})
-	return os.WriteFile(filepath.Join(dataDir, "cluster-state.json"), b, 0o600)
+	return writeSynced(filepath.Join(dataDir, "cluster-state.json"), b) // whole or absent, never torn
 }
 
 func (n *Node) saveState() {

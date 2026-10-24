@@ -264,8 +264,11 @@ func TestPasskeyCeremoniesArePurposeBound(t *testing.T) {
 	wantStatus(t, res, out, 200)
 	signed.markReauth()
 
-	// registration ceremonies: sign-in-time enrolment cannot finish at the account endpoint
-	tid, _ := e.Mod.PutEnrolTicket(pat.ID)
+	// registration ceremonies: sign-in-time enrolment cannot finish at the account endpoint. The enrolment step
+	// exists only for an account with no second factor yet (pat has a passkey, so pat's would be refused): quinn's
+	// ticket begins the ceremony, and pat's session must not be able to finish it.
+	quinn := e.user(t, org, "quinn", model.RoleUser)
+	tid, _ := e.Mod.PutEnrolTicket(quinn.ID)
 	res, begin = e.browser(t).post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": tid})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])

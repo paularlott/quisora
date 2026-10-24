@@ -413,13 +413,23 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 		writeErr(w, http.StatusUnprocessableEntity, "Choose a password you have not used just now.", "new")
 		return
 	}
-	if _, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &in.New}); err != nil {
+	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &in.New})
+	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	// UpdateUser leaves a user's own sessions alone; end the others here.
-	n := m.endOtherSessions(ctx, a)
+	// UpdateUser leaves a user's own sessions alone; end the others here. The password is changed whatever happens
+	// to them, so the answer is still a success, but one that says when a session could not be signed out (whoever
+	// had the old password may still be in it), not a count that reads as all of them.
+	n, err := m.endOtherSessions(ctx, a)
+	m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
 	m.changed(a)
+	if err != nil {
+		m.s.Log.Warn("password changed; not every other session could be ended", "user", u.ID, "error", err)
+		web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": n,
+			"warning": "Your password was changed, but not every other session could be signed out. Review your sessions."})
+		return
+	}
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": n})
 }
 
@@ -446,10 +456,12 @@ func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct
 		web.WriteError(w, err)
 		return
 	}
-	if _, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password}); err != nil {
+	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password})
+	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
+	m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
 	m.changed(a)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": 0})
 }
@@ -465,30 +477,76 @@ func (m *Module) passwordsAllowed(ctx context.Context, u *model.User) bool {
 	return err == nil && eff.Password
 }
 
-func (m *Module) endOtherSessions(ctx context.Context, a acct) int {
+// endOtherSessions ends every session of the user but the current one, with their refresh grants, and reports how
+// many ended and the failures (a session that could not be listed or deleted still works: the caller says so
+// rather than counting only what ended).
+func (m *Module) endOtherSessions(ctx context.Context, a acct) (int, error) {
 	list, err := m.s.Svc.Sessions.All(ctx, a.u.ID)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	n := 0
+	var errs []error
 	for _, s := range list {
-		if s.ID != a.sess.ID && m.s.Sessions.Delete(ctx, s.ID) == nil {
-			n++
+		if s.ID == a.sess.ID {
+			continue
 		}
+		if err := m.s.Sessions.Delete(ctx, s.ID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		n++
 	}
-	return n
+	return n, errors.Join(errs...)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Re-authentication (needed before turning off the authenticator app)
 
-func (m *Module) markReauth(ctx context.Context, a acct) {
-	_ = m.s.Eph.Set(ctx, nsReauth, a.sess.ID, []byte("1"), reauthTTL)
+// markReauth records that the session confirmed the account's credentials as they are at security generation gen
+// (model.User.SecurityGen): the mark is good for reauthTTL, and only while the account stays at that generation.
+func (m *Module) markReauth(ctx context.Context, sessID string, gen uint64) {
+	_ = m.s.Eph.Set(ctx, nsReauth, sessID, []byte(strconv.FormatUint(gen, 10)), reauthTTL)
 }
 
+// reauthed reports whether the session re-authenticated within reauthTTL against the account as it still is. A
+// confirmation given at an earlier security generation — before the owner set up a second factor from another
+// browser, say — was given with credentials that no longer suffice on their own, so it no longer counts: the account
+// page asks again, now for the factor that was added. The user is read afresh (the request's copy is a per-node
+// cache): a change made on another node must count at once, not after the cache turns over.
 func (m *Module) reauthed(ctx context.Context, a acct) bool {
-	_, err := m.s.Eph.Get(ctx, nsReauth, a.sess.ID)
-	return err == nil
+	b, err := m.s.Eph.Get(ctx, nsReauth, a.sess.ID)
+	if err != nil {
+		return false
+	}
+	gen, err := strconv.ParseUint(string(b), 10, 64)
+	if err != nil {
+		return false
+	}
+	u, err := m.s.Svc.Users.Get(ctx, a.sess.UserID)
+	return err == nil && u.SecurityGen == gen
+}
+
+// refreshReauth carries a session's standing re-authentication over to generation gen, which a change this very
+// session just made — and confirmed itself for — moved the account to: the confirmation was for that change, so the
+// change does not spend it, and the person can go on (add a second passkey, make recovery codes) without the dialog
+// again. A session without a standing confirmation gets none.
+func (m *Module) refreshReauth(ctx context.Context, sessID string, gen uint64) {
+	if _, err := m.s.Eph.Get(ctx, nsReauth, sessID); err == nil {
+		m.markReauth(ctx, sessID, gen)
+	}
+}
+
+// credentialChanged follows a change this session made to a credential kept outside the user record (a passkey or
+// a connected provider, added or removed): the account's security generation moves on, ending whatever is in flight
+// for the account elsewhere, the session's confirmation carries over, and the cached user is dropped.
+func (m *Module) credentialChanged(ctx context.Context, a acct, userID string) {
+	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, userID); err == nil {
+		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
+	} else {
+		m.s.Log.Error("security generation not advanced", "user", userID, "error", err)
+	}
+	m.changed(a)
 }
 
 // needReauth answers 403 {"field":"reauth"} (the shape the account page turns into its re-authentication dialog)
@@ -602,7 +660,7 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		writeErr(w, http.StatusUnprocessableEntity, "Enter your password.", "password")
 		return
 	}
-	m.markReauth(ctx, a)
+	m.markReauth(ctx, a.sess.ID, u.SecurityGen)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
 }
 
@@ -646,7 +704,7 @@ func (m *Module) reauthPasskeyFinish(w http.ResponseWriter, r *http.Request, a a
 		writeErr(w, http.StatusUnprocessableEntity, msgBadPasskey, "")
 		return
 	}
-	m.markReauth(r.Context(), a)
+	m.markReauth(r.Context(), a.sess.ID, res.User.SecurityGen)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
 }
 
@@ -769,20 +827,46 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
+	m.credentialChanged(ctx, a, u.ID) // a way in is gone
 	// The sessions that signed in with it end (with their refresh tokens; applications are told by back-channel
-	// logout), except the one deleting it, which has just confirmed it is the user.
-	ended := 0
-	if list, err := m.s.Svc.Sessions.All(ctx, u.ID); err == nil {
+	// logout), except the one deleting it, which has just confirmed it is the user. The passkey is gone whatever
+	// happens here; a session that could not be ended is recorded with the removal (and logged) rather than left
+	// out of the count as if it never existed.
+	ended, failed := 0, 0
+	if list, err := m.s.Svc.Sessions.All(ctx, u.ID); err != nil {
+		failed = -1 // unknown how many: the list could not be read
+		m.s.Log.Warn("passkey removed; its sessions could not be listed", "user", u.ID, "error", err)
+	} else {
 		for _, s := range list {
-			if s.Passkey == p.ID && s.ID != a.sess.ID && m.s.Sessions.Delete(ctx, s.ID) == nil {
-				ended++
+			if s.Passkey != p.ID || s.ID == a.sess.ID {
+				continue
 			}
+			if err := m.s.Sessions.Delete(ctx, s.ID); err != nil {
+				failed++
+				m.s.Log.Warn("passkey removed; a session it signed in could not be ended", "user", u.ID, "error", err)
+				continue
+			}
+			ended++
 		}
 	}
 	if err := m.s.Svc.DropRecoveryCodes(ctx, a.u.ID); err != nil {
 		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", a.u.ID, "error", err)
 	}
-	m.auditSelf(r, a, "account.passkey.delete", map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)})
+	detail := map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)}
+	if failed != 0 {
+		detail["sessions_result"] = "incomplete"
+		if failed > 0 {
+			detail["sessions_failed"] = strconv.Itoa(failed)
+		}
+	}
+	m.auditSelf(r, a, "account.passkey.delete", detail)
+	if failed != 0 {
+		// The passkey is removed (so not an error of the request), but the sign-outs it should have caused did not
+		// all happen: say so, in the shape the page shows as a message.
+		web.WriteJSON(w, http.StatusOK, map[string]any{"sessions_ended": ended,
+			"warning": "The passkey was removed, but not every session it signed in could be ended. Review your sessions."})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -842,7 +926,12 @@ func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a
 	if !m.passkeyRoom(w, r, u) { // checked again: several ceremonies may have been begun at once
 		return
 	}
+	// Stored with a compare-and-swap on the user just read, moving its security generation on (StoreRegistration).
 	p, _, err := m.Passkeys.FinishRegistrationAs(r.Context(), purposeRegister, u, in.Challenge, in.Credential, in.Name)
+	if errors.Is(err, store.ErrStale) {
+		web.WriteError(w, service.ErrStale)
+		return
+	}
 	if err != nil {
 		msg := "The passkey could not be registered. Try again."
 		if errors.Is(err, passkey.ErrChallenge) {
@@ -851,6 +940,8 @@ func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a
 		writeErr(w, http.StatusUnprocessableEntity, msg, "")
 		return
 	}
+	m.refreshReauth(r.Context(), a.sess.ID, u.SecurityGen)
+	m.changed(a)
 	m.auditSelf(r, a, "account.passkey.add", map[string]string{"name": p.Name})
 	web.WriteJSON(w, http.StatusCreated, toPasskeyItem(p))
 }
@@ -872,7 +963,9 @@ func (m *Module) totpBegin(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	secret := secure.NewTOTPSecret()
-	if err := m.s.Eph.Set(ctx, nsPending, a.sess.ID, []byte(m.s.Svc.Sealer.SealFor(pendingTOTPBinding("session", a.sess.ID), []byte(secret))), 10*time.Minute); err != nil {
+	pend, _ := json.Marshal(pendingTOTP{Sealed: m.s.Svc.Sealer.SealFor(pendingTOTPBinding("session", a.sess.ID), []byte(secret)),
+		Gen: u.SecurityGen})
+	if err := m.s.Eph.Set(ctx, nsPending, a.sess.ID, pend, 10*time.Minute); err != nil {
 		m.internalError(w, r, "pending totp", err)
 		return
 	}
@@ -882,6 +975,15 @@ func (m *Module) totpBegin(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, resp)
+}
+
+// pendingTOTP is an authenticator secret being set up from the account page (ephemeral, nsPending, keyed by the
+// session). It is bound to the account's security generation when begun: a secret shown before the account changed
+// (a factor set up or removed from another browser, a password reset) is not confirmed against the account as it
+// is now — totpConfirm says to start again.
+type pendingTOTP struct {
+	Sealed string `json:"s"`
+	Gen    uint64 `json:"g"`
 }
 
 type codeReq struct {
@@ -899,12 +1001,13 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 		writeErr(w, http.StatusTooManyRequests, "Too many attempts. Start again in a few minutes.", "")
 		return
 	}
-	sealed, err := m.s.Eph.Get(ctx, nsPending, a.sess.ID)
-	if err != nil {
+	raw, err := m.s.Eph.Get(ctx, nsPending, a.sess.ID)
+	var pend pendingTOTP
+	if err != nil || json.Unmarshal(raw, &pend) != nil || pend.Sealed == "" {
 		writeErr(w, http.StatusConflict, "Start the Authenticator App set-up again.", "")
 		return
 	}
-	secret, err := m.s.Svc.Sealer.OpenFor(pendingTOTPBinding("session", a.sess.ID), string(sealed))
+	secret, err := m.s.Svc.Sealer.OpenFor(pendingTOTPBinding("session", a.sess.ID), pend.Sealed)
 	if err != nil {
 		m.internalError(w, r, "open pending secret", err)
 		return
@@ -919,12 +1022,20 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
+	if u.SecurityGen != pend.Gen { // the account changed since the secret was shown: not confirmed against it
+		_ = m.s.Eph.Delete(ctx, nsPending, a.sess.ID)
+		writeErr(w, http.StatusConflict, "Your account changed since you started. Start the Authenticator App set-up again.", "")
+		return
+	}
 	replace := u.HasTOTP()
 	if replace && !m.needReauth(w, r, a) {
 		return
 	}
+	// The commit: a compare-and-swap on the version just read, moving the security generation on, so a factor set
+	// meanwhile (from another browser, or at a sign-in) is never overwritten unseen.
 	now := time.Now().UTC()
 	u.TOTPSecret, u.MFAEnrolledAt = m.s.Svc.Sealer.SealFor(service.TOTPBinding(u.ID), secret), &now
+	u.BumpSecurity()
 	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); err != nil {
 		web.WriteError(w, mapStoreErr(err))
 		return
@@ -934,6 +1045,7 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	_ = m.s.Eph.Delete(ctx, nsPending, a.sess.ID)
+	m.refreshReauth(ctx, a.sess.ID, u.SecurityGen)
 	m.changed(a)
 	if replace {
 		m.auditSelf(r, a, "account.totp.replace", nil)
@@ -960,6 +1072,7 @@ func (m *Module) createRecoveryCodes(w http.ResponseWriter, r *http.Request, a a
 		web.WriteError(w, err)
 		return
 	}
+	m.refreshReauth(r.Context(), a.sess.ID, u.SecurityGen)
 	m.changed(a)
 	w.Header().Set("Cache-Control", "no-store") // shown this once
 	web.WriteJSON(w, http.StatusOK, map[string]any{"codes": codes})
@@ -986,6 +1099,7 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 		}
 	}
 	u.TOTPSecret, u.MFAEnrolledAt = "", nil
+	u.BumpSecurity()
 	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); err != nil {
 		web.WriteError(w, mapStoreErr(err))
 		return
@@ -993,6 +1107,10 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	if err := m.s.Svc.DropRecoveryCodes(ctx, u.ID); err != nil {
 		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", u.ID, "error", err)
 	}
+	if fresh, err := m.fresh(ctx, a); err == nil { // DropRecoveryCodes may have moved the generation on again
+		u = fresh
+	}
+	m.refreshReauth(ctx, a.sess.ID, u.SecurityGen)
 	m.changed(a)
 	m.auditSelf(r, a, "account.totp.disable", nil)
 	w.WriteHeader(http.StatusNoContent)
@@ -1068,8 +1186,19 @@ func (m *Module) revokeSession(w http.ResponseWriter, r *http.Request, a acct) {
 }
 
 func (m *Module) revokeOtherSessions(w http.ResponseWriter, r *http.Request, a acct) {
-	n := m.endOtherSessions(r.Context(), a)
-	m.auditSelf(r, a, "account.session.revoke_others", map[string]string{"count": strconv.Itoa(n)})
+	n, err := m.endOtherSessions(r.Context(), a)
+	detail := map[string]string{"count": strconv.Itoa(n)}
+	if err != nil {
+		// Some (or all) of the other sessions still work: the answer says what ended and that it is not everything,
+		// rather than a count that reads as "done".
+		detail["result"] = "incomplete"
+		detail["error"] = err.Error()
+		m.auditSelf(r, a, "account.session.revoke_others", detail)
+		web.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"revoked": n,
+			"error": "Not every session could be signed out right now (" + strconv.Itoa(n) + " ended). Please try again shortly."})
+		return
+	}
+	m.auditSelf(r, a, "account.session.revoke_others", detail)
 	web.WriteJSON(w, http.StatusOK, map[string]int{"revoked": n})
 }
 
@@ -1213,6 +1342,10 @@ func (m *Module) revokeApp(w http.ResponseWriter, r *http.Request, a acct) {
 	client := r.PathValue("client")
 	n, err := m.s.Svc.RevokeAppAccess(ctx, a.u.ID, client) // tells the application first (back-channel logout)
 	if err != nil {
+		if n > 0 { // partly done: some grants are gone, at least one still works
+			m.auditSelf(r, a, "account.app.revoke", map[string]string{"client": client, "result": "incomplete",
+				"grants_removed": strconv.Itoa(n), "error": err.Error()})
+		}
 		web.WriteError(w, err)
 		return
 	}

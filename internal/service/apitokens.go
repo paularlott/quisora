@@ -410,7 +410,13 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if !secure.EqualSecret(secret, t.SecretHash) {
 		return refuse("wrong secret")
 	}
-	if !s.APITokenCurrent(ctx, t.OrgID, t.Stamp) {
+	// The sign-out counters that cannot be read now decide nothing (503), rather than refusing a good token as
+	// "ended" and auditing an emergency sign-out that did not happen.
+	want, err := s.APITokenStamp(ctx, t.OrgID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: the sign-out counters could not be read: %v", ErrUnavailable, err)
+	}
+	if !t.Stamp.Current(want) {
 		return refuse("ended by an emergency sign-out")
 	}
 	u, err := s.Users.Get(ctx, t.UserID)
