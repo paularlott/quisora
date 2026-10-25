@@ -357,7 +357,7 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 	defer m.settle(ctx, key, &wrong)
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	ok, err := m.s.Svc.VerifyPassword(vctx, u, password)
+	ok, err := m.s.Svc.VerifyPassword(vctx, u.OrgID, u, password)
 	if errors.Is(err, secure.ErrBusy) {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, http.StatusServiceUnavailable, "The server is busy. Please try again in a moment.", "")

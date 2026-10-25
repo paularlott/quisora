@@ -291,16 +291,16 @@ func TestMatrixGroupsClientsProviders(t *testing.T) {
 		}
 		_, err = c.svc.UpdateGroup(c.ctx, actor(ac.u), g.ID, service.GroupInput{DisplayName: ptr(c.next("grp"))})
 		c.check(t, "update group as "+ac.name, err, wantAdmin)
-		err = c.svc.SetMembership(c.ctx, actor(ac.u), g.ID, c.aUser.ID, true)
-		c.check(t, "add member as "+ac.name, err, wantAdmin)
-		err = c.svc.SetMembership(c.ctx, actor(ac.u), g.ID, c.aUser.ID, false)
-		c.check(t, "remove member as "+ac.name, err, wantAdmin)
-		// Read access to groups follows user management.
+		// Membership and read access to groups follow user management: a manager adds and removes plain users.
 		readGroups := ac.name == "super" || ac.name == "a-admin" || ac.name == "a-manager"
 		wantRead := "forbidden"
 		if readGroups {
 			wantRead = "ok"
 		}
+		err = c.svc.SetMembership(c.ctx, actor(ac.u), g.ID, c.aUser.ID, true)
+		c.check(t, "add member as "+ac.name, err, wantRead)
+		err = c.svc.SetMembership(c.ctx, actor(ac.u), g.ID, c.aUser.ID, false)
+		c.check(t, "remove member as "+ac.name, err, wantRead)
 		_, _, err = c.svc.ListGroups(c.ctx, actor(ac.u), c.a.ID, store.ListQuery{})
 		c.check(t, "list groups as "+ac.name, err, wantRead)
 		_, err = c.svc.GetGroup(c.ctx, actor(ac.u), g.ID)

@@ -181,7 +181,7 @@ func TestCoverageSealedFormats(t *testing.T) {
 }
 
 func TestCoverageHasherAndErrors(t *testing.T) {
-	if cap(NewHasher(0).sem) < 1 {
+	if NewHasher(0).free < 1 {
 		t.Fatal("default workers")
 	}
 	h := NewHasher(1)
@@ -192,7 +192,7 @@ func TestCoverageHasherAndErrors(t *testing.T) {
 		"$argon2id$v=19$m=65536,t=1,p=1$c2FsdHNhbHRzYWx0$!!!",
 		"$argon2id$v=19$m=1,t=1,p=1$c2FsdHNhbHRzYWx0$" + strings.Repeat("A", 22),
 	} {
-		if ok, _, err := h.Verify(t.Context(), "pw", bad); ok || !errors.Is(err, ErrHashParams) {
+		if ok, _, err := h.Verify(t.Context(), "", "pw", bad); ok || !errors.Is(err, ErrHashParams) {
 			t.Errorf("Verify(%q): ok %v err %v", bad, ok, err)
 		}
 	}

@@ -68,7 +68,7 @@ The new token's claims:
 
 | Parameter | |
 | --- | --- |
-| `subject_token` | The user's access token, issued by this Quisora. Not a refresh token, not a client credentials token. |
+| `subject_token` | The user's access token, issued by this Quisora. Not a refresh token, not a client credentials token. A DPoP-bound token is accepted without a proof of its key: the service exchanging it received it from the user's application and acts for the user, and it holds none of that application's keys. The new token is bound to the exchanging client's own DPoP key when it sends a proof. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` (or `…:jwt`). |
 | `resource` or `audience` | The APIs the new token is for: only those registered on the calling client. |
 | `scope` | Optional: at most the subject token's scopes that the calling client also has. Without it, all of those. `offline_access` is dropped. |

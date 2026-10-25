@@ -778,8 +778,13 @@ func (p *Provider) respond(w http.ResponseWriter, r *http.Request, f *flow, para
 		}
 		// The auto-submitting form must be allowed to post to the client's origin (the default CSP only allows
 		// https:); everything else stays as strict as the global policy.
+		target, ok := formActionSource(u)
+		if !ok {
+			p.message(w, r, http.StatusBadRequest, "Invalid redirect", "This request cannot be completed", "")
+			return
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "+
-			"img-src 'self' data: https:; font-src 'self'; connect-src 'self'; form-action "+u.Scheme+"://"+u.Host+
+			"img-src 'self' data: https:; font-src 'self'; connect-src 'self'; form-action "+target+
 			"; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 		p.s.Render.Render(w, http.StatusOK, "oauth-post", p.s.Page(w, r, "Continue", "", data))
 		return
@@ -937,4 +942,18 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, map[string]string{"client_id": c.ID,
 		"decision": f.Decision, "scopes": strings.Join(f.consent(), " ")})
 	web.WriteJSON(w, http.StatusOK, map[string]string{"redirect": "/oauth/authorize/resume?flow=" + url.QueryEscape(in.Flow)})
+}
+
+// formActionSource is the CSP source a form_post page may post to for redirect URI u: its origin, or for a native
+// app's private-use scheme (com.example.app:/cb) the scheme alone. A host or scheme with characters a CSP source
+// cannot hold (separators, quotes, spaces) is refused: they would add directives of their own to the page.
+func formActionSource(u *url.URL) (string, bool) {
+	clean := func(s string) bool { return !strings.ContainsAny(s, ";,'\" \t\r\n") }
+	if !clean(u.Scheme) || !clean(u.Host) || u.Scheme == "" {
+		return "", false
+	}
+	if u.Host == "" {
+		return u.Scheme + ":", true
+	}
+	return u.Scheme + "://" + u.Host, true
 }

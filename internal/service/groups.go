@@ -335,15 +335,21 @@ func (s *Service) SetMembership(ctx context.Context, a *Actor, groupID, userID s
 // (materializeMember). A writer that dies after the commit leaves its entry pending, visible all the same; the next
 // change of the group, or housekeeping (FinishGroupChanges), finishes it. The pending entry is removed from the
 // record by a second compare-and-swap once materialized, which moves the version once more (the version returned).
-// A change touching more than MaxMembersPerChange memberships is refused (ErrTooLarge).
+// A change touching more than MaxMembersPerChange memberships is refused (ErrTooLarge). A manager may only add and
+// remove members, and only plain users (checkMembership); the group's fields are for administrators.
 func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in GroupInput, add, remove []string) (*model.Group, error) {
-	if !s.canAdminOrg(a, g.OrgID) {
+	if !s.canManageUsers(a, g.OrgID) {
 		return nil, ErrForbidden
 	}
 	next := *g
 	next.Tags = slices.Clone(g.Tags)
 	if err := applyGroup(&next, in); err != nil {
 		return nil, err
+	}
+	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
+	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
+	if fieldsChanged && !s.canAdminOrg(a, g.OrgID) {
+		return nil, ErrForbidden // a manager adds and removes members, and changes nothing else
 	}
 	add, remove = dedupe(add), dedupe(remove)
 	if len(add)+len(remove) > MaxMembersPerChange {
@@ -357,7 +363,6 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 	if err != nil && len(remaining) >= maxPendingChanges {
 		return nil, s.unfinished(g, err)
 	}
-	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
 	if tagsChanged {
 		// A group's tags reach every member's tokens: a provisioning client changes them only on a group whose
 		// members it could manage one by one.
@@ -384,7 +389,6 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 			}
 		}
 	}
-	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
 	membersChanged := len(entry.Add)+len(entry.Remove) > 0
 	if !fieldsChanged && !membersChanged && len(remaining) == len(g.Pending) {
 		// Nothing to do, but a change made from an old copy is still refused.
@@ -575,9 +579,10 @@ func (s *Service) checkMembership(ctx context.Context, a *Actor, g *model.Group,
 	if uerr == nil && u.OrgID == g.OrgID && s.Visibility(a, u) == Hidden {
 		return ErrNotFound // a super admin, to anyone but a super admin
 	}
-	// Group membership carries access and tags: a provisioning client changes it only for users it may manage
-	// (never an administrator), like their other attributes. (A membership of a user who no longer exists can go.)
-	if a.ClientID != "" && uerr == nil && !s.canManageUser(a, u) {
+	// Group membership carries access and tags: a provisioning client or a manager changes it only for users they may
+	// manage (a client never an administrator, a manager plain users only), like their other attributes. (A
+	// membership of a user who no longer exists can go.)
+	if (a.ClientID != "" || !s.canAdminOrg(a, g.OrgID)) && uerr == nil && !s.canManageUser(a, u) {
 		return ErrForbidden
 	}
 	if member && (uerr != nil || u.OrgID != g.OrgID) {

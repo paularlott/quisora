@@ -131,7 +131,7 @@ func Seed(ctx context.Context, svc *service.Service, o SeedOptions, out io.Write
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
-	h, err := svc.Hasher.Hash(ctx, o.Password)
+	h, err := svc.Hasher.Hash(ctx, "", o.Password)
 	if err != nil {
 		return nil, err
 	}

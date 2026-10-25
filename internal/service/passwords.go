@@ -17,13 +17,13 @@ import (
 // PasswordBinding binds a user's sealed password hash to the user.
 func PasswordBinding(userID string) string { return "user/" + userID + "/password" }
 
-// hashPassword returns the stored form of password for the user with userID.
-func (s *Service) hashPassword(ctx context.Context, userID, password string) (string, error) {
-	h, err := s.Hasher.Hash(ctx, password)
+// hashPassword returns the stored form of password for u (it waits for a hashing worker in its organization's line).
+func (s *Service) hashPassword(ctx context.Context, u *model.User, password string) (string, error) {
+	h, err := s.Hasher.Hash(ctx, u.OrgID, password)
 	if err != nil {
 		return "", err
 	}
-	return s.SealPasswordHash(userID, h), nil
+	return s.SealPasswordHash(u.ID, h), nil
 }
 
 // SealPasswordHash seals an argon2id hash for the user with userID (the load test seeds many users with one hash).
@@ -31,10 +31,11 @@ func (s *Service) SealPasswordHash(userID, hash string) string {
 	return s.Sealer.SealFor(PasswordBinding(userID), []byte(hash))
 }
 
-// VerifyPassword reports whether password is u's. Every call costs one hash, whether or not there is a user or a
-// password (nil u: an unknown account), so timing reveals neither. After a match, a hash made with other settings than
-// today's is replaced (best effort: the sign-in goes ahead regardless).
-func (s *Service) VerifyPassword(ctx context.Context, u *model.User, password string) (bool, error) {
+// VerifyPassword reports whether password is u's, for a sign-in at organization orgID (the hashing workers' waiting
+// line: secure.Hasher). Every call costs one hash, whether or not there is a user or a password (nil u: an unknown
+// account), so timing reveals neither. After a match, a hash made with other settings than today's is replaced (best
+// effort: the sign-in goes ahead regardless).
+func (s *Service) VerifyPassword(ctx context.Context, orgID string, u *model.User, password string) (bool, error) {
 	stored := ""
 	if u != nil {
 		stored = u.PasswordHash
@@ -50,7 +51,7 @@ func (s *Service) VerifyPassword(ctx context.Context, u *model.User, password st
 			encoded = string(plain)
 		}
 	}
-	ok, rehash, err := s.Hasher.Verify(ctx, password, encoded)
+	ok, rehash, err := s.Hasher.Verify(ctx, orgID, password, encoded)
 	if errors.Is(err, secure.ErrHashParams) {
 		s.Log.Error("a stored password hash names settings out of range: refused", "user", u.ID)
 		return false, nil
@@ -59,16 +60,17 @@ func (s *Service) VerifyPassword(ctx context.Context, u *model.User, password st
 		return false, err
 	}
 	if rehash && s.CanWrite() {
-		s.rehashPassword(ctx, u.ID, stored, password)
+		s.rehashPassword(ctx, u, stored, password)
 	}
 	return true, nil
 }
 
 // rehashPassword replaces the user's stored hash with one made with today's settings, if it is still stored (a change
 // made meanwhile is never overwritten).
-func (s *Service) rehashPassword(ctx context.Context, userID, stored, password string) {
+func (s *Service) rehashPassword(ctx context.Context, u *model.User, stored, password string) {
 	ctx = context.WithoutCancel(ctx)
-	next, err := s.hashPassword(ctx, userID, password)
+	userID := u.ID
+	next, err := s.hashPassword(ctx, u, password)
 	if err != nil {
 		return
 	}

@@ -262,7 +262,7 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		if err := s.CheckPassword(ctx, u, *in.Password); err != nil {
 			return err
 		}
-		h, err := s.hashPassword(ctx, u.ID, *in.Password)
+		h, err := s.hashPassword(ctx, u, *in.Password)
 		if err != nil {
 			return err
 		}
@@ -495,16 +495,30 @@ func (e *conflictErr) Unwrap() error { return e.error }
 // verified state.
 func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserInput) (*model.User, error) {
 	before, err := s.Users.Get(ctx, id)
-	if err != nil || before.Role != model.RoleSuperAdmin || (in.Role == nil && in.Active == nil && in.ValidUntil == nil) {
+	if err != nil {
 		return s.updateUser(ctx, a, id, in)
 	}
-	// A change that can remove a super admin holds the primary organization's admin lock (cluster-wide), and its
-	// last-super-admin check counts from a quorum's copies: two such changes on two nodes can never both pass it.
-	unlock, err := s.lockAdmins(ctx, before.OrgID)
-	if err != nil {
-		return nil, err
+	// A new manager holds the organization's managers lock (cluster-wide), and its loop check reads the chain from a
+	// quorum's copies (setManager): two changes on two nodes (A reports to B, B to A) can never both pass it. Taken
+	// before the admin lock, always, so the two never wait on each other.
+	if w := in.Work; w != nil && w.ManagerID != nil && strings.TrimSpace(*w.ManagerID) != "" &&
+		strings.TrimSpace(*w.ManagerID) != before.Work.ManagerID {
+		l, err := s.lock(ctx, "managers/"+before.OrgID, adminLockTTL, 10*time.Second,
+			"another change of this organization's managers is in progress")
+		if err != nil {
+			return nil, err
+		}
+		defer l.release(ctx)
 	}
-	defer unlock()
+	if before.Role == model.RoleSuperAdmin && (in.Role != nil || in.Active != nil || in.ValidUntil != nil) {
+		// A change that can remove a super admin holds the primary organization's admin lock (cluster-wide), and its
+		// last-super-admin check counts from a quorum's copies: two such changes on two nodes can never both pass it.
+		unlock, err := s.lockAdmins(ctx, before.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	return s.updateUser(ctx, a, id, in)
 }
 
@@ -1123,7 +1137,8 @@ func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 }
 
 // setManager sets u's manager: another user of the same organization, and never one who reports to u (directly or
-// further down), which would make a loop. "" clears it.
+// further down), which would make a loop. "" clears it. The chain is read from a quorum's copies (FreshUser), under
+// the managers lock UpdateUser holds, so a change confirmed on another node is seen.
 func (s *Service) setManager(ctx context.Context, u *model.User, id string) error {
 	if id == "" {
 		u.Work.ManagerID = ""
@@ -1132,23 +1147,36 @@ func (s *Service) setManager(ctx context.Context, u *model.User, id string) erro
 	if id == u.ID {
 		return Invalid("work.manager_id", "a person cannot be their own manager")
 	}
-	m, err := s.Users.Get(ctx, id)
+	if id == u.Work.ManagerID {
+		return nil // unchanged
+	}
+	m, err := s.FreshUser(ctx, id)
+	if errors.Is(err, ErrUnavailable) {
+		return err
+	}
 	if err != nil || m.OrgID != u.OrgID {
 		return Invalid("work.manager_id", "choose a user of this organization")
 	}
-	for n, next := 0, m.Work.ManagerID; next != "" && n < 100; n++ {
-		if next == u.ID {
+	for n, next := 0, m.Work.ManagerID; next != ""; n++ {
+		if next == u.ID || n == maxManagerChain {
 			return Invalid("work.manager_id", "that person reports to this user")
 		}
-		up, err := s.Users.Get(ctx, next)
+		up, err := s.FreshUser(ctx, next)
+		if errors.Is(err, ErrUnavailable) {
+			return err
+		}
 		if err != nil {
-			break
+			break // the chain ends at a user who is gone
 		}
 		next = up.Work.ManagerID
 	}
 	u.Work.ManagerID = id
 	return nil
 }
+
+// maxManagerChain bounds how far setManager follows a chain of managers: one longer than this (or a loop written
+// before the check existed) is refused rather than followed for ever.
+const maxManagerChain = 100
 
 // clearManagerOf removes the user as the manager of everyone who reports to them (they are being deleted).
 func (s *Service) clearManagerOf(ctx context.Context, u *model.User) {
@@ -1179,24 +1207,33 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 	endReached := "The end date was reached."
 	now := time.Now()
 	n := 0
+	// Users this pass could not end (the last super admin(s) are never disabled, though their end date still stops
+	// sign-in; or a write that failed) stay at the front of the due list: they are skipped, and each read asks for
+	// that many more, so they never hide the users behind them.
+	stuck := map[string]bool{}
 	for {
-		due, err := s.dueUsers(ctx, now, 200)
+		limit := 200 + len(stuck)
+		due, err := s.dueUsers(ctx, now, limit)
 		if err != nil {
 			return n, mapStore(err)
 		}
-		done := 0
+		progress := false
 		for _, u := range due {
 			if u.ValidUntil == nil || u.ValidUntil.After(now) {
 				return n, nil // sorted by end date: the rest end later
 			}
+			if stuck[u.ID] {
+				continue
+			}
+			progress = true
 			if _, err := s.UpdateUser(ctx, System, u.ID, UserInput{Active: ptrBool(false), StatusReason: &endReached}); err != nil {
-				continue // the last super admin(s) are never disabled; their end date still stops sign-in
+				stuck[u.ID] = true
+				continue
 			}
 			s.Audit(ctx, System, u.OrgID, "user.expire", u.Username, map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)})
 			n++
-			done++
 		}
-		if len(due) < 200 || done == 0 {
+		if len(due) < limit || !progress {
 			return n, nil
 		}
 	}

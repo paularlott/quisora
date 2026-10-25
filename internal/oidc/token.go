@@ -173,7 +173,11 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	raw, err := p.s.Eph.Take(ctx, nsCode, code)
 	if err != nil {
 		if errors.Is(err, ephemeral.ErrNotFound) {
-			// A code presented twice: everything issued from the first use must die (RFC 6749 §4.1.2).
+			// A code presented twice: everything issued from the first use must die (RFC 6749 §4.1.2). The mark goes
+			// first, then the grant is looked for; the first use records its grant, then looks for the mark (both
+			// under the code's id, on one node, in order): whichever comes second sees the other, so a replay racing
+			// the first use's grant still ends it.
+			_ = p.s.Eph.Set(ctx, nsReplayed, code, []byte{1}, usedTTL)
 			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
 				// The replay is refused either way; whether the grant could be ended is recorded as it happened.
 				rerr := p.revokeGrant(ctx, string(gid))
@@ -222,8 +226,19 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
 	}
 	tr, gid, oe := p.userGrant(ctx, c, &cd, res, jkt, "")
-	if oe == nil {
+	switch {
+	case oe != nil && oe.status >= 500:
+		// Nothing was decided (a store that could not be read or written): the code is put back for the client's
+		// retry, rather than spent on our failure.
+		_ = p.s.Eph.Set(ctx, nsCode, code, raw, p.codeTTL(c))
+	case oe == nil:
 		_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(gid), usedTTL)
+		if _, err := p.s.Eph.Get(ctx, nsReplayed, code); err == nil { // presented again while this one ran
+			rerr := p.revokeGrant(ctx, gid)
+			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
+			p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": strconv.FormatBool(rerr == nil)})
+			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
+		}
 	}
 	return tr, oe
 }

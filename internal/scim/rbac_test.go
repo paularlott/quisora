@@ -13,7 +13,7 @@ func TestSCIMRBAC(t *testing.T) {
 	mgrUser := e.users["mgr-a"]
 	bUser := e.mkUser(e.orgB, "b-plain", model.RoleUser)
 
-	// Manager token: plain users only; groups read-only.
+	// Manager token: plain users only; of groups, only the membership of plain users.
 	if r := e.createUser("acme", e.mgrA, map[string]any{"userName": "by-mgr"}); r.Status != 201 {
 		t.Errorf("manager creates user: %d %s", r.Status, r.Raw)
 	}
@@ -56,14 +56,44 @@ func TestSCIMRBAC(t *testing.T) {
 	if r := e.do("POST", "/scim/v2/acme/Groups", e.mgrA, map[string]any{"displayName": "nope"}); r.Status != 403 {
 		t.Errorf("manager creates group: %d", r.Status)
 	}
-	if r := e.do("PATCH", "/scim/v2/acme/Groups/"+gid, e.mgrA, patchBody(op("remove", "members", nil))); r.Status != 403 {
-		t.Errorf("manager patches group: %d", r.Status)
+	if r := e.do("PATCH", "/scim/v2/acme/Groups/"+gid, e.mgrA, patchBody(op("replace", "displayName", "renamed"))); r.Status != 403 {
+		t.Errorf("manager renames group: %d", r.Status)
+	}
+	for _, u := range []string{admUser.ID, mgrUser.ID} {
+		if r := e.do("PATCH", "/scim/v2/acme/Groups/"+gid, e.mgrA, patchBody(op("add", "members", []any{map[string]any{"value": u}}))); r.Status != 403 {
+			t.Errorf("manager adds %s to group: %d %s", u, r.Status, r.Raw)
+		}
+	}
+	if r := e.do("PATCH", "/scim/v2/acme/Groups/"+gid, e.mgrA, patchBody(op("remove", "members", nil))); r.Status != 200 {
+		t.Errorf("manager removes plain users: %d %s", r.Status, r.Raw)
+	}
+	if r := e.do("PATCH", "/scim/v2/acme/Groups/"+gid, e.mgrA, patchBody(op("add", "members", []any{map[string]any{"value": plain}}))); r.Status != 200 {
+		t.Errorf("manager adds a plain user: %d %s", r.Status, r.Raw)
 	}
 	if r := e.do("DELETE", "/scim/v2/acme/Groups/"+gid, e.mgrA, nil); r.Status != 403 {
 		t.Errorf("manager deletes group: %d", r.Status)
 	}
 	if g := e.do("GET", "/scim/v2/acme/Groups/"+gid, e.admA, nil); len(g.list("members")) != 1 {
-		t.Error("forbidden group patch changed the group")
+		t.Error("forbidden group patches changed the group")
+	}
+	// An administrator in a group does not stop a manager changing its plain users, and is never taken out by them:
+	// a manager's token does not see the administrator, so removing every member it sees, or a PUT of the members
+	// it sees, leaves them.
+	mixed := e.group("rbac-mixed", plain, admUser.ID)
+	if r := e.do("PATCH", "/scim/v2/acme/Groups/"+mixed, e.mgrA, patchBody(op("remove", "members", nil))); r.Status != 200 {
+		t.Errorf("manager empties a group with an administrator: %d %s", r.Status, r.Raw)
+	}
+	plain2 := e.mk("plain2", nil)
+	if r := e.do("PUT", "/scim/v2/acme/Groups/"+mixed, e.mgrA, map[string]any{"displayName": "rbac-mixed",
+		"members": []any{map[string]any{"value": plain2}}}); r.Status != 200 {
+		t.Errorf("manager puts a group with an administrator: %d %s", r.Status, r.Raw)
+	}
+	got := map[string]bool{}
+	for _, m := range e.do("GET", "/scim/v2/acme/Groups/"+mixed, e.admA, nil).list("members") {
+		got[m.(map[string]any)["value"].(string)] = true
+	}
+	if len(got) != 2 || !got[admUser.ID] || !got[plain2] {
+		t.Errorf("members of the mixed group: %v", got)
 	}
 	if r := e.do("DELETE", "/scim/v2/acme/Users/"+plain, e.mgrA, nil); r.Status != 204 {
 		t.Errorf("manager deletes plain: %d", r.Status)

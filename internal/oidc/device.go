@@ -230,16 +230,23 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 		_ = p.s.Eph.Delete(ctx, nsDevice, deviceCode)
 		return nil, oerr("access_denied", "the user denied the sign-in")
 	}
-	// Approved: the tokens are issued once, whichever poll takes them first.
+	// Approved: the tokens are issued once, whichever poll takes them first. A failure of ours (5xx) puts the
+	// approval back for the next poll, rather than making the user approve again.
 	if _, err := p.s.Eph.Take(ctx, nsDevice, deviceCode); err != nil {
 		return nil, expired
+	}
+	restore := func(oe *oauthError) *oauthError {
+		if left := d.ttl(); oe != nil && oe.status >= 500 && left > 0 {
+			_ = p.s.Eph.Set(ctx, nsDevice, deviceCode, raw, left)
+		}
+		return oe
 	}
 	_ = p.s.Eph.Delete(ctx, nsDevicePoll, deviceCode)
 	// The approver's role is checked on the user as they are now (userGrant then checks the rest about them); a
 	// user that cannot be read decides nothing, and a user that is gone is refused by userGrant.
 	u, err := p.user(ctx, d.UserID)
 	if err != nil && !gone(err) {
-		return nil, serverError(unavailable(err))
+		return nil, restore(serverError(unavailable(err)))
 	}
 	if err == nil && u.Role.Privileged() && !c.DevicePrivileged {
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
@@ -247,7 +254,7 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
 		AMR: d.AMR, Scopes: d.Scopes, Resources: d.Resources}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, jkt, "device_code")
-	return tr, oe
+	return tr, restore(oe)
 }
 
 // devicePending answers a poll of a sign-in the user has not decided: slow_down when it came sooner than the device's

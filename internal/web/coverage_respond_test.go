@@ -89,11 +89,14 @@ func TestDecodeJSON(t *testing.T) {
 		"not json":      `nope`,
 		"empty":         ``,
 		"wrong type":    `{"a":5}`,
-		"too large":     `{"a":"` + strings.Repeat("x", MaxJSONBody) + `"}`,
 	} {
 		if _, code, ok := run(payload); ok || code != http.StatusBadRequest {
 			t.Errorf("%s: ok=%v code=%d", name, ok, code)
 		}
+	}
+	// a body over the limit is refused as too large (413), not as unreadable
+	if _, code, ok := run(`{"a":"` + strings.Repeat("x", MaxJSONBody) + `"}`); ok || code != http.StatusRequestEntityTooLarge {
+		t.Errorf("too large: ok=%v code=%d", ok, code)
 	}
 }
 

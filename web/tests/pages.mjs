@@ -137,6 +137,14 @@ export const PAGES = [
       await p.locator('#f-member').fill('a'); await p.locator('#member-picks [role=option]').first().waitFor()
       await p.keyboard.press('ArrowDown'); await p.waitForTimeout(300)
     }] },
+  // A manager: the members of a group, and plain users only to add; no group is created, changed or deleted.
+  { name: 'groups-manager', path: `${A}/groups`, as: 'manager', dialog: true, steps: [waitRows, async (p) => {
+      for (const name of ['New group', 'Edit Engineering', 'Delete Engineering']) {
+        if (await p.getByRole('button', { name }).count()) throw new Error(`a manager sees ${name}`)
+      }
+    }, open('Members of Engineering'), async (p) => {
+      await p.locator('#f-member').fill('a'); await p.locator('#member-picks [role=option]').first().waitFor()
+    }] },
   { name: 'groups-new-tags', path: `${A}/groups`, as: 'admin', dialog: true, steps: [waitRows, open('New group'), async (p) => {
       await p.locator('#f-tags').fill('team:a,team:b '); await p.locator('#f-tags').type('x y!'); await p.keyboard.press('Enter')
       await p.locator('#e-tags').filter({ hasText: 'is not a valid tag' }).waitFor(); await p.waitForTimeout(450)

@@ -98,7 +98,7 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/orgs/{org}/users", m.orgPage("admin-users", "Users", "users", false, nil))
 	page("GET /admin/orgs/{org}/users/{id}", m.orgPage("admin-user", "User", "users", false,
 		func(v *View, r *http.Request) { v.UserID = r.PathValue("id"); v.Self = v.UserID == web.Actor(r).UserID }))
-	page("GET /admin/orgs/{org}/groups", m.orgPage("admin-groups", "Groups", "groups", true, nil))
+	page("GET /admin/orgs/{org}/groups", m.orgPage("admin-groups", "Groups", "groups", false, nil))
 	page("GET /admin/orgs/{org}/tenants", m.orgPage("admin-tenants", "Tenants", "tenants", true, nil))
 	page("GET /admin/orgs/{org}/tenants/{tenant}", m.pageTenant)
 	page("GET /admin/orgs/{org}/clients", m.pageClientsMoved)

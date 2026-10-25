@@ -224,7 +224,7 @@ func TestAccountPasswordForPasswordlessUser(t *testing.T) {
 	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "my first password!"})
 	wantStatus(t, res, out, 200)
 	got, _ := e.Svc.Users.Get(context.Background(), u.ID)
-	if ok, err := e.Svc.VerifyPassword(context.Background(), got, "my first password!"); err != nil || !ok {
+	if ok, err := e.Svc.VerifyPassword(context.Background(), "", got, "my first password!"); err != nil || !ok {
 		t.Fatalf("password not set: %v %v", ok, err)
 	}
 	// the session that set it carries on, and from now on changing it needs the current one

@@ -1132,7 +1132,8 @@ export default function (Alpine) {
   Alpine.data('adminGroups', () => mix(tableMixin(), formMixin(), dialogMixin(), tagsMixin(), pickerMixin({
     // active users of the organization who are not members yet; choosing one adds them at once
     async search(q) {
-      const res = await get(`${this.apiBase}/users${qs({ q, limit: 10, active: 1 })}`)
+      // a manager adds plain users only
+      const res = await get(`${this.apiBase}/users${qs({ q, limit: 10, active: 1, ...(this.admin ? {} : { role: 'user' }) })}`)
       const have = new Set(this.members.map((m) => m.id))
       const items = res.items.filter((u) => !have.has(u.id))
       return { more: res.total > res.items.length, items: items.map((u) => ({ type: 'user', id: u.id, label: u.name || u.username, detail: u.email, kind: 'User' })) }
@@ -1140,10 +1141,11 @@ export default function (Alpine) {
     chosen(p) { return this.addMember(p) },
     clearOnChoose: true,
   }), {
-    editing: null, apiBase: '', group: null, members: [], membersTotal: 0, membersLoading: false,
+    editing: null, apiBase: '', admin: false, group: null, members: [], membersTotal: 0, membersLoading: false,
     _mt: null, membersGone: false,
     init() {
       this.apiBase = this.$el.dataset.base
+      this.admin = 'admin' in this.$el.dataset
       this.initTable()
       subscribe(['member', 'group', 'user'], (ev) => this.liveMembers(ev))
     },
@@ -1208,7 +1210,8 @@ export default function (Alpine) {
       if (!quiet) this.membersLoading = true
       try {
         const res = await get(`${this.apiBase}/groups/${enc(this.group.id)}/members${qs({ limit: 100 })}`)
-        const items = res.items.map((m) => ({ ...m, removeLabel: 'Remove ' + (m.name || m.username) + ' from group', title: m.name || m.username }))
+        const items = res.items.map((m) => ({ ...m, removeLabel: 'Remove ' + (m.name || m.username) + ' from group', title: m.name || m.username,
+          canRemove: this.admin || m.role === 'user' }))
         const sig = items.map((m) => m.id).join()
         const changed = !quiet || sig !== this.members.map((m) => m.id).join()
         if (changed) {

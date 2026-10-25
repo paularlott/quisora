@@ -253,16 +253,22 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 		checks = append(checks, []byte(base64.RawURLEncoding.EncodeToString(m[:12])))
 	}
 	t := store.NewTable[model.Ephemeral](st)
-	e, err := t.Get(ctx, sharedKeyCheckID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		if err := t.Create(ctx, &model.Ephemeral{Meta: model.Meta{ID: sharedKeyCheckID}, Value: checks[0]}); err != nil &&
-			!errors.Is(err, store.ErrStale) {
+	var e *model.Ephemeral
+	for attempt := 0; e == nil; attempt++ {
+		got, err := t.Get(ctx, sharedKeyCheckID)
+		switch {
+		case err == nil:
+			e = got
+		case !errors.Is(err, store.ErrNotFound):
 			return fmt.Errorf("master key check: %w", err)
+		case attempt == 3:
+			return errors.New("master key check: the check record could not be created or read")
+		default: // created here, or concurrently by another node: read it again
+			err := t.Create(ctx, &model.Ephemeral{Meta: model.Meta{ID: sharedKeyCheckID}, Value: checks[0]})
+			if err != nil && !errors.Is(err, store.ErrStale) {
+				return fmt.Errorf("master key check: %w", err)
+			}
 		}
-		return checkSharedKey(ctx, st, sealer, logger.NewNullLogger(), shared) // created here or concurrently elsewhere
-	case err != nil:
-		return fmt.Errorf("master key check: %w", err)
 	}
 	i := slices.IndexFunc(checks, func(c []byte) bool { return string(c) == string(e.Value) })
 	switch {
@@ -271,9 +277,8 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 			"set server.master_key to the same value on every node (and, during a rotation, the same " +
 			"server.previous_master_keys)")
 	case i < 0:
-		return errors.New("server.master_key is not the key this node's data was sealed with: give it that key (a " +
-			"server that used a generated data_dir/master.key: that file's content). To change keys, rotate: the old " +
-			"one in server.previous_master_keys (docs/RUNNING.md)")
+		return errors.New("server.master_key is not the key this node's data was sealed with: give it that key. To " +
+			"change keys, rotate: the old one in server.previous_master_keys (docs/RUNNING.md)")
 	case i > 0:
 		// A rotation: the database names a previous key of this node's ring. From here on it names the new one, so a
 		// node that is still given only the old key refuses to start instead of sealing with it.

@@ -191,9 +191,9 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	if a.UserID == "" || a.Scoped() {
 		return nil, "", ErrForbidden // tokens cannot mint tokens
 	}
-	t, err := s.APITokens.Get(ctx, id)
-	if err != nil || t.UserID != a.UserID {
-		return nil, "", ErrNotFound
+	t, err := s.ownLiveToken(ctx, a, id)
+	if err != nil {
+		return nil, "", err
 	}
 	// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
 	for _, sc := range t.Scopes {
@@ -210,6 +210,24 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	}
 	s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
 	return t, apiTokenPrefix + t.ID + "_" + secret, nil
+}
+
+// ownLiveToken returns a's own token id for a change (a new secret, a new name or audience): not one that stopped
+// working when a's sign-in was reset (its epoch is no longer held: ValidateAPIToken refuses it), whose new secret or
+// settings would never work.
+func (s *Service) ownLiveToken(ctx context.Context, a *Actor, id string) (*model.APIToken, error) {
+	t, err := s.APITokens.Get(ctx, id)
+	if err != nil || t.UserID != a.UserID {
+		return nil, ErrNotFound
+	}
+	u, err := s.Users.Get(ctx, a.UserID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if !u.Holds(t.Epoch) {
+		return nil, Invalid("token", "this token stopped working when your sign-in was reset: delete it and make a new one")
+	}
+	return t, nil
 }
 
 // TokenApps lists the applications the actor may make a personal api token for: the enabled confidential clients of
@@ -300,9 +318,9 @@ func (s *Service) UpdateAPIToken(ctx context.Context, a *Actor, id string, in AP
 	if a.UserID == "" || a.Scoped() {
 		return nil, ErrForbidden
 	}
-	t, err := s.APITokens.Get(ctx, id)
-	if err != nil || t.UserID != a.UserID {
-		return nil, ErrNotFound
+	t, err := s.ownLiveToken(ctx, a, id)
+	if err != nil {
+		return nil, err
 	}
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)

@@ -28,17 +28,17 @@ import (
 func TestPassword(t *testing.T) {
 	h := NewHasher(2)
 	ctx := context.Background()
-	enc, err := h.Hash(ctx, "correct horse")
+	enc, err := h.Hash(ctx, "", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, rehash, _ := h.Verify(ctx, "correct horse", enc); !ok || rehash {
+	if ok, rehash, _ := h.Verify(ctx, "", "correct horse", enc); !ok || rehash {
 		t.Fatalf("verify: ok %v, rehash %v", ok, rehash)
 	}
-	if ok, _, _ := h.Verify(ctx, "wrong", enc); ok {
+	if ok, _, _ := h.Verify(ctx, "", "wrong", enc); ok {
 		t.Fatal("wrong password verified")
 	}
-	if ok, _, _ := h.Verify(ctx, "x", ""); ok {
+	if ok, _, _ := h.Verify(ctx, "", "x", ""); ok {
 		t.Fatal("empty hash verified")
 	}
 }
@@ -55,7 +55,7 @@ func TestPasswordSettings(t *testing.T) {
 			base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
 	}
 	weaker := mk(12*1024, 1, 1, salt, 32)
-	if ok, rehash, err := h.Verify(ctx, "pw", weaker); !ok || !rehash || err != nil {
+	if ok, rehash, err := h.Verify(ctx, "", "pw", weaker); !ok || !rehash || err != nil {
 		t.Errorf("weaker settings: ok %v, rehash %v, %v", ok, rehash, err)
 	}
 	for name, enc := range map[string]string{
@@ -66,7 +66,7 @@ func TestPasswordSettings(t *testing.T) {
 		"damaged":         "$argon2id$v=19$m=x$y$z",
 	} {
 		start := time.Now()
-		if ok, _, err := h.Verify(ctx, "pw", enc); ok || !errors.Is(err, ErrHashParams) {
+		if ok, _, err := h.Verify(ctx, "", "pw", enc); ok || !errors.Is(err, ErrHashParams) {
 			t.Errorf("%s: ok %v, %v", name, ok, err)
 		}
 		if d := time.Since(start); d > 100*time.Millisecond {
@@ -77,10 +77,10 @@ func TestPasswordSettings(t *testing.T) {
 
 func TestHasherBusy(t *testing.T) {
 	h := NewHasher(1)
-	h.sem <- struct{}{}
+	h.free = 0 // every worker busy
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if _, err := h.Hash(ctx, "x"); err != ErrBusy {
+	if _, err := h.Hash(ctx, "", "x"); err != ErrBusy {
 		t.Fatalf("want ErrBusy, got %v", err)
 	}
 }
@@ -134,11 +134,11 @@ func TestTOTP(t *testing.T) {
 func BenchmarkPasswordVerify(b *testing.B) {
 	h := NewHasher(0)
 	ctx := context.Background()
-	enc, _ := h.Hash(ctx, "password")
+	enc, _ := h.Hash(ctx, "", "password")
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _, _ = h.Verify(ctx, "password", enc)
+			_, _, _ = h.Verify(ctx, "", "password", enc)
 		}
 	})
 }
@@ -269,15 +269,15 @@ func TestPasswordBcrypt(t *testing.T) {
 	if kind, err := CheckImport(string(enc)); kind != "bcrypt" || err != nil {
 		t.Fatalf("import check: %q %v", kind, err)
 	}
-	if ok, rehash, err := h.Verify(ctx, "correct horse", string(enc)); !ok || !rehash || err != nil {
+	if ok, rehash, err := h.Verify(ctx, "", "correct horse", string(enc)); !ok || !rehash || err != nil {
 		t.Errorf("verify: ok %v, rehash %v, %v", ok, rehash, err)
 	}
-	if ok, _, _ := h.Verify(ctx, "wrong", string(enc)); ok {
+	if ok, _, _ := h.Verify(ctx, "", "wrong", string(enc)); ok {
 		t.Error("wrong password verified")
 	}
 	// PHP's $2y$ is the same algorithm
 	y := "$2y$" + string(enc)[4:]
-	if ok, _, err := h.Verify(ctx, "correct horse", y); !ok || err != nil {
+	if ok, _, err := h.Verify(ctx, "", "correct horse", y); !ok || err != nil {
 		t.Errorf("$2y$: %v %v", ok, err)
 	}
 	high, _ := bcrypt.GenerateFromPassword([]byte("x"), 4)
@@ -286,7 +286,7 @@ func TestPasswordBcrypt(t *testing.T) {
 		if _, err := CheckImport(bad); !errors.Is(err, ErrHashParams) {
 			t.Errorf("import %s: %v", name, err)
 		}
-		if ok, _, err := h.Verify(ctx, "x", bad); ok || !errors.Is(err, ErrHashParams) {
+		if ok, _, err := h.Verify(ctx, "", "x", bad); ok || !errors.Is(err, ErrHashParams) {
 			t.Errorf("verify %s: %v %v", name, ok, err)
 		}
 	}

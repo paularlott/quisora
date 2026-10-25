@@ -60,11 +60,12 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(stateCookie); err == nil {
 		browser = c.Value
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	// Rate-limited first: a refused callback leaves the state cookie, so the user's sign-in can still finish.
 	if !m.rateLimit(w, r, "callback", known{any: true}) {
 		return
 	}
+	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	state, provider := q.Get("state"), r.PathValue("provider")
 	if q.Get("error") != "" { // the user declined, or the provider failed
 		if org, next, tenant, ok := m.Upstream.CancelTenant(ctx, provider, state, browser); ok {

@@ -49,7 +49,7 @@ func (e *env) verify(u *model.User, pw string) bool {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ok, err := e.svc.VerifyPassword(e.ctx, got, pw)
+	ok, err := e.svc.VerifyPassword(e.ctx, "", got, pw)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestPasswordsSealed(t *testing.T) {
 	if !e.verify(alan, "correct horse battery") || e.verify(alan, "wrong") {
 		t.Error("verify")
 	}
-	if ok, err := e.svc.VerifyPassword(e.ctx, nil, "anything"); ok || err != nil {
+	if ok, err := e.svc.VerifyPassword(e.ctx, "", nil, "anything"); ok || err != nil {
 		t.Errorf("no user: %v %v", ok, err)
 	}
 	// copied onto another account, it opens nothing

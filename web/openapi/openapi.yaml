@@ -1121,6 +1121,7 @@ paths:
     patch:
       tags: [Groups]
       summary: Update a group
+      description: Administrators only; a manager changes a group's members and nothing else
       operationId: patch_orgs_org_groups_id
       requestBody:
         content:
@@ -1214,6 +1215,7 @@ paths:
     put:
       tags: [Groups]
       summary: Add a user to a group (idempotent)
+      description: Administrators add anyone; managers add plain users only (not managers, administrators or themselves)
       operationId: put_orgs_org_groups_id_members_user
       responses:
         "200":
@@ -1233,6 +1235,7 @@ paths:
     delete:
       tags: [Groups]
       summary: Remove a user from a group
+      description: Administrators remove anyone; managers remove plain users only (not managers, administrators or themselves)
       operationId: delete_orgs_org_groups_id_members_user
       responses:
         "200":

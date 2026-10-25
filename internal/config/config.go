@@ -186,7 +186,7 @@ type Limits struct {
 	LoginPerIPMin   int `toml:"login_per_ip_min" flag:"login-per-ip-min" usage:"Sign-in attempts per organization and IP per minute (0 = no limit)"`
 	LockoutAttempts int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
 	LockoutMinutes  int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
-	PasswordWorkers int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs)"`
+	PasswordWorkers int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs); sign-ins waiting for one are served by organization in turn"`
 	// PasswordMinLength is the shortest password accepted, in characters. NIST SP 800-63B rev 4 asks for 15 where a
 	// password may be the only factor (as here, unless the organization requires a second one), and 8 at least.
 	PasswordMinLength int `toml:"password_min_length" flag:"password-min-length" usage:"Shortest password accepted, characters (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)"`

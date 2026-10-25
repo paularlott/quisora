@@ -85,8 +85,8 @@
       <div class="nav-org"><span class="cell-sub block">Organization</span>{{.DisplayName}}</div>
       {{end}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/users"{{if eq $.Nav "users"}} aria-current="page"{{end}}>{{template "icon" "users"}} Users</a>
-      {{if $.IsAdmin}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>{{template "icon" "shield"}} Groups</a>
+      {{if $.IsAdmin}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>

@@ -15,11 +15,14 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/text/unicode/norm"
 )
 
 // RandomBytes returns n cryptographically random bytes.
@@ -82,36 +85,97 @@ var (
 	ErrHashParams = errors.New("secure: password hash settings out of range")
 )
 
-// Hasher hashes and verifies passwords with a concurrency limit.
-type Hasher struct{ sem chan struct{} }
+// Hasher hashes and verifies passwords, at most workers at a time (each holds ~19 MiB). Callers that find every
+// worker busy wait in one of hashLines lines, chosen by their key (an organization), and a worker that comes free
+// takes the next caller of the next line that has one, in turn. So a flood of sign-ins at one organization only
+// queues behind itself: the other lines are served as often as it is, while an organization alone uses every worker.
+type Hasher struct {
+	mu      sync.Mutex
+	free    int               // workers not hashing
+	waiting [][]chan struct{} // callers waiting, by line
+	next    int               // the line served next
+}
+
+// hashLines is how many waiting lines there are (organizations share one when they hash to it).
+const hashLines = 10
 
 // NewHasher allows workers concurrent hashes (0 = GOMAXPROCS).
 func NewHasher(workers int) *Hasher {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
-	return &Hasher{sem: make(chan struct{}, workers)}
+	return &Hasher{free: workers, waiting: make([][]chan struct{}, hashLines)}
 }
 
-func (h *Hasher) acquire(ctx context.Context) error {
+// acquire takes a worker for a caller with key, waiting in its line while none is free (ErrBusy when ctx ends first).
+func (h *Hasher) acquire(ctx context.Context, key string) error {
+	h.mu.Lock()
+	if h.free > 0 {
+		h.free--
+		h.mu.Unlock()
+		return nil
+	}
+	line := lineOf(key)
+	turn := make(chan struct{})
+	h.waiting[line] = append(h.waiting[line], turn)
+	h.mu.Unlock()
 	select {
-	case h.sem <- struct{}{}:
+	case <-turn:
 		return nil
 	case <-ctx.Done():
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if i := slices.Index(h.waiting[line], turn); i >= 0 {
+		h.waiting[line] = slices.Delete(h.waiting[line], i, i+1)
 		return ErrBusy
 	}
+	// handed a worker just as ctx ended: hand it on
+	h.releaseLocked()
+	return ErrBusy
 }
 
-// Hash returns an encoded argon2id hash of password.
-func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
-	if err := h.acquire(ctx); err != nil {
+// release gives the worker to the next waiting caller, taking the lines in turn, or frees it.
+func (h *Hasher) release() {
+	h.mu.Lock()
+	h.releaseLocked()
+	h.mu.Unlock()
+}
+
+func (h *Hasher) releaseLocked() {
+	for range hashLines {
+		line := h.next
+		h.next = (h.next + 1) % hashLines
+		if q := h.waiting[line]; len(q) > 0 {
+			h.waiting[line] = q[1:]
+			close(q[0])
+			return
+		}
+	}
+	h.free++
+}
+
+// lineOf is the waiting line of key.
+func lineOf(key string) int {
+	sum := sha256.Sum256([]byte(key))
+	return int(sum[0]) % hashLines
+}
+
+// NormalizePassword is the form a password is hashed in: Unicode NFKC, so the same password typed on another
+// keyboard or platform (composed or decomposed accents, full-width forms) is the same password (NIST SP 800-63B).
+func NormalizePassword(password string) string { return norm.NFKC.String(password) }
+
+// Hash returns an encoded argon2id hash of password (NormalizePassword). key decides the waiting line when every
+// worker is busy (the organization).
+func (h *Hasher) Hash(ctx context.Context, key, password string) (string, error) {
+	if err := h.acquire(ctx, key); err != nil {
 		return "", err
 	}
-	defer func() { <-h.sem }()
+	defer h.release()
 	salt := RandomBytes(16)
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	sum := argon2.IDKey([]byte(NormalizePassword(password)), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argonMemory, argonTime, argonThreads,
-		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(sum)), nil
 }
 
 // Imported bcrypt hashes (users moved from another system) are accepted with a cost in this range.
@@ -163,18 +227,19 @@ func parseArgon2(encoded string) (m, t uint32, p uint8, salt, want []byte, err e
 }
 
 // Verify reports whether password matches the encoded hash, and (rehash) whether the hash should be replaced while
-// the caller has the password: an imported bcrypt hash, or argon2id made with settings other than today's. An empty
-// hash never matches (but still costs a hash, so timing does not reveal whether an account has a password). A hash
-// naming settings outside the bounds above is refused without hashing (ErrHashParams).
-func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, rehash bool, err error) {
+// the caller has the password: an imported bcrypt hash, argon2id made with settings other than today's, or one made
+// of the password as typed rather than normalized (imported from another system). An empty hash never matches (but
+// still costs a hash, so timing does not reveal whether an account has a password). A hash naming settings outside
+// the bounds above is refused without hashing (ErrHashParams). key is the waiting line's (Hash).
+func (h *Hasher) Verify(ctx context.Context, key, password, encoded string) (ok, rehash bool, err error) {
 	if isBcrypt(encoded) {
 		if _, err := CheckImport(encoded); err != nil {
 			return false, false, err
 		}
-		if err := h.acquire(ctx); err != nil {
+		if err := h.acquire(ctx, key); err != nil {
 			return false, false, err
 		}
-		defer func() { <-h.sem }()
+		defer h.release()
 		// a password longer than bcrypt's 72 bytes is an error here: it cannot match
 		if bcrypt.CompareHashAndPassword([]byte(encoded), []byte(password)) != nil {
 			return false, false, nil
@@ -186,17 +251,26 @@ func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, reha
 	if plain && perr != nil {
 		return false, false, perr
 	}
-	if err := h.acquire(ctx); err != nil {
+	if err := h.acquire(ctx, key); err != nil {
 		return false, false, err
 	}
-	defer func() { <-h.sem }()
+	defer h.release()
+	normalized := NormalizePassword(password)
 	if !plain {
-		argon2.IDKey([]byte(password), dummySalt, argonTime, argonMemory, argonThreads, argonKeyLen)
+		argon2.IDKey([]byte(normalized), dummySalt, argonTime, argonMemory, argonThreads, argonKeyLen)
 		return false, false, nil
 	}
-	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
+	got := argon2.IDKey([]byte(normalized), salt, t, m, p, uint32(len(want)))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
-		return false, false, nil
+		if normalized == password {
+			return false, false, nil
+		}
+		// An imported argon2id hash made of the password as typed: it matches once, and is replaced (rehash).
+		got = argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
+		if subtle.ConstantTimeCompare(got, want) != 1 {
+			return false, false, nil
+		}
+		return true, true, nil
 	}
 	rehash = m != argonMemory || t != argonTime || p != argonThreads || len(want) != argonKeyLen || len(salt) != 16
 	return true, rehash, nil

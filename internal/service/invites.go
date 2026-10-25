@@ -193,7 +193,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 			if err := s.CheckPassword(ctx, u, password); err != nil {
 				return nil, nil, err
 			}
-			if hash, err = s.hashPassword(ctx, u.ID, password); err != nil {
+			if hash, err = s.hashPassword(ctx, u, password); err != nil {
 				return nil, nil, err
 			}
 		}

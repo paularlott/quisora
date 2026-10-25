@@ -1,13 +1,13 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminGroups" data-api="{{.Data.API}}/groups" data-base="{{.Data.API}}" data-sort="display_name" data-noun="groups" data-live="group member" class="stack-lg">
+<div x-data="adminGroups" data-api="{{.Data.API}}/groups" data-base="{{.Data.API}}" data-sort="display_name" data-noun="groups" data-live="group member"{{if .IsAdmin}} data-admin{{end}} class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">{{.Org.DisplayName}}</p>
       <h1 class="page-title">Groups</h1>
-      <p class="page-sub">Groups collect users so applications can grant access by membership. They appear in the <code>groups</code> token claim.</p>
+      <p class="page-sub">Groups collect users so applications can grant access by membership. They appear in the <code>groups</code> token claim.{{if not .IsAdmin}} You can add users to groups and take them out; an administrator creates and changes the groups.{{end}}</p>
     </div>
-    <div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New group</button></div>
+    {{if .IsAdmin}}<div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New group</button></div>{{end}}
   </div>
 
   <section class="glass-card" aria-label="Groups list">
@@ -31,15 +31,15 @@
             <td x-text="row.createdText"></td>
             <td class="actions">
               <button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" @click="openMembers">{{template "icon" "users"}} Members<span class="sr-only"> of <span x-text="row.display_name"></span></span></button>
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+              {{if $.IsAdmin}}<button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>{{end}}
             </td>
           </tr></template>
         </tbody>
       </table>
     </div>
     {{template "skeleton"}}
-    {{template "empty" (dict "icon" "shield" "title" "No groups yet" "text" "Create a group, then add users to it.")}}
+    {{template "empty" (dict "icon" "shield" "title" "No groups yet" "text" (or (and .IsAdmin "Create a group, then add users to it.") "An administrator creates the groups."))}}
     {{template "pager"}}
   </section>
 
@@ -58,7 +58,7 @@
   {{template "dialog-start" (dict "id" "members-dialog" "title" "Members" "titleBind" "membersTitle" "size" "lg")}}
   <div class="dialog-body">
     <div role="status" class="status-slot"><div class="alert alert-warning" x-show="membersDeleted" x-cloak>{{template "icon" "alert"}}<span>This group was deleted by someone else.</span></div></div>
-    {{template "picker" (dict "id" "f-member" "list" "member-picks" "label" "Add a user" "listLabel" "Users" "placeholder" "Name or email address" "help" "Type to find active users who are not in this group yet; use the arrow keys and Enter to add one.")}}
+    {{template "picker" (dict "id" "f-member" "list" "member-picks" "label" "Add a user" "listLabel" "Users" "placeholder" "Name or email address" "help" (or (and .IsAdmin "Type to find active users who are not in this group yet; use the arrow keys and Enter to add one.") "Type to find active users (not managers or administrators) who are not in this group yet; use the arrow keys and Enter to add one."))}}
     <div>
       <h3 class="section-title mb-2"><span x-text="memberCount">Members</span></h3>
       <p class="muted" x-show="noMembers" x-cloak>This group has no members yet.</p>
@@ -68,7 +68,7 @@
           <thead><tr><th scope="col">User</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody><template x-for="m in members" :key="m.id"><tr>
             <td><span class="cell-title" x-text="m.title"></span><div class="cell-sub" x-text="m.email"></div></td>
-            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="m.removeLabel" :data-id="m.id" @click="removeMember">{{template "icon" "x"}}</button></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="m.canRemove" :aria-label="m.removeLabel" :data-id="m.id" @click="removeMember">{{template "icon" "x"}}</button></td>
           </tr></template></tbody>
         </table>
       </div>

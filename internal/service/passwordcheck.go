@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 )
 
 // Password checks beyond the length (ValidatePassword): NIST SP 800-63B §3.1.1.2 asks a verifier to refuse passwords
@@ -144,6 +145,7 @@ func (s *Service) personalWords(ctx context.Context, u *model.User) []string {
 // CheckPassword checks a password u is choosing: the length (validatePassword), then that it is not easy to guess
 // (weakPassword), with u's own details as words it must not be built on.
 func (s *Service) CheckPassword(ctx context.Context, u *model.User, pw string) error {
+	pw = secure.NormalizePassword(pw) // judged as it is hashed
 	if err := s.validatePassword(pw); err != nil {
 		return err
 	}

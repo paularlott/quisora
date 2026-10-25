@@ -541,6 +541,16 @@ func TestGroups(t *testing.T) {
 	if ad.get(A+"/groups/"+gid+"/members").total() != 1 {
 		t.Fatal("remove member")
 	}
+	// a manager adds plain users and takes them out; the group itself, and the memberships of managers and
+	// administrators (their own included), are for administrators
+	mg := w.as("manager")
+	want(t, mg.put(A+"/groups/"+gid+"/members/"+uid, nil), 200)
+	want(t, mg.delete(A+"/groups/"+gid+"/members/"+uid), 200)
+	want(t, mg.delete(A+"/groups/"+gid+"/members/"+w.users["manager"].ID), 403)
+	want(t, mg.put(A+"/groups/"+gid+"/members/"+w.users["admin"].ID, nil), 403)
+	want(t, mg.patch(A+"/groups/"+gid, map[string]any{"display_name": "Mine"}), 403)
+	want(t, mg.patch(A+"/groups/"+gid, map[string]any{"tags": []string{"x"}}), 403)
+	want(t, mg.delete(A+"/groups/"+gid), 403)
 	want(t, ad.delete(A+"/groups/"+gid), 200)
 	want(t, ad.get(A+"/groups/"+gid+"/members"), 404)
 	// groups of another org are invisible
@@ -1163,6 +1173,15 @@ func TestPages(t *testing.T) {
 	// permissions
 	html(ad, "/admin/orgs", 403)
 	html(mg, "/admin/orgs/acme/users", 200)
+	// managers reach the groups page for its members dialog only
+	if b := html(mg, "/admin/orgs/acme/groups", 200); !strings.Contains(b, `href="/admin/orgs/acme/groups" aria-current="page"`) ||
+		strings.Contains(b, "data-admin") || strings.Contains(b, "openCreate") || strings.Contains(b, `@click="edit"`) || strings.Contains(b, `@click="remove"`) ||
+		!strings.Contains(b, `@click="openMembers"`) {
+		t.Error("manager: groups page")
+	}
+	if b := html(ad, "/admin/orgs/acme/groups", 200); !strings.Contains(b, "data-admin") || !strings.Contains(b, "openCreate") {
+		t.Error("admin: groups page")
+	}
 	b := html(mg, "/admin/orgs/acme/tenants", 403)
 	if !strings.Contains(b, "Not allowed") || !strings.Contains(b, "<h1") {
 		t.Error("403 page")

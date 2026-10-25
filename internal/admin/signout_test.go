@@ -131,7 +131,7 @@ func TestImportUserAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := w.env.Svc.VerifyPassword(context.Background(), u, "old system password"); !ok || err != nil {
+	if ok, err := w.env.Svc.VerifyPassword(context.Background(), "", u, "old system password"); !ok || err != nil {
 		t.Errorf("the imported password does not verify: %v", err)
 	}
 	// the update body has no such field: the hash the sign-in made (argon2id) stays

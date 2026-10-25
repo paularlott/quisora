@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/paularlott/quisora/internal/service"
@@ -74,9 +73,14 @@ func capitalise(s string) string {
 
 // DecodeJSON decodes a size-limited JSON body into v, rejecting unknown fields.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, MaxJSONBody))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxJSONBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			WriteJSON(w, http.StatusRequestEntityTooLarge, ErrorBody{Error: "The request is too large."})
+			return false
+		}
 		WriteJSON(w, http.StatusBadRequest, ErrorBody{Error: "The request could not be read."})
 		return false
 	}

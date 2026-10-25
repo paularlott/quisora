@@ -105,7 +105,11 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		check = nil
 	}
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	ok, err := m.s.Svc.VerifyPassword(vctx, check, in.Password)
+	orgID := ""
+	if org != nil {
+		orgID = org.ID
+	}
+	ok, err := m.s.Svc.VerifyPassword(vctx, orgID, check, in.Password)
 	cancel()
 	if errors.Is(err, secure.ErrBusy) {
 		w.Header().Set("Retry-After", "1")

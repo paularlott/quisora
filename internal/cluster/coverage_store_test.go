@@ -190,19 +190,23 @@ func TestPurgeOnceWaitsForCatchUp(t *testing.T) {
 	}
 	tomb("old", 30*24*time.Hour)
 	tomb("young", time.Hour)
-	for name, set := range map[string]func(){
-		"bootstrap":  func() { n.bootstrap.Store(true) },
-		"catchingUp": func() { n.bootstrap.Store(false); n.catchingUp.Store(true) },
-		"behind": func() {
+	// In this order: each step clears the previous one's state.
+	for _, c := range []struct {
+		name string
+		set  func()
+	}{
+		{"bootstrap", func() { n.bootstrap.Store(true) }},
+		{"catchingUp", func() { n.bootstrap.Store(false); n.catchingUp.Store(true) }},
+		{"behind", func() {
 			n.catchingUp.Store(false)
 			why := "behind"
 			n.behind.Store(&why)
-		},
+		}},
 	} {
-		set()
+		c.set()
 		n.purgeOnce(bg, time.Now())
 		if gone("old") {
-			t.Fatalf("purged while %s", name)
+			t.Fatalf("purged while %s", c.name)
 		}
 	}
 	n.behind.Store(nil)
