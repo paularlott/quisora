@@ -122,56 +122,14 @@ func coerce(info attrInfo, v any) any {
 	return v
 }
 
-// set applies op to the attribute named by p.
+// set applies op to the attribute named by p: it finds the object the attribute lives in (target), then removes it,
+// or adds or replaces it through a value filter (setFiltered), as a sub-attribute (setSub) or whole (setPlain).
 func (rl *patchRules) set(res map[string]any, op string, p attrPath, value any, hasValue bool) *Error {
 	sch := rl.sch
-	base := res
-	if p.URN != "" && strings.EqualFold(p.URN, sch.core) {
-		p.URN = ""
+	base, p, done, e := rl.target(res, op, p, value)
+	if done || e != nil {
+		return e
 	}
-	if p.URN != "" {
-		urn, ok := sch.extURN(p.URN)
-		if !ok {
-			return badPath("unknown schema %q", p.URN)
-		}
-		p.URN = urn
-		if p.Name == "" { // the whole extension
-			switch op {
-			case "remove":
-				delete(res, urn)
-			case "replace":
-				res[urn] = value
-			default:
-				m, _ := res[urn].(map[string]any)
-				vm, ok := value.(map[string]any)
-				if !ok {
-					return badValue("%s must be an object", urn)
-				}
-				if m == nil {
-					m = map[string]any{}
-					res[urn] = m
-				}
-				for k, v := range vm {
-					m[k] = v
-				}
-			}
-			return nil
-		}
-		m, _ := res[urn].(map[string]any)
-		if m == nil {
-			if op == "remove" {
-				return nil
-			}
-			m = map[string]any{}
-			res[urn] = m
-		}
-		base = m
-	} else if p.Name == "" {
-		return badPath("a path is required")
-	} else if rl.readOnly[strings.ToLower(p.Name)] {
-		return nil // read-only attributes are ignored, as many provisioning clients send them back
-	}
-
 	name := sch.canonName(p.URN, p.Name, "")
 	key := name
 	if k, ok := keyOf(base, name); ok {
@@ -181,86 +139,149 @@ func (rl *patchRules) set(res map[string]any, op string, p attrPath, value any, 
 	if p.Sub != "" {
 		subName = sch.canonName(p.URN, p.Name, p.Sub)
 	}
-	info := sch.info(attrPath{URN: p.URN, Name: p.Name})
-	subInfo := sch.info(attrPath{URN: p.URN, Name: p.Name, Sub: p.Sub})
-
-	switch op {
-	case "remove":
+	switch {
+	case op == "remove":
 		return removeAttr(base, key, p, subName, value, hasValue, sch)
+	case p.Filter != nil:
+		return setFiltered(base, key, op, p, subName, coerce(sch.info(attrPath{URN: p.URN, Name: p.Name, Sub: p.Sub}), value), sch)
+	case subName != "":
+		setSub(base, key, subName, coerce(sch.info(attrPath{URN: p.URN, Name: p.Name, Sub: p.Sub}), value))
+		return nil
+	default:
+		return setPlain(base, key, op, sch.info(attrPath{URN: p.URN, Name: p.Name}), value)
 	}
+}
 
-	// add / replace
-	if p.Filter != nil {
-		arr, _ := base[key].([]any)
-		var matched []map[string]any
-		for _, e := range arr {
-			if em, ok := e.(map[string]any); ok && evalNode(p.Filter, em, sch) {
-				matched = append(matched, em)
-			}
-		}
+// target returns the object the attribute p names lives in (res, or an extension's object within it: created for an
+// add or replace) and p with its schema URN made canonical. done is set when the operation is complete already: it
+// named a whole extension (applied here), a read-only attribute (left alone), or removes from an absent extension.
+func (rl *patchRules) target(res map[string]any, op string, p attrPath, value any) (base map[string]any, _ attrPath, done bool, _ *Error) {
+	sch := rl.sch
+	if p.URN != "" && strings.EqualFold(p.URN, sch.core) {
+		p.URN = ""
+	}
+	if p.URN == "" {
 		switch {
-		case subName != "":
-			v := coerce(subInfo, value)
-			if len(matched) == 0 { // be lenient: create the element the filter describes
-				em := filterSeed(p.Filter)
-				em[subName] = v
-				arr = append(arr, em)
-				matched = []map[string]any{em}
-			} else {
-				for _, em := range matched {
-					setKey(em, subName, v)
-				}
-			}
-			if subName == "primary" && v == true {
-				onlyPrimary(arr, matched)
-			}
+		case p.Name == "":
+			return nil, p, false, badPath("a path is required")
+		case rl.readOnly[strings.ToLower(p.Name)]:
+			return nil, p, true, nil // read-only attributes are ignored, as many provisioning clients send them back
+		}
+		return res, p, false, nil
+	}
+	urn, ok := sch.extURN(p.URN)
+	if !ok {
+		return nil, p, false, badPath("unknown schema %q", p.URN)
+	}
+	p.URN = urn
+	if p.Name == "" { // the whole extension
+		switch op {
+		case "remove":
+			delete(res, urn)
+		case "replace":
+			res[urn] = value
 		default:
+			m, _ := res[urn].(map[string]any)
 			vm, ok := value.(map[string]any)
 			if !ok {
-				return badValue("the value for a filtered path must be an object")
+				return nil, p, false, badValue("%s must be an object", urn)
 			}
-			if len(matched) == 0 {
-				em := filterSeed(p.Filter)
-				for k, v := range vm {
-					em[k] = coercePrimary(k, v)
-				}
-				arr = append(arr, em)
-				matched = []map[string]any{em}
-			} else {
-				for _, em := range matched {
-					if op == "replace" {
-						for k := range em {
-							delete(em, k)
-						}
-					}
-					for k, v := range vm {
-						setKey(em, k, coercePrimary(k, v))
-					}
-				}
+			if m == nil {
+				m = map[string]any{}
+				res[urn] = m
 			}
+			for k, v := range vm {
+				m[k] = v
+			}
+		}
+		return nil, p, true, nil
+	}
+	m, _ := res[urn].(map[string]any)
+	if m == nil {
+		if op == "remove" {
+			return nil, p, true, nil
+		}
+		m = map[string]any{}
+		res[urn] = m
+	}
+	return m, p, false, nil
+}
+
+// setFiltered adds or replaces through a value filter (emails[type eq "work"].value): in the elements it matches,
+// or, when none does, in a new element the filter describes (lenient, as clients expect). value is coerced for a
+// sub-attribute already.
+func setFiltered(base map[string]any, key, op string, p attrPath, subName string, value any, sch *schemaSet) *Error {
+	arr, _ := base[key].([]any)
+	var matched []map[string]any
+	for _, e := range arr {
+		if em, ok := e.(map[string]any); ok && evalNode(p.Filter, em, sch) {
+			matched = append(matched, em)
+		}
+	}
+	if subName != "" {
+		if len(matched) == 0 {
+			em := filterSeed(p.Filter)
+			em[subName] = value
+			arr = append(arr, em)
+			matched = []map[string]any{em}
+		} else {
+			for _, em := range matched {
+				setKey(em, subName, value)
+			}
+		}
+		if subName == "primary" && value == true {
 			onlyPrimary(arr, matched)
 		}
 		base[key] = arr
 		return nil
 	}
-
-	if subName != "" {
-		v := coerce(subInfo, value)
-		switch t := base[key].(type) {
-		case map[string]any:
-			setKey(t, subName, v)
-		case []any:
-			if len(t) == 0 {
-				base[key] = []any{map[string]any{subName: v}}
-			} else if first, ok := t[0].(map[string]any); ok {
-				setKey(first, subName, v)
-			}
-		default:
-			base[key] = map[string]any{subName: v}
-		}
-		return nil
+	vm, ok := value.(map[string]any)
+	if !ok {
+		return badValue("the value for a filtered path must be an object")
 	}
+	if len(matched) == 0 {
+		em := filterSeed(p.Filter)
+		for k, v := range vm {
+			em[k] = coercePrimary(k, v)
+		}
+		arr = append(arr, em)
+		matched = []map[string]any{em}
+	} else {
+		for _, em := range matched {
+			if op == "replace" {
+				for k := range em {
+					delete(em, k)
+				}
+			}
+			for k, v := range vm {
+				setKey(em, k, coercePrimary(k, v))
+			}
+		}
+	}
+	onlyPrimary(arr, matched)
+	base[key] = arr
+	return nil
+}
 
+// setSub sets a sub-attribute (name.givenName; on a multi-valued attribute, its first element's).
+func setSub(base map[string]any, key, subName string, value any) {
+	switch t := base[key].(type) {
+	case map[string]any:
+		setKey(t, subName, value)
+	case []any:
+		if len(t) == 0 {
+			base[key] = []any{map[string]any{subName: value}}
+		} else if first, ok := t[0].(map[string]any); ok {
+			setKey(first, subName, value)
+		}
+	default:
+		base[key] = map[string]any{subName: value}
+	}
+}
+
+// setPlain adds or replaces a whole attribute: a multi-valued one gains the elements it lacks (an add) or is
+// replaced; a complex one gains the sub-attributes added; any other is replaced.
+func setPlain(base map[string]any, key, op string, info attrInfo, value any) *Error {
 	value = coerce(info, value)
 	existing, exists := base[key]
 	_, existingMulti := existing.([]any)

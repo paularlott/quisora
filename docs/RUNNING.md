@@ -220,6 +220,10 @@ a node started with only the old key refuses to start.
 - A secret that no configured key opens (the old key removed before the rotation completed, or a damaged value) is
   logged at error level (`secrets that no configured master key opens`); put the missing key back in
   `previous_master_keys`.
+- Queued emails and back-channel logouts are sealed too. One sealed with a key that is no longer configured stays
+  queued (the log says `items not re-sealed with the active master key`), to be delivered once its key is back, and
+  until then the rotation is not complete. If that key is lost for good, stop the node and run
+  `quisora queue purge-lost` there: it removes those items, and only those, from the node's queues.
 - Refresh grants made by a version from before refresh grants had their own key are converted by the re-seal. During
   a rotation started straight after upgrading, they are converted only when next used, and the log counts the rest
   (`refresh grants from an earlier version`); removing the old key ends those, and their users sign in again. Upgrade,
@@ -358,19 +362,17 @@ size = 3                  # required, identical on every node; quorum = size/2+1
 key = "…"                 # quisora genkey, identical on every node
 ```
 
-- **Quorum.** It is fixed by `cluster.size` and never shrinks. Three nodes tolerate one down.
-- **Starting.** A node serves only `/healthz` and `/readyz` until it has caught up with the cluster.
-- **Without a quorum** a node makes no replicated write. The token, userinfo and introspection endpoints keep answering
-  for `cluster.minority_grace` (300 s).
-- **Security-sensitive records** (users, credentials, clients, providers, organizations, tenants, access, memberships)
-  are quorum compare-and-swaps: a change made from an outdated copy fails instead of overwriting.
-- **Short-lived state** stays on the node that made it; the others forward to it.
-- **Each node keeps its id** in its data directory (or set `cluster.node_id`). Keep the data directory with the
-  database. A node that finds another node's database, or one shared with another node, refuses to serve. It never
-  wipes it.
-- **Clocks** must be synchronised (NTP), within milliseconds; more than 5 s apart is a broken node
-  ([Clocks](REPLICATION.md#clocks)). A node that starts takes part in quorum writes, and reports ready, after 11 s. Gossip refuses
-  packets more than two minutes off the receiver's clock.
+How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator needs from it:
+
+- **Quorum** is `cluster.size`/2+1 and never shrinks: three nodes tolerate one down. Without a quorum a node makes no
+  replicated write, and the token, userinfo and introspection endpoints keep answering for `cluster.minority_grace`
+  (300 s). ([Cluster size and quorum](REPLICATION.md#cluster-size-and-quorum))
+- **A starting node** serves only `/healthz` and `/readyz` until it has caught up. Restart nodes one at a time.
+  ([Node states](REPLICATION.md#node-states))
+- **Keep the data directory with the database**: it holds the node's id (or set `cluster.node_id`), and a node that
+  finds another node's database refuses to serve (it never wipes it).
+- **Clocks** must be in sync (NTP); more than 5 s apart is a broken node, and gossip refuses packets more than two
+  minutes off the receiver's clock. ([Clocks](REPLICATION.md#clocks))
 
 New cluster:
 
@@ -379,17 +381,9 @@ New cluster:
 
 Replacing a node: start the replacement with an empty database and the same configuration. It copies everything.
 
-Changing the size: stop every node, set the new `cluster.size` and `cluster.peers` everywhere, start the nodes that
-hold data, then the new ones.
-
-**Long outages.** Deletions are kept as tombstones for seven days. A node that has not synced with a majority for six
-days, or whose data is of unknown age, stops or refuses to start, and keeps its data:
-
-- If the others hold the data, start it with an empty database. It copies everything.
-- After a whole-cluster outage every node refuses. Run `quisora force-start` on the node with the newest data and start
-  it (one start only, audited), then start the others with empty databases.
-
-Every procedure and what each refusal means: [REPLICATION.md](REPLICATION.md#operator-procedures).
+Changing the size, recovering from a long outage (a node that has not synced for six days stops and keeps its data;
+after a whole-cluster outage, `quisora force-start` on the node with the newest data), and what each refusal means:
+[REPLICATION.md, Operator procedures](REPLICATION.md#operator-procedures).
 
 ### Rotating the cluster key
 

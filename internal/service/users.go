@@ -601,71 +601,8 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if self {
 		dropUnchanged(u, &in) // a form saving yourself sends every field: only what differs is a change
 	}
-	if !s.canManageUser(a, u) {
-		if !self {
-			return nil, s.denied(a, u)
-		}
-		if in.Role != nil || in.Active != nil || in.ExternalID != nil || in.Verified != nil || in.Username != nil ||
-			in.Tags != nil || in.LinkedEmails != nil || in.PhoneVerified != nil {
-			return nil, ErrForbidden
-		}
-	}
-	if !self && in.Password != nil && a != System {
-		return nil, Invalid("password", "remove the password or send a new invitation; users choose their own passwords")
-	}
-	if self && in.LinkedEmails != nil {
-		return nil, ErrForbidden // own linked addresses change through AddLinkedEmail / RemoveLinkedEmail
-	}
-	if self && !isSelfService(ctx) {
-		// Own credentials change only through the account page, which verifies the current password or a recent
-		// re-authentication; the management API (sessions or tokens) must not be a shortcut around that.
-		if in.Password != nil {
-			return nil, Invalid("password", "change your own password from your account page")
-		}
-	}
-	if !self && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
-		// Password resets go to the primary address: whoever sets a manager's or administrator's could reset their
-		// password, so for an established privileged account that is a sign-in reset (super admins only).
-		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
-			return nil, err
-		}
-	}
-	if self && a != System && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
-		// The primary address is what password sign-in, resets and every application's email claim use: someone
-		// else sets it (a manager or administrator, or SCIM), whatever the user's own role; the user can only make one
-		// of their verified addresses primary.
-		return nil, Invalid("email", "is changed by another manager or administrator, not by yourself")
-	}
-	if self && a != System && ((in.Verified != nil && *in.Verified && !u.EmailVerified) ||
-		(in.PhoneVerified != nil && *in.PhoneVerified && !u.PhoneVerified)) {
-		// Applications trust these claims: your own address or number is verified only by proving you receive it.
-		return nil, Invalid("email_verified", "your own email address is verified by the link mailed to it, not by marking it")
-	}
-	if !self && in.LinkedEmails != nil && addsVerifiedLinked(u, *in.LinkedEmails) {
-		// Linked addresses set here count as verified, and a verified address links sign-ins from providers to the
-		// account: as AddLinkedEmail with verified, for an established privileged account that is a sign-in reset.
-		if err := s.mayResetSignIn(ctx, a, u, "emails"); err != nil {
-			return nil, err
-		}
-	}
-	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || strings.EqualFold(strings.TrimSpace(*in.Email), u.Email)) {
-		// A verified address links sign-ins from providers to the account, as changing it does (just above).
-		if err := s.mayResetSignIn(ctx, a, u, "email_verified"); err != nil {
-			return nil, err
-		}
-	}
-	if self && ((in.Role != nil && *in.Role != u.Role) || (in.Active != nil && !*in.Active)) {
-		return nil, Invalid("role", "you cannot change your own role or disable yourself")
-	}
-	if self && (in.ValidUntil != nil || in.UserType != nil || in.Work != nil) && a != System && !a.IsSuper() {
-		// Applications may trust these (a department, a manager): someone above you sets them. Super admins have
-		// nobody above them.
-		return nil, Invalid("work", "your work details, user type and end date are set by an administrator")
-	}
-	if self && (in.Tags != nil || in.Username != nil || in.ExternalID != nil) && a != System && !a.IsSuper() {
-		// The same for the tags and username every application receives and the id provisioning matches on. Users
-		// and managers were refused above (they cannot manage themselves); this catches an administrator, who can.
-		return nil, ErrForbidden
+	if err := s.mayChange(ctx, a, u, in, self); err != nil {
+		return nil, err
 	}
 	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
 	before := u.Role
@@ -759,6 +696,79 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		return nil, mapStore(err)
 	}
 	return u, nil
+}
+
+// mayChange is who may make which change of u (updateUser): a may manage u, or u is a's own account and the change is
+// one a user may make to themselves; and what neither may make (someone else's password, a privileged account's
+// sign-in address without a sign-in reset, your own role, verification or work details, ...). self: a is u.
+func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in UserInput, self bool) error {
+	if !s.canManageUser(a, u) {
+		if !self {
+			return s.denied(a, u)
+		}
+		if in.Role != nil || in.Active != nil || in.ExternalID != nil || in.Verified != nil || in.Username != nil ||
+			in.Tags != nil || in.LinkedEmails != nil || in.PhoneVerified != nil {
+			return ErrForbidden
+		}
+	}
+	if !self && in.Password != nil && a != System {
+		return Invalid("password", "remove the password or send a new invitation; users choose their own passwords")
+	}
+	if self && in.LinkedEmails != nil {
+		return ErrForbidden // own linked addresses change through AddLinkedEmail / RemoveLinkedEmail
+	}
+	if self && !isSelfService(ctx) {
+		// Own credentials change only through the account page, which verifies the current password or a recent
+		// re-authentication; the management API (sessions or tokens) must not be a shortcut around that.
+		if in.Password != nil {
+			return Invalid("password", "change your own password from your account page")
+		}
+	}
+	if !self && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
+		// Password resets go to the primary address: whoever sets a manager's or administrator's could reset their
+		// password, so for an established privileged account that is a sign-in reset (super admins only).
+		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+			return err
+		}
+	}
+	if self && a != System && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
+		// The primary address is what password sign-in, resets and every application's email claim use: someone
+		// else sets it (a manager or administrator, or SCIM), whatever the user's own role; the user can only make one
+		// of their verified addresses primary.
+		return Invalid("email", "is changed by another manager or administrator, not by yourself")
+	}
+	if self && a != System && ((in.Verified != nil && *in.Verified && !u.EmailVerified) ||
+		(in.PhoneVerified != nil && *in.PhoneVerified && !u.PhoneVerified)) {
+		// Applications trust these claims: your own address or number is verified only by proving you receive it.
+		return Invalid("email_verified", "your own email address is verified by the link mailed to it, not by marking it")
+	}
+	if !self && in.LinkedEmails != nil && addsVerifiedLinked(u, *in.LinkedEmails) {
+		// Linked addresses set here count as verified, and a verified address links sign-ins from providers to the
+		// account: as AddLinkedEmail with verified, for an established privileged account that is a sign-in reset.
+		if err := s.mayResetSignIn(ctx, a, u, "emails"); err != nil {
+			return err
+		}
+	}
+	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || strings.EqualFold(strings.TrimSpace(*in.Email), u.Email)) {
+		// A verified address links sign-ins from providers to the account, as changing it does (just above).
+		if err := s.mayResetSignIn(ctx, a, u, "email_verified"); err != nil {
+			return err
+		}
+	}
+	if self && ((in.Role != nil && *in.Role != u.Role) || (in.Active != nil && !*in.Active)) {
+		return Invalid("role", "you cannot change your own role or disable yourself")
+	}
+	if self && (in.ValidUntil != nil || in.UserType != nil || in.Work != nil) && a != System && !a.IsSuper() {
+		// Applications may trust these (a department, a manager): someone above you sets them. Super admins have
+		// nobody above them.
+		return Invalid("work", "your work details, user type and end date are set by an administrator")
+	}
+	if self && (in.Tags != nil || in.Username != nil || in.ExternalID != nil) && a != System && !a.IsSuper() {
+		// The same for the tags and username every application receives and the id provisioning matches on. Users
+		// and managers were refused above (they cannot manage themselves); this catches an administrator, who can.
+		return ErrForbidden
+	}
+	return nil
 }
 
 // guardLastAdmin refuses to demote, disable, delete or end-date a super admin when fewer than MinSuperAdmins usable

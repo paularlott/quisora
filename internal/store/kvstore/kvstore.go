@@ -496,6 +496,36 @@ func appendSortKey(b []byte, f model.Field, v any) []byte {
 }
 
 // sortIndexed returns the field a sort index serves q.Sort with, if there is one.
+// sortBounds returns the part of scope's range of f's sort index that flts select, when every one of them is a range
+// filter on f (gte: from; lt: to; prefix: the keys starting with it). The bounds are sort index positions:
+// "<scope>/<sort key>", from inclusive and to exclusive (a member is "<scope>/<sort key>\x00<id>").
+func sortBounds(scope string, f model.Field, flts []store.Filter) (from, to string, ok bool) {
+	from, to = scopeBounds(scope)
+	if len(flts) == 0 {
+		return from, to, false
+	}
+	at := func(v any) string {
+		return string(appendSortKey(append([]byte(scopeEscaper.Replace(scope)), '/'), f, v))
+	}
+	for _, flt := range flts {
+		if flt.Field != f.Name {
+			return from, to, false
+		}
+		switch flt.Op {
+		case store.OpGTE:
+			from = max(from, at(flt.Value))
+		case store.OpLT:
+			to = min(to, at(flt.Value))
+		case store.OpPrefix:
+			b := at(flt.Value)                         // a string's key is the lowered string, as the filter (case-insensitive)
+			from, to = max(from, b), min(to, b+"\xff") // no key holds 0xff (UTF-8 never does; NUL and 0x01 are escaped)
+		default:
+			return from, to, false
+		}
+	}
+	return from, to, true
+}
+
 func sortIndexed(kind model.Kind, sort string) (model.Field, bool) {
 	f, ok := model.Schemas[kind].Field(sort)
 	return f, ok && f.SortIndex
@@ -1097,7 +1127,31 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		return s.listExcluding(ctx, kind, bucket, q, out)
 	case q.Search == "" && excluding && (q.Scope != "" || model.Unscoped(kind)):
 		if f, ok := sortIndexed(kind, q.Sort); ok {
-			return s.listSorted(ctx, kind, q, f, out)
+			from, to := scopeBounds(q.Scope)
+			return s.listSorted(ctx, kind, q, f, out, from, to)
+		}
+	}
+	if in == "" && q.Search == "" && (q.Scope != "" || model.Unscoped(kind)) {
+		// Range filters a sort index serves: on the sort field itself (an audit page from/to, by time), the page is
+		// that range of the index; on another sort-indexed field (an action prefix), the range's ids are the only
+		// candidates.
+		if f, ok := sortIndexed(kind, q.Sort); ok {
+			if from, to, ok := sortBounds(q.Scope, f, q.Filters); ok {
+				return s.listSorted(ctx, kind, q, f, nil, from, to)
+			}
+		}
+		for _, flt := range q.Filters {
+			if f, ok := sortIndexed(kind, flt.Field); ok && flt.Op != "" {
+				from, to, _ := sortBounds(q.Scope, f, []store.Filter{flt})
+				members, _, err := s.eng.Page(ctx, sortBucket(kind, f.Name), pageQuery{From: from, To: to, NoTotal: true}, nowMs())
+				if err != nil {
+					return nil, err
+				}
+				for i, m := range members {
+					members[i] = sortMemberID(m)
+				}
+				return s.collect(ctx, kind, members, q)
+			}
 		}
 	}
 	if in != "" {
@@ -1264,9 +1318,11 @@ func (s *Store) excluded(ctx context.Context, kind model.Kind, scope string, out
 // Descending, the range is read backwards, which orders the records of equal values by id descending where the
 // store's order (store.ListQuery: ties break by id ascending, whatever the direction) wants them ascending: the
 // runs of equal values the page holds are put right by fixDescTies.
-func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQuery, f model.Field, out []string) (*store.ListResult, error) {
+func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQuery, f model.Field, out []string, from, to string) (*store.ListResult, error) {
 	bucket, rng := sortBucket(kind, q.Sort), listBucket(kind, q.Scope)
-	from, to := scopeBounds(q.Scope)
+	if sf, st := scopeBounds(q.Scope); from != sf || to != st {
+		rng = "" // a range of the scope: its total is counted as it is read, not taken from the scope's counter
+	}
 	var skip map[string]struct{}
 	if len(out) > 0 {
 		ids, err := s.excluded(ctx, kind, q.Scope, out)
@@ -1287,12 +1343,14 @@ func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQue
 		return s.listPage(ctx, kind, bucket, p, sortMemberID, rng, false, false)
 	}
 	total := -1
-	n, expiring, err := s.counts(ctx, rng)
-	if err != nil {
-		return nil, err
-	}
-	if expiring == 0 {
-		p.NoTotal, total = true, n-len(skip)
+	if rng != "" {
+		n, expiring, err := s.counts(ctx, rng)
+		if err != nil {
+			return nil, err
+		}
+		if expiring == 0 {
+			p.NoTotal, total = true, n-len(skip)
+		}
 	}
 	members, scanned, err := s.eng.Page(ctx, bucket, p, nowMs())
 	if err != nil {

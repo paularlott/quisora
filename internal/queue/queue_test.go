@@ -195,3 +195,34 @@ func TestConcurrentAdds(t *testing.T) {
 		t.Fatal("a crash's temporary file was not cleared at start")
 	}
 }
+
+// PurgeLost removes only the items no configured key opens; the next start counts what is left, and a queue whose
+// lost items are purged no longer keeps a previous key from being retired.
+func TestPurgeLost(t *testing.T) {
+	dir := t.TempDir()
+	lostKey, key := secure.RandomBytes(32), secure.RandomBytes(32)
+	down := &sink{}
+	down.fail.Store(100)
+	q := open(t, dir, sealer(t, lostKey), down, time.Hour)
+	_ = q.Add("lost", 0, 0)
+	waitFor(t, func() bool { return down.n.Load() == 1 })
+	q.Close()
+	q = open(t, dir, sealer(t, key), down, time.Hour)
+	_ = q.Add("kept", time.Hour, 0)
+	if n := q.Reseal(); n != 1 {
+		t.Fatalf("lost items before the purge: %d", n)
+	}
+	q.Close()
+
+	if n, err := PurgeLost(dir, sealer(t, key)); err != nil || n != 1 {
+		t.Fatalf("purged %d: %v", n, err)
+	}
+	q = open(t, dir, sealer(t, key), down, time.Hour)
+	defer q.Close()
+	if q.Queued() != 1 || q.Reseal() != 0 {
+		t.Fatalf("after the purge: queued %d", q.Queued())
+	}
+	if n, err := PurgeLost(filepath.Join(dir, "missing"), sealer(t, key)); err != nil || n != 0 {
+		t.Fatalf("a queue never made: %d %v", n, err)
+	}
+}

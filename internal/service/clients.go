@@ -144,6 +144,7 @@ func checkScopes(list []string) ([]string, error) {
 	return out, nil
 }
 
+// applyClient sets the fields of c that in carries, each checked, then settles the client as a whole (settleClient).
 func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in ClientInput) error {
 	if in.TenantID != nil {
 		t, err := s.Tenants.Get(ctx, *in.TenantID)
@@ -277,6 +278,13 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		}
 		c.SCIM = *in.SCIM
 	}
+	return settleClient(c)
+}
+
+// settleClient applies what c's settings imply (a public client always rotates refresh tokens; a FAPI 2.0 client uses
+// PAR and DPoP) and refuses the combinations that cannot work (a public client with client credentials, FAPI with
+// RS256, private_key_jwt without keys, ...): the checks of the client as a whole, after applyClient set its fields.
+func settleClient(c *model.Client) error {
 	if c.Public() {
 		switch {
 		case slices.Contains(c.GrantTypes, "client_credentials"):

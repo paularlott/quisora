@@ -1,5 +1,7 @@
 package backup_test
 
+// Regression tests from the external code reviews, one per finding: each states the failure it guards against.
+
 import (
 	"bytes"
 	"compress/gzip"

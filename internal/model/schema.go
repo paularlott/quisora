@@ -160,11 +160,11 @@ var Schemas = map[Kind]Schema{
 	KindReplay: {KindReplay, nil},
 	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
-		{Name: "action", Type: FieldString, Sort: true, SortIndex: true},
+		{Name: "action", Type: FieldString, Sort: true, SortIndex: true, Index: true}, // action= reads only those events
 		{Name: "actor", Type: FieldString, Search: true},
 		{Name: "target", Type: FieldString, Search: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
-		{Name: "outcome", Type: FieldString},
+		{Name: "outcome", Type: FieldString, Index: true},
 		{Name: "ip", Type: FieldString, Search: true},
 	}},
 }

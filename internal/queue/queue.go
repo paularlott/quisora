@@ -136,7 +136,8 @@ func (q *Queue[T]) Reseal() (stale int) {
 	}
 	if stale > 0 {
 		q.o.Log.Error(q.o.Name+": items not re-sealed with the active master key keep needing their key (a key "+
-			"not configured: put it back in server.previous_master_keys; or a write that failed: it is tried again)",
+			"not configured: put it back in server.previous_master_keys, or, if it is lost for good, give them up with "+
+			"\"quisora queue purge-lost\"; or a write that failed: it is tried again)",
 			"items", stale)
 	}
 	return stale
@@ -242,6 +243,37 @@ func (q *Queue[T]) removeTemp() {
 			_ = os.Remove(filepath.Join(q.dir, n))
 		}
 	}
+}
+
+// PurgeLost removes from the queue in dir the items no key of sealer opens: sealed with a master key that is lost
+// (not in server.master_key nor server.previous_master_keys, and never coming back). Such items are kept otherwise,
+// to be delivered once their key is configured again, and they keep a previous key from being retired (Reseal);
+// purging them gives them up for good. It returns how many it removed. Run it with the node stopped ("quisora queue
+// purge-lost"): the node counts its items when it starts.
+func PurgeLost(dir string, sealer *secure.Sealer) (int, error) {
+	q := &Queue[struct{}]{dir: dir}
+	names, err := q.files()
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, name := range names {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return n, err
+		}
+		if _, err := sealer.OpenFor("", string(b)); !errors.Is(err, secure.ErrUnknownKey) {
+			continue // opened (or not this queue's binding, which is not judged here): not lost
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // idleCheck bounds how long the worker sleeps: it notices a retry that is due, or files put there by hand.

@@ -43,7 +43,7 @@ func newRoot(cfg *config.Config) *cli.Command {
 			warnLooseFiles(os.Stderr, cfg, c)
 			return ctx, nil
 		},
-		Commands: []*cli.Command{serveCmd(cfg, server), bootstrapCmd(cfg, flags.For("bootstrap")), forceStartCmd(cfg, server), setPrimaryCmd(cfg, server), signOutCmd(cfg, server), inviteCmd(cfg, server), backupCmd(cfg, server), restoreCmd(cfg, server),
+		Commands: []*cli.Command{serveCmd(cfg, server), bootstrapCmd(cfg, flags.For("bootstrap")), forceStartCmd(cfg, server), setPrimaryCmd(cfg, server), signOutCmd(cfg, server), queueCmd(cfg, server), inviteCmd(cfg, server), backupCmd(cfg, server), restoreCmd(cfg, server),
 			healthcheckCmd(cfg, server), genkeyCmd()},
 	}
 }

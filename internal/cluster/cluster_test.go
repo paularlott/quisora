@@ -94,6 +94,9 @@ func TestUniqueConflictConverges(t *testing.T) {
 		for _, tn := range c.nodes {
 			tn.n.OnConflict(func(*store.Record) { conflicts.Add(1) })
 		}
+		// Each node is cut off while it writes, so all three claims are made before any reaches another node (written
+		// merely at once, one could arrive first and the next write would be refused, rightly, as a duplicate).
+		c.partition([]int{0}, []int{1}, []int{2})
 		ids := make([]string, 3)
 		var wg sync.WaitGroup
 		for i, tn := range c.nodes {
@@ -101,12 +104,13 @@ func TestUniqueConflictConverges(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := tn.st().Put(bg, newRec(ids[i], "o|same-name")); err != nil {
+				if err := tn.st().Put(bg, newRec(ids[i], "o|same-name")); !store.Applied(err) {
 					t.Error(err)
 				}
 			}()
 		}
 		wg.Wait()
+		c.heal()
 		waitFor(t, 15*time.Second, "one holder of the value everywhere, every record kept", func() bool {
 			var winner string
 			for _, tn := range c.nodes {
