@@ -130,7 +130,7 @@ func (n *Node) reloadPhase(ctx context.Context, gc *gossip.Cluster, peers []*mem
 	for _, mb := range peers {
 		go func(mb *member) {
 			var resp ReloadReport
-			if err := gc.SendToWithResponse(mb.node, msgReload, &req, &resp); err != nil {
+			if err := gc.SendToWithResponseContext(ctx, mb.node, msgReload, &req, &resp); err != nil {
 				resp = ReloadReport{Error: "did not answer: " + err.Error()}
 			}
 			resp.Node = mb.id

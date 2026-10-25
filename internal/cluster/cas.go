@@ -474,11 +474,14 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 		mode = modeBlind
 	}
 	rec.Origin = n.id
-	ctx = context.WithoutCancel(ctx) // a client that goes away mid-write must not leave intents or a half commit
+	// The prepare phase runs within the caller's ctx: a deadline or a client gone before a quorum granted ends the
+	// write with nothing committed (the intents granted are released). From the commit on, the write is seen through
+	// whatever the caller does (wctx), so it never stops half committed.
+	wctx := context.WithoutCancel(ctx)
 	op := model.NewID()
 	deadline := time.Now().Add(intentTTL + time.Second)
 	for attempt := 1; ; attempt++ {
-		base, err := s.stamp(ctx, rec, mode, expect)
+		base, err := s.stamp(wctx, rec, mode, expect)
 		if err != nil {
 			return err
 		}
@@ -488,14 +491,18 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 		}
 		granted, outcome, low, repair := s.prepareAll(ctx, op, rec, b, mode, base)
 		floor := hlc.Timestamp(low.Floor)
+		if outcome != stGrant && ctx.Err() != nil {
+			s.abort(op, rec.Version, granted)
+			return fmt.Errorf("%w: the write was given up before a quorum granted it: %w", store.ErrUnconfirmed, ctx.Err())
+		}
 		switch outcome {
 		case stGrant:
-			return s.commitAll(ctx, op, rec, b, granted)
+			return s.commitAll(wctx, op, rec, b, granted)
 		case stStale, stDeleted:
 			s.abort(op, rec.Version, granted)
 			n.refused.Add(1)
 			for _, r := range repair {
-				_, _ = s.applyReplica(ctx, r) // read repair: this node now holds the newer copy
+				_, _ = s.applyReplica(wctx, r) // read repair: this node now holds the newer copy
 			}
 			if outcome == stStale && mode == modeUpsert && attempt < 8 {
 				continue // a whole-record write re-bases on the newer copy: the later commit wins, by design
@@ -560,7 +567,7 @@ func (s *Store) prepareAll(ctx context.Context, op string, rec *store.Record, b 
 	for _, mb := range peers {
 		go func(mb *member) {
 			var resp prepareResp
-			err := n.gc.SendToWithResponse(mb.node, msgPrepare, req, &resp)
+			err := n.gc.SendToWithResponseContext(ctx, mb.node, msgPrepare, req, &resp)
 			votes <- vote{mb: mb, resp: resp, err: err}
 		}(mb)
 	}
@@ -647,6 +654,8 @@ func (s *Store) commitAll(ctx context.Context, op string, rec *store.Record, b [
 	for _, mb := range peers {
 		go func(mb *member) {
 			var resp commitResp
+			// Not bounded by ctx: once this node has committed, the peers' commits are seen through (within the
+			// transport's timeouts) even if the caller has gone, so the write is confirmed where it can be.
 			err := n.gc.SendToWithResponse(mb.node, msgCommit, req, &resp)
 			results <- err == nil && resp.St == stGrant
 		}(mb)

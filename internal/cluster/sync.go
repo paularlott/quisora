@@ -472,7 +472,7 @@ func (n *Node) fetchPages(ctx context.Context, mb *member, cur cursor, out chan<
 		var resp feedResp
 		pg := feedPage{}
 		sent := time.Now()
-		if err := n.gc.SendToWithResponse(mb.node, msgFeed, &req, &resp); err != nil {
+		if err := n.gc.SendToWithResponseContext(ctx, mb.node, msgFeed, &req, &resp); err != nil {
 			pg.err = err
 		} else {
 			pg.resp = resp
@@ -778,7 +778,7 @@ func (n *Node) ackPeers(ctx context.Context, b []byte) error {
 	for _, mb := range peers {
 		go func(mb *member) {
 			var ack ackMsg
-			err := n.gc.SendToWithResponse(mb.node, msgPush, msg, &ack)
+			err := n.gc.SendToWithResponseContext(ctx, mb.node, msgPush, msg, &ack)
 			if err == nil && !ack.OK {
 				if ack.St == pushSuperseded {
 					// It holds something newer: the write did not take effect there. Not an acknowledgement.

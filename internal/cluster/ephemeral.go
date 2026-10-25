@@ -131,9 +131,9 @@ func (n *Node) route(ns, id string) (mb *member, dead bool) {
 	return n.hrw(ns, id), false
 }
 
-func (e *Ephemeral) call(mb *member, req *ephReq) (*ephResp, error) {
+func (e *Ephemeral) call(ctx context.Context, mb *member, req *ephReq) (*ephResp, error) {
 	var resp ephResp
-	if err := e.n.gc.SendToWithResponse(mb.node, msgEph, req, &resp); err != nil {
+	if err := e.n.gc.SendToWithResponseContext(ctx, mb.node, msgEph, req, &resp); err != nil {
 		return nil, fmt.Errorf("cluster: ephemeral forward to %s: %w", mb.id, err)
 	}
 	switch resp.Code {
@@ -159,7 +159,7 @@ func (e *Ephemeral) Set(ctx context.Context, ns, id string, value []byte, ttl ti
 	if mb.id == e.n.id {
 		return e.local.Set(ctx, ns, id, value, ttl)
 	}
-	_, err := e.call(mb, &ephReq{Op: opSet, NS: ns, ID: id, Val: value, TTL: ttl.Milliseconds()})
+	_, err := e.call(ctx, mb, &ephReq{Op: opSet, NS: ns, ID: id, Val: value, TTL: ttl.Milliseconds()})
 	return err
 }
 
@@ -177,7 +177,7 @@ func (e *Ephemeral) Get(ctx context.Context, ns, id string) ([]byte, error) {
 	if mb.id == e.n.id {
 		return e.local.Get(ctx, ns, id)
 	}
-	r, err := e.call(mb, &ephReq{Op: opGet, NS: ns, ID: id})
+	r, err := e.call(ctx, mb, &ephReq{Op: opGet, NS: ns, ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func (e *Ephemeral) Take(ctx context.Context, ns, id string) ([]byte, error) {
 	if mb.id == e.n.id {
 		return e.local.Take(ctx, ns, id)
 	}
-	r, err := e.call(mb, &ephReq{Op: opTake, NS: ns, ID: id})
+	r, err := e.call(ctx, mb, &ephReq{Op: opTake, NS: ns, ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (e *Ephemeral) Delete(ctx context.Context, ns, id string) error {
 	if mb.id == e.n.id {
 		return e.local.Delete(ctx, ns, id)
 	}
-	_, err := e.call(mb, &ephReq{Op: opDelete, NS: ns, ID: id})
+	_, err := e.call(ctx, mb, &ephReq{Op: opDelete, NS: ns, ID: id})
 	return err
 }
 
@@ -237,7 +237,7 @@ func (e *Ephemeral) Incr(ctx context.Context, ns, key string, delta int64, windo
 	if mb.id == e.n.id {
 		return e.local.Incr(ctx, ns, key, delta, window)
 	}
-	r, err := e.call(mb, &ephReq{Op: opIncr, NS: ns, ID: key, Delta: delta, TTL: window.Milliseconds()})
+	r, err := e.call(ctx, mb, &ephReq{Op: opIncr, NS: ns, ID: key, Delta: delta, TTL: window.Milliseconds()})
 	if err != nil {
 		e.n.log.WithError(err).Debug("counter owner unreachable: refusing")
 		return 0, err

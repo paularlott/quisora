@@ -119,6 +119,8 @@ type netsim struct {
 	cut       map[string]bool
 	dropTo    map[string]map[gossip.MessageType]bool
 	feedDelay time.Duration
+	slowMsg   gossip.MessageType // held up by slowBy, or until the caller's context ends
+	slowBy    time.Duration
 }
 
 func (ns *netsim) tr() gossip.Transport {
@@ -156,16 +158,7 @@ func (ns *netsim) Send(tt gossip.TransportType, nd *gossip.Node, p *gossip.Packe
 }
 
 func (ns *netsim) SendWithReply(nd *gossip.Node, p *gossip.Packet) (*gossip.Packet, error) {
-	if ns.blocked(nd, p.MessageType) {
-		return nil, errors.New("netsim: unreachable")
-	}
-	ns.mu.RLock()
-	d := ns.feedDelay
-	ns.mu.RUnlock()
-	if d > 0 && p.MessageType == msgFeed {
-		time.Sleep(d)
-	}
-	return ns.tr().SendWithReply(nd, p)
+	return ns.SendWithReplyContext(context.Background(), nd, p)
 }
 
 // OpenStream and SetStreamHandler pass streams (quorum reads) through: refused, as packets are, to a node this one
@@ -189,6 +182,30 @@ func (ns *netsim) SetStreamHandler(h func(*gossip.Packet, io.Writer) error) {
 	}); ok {
 		st.SetStreamHandler(h)
 	}
+}
+
+// SendWithReplyContext passes the caller's context through (gossip.ContextTransport), as SendWithReply does.
+func (ns *netsim) SendWithReplyContext(ctx context.Context, nd *gossip.Node, p *gossip.Packet) (*gossip.Packet, error) {
+	if ns.blocked(nd, p.MessageType) {
+		return nil, errors.New("netsim: unreachable")
+	}
+	ns.mu.RLock()
+	d, slowMsg, slowBy := ns.feedDelay, ns.slowMsg, ns.slowBy
+	ns.mu.RUnlock()
+	if d > 0 && p.MessageType == msgFeed {
+		time.Sleep(d)
+	}
+	if slowBy > 0 && p.MessageType == slowMsg {
+		select {
+		case <-time.After(slowBy):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if ct, ok := ns.tr().(gossip.ContextTransport); ok {
+		return ct.SendWithReplyContext(ctx, nd, p)
+	}
+	return ns.tr().SendWithReply(nd, p)
 }
 
 func (c *tcluster) net(i int) *netsim {

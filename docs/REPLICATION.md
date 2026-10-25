@@ -163,8 +163,10 @@ caller read).
    Busy, low and not-ready answers make the writer retry with a new stamp after a short random pause, for at most
    6 s (the intent lifetime plus 1 s); anything else (too few nodes answering) fails with `store.ErrUnconfirmed`.
    Intents of a write that does not commit are released (abort); grants that arrive after the decision are released
-   too.
-4. **Commit** to every voter that granted, the writer first. Each applies the record **only while it still holds the
+   too. Up to here the write runs within its caller's context: a deadline, or a client gone, before a quorum granted
+   ends it with `store.ErrUnconfirmed` and nothing committed (the peers' exchanges, dials included, end with it).
+4. **Commit** to every voter that granted, the writer first. From here the write is seen through whatever its caller
+   does, within the transport's timeouts, so it never stops half committed. Each applies the record **only while it still holds the
    intent** — "applied this exact version over the base" — then releases it. **The write succeeds once a quorum (the
    writer included) has applied it.** The record is then broadcast to every node; anti-entropy heals anything
    missed.

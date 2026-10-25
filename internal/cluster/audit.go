@@ -121,10 +121,12 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 		err  error
 	}
 	replies := make(chan reply, len(peers))
+	ctx, cancel := context.WithTimeout(ctx, auditWait)
+	defer cancel()
 	for _, mb := range peers {
 		go func(mb *member) {
 			var resp auditResp
-			err := n.gc.SendToWithResponse(mb.node, msgAudit, &req, &resp)
+			err := n.gc.SendToWithResponseContext(ctx, mb.node, msgAudit, &req, &resp)
 			replies <- reply{resp, err}
 		}(mb)
 	}
