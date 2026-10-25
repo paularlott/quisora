@@ -1319,3 +1319,244 @@ func TestReviewInviteReplacementAuthorityRecheckedAfterConflict(t *testing.T) {
 		t.Fatalf("admin replaced a privileged user's invitation from another issuer after a CAS conflict; original link result: %v", peekErr)
 	}
 }
+
+// fresh7Stall pauses the first write of the user id that disables (or, with deleted, tombstones) them until resume
+// closes, so the test can let the admin lease lapse under a guarded write.
+type fresh7Stall struct {
+	store.Store
+	id              string
+	deleted         bool
+	once            atomic.Bool
+	entered, resume chan struct{}
+}
+
+func newFresh7Stall(st store.Store, id string, deleted bool) *fresh7Stall {
+	return &fresh7Stall{Store: st, id: id, deleted: deleted, entered: make(chan struct{}), resume: make(chan struct{})}
+}
+
+func (g *fresh7Stall) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindUser && r.ID == g.id && r.Deleted == g.deleted {
+		stall := g.deleted
+		if !g.deleted {
+			var u model.User
+			if err := store.Decode(r, &u); err != nil {
+				return err
+			}
+			stall = !u.Active
+		}
+		if stall && g.once.CompareAndSwap(false, true) {
+			close(g.entered)
+			select {
+			case <-g.resume:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return g.Store.CompareAndPut(ctx, r, expect)
+}
+
+// lapseAdminLease makes the primary organization's admin lease look expired, as it does adminLockTTL after a holder
+// paused: the next lockAdmins takes it over.
+func lapseAdminLease(t *testing.T, e *env) {
+	t.Helper()
+	l, err := e.svc.Locks.Get(e.ctx, "admins/"+e.primary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Until = time.Now().Add(-time.Second)
+	if err := e.svc.Locks.Update(e.ctx, l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A disable whose write lands after its admin lease lapsed — another holder having disabled the other super admin
+// meanwhile, counting this one as still usable — is undone, and reported refused: the two cannot leave none.
+func TestFresh7DisableLandingAfterLeaseLapsedIsUndone(t *testing.T) {
+	e := newEnv(t)
+	a := e.super
+	b := e.user(e.primary.ID, "second-super", model.RoleSuperAdmin)
+	g := newFresh7Stall(e.svc.Store, a.ID, false)
+	e.svc.Users.S = g
+	off := false
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.UpdateUser(e.ctx, service.System, a.ID, service.UserInput{Active: &off})
+		done <- err
+	}()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disable did not reach its guarded write")
+	}
+	lapseAdminLease(t, e)
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, b.ID, service.UserInput{Active: &off}); err != nil {
+		t.Fatalf("the replacement holder's disable (judged while a was usable): %v", err)
+	}
+	close(g.resume)
+	if err := <-done; !errors.Is(err, service.ErrLastAdmin) {
+		t.Fatalf("the disable that landed after its lease lapsed: err %v, want ErrLastAdmin", err)
+	}
+	got, err := e.svc.Users.Get(e.ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Active || got.Role != model.RoleSuperAdmin || got.StatusChanged != nil {
+		t.Fatalf("a not put back as it was: active=%v role=%s status=%+v", got.Active, got.Role, got.StatusChanged)
+	}
+	if got, _ = e.svc.Users.Get(e.ctx, b.ID); got.Active {
+		t.Fatal("the disable made within its lease did not stand")
+	}
+	// Audited as a refusal, not as a disable.
+	page, err := e.svc.ListAudit(e.ctx, service.System, e.primary.ID, service.AuditQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range page.Items {
+		if en.Target == a.Username && en.Action == "user.update" && en.Outcome == "success" {
+			t.Fatalf("the undone disable was audited as made: %+v", en)
+		}
+	}
+}
+
+// The same for a deletion: a super admin deleted by a write that landed after its lease lapsed is created again.
+func TestFresh7DeleteLandingAfterLeaseLapsedIsUndone(t *testing.T) {
+	e := newEnv(t)
+	a := e.super
+	b := e.user(e.primary.ID, "second-super", model.RoleSuperAdmin)
+	g := newFresh7Stall(e.svc.Store, a.ID, true)
+	e.svc.Users.S = g
+	done := make(chan error, 1)
+	go func() { done <- e.svc.DeleteUser(e.ctx, service.System, a.ID) }()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not reach its guarded write")
+	}
+	lapseAdminLease(t, e)
+	if err := e.svc.DeleteUser(e.ctx, service.System, b.ID); err != nil {
+		t.Fatalf("the replacement holder's delete (judged while a was usable): %v", err)
+	}
+	close(g.resume)
+	if err := <-done; !errors.Is(err, service.ErrLastAdmin) {
+		t.Fatalf("the delete that landed after its lease lapsed: err %v, want ErrLastAdmin", err)
+	}
+	got, err := e.svc.Users.Get(e.ctx, a.ID)
+	if err != nil {
+		t.Fatalf("a was not created again: %v", err)
+	}
+	if !got.Active || got.Role != model.RoleSuperAdmin || got.Username != a.Username || got.Email != a.Email {
+		t.Fatalf("a not created again as they were: %+v", got)
+	}
+	if _, err := e.svc.Users.Get(e.ctx, b.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the delete made within its lease did not stand: %v", err)
+	}
+}
+
+// A write that lands within its lease is kept without a second decision, and a lapsed lease alone undoes nothing
+// while enough super admins remain.
+func TestFresh7LapsedLeaseKeepsAChangeStillSafe(t *testing.T) {
+	e := newEnv(t)
+	a := e.super
+	e.user(e.primary.ID, "second-super", model.RoleSuperAdmin)
+	g := newFresh7Stall(e.svc.Store, a.ID, false)
+	e.svc.Users.S = g
+	off := false
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.UpdateUser(e.ctx, service.System, a.ID, service.UserInput{Active: &off})
+		done <- err
+	}()
+	<-g.entered
+	lapseAdminLease(t, e)
+	close(g.resume)
+	if err := <-done; err != nil {
+		t.Fatalf("a disable that leaves a super admin: %v", err)
+	}
+	if got, _ := e.svc.Users.Get(e.ctx, a.ID); got.Active {
+		t.Fatal("the disable was undone although a super admin remained")
+	}
+}
+
+type fresh7PromotedTarget struct {
+	store.Store
+	target *store.Record
+}
+
+type fresh7UnavailableTarget struct {
+	store.Store
+	id string
+}
+
+func (s fresh7UnavailableTarget) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindUser && id == s.id {
+		return nil, errors.New("review: user lookup unavailable")
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+func TestFresh7ManagerCannotRemovePrivilegedMemberOnReadFailure(t *testing.T) {
+	e := newEnv(t)
+	mgr := e.user(e.primary.ID, "read-failure-manager", model.RoleManager)
+	u := e.user(e.primary.ID, "protected-member", model.RoleAdmin)
+	g, err := e.svc.CreateGroupWithMembers(e.ctx, service.System, e.primary.ID, service.GroupInput{DisplayName: ptr("protected-group")}, []string{u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := e.svc.Users.S
+	e.svc.Users.S = fresh7UnavailableTarget{Store: base, id: u.ID}
+	err = e.svc.SetMembership(e.ctx, actor(mgr), g.ID, u.ID, false)
+	e.svc.Users.S = base
+	remaining, readErr := e.svc.GroupMembers(e.ctx, service.System, g.ID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err == nil || !slices.Contains(remaining, u.ID) {
+		t.Fatalf("unavailable target rank did not preserve privileged membership: result=%v remaining=%v", err, remaining)
+	}
+}
+
+func (s fresh7PromotedTarget) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*store.Record, error) {
+	out := make(map[string]*store.Record, len(ids))
+	for _, id := range ids {
+		if kind == model.KindUser && id == s.target.ID {
+			out[id] = s.target
+			continue
+		}
+		r, err := s.Store.Get(ctx, kind, id)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[id] = r
+	}
+	return out, nil
+}
+
+// A manager may change only plain users' memberships. A promotion already held
+// by a quorum must count even while the serving node's local copy is behind.
+func TestFresh7ManagerMembershipRespectsConfirmedPromotion(t *testing.T) {
+	e := newEnv(t)
+	mgr := e.user(e.primary.ID, "membership-manager", model.RoleManager)
+	u := e.user(e.primary.ID, "promoted-member", model.RoleUser)
+	g, err := e.svc.CreateGroup(e.ctx, service.System, e.primary.ID, service.GroupInput{DisplayName: ptr("review-group")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := *u
+	newer.Role = model.RoleAdmin
+	rec, err := store.Encode(&newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.Store = fresh7PromotedTarget{Store: e.svc.Store, target: rec}
+	confirmed, err := e.svc.FreshUser(e.ctx, u.ID)
+	if err != nil || confirmed.Role != model.RoleAdmin {
+		t.Fatalf("quorum fixture: %+v %v", confirmed, err)
+	}
+	if err := e.svc.SetMembership(e.ctx, actor(mgr), g.ID, u.ID, true); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("manager changed membership of a quorum-confirmed administrator using stale local rank: %v", err)
+	}
+}

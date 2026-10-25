@@ -103,8 +103,12 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 	if len(members) > MaxMembersPerChange {
 		return nil, ErrTooLarge
 	}
+	users, err := s.membersToJudge(ctx, a, members)
+	if err != nil {
+		return nil, err
+	}
 	for _, uid := range members {
-		if err := s.checkMembership(ctx, a, g, uid, true); err != nil {
+		if err := s.checkMembership(a, g, uid, users[uid], true); err != nil {
 			return nil, err
 		}
 	}
@@ -370,6 +374,10 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 			return nil, err
 		}
 	}
+	users, err := s.membersToJudge(ctx, a, slices.Concat(add, remove))
+	if err != nil {
+		return nil, err
+	}
 	entry := model.GroupChange{Seq: g.Seq + 1, At: time.Now().UTC()}
 	for _, c := range []struct {
 		ids    []string
@@ -377,7 +385,7 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		into   *[]string
 	}{{add, true, &entry.Add}, {remove, false, &entry.Remove}} {
 		for _, uid := range c.ids {
-			if err := s.checkMembership(ctx, a, g, uid, c.member); err != nil {
+			if err := s.checkMembership(a, g, uid, users[uid], c.member); err != nil {
 				return nil, err
 			}
 			member, err := s.isMember(ctx, g, uid)
@@ -573,19 +581,61 @@ func (s *Service) isMember(ctx context.Context, g *model.Group, userID string) (
 	return m.Active(), nil
 }
 
-// checkMembership refuses a change to a user's membership of g that a may not make.
-func (s *Service) checkMembership(ctx context.Context, a *Actor, g *model.Group, userID string, member bool) error {
-	u, uerr := s.Users.Get(ctx, userID)
-	if uerr == nil && u.OrgID == g.OrgID && s.Visibility(a, u) == Hidden {
+// membersToJudge reads the users (by id) whose memberships a change by a touches, as a's reach is judged on them
+// (checkMembership, clientMayAffectMembers): a user who no longer exists is left out, and one who cannot be read
+// refuses the change — a rank that could not be read is never taken as plain. For an actor whose reach depends on
+// the user's rank (anyone but a super admin: an administrator never reaches a super admin, a manager or a
+// provisioning client plain users only) each user is also read from a quorum's copies (freshMany), and the newer copy
+// judged: a promotion a majority has confirmed counts even before it has reached this node.
+func (s *Service) membersToJudge(ctx context.Context, a *Actor, ids []string) (map[string]*model.User, error) {
+	users := make(map[string]*model.User, len(ids))
+	for _, id := range ids {
+		u, err := s.Users.Get(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		users[id] = u
+	}
+	if a.IsSuper() || len(users) == 0 {
+		return users, nil
+	}
+	known := make([]string, 0, len(users))
+	for id := range users {
+		known = append(known, id)
+	}
+	recs, err := s.freshMany(ctx, model.KindUser, known)
+	if err != nil {
+		return nil, err
+	}
+	for id, r := range recs {
+		if r.Version <= users[id].Version {
+			continue
+		}
+		u := &model.User{}
+		if err := store.Decode(r, u); err != nil {
+			return nil, err
+		}
+		users[id] = u
+	}
+	return users, nil
+}
+
+// checkMembership refuses a change to the membership of g of the user userID — u as membersToJudge read them, nil
+// for one who no longer exists — that a may not make.
+func (s *Service) checkMembership(a *Actor, g *model.Group, userID string, u *model.User, member bool) error {
+	if u != nil && u.OrgID == g.OrgID && s.Visibility(a, u) == Hidden {
 		return ErrNotFound // a super admin, to anyone but a super admin
 	}
 	// Group membership carries access and tags: a provisioning client or a manager changes it only for users they may
 	// manage (a client never an administrator, a manager plain users only), like their other attributes. (A
 	// membership of a user who no longer exists can go.)
-	if (a.ClientID != "" || !s.canAdminOrg(a, g.OrgID)) && uerr == nil && !s.canManageUser(a, u) {
+	if (a.ClientID != "" || !s.canAdminOrg(a, g.OrgID)) && u != nil && !s.canManageUser(a, u) {
 		return ErrForbidden
 	}
-	if member && (uerr != nil || u.OrgID != g.OrgID) {
+	if member && (u == nil || u.OrgID != g.OrgID) {
 		return Invalid("members", "user "+userID+" is not in this organization")
 	}
 	return nil
@@ -601,14 +651,11 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		u, err := s.Users.Get(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return mapStore(err)
-		}
+	users, err := s.membersToJudge(ctx, a, ids)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
 		if !s.canManageUser(a, u) {
 			return ErrForbidden
 		}

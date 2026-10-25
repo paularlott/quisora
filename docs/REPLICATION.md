@@ -233,6 +233,16 @@ quorum compare-and-swap, held for at most 30 s and waited for up to 10 s — and
 quorum's copies** (quorum read): a demotion confirmed by a majority anywhere is counted even before it has reached
 this node. Two demotions on two nodes are therefore serialised, and the second sees the first.
 
+The lock serialises the decisions, not the writes: a holder paused (or a store slow) for longer than the lease can
+land its write after the next holder decided on the records as they were before it, each of two disables judged while
+the other administrator was still usable. So the write is **fenced** on the lease: once it has landed, a holder whose
+lease is no longer its own (another holder's, or lapsed, a second of clock skew allowed for) makes the decision
+again on the records as they are now, and a change it would now refuse is undone — the user put back as they were,
+a deleted user created again — and reported refused (`ErrLastAdmin`). A change made within the lease stands without a
+second decision. The undo is a compare-and-swap on the copy the change wrote; a copy changed since gets back only what
+the guard judged (role, active state, end date). The change was visible between its write and its undo, but nothing
+irreversible follows the write before the fence: sessions end, and the audit entry is written, only after it.
+
 ### The last way in
 
 A user removing one of their own ways to sign in (a passkey, a connected provider, the authenticator app) may not
@@ -278,6 +288,12 @@ and the orphan sweep marks their records removed later ("Deletion" below). Creat
 creates the record carrying the first entry: the group exists with every member or not at all. One change may add
 and remove at most 1,000 memberships (`service.MaxMembersPerChange`), which keeps the log small; SCIM refuses a
 larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
+
+Whose membership an actor may change depends on the user's rank (an administrator never reaches a super admin; a
+manager or a provisioning client changes plain users' memberships only), so a change by anyone but a super admin
+judges each user it touches on the newer of this node's copy and **a quorum's** (one quorum read for the whole
+change, `membersToJudge`): a promotion a majority has confirmed counts before it has reached this node. A user who
+cannot be read refuses the change; a rank that could not be read is never taken as plain.
 
 **What readers see.** Every reader of memberships (the groups of a user for tokens and tenant access, a group's
 members, member counts, SCIM resources) reads the group's record and applies its pending entries over the
@@ -618,7 +634,9 @@ compare-and-swap updates and purging is idempotent. Keep clock skew between the 
   mean").
 - Two records created concurrently on two nodes with the same unique value both exist until the clash is resolved
   (normally within seconds); the later one is then stripped of the value.
-- The admin lock is held for at most 30 s; a holder stalled for longer could overlap the next holder.
+- The admin lock is held for at most 30 s; a holder stalled for longer overlaps the next holder, and its write is
+  judged again once it lands (the fence above): a change the next holder's made unsafe is undone, after having been
+  visible for a moment. An undo that fails (the store unavailable at that moment) is logged, and the change stands.
 - A group change's sequence fence rests on the removed membership record being kept: a writer stalled for longer than
   7 days (`model.RemovedMemberRetention`) could re-create a membership removed since, as any write that old could
   undo a purged tombstone. A membership a stalled writer materializes for a group or user deleted meanwhile is inert

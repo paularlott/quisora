@@ -136,15 +136,12 @@ func (s *Service) NoteTOTPStep(ctx context.Context, u *model.User, step int64) e
 const adminLockTTL = 30 * time.Second
 
 // lockAdmins takes the organization's admin lock (a lease, lock.go), so changes that could remove a super admin the
-// server needs are serialised across every node. It waits up to ten seconds for another holder. The returned
-// function releases it.
-func (s *Service) lockAdmins(ctx context.Context, orgID string) (func(), error) {
-	l, err := s.lock(ctx, "admins/"+orgID, adminLockTTL, 10*time.Second,
+// server needs are serialised across every node. It waits up to ten seconds for another holder. The caller releases
+// the lease, and fences the write it decided on (lease.fence): the lease serialises the decisions, the fence undoes a
+// write that landed after it lapsed and would be refused now.
+func (s *Service) lockAdmins(ctx context.Context, orgID string) (*lease, error) {
+	return s.lock(ctx, "admins/"+orgID, adminLockTTL, 10*time.Second,
 		"another change of this organization's administrators is in progress")
-	if err != nil {
-		return nil, err
-	}
-	return func() { l.release(ctx) }, nil
 }
 
 // usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
