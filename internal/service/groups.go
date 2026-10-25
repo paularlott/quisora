@@ -261,9 +261,6 @@ func CommittedMembers(g *model.Group, ids []string) []string {
 		set[id] = true
 	}
 	for _, c := range g.Pending {
-		if c.Clear {
-			clear(set)
-		}
 		for _, id := range c.Remove {
 			delete(set, id)
 		}
@@ -453,17 +450,6 @@ func (s *Service) applyGroupChanges(ctx context.Context, g *model.Group) ([]mode
 }
 
 func (s *Service) applyGroupChange(ctx context.Context, g *model.Group, c model.GroupChange) error {
-	if c.Clear {
-		ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
-		if err != nil {
-			return mapStore(err)
-		}
-		for _, m := range ms {
-			if err := s.materializeMember(ctx, g, m.UserID, false, c.Seq); err != nil {
-				return err
-			}
-		}
-	}
 	for _, uid := range c.Remove {
 		if err := s.materializeMember(ctx, g, uid, false, c.Seq); err != nil {
 			return err

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -156,20 +157,21 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 // passedEpochs returns the ids of the credentials, sessions and refresh grants among ents made in an epoch their
 // account has moved past (model.User.Counts: its sign-in was reset, its password reset, or an invitation acceptance
 // that lost stored it). This node's copies of the accounts (one read) say which look passed; a quorum's copies of
-// those accounts (one read) confirm them, so an epoch this node has not received yet never removes a record that
-// counts. An account gone here is left to the owner check.
+// those accounts confirm them, a chunk at a time, keeping only their epochs, so an epoch this node has not received
+// yet never removes a record that counts, and a batch of 20,000 never holds 20,000 accounts. An account gone here is
+// left to the owner check.
 func (s *Service) passedEpochs(ctx context.Context, ents []model.Entity) (map[string]bool, error) {
-	var ids []string
+	owners := map[string]bool{}
 	for _, e := range ents {
-		if c, ok := e.(model.Credential); ok && !slices.Contains(ids, c.Owner()) {
-			ids = append(ids, c.Owner())
+		if c, ok := e.(model.Credential); ok {
+			owners[c.Owner()] = true
 		}
 	}
 	out := map[string]bool{}
-	if len(ids) == 0 {
+	if len(owners) == 0 {
 		return out, nil
 	}
-	local, err := s.Users.GetMany(ctx, ids)
+	local, err := s.Users.GetMany(ctx, slices.Collect(maps.Keys(owners)))
 	if err != nil {
 		return nil, mapStore(err)
 	}
@@ -177,25 +179,28 @@ func (s *Service) passedEpochs(ctx context.Context, ents []model.Entity) (map[st
 	for _, u := range local {
 		here[u.ID] = u
 	}
-	var suspect []string // accounts with a credential that looks passed here
+	suspect := map[string]bool{} // accounts with a credential that looks passed here
 	for _, e := range ents {
 		if c, ok := e.(model.Credential); ok {
-			if u := here[c.Owner()]; u != nil && !u.Counts(c) && !slices.Contains(suspect, u.ID) {
-				suspect = append(suspect, u.ID)
+			if u := here[c.Owner()]; u != nil && !u.Counts(c) {
+				suspect[u.ID] = true
 			}
 		}
 	}
-	recs, err := s.freshMany(ctx, model.KindUser, suspect)
-	if err != nil {
-		return nil, err
-	}
-	fresh := make(map[string]*model.User, len(recs))
-	for id, r := range recs {
-		u := &model.User{}
-		if err := store.Decode(r, u); err != nil {
+	here = nil
+	fresh := make(map[string]*model.User, len(suspect)) // the epochs only
+	for chunk := range slices.Chunk(slices.Collect(maps.Keys(suspect)), 500) {
+		recs, err := s.freshMany(ctx, model.KindUser, chunk)
+		if err != nil {
 			return nil, err
 		}
-		fresh[id] = u
+		for id, r := range recs {
+			u := &model.User{}
+			if err := store.Decode(r, u); err != nil {
+				return nil, err
+			}
+			fresh[id] = &model.User{CredEpoch: u.CredEpoch, SessionEpoch: u.SessionEpoch}
+		}
 	}
 	for _, e := range ents {
 		if c, ok := e.(model.Credential); ok {

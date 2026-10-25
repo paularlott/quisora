@@ -93,17 +93,21 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	}
 	key := model.IdentityKey(res.Provider.ID, res.Claims.Subject)
 	if id, err := m.s.Svc.Identities.GetByUnique(ctx, key); err == nil && id.Authority == model.ProviderAuthority(res.Provider) {
-		if id.UserID == u.ID {
+		switch {
+		case id.UserID == u.ID && u.Counts(id):
 			back("connected")
 			return
-		}
-		// Held by another account: refused, unless that link counts for nothing (its account or organization was
-		// deleted), when it goes and this one is made.
-		if freed, err := m.s.Svc.ReleaseUnique(ctx, model.KindIdentity, key); err != nil || !freed {
-			m.audit(r, "account.provider.connect_refused", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name,
-				"reason": "linked to another account"})
-			back("taken")
-			return
+		case id.UserID == u.ID:
+			// this account's link of an epoch it has moved past (its sign-in was reset): replaced below
+		default:
+			// Another account's: refused, unless it counts for nothing (its account or organization was deleted),
+			// when it goes and this one is made.
+			if freed, err := m.s.Svc.ReleaseUnique(ctx, model.KindIdentity, key); err != nil || !freed {
+				m.audit(r, "account.provider.connect_refused", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name,
+					"reason": "linked to another account"})
+				back("taken")
+				return
+			}
 		}
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		m.internalError(w, r, "identity", err)

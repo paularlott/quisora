@@ -1,7 +1,9 @@
 package cluster
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/paularlott/gossip"
@@ -21,11 +23,42 @@ const (
 	msgPrepare gossip.MessageType = gossip.UserMsg + 6  // request/response: quorum compare-and-swap, phase 1
 	msgCommit  gossip.MessageType = gossip.UserMsg + 7  // request/response: quorum compare-and-swap, phase 2
 	msgAbort   gossip.MessageType = gossip.UserMsg + 8  // one-way: release a quorum compare-and-swap's intents
-	msgRead    gossip.MessageType = gossip.UserMsg + 9  // request/response: records by id (quorum read)
+	msgRead    gossip.MessageType = gossip.UserMsg + 9  // stream: records by id (quorum read), any number of them
 	msgAudit   gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's audit events
 	msgNotice  gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
 	msgReload  gossip.MessageType = gossip.UserMsg + 12 // request/response: re-read the configuration (check, or apply)
 )
+
+// writeFrame writes b to a stream as one length-prefixed frame; readFrame reads it back (io.EOF at the end of a
+// complete stream).
+func writeFrame(w io.Writer, b []byte) error {
+	var l [4]byte
+	binary.BigEndian.PutUint32(l[:], uint32(len(b)))
+	if _, err := w.Write(l[:]); err != nil {
+		return err
+	}
+	_, err := w.Write(b)
+	return err
+}
+
+// maxFrame bounds one frame (one encoded record), so a corrupt length cannot cause a huge allocation.
+const maxFrame = 16 << 20
+
+func readFrame(r io.Reader) ([]byte, error) {
+	var l [4]byte
+	if _, err := io.ReadFull(r, l[:]); err != nil {
+		return nil, err // io.EOF here: the stream ended between frames, complete
+	}
+	size := binary.BigEndian.Uint32(l[:])
+	if size > maxFrame {
+		return nil, fmt.Errorf("cluster: frame of %d bytes", size)
+	}
+	b := make([]byte, size)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return b, nil
+}
 
 // recordMsg carries one encoded record (see encodeRecord).
 type recordMsg struct {

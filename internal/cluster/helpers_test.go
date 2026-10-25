@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -165,6 +166,29 @@ func (ns *netsim) SendWithReply(nd *gossip.Node, p *gossip.Packet) (*gossip.Pack
 		time.Sleep(d)
 	}
 	return ns.tr().SendWithReply(nd, p)
+}
+
+// OpenStream and SetStreamHandler pass streams (quorum reads) through: refused, as packets are, to a node this one
+// is cut off from.
+func (ns *netsim) OpenStream(ctx context.Context, nd *gossip.Node, p *gossip.Packet) (io.ReadCloser, error) {
+	if ns.blocked(nd, p.MessageType) {
+		return nil, errors.New("netsim: unreachable")
+	}
+	st, ok := ns.tr().(interface {
+		OpenStream(context.Context, *gossip.Node, *gossip.Packet) (io.ReadCloser, error)
+	})
+	if !ok {
+		return nil, gossip.ErrStreamsUnsupported
+	}
+	return st.OpenStream(ctx, nd, p)
+}
+
+func (ns *netsim) SetStreamHandler(h func(*gossip.Packet, io.Writer) error) {
+	if st, ok := ns.tr().(interface {
+		SetStreamHandler(func(*gossip.Packet, io.Writer) error)
+	}); ok {
+		st.SetStreamHandler(h)
+	}
 }
 
 func (c *tcluster) net(i int) *netsim {

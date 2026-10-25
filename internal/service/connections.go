@@ -310,19 +310,28 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 }
 
 // removeWay is the one way a passkey, a connected provider or the authenticator app is removed, by an administrator
-// or by the user on the account page: who may (manageConnections), what may go (done to yourself, your last way in stays, and so does your
-// last second factor where one is required; someone else may take them, and send an invitation), the removal itself
-// (remove), and what follows from it: what is in flight for the account ends (its security generation moves on), and
-// the recovery codes go with the last second factor.
+// or by the user on the account page: who may (manageConnections), what may go (done to yourself, your last way in
+// stays, and so does your last second factor where one is required; someone else may take them, and send an
+// invitation), the removal itself (remove), and what follows from it: what is in flight for the account ends (its
+// security generation moves on), and the recovery codes go with the last second factor.
+//
+// Removals of one account's ways in are serialised across the cluster (a lease, waysLockTTL) and decided on the ways a
+// quorum holds (freshWays): two removals at once, on any nodes, cannot each leave the other's way as the last one
+// and so remove both.
 func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way, remove func(*model.User, *Ways) error) error {
-	u, err := s.Users.Get(ctx, userID)
+	l, err := s.lock(ctx, "ways/"+userID, waysLockTTL, 10*time.Second, "another change of this account's ways in is in progress")
 	if err != nil {
-		return mapStore(err)
+		return err
+	}
+	defer l.release(ctx)
+	u, err := s.FreshUser(ctx, userID)
+	if err != nil {
+		return err
 	}
 	if err := s.manageConnections(ctx, a, u); err != nil {
 		return err
 	}
-	w, err := s.UserWays(ctx, u)
+	w, err := s.freshWays(ctx, u)
 	if err != nil {
 		return err
 	}
@@ -355,6 +364,40 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		}
 	}
 	return rerr
+}
+
+// waysLockTTL bounds how long an account's ways-in lock is held when its holder dies.
+const waysLockTTL = 30 * time.Second
+
+// freshWays is UserWays (u read from a quorum) less the passkeys and links a quorum no longer holds: a removal
+// confirmed by a majority anywhere is counted, even before it reaches this node. (A way added elsewhere that has not
+// reached this node is missed: the count can only be too low, which refuses a removal rather than allowing a wrong
+// one.)
+func (s *Service) freshWays(ctx context.Context, u *model.User) (*Ways, error) {
+	w, err := s.UserWays(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	pks, err := s.freshMany(ctx, model.KindPasskey, ids(w.Passkeys))
+	if err != nil {
+		return nil, err
+	}
+	w.Passkeys = slices.DeleteFunc(w.Passkeys, func(p *model.Passkey) bool { return pks[p.ID] == nil })
+	links, err := s.freshMany(ctx, model.KindIdentity, ids(w.Providers))
+	if err != nil {
+		return nil, err
+	}
+	w.Providers = slices.DeleteFunc(w.Providers, func(i *model.Identity) bool { return links[i.ID] == nil })
+	return w, nil
+}
+
+// ids returns the ids of es.
+func ids[E model.Entity](es []E) []string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.GetMeta().ID
+	}
+	return out
 }
 
 // selfOr is the audit action for a change a made to u: self when a is u (the account page), other otherwise.

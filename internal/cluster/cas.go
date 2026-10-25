@@ -1,11 +1,14 @@
 package cluster
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -108,12 +111,6 @@ type abortReq struct {
 type readReq struct {
 	Kind string
 	IDs  []string
-}
-
-type readResp struct {
-	NotReady bool
-	Failed   bool     // a copy could not be read: the answer proves nothing and is not counted
-	Recs     [][]byte // the voter's copies (tombstones included); absent ids are left out
 }
 
 type intent struct {
@@ -353,32 +350,41 @@ func (n *Node) handleAbort(_ *gossip.Node, pkt *gossip.Packet) error {
 	return nil
 }
 
-// handleRead answers a quorum read with this node's copies (tombstones included).
-func (n *Node) handleRead(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
+// handleRead serves a quorum read (Store.Fresh) as a stream: this node's copy of each requested record (tombstones
+// included; an id it has nothing for is left out), each written as it is read (writeFrame), so a reply of any size
+// is neither held in memory nor bound by the packet limit. A node that does not vote, or a copy it cannot read,
+// fails the stream: leaving that record out would claim this node has none, and a quorum read could then certify a
+// copy older than one this node holds.
+func (n *Node) handleRead(pkt *gossip.Packet, w io.Writer) error {
 	var req readReq
 	if err := pkt.Unmarshal(&req); err != nil {
-		return nil, err
+		return err
+	}
+	if len(req.IDs) > readBatch {
+		return fmt.Errorf("quorum read of %d records: at most %d", len(req.IDs), readBatch)
 	}
 	if !n.votes() {
-		return &readResp{NotReady: true}, nil
+		return errNotVoting
 	}
-	resp := &readResp{}
+	bw := bufio.NewWriter(w)
 	for _, id := range req.IDs {
 		r, err := n.st.inner.Lookup(n.ctx, model.Kind(req.Kind), id)
 		if errors.Is(err, store.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			// Leaving the record out would claim this node has none: a quorum read could then certify a copy
-			// older than one this node holds.
 			n.log.WithError(err).Warn("quorum read: record unreadable", "kind", req.Kind, "id", id)
-			return &readResp{Failed: true}, nil
+			return fmt.Errorf("record %s unreadable", id)
 		}
-		if b, err := encodeRecord(r); err == nil {
-			resp.Recs = append(resp.Recs, b)
+		b, err := encodeRecord(r)
+		if err != nil {
+			return err
+		}
+		if err := writeFrame(bw, b); err != nil {
+			return err
 		}
 	}
-	return resp, nil
+	return bw.Flush()
 }
 
 // ---- writer ----
@@ -673,7 +679,6 @@ func (s *Store) commitAll(ctx context.Context, op string, rec *store.Record, b [
 // (read repair). Tombstones are returned too (Deleted). Without gossip (a single node, or a shared database, which
 // is the only copy) it is a local read. It implements store.QuorumReader.
 func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*store.Record, error) {
-	n := s.n
 	out := map[string]*store.Record{}
 	for _, id := range ids {
 		if r, err := s.inner.Lookup(ctx, kind, id); err == nil {
@@ -682,36 +687,50 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 			return nil, err
 		}
 	}
-	if n.gc == nil || len(ids) == 0 {
+	if s.n.gc == nil || len(ids) == 0 {
 		return out, nil
 	}
-	if !n.votes() {
+	if !s.n.votes() {
 		return nil, fmt.Errorf("%w: this node is not caught up", store.ErrNotWritable)
 	}
-	peers := n.otherPeers()
-	type answer struct {
-		resp readResp
-		err  error
+	for batch := range slices.Chunk(ids, readBatch) {
+		if err := s.freshBatch(ctx, kind, batch, out); err != nil {
+			return nil, err
+		}
 	}
-	answers := make(chan answer, len(peers))
+	return out, nil
+}
+
+// readBatch is the most ids one quorum read request names (a request is one packet; the reply is a stream).
+const readBatch = 1000
+
+// freshBatch reads ids from enough peers to make a quorum with this node, each reply a stream (handleRead), and
+// merges the newest copy of each record into out (repairing this node's copy).
+func (s *Store) freshBatch(ctx context.Context, kind model.Kind, ids []string, out map[string]*store.Record) error {
+	n := s.n
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // the replies not needed for the quorum are abandoned
+	peers := n.otherPeers()
+	answers := make(chan []*store.Record, len(peers))
 	req := &readReq{Kind: string(kind), IDs: ids}
 	for _, mb := range peers {
 		go func(mb *member) {
-			var resp readResp
-			err := n.gc.SendToWithResponse(mb.node, msgRead, req, &resp)
-			answers <- answer{resp, err}
+			recs, err := n.readFrom(ctx, mb, req)
+			if err != nil {
+				recs = nil
+			}
+			answers <- recs
 		}(mb)
 	}
 	got := 1
 	for range peers {
-		a := <-answers
-		if a.err != nil || a.resp.NotReady || a.resp.Failed {
+		recs := <-answers
+		if recs == nil {
 			continue
 		}
 		got++
-		for _, b := range a.resp.Recs {
-			r, err := decodeRecord(b)
-			if err != nil || r.Kind != kind {
+		for _, r := range recs {
+			if r.Kind != kind {
 				continue
 			}
 			if cur := out[r.ID]; cur == nil || store.Newer(r, cur) {
@@ -720,11 +739,34 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 			}
 		}
 		if got >= n.Quorum() {
-			break
+			return nil
 		}
 	}
-	if got < n.Quorum() {
-		return nil, fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.Quorum())
+	return fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.Quorum())
+}
+
+// readFrom reads one peer's reply to a quorum read; any failure (the peer does not vote, a copy it could not read, a
+// broken stream) is an error, and the reply is not counted.
+func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store.Record, error) {
+	rc, err := n.gc.OpenStream(ctx, mb.node, msgRead, req)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	defer rc.Close()
+	br := bufio.NewReader(rc)
+	recs := []*store.Record{} // non-nil: an answer, even with no records
+	for {
+		b, err := readFrame(br)
+		if errors.Is(err, io.EOF) {
+			return recs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		r, err := decodeRecord(b)
+		if err != nil {
+			return nil, err
+		}
+		recs = append(recs, r)
+	}
 }

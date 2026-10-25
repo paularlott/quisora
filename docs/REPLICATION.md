@@ -127,7 +127,7 @@ prepare has no effect anywhere and there is no compensation step to race with.
 | prepare | `UserMsg+6`, request/response | `prepareReq{Op, Rec, Mode, BaseEpoch, BaseVersion}` | `prepareResp{St, Floor, Cur}` |
 | commit | `UserMsg+7`, request/response | `commitReq{Op, Rec}` | `commitResp{St}` |
 | abort | `UserMsg+8`, one way | `abortReq{Op, Version}` | — |
-| quorum read | `UserMsg+9`, request/response | `readReq{Kind, IDs}` | `readResp{NotReady, Failed, Recs}` |
+| quorum read | `UserMsg+9`, stream | `readReq{Kind, IDs}` (at most 1,000 ids) | a stream of length-prefixed records |
 
 `Op` is the write's identity (a retry keeps it, so it supersedes its own earlier intent; an abort names the stamp it
 aborts, so a late abort of one attempt never releases the next attempt's intent); `Rec` is the encoded,
@@ -198,8 +198,11 @@ that writes a quorum kind — a sign-in (its sign-in record), a code exchange or
 client assertion or DPoP proof (replay records), an administrative change — and retries. Restart nodes one at a time
 to avoid the window altogether.
 
-A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one says so
-(`Failed`) and is not counted, rather than answering as if it held none.
+A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one fails its
+reply and is not counted, rather than answering as if it held none. The reply is a gossip stream (any size, written
+as each record is read, never held whole in memory or bound by the 4 MB packet limit); a read of more ids is sent
+1,000 ids per request, each batch confirmed by its own quorum. Every other reply stays within one packet: a feed page
+(the first full copy of a new node, and catching up) carries at most 1,000 records and 1 MB.
 
 ### Sign-in stamps
 
@@ -219,6 +222,14 @@ while another one without an end date remains) take the organization's **admin l
 quorum compare-and-swap, held for at most 30 s and waited for up to 10 s — and count the administrators from **a
 quorum's copies** (quorum read): a demotion confirmed by a majority anywhere is counted even before it has reached
 this node. Two demotions on two nodes are therefore serialised, and the second sees the first.
+
+### The last way in
+
+A user removing one of their own ways to sign in (a passkey, a connected provider, the authenticator app) may not
+remove the last one, nor their last second factor where one is required. Removals of one account's ways in take the
+account's lock (`ways/<user id>`, as the admin lock) and count the ways from a quorum's copies of the user, its
+passkeys and its links: two removals on two nodes, each of a different one of the last two passkeys, are serialised,
+and the second is refused.
 
 ### Groups and their members
 
@@ -317,6 +328,12 @@ in a quorum's copies — is removed (a membership is marked removed, fencing sta
 credential, session or refresh grant of an epoch its account has moved past. Only records at least an hour old are
 judged, so an owner created on another node has time to arrive. A pass takes about a day at five million users. It
 also removes what any interrupted write left, so there is no other clean-up path to keep correct.
+
+Deleting an organization sends no back-channel logout: a user signs in only to applications of their own
+organization, and those are deleted with it (their tokens stop working at once), so the deletion is one write
+whatever the organization's size. Deleting a user tells the applications at once, and marks the user's memberships
+removed at once (the sweep's own removal), so group member lists and counts, which are read from the membership
+index, never count a deleted user.
 
 A unique value held by such a record (a provider identity's subject, a passkey's credential id) does not wait for the
 sweep: a create that finds it taken asks `service.ReleaseUnique`, which removes the holder if, read from a quorum, it

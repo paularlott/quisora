@@ -309,28 +309,13 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	}
 	// The organization record is the one thing deleted: its users, groups, applications, tenants and providers stand
 	// on it, so none counts any more from this write (service.UserUsable, and an application of a deleted organization
-	// is unknown), and the orphan sweep removes their records (sweep.go). The applications its users signed in to are
-	// told first (back-channel logout).
-	ctx = Durable(ctx)
-	users := 0
-	for after := ""; ; {
-		page, _, err := s.Users.List(ctx, store.ListQuery{Scope: id, After: after, Limit: 500})
-		if err != nil {
-			return mapStore(err)
-		}
-		for _, u := range page {
-			s.sessionsEnding(ctx, u.ID, nil)
-		}
-		users += len(page)
-		if len(page) < 500 {
-			break
-		}
-		after = page[len(page)-1].ID
-	}
-	if err := s.Orgs.Delete(ctx, id); err != nil {
+	// is unknown), and the orphan sweep removes their records (sweep.go). No back-channel logout is sent: a user signs
+	// in only to applications of their own organization, and those are deleted with it (their tokens stop working at
+	// once). So the deletion is one write, whatever the organization's size.
+	if err := s.Orgs.Delete(Durable(ctx), id); err != nil {
 		return mapStore(err)
 	}
-	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(users)})
+	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)})
 	return nil
 }
 

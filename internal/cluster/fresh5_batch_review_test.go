@@ -26,7 +26,7 @@ func TestFreshReviewQuorumBatchFitsDefaultTransport(t *testing.T) {
 	}
 	const n = 6000 // below the production orphan sweep's 20,000-record batch
 	ids := make([]string, 0, n)
-	resp := &readResp{}
+	resp := &struct{ Recs [][]byte }{} // the size the reply would have as one packet
 	for i := range n {
 		u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: "org", Username: fmt.Sprintf("user-%06d", i), Email: fmt.Sprintf("user-%06d@example.test", i), GivenName: randomText(100), FamilyName: randomText(100), ExternalID: randomText(255), Active: true}
 		u.Work.Title = randomText(255)

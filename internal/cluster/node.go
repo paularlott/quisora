@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -101,6 +102,9 @@ func peerCompatible(sender *gossip.Node) bool {
 // errIncompatible answers a request from a peer of an incompatible build.
 var errIncompatible = errors.New("cluster: the peer runs an incompatible build")
 
+// errNotVoting fails a quorum read served by a node that takes no part in quorums (not caught up).
+var errNotVoting = errors.New("cluster: this node does not vote")
+
 func compatOnly(f gossip.Handler) gossip.Handler {
 	return func(sender *gossip.Node, p *gossip.Packet) error {
 		if !peerCompatible(sender) {
@@ -127,7 +131,7 @@ type Options struct {
 	TombstoneRetention time.Duration
 	// SyncInterval is how often each peer's change feed is pulled. Default 5 seconds.
 	SyncInterval time.Duration
-	// PageSize is the number of changes requested per anti-entropy page. Default 500.
+	// PageSize is the number of changes requested per anti-entropy page (a page is also at most 1 MB). Default 1000.
 	PageSize int
 	// JoinWait is how long Start waits for the first peer to appear before carrying on. Default 2 seconds.
 	JoinWait time.Duration
@@ -400,10 +404,18 @@ func (n *Node) buildGossip() error {
 		t gossip.MessageType
 		f gossip.ReplyHandler
 	}{{msgPush, n.handlePush}, {msgFeed, n.handleFeed}, {msgEph, n.handleEph}, {msgPrepare, n.handlePrepare},
-		{msgCommit, n.handleCommit}, {msgRead, n.handleRead}, {msgAudit, n.handleAudit}, {msgReload, n.handleReload}} {
+		{msgCommit, n.handleCommit}, {msgAudit, n.handleAudit}, {msgReload, n.handleReload}} {
 		if err := gc.HandleFuncWithReply(h.t, compatOnlyReply(h.f)); err != nil {
 			return err
 		}
+	}
+	if err := gc.HandleStreamFunc(msgRead, func(sender *gossip.Node, p *gossip.Packet, w io.Writer) error {
+		if !peerCompatible(sender) {
+			return errIncompatible
+		}
+		return n.handleRead(p, w)
+	}); err != nil {
+		return err
 	}
 	gc.HandleNodeStateChangeFunc(n.onNodeState)
 	gc.HandleNodeMetadataChangeFunc(func(nd *gossip.Node) {

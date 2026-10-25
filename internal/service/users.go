@@ -866,11 +866,31 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	}
 	// The user is gone, and with it everything that was theirs: every session, grant, token, passkey or link stands on
 	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The applications are
-	// told (back-channel logout), and the users they managed get no manager.
+	// told (back-channel logout), the users they managed get no manager, and their memberships are removed now (as
+	// the sweep would remove them), so group member lists and counts, read from the membership index, drop them at
+	// once.
 	s.sessionsEnding(Durable(ctx), u.ID, nil)
 	s.clearManagerOf(ctx, u)
+	s.endMemberships(ctx, u)
 	s.Audit(ctx, a, u.OrgID, "user.delete", u.Username, nil)
 	return nil
+}
+
+// endMemberships marks the deleted user u's memberships removed (removeOrphan, the sweep's own removal: a group
+// writer that stalled cannot bring one back). A user is in a handful of groups: one indexed read. A failure is left
+// to the sweep.
+func (s *Service) endMemberships(ctx context.Context, u *model.User) {
+	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+	if err == nil {
+		for _, m := range ms {
+			if err = s.removeOrphan(ctx, m); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		s.Log.Warn("a deleted user's memberships are left to the orphan sweep", "user", u.ID, "error", err)
+	}
 }
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap

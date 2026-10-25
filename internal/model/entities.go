@@ -317,11 +317,10 @@ type Group struct {
 
 // GroupChange is one committed change of a group's members (Group.Pending).
 type GroupChange struct {
-	Seq    uint64    `msgpack:"s"`            // the group's Seq when committed: materialized writes carry it
-	At     time.Time `msgpack:"t"`            // when it was committed (housekeeping finishes old ones)
-	Add    []string  `msgpack:"a,omitempty"`  // user ids made members
-	Remove []string  `msgpack:"r,omitempty"`  // user ids removed
-	Clear  bool      `msgpack:"cl,omitempty"` // every member is removed (the group is being deleted)
+	Seq    uint64    `msgpack:"s"`           // the group's Seq when committed: materialized writes carry it
+	At     time.Time `msgpack:"t"`           // when it was committed (housekeeping finishes old ones)
+	Add    []string  `msgpack:"a,omitempty"` // user ids made members
+	Remove []string  `msgpack:"r,omitempty"` // user ids removed
 }
 
 func (g *Group) Kind() Kind { return KindGroup }
@@ -342,9 +341,6 @@ func (g *Group) Index() Index {
 // userID's membership: decided is false when none mentions the user, and the Member record alone decides.
 func (g *Group) PendingMember(userID string) (member, decided bool) {
 	for _, c := range g.Pending { // oldest first: the last word wins
-		if c.Clear {
-			member, decided = false, true
-		}
 		if slices.Contains(c.Remove, userID) {
 			member, decided = false, true
 		}
