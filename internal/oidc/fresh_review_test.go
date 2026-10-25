@@ -84,3 +84,37 @@ func TestFreshReviewRevocationDoesNotReportSuccessWhenDeletionFails(t *testing.T
 		t.Fatalf("revocation reported 200 while storage deletion failed; refresh afterward status=%d", refreshed.status)
 	}
 }
+
+// A failure to read the emergency sign-out counters is unavailable state, not proof the session ended.
+func TestFreshReviewCodeExchangeDistinguishesSignOutReadFailure(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	browser, _ := h.session(h.user)
+	verifier, challenge := pkce()
+	code := h.getCode(browser, cl, challenge, nil)
+	h.env.Svc.InvalidateSignOut()
+	h.env.Svc.Orgs.S = failReads{Store: h.env.Svc.Orgs.S, kind: model.KindOrg}
+	r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {cl.RedirectURIs[0]}, "code_verifier": {verifier}}, cl, secret)
+	expectUnavailable(t, "code exchange with unreadable sign-out counters", r)
+}
+
+func TestFreshReviewApprovedDeviceGrantDiesWithSessionEpoch(t *testing.T) {
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	dc, uc := h.startDevice(cl, "openid profile offline_access")
+	browser, csrf := h.session(h.user)
+	if status, page := h.consentDevice(browser, csrf, uc, true); status != 200 {
+		t.Fatalf("approval: %d %s", status, page)
+	}
+	base := h.env.Svc.Store
+	h.env.Svc.Store = failDeletes{Store: base, kind: model.KindSession}
+	err := h.env.Svc.ResetCredentials(context.Background(), h.user.ID)
+	h.env.Svc.Store = base
+	if err == nil {
+		t.Fatal("setup: expected session cleanup failure")
+	}
+	h.p.InvalidateUser(h.user.ID)
+	if r := h.pollDevice(cl, dc); r.status != 400 || r.str("error") != "invalid_grant" {
+		t.Fatalf("approved device authorization outlived session epoch: %d %v", r.status, r.m)
+	}
+}
