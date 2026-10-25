@@ -50,7 +50,10 @@ func (f *fakeSelect) seen() []string {
 	return append([]string(nil), f.queries...)
 }
 
-const countSuffix = " | stats count_uniq(id) n"
+const (
+	countSuffix = " | stats count_uniq(id) n"
+	dedup       = " | sort by (_time desc) partition by (id) limit 1"
+)
 
 // answer serves rows to the page query and count to the count query.
 func answer(rows, count string) func(string, http.ResponseWriter) {
@@ -85,7 +88,7 @@ func TestReadAuditQueriesAndParsesRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := vl.seen()
-	if len(seen) != 2 || seen[0] != Filter(q)+" | sort by (_time desc) | offset 3 | limit 2" || seen[1] != Filter(q)+countSuffix {
+	if len(seen) != 2 || seen[0] != Filter(q)+dedup+" | sort by (_time desc) | offset 3 | limit 2" || seen[1] != Filter(q)+countSuffix {
 		t.Fatalf("queries %q", seen)
 	}
 	if page.Total != 7 || page.Source != "victorialogs" || page.Nodes != 1 || page.Answered != 1 || len(page.Items) != 2 {
@@ -125,7 +128,7 @@ func TestReadAuditSortOrders(t *testing.T) {
 			t.Fatalf("case %d: %+v %v", i, page, err)
 		}
 		seen := vl.seen()
-		if got := seen[2*i]; got != Filter(tc.q)+tc.tail {
+		if got := seen[2*i]; got != Filter(tc.q)+dedup+tc.tail {
 			t.Errorf("case %d: query %q, want tail %q", i, got, tc.tail)
 		}
 	}

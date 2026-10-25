@@ -31,6 +31,7 @@ func TestFreshReviewGrantMaintenanceCannotReopenRefreshGrace(t *testing.T) {
 			}
 			// Model an otherwise identical rotation whose response was lost more than a grace interval ago.
 			g.Updated = time.Now().Add(-2 * refreshRetryGrace)
+			g.Rotated = g.Updated
 			raw, err := store.EncodeAsIs(g)
 			if err != nil {
 				t.Fatal(err)

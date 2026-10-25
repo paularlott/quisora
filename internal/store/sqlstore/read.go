@@ -138,7 +138,7 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 				continue
 			}
 			low := strings.ToLower(v.(string)) // ignoring case, as on every backend
-			w, lc := likeEscape.Replace(low), "LOWER("+col+")"
+			w, lc := likeEscape.Replace(low), s.d.lower(col)
 			b.WriteString(" AND (" + lc + " = ? OR " + lc + " LIKE ? ESCAPE '!' OR " + lc + " LIKE ? ESCAPE '!' OR " +
 				lc + " LIKE ? ESCAPE '!')")
 			args = append(args, low, w+" %", "% "+w, "% "+w+" %")
@@ -146,7 +146,7 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 		}
 		switch f.Op {
 		case store.OpPrefix:
-			col, op, v = "LOWER("+col+")", " LIKE ? ESCAPE '!'", likeEscape.Replace(strings.ToLower(f.Value.(string)))+"%"
+			col, op, v = s.d.lower(col), " LIKE ? ESCAPE '!'", likeEscape.Replace(strings.ToLower(f.Value.(string)))+"%"
 		case store.OpGTE:
 			op = " >= ?"
 		case store.OpLT:
@@ -160,7 +160,7 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 		pat := likeEscape.Replace(strings.ToLower(q.Search)) + "%" // a prefix match, as on every backend
 		for _, f := range schema.Fields {
 			if f.Search {
-				terms = append(terms, "LOWER("+s.d.quote(f.Name)+") LIKE ? ESCAPE '!'")
+				terms = append(terms, s.d.lower(s.d.quote(f.Name))+" LIKE ? ESCAPE '!'")
 				args = append(args, pat)
 			}
 		}

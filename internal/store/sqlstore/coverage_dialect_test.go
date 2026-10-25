@@ -116,7 +116,7 @@ func TestCoverageDialectSQL(t *testing.T) {
 		t.Fatal("int colType")
 	}
 
-	if pg.sortExpr(str) != `LOWER("n") COLLATE "C"` || sq.sortExpr(str) != `LOWER("n")` || my.sortExpr(str) != "LOWER(`n`)" {
+	if pg.sortExpr(str) != `LOWER("n") COLLATE "C"` || sq.sortExpr(str) != `quisora_lower("n")` || my.sortExpr(str) != "LOWER(`n`)" {
 		t.Fatal("sortExpr string")
 	}
 	if pg.sortExpr(num) != `"c"` || my.sortExpr(num) != "`c`" {
@@ -131,7 +131,7 @@ func TestCoverageDialectSQL(t *testing.T) {
 	if got := mdb.sortIndexExpr(str); got != "" {
 		t.Fatalf("mariadb has no functional indexes: %q", got)
 	}
-	if got := sq.sortIndexExpr(str); got != `LOWER("n")` {
+	if got := sq.sortIndexExpr(str); got != `quisora_lower("n")` {
 		t.Fatal(got)
 	}
 	if got := mdb.sortIndexExpr(num); got != "`c`" {

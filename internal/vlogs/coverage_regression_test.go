@@ -110,22 +110,16 @@ func TestReplayHoldsOnRefusedCredentials(t *testing.T) {
 
 // VictoriaLogs holds an event twice when it was delivered twice (at-least-once: a crash mid-replay, or an event logged
 // and spooled after a slow disk), and docs/RUNNING.md says every event has a unique id "for removing duplicates when
-// reading": a page must not show the same event twice.
+// reading": the page query keeps one row per id before it cuts the page, so a page never shows an event twice and
+// duplicates take no place on it (TestFreshReviewLiveDuplicateEventsDoNotConsumeAuditPage runs it on VictoriaLogs).
 func TestReadAuditRemovesDuplicatesByID(t *testing.T) {
-	row := `{"_time":"2026-01-02T03:04:05Z","id":"dup-1","org":"o","action":"user.update","actor":"a","outcome":"success"}` + "\n"
-	other := `{"_time":"2026-01-02T03:04:06Z","id":"other","org":"o","action":"user.update","actor":"a","outcome":"success"}` + "\n"
-	f := newFakeSelect(t, answer(row+row+other, `{"n":"3"}`+"\n"))
+	f := newFakeSelect(t, answer("", `{"n":"0"}`+"\n"))
 	c := newReader(t, f.srv.URL)
-	page, err := c.ReadAudit(context.Background(), service.AuditQuery{Org: "o", Limit: 10})
-	if err != nil {
+	if _, err := c.ReadAudit(context.Background(), service.AuditQuery{Org: "o", Limit: 10}); err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]int{}
-	for _, it := range page.Items {
-		seen[it.ID]++
-	}
-	if seen["dup-1"] != 1 || seen["other"] != 1 {
-		t.Fatalf("events by id: %v (total %d)", seen, page.Total)
+	if q := f.seen()[0]; !strings.HasPrefix(q, Filter(service.AuditQuery{Org: "o"})+dedup+" | sort by ") {
+		t.Fatalf("page query %q", q)
 	}
 }
 

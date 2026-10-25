@@ -1187,6 +1187,23 @@ func (s *Service) UsablePasskeys(ctx context.Context, u *model.User, except stri
 	return len(w.without(way{passkey: except}).Passkeys), nil
 }
 
+// HeldPasskeys counts u's passkeys that still belong to the account (made in its credential epoch, not removed),
+// usable or not: a disabled one is still evidence that the account had a second factor. One from an earlier epoch is
+// inert, whether or not its record is gone yet, and does not count.
+func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) {
+	pks, err := s.Passkeys.All(ctx, u.ID)
+	if err != nil {
+		return 0, mapStore(err)
+	}
+	n := 0
+	for _, p := range pks {
+		if u.Counts(p) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // dropEmailLinks removes the provider links a newly promoted manager or administrator did not make themselves: links
 // made automatically by email address (and links of unknown origin). Privileged accounts are never linked by email
 // (upstream.ErrPrivileged), so a promotion must not keep one made before. Links the user connected while signed in,

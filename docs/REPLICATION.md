@@ -130,7 +130,7 @@ prepare has no effect anywhere and there is no compensation step to race with.
 | commit | `UserMsg+7`, request/response | `commitReq{Op, Rec}` | `commitResp{St}` |
 | abort | `UserMsg+8`, one way | `abortReq{Op, Version}` | — |
 | quorum read | `UserMsg+9`, stream | `readReq{Kind, IDs}` (at most 1,000 ids) | a stream of length-prefixed records |
-| small quorum read | `UserMsg+13`, request/response | `readReq{Kind, IDs}` (at most 16 ids) | `readFewResp{Recs}` |
+| small quorum read | `UserMsg+13`, request/response | `readReq{Kind, IDs}` (at most 16 ids) | `readFewResp{Recs, Large}` |
 
 `Op` is the write's identity (a retry keeps it, so it supersedes its own earlier intent; an abort names the stamp it
 aborts, so a late abort of one attempt never releases the next attempt's intent); `Rec` is the encoded,
@@ -207,8 +207,9 @@ to avoid the window altogether.
 
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one fails its
 reply and is not counted, rather than answering as if it held none. A read of at most 16 ids (the user at a sign-in
-step, a membership and its group) is one request and one reply over a pooled connection (`readFew`, `UserMsg+13`).
-A larger one is a gossip stream (any size, written as each record is read: the voter never holds it whole, and it
+step, a membership and its group) is one request and one reply over a pooled connection (`readFew`, `UserMsg+13`),
+unless the records come to more than 1 MiB (clients with large JWKS documents): the voter then answers `Large` and
+the reader reads them as a stream. A larger one is a gossip stream (any size, written as each record is read: the voter never holds it whole, and it
 is not bound by the 4 MB packet limit; the reader collects each voter's records); it is sent 1,000 ids per request,
 each batch confirmed by its own quorum. A read ends with its caller's deadline, a dial
 or a reply still in progress included. Every other reply stays within one packet: a feed page

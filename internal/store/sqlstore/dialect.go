@@ -1,6 +1,7 @@
 package sqlstore
 
 import (
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strconv"
@@ -143,7 +144,32 @@ func (d *dialect) sortExpr(f model.Field) string {
 	if d.isPG() {
 		return "LOWER(" + col + `) COLLATE "C"`
 	}
+	return d.lower(col)
+}
+
+// lower is col in lower case, folded as the in-memory reference folds it (strings.ToLower). SQLite's own LOWER folds
+// ASCII only, so there it is sqliteLower.
+func (d *dialect) lower(col string) string {
+	if d.name == "sqlite" {
+		return sqliteLower + "(" + col + ")"
+	}
 	return "LOWER(" + col + ")"
+}
+
+// sqliteLower is strings.ToLower as a SQLite function, for every SQLite connection this process opens. It is
+// deterministic, so SQLite indexes it (the sort indexes).
+const sqliteLower = "quisora_lower"
+
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction(sqliteLower, 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		switch v := args[0].(type) {
+		case string:
+			return strings.ToLower(v), nil
+		case []byte:
+			return strings.ToLower(string(v)), nil
+		}
+		return args[0], nil // NULL, numbers
+	})
 }
 
 // sortIndexExpr is the index key part for a sortable field, or "" when the database cannot index it

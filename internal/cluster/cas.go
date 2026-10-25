@@ -113,9 +113,11 @@ type readReq struct {
 	IDs  []string
 }
 
-// readFewResp answers a quorum read of at most readFew ids in one reply: the encoded records found.
+// readFewResp answers a quorum read of at most readFew ids in one reply: the encoded records found, or Large (and no
+// records) when they come to more than readFewBytes, which the reader then reads as a stream.
 type readFewResp struct {
-	Recs [][]byte
+	Recs  [][]byte
+	Large bool
 }
 
 type intent struct {
@@ -380,12 +382,22 @@ func (n *Node) handleReadFew(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 		return nil, err
 	}
 	var resp readFewResp
+	size := 0
 	err := n.readRecords(&req, readFew, func(b []byte) error {
+		if size += len(b); size > readFewBytes {
+			return errReadLarge
+		}
 		resp.Recs = append(resp.Recs, b)
 		return nil
 	})
+	if errors.Is(err, errReadLarge) {
+		return &readFewResp{Large: true}, nil
+	}
 	return &resp, err
 }
+
+// errReadLarge stops a small quorum read's reply that has outgrown readFewBytes.
+var errReadLarge = errors.New("cluster: quorum read reply too large for one packet")
 
 // readRecords passes the encoded records of req that this node holds to emit, refusing a request of more than max
 // ids, or when this node does not vote (its copies may be out of date).
@@ -772,10 +784,13 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 
 // readBatch is the most ids one quorum read request names (a request is one packet; the reply is a stream). A read of
 // at most readFew ids (a user at a sign-in step, a membership and its group) is one request and one reply over a
-// pooled connection instead: no stream to open, and a reply small enough to hold whole.
+// pooled connection instead: no stream to open (about half the time of a stream, measured on one machine). Records
+// can be large (a client's JWKS), so a reply of more than readFewBytes is refused by the peer and read as a stream;
+// the bound stays well under gossip's packet limit (4 MB) with room for the envelope.
 const (
-	readBatch = 1000
-	readFew   = 16
+	readBatch    = 1000
+	readFew      = 16
+	readFewBytes = 1 << 20
 )
 
 // freshBatch reads ids from enough peers to make a quorum with this node, each reply a stream (handleRead), and
@@ -837,6 +852,9 @@ func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store
 		if err := n.gc.SendToWithResponseContext(ctx, mb.node, msgReadFew, req, &resp); err != nil {
 			return nil, err
 		}
+		if resp.Large {
+			return n.readStream(ctx, mb, req)
+		}
 		recs := make([]*store.Record, 0, len(resp.Recs))
 		for _, b := range resp.Recs {
 			r, err := decodeRecord(b)
@@ -847,6 +865,11 @@ func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store
 		}
 		return recs, nil
 	}
+	return n.readStream(ctx, mb, req)
+}
+
+// readStream reads one peer's reply to a quorum read as a stream (handleRead).
+func (n *Node) readStream(ctx context.Context, mb *member, req *readReq) ([]*store.Record, error) {
 	rc, err := n.gc.OpenStream(ctx, mb.node, msgRead, req)
 	if err != nil {
 		return nil, err

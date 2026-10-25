@@ -27,7 +27,7 @@ func TestFreshReviewDuplicateEventsDoNotConsumeAuditPage(t *testing.T) {
 		}
 		selected := rows
 		// A query that deduplicates before pagination follows distinct-row offsets.
-		if strings.Contains(q, "uniq") || strings.Contains(q, "stats by (id)") {
+		if strings.Contains(q, "uniq") || strings.Contains(q, "stats by (id)") || strings.Contains(q, "partition by (id)") {
 			selected = []map[string]string{rows[0], rows[2], rows[4]}
 		}
 		m := bounds.FindStringSubmatch(q)
@@ -90,7 +90,8 @@ func TestFreshReviewLiveDuplicateEventsDoNotConsumeAuditPage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if first.Total == 3 {
+		// The count sees new rows a moment before row queries do: wait for both.
+		if first.Total == 3 && len(first.Items) == q.Limit {
 			break
 		}
 		if time.Now().After(deadline) {

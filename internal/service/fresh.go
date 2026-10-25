@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -30,15 +29,12 @@ func (s *Service) freshMany(ctx context.Context, kind model.Kind, ids []string) 
 		}
 		return out, nil
 	}
-	for _, id := range ids {
-		r, err := s.Store.Get(ctx, kind, id)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, mapStore(err)
-		}
-		out[id] = r
+	recs, err := store.GetMany(ctx, s.Store, kind, ids)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	for _, r := range recs {
+		out[r.ID] = r
 	}
 	return out, nil
 }

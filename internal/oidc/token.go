@@ -562,7 +562,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	var newRefresh string
 	switch {
-	case (c.RotateRefresh || c.Public()) && pr.counted && pr.counter+1 == g.Counter && time.Since(g.Updated) < refreshRetryGrace &&
+	case (c.RotateRefresh || c.Public()) && pr.counted && pr.counter+1 == g.Counter && time.Since(g.Rotated) < refreshRetryGrace &&
 		(!c.Public() || g.DPoPJKT != ""):
 		// The token just before the current one, moments after it was rotated, from a caller that also proved who it
 		// is (a confidential client's credentials, or the DPoP key the grant is bound to: a copied token alone is not
@@ -583,6 +583,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		}
 		for attempt := 1; ; attempt++ {
 			g.Counter++
+			g.Rotated = time.Now().UTC()
 			err := p.svc.Grants.Update(ctx, g)
 			if err == nil {
 				break

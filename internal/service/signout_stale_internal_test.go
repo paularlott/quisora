@@ -62,3 +62,49 @@ func TestSignOutCountersStaleBound(t *testing.T) {
 		t.Fatal("counters past signOutMaxStale still served while the store could not be read")
 	}
 }
+
+// The cache holds the organizations read lately, not every one ever read: once a generation is older than any entry
+// is of use, the next read starts a new one and the generation before it goes.
+func TestSignOutCacheKeepsRecentOrganizationsOnly(t *testing.T) {
+	ctx := context.Background()
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	s := New(config.Default(), memstore.New(), sealer)
+	if _, _, err := s.Bootstrap(ctx, "root@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, name := range []string{"one", "two", "three"} {
+		o, err := s.CreateOrg(ctx, System, OrgInput{Name: &name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, o.ID)
+	}
+	read := func(id string) {
+		t.Helper()
+		if _, err := s.SessionStamp(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age := func() {
+		s.signOut.mu.Lock()
+		s.signOut.genAt = s.signOut.genAt.Add(-2 * signOutMaxStale)
+		s.signOut.mu.Unlock()
+	}
+	s.InvalidateSignOut()
+	read(ids[0])
+	age()
+	read(ids[1]) // a new generation: ids[0] moves to the one before
+	if _, ok := s.signOut.prev[ids[0]]; !ok {
+		t.Fatal("the previous generation was dropped at once")
+	}
+	age()
+	read(ids[2]) // and another: ids[0] goes
+	s.signOut.mu.Lock()
+	defer s.signOut.mu.Unlock()
+	_, inOrgs := s.signOut.orgs[ids[0]]
+	_, inPrev := s.signOut.prev[ids[0]]
+	if inOrgs || inPrev || len(s.signOut.orgs)+len(s.signOut.prev) != 2 {
+		t.Fatalf("held: %d now, %d before", len(s.signOut.orgs), len(s.signOut.prev))
+	}
+}

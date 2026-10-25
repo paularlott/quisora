@@ -23,9 +23,14 @@ import (
 // through the cluster's change notices, on the others; the bound covers nodes that share a database without gossip.
 const signOutCacheTTL = 5 * time.Second
 
+// signOutCache holds the counters last read. Organizations are kept in two generations: orgs, and prev, the orgs of
+// the generation before, which no entry outlives (signOutMaxStale is the longest one is of use), so only the
+// organizations read lately are held, never every one ever read.
 type signOutCache struct {
 	mu      sync.Mutex
 	orgs    map[string]cachedCounters
+	prev    map[string]cachedCounters
+	genAt   time.Time // when orgs began
 	server  model.SignOutCounters
 	hasSrv  bool
 	fetched time.Time // of server
@@ -39,7 +44,7 @@ type cachedCounters struct {
 // InvalidateSignOut drops the cached sign-out counters (an organization changed, here or on another node).
 func (s *Service) InvalidateSignOut() {
 	s.signOut.mu.Lock()
-	s.signOut.orgs = nil
+	s.signOut.orgs, s.signOut.prev = nil, nil
 	s.signOut.hasSrv = false
 	s.signOut.mu.Unlock()
 }
@@ -56,6 +61,9 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 	c := &s.signOut
 	c.mu.Lock()
 	co, okOrg := c.orgs[orgID]
+	if !okOrg {
+		co, okOrg = c.prev[orgID]
+	}
 	srv, okSrv := c.server, c.hasSrv
 	srvAt := c.fetched
 	c.mu.Unlock()
@@ -65,8 +73,8 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 		case gerr == nil:
 			co = cachedCounters{c: o.SignOut, fetched: now}
 			c.mu.Lock()
-			if c.orgs == nil {
-				c.orgs = map[string]cachedCounters{}
+			if c.orgs == nil || now.Sub(c.genAt) > signOutMaxStale {
+				c.prev, c.orgs, c.genAt = c.orgs, map[string]cachedCounters{}, now
 			}
 			c.orgs[orgID] = co
 			c.mu.Unlock()

@@ -161,12 +161,13 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 			break
 		}
 		// Enrolment here lets whoever holds the first factor choose the second, which is only right for an account
-		// that never had one. An account whose passkeys can no longer sign in (disabled after a suspected clone,
-		// or registered without user verification) keeps them as evidence that it had a second factor: it gets a
-		// new one through an invitation from an administrator, not from the password.
-		if all, err := m.s.Svc.Passkeys.Count(ctx, u.ID); err != nil {
+		// that never had one (passkeys of an earlier credential epoch, made inert by a reset, do not count). An
+		// account whose passkeys can no longer sign in (disabled after a suspected clone, or registered without user
+		// verification) keeps them as evidence that it had a second factor: it gets a new one through an invitation
+		// from an administrator, not from the password.
+		if held, err := m.s.Svc.HeldPasskeys(ctx, u); err != nil {
 			return stepResp{}, err
-		} else if all > 0 {
+		} else if held > 0 {
 			return stepResp{}, errFactorLost
 		}
 		// No factor of their own, and the organization takes a code by email: emailed now, instead of setting one up.

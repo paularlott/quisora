@@ -473,11 +473,13 @@ func (c *Client) ReadAudit(ctx context.Context, q service.AuditQuery) (service.A
 		}
 		order = "action" + dir + ", " + order
 	}
-	rows, err := c.query(ctx, fmt.Sprintf("%s | sort by (%s) | offset %d | limit %d", filter, order, max(q.Offset, 0), max(q.Limit, 1)))
+	// Delivery is at least once, so VictoriaLogs may hold an event twice: each id is kept once (every event has one)
+	// before the page is cut, and counted once, so the pages and the total agree.
+	rows, err := c.query(ctx, fmt.Sprintf("%s | sort by (_time desc) partition by (id) limit 1 | sort by (%s) | offset %d | limit %d",
+		filter, order, max(q.Offset, 0), max(q.Limit, 1)))
 	if err != nil {
 		return service.AuditPage{}, err
 	}
-	// Delivery is at least once, so VictoriaLogs may hold an event twice: count each id once, and list it once.
 	counts, err := c.query(ctx, filter+" | stats count_uniq(id) n")
 	if err != nil {
 		return service.AuditPage{}, err
@@ -486,14 +488,7 @@ func (c *Client) ReadAudit(ctx context.Context, q service.AuditQuery) (service.A
 	if len(counts) == 1 {
 		page.Total, _ = strconv.Atoi(counts[0]["n"])
 	}
-	seen := make(map[string]bool, len(rows))
 	for _, r := range rows {
-		if id := r["id"]; id != "" {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-		}
 		page.Items = append(page.Items, fromRow(r))
 	}
 	return page, nil

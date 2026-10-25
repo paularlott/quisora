@@ -50,7 +50,7 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	established := u.HasTOTP()
 	if !established {
-		n, err := m.s.Svc.Passkeys.Count(r.Context(), u.ID) // any passkey, usable or not (see secondFactor)
+		n, err := m.s.Svc.HeldPasskeys(r.Context(), u) // any passkey of the account, usable or not (see secondFactor)
 		if err != nil {
 			m.internalError(w, r, "count passkeys", err)
 			return nil, nil, nil, false

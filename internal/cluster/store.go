@@ -67,21 +67,7 @@ func (s *Store) quorumKind(rec *store.Record) bool {
 
 // GetMany reads several records in one round trip of the wrapped store (store.MultiGetter), or one by one.
 func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
-	if mg, ok := s.inner.(store.MultiGetter); ok {
-		return mg.GetMany(ctx, kind, ids)
-	}
-	out := make([]*store.Record, 0, len(ids))
-	for _, id := range ids {
-		r, err := s.inner.Get(ctx, kind, id)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
+	return store.GetMany(ctx, s.inner, kind, ids)
 }
 
 // ListDue lists the records due from the wrapped store's due index (store.DueLister), or ErrNoDueIndex.

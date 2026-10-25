@@ -135,11 +135,31 @@ const (
 	OpLT     = "lt"     // a time or integer field is before Value
 )
 
-// MultiGetter is optionally implemented by backends that read several records in one round trip. Table.GetMany uses
-// it where available and falls back to one Get per id.
+// MultiGetter is optionally implemented by backends that read several records in one round trip. GetMany uses it
+// where available and falls back to one Get per id.
 type MultiGetter interface {
 	// GetMany returns the live records of kind among ids, in the order of ids; ids with no live record are left out.
 	GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*Record, error)
+}
+
+// GetMany returns the live records of kind among ids, in the order of ids, leaving out those with none: one read on a
+// backend that reads many at once (MultiGetter), else one Get per id.
+func GetMany(ctx context.Context, s Store, kind model.Kind, ids []string) ([]*Record, error) {
+	if mg, ok := s.(MultiGetter); ok {
+		return mg.GetMany(ctx, kind, ids)
+	}
+	out := make([]*Record, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.Get(ctx, kind, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // ListQuery selects records of one kind.

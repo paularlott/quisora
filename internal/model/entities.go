@@ -872,6 +872,9 @@ type Grant struct {
 	AMR       []string  `msgpack:"amr" json:"amr"`
 	AuthTime  time.Time `msgpack:"at" json:"auth_time"`
 	Counter   uint64    `msgpack:"n" json:"-"`
+	// Rotated is when Counter last moved: the retry grace of the token before the current one runs from it, never
+	// from Updated, which other changes (a re-seal of Key) move too.
+	Rotated time.Time `msgpack:"rt,omitempty" json:"-"`
 	// Key is the grant's refresh token key, random, sealed with the master key (service.GrantKeyBinding); the tokens
 	// are made from it (oidc refreshToken).
 	Key string `msgpack:"rk,omitempty" json:"-"`
