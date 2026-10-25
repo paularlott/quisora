@@ -2,6 +2,8 @@ package login_test
 
 import (
 	"context"
+	"errors"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -18,6 +21,54 @@ type freshInviteGate struct {
 	armed   atomic.Bool
 	entered chan struct{}
 	release chan struct{}
+}
+
+type freshIdentityDeleteFailure struct{ store.Store }
+
+func (s freshIdentityDeleteFailure) Put(ctx context.Context, r *store.Record) error {
+	if r.Kind == model.KindIdentity && r.Deleted {
+		return errors.New("review: identity cleanup unavailable")
+	}
+	return s.Store.Put(ctx, r)
+}
+
+func TestFreshReviewReconnectReplacesIdentityFromResetEpoch(t *testing.T) {
+	e := newUpEnv(t, nil)
+	ctx := context.Background()
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false); in.LinkByEmail = ptr(false) })
+	u := e.user(t, e.org, "reset-connection", model.RoleUser)
+	old := model.NewIdentity(u, p, "reset-sub", u.Email, "connect")
+	if err := e.Svc.Identities.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	base := e.Svc.Store
+	e.Svc.Store = freshIdentityDeleteFailure{Store: base}
+	if err := e.Svc.ResetCredentials(ctx, u.ID); err == nil {
+		t.Fatal("expected injected cleanup failure")
+	}
+	e.Svc.Store = base
+	current, err := e.Svc.Users.Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := e.signedIn(t, current)
+	b.markReauth()
+	res, out := b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
+	wantStatus(t, res, out, 200)
+	authURL := str(out, "url")
+	code := e.oidc.Authorize(authURL, claims("reset-sub", current.Email))
+	parsed, _ := url.Parse(authURL)
+	res, _ = b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(parsed.Query().Get("state")) + "&code=" + url.QueryEscape(code))
+	if res.Header.Get("Location") != "/account?provider=connected#providers" {
+		t.Fatalf("callback: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+	ids, err := e.Svc.CurrentIdentities(ctx, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("successful reconnect left no usable identity: count=%d oldEpoch=%d currentEpoch=%d", len(ids), old.Epoch, current.CredEpoch)
+	}
 }
 
 // CompareAndPut pauses the first acceptance as it stores its passkey: the last step before its commit (the flow
