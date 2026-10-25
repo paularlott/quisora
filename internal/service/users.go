@@ -913,67 +913,51 @@ func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap
 // of the user record is the change: it removes the password, the authenticator app and the recovery codes, gives the
-// account a new credential epoch (model.User.CredEpoch: every passkey, connected provider, API token, session and
-// refresh grant stops counting at that write) and moves the security generation on (every sign-in step, set-up or
-// link in flight ends). Removing the old records follows (ClearCredentials), as tidying: relying parties are told of
-// the ended sessions. Re-inviting a compromised account therefore evicts whoever had it, at once.
+// account new credential and session epochs (model.User.CredEpoch, SessionEpoch: every passkey, connected provider,
+// API token, session and refresh grant stops counting at that write) and moves the security generation on (every
+// sign-in step, set-up or link in flight ends). Removing the records of the epochs it replaced follows
+// (ClearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised account
+// therefore evicts whoever had it, at once.
 func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 	ctx = Durable(ctx)
-	var epoch uint64
 	for attempt := 0; ; attempt++ {
 		u, err := s.Users.Get(ctx, userID)
 		if err != nil {
 			return mapStore(err)
 		}
+		was := *u
 		if u.PasswordHash != "" {
 			now := time.Now().UTC()
 			u.PasswordChangedAt = &now
 		}
 		u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil
-		u.CredEpoch = NewCredEpoch()
+		u.CredEpoch, u.SessionEpoch = NewCredEpoch(), NewCredEpoch()
 		u.BumpSecurity()
 		err = s.Users.Update(ctx, u)
 		if store.Applied(err) {
-			epoch = u.CredEpoch
-			break
+			return s.ClearCredentials(ctx, userID, was.CredEpoch, was.SessionEpoch)
 		}
 		// re-read and retried when a concurrent change (a profile edit, a sign-in's stamp) got there first
 		if !errors.Is(err, store.ErrStale) || attempt == 9 {
 			return mapStore(err)
 		}
 	}
-	return s.ClearCredentials(ctx, userID, epoch)
 }
 
-// ClearCredentials removes the records of the account's credentials made in any epoch but epoch (model.User.CredEpoch)
-// — passkeys, connected providers, API tokens — and ends every session and refresh grant (relying parties are
-// told). Those of another epoch count for nothing already; this tidies them away, and doing it again is harmless.
-// Every removal is tried even when one fails; the errors are returned together. A write that is applied but not yet
-// confirmed by a peer is no failure.
-func (s *Service) ClearCredentials(ctx context.Context, userID string, epoch uint64) error {
+// ClearCredentials removes the records of the account's credentials made in credential epoch cred (passkeys,
+// connected providers, API tokens) and of its sessions and refresh grants made in session epoch sess: the epochs a
+// change of the user record just replaced (model.User.CredEpoch, SessionEpoch). They count for nothing already; this
+// tidies them away, and only them: a record of a later epoch (a later change, or one being made) stays. Relying
+// parties are told of the ended sessions. Doing it again is harmless. Every removal is tried even when one fails; the
+// errors are returned together. A write that is applied but not yet confirmed by a peer is no failure.
+func (s *Service) ClearCredentials(ctx context.Context, userID string, cred, sess uint64) error {
 	ctx = Durable(ctx)
-	var errs []error
+	errs := []error{s.endSessionsOf(ctx, userID, sess)}
 	fail := func(err error) {
-		if !store.Applied(err) {
+		if !store.Applied(err) && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, err)
 		}
-	}
-	fail(s.endUserSessions(ctx, userID, nil))
-	stale := func(r *store.Record) bool {
-		e := model.NewEntity(r.Kind)
-		if store.Decode(r, e) != nil {
-			return true
-		}
-		switch c := e.(type) {
-		case *model.Passkey:
-			return c.Epoch != epoch
-		case *model.Identity:
-			return c.Epoch != epoch
-		case *model.APIToken:
-			return c.Epoch != epoch
-		}
-		return true
 	}
 	for _, k := range []model.Kind{model.KindPasskey, model.KindIdentity, model.KindAPIToken} {
 		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: userID})
@@ -982,15 +966,65 @@ func (s *Service) ClearCredentials(ctx context.Context, userID string, epoch uin
 			continue
 		}
 		for _, r := range res.Records {
-			if !stale(r) {
-				continue
-			}
-			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); !errors.Is(err, store.ErrStale) {
-				fail(err)
+			if e, ok := epochOf(r); ok && e == cred {
+				fail(s.Store.Put(ctx, store.Tombstone(k, r.ID)))
 			}
 		}
 	}
 	return mapStore(errors.Join(errs...))
+}
+
+// endSessionsOf removes the user's sessions and refresh grants made in session epoch sess (one a change of the user
+// record replaced), telling relying parties of the sessions first (back-channel logout).
+func (s *Service) endSessionsOf(ctx context.Context, userID string, sess uint64) error {
+	var errs []error
+	for _, k := range []model.Kind{model.KindSession, model.KindGrant} {
+		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: userID})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list %s: %w", k, err))
+			continue
+		}
+		var ended []string
+		for _, r := range res.Records {
+			if e, ok := epochOf(r); ok && e == sess {
+				ended = append(ended, r.ID)
+			}
+		}
+		if k == model.KindSession && len(ended) > 0 {
+			s.sessionsEnding(ctx, userID, ended)
+		}
+		for _, id := range ended {
+			if err := s.Store.Put(Durable(ctx), store.Tombstone(k, id)); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+				errs = append(errs, fmt.Errorf("end %s %s: %w", k, id, err))
+			}
+		}
+	}
+	err := errors.Join(errs...)
+	if err != nil {
+		s.Log.WithError(err).Error("not every session and refresh grant of the user could be removed", "user", userID)
+	}
+	return err
+}
+
+// epochOf is the epoch a credential, session or refresh grant record was made in (false: another kind, or unreadable).
+func epochOf(r *store.Record) (uint64, bool) {
+	e := model.NewEntity(r.Kind)
+	if store.Decode(r, e) != nil {
+		return 0, false
+	}
+	switch c := e.(type) {
+	case *model.Passkey:
+		return c.Epoch, true
+	case *model.Identity:
+		return c.Epoch, true
+	case *model.APIToken:
+		return c.Epoch, true
+	case *model.Session:
+		return c.Epoch, true
+	case *model.Grant:
+		return c.Epoch, true
+	}
+	return 0, false
 }
 
 // endUserSessions tombstones a user's sessions and refresh grants, except those of the acting session's user when

@@ -102,6 +102,15 @@ func (s *Service) APITokenStamp(ctx context.Context, orgID string) (model.SignOu
 }
 
 // SessionCurrent reports whether a session or refresh grant of orgID with stamp st has not been signed out.
+// SessionUsable is the one test of whether a session still signs its user in, wherever it is used (a browser
+// request, an authorization code or device sign-in redeemed from it): unexpired, its user enabled, made in the
+// account's session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of the account's
+// sign-in), and not ended by an emergency sign-out (its stamp). u must be the session's user, as recently read.
+func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) bool {
+	return sess.UserID == u.ID && sess.Valid(time.Now()) && u.Enabled(time.Now()) && u.SessionHolds(sess.Epoch) &&
+		s.SessionCurrent(ctx, sess.OrgID, sess.Stamp)
+}
+
 func (s *Service) SessionCurrent(ctx context.Context, orgID string, st model.SignOutStamp) bool {
 	want, err := s.SessionStamp(ctx, orgID)
 	return err == nil && st.Current(want)

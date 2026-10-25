@@ -241,10 +241,15 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != cd.OrgID {
 		return nil, "", oerr("invalid_grant", "the user is no longer active")
 	}
-	if s, err := p.svc.Sessions.Get(ctx, cd.SessionID); err != nil || !s.Valid(time.Now()) {
-		if err != nil && !gone(err) {
-			return nil, "", serverError(unavailable(err))
-		}
+	// The grant is the session's authorization carried on: only a session that still signs the user in (not ended by
+	// a password reset, a reset of the account's sign-in or an emergency sign-out, service.SessionUsable) gives one,
+	// and the grant takes the session's epoch and sign-out stamp, never the current ones, so a code redeemed after its
+	// session ended cannot renew what that session lost.
+	sess, err := p.svc.Sessions.Get(ctx, cd.SessionID)
+	if err != nil && !gone(err) {
+		return nil, "", serverError(unavailable(err))
+	}
+	if err != nil || !p.svc.SessionUsable(ctx, sess, u) {
 		return nil, "", oerr("invalid_grant", "the user's session has ended")
 	}
 	org, err := p.org(ctx, cd.OrgID)
@@ -263,16 +268,13 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: u.CredEpoch, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
 		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
 		g.DPoPJKT = jkt // a public client's refresh tokens need the same key from now on (RFC 9449 §5)
 	}
 	g.ID = model.NewID() // the key is sealed bound to the id
-	if g.Stamp, err = p.svc.SessionStamp(ctx, u.OrgID); err != nil {
-		return nil, "", serverError(err)
-	}
 	p.svc.NewGrantKey(g)
 	if err := p.svc.Grants.Create(ctx, g); err != nil {
 		return nil, "", serverError(err)
@@ -299,29 +301,43 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	return tr, g.ID, nil
 }
 
-// grantLive: a grant made without the offline_access scope lasts only as long as the user's browser session (OIDC
-// Core §11: refreshing while the user is away needs offline_access); with it, it outlives the session's expiry.
-// Either way, ending the session (sign-out, revocation) deletes the grant. An error means the answer could not be
-// read (the sign-out counters or the session): the caller answers 503, not "ended".
-func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (bool, error) {
+// grantLive is the one test of whether a refresh grant still stands for its user, wherever one is used (a refresh, an
+// introspection of a refresh token): its user is active and in its organization (read here: also returned), it was
+// granted in the user's current session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of
+// the account's sign-in), it is not ended by an emergency sign-out (its stamp), and one made without the
+// offline_access scope lasts only as long as the browser session it was granted in (OIDC Core §11: refreshing while
+// the user is away needs offline_access), which must still sign the user in (service.SessionUsable). Ending the
+// session (sign-out, revocation) deletes the grant too. An error means the answer could not be read (the user, the
+// sign-out counters or the session): the caller answers 503, not "ended".
+func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, bool, error) {
+	u, err := p.user(ctx, g.UserID)
+	if err != nil {
+		if gone(err) {
+			return nil, false, nil
+		}
+		return nil, false, unavailable(err)
+	}
+	if !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.SessionHolds(g.Epoch) {
+		return u, false, nil
+	}
 	want, err := p.svc.SessionStamp(ctx, g.OrgID)
 	if err != nil {
-		return false, unavailable(err)
+		return nil, false, unavailable(err)
 	}
 	if !g.Stamp.Current(want) { // ended by an emergency sign-out
-		return false, nil
+		return u, false, nil
 	}
 	if slices.Contains(g.Scopes, "offline_access") {
-		return true, nil
+		return u, true, nil
 	}
 	s, err := p.svc.Sessions.Get(ctx, g.SessionID)
 	if err != nil {
 		if gone(err) {
-			return false, nil
+			return u, false, nil
 		}
-		return false, unavailable(err)
+		return nil, false, unavailable(err)
 	}
-	return s.Valid(time.Now()), nil
+	return u, p.svc.SessionUsable(ctx, s, u), nil
 }
 
 // revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it. The error is the deletion's: a
@@ -463,7 +479,8 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok {
 		return nil, invalid
 	}
-	if live, err := p.grantLive(ctx, g); err != nil {
+	u, live, err := p.grantLive(ctx, g)
+	if err != nil {
 		return nil, serverError(err) // not known to have ended: the client keeps the token and retries
 	} else if !live {
 		return nil, invalid
@@ -495,13 +512,6 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
 			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", rerr == nil)
 		}
-		return nil, invalid
-	}
-	u, err := p.user(ctx, g.UserID)
-	if err != nil && !gone(err) {
-		return nil, serverError(unavailable(err))
-	}
-	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.Holds(g.Epoch) {
 		return nil, invalid
 	}
 	org, err := p.org(ctx, g.OrgID)

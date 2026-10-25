@@ -99,6 +99,10 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	}
 	now := time.Now()
 	known := map[ownerRef]bool{} // owners seen to exist in this batch
+	holders, err := s.epochHolders(ctx, res.Records)
+	if err != nil {
+		return 0, err
+	}
 	removed := 0
 	for _, r := range res.Records {
 		e := model.NewEntity(kind)
@@ -114,7 +118,9 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 		if now.Sub(e.GetMeta().Updated) < sweepMinAge {
 			continue
 		}
-		if s.epochPassed(ctx, e) { // a credential of an earlier credential epoch of its account: counts for nothing
+		if passed, err := s.epochPassed(ctx, e, holders); err != nil {
+			return removed, err
+		} else if passed { // of an epoch its account has moved past: counts for nothing
 			if err := s.removeOrphan(ctx, e); err != nil {
 				return removed, err
 			}
@@ -144,27 +150,79 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	return removed, nil
 }
 
-// epochPassed reports whether e is a credential made in a credential epoch its account has moved past
-// (model.User.CredEpoch: its sign-in was reset, or an invitation acceptance that lost stored it).
-func (s *Service) epochPassed(ctx context.Context, e model.Entity) bool {
-	var userID string
-	var epoch uint64
+// credEpoch returns the account and epoch of a credential (passkey, connected provider, API token: the account's
+// CredEpoch) or a session or refresh grant (its SessionEpoch); false for the other kinds.
+func credEpoch(e model.Entity) (userID string, epoch uint64, session, ok bool) {
 	switch c := e.(type) {
 	case *model.Passkey:
-		userID, epoch = c.UserID, c.Epoch
+		return c.UserID, c.Epoch, false, true
 	case *model.Identity:
-		userID, epoch = c.UserID, c.Epoch
+		return c.UserID, c.Epoch, false, true
 	case *model.APIToken:
-		userID, epoch = c.UserID, c.Epoch
+		return c.UserID, c.Epoch, false, true
 	case *model.Session:
-		userID, epoch = c.UserID, c.Epoch
+		return c.UserID, c.Epoch, true, true
 	case *model.Grant:
-		userID, epoch = c.UserID, c.Epoch
-	default:
-		return false
+		return c.UserID, c.Epoch, true, true
 	}
-	u, err := s.FreshUser(ctx, userID) // a quorum's copy: an epoch this node has not received yet is not missed
-	return err == nil && !u.Holds(epoch)
+	return "", 0, false, false
+}
+
+// epochHolders reads, in one read of this node's copies, the accounts of the batch's credentials, sessions and
+// refresh grants (by id).
+func (s *Service) epochHolders(ctx context.Context, recs []*store.Record) (map[string]*model.User, error) {
+	seen := map[string]bool{}
+	var ids []string
+	for _, r := range recs {
+		e := model.NewEntity(r.Kind)
+		if store.Decode(r, e) != nil {
+			continue
+		}
+		if id, _, _, ok := credEpoch(e); ok && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	out := map[string]*model.User{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	us, err := s.Users.GetMany(ctx, ids)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	for _, u := range us {
+		out[u.ID] = u
+	}
+	return out, nil
+}
+
+// epochPassed reports whether e is a credential, session or refresh grant of an epoch its account has moved past
+// (model.User.CredEpoch, SessionEpoch: its sign-in was reset, its password reset, or an invitation acceptance that
+// lost stored it). This node's copy of the account (holders) decides which to look at; a quorum's copy confirms it
+// before the answer is yes, so an epoch this node has not received yet never removes a record that counts.
+func (s *Service) epochPassed(ctx context.Context, e model.Entity, holders map[string]*model.User) (bool, error) {
+	userID, epoch, session, ok := credEpoch(e)
+	if !ok {
+		return false, nil
+	}
+	holds := func(u *model.User) bool {
+		if session {
+			return u.SessionHolds(epoch)
+		}
+		return u.Holds(epoch)
+	}
+	if u, here := holders[userID]; !here || holds(u) {
+		return false, nil // current here (or the account is gone here: the owner check decides)
+	}
+	u, err := s.FreshUser(ctx, userID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !holds(u), nil
 }
 
 // ownerGone reports whether o no longer exists: missing here, and missing or deleted in a quorum's copies (a record

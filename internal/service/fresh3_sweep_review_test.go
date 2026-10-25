@@ -40,7 +40,7 @@ func TestFreshReviewSweepReadsSameEpochOwnerPerCredential(t *testing.T) {
 	if err := s.Orgs.Create(ctx, org); err != nil {
 		t.Fatal(err)
 	}
-	u := &model.User{OrgID: org.ID, Username: "owner", Email: "owner@example.test", CredEpoch: 7}
+	u := &model.User{OrgID: org.ID, Username: "owner", Email: "owner@example.test", CredEpoch: 7, SessionEpoch: 7}
 	if err := s.Users.Create(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -64,4 +64,7 @@ func TestFreshReviewSweepReadsSameEpochOwnerPerCredential(t *testing.T) {
 		t.Fatalf("removed=%d err=%v", n, err)
 	}
 	t.Logf("valid sessions=100, distinct owners=1, serial quorum Fresh calls=%d", st.calls)
+	if st.calls != 0 { // the batch's owners are read once, from this node; a quorum read only confirms a removal
+		t.Fatalf("%d quorum reads for a batch of current sessions", st.calls)
+	}
 }

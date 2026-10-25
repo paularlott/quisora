@@ -12,8 +12,8 @@ import (
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
-// A session made in an earlier credential epoch stops working at the user write that moves the epoch on (an accepted
-// invitation, a reset of the account's sign-in), whether or not its record has been removed yet.
+// A session made in an earlier session epoch stops working at the user write that moves the epoch on (a password
+// reset, an accepted invitation, a reset of the account's sign-in), whether or not its record has been removed yet.
 func TestSessionOfPassedEpoch(t *testing.T) {
 	ctx := context.Background()
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
@@ -26,7 +26,7 @@ func TestSessionOfPassedEpoch(t *testing.T) {
 	if err := svc.Users.Create(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	sess := &model.Session{Meta: model.Meta{ID: "epoch-session"}, UserID: u.ID, OrgID: org.ID, Epoch: u.CredEpoch,
+	sess := &model.Session{Meta: model.Meta{ID: "epoch-session"}, UserID: u.ID, OrgID: org.ID, Epoch: u.SessionEpoch,
 		AuthTime: time.Now(), LastSeen: time.Now(), Expires: time.Now().Add(time.Hour)}
 	if err := svc.Sessions.Create(ctx, sess); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestSessionOfPassedEpoch(t *testing.T) {
 	if got, _ := m.Lookup(ctx, sess.ID); got == nil {
 		t.Fatal("a session of the current epoch is refused")
 	}
-	u.CredEpoch = service.NewCredEpoch()
+	u.SessionEpoch = service.NewCredEpoch()
 	if err := svc.Users.Update(ctx, u); err != nil {
 		t.Fatal(err)
 	}

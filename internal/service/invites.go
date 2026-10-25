@@ -161,9 +161,9 @@ func NewCredEpoch() uint64 {
 
 // UseSignInLink accepts an invitation or a password reset (purpose) with token: it is the commit of the whole change,
 // one compare-and-swap of the user record that sets the new password (none: "", an invitation that sets up a passkey
-// instead), for an invitation also gives the account the credential epoch epoch (NewCredEpoch: every earlier passkey,
-// connected provider, API token, session and refresh grant stops counting, and the passkey the flow stored for epoch
-// starts), removes the authenticator app and the recovery codes, proves the address the link was sent to,
+// instead), gives the account a new session epoch (every session and refresh grant stops counting), for an invitation
+// also the credential epoch epoch (NewCredEpoch: every earlier passkey, connected provider and API token stops
+// counting, and the passkey the flow stored for epoch starts), removes the authenticator app and the recovery codes, proves the address the link was sent to,
 // re-enables the account of a break-glass invitation, and moves the account's security generation on. That move is
 // what uses the link up, and every other invitation or reset link of the account with it (they are bound to the
 // generation: PeekLink). Until then nothing of the account has changed and the link works: a failure before it is
@@ -191,9 +191,11 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 			u.PasswordChangedAt = &now
 		}
 		u.PasswordHash = hash
+		was := *u
+		u.SessionEpoch = NewCredEpoch() // the account's sessions and refresh grants end at this write
 		if purpose == LinkInvite {
 			u.TOTPSecret, u.MFAEnrolledAt, u.RecoveryCodes, u.RecoveryCreated = "", nil, nil, nil
-			u.CredEpoch = epoch
+			u.CredEpoch = epoch // and every credential, but the passkey stored for epoch
 		}
 		if l.Email != "" && strings.EqualFold(l.Email, u.Email) {
 			u.EmailVerified = true // the link went to this address: it is proven
@@ -213,11 +215,11 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 		if !store.Applied(err) {
 			return nil, nil, mapStore(err)
 		}
+		// Tidying, of what this write replaced and nothing later: the old epochs' records.
 		if purpose == LinkInvite {
-			// Tidying: the old credentials count no more (their epoch has passed); their records go.
-			_ = s.ClearCredentials(ctx, u.ID, u.CredEpoch)
+			_ = s.ClearCredentials(ctx, u.ID, was.CredEpoch, was.SessionEpoch)
 		} else {
-			_ = s.endUserSessions(ctx, u.ID, nil) // a new password ends the account's sessions and refresh grants
+			_ = s.endSessionsOf(ctx, u.ID, was.SessionEpoch)
 		}
 		_ = s.Links.DeleteIf(ctx, l.ID, l.Version) // tidying only, and only this link: a newer one issued since stays
 		return l, u, nil

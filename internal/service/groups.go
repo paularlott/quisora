@@ -636,23 +636,20 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 }
 
 // UserGroups returns the groups a user belongs to (no permission check: used to build tokens, SCIM and admin
-// views): the user's membership records, with the pending changes of the organization's groups applied over them,
-// and each group as it is. A membership and its group must come from the same moment, or a result could pair a
-// membership from before a change with the group from after it (a user removed from a group that was given a tag
-// in the same change, with the tag). A group's change numbers (Group.Seq) say when: a membership record written by
-// the group's latest change, or one the group's pending log still decides, matches the group read; one the group
-// has moved past may be older than the group (this node has the group's later change but not yet, or not as read,
-// the membership it wrote), so it is read again from a quorum's copies, which hold every change the group lists as
-// done (a change is materialized, its membership records confirmed, before it leaves the pending log).
+// views), each group as it is at a moment when the user is a member of it: a result never pairs a membership with a
+// group from another moment (a user removed from a group that was given a tag in the same change must not get the
+// tag, nor one re-added after a change that took a tag away keep it). Each group is matched with the user's
+// membership by the group's change numbers (memberAt); the user's memberships and the groups with pending changes
+// are read from this node, and quorum reads settle what they cannot.
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
 	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	seq := make(map[string]uint64, len(ms)) // group id -> the change that wrote the membership
+	mine := make(map[string]*model.Member, len(ms))
 	ids := make([]string, 0, len(ms))
 	for _, m := range ms {
-		seq[m.GroupID] = m.Seq
+		mine[m.GroupID] = m
 		ids = append(ids, m.GroupID)
 	}
 	pending, _, err := s.Groups.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "pending", Value: true}}})
@@ -660,7 +657,7 @@ func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group
 		return nil, mapStore(err)
 	}
 	for _, g := range pending {
-		if member, decided := g.PendingMember(u.ID); decided && member && !slices.Contains(ids, g.ID) {
+		if member, decided := g.PendingMember(u.ID); decided && member && mine[g.ID] == nil {
 			ids = append(ids, g.ID)
 		}
 	}
@@ -669,59 +666,98 @@ func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	var recheck []string // memberships the group has moved past: read again
-	gs = slices.DeleteFunc(gs, func(g *model.Group) bool {
-		if member, decided := g.PendingMember(u.ID); decided {
-			return !member
-		}
-		if seq[g.ID] < g.Seq {
-			recheck = append(recheck, model.MemberID(g.ID, u.ID))
-		}
-		return false
-	})
-	if len(recheck) > 0 {
-		current, err := s.currentMembers(ctx, recheck)
+	out := make([]*model.Group, 0, len(gs))
+	for _, g := range gs {
+		g, member, err := s.memberAt(ctx, u.ID, g, mine[g.ID])
 		if err != nil {
 			return nil, err
 		}
-		gs = slices.DeleteFunc(gs, func(g *model.Group) bool {
-			id := model.MemberID(g.ID, u.ID)
-			return slices.Contains(recheck, id) && !current[id]
-		})
-	}
-	if gs == nil {
-		gs = []*model.Group{}
-	}
-	return gs, nil
-}
-
-// currentMembers reads memberships by id from a quorum's copies (store.QuorumReader; this store's own without a
-// cluster) and reports which are live, active memberships.
-func (s *Service) currentMembers(ctx context.Context, ids []string) (map[string]bool, error) {
-	out := make(map[string]bool, len(ids))
-	qr, ok := s.Store.(store.QuorumReader)
-	if !ok {
-		ms, err := s.Members.GetMany(ctx, ids)
-		if err != nil {
-			return nil, mapStore(err)
-		}
-		for _, m := range ms {
-			out[m.ID] = m.Active()
-		}
-		return out, nil
-	}
-	recs, err := qr.Fresh(ctx, model.KindMember, ids)
-	if err != nil {
-		return nil, mapStore(err)
-	}
-	now := time.Now()
-	for id, r := range recs {
-		var m model.Member
-		if r.Live(now) && store.Decode(r, &m) == nil {
-			out[id] = m.Active()
+		if member {
+			out = append(out, g)
 		}
 	}
 	return out, nil
+}
+
+// memberAt returns a group and whether the user is its member at the same moment, starting from a copy of the group
+// and of the membership (nil: none read). A group's changes are numbered (Group.Seq); a membership record carries the
+// number of the change that last wrote it, and a change is materialized (its membership records written and
+// confirmed) before it leaves the group's pending log. So: the group's pending log decides the user's membership in
+// the group as read; a membership written by the group's latest change matches it; one read from a quorum after the
+// group, and written by a change no later than the group's latest, is the membership as of that group (a later change
+// of the user's membership would have written a later number); one written by a later change than the group's means
+// the group read is older, and the group is read again from a quorum.
+func (s *Service) memberAt(ctx context.Context, userID string, g *model.Group, m *model.Member) (*model.Group, bool, error) {
+	fresh := false // m was read from a quorum after g
+	for range 8 {
+		if member, decided := g.PendingMember(userID); decided {
+			return g, member, nil
+		}
+		var seq uint64
+		if m != nil {
+			seq = m.Seq
+		}
+		switch {
+		case seq == g.Seq && m != nil, seq < g.Seq && fresh, seq == 0 && g.Seq == 0:
+			return g, m != nil && m.Active(), nil
+		case seq < g.Seq: // the group has moved past this copy: read the membership from a quorum, after the group
+			var err error
+			if m, err = s.freshMember(ctx, model.MemberID(g.ID, userID)); err != nil {
+				return nil, false, err
+			}
+			fresh = true
+		default: // the membership is newer than the group read: read the group again, from a quorum
+			fg, err := s.freshGroup(ctx, g.ID)
+			if err != nil {
+				return nil, false, err
+			}
+			if fg == nil {
+				return g, false, nil // deleted since
+			}
+			g, fresh = fg, false
+		}
+	}
+	return nil, false, fmt.Errorf("%w: the group's members keep changing", ErrUnavailable)
+}
+
+// freshMember reads a membership from a quorum's copies (this store's own without a cluster); nil when there is none.
+func (s *Service) freshMember(ctx context.Context, id string) (*model.Member, error) {
+	m := &model.Member{}
+	if ok, err := s.freshRecord(ctx, model.KindMember, id, m); err != nil || !ok {
+		return nil, err
+	}
+	return m, nil
+}
+
+// freshGroup reads a group from a quorum's copies (this store's own without a cluster); nil when it is gone.
+func (s *Service) freshGroup(ctx context.Context, id string) (*model.Group, error) {
+	g := &model.Group{}
+	if ok, err := s.freshRecord(ctx, model.KindGroup, id, g); err != nil || !ok {
+		return nil, err
+	}
+	return g, nil
+}
+
+// freshRecord reads a live record into e from a quorum's copies (store.QuorumReader; this store's own without a
+// cluster), reporting whether there is one.
+func (s *Service) freshRecord(ctx context.Context, kind model.Kind, id string, e model.Entity) (bool, error) {
+	var r *store.Record
+	if qr, ok := s.Store.(store.QuorumReader); ok {
+		recs, err := qr.Fresh(ctx, kind, []string{id})
+		if err != nil {
+			return false, mapStore(err)
+		}
+		r = recs[id]
+	} else {
+		var err error
+		if r, err = s.Store.Get(ctx, kind, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return false, mapStore(err)
+		}
+	}
+	if r == nil || !r.Live(time.Now()) {
+		return false, nil
+	}
+	return true, store.Decode(r, e)
 }
 
 // dedupe returns ids without repeats, in their first order.

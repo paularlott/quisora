@@ -257,7 +257,11 @@ larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
 **What readers see.** Every reader of memberships (the groups of a user for tokens and tenant access, a group's
 members, member counts, SCIM resources) reads the group's record and applies its pending entries over the
 membership records, so it observes exactly the committed changes: never one that failed (nothing of it was written)
-and never a committed one in part. A committed removal is in force the moment the commit succeeds, materialized or
+and never a committed one in part. A user's groups for tokens are read group by group, each matched with the user's
+membership at the same moment by the group's change numbers (a membership record carries the number of the change
+that wrote it): a membership older than the group read is read again from a quorum, and a group older than the
+membership read is read again from a quorum, until they agree, so a user never gets a group's tags from a moment they
+were not its member. A committed removal is in force the moment the commit succeeds, materialized or
 not; a committed addition is seen the same way (a user's groups include the organization's groups with pending
 entries, one indexed read, normally empty). A membership of a group that no longer exists names no group and grants
 nothing. The group's version, its SCIM ETag, moves at the commit and once more when the entry is cleared (normally
@@ -276,13 +280,18 @@ the record it replaces). One is used up by the commit of the change it makes, a 
 record that moves the account's security generation on (`service.UseSignInLink`): a link presented to two nodes at
 once is used once, and a failure before the commit leaves it usable.
 
-The user record is also the one commit point for which of an account's credentials count. Every passkey, connected
-provider, API token, session and refresh grant carries the account's **credential epoch** it was made in
-(`model.User.CredEpoch`), and works only while that is the account's. An accepted invitation (or a reset of the
-account's sign-in) gives the account a new random epoch in its commit: every earlier credential stops at that write,
-on every node that has it, and the passkey the invitation stored for the new epoch beforehand starts. Of two
-acceptances racing, only the winner's epoch is committed; the loser's passkey never counts, and is tidied away.
-Removing the old credentials' records afterwards is tidying (the orphan sweep finishes it after a crash).
+The user record is also the one commit point for which of an account's credentials and sign-ins count. Every
+passkey, connected provider and API token carries the account's **credential epoch** it was made in
+(`model.User.CredEpoch`); every session carries its **session epoch** (`SessionEpoch`). Each works only while its
+epoch is the account's. A password reset gives the account a new session epoch in its commit; an accepted invitation
+(or a reset of the account's sign-in) new epochs of both: every earlier session or credential stops at that write, on
+every node that has it, and the passkey an invitation stored for its new epoch beforehand starts. Of two acceptances
+racing, only the winner's epoch is committed; the loser's passkey never counts. A refresh grant carries the session
+epoch and the sign-out stamp of the session it was granted in, never the current ones: an authorization code or
+device sign-in is redeemed only while its session still signs the user in (`service.SessionUsable`, the one test of
+a session, also for browsers), so a code cannot outlive, or renew, what its session lost. Removing old records after a
+change is tidying of the epochs that change replaced and of no other, so a late tidying never touches what a later
+change made (the orphan sweep finishes it after a crash, and removes a losing acceptance's passkey).
 
 ## Other writes
 

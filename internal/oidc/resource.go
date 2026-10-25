@@ -476,16 +476,10 @@ func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, 
 	if !ok {
 		return inactive, nil
 	}
-	if live, err := p.grantLive(ctx, g); err != nil {
+	u, live, err := p.grantLive(ctx, g)
+	if err != nil {
 		return nil, err
 	} else if !live {
-		return inactive, nil
-	}
-	u, err := p.user(ctx, g.UserID)
-	if err != nil && !gone(err) {
-		return nil, unavailable(err)
-	}
-	if err != nil || !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.Holds(g.Epoch) {
 		return inactive, nil
 	}
 	app, err := p.appAccess(ctx, caller, nil, u)

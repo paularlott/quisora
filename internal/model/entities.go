@@ -165,18 +165,25 @@ type User struct {
 	// racing to set a first factor cannot both succeed. (The role, address and end date are not credentials: each
 	// step judges them afresh from the live user.)
 	SecurityGen uint64 `msgpack:"sg,omitempty" json:"-"`
-	// CredEpoch says which of the account's credentials count: a passkey, connected provider, API token, session or
-	// refresh grant works only while its own Epoch is this one (Holds). Every one is made with the account's epoch;
-	// replacing every way in at once (an accepted invitation, a reset of the account's sign-in) gives the account a
-	// new random epoch in the same compare-and-swap of this record that sets its password, so all the old ones stop
-	// working at that very write, and a passkey stored for the new epoch beforehand starts working at it, whatever
-	// happens to the records themselves (removing them afterwards is only tidying). The user record is the one
-	// commit point for which credentials are valid.
-	CredEpoch uint64 `msgpack:"ce,omitempty" json:"-"`
+	// CredEpoch and SessionEpoch say which of the account's credentials and sign-ins count. A passkey, connected
+	// provider or API token works only while its Epoch is the account's CredEpoch (Holds); a session or refresh grant
+	// only while its Epoch is the account's SessionEpoch (SessionHolds). Each is made with the account's epoch as it is
+	// then. A change that ends them all gives the account a new random epoch in the same compare-and-swap of this
+	// record that makes the change — an accepted invitation or a reset of the account's sign-in both epochs, a
+	// password reset the session epoch — so the old ones stop working at that very write, and a passkey stored for the
+	// new epoch beforehand starts working at it, whatever happens to the records themselves: removing them afterwards
+	// is only tidying, of the epoch that write replaced and no other. The user record is the one commit point for which
+	// credentials and sign-ins are valid.
+	CredEpoch    uint64 `msgpack:"ce,omitempty" json:"-"`
+	SessionEpoch uint64 `msgpack:"se,omitempty" json:"-"`
 }
 
-// Holds reports whether a credential made in epoch still counts for the account (CredEpoch).
+// Holds reports whether a credential (passkey, connected provider, API token) made in epoch still counts for the
+// account (CredEpoch).
 func (u *User) Holds(epoch uint64) bool { return epoch == u.CredEpoch }
+
+// SessionHolds reports whether a session or refresh grant made in epoch still counts for the account (SessionEpoch).
+func (u *User) SessionHolds(epoch uint64) bool { return epoch == u.SessionEpoch }
 
 // BumpSecurity moves the account on to its next security generation (SecurityGen); the caller writes the user.
 func (u *User) BumpSecurity() { u.SecurityGen++ }
@@ -736,7 +743,7 @@ func IdentityKey(providerID, subject string) string { return providerID + "/" + 
 
 type Session struct {
 	Meta
-	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	// Epoch is the account's session epoch it was made in (User.SessionEpoch): it works only while that is current.
 	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
 	UserID    string    `msgpack:"ui" json:"user_id"`
 	OrgID     string    `msgpack:"o" json:"org_id"`
@@ -786,7 +793,8 @@ func (s *Session) Valid(now time.Time) bool {
 
 type Grant struct {
 	Meta
-	// Epoch is the account's credential epoch it was made in (User.CredEpoch): it works only while that is current.
+	// Epoch is the session epoch of the sign-in it was granted in (User.SessionEpoch): it works only while that is
+	// current.
 	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
 	ClientID  string    `msgpack:"ci" json:"client_id"`
 	UserID    string    `msgpack:"ui" json:"user_id"`

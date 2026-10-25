@@ -287,7 +287,7 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 		}
 		p.grants.put(id, st)
 	}
-	if !st.alive || !u.Holds(st.epoch) { // (a grant from before the user's sign-in was reset: model.User.CredEpoch)
+	if !st.alive || !u.SessionHolds(st.epoch) { // (a grant of an ended session epoch: model.User.SessionEpoch)
 		return false, nil
 	}
 	// The stamp is compared on every use, cached or not: an emergency sign-out ends the grant's tokens at once.
@@ -304,7 +304,7 @@ type grantState struct {
 	alive bool
 	org   string
 	stamp model.SignOutStamp
-	epoch uint64 // the user's credential epoch it was made in
+	epoch uint64 // the session epoch it was granted in
 }
 
 // ---------------------------------------------------------------------------------------------------------------
