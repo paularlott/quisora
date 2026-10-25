@@ -126,13 +126,12 @@ func toCredential(p *model.Passkey) webauthn.Credential {
 }
 
 func (s *Service) loadUser(ctx context.Context, u *model.User) (*waUser, []*model.Passkey, error) {
-	pks, err := s.svc.Passkeys.All(ctx, u.ID)
+	// Only the passkeys that count (service.CurrentPasskeys: one made before the account's sign-in was reset, or stored
+	// by an invitation acceptance that lost, is not offered and does not sign in).
+	pks, err := s.svc.CurrentPasskeys(ctx, u)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Only the passkeys of the account's credential epoch count (model.User.CredEpoch): one made before its sign-in
-	// was reset, or stored by an invitation acceptance that lost, is not offered and does not sign in.
-	pks = slices.DeleteFunc(pks, func(p *model.Passkey) bool { return !u.Holds(p.Epoch) })
 	w := &waUser{u: u, creds: make([]webauthn.Credential, 0, len(pks))}
 	for _, p := range pks {
 		w.creds = append(w.creds, toCredential(p))
@@ -483,7 +482,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		// deletes it and adds their authenticator again (the account page says why), and every session it signed in
 		// ends — the copy's holder may be one of them.
 		s.disable(ctx, pk)
-		if _, err := s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID); err != nil {
+		if _, err := s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID, ""); err != nil {
 			s.svc.Log.WithError(err).Error("passkey clone detected; not every session it signed in could be ended", "user", pk.UserID, "passkey", pk.ID)
 		}
 		return &LoginResult{User: user, Passkey: pk}, ErrCloneDetected

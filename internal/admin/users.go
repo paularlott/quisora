@@ -169,7 +169,7 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, http.StatusOK, view)
 		return
 	}
-	if pks, err := m.s.Svc.Passkeys.All(r.Context(), u.ID); err == nil {
+	if pks, err := m.s.Svc.CurrentPasskeys(r.Context(), u); err == nil {
 		n := len(pks)
 		view.Passkeys = &n
 	}
@@ -802,7 +802,7 @@ func (m *Module) removeUserPasskey(w http.ResponseWriter, r *http.Request) {
 	if !proceed {
 		return
 	}
-	if _, err := m.s.Svc.RemovePasskey(ctx, a, u.ID, r.PathValue("passkey")); err != nil {
+	if _, err := m.s.Svc.RemovePasskey(ctx, a, u.ID, r.PathValue("passkey"), ""); err != nil {
 		web.WriteError(w, err)
 		return
 	}

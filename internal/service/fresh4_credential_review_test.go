@@ -26,7 +26,7 @@ func TestFresh4LastPasskeyGuardIgnoresPassedEpoch(t *testing.T) {
 	}
 	current := makeKey("current", u.CredEpoch)
 	makeKey("superseded", 0)
-	_, err := e.svc.RemovePasskey(service.SelfService(e.ctx), actor(u), u.ID, current.ID)
+	_, err := e.svc.RemovePasskey(service.SelfService(e.ctx), actor(u), u.ID, current.ID, "")
 	if err == nil {
 		remaining, readErr := e.svc.Passkeys.All(e.ctx, u.ID)
 		if readErr != nil {

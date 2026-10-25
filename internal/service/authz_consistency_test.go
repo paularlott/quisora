@@ -127,7 +127,7 @@ func TestEndPasskeySessionsReportsFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.svc.Grants.S = failOneDelete{Store: e.svc.Grants.S, id: g.ID}
-	n, err := e.svc.EndPasskeySessions(e.ctx, u.ID, "pk1")
+	n, err := e.svc.EndPasskeySessions(e.ctx, u.ID, "pk1", "")
 	if err == nil {
 		t.Fatalf("the grant's deletion failed but nothing was reported (ended %d)", n)
 	}

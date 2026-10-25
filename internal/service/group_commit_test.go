@@ -153,7 +153,7 @@ func TestHousekeepingFinishesAbandonedGroupChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A writer that died right after its commit: the record carries the entry, no membership exists.
-	g.Seq, g.Pending = 1, []model.GroupChange{{Op: "op", Seq: 1, At: time.Now().Add(-time.Minute), Add: []string{u.ID}}}
+	g.Seq, g.Pending = 1, []model.GroupChange{{Seq: 1, At: time.Now().Add(-time.Minute), Add: []string{u.ID}}}
 	if err := e.svc.Groups.Update(e.ctx, g); err != nil {
 		t.Fatal(err)
 	}

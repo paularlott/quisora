@@ -64,7 +64,7 @@ func recoveryHash(userID, norm string) string {
 // only time they are seen. u must have a second factor (an authenticator app or a passkey): the codes stand in for
 // it.
 func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.User) ([]string, error) {
-	n, err := s.UsablePasskeys(ctx, u.ID, "")
+	n, err := s.UsablePasskeys(ctx, u, "")
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (s *Service) DropRecoveryCodes(ctx context.Context, userID string) error {
 		if len(u.RecoveryCodes) == 0 || u.HasTOTP() {
 			return nil
 		}
-		if n, err := s.UsablePasskeys(ctx, userID, ""); err != nil || n > 0 {
+		if n, err := s.UsablePasskeys(ctx, u, ""); err != nil || n > 0 {
 			return err
 		}
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil

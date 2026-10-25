@@ -110,7 +110,7 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 	var entry *model.GroupChange
 	if len(members) > 0 {
 		g.Seq = 1
-		entry = &model.GroupChange{Op: model.NewID(), Seq: 1, At: time.Now().UTC(), Add: members}
+		entry = &model.GroupChange{Seq: 1, At: time.Now().UTC(), Add: members}
 		g.Pending = []model.GroupChange{*entry}
 	}
 	if err := s.Groups.Create(ctx, g); err != nil {
@@ -171,7 +171,7 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	next := *g
 	next.Tags = slices.Clone(g.Tags)
 	next.Seq = g.Seq + 1
-	next.Pending = append(remaining, model.GroupChange{Op: model.NewID(), Seq: next.Seq, At: time.Now().UTC(), Clear: true})
+	next.Pending = append(remaining, model.GroupChange{Seq: next.Seq, At: time.Now().UTC(), Clear: true})
 	if err := s.Groups.Update(ctx, &next); err != nil {
 		return mapStore(err)
 	}
@@ -378,7 +378,7 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 			return nil, err
 		}
 	}
-	entry := model.GroupChange{Op: model.NewID(), Seq: g.Seq + 1, At: time.Now().UTC()}
+	entry := model.GroupChange{Seq: g.Seq + 1, At: time.Now().UTC()}
 	for _, c := range []struct {
 		ids    []string
 		member bool
@@ -666,98 +666,105 @@ func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	out := make([]*model.Group, 0, len(gs))
+	return s.membersAt(ctx, u.ID, gs, mine)
+}
+
+// membersAt returns the groups of gs the user is a member of, each as it is at a moment it says so, starting from
+// copies of the groups and of the user's memberships (mine, by group id). A group's changes are numbered (Group.Seq);
+// a membership record carries the number of the change that last wrote it, and a change is materialized (its
+// membership records written and confirmed) before it leaves the group's pending log. So, for each group: its
+// pending log decides the user's membership in the group as read; a membership written by the group's latest change
+// matches it; a membership read from a quorum after the group, written by a change no later than the group's latest,
+// is the membership as of that group (a later change of the user's membership would have written a later number);
+// and one written by a later change than the group's means the group read is older, and the group is read again from
+// a quorum. The reads a round needs are made together: one quorum read of the memberships to read again, one of the
+// groups.
+func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Group, mine map[string]*model.Member) ([]*model.Group, error) {
+	type pair struct {
+		g     *model.Group
+		m     *model.Member
+		fresh bool // m was read from a quorum after g
+	}
+	open := make([]*pair, 0, len(gs))
 	for _, g := range gs {
-		g, member, err := s.memberAt(ctx, u.ID, g, mine[g.ID])
+		open = append(open, &pair{g: g, m: mine[g.ID]})
+	}
+	out := []*model.Group{}
+	for range 8 {
+		var readM, readG []*pair
+		next := open[:0]
+		for _, p := range open {
+			if member, decided := p.g.PendingMember(userID); decided {
+				if member {
+					out = append(out, p.g)
+				}
+				continue
+			}
+			var seq uint64
+			if p.m != nil {
+				seq = p.m.Seq
+			}
+			switch {
+			case seq == p.g.Seq && p.m != nil, seq < p.g.Seq && p.fresh, seq == 0 && p.g.Seq == 0:
+				if p.m != nil && p.m.Active() {
+					out = append(out, p.g)
+				}
+				continue
+			case seq < p.g.Seq: // the group has moved past this copy: read the membership again, after the group
+				readM = append(readM, p)
+			default: // the membership is newer than the group read: read the group again
+				readG = append(readG, p)
+			}
+			next = append(next, p)
+		}
+		open = next
+		if len(open) == 0 {
+			slices.SortFunc(out, func(a, b *model.Group) int { return strings.Compare(a.ID, b.ID) })
+			return out, nil
+		}
+		ids := make([]string, len(readM))
+		for i, p := range readM {
+			ids[i] = model.MemberID(p.g.ID, userID)
+		}
+		recs, err := s.freshMany(ctx, model.KindMember, ids)
 		if err != nil {
 			return nil, err
 		}
-		if member {
-			out = append(out, g)
-		}
-	}
-	return out, nil
-}
-
-// memberAt returns a group and whether the user is its member at the same moment, starting from a copy of the group
-// and of the membership (nil: none read). A group's changes are numbered (Group.Seq); a membership record carries the
-// number of the change that last wrote it, and a change is materialized (its membership records written and
-// confirmed) before it leaves the group's pending log. So: the group's pending log decides the user's membership in
-// the group as read; a membership written by the group's latest change matches it; one read from a quorum after the
-// group, and written by a change no later than the group's latest, is the membership as of that group (a later change
-// of the user's membership would have written a later number); one written by a later change than the group's means
-// the group read is older, and the group is read again from a quorum.
-func (s *Service) memberAt(ctx context.Context, userID string, g *model.Group, m *model.Member) (*model.Group, bool, error) {
-	fresh := false // m was read from a quorum after g
-	for range 8 {
-		if member, decided := g.PendingMember(userID); decided {
-			return g, member, nil
-		}
-		var seq uint64
-		if m != nil {
-			seq = m.Seq
-		}
-		switch {
-		case seq == g.Seq && m != nil, seq < g.Seq && fresh, seq == 0 && g.Seq == 0:
-			return g, m != nil && m.Active(), nil
-		case seq < g.Seq: // the group has moved past this copy: read the membership from a quorum, after the group
-			var err error
-			if m, err = s.freshMember(ctx, model.MemberID(g.ID, userID)); err != nil {
-				return nil, false, err
+		for _, p := range readM {
+			p.m, p.fresh = nil, true
+			if r, ok := recs[model.MemberID(p.g.ID, userID)]; ok {
+				m := &model.Member{}
+				if err := store.Decode(r, m); err != nil {
+					return nil, err
+				}
+				p.m = m
 			}
-			fresh = true
-		default: // the membership is newer than the group read: read the group again, from a quorum
-			fg, err := s.freshGroup(ctx, g.ID)
-			if err != nil {
-				return nil, false, err
+		}
+		ids = make([]string, len(readG))
+		for i, p := range readG {
+			ids[i] = p.g.ID
+		}
+		if recs, err = s.freshMany(ctx, model.KindGroup, ids); err != nil {
+			return nil, err
+		}
+		kept := open[:0]
+		for _, p := range open {
+			if slices.Contains(readG, p) {
+				r, ok := recs[p.g.ID]
+				if !ok {
+					continue // deleted since
+				}
+				g := &model.Group{}
+				if err := store.Decode(r, g); err != nil {
+					return nil, err
+				}
+				p.g, p.fresh = g, false
 			}
-			if fg == nil {
-				return g, false, nil // deleted since
-			}
-			g, fresh = fg, false
+			kept = append(kept, p)
 		}
+		open = kept
 	}
-	return nil, false, fmt.Errorf("%w: the group's members keep changing", ErrUnavailable)
-}
-
-// freshMember reads a membership from a quorum's copies (this store's own without a cluster); nil when there is none.
-func (s *Service) freshMember(ctx context.Context, id string) (*model.Member, error) {
-	m := &model.Member{}
-	if ok, err := s.freshRecord(ctx, model.KindMember, id, m); err != nil || !ok {
-		return nil, err
-	}
-	return m, nil
-}
-
-// freshGroup reads a group from a quorum's copies (this store's own without a cluster); nil when it is gone.
-func (s *Service) freshGroup(ctx context.Context, id string) (*model.Group, error) {
-	g := &model.Group{}
-	if ok, err := s.freshRecord(ctx, model.KindGroup, id, g); err != nil || !ok {
-		return nil, err
-	}
-	return g, nil
-}
-
-// freshRecord reads a live record into e from a quorum's copies (store.QuorumReader; this store's own without a
-// cluster), reporting whether there is one.
-func (s *Service) freshRecord(ctx context.Context, kind model.Kind, id string, e model.Entity) (bool, error) {
-	var r *store.Record
-	if qr, ok := s.Store.(store.QuorumReader); ok {
-		recs, err := qr.Fresh(ctx, kind, []string{id})
-		if err != nil {
-			return false, mapStore(err)
-		}
-		r = recs[id]
-	} else {
-		var err error
-		if r, err = s.Store.Get(ctx, kind, id); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return false, mapStore(err)
-		}
-	}
-	if r == nil || !r.Live(time.Now()) {
-		return false, nil
-	}
-	return true, store.Decode(r, e)
+	return nil, fmt.Errorf("%w: the user's groups keep changing", ErrUnavailable)
 }
 
 // dedupe returns ids without repeats, in their first order.

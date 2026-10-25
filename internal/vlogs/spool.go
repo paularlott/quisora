@@ -21,7 +21,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +98,7 @@ func (s *spool) list() ([]segment, int64) {
 		out = append(out, segment{name, info.Size()})
 		total += info.Size()
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name }) // names start with the time: age order
+	// (os.ReadDir lists by name, and names start with the time: age order)
 	return out, total
 }
 

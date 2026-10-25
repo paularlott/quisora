@@ -166,7 +166,7 @@ func (m *Module) summary(ctx context.Context, u *model.User) (accountResp, error
 	if org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
 		out.Org.Name, out.Org.Display, out.Org.RequireMFA = org.Name, org.DisplayName, org.Settings.RequireMFA
 	}
-	n, err := m.s.Svc.UsablePasskeys(ctx, u.ID, "")
+	n, err := m.s.Svc.UsablePasskeys(ctx, u, "")
 	if err != nil {
 		return out, err
 	}
@@ -176,7 +176,7 @@ func (m *Module) summary(ctx context.Context, u *model.User) (accountResp, error
 	out.Security.PasskeysAvailable, out.Security.MailAvailable = m.Passkeys != nil, m.Mail != nil
 	out.Security.PasswordsAllowed = m.passwordsAllowed(ctx, u)
 	out.Security.Providers = []string{}
-	if ids, err := m.s.Svc.Identities.All(ctx, u.ID); err == nil {
+	if ids, err := m.s.Svc.CurrentIdentities(ctx, u); err == nil {
 		for _, id := range ids {
 			if p, err := m.s.Svc.Providers.Get(ctx, id.ProviderID); err == nil {
 				out.Security.Providers = append(out.Security.Providers, p.Name)
@@ -540,6 +540,15 @@ func (m *Module) refreshReauth(ctx context.Context, sessID string, gen uint64) {
 // credentialChanged follows a change this session made to a credential kept outside the user record (a passkey or
 // a connected provider, added or removed): the account's security generation moves on, ending whatever is in flight
 // for the account elsewhere, the session's confirmation carries over, and the cached user is dropped.
+// afterCredentialChange keeps the session's re-authentication good after a service operation moved the account's
+// security generation on (a way in removed), and tells the account's other pages.
+func (m *Module) afterCredentialChange(ctx context.Context, a acct) {
+	if fresh, err := m.s.Svc.Users.Get(ctx, a.u.ID); err == nil {
+		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
+	}
+	m.changed(a)
+}
+
 func (m *Module) credentialChanged(ctx context.Context, a acct, userID string) {
 	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, userID); err == nil {
 		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
@@ -565,7 +574,7 @@ func (m *Module) needReauth(w http.ResponseWriter, r *http.Request, a acct) bool
 		if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
 			return true
 		}
-		pk, err := m.s.Svc.UsablePasskeys(ctx, a.u.ID, "")
+		pk, err := m.s.Svc.UsablePasskeys(ctx, a.u, "")
 		if err == nil && !a.u.HasTOTP() && pk == 0 {
 			return true
 		}
@@ -634,7 +643,7 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		}
 	case u.PasswordHash != "":
 		// A passkey as the account's second factor: the password alone is not enough.
-		if n, err := m.s.Svc.UsablePasskeys(ctx, u.ID, ""); err != nil {
+		if n, err := m.s.Svc.UsablePasskeys(ctx, u, ""); err != nil {
 			m.internalError(w, r, "count passkeys", err)
 			return
 		} else if n > 0 && m.Passkeys != nil {
@@ -744,7 +753,7 @@ func passkeyProblem(p *model.Passkey) string {
 }
 
 func (m *Module) listPasskeys(w http.ResponseWriter, r *http.Request, a acct) {
-	list, err := m.s.Svc.Passkeys.All(r.Context(), a.u.ID)
+	list, err := m.s.Svc.CurrentPasskeys(r.Context(), a.u)
 	if err != nil {
 		m.internalError(w, r, "list passkeys", err)
 		return
@@ -806,61 +815,15 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 	if p == nil || !m.needReauth(w, r, a) {
 		return
 	}
-	u, err := m.fresh(ctx, a)
+	// Removed as the service removes any (service.RemovePasskey: the last-way and second-factor guards, the sessions
+	// it signed in, the recovery codes with the last second factor), keeping the session doing it.
+	ended, err := m.s.Svc.RemovePasskey(service.SelfService(ctx), a.actor, a.u.ID, p.ID, a.sess.ID)
+	if err != nil && ended == 0 {
+		web.WriteError(w, mapStoreErr(err))
+		return
+	}
+	m.afterCredentialChange(ctx, a)
 	if err != nil {
-		web.WriteError(w, err)
-		return
-	}
-	if m.mfaRequired(ctx, u) && !u.HasTOTP() {
-		if n, _ := m.s.Svc.UsablePasskeys(ctx, u.ID, p.ID); n == 0 && p.Usable() {
-			writeErr(w, http.StatusConflict, "You need a second factor. Set up an Authenticator App first.", "")
-			return
-		}
-	}
-	if n, _ := m.s.Svc.UsablePasskeys(ctx, u.ID, p.ID); n == 0 && p.Usable() && u.PasswordHash == "" {
-		if ids, _ := m.s.Svc.Identities.Count(ctx, u.ID); ids == 0 {
-			writeErr(w, http.StatusConflict, "This is your only way to sign in. Ask an administrator for an invitation first.", "")
-			return
-		}
-	}
-	if err := m.s.Svc.Passkeys.Delete(service.Durable(ctx), p.ID); err != nil {
-		web.WriteError(w, err)
-		return
-	}
-	m.credentialChanged(ctx, a, u.ID) // a way in is gone
-	// The sessions that signed in with it end (with their refresh tokens; applications are told by back-channel
-	// logout), except the one deleting it, which has just confirmed it is the user. The passkey is gone whatever
-	// happens here; a session that could not be ended is recorded with the removal (and logged) rather than left
-	// out of the count as if it never existed.
-	ended, failed := 0, 0
-	if list, err := m.s.Svc.Sessions.All(ctx, u.ID); err != nil {
-		failed = -1 // unknown how many: the list could not be read
-		m.s.Log.Warn("passkey removed; its sessions could not be listed", "user", u.ID, "error", err)
-	} else {
-		for _, s := range list {
-			if s.Passkey != p.ID || s.ID == a.sess.ID {
-				continue
-			}
-			if err := m.s.Sessions.Delete(ctx, s.ID); err != nil {
-				failed++
-				m.s.Log.Warn("passkey removed; a session it signed in could not be ended", "user", u.ID, "error", err)
-				continue
-			}
-			ended++
-		}
-	}
-	if err := m.s.Svc.DropRecoveryCodes(ctx, a.u.ID); err != nil {
-		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", a.u.ID, "error", err)
-	}
-	detail := map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)}
-	if failed != 0 {
-		detail["sessions_result"] = "incomplete"
-		if failed > 0 {
-			detail["sessions_failed"] = strconv.Itoa(failed)
-		}
-	}
-	m.auditSelf(r, a, "account.passkey.delete", detail)
-	if failed != 0 {
 		// The passkey is removed (so not an error of the request), but the sign-outs it should have caused did not
 		// all happen: say so, in the shape the page shows as a message.
 		web.WriteJSON(w, http.StatusOK, map[string]any{"sessions_ended": ended,
@@ -1031,16 +994,9 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	if replace && !m.needReauth(w, r, a) {
 		return
 	}
-	// The commit: a compare-and-swap on the version just read, moving the security generation on, so a factor set
-	// meanwhile (from another browser, or at a sign-in) is never overwritten unseen.
-	now := time.Now().UTC()
-	u.TOTPSecret, u.MFAEnrolledAt = m.s.Svc.Sealer.SealFor(service.TOTPBinding(u.ID), secret), &now
-	u.BumpSecurity()
-	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); err != nil {
-		web.WriteError(w, mapStoreErr(err))
-		return
-	}
-	if err := m.s.Svc.NoteTOTPStep(ctx, u, step); err != nil { // the code just used cannot sign in again
+	// The commit (service.SetTOTP): a compare-and-swap on the version just read, so a factor set meanwhile (from
+	// another browser, or at a sign-in) is never overwritten unseen.
+	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
 		web.WriteError(w, mapStoreErr(err))
 		return
 	}
@@ -1083,36 +1039,13 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return
 	}
-	u, err := m.fresh(ctx, a)
-	if err != nil {
-		web.WriteError(w, err)
-		return
-	}
-	if !u.HasTOTP() {
-		writeErr(w, http.StatusConflict, "No Authenticator App is set up.", "")
-		return
-	}
-	if m.mfaRequired(ctx, u) {
-		if n, _ := m.s.Svc.UsablePasskeys(ctx, u.ID, ""); n == 0 {
-			writeErr(w, http.StatusConflict, "You need a second factor. Add a passkey first.", "")
-			return
-		}
-	}
-	u.TOTPSecret, u.MFAEnrolledAt = "", nil
-	u.BumpSecurity()
-	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); err != nil {
+	// Removed as any is (service.RemoveTOTP: not your last second factor where one is required; the recovery codes
+	// go with the last second factor).
+	if err := m.s.Svc.RemoveTOTP(service.SelfService(ctx), a.actor, a.u.ID); err != nil {
 		web.WriteError(w, mapStoreErr(err))
 		return
 	}
-	if err := m.s.Svc.DropRecoveryCodes(ctx, u.ID); err != nil {
-		m.s.Log.Warn("recovery codes not removed with the last second factor", "user", u.ID, "error", err)
-	}
-	if fresh, err := m.fresh(ctx, a); err == nil { // DropRecoveryCodes may have moved the generation on again
-		u = fresh
-	}
-	m.refreshReauth(ctx, a.sess.ID, u.SecurityGen)
-	m.changed(a)
-	m.auditSelf(r, a, "account.totp.disable", nil)
+	m.afterCredentialChange(ctx, a)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1360,11 +1293,7 @@ func (m *Module) revokeApp(w http.ResponseWriter, r *http.Request, a acct) {
 // mfaRequired reports whether u must keep a second factor: their organization requires one, or they are a manager
 // or above.
 func (m *Module) mfaRequired(ctx context.Context, u *model.User) bool {
-	if u.Role.Privileged() {
-		return true
-	}
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	return err == nil && org.Settings.RequireMFA
+	return m.s.Svc.MFARequired(ctx, u)
 }
 
 // profileOptions handles GET /api-internal/account/profile-options: the languages, time zones and user types the

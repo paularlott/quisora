@@ -3,7 +3,6 @@ package login
 import (
 	"errors"
 	"net/http"
-	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -32,7 +31,7 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 		m.internalError(w, r, "list providers", err)
 		return
 	}
-	ids, _ := m.s.Svc.Identities.All(ctx, a.u.ID)
+	ids, _ := m.s.Svc.CurrentIdentities(ctx, a.u)
 	out := make([]providerItem, 0, len(ps))
 	for _, p := range ps {
 		it := providerItem{ID: p.ID, Name: p.Name, Type: p.Type}
@@ -135,44 +134,22 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	back("connected")
 }
 
-// disconnectProvider handles DELETE /api-internal/account/providers/{id}; it refuses to remove the last way to sign in.
+// disconnectProvider handles DELETE /api-internal/account/providers/{id}, as the service disconnects any
+// (service.DisconnectProvider): it refuses to remove the last way to sign in.
 func (m *Module) disconnectProvider(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return
 	}
 	ctx := r.Context()
-	pid := r.PathValue("id")
-	ids, err := m.s.Svc.Identities.All(ctx, a.u.ID)
-	if err != nil {
-		m.internalError(w, r, "identities", err)
-		return
-	}
-	mine := slices.DeleteFunc(slices.Clone(ids), func(id *model.Identity) bool { return id.ProviderID != pid })
-	if len(mine) == 0 {
-		writeErr(w, http.StatusNotFound, "Not found.", "")
-		return
-	}
-	u, err := m.fresh(ctx, a)
+	n, err := m.s.Svc.DisconnectProvider(service.SelfService(ctx), a.actor, a.u.ID, r.PathValue("id"))
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	pk, _ := m.s.Svc.UsablePasskeys(ctx, u.ID, "")
-	if u.PasswordHash == "" && pk == 0 && len(ids) == len(mine) {
-		writeErr(w, http.StatusConflict, "This is your only way to sign in. Add a passkey or ask an administrator for an invitation first.", "")
+	if n == 0 {
+		writeErr(w, http.StatusNotFound, "Not found.", "")
 		return
 	}
-	for _, id := range mine {
-		if err := m.s.Svc.Identities.Delete(service.Durable(ctx), id.ID); err != nil {
-			web.WriteError(w, err)
-			return
-		}
-	}
-	m.credentialChanged(ctx, a, u.ID) // a way in is gone
-	name := pid
-	if p, err := m.s.Svc.Providers.Get(ctx, pid); err == nil {
-		name = p.Name
-	}
-	m.auditSelf(r, a, "account.provider.disconnect", map[string]string{"provider": name})
+	m.afterCredentialChange(ctx, a)
 	w.WriteHeader(http.StatusNoContent)
 }

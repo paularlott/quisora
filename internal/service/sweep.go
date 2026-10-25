@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -98,12 +99,8 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 		sw.after = res.Records[len(res.Records)-1].ID
 	}
 	now := time.Now()
-	known := map[ownerRef]bool{} // owners seen to exist in this batch
-	holders, err := s.epochHolders(ctx, res.Records)
-	if err != nil {
-		return 0, err
-	}
 	removed := 0
+	var ents []model.Entity // decoded once, those old enough to judge
 	for _, r := range res.Records {
 		e := model.NewEntity(kind)
 		if store.Decode(r, e) != nil {
@@ -115,12 +112,17 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			}
 			continue
 		}
-		if now.Sub(e.GetMeta().Updated) < sweepMinAge {
-			continue
+		if now.Sub(e.GetMeta().Updated) >= sweepMinAge {
+			ents = append(ents, e)
 		}
-		if passed, err := s.epochPassed(ctx, e, holders); err != nil {
-			return removed, err
-		} else if passed { // of an epoch its account has moved past: counts for nothing
+	}
+	passed, err := s.passedEpochs(ctx, ents)
+	if err != nil {
+		return removed, err
+	}
+	known := map[ownerRef]bool{} // owners seen to exist in this batch
+	for _, e := range ents {
+		if passed[e.GetMeta().ID] { // of an epoch its account has moved past: counts for nothing
 			if err := s.removeOrphan(ctx, e); err != nil {
 				return removed, err
 			}
@@ -142,7 +144,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			if err := s.removeOrphan(ctx, e); err != nil {
 				return removed, err
 			}
-			s.Log.Info("removed a record whose owner is gone", "kind", kind, "id", r.ID, "owner", string(o.kind)+" "+o.id)
+			s.Log.Info("removed a record whose owner is gone", "kind", kind, "id", e.GetMeta().ID, "owner", string(o.kind)+" "+o.id)
 			removed++
 			break
 		}
@@ -150,79 +152,58 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	return removed, nil
 }
 
-// credEpoch returns the account and epoch of a credential (passkey, connected provider, API token: the account's
-// CredEpoch) or a session or refresh grant (its SessionEpoch); false for the other kinds.
-func credEpoch(e model.Entity) (userID string, epoch uint64, session, ok bool) {
-	switch c := e.(type) {
-	case *model.Passkey:
-		return c.UserID, c.Epoch, false, true
-	case *model.Identity:
-		return c.UserID, c.Epoch, false, true
-	case *model.APIToken:
-		return c.UserID, c.Epoch, false, true
-	case *model.Session:
-		return c.UserID, c.Epoch, true, true
-	case *model.Grant:
-		return c.UserID, c.Epoch, true, true
-	}
-	return "", 0, false, false
-}
-
-// epochHolders reads, in one read of this node's copies, the accounts of the batch's credentials, sessions and
-// refresh grants (by id).
-func (s *Service) epochHolders(ctx context.Context, recs []*store.Record) (map[string]*model.User, error) {
-	seen := map[string]bool{}
+// passedEpochs returns the ids of the credentials, sessions and refresh grants among ents made in an epoch their
+// account has moved past (model.User.Counts: its sign-in was reset, its password reset, or an invitation acceptance
+// that lost stored it). This node's copies of the accounts (one read) say which look passed; a quorum's copies of
+// those accounts (one read) confirm them, so an epoch this node has not received yet never removes a record that
+// counts. An account gone here is left to the owner check.
+func (s *Service) passedEpochs(ctx context.Context, ents []model.Entity) (map[string]bool, error) {
 	var ids []string
-	for _, r := range recs {
-		e := model.NewEntity(r.Kind)
-		if store.Decode(r, e) != nil {
-			continue
-		}
-		if id, _, _, ok := credEpoch(e); ok && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+	for _, e := range ents {
+		if c, ok := e.(model.Credential); ok && !slices.Contains(ids, c.Owner()) {
+			ids = append(ids, c.Owner())
 		}
 	}
-	out := map[string]*model.User{}
+	out := map[string]bool{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	us, err := s.Users.GetMany(ctx, ids)
+	local, err := s.Users.GetMany(ctx, ids)
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	for _, u := range us {
-		out[u.ID] = u
+	here := make(map[string]*model.User, len(local))
+	for _, u := range local {
+		here[u.ID] = u
+	}
+	var suspect []string // accounts with a credential that looks passed here
+	for _, e := range ents {
+		if c, ok := e.(model.Credential); ok {
+			if u := here[c.Owner()]; u != nil && !u.Counts(c) && !slices.Contains(suspect, u.ID) {
+				suspect = append(suspect, u.ID)
+			}
+		}
+	}
+	recs, err := s.freshMany(ctx, model.KindUser, suspect)
+	if err != nil {
+		return nil, err
+	}
+	fresh := make(map[string]*model.User, len(recs))
+	for id, r := range recs {
+		u := &model.User{}
+		if err := store.Decode(r, u); err != nil {
+			return nil, err
+		}
+		fresh[id] = u
+	}
+	for _, e := range ents {
+		if c, ok := e.(model.Credential); ok {
+			if u := fresh[c.Owner()]; u != nil && !u.Counts(c) {
+				out[e.GetMeta().ID] = true
+			}
+		}
 	}
 	return out, nil
-}
-
-// epochPassed reports whether e is a credential, session or refresh grant of an epoch its account has moved past
-// (model.User.CredEpoch, SessionEpoch: its sign-in was reset, its password reset, or an invitation acceptance that
-// lost stored it). This node's copy of the account (holders) decides which to look at; a quorum's copy confirms it
-// before the answer is yes, so an epoch this node has not received yet never removes a record that counts.
-func (s *Service) epochPassed(ctx context.Context, e model.Entity, holders map[string]*model.User) (bool, error) {
-	userID, epoch, session, ok := credEpoch(e)
-	if !ok {
-		return false, nil
-	}
-	holds := func(u *model.User) bool {
-		if session {
-			return u.SessionHolds(epoch)
-		}
-		return u.Holds(epoch)
-	}
-	if u, here := holders[userID]; !here || holds(u) {
-		return false, nil // current here (or the account is gone here: the owner check decides)
-	}
-	u, err := s.FreshUser(ctx, userID)
-	if errors.Is(err, ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !holds(u), nil
 }
 
 // ownerGone reports whether o no longer exists: missing here, and missing or deleted in a quorum's copies (a record
@@ -238,16 +219,12 @@ func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
 	if !errors.Is(err, store.ErrNotFound) {
 		return false, mapStore(err)
 	}
-	qr, ok := s.Store.(store.QuorumReader)
-	if !ok {
-		return true, nil
-	}
-	recs, err := qr.Fresh(ctx, o.kind, []string{o.id})
+	recs, err := s.freshMany(ctx, o.kind, []string{o.id})
 	if err != nil {
-		return false, mapStore(err)
+		return false, err
 	}
-	r, ok := recs[o.id]
-	return !ok || !r.Live(time.Now()), nil
+	_, live := recs[o.id]
+	return !live, nil
 }
 
 // removeOrphan removes e. A membership is marked removed, not tombstoned, with a sequence no writer can pass, so a

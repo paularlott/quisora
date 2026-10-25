@@ -45,4 +45,7 @@ func TestFreshReviewSweepObsoleteSessionsRepeatOwnerConfirmation(t *testing.T) {
 		t.Fatalf("removed=%d err=%v", n, err)
 	}
 	t.Logf("obsolete sessions=100, distinct owners=1, serial quorum Fresh calls=%d", st.calls)
+	if st.calls > 1 { // the batch's suspect owners are confirmed together
+		t.Fatalf("%d quorum reads to confirm one owner", st.calls)
+	}
 }

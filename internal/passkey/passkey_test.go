@@ -269,7 +269,7 @@ func TestLegacyUnverifiedPasskeyUnusable(t *testing.T) {
 	if err := e.svc.Passkeys.Update(e.ctx, list[0]); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := e.svc.UsablePasskeys(e.ctx, e.user.ID, ""); n != 0 {
+	if n, _ := e.svc.UsablePasskeys(e.ctx, e.user, ""); n != 0 {
 		t.Fatalf("usable count %d", n)
 	}
 	id, opts := e.options(t, nil) // discoverable: the authenticator still offers it

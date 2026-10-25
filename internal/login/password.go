@@ -40,7 +40,7 @@ type stepResp struct {
 func (m *Module) alternatives(ctx context.Context, u *model.User, step string, email bool) []string {
 	var out []string
 	if step == "totp" && m.Passkeys != nil {
-		if n, err := m.s.Svc.UsablePasskeys(ctx, u.ID, ""); err == nil && n > 0 {
+		if n, err := m.s.Svc.UsablePasskeys(ctx, u, ""); err == nil && n > 0 {
 			out = append(out, "passkey")
 		}
 	}
@@ -145,7 +145,7 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 		t.Step = "totp"
 	case eff.RequireMFA || u.Role.Privileged(): // managers and above always use a second factor
 		t.Step, ttl = "enrol", enrolTTL
-		usable, err := m.s.Svc.UsablePasskeys(ctx, u.ID, "")
+		usable, err := m.s.Svc.UsablePasskeys(ctx, u, "")
 		if err != nil {
 			return stepResp{}, err
 		}

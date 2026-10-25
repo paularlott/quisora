@@ -269,7 +269,7 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		set[id] = struct{}{}
 		m.mu.Unlock()
 	}
-	if !m.svc.SessionUsable(ctx, cs.sess, cs.user) {
+	if ok, _ := m.svc.SessionUsable(ctx, cs.sess, cs.user); !ok { // (counters unreadable: not signed in, for now)
 		return nil, nil
 	}
 	if now.Sub(cs.sess.LastSeen) > lastSeenThrottle {

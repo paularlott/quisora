@@ -10,7 +10,6 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/secure"
-	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -143,19 +142,12 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	// account — this ticket twice, or two tickets issued from the same password — both read the same version, and
 	// the store lets exactly one write it (a quorum of the cluster confirms which); the other finds it stale and
 	// sends its browser back to sign in, where the factor that won now stands between it and a session.
-	now := time.Now().UTC()
-	u.TOTPSecret, u.MFAEnrolledAt = m.s.Svc.Sealer.SealFor(service.TOTPBinding(u.ID), secret), &now
-	u.BumpSecurity()
-	if err := m.s.Svc.Users.Update(service.Durable(ctx), u); !store.Applied(err) {
+	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
 		if errors.Is(err, store.ErrStale) {
 			writeErr(w, http.StatusConflict, msgChanged, "")
 			return
 		}
 		m.internalError(w, r, "save totp", err)
-		return
-	}
-	if err := m.s.Svc.NoteTOTPStep(ctx, u, step); err != nil { // the code just used cannot sign in again
-		m.internalError(w, r, "save totp step", err)
 		return
 	}
 	m.audit(r, "account.totp.enable", org, u, u.Username, map[string]string{"during": "sign-in"})

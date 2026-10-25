@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
@@ -46,7 +47,8 @@ type App struct {
 	closers []func()
 	mailer  *mail.Mailer // nil without an SMTP server
 	// logoutQueue holds the back-channel logouts to retry (nil without the OIDC provider).
-	logoutQueue *queue.Queue[oidc.LogoutRetry]
+	// Opened after the background work starts (it needs the OIDC provider), so read atomically.
+	logoutQueue atomic.Pointer[queue.Queue[oidc.LogoutRetry]]
 
 	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
 	// cancels their context and waits for them before it closes anything they use.
@@ -179,6 +181,8 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	// server stops taking requests, before the mailer, the audit writer and the store close.
 	bg, stop := context.WithCancel(ctx)
 	a.closers = append(a.closers, func() { stop(); a.bg.Wait() })
+	// Every master key report says how many queued items still need a previous key (re-sealing them first).
+	a.Svc.QueuesStale = a.resealQueues
 	srv.Use(modules(bg, a)...)
 	if a.OIDC != nil {
 		// Back-channel logouts a relying party did not take are retried from disk, also across restarts.
@@ -187,7 +191,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 			a.Close()
 			return nil, err
 		}
-		a.logoutQueue = q
+		a.logoutQueue.Store(q)
 		metrics.Default.Gauge("quisora_backchannel_logout_queued", "Back-channel logouts waiting to be retried.",
 			nil, metrics.Value(func() float64 { return float64(q.Queued()) }))
 		// Back-channel logouts still being delivered finish (or go to the retry queue) before the queue, the audit

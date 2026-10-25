@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,25 +118,28 @@ func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 	return nil
 }
 
-// Reseal re-seals every queued item with the active master key, and returns how many no configured key opens (those
-// stay queued, and are delivered once their key is configured again). Call it after the master keys change, before
-// the node reports its new key (service.ReportMasterKey).
-func (q *Queue[T]) Reseal() (unopenable int) {
+// Reseal re-seals every queued item with the active master key, and returns how many are still not sealed with it:
+// one no configured key opens (kept, and delivered once its key is configured again), or one whose rewrite failed (a
+// full or failing disk). Either still needs a previous key: while the count is not 0 no previous key may be removed
+// (app.ReloadMasterKeys refuses, and this node reports the rotation unfinished). Call it after the master keys change,
+// before the node reports its new key (service.ReportMasterKey). An unreadable queue counts as one.
+func (q *Queue[T]) Reseal() (stale int) {
 	names, err := q.files()
 	if err != nil {
 		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
-		return 0
+		return 1
 	}
 	for _, name := range names {
 		if err := q.reseal(name); err != nil {
-			unopenable++
+			stale++
 		}
 	}
-	if unopenable > 0 {
-		q.o.Log.Error(q.o.Name+": items sealed with a master key that is not configured are kept until it is "+
-			"(put it back in server.previous_master_keys)", "items", unopenable)
+	if stale > 0 {
+		q.o.Log.Error(q.o.Name+": items not re-sealed with the active master key keep needing their key (a key "+
+			"not configured: put it back in server.previous_master_keys; or a write that failed: it is tried again)",
+			"items", stale)
 	}
-	return unopenable
+	return stale
 }
 
 func (q *Queue[T]) reseal(name string) error {
@@ -226,8 +228,7 @@ func (q *Queue[T]) files() ([]string, error) {
 			out = append(out, n)
 		}
 	}
-	sort.Strings(out)
-	return out, nil
+	return out, nil // (os.ReadDir lists by name: oldest first)
 }
 
 // removeTemp removes the temporary files of writes a crash cut short (their Add reported the failure). Only at

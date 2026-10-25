@@ -966,7 +966,7 @@ func (s *Service) ClearCredentials(ctx context.Context, userID string, cred, ses
 			continue
 		}
 		for _, r := range res.Records {
-			if e, ok := epochOf(r); ok && e == cred {
+			if madeIn(r, cred) {
 				fail(s.Store.Put(ctx, store.Tombstone(k, r.ID)))
 			}
 		}
@@ -986,7 +986,7 @@ func (s *Service) endSessionsOf(ctx context.Context, userID string, sess uint64)
 		}
 		var ended []string
 		for _, r := range res.Records {
-			if e, ok := epochOf(r); ok && e == sess {
+			if madeIn(r, sess) {
 				ended = append(ended, r.ID)
 			}
 		}
@@ -1006,25 +1006,24 @@ func (s *Service) endSessionsOf(ctx context.Context, userID string, sess uint64)
 	return err
 }
 
-// epochOf is the epoch a credential, session or refresh grant record was made in (false: another kind, or unreadable).
-func epochOf(r *store.Record) (uint64, bool) {
+// credentialOf decodes a credential, session or refresh grant record (false: another kind, or unreadable).
+func credentialOf(r *store.Record) (model.Credential, bool) {
 	e := model.NewEntity(r.Kind)
 	if store.Decode(r, e) != nil {
-		return 0, false
+		return nil, false
 	}
-	switch c := e.(type) {
-	case *model.Passkey:
-		return c.Epoch, true
-	case *model.Identity:
-		return c.Epoch, true
-	case *model.APIToken:
-		return c.Epoch, true
-	case *model.Session:
-		return c.Epoch, true
-	case *model.Grant:
-		return c.Epoch, true
+	c, ok := e.(model.Credential)
+	return c, ok
+}
+
+// madeIn reports whether r is a credential, session or refresh grant made in epoch.
+func madeIn(r *store.Record, epoch uint64) bool {
+	c, ok := credentialOf(r)
+	if !ok {
+		return false
 	}
-	return 0, false
+	e, _ := c.MadeIn()
+	return e == epoch
 }
 
 // endUserSessions tombstones a user's sessions and refresh grants, except those of the acting session's user when
@@ -1123,17 +1122,13 @@ func (s *Service) FindUserByEmail(ctx context.Context, orgID, email string) (*mo
 	return u, nil
 }
 
-// UsablePasskeys counts the user's passkeys that can sign in (model.Passkey.Usable), leaving out except (a passkey
-// about to be removed).
-func (s *Service) UsablePasskeys(ctx context.Context, userID, except string) (int, error) {
-	l, err := s.Passkeys.All(ctx, userID)
-	n := 0
-	for _, p := range l {
-		if p.ID != except && p.Usable() {
-			n++
-		}
+// UsablePasskeys counts u's passkeys that can sign in (Ways), leaving out except (a passkey about to be removed).
+func (s *Service) UsablePasskeys(ctx context.Context, u *model.User, except string) (int, error) {
+	w, err := s.UserWays(ctx, u)
+	if err != nil {
+		return 0, err
 	}
-	return n, err
+	return len(w.without(way{passkey: except}).Passkeys), nil
 }
 
 // dropEmailLinks removes the provider links a newly promoted manager or administrator did not make themselves: links
@@ -1269,7 +1264,7 @@ func ptrBool(b bool) *bool { return &b }
 // copy is signed out too. Returns how many sessions ended, and the failures together: a session or refresh grant
 // that could not be deleted still works (for the copy's holder too), so the caller records that the sign-out did not
 // finish rather than only how many did.
-func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID string) (int, error) {
+func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, keepSession string) (int, error) {
 	ctx = Durable(ctx)
 	sessions, err := s.Sessions.All(ctx, userID)
 	if err != nil {
@@ -1277,7 +1272,7 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID stri
 	}
 	var ids []string
 	for _, ss := range sessions {
-		if ss.Passkey == passkeyID {
+		if ss.Passkey == passkeyID && ss.ID != keepSession {
 			ids = append(ids, ss.ID)
 		}
 	}

@@ -110,6 +110,9 @@ func main() {
 			http.Error(w, "unknown role", http.StatusBadRequest)
 			return
 		}
+		if fresh, err := svc.Users.Get(r.Context(), u.ID); err == nil {
+			u = fresh // as it is now: a session is made in the account's current session epoch
+		}
 		org, _ := svc.Orgs.Get(r.Context(), u.OrgID)
 		amr := []string{"pwd"}
 		if u.Role.Rank() >= model.RoleManager.Rank() {

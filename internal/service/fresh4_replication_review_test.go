@@ -57,4 +57,7 @@ func TestFresh4UserGroupsQuorumReadFanout(t *testing.T) {
 		t.Fatalf("got %d groups, want %d", len(gs), groups)
 	}
 	t.Logf("%d unchanged memberships caused %d serial quorum read calls", groups, counter.calls.Load())
+	if n := counter.calls.Load(); n > 1 { // one round: the memberships to read again, read together
+		t.Fatalf("%d quorum reads for one round of reconciliation", n)
+	}
 }

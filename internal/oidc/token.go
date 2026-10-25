@@ -249,7 +249,13 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if err != nil && !gone(err) {
 		return nil, "", serverError(unavailable(err))
 	}
-	if err != nil || !p.svc.SessionUsable(ctx, sess, u) {
+	usable := false
+	if err == nil {
+		if usable, err = p.svc.SessionUsable(ctx, sess, u); err != nil {
+			return nil, "", serverError(unavailable(err)) // not known to have ended: the client retries
+		}
+	}
+	if !usable {
 		return nil, "", oerr("invalid_grant", "the user's session has ended")
 	}
 	org, err := p.org(ctx, cd.OrgID)
@@ -320,7 +326,7 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 	if !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.SessionHolds(g.Epoch) {
 		return u, false, nil
 	}
-	want, err := p.svc.SessionStamp(ctx, g.OrgID)
+	want, err := p.svc.SessionStamp(ctx, g.OrgID) // read once: the grant's stamp and its session's are judged by it
 	if err != nil {
 		return nil, false, unavailable(err)
 	}
@@ -337,7 +343,7 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 		}
 		return nil, false, unavailable(err)
 	}
-	return u, p.svc.SessionUsable(ctx, s, u), nil
+	return u, service.SessionUsableAt(s, u, want), nil
 }
 
 // revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it. The error is the deletion's: a

@@ -105,10 +105,21 @@ func (s *Service) APITokenStamp(ctx context.Context, orgID string) (model.SignOu
 // SessionUsable is the one test of whether a session still signs its user in, wherever it is used (a browser
 // request, an authorization code or device sign-in redeemed from it): unexpired, its user enabled, made in the
 // account's session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of the account's
-// sign-in), and not ended by an emergency sign-out (its stamp). u must be the session's user, as recently read.
-func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) bool {
-	return sess.UserID == u.ID && sess.Valid(time.Now()) && u.Enabled(time.Now()) && u.SessionHolds(sess.Epoch) &&
-		s.SessionCurrent(ctx, sess.OrgID, sess.Stamp)
+// sign-in), and not ended by an emergency sign-out (its stamp). u must be the session's user, as recently read. An
+// error is the sign-out counters that could not be read: no verdict (the caller answers 503), never "ended".
+func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) (bool, error) {
+	want, err := s.SessionStamp(ctx, sess.OrgID)
+	if err != nil {
+		return false, err
+	}
+	return SessionUsableAt(sess, u, want), nil
+}
+
+// SessionUsableAt is SessionUsable given the organization's sign-out counters as just read (want), for a caller that
+// read them already.
+func SessionUsableAt(sess *model.Session, u *model.User, want model.SignOutStamp) bool {
+	now := time.Now()
+	return sess.UserID == u.ID && sess.Valid(now) && u.Enabled(now) && u.SessionHolds(sess.Epoch) && sess.Stamp.Current(want)
 }
 
 func (s *Service) SessionCurrent(ctx context.Context, orgID string, st model.SignOutStamp) bool {

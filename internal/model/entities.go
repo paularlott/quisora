@@ -185,6 +185,34 @@ func (u *User) Holds(epoch uint64) bool { return epoch == u.CredEpoch }
 // SessionHolds reports whether a session or refresh grant made in epoch still counts for the account (SessionEpoch).
 func (u *User) SessionHolds(epoch uint64) bool { return epoch == u.SessionEpoch }
 
+// Credential is a record that counts for its account only in the epoch it was made in: a passkey, connected provider
+// or API token (the account's CredEpoch), a session or refresh grant (its SessionEpoch).
+type Credential interface {
+	Entity
+	Owner() string                        // the user it belongs to
+	MadeIn() (epoch uint64, session bool) // its epoch, and whether that is a session epoch
+}
+
+// Counts reports whether c, one of u's, still counts: made in the account's epoch of its kind.
+func (u *User) Counts(c Credential) bool {
+	e, session := c.MadeIn()
+	if session {
+		return u.SessionHolds(e)
+	}
+	return u.Holds(e)
+}
+
+func (p *Passkey) Owner() string           { return p.UserID }
+func (p *Passkey) MadeIn() (uint64, bool)  { return p.Epoch, false }
+func (i *Identity) Owner() string          { return i.UserID }
+func (i *Identity) MadeIn() (uint64, bool) { return i.Epoch, false }
+func (t *APIToken) Owner() string          { return t.UserID }
+func (t *APIToken) MadeIn() (uint64, bool) { return t.Epoch, false }
+func (s *Session) Owner() string           { return s.UserID }
+func (s *Session) MadeIn() (uint64, bool)  { return s.Epoch, true }
+func (g *Grant) Owner() string             { return g.UserID }
+func (g *Grant) MadeIn() (uint64, bool)    { return g.Epoch, true }
+
 // BumpSecurity moves the account on to its next security generation (SecurityGen); the caller writes the user.
 func (u *User) BumpSecurity() { u.SecurityGen++ }
 
@@ -289,7 +317,6 @@ type Group struct {
 
 // GroupChange is one committed change of a group's members (Group.Pending).
 type GroupChange struct {
-	Op     string    `msgpack:"op"`           // id of the operation, for logs
 	Seq    uint64    `msgpack:"s"`            // the group's Seq when committed: materialized writes carry it
 	At     time.Time `msgpack:"t"`            // when it was committed (housekeeping finishes old ones)
 	Add    []string  `msgpack:"a,omitempty"`  // user ids made members

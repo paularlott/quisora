@@ -99,7 +99,8 @@ func (m *Mailer) Close() { m.q.Close() }
 // Queued returns how many messages are waiting to be sent.
 func (m *Mailer) Queued() int { return m.q.Queued() }
 
-// Reseal re-seals the queued messages with the active master key (queue.Queue.Reseal).
+// Reseal re-seals the queued messages with the active master key, returning how many still need another key
+// (queue.Queue.Reseal).
 func (m *Mailer) Reseal() int { return m.q.Reseal() }
 
 // ErrQueueFull is returned when the queue is full.

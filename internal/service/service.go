@@ -172,6 +172,9 @@ type Service struct {
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.
 	OnSessionsEnding func(ctx context.Context, userID string, sessionIDs []string)
+	// QueuesStale, when set, re-seals this node's queues on disk and returns how many of their items still need a
+	// previous master key: reported with the node's keys (ReportMasterKey), it keeps the rotation unfinished.
+	QueuesStale func() int
 
 	// OnAppAccessEnding is called just before a user's grants to one client are removed (RevokeAppAccess), so that
 	// client can be sent back-channel logout tokens and the grants stop working at once. Set by the app.

@@ -145,29 +145,6 @@ func (s *Service) lockAdmins(ctx context.Context, orgID string) (func(), error) 
 	return func() { l.release(ctx) }, nil
 }
 
-// FreshUser reads user id from a quorum's copies (store.QuorumReader; a local read without a cluster): a change of
-// the account that a majority confirmed anywhere is seen, even before it has reached this node.
-func (s *Service) FreshUser(ctx context.Context, id string) (*model.User, error) {
-	qr, ok := s.Store.(store.QuorumReader)
-	if !ok {
-		u, err := s.Users.Get(ctx, id)
-		return u, mapStore(err)
-	}
-	recs, err := qr.Fresh(ctx, model.KindUser, []string{id})
-	if err != nil {
-		return nil, mapStore(err)
-	}
-	r, ok := recs[id]
-	if !ok || !r.Live(time.Now()) {
-		return nil, ErrNotFound
-	}
-	u := &model.User{}
-	if err := store.Decode(r, u); err != nil {
-		return nil, err
-	}
-	return u, nil
-}
-
 // usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
 // a quorum's copies (store.QuorumReader) of the users this node lists with it: a demotion, disabling, end date or
 // deletion confirmed by a majority anywhere is counted, even if it has not reached this node yet. (A promotion that
@@ -180,32 +157,19 @@ func (s *Service) usableAdmins(ctx context.Context, orgID string, role model.Rol
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	now := time.Now()
-	qr, ok := s.Store.(store.QuorumReader)
-	if !ok {
-		out := l[:0:0]
-		for _, u := range l {
-			if u.OrgID == orgID && u.Role == role && u.Enabled(now) {
-				out = append(out, u)
-			}
-		}
-		return out, nil
-	}
 	ids := make([]string, len(l))
 	for i, u := range l {
 		ids[i] = u.ID
 	}
-	recs, err := qr.Fresh(ctx, model.KindUser, ids)
+	recs, err := s.freshMany(ctx, model.KindUser, ids)
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, err
 	}
+	now := time.Now()
 	var out []*model.User
 	for _, r := range recs {
 		u := &model.User{}
-		if !r.Live(now) || store.Decode(r, u) != nil {
-			continue
-		}
-		if u.OrgID == orgID && u.Role == role && u.Enabled(now) {
+		if store.Decode(r, u) == nil && u.OrgID == orgID && u.Role == role && u.Enabled(now) {
 			out = append(out, u)
 		}
 	}

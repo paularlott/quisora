@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,11 @@ const (
 func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
 	id := masterKeyReportPrefix + nodeID
 	for range 5 {
+		// "<active>,<previous>...|<queued items needing a previous key>" (QueuesStale)
 		until, keys := time.Now().Add(MasterKeyReportTTL), strings.Join(s.Sealer.KeyIDs(), ",")
+		if s.QueuesStale != nil {
+			keys += "|" + strconv.Itoa(s.QueuesStale())
+		}
 		l, err := s.Locks.Get(ctx, id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -45,6 +50,9 @@ func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
 type NodeKeys struct {
 	Active   string   `json:"active_key"`
 	Previous []string `json:"previous_keys"`
+	// QueueStale counts the items of the node's queues on disk (mail, back-channel logouts) still sealed with a
+	// previous key: the previous keys cannot go while any node has one.
+	QueueStale int `json:"queued_items_stale"`
 }
 
 // MasterKeyNodes returns the master keys each live node reported, by node id.
@@ -64,8 +72,10 @@ func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, erro
 				return out, nil // past the reports
 			}
 			if r.Until.After(now) {
-				ids := strings.Split(r.Holder, ",")
-				out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...)}
+				keys, stale, _ := strings.Cut(r.Holder, "|")
+				ids := strings.Split(keys, ",")
+				n, _ := strconv.Atoi(stale)
+				out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...), QueueStale: n}
 			}
 		}
 		if len(l) < 100 {
@@ -104,6 +114,8 @@ type MasterKeyStatus struct {
 	Stale        int `json:"stale_secrets"`
 	Unopenable   int `json:"unopenable_secrets"`
 	LegacyGrants int `json:"legacy_grants"`
+	// QueueStale counts the items of the nodes' queues on disk still sealed with a previous key (NodeKeys.QueueStale).
+	QueueStale int `json:"queued_items_stale"`
 	// Removable says the previous keys can be removed now: every node seals with the active key and nothing stored
 	// needs another one. State is one of none (no previous keys), waiting_for_nodes, resealing, unopenable,
 	// legacy_grants, complete; Detail says what to do.
@@ -121,11 +133,15 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		return nil, err
 	}
 	st.Nodes, st.NodesAgree = nodes, true
-	var others []string
+	var others, queued []string
 	for node, k := range nodes {
 		if k.Active != st.Active {
 			st.NodesAgree = false
 			others = append(others, node+" ("+k.Active+")")
+		}
+		if k.QueueStale > 0 {
+			st.QueueStale += k.QueueStale
+			queued = append(queued, node)
 		}
 	}
 	r, err := s.resealSecrets(ctx, 0, true)
@@ -146,6 +162,10 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		st.State = "resealing"
 		st.Detail = itoa(st.Stale) + " stored secrets are still sealed with a previous key; the housekeeping leader " +
 			"re-seals them within minutes."
+	case st.QueueStale > 0:
+		st.State = "resealing"
+		st.Detail = itoa(st.QueueStale) + " queued messages on " + strings.Join(queued, ", ") + " are still sealed " +
+			"with a previous key (their re-seal failed: see that node's log; it is tried again at its next report)."
 	case st.LegacyGrants > 0:
 		st.State = "legacy_grants"
 		st.Detail = itoa(st.LegacyGrants) + " refresh grants from an earlier version still depend on a previous key " +
