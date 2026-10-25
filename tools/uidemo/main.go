@@ -2,7 +2,7 @@
 // the accessibility audit (web/tests): it serves HTTPS with a self-signed certificate and adds a development-only
 // sign-in shortcut, GET /__demo/login?as=super|admin|manager|user&next=/path.
 //
-//	go run ./internal/admin/cmd/uidemo -addr 127.0.0.1:18443
+//	go run ./tools/uidemo -addr 127.0.0.1:18443
 package main
 
 import (

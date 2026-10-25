@@ -4,7 +4,7 @@
 # Development tools, test helpers and the UI demo server are left out. Raise the floor as coverage grows.
 set -eu
 cd "$(dirname "$0")/.."
-exclude='/conformance/|/internal/admin/cmd/uidemo$|/internal/loadtest$|/internal/store/storetest$|/internal/upstream/upstreamtest$|/internal/webtest$|/tools/'
+exclude='/conformance/|/internal/loadtest$|/internal/store/storetest$|/internal/upstream/upstreamtest$|/internal/webtest$|/tools/'
 pkgs=$(go list ./... | grep -Ev "$exclude" | paste -sd, -)
 out=${COVER_OUT:-coverage.out}
 go test -coverpkg="$pkgs" -coverprofile="$out" ./... >/dev/null

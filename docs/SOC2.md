@@ -111,7 +111,7 @@ read through the `auditor` vmauth user with LogsQL.
 
 | Control | Evidence | How |
 | --- | --- | --- |
-| Access reviews (CC6.2, CC6.3) | Each organization's administrators, managers and their last sign-in, reviewed and signed off each quarter | `GET /api/orgs/<org>/users?role=admin` (and `manager`, `superadmin`), saved with the reviewer's sign-off; changes made as a result show as `user.update` events |
+| Access reviews (CC6.2, CC6.3) | Each organization's administrators, managers and their last sign-in, reviewed and signed off each quarter | `GET /api/orgs/<org>/users?role=admin` (and `manager`, `super_admin`), saved with the reviewer's sign-off; changes made as a result show as `user.update` events |
 | Joiners and leavers (CC6.2) | Accounts created, disabled, ended and deleted, matched to HR records | `action:user.create OR action:user.provision OR action:user.update OR action:user.expire OR action:user.delete` |
 | Privileged changes (CC6.3) | Role changes | `action:user.update AND detail.changed.role:*` |
 | Authentication policy (CC6.1) | MFA required where the policy says | `action:org.update AND detail.changed.settings.require_mfa:*`; the organization settings pages |

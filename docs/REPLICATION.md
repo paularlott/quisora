@@ -304,7 +304,10 @@ passkey, connected provider and API token carries the account's **credential epo
 epoch is the account's. A password reset gives the account a new session epoch in its commit; an accepted invitation
 (or a reset of the account's sign-in) new epochs of both: every earlier session or credential stops at that write, on
 every node that has it, and the passkey an invitation stored for its new epoch beforehand starts. Of two acceptances
-racing, only the winner's epoch is committed; the loser's passkey never counts. A refresh grant carries the session
+racing, only the winner's epoch is committed; the loser's passkey never counts. "At that write" means where the
+write has landed: a check reads the node's own copy of the account (the token endpoints cache it for up to 5 s), so
+on a node the commit has not reached yet the old ones work until it arrives. The commit is held by a majority when it
+returns, and the other nodes receive it by broadcast, or by anti-entropy within seconds. A refresh grant carries the session
 epoch and the sign-out stamp of the session it was granted in, never the current ones: an authorization code or
 device sign-in is redeemed only while its session still signs the user in (`service.SessionUsable`, the one test of
 a session, also for browsers), so a code cannot outlive, or renew, what its session lost. Removing old records after a

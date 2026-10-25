@@ -224,6 +224,8 @@ func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, erro
 	for i, id := range ids {
 		ids[i] = strings.TrimPrefix(id, g.ID+":") // model.MemberID
 	}
+	// Load-bearing: CommittedMembers is the read side of the group commit log (a committed change is seen before it
+	// is materialized), and liveUsers that of "a membership stands on its user".
 	return s.liveUsers(ctx, g.OrgID, CommittedMembers(g, ids))
 }
 

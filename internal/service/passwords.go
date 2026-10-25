@@ -17,8 +17,8 @@ import (
 // PasswordBinding binds a user's sealed password hash to the user.
 func PasswordBinding(userID string) string { return "user/" + userID + "/password" }
 
-// HashPassword returns the stored form of password for the user with userID.
-func (s *Service) HashPassword(ctx context.Context, userID, password string) (string, error) {
+// hashPassword returns the stored form of password for the user with userID.
+func (s *Service) hashPassword(ctx context.Context, userID, password string) (string, error) {
 	h, err := s.Hasher.Hash(ctx, password)
 	if err != nil {
 		return "", err
@@ -68,7 +68,7 @@ func (s *Service) VerifyPassword(ctx context.Context, u *model.User, password st
 // made meanwhile is never overwritten).
 func (s *Service) rehashPassword(ctx context.Context, userID, stored, password string) {
 	ctx = context.WithoutCancel(ctx)
-	next, err := s.HashPassword(ctx, userID, password)
+	next, err := s.hashPassword(ctx, userID, password)
 	if err != nil {
 		return
 	}

@@ -265,7 +265,7 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		if err := s.CheckPassword(ctx, u, *in.Password); err != nil {
 			return err
 		}
-		h, err := s.HashPassword(ctx, u.ID, *in.Password)
+		h, err := s.hashPassword(ctx, u.ID, *in.Password)
 		if err != nil {
 			return err
 		}
@@ -879,7 +879,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 // account new credential and session epochs (model.User.CredEpoch, SessionEpoch: every passkey, connected provider,
 // API token, session and refresh grant stops counting at that write) and moves the security generation on (every
 // sign-in step, set-up or link in flight ends). Removing the records of the epochs it replaced follows
-// (ClearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised account
+// (clearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised account
 // therefore evicts whoever had it, at once.
 func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 	ctx = Durable(ctx)
@@ -900,7 +900,7 @@ func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 		u.BumpSecurity()
 		err = s.Users.Update(ctx, u)
 		if store.Applied(err) {
-			return s.ClearCredentials(ctx, userID, was.CredEpoch, was.SessionEpoch)
+			return s.clearCredentials(ctx, userID, was.CredEpoch, was.SessionEpoch)
 		}
 		// re-read and retried when a concurrent change (a profile edit, a sign-in's stamp) got there first
 		if !errors.Is(err, store.ErrStale) || attempt == 9 {
@@ -909,13 +909,13 @@ func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 	}
 }
 
-// ClearCredentials removes the records of the account's credentials made in credential epoch cred (passkeys,
+// clearCredentials removes the records of the account's credentials made in credential epoch cred (passkeys,
 // connected providers, API tokens) and of its sessions and refresh grants made in session epoch sess: the epochs a
 // change of the user record just replaced (model.User.CredEpoch, SessionEpoch). They count for nothing already; this
 // tidies them away, and only them: a record of a later epoch (a later change, or one being made) stays. Relying
 // parties are told of the ended sessions. Doing it again is harmless. Every removal is tried even when one fails; the
 // errors are returned together. A write that is applied but not yet confirmed by a peer is no failure.
-func (s *Service) ClearCredentials(ctx context.Context, userID string, cred, sess uint64) error {
+func (s *Service) clearCredentials(ctx context.Context, userID string, cred, sess uint64) error {
 	ctx = Durable(ctx)
 	errs := []error{s.endSessionsOf(ctx, userID, sess)}
 	fail := func(err error) {

@@ -733,7 +733,7 @@ func (s *Store) freshBatch(ctx context.Context, kind model.Kind, ids []string, o
 			answers <- answer{recs, err}
 		}(mb)
 	}
-	got := 1
+	got := 1 // this node (cluster.size is at least 2, so a quorum always needs a peer)
 	var errs []error
 	for range peers {
 		var a answer

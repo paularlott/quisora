@@ -174,7 +174,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	secret := secure.RandomToken(32)
 	plain := apiTokenPrefix + t.ID + "_" + secret
 	t.SecretHash = secure.HashSecret(secret)
-	if t.Stamp, err = s.APITokenStamp(ctx, a.OrgID); err != nil {
+	if t.Stamp, err = s.apiTokenStamp(ctx, a.OrgID); err != nil {
 		return nil, "", mapStore(err)
 	}
 	if err := s.APITokens.Create(ctx, t); err != nil {
@@ -416,7 +416,7 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	}
 	// The sign-out counters that cannot be read now decide nothing (503), rather than refusing a good token as
 	// "ended" and auditing an emergency sign-out that did not happen.
-	want, err := s.APITokenStamp(ctx, t.OrgID)
+	want, err := s.apiTokenStamp(ctx, t.OrgID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: the sign-out counters could not be read: %v", ErrUnavailable, err)
 	}

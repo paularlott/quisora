@@ -1,5 +1,5 @@
 // Takes screenshots of every page in both themes: node tests/shots.mjs [baseURL] [outDir]
-// Needs the demo server (go run ./internal/admin/cmd/uidemo) running.
+// Needs the demo server (go run ./tools/uidemo) running.
 import { chromium } from '@playwright/test'
 import { PAGES } from './pages.mjs'
 

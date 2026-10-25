@@ -188,7 +188,9 @@ func (q *Queue[T]) writeSealed(name, sealed string) error {
 		os.Remove(tmp)
 		return err
 	}
-	d, err := os.Open(q.dir) // the new name too
+	// Load-bearing: the rename is durable only once the directory is synced. Without it a power loss can lose an
+	// item already accepted ("accepted means on disk").
+	d, err := os.Open(q.dir)
 	if err != nil {
 		return err
 	}
@@ -294,7 +296,10 @@ func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 	it, err := q.read(name)
 	switch {
 	case errors.Is(err, os.ErrNotExist), errors.Is(err, secure.ErrUnknownKey):
-		return time.Time{} // gone, or sealed with a key not configured now: kept for when it is (Reseal logs it)
+		// Gone, or sealed with a key not configured now: kept for when it is (Reseal logs it). Load-bearing: Reseal
+		// counts such items, and that count is what keeps a previous master key from being retired while an item
+		// still needs it (service QueuesStale); dropping them would lose the items and hide the dependency.
+		return time.Time{}
 	case err != nil:
 		q.o.Log.Error(q.o.Name+": item cannot be read, dropping it", "file", name, "error", err)
 		q.remove(name)

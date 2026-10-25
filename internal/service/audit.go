@@ -79,11 +79,11 @@ func (s *Service) ListAudit(ctx context.Context, a *Actor, orgID string, q Audit
 	if s.AuditReader != nil {
 		return s.AuditReader.ReadAudit(ctx, q)
 	}
-	return s.ReadAuditStore(ctx, q)
+	return s.readAuditStore(ctx, q)
 }
 
-// ReadAuditStore reads the audit log from this node's store (a standalone node, or nodes sharing one database).
-func (s *Service) ReadAuditStore(ctx context.Context, q AuditQuery) (AuditPage, error) {
+// readAuditStore reads the audit log from this node's store (a standalone node, or nodes sharing one database).
+func (s *Service) readAuditStore(ctx context.Context, q AuditQuery) (AuditPage, error) {
 	items, total, err := s.Audits.List(ctx, AuditListQuery(q))
 	if err != nil {
 		return AuditPage{}, mapStore(err)

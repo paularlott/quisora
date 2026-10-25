@@ -182,7 +182,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 			if err := s.CheckPassword(ctx, u, password); err != nil {
 				return nil, nil, err
 			}
-			if hash, err = s.HashPassword(ctx, u.ID, password); err != nil {
+			if hash, err = s.hashPassword(ctx, u.ID, password); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -217,7 +217,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 		}
 		// Tidying, of what this write replaced and nothing later: the old epochs' records.
 		if purpose == LinkInvite {
-			_ = s.ClearCredentials(ctx, u.ID, was.CredEpoch, was.SessionEpoch)
+			_ = s.clearCredentials(ctx, u.ID, was.CredEpoch, was.SessionEpoch)
 		} else {
 			_ = s.endSessionsOf(ctx, u.ID, was.SessionEpoch)
 		}

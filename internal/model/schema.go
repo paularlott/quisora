@@ -68,9 +68,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "family_name", Type: FieldString, Search: true, Sort: true, SortIndex: true}, // "Smith" finds John Smith
 		{Name: "external_id", Type: FieldString},
-		{Name: "tags", Type: FieldString, Index: true, Words: true}, // the console's tag filter, without reading the org
-		{Name: "role", Type: FieldString, Sort: true, SortIndex: true},
-		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true},
+		{Name: "tags", Type: FieldString, Index: true, Words: true},                 // the console's tag filter, without reading the org
+		{Name: "role", Type: FieldString, Sort: true, SortIndex: true, Index: true}, // role filters (SCIM, console)
+		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true, Index: true}, // active filters: the true ones indexed
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "user_type", Type: FieldString, Sort: true},
 		{Name: "department", Type: FieldString, Sort: true},

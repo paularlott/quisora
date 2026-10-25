@@ -46,7 +46,8 @@ type spool struct {
 
 // newSpool opens (creating) dir as a spool of at most maxMB megabytes (0 = defaultSpoolMB) and checks it can write
 // there, so a bad path fails at startup rather than at the first outage. Segments already there (a previous run's)
-// are replayed, never appended to: whatever a crash left torn at the end of one stays its last line.
+// are replayed, never appended to: whatever a crash left torn at the end of one stays its last line. (Load-bearing:
+// replay drops only a segment's last line, so appending to one found at start could bury a torn line.)
 func newSpool(dir string, maxMB int) (*spool, error) {
 	if maxMB <= 0 {
 		maxMB = defaultSpoolMB

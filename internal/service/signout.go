@@ -95,8 +95,8 @@ func (s *Service) SessionStamp(ctx context.Context, orgID string) (model.SignOut
 	return model.SignOutStamp{Server: srv.Sessions, Org: org.Sessions}, err
 }
 
-// APITokenStamp is the stamp for a personal API token made now in orgID.
-func (s *Service) APITokenStamp(ctx context.Context, orgID string) (model.SignOutStamp, error) {
+// apiTokenStamp is the stamp for a personal API token made now in orgID.
+func (s *Service) apiTokenStamp(ctx context.Context, orgID string) (model.SignOutStamp, error) {
 	org, srv, err := s.signOutCounters(ctx, orgID)
 	return model.SignOutStamp{Server: srv.APITokens, Org: org.APITokens}, err
 }
@@ -144,12 +144,6 @@ func SessionUsableAt(sess *model.Session, u *model.User, want model.SignOutStamp
 
 func (s *Service) SessionCurrent(ctx context.Context, orgID string, st model.SignOutStamp) bool {
 	want, err := s.SessionStamp(ctx, orgID)
-	return err == nil && st.Current(want)
-}
-
-// APITokenCurrent reports whether a personal API token of orgID with stamp st has not been signed out.
-func (s *Service) APITokenCurrent(ctx context.Context, orgID string, st model.SignOutStamp) bool {
-	want, err := s.APITokenStamp(ctx, orgID)
 	return err == nil && st.Current(want)
 }
 
@@ -304,7 +298,7 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 	if err != nil {
 		return n, err
 	}
-	tok, err := s.APITokenStamp(ctx, orgID)
+	tok, err := s.apiTokenStamp(ctx, orgID)
 	if err != nil {
 		return n, err
 	}

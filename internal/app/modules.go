@@ -25,6 +25,8 @@ import (
 func modules(ctx context.Context, a *App) []web.Module {
 	op := oidc.New(a.Server)
 	if a.Node.SharedDatabase() {
+		// Load-bearing: nodes sharing a database without gossip hear of no change, so the caches' age is the only
+		// bound on how long a disabled client, a rotated secret or key keeps working on another node.
 		op.ShortCaches()
 	}
 	op.AllowPrivateNetworks = a.Cfg.Server.AllowPrivateNetworks
