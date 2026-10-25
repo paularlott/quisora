@@ -187,7 +187,10 @@ type Limits struct {
 	LockoutAttempts int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
 	LockoutMinutes  int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
 	PasswordWorkers int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs)"`
-	EphemeralMB     int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// PasswordMinLength is the shortest password accepted, in characters. NIST SP 800-63B rev 4 asks for 15 where a
+	// password may be the only factor (as here, unless the organization requires a second one), and 8 at least.
+	PasswordMinLength int `toml:"password_min_length" flag:"password-min-length" usage:"Shortest password accepted, characters (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)"`
+	EphemeralMB       int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 }
 
 type Log struct {
@@ -226,7 +229,7 @@ func Default() *Config {
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
-		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024},
+		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024, PasswordMinLength: 15},
 		Log:     Log{Level: "info", Format: "console", Access: true},
 	}
 }
@@ -480,6 +483,10 @@ func (c *Config) Validate() error {
 	positive("server.shutdown_timeout", c.Server.ShutdownTimeout)
 	positive("tokens.access_ttl", c.Tokens.AccessTTL)
 	positive("limits.ephemeral_mb", c.Limits.EphemeralMB)
+	if n := c.Limits.PasswordMinLength; n < 8 || n > 64 {
+		errs = append(errs, fmt.Errorf("limits.password_min_length must be between 8 and 64 (NIST SP 800-63B: at least 8, "+
+			"and 15 where a password may be the only factor), not %d", n))
+	}
 	positive("tokens.id_token_ttl", c.Tokens.IDTokenTTL)
 	positive("tokens.refresh_ttl", c.Tokens.RefreshTTL)
 	positive("tokens.code_ttl", c.Tokens.CodeTTL)

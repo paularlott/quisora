@@ -112,6 +112,7 @@ login_per_ip_min = 300                    # sign-in attempts per organization an
 lockout_attempts = 10                     # failed passwords before an account is locked
 lockout_minutes = 15
 password_workers = 0                      # concurrent password hashes (0 = number of CPUs)
+password_min_length = 15                  # shortest password accepted (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)
 ephemeral_mb = 1024                       # memory per node for short-lived sign-in state (flows, codes, pushed requests); past it they get 503
 
 [log]

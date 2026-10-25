@@ -141,10 +141,10 @@ func (s *Service) personalWords(ctx context.Context, u *model.User) []string {
 	return words
 }
 
-// CheckPassword checks a password u is choosing: the length (ValidatePassword), then that it is not easy to guess
+// CheckPassword checks a password u is choosing: the length (validatePassword), then that it is not easy to guess
 // (weakPassword), with u's own details as words it must not be built on.
 func (s *Service) CheckPassword(ctx context.Context, u *model.User, pw string) error {
-	if err := ValidatePassword(pw); err != nil {
+	if err := s.validatePassword(pw); err != nil {
 		return err
 	}
 	if why := weakPassword(pw, s.personalWords(ctx, u)); why != "" {

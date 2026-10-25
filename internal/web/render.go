@@ -28,6 +28,7 @@ type Site struct {
 	PublicURL    string
 	Mail         bool // an SMTP server is configured (config.Mail.Enabled)
 	Clustered    bool // nodes replicate over gossip: super admins get the cluster page
+	PasswordMin  int  // limits.password_min_length: the forms say how long a password must be
 }
 
 // Page is the data every template receives; Data carries the page-specific values.
@@ -151,6 +152,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, p *Pag
 // SiteFromConfig builds the branding block.
 func SiteFromConfig(c *config.Config) Site {
 	s := Site{Name: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
-		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled()}
+		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(),
+		PasswordMin: c.Limits.PasswordMinLength}
 	return s
 }

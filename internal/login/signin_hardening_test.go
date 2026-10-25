@@ -86,3 +86,14 @@ func TestFailedSignInDoesNotRecordAPasswordTypedAsTheLogin(t *testing.T) {
 		t.Fatalf("the address tried is not recorded: %v", seen)
 	}
 }
+
+// The password forms say how long a password must be: limits.password_min_length.
+func TestPasswordFormsStateTheMinimum(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.PasswordMinLength = 12 })
+	org := e.org(t, "acme", nil)
+	_, link := e.invitee(t, org, "newbie")
+	res, body := e.browser(t).get(link)
+	if res.StatusCode != 200 || !strings.Contains(body, "At least 12 characters.") {
+		t.Fatalf("invitation page %d does not state the minimum", res.StatusCode)
+	}
+}

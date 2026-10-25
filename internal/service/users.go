@@ -95,14 +95,11 @@ func applyTags(dst *[]string, in *[]string) error {
 
 var usernameRe = regexp.MustCompile(`^[\p{L}\p{N}._@+-]{1,128}$`)
 
-// MinPasswordLength is the shortest password accepted.
-const MinPasswordLength = 10
-
-// ValidatePassword checks a new password against the policy.
-func ValidatePassword(pw string) error {
-	n := utf8.RuneCountInString(pw)
-	if n < MinPasswordLength {
-		return Invalid("password", "must be at least "+itoa(MinPasswordLength)+" characters")
+// validatePassword checks a new password's length: at least limits.password_min_length characters.
+func (s *Service) validatePassword(pw string) error {
+	n, min := utf8.RuneCountInString(pw), s.Cfg.Limits.PasswordMinLength
+	if n < min {
+		return Invalid("password", "must be at least "+itoa(min)+" characters")
 	}
 	if len(pw) > 1024 {
 		return Invalid("password", "is too long")

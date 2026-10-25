@@ -28,7 +28,7 @@
     {{end}}
     {{if .Data.Password}}
     <input type="text" name="username" value="{{.Data.Email}}" autocomplete="username" readonly hidden>
-    {{template "field" (dict "name" "password" "label" "Password" "required" (not $.Data.Passkey) "type" "password" "autofocus" (not $.Data.Passkey) "autocomplete" "new-password" "help" "At least 10 characters.")}}
+    {{template "field" (dict "name" "password" "label" "Password" "required" (not $.Data.Passkey) "type" "password" "autofocus" (not $.Data.Passkey) "autocomplete" "new-password" "help" (printf "At least %d characters." $.Site.PasswordMin))}}
     {{template "field" (dict "name" "confirm" "label" "Confirm password" "required" (not $.Data.Passkey) "type" "password" "autocomplete" "new-password")}}
     <button type="submit" class="btn w-full" :class="passwordButtonClass" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="passwordLabel">{{if .Data.Passkey}}Set password{{else}}Activate account{{end}}</span></button>
     {{end}}

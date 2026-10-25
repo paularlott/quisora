@@ -67,7 +67,7 @@
             <div class="dialog-body">
               <p class="muted" x-text="dialogNote">Changing your password signs you out of every other browser and device.</p>
               {{template "field" (dict "name" "pw_current" "label" "Current password" "type" "password" "required" true "autofocus" true "autocomplete" "current-password" "show" "hasPassword")}}
-              {{template "field" (dict "name" "pw_new" "label" "New password" "type" "password" "required" true "autofocus" true "autocomplete" "new-password" "help" "At least 10 characters.")}}
+              {{template "field" (dict "name" "pw_new" "label" "New password" "type" "password" "required" true "autofocus" true "autocomplete" "new-password" "help" (printf "At least %d characters." $.Site.PasswordMin))}}
               {{template "field" (dict "name" "pw_confirm" "label" "Confirm new password" "type" "password" "required" true "autocomplete" "new-password")}}
             </div>
             {{template "form-foot" (dict "label" "submitLabel" "default" "Change password")}}
