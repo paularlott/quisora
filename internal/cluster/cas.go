@@ -557,7 +557,9 @@ func (s *Store) quorumWrite(ctx context.Context, rec *store.Record, mode uint8, 
 				return fmt.Errorf("%w: the record stayed busy, or too few nodes were ready to take part",
 					store.ErrUnconfirmed)
 			}
-			time.Sleep(time.Duration(1+rand.IntN(min(1<<min(attempt, 6), 50))) * time.Millisecond)
+			if err := pause(ctx, time.Duration(1+rand.IntN(min(1<<min(attempt, 6), 50)))*time.Millisecond); err != nil {
+				return fmt.Errorf("%w: the write was given up before a quorum granted it: %w", store.ErrUnconfirmed, err)
+			}
 		default:
 			s.abort(op, rec.Version, granted)
 			n.unconfirmed.Add(1)
@@ -865,5 +867,17 @@ func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store
 			return nil, err
 		}
 		recs = append(recs, r)
+	}
+}
+
+// pause waits d, or until ctx ends (its error).
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }

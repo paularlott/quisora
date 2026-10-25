@@ -67,7 +67,9 @@ func (s *Service) updateSignIn(ctx context.Context, u *model.User, fn func(si *m
 			return err
 		}
 		// Changed meanwhile (perhaps on another node): the newer copy is here now (read repair); apply fn to it.
-		time.Sleep(time.Duration(1+rand.IntN(5*(attempt+1))) * time.Millisecond)
+		if err := pause(ctx, time.Duration(1+rand.IntN(5*(attempt+1)))*time.Millisecond); err != nil {
+			return err
+		}
 	}
 	return err
 }

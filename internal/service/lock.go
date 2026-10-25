@@ -51,7 +51,21 @@ func (s *Service) lock(ctx context.Context, id string, ttl, wait time.Duration, 
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("%w: %s", ErrUnavailable, busy)
 		}
-		time.Sleep(time.Duration(10+rand.IntN(20*min(attempt, 10))) * time.Millisecond)
+		if err := pause(ctx, time.Duration(10+rand.IntN(20*min(attempt, 10)))*time.Millisecond); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrUnavailable, busy, err)
+		}
+	}
+}
+
+// pause waits d, or until ctx ends (its error).
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 

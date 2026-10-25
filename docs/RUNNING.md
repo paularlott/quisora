@@ -633,7 +633,8 @@ the spool are always in `server.data_dir`, [The data directory](#the-data-direct
 them is refused at start-up; take them out, and move an existing store or spool into the data directory first.
 
 **Before the first release** there is no upgrade path: a store written by an older pre-release build is refused at
-start-up. Wipe it and start clean (or restore a backup made by the new build).
+start-up. Wipe it and start clean (or restore a backup made by the new build). What has to happen before that
+release: [RELEASE.md](RELEASE.md).
 
 **From the first release:**
 

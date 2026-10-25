@@ -33,7 +33,7 @@ const (
 	nsCode     = "oauth.code"
 	nsUsed     = "oauth.used"     // code id -> grant id, to revoke on replay
 	nsReplayed = "oauth.replayed" // code id presented again: a redemption still under way revokes what it makes
-	nsRateOIDC = "oauth.rate" // failed client authentications per IP
+	nsRateOIDC = "oauth.rate"     // failed client authentications per IP
 	nsLogout   = "oauth.logout"
 	flowTTL    = 20 * time.Minute
 	usedTTL    = time.Hour

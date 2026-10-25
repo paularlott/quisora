@@ -76,8 +76,9 @@ curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 
 ## SCIM (`scim`)
 
-The token provisions users and groups in its owner's organization (a super admin's, in any organization). Groups need
-an administrator's token. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
+The token provisions users and groups in its owner's organization (a super admin's, in any organization). A manager's
+token changes plain users and their group memberships. Creating, renaming, retagging or deleting a group, and anything
+done to a manager or administrator, needs an administrator's token. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
 in the OpenAPI document under the SCIM tag, and the server describes itself at `/scim/v2/<org>/ServiceProviderConfig`
 and `/scim/v2/<org>/Schemas`.
 
@@ -88,6 +89,18 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?filter=userN
 
 A provisioning service that supports OAuth can use a client instead: a confidential client with SCIM provisioning
 turned on gets short-lived tokens with the client credentials grant, and no person's token is involved.
+
+### Where SCIM is lenient
+
+Entra ID and Okta send requests that a strict reading of RFC 7644 would refuse. Quisora accepts them:
+
+- A `replace` through a value filter that matches nothing creates the element, for example
+  `emails[type eq "work"].value` on a user with no work address.
+- Unknown attributes are dropped silently, not refused.
+- `emails.value` with no filter sets the first address only.
+- `phoneNumbers[type eq "mobile"]` keeps only one number: the primary one, or else the first. Quisora stores one
+  phone number per user.
+- A PUT of a user without `phoneNumbers` leaves the number as it was.
 
 ## Backups (`backup`)
 
