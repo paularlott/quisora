@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -83,16 +84,35 @@ func TestGroupMembershipIdempotentAndScoped(t *testing.T) {
 		t.Errorf("other org admin: %v", err)
 	}
 
-	// Deleting the group removes its memberships.
+	// Deleting the group ends its memberships at once (they stand on it); the orphan sweep removes them.
 	if err := c.svc.DeleteGroup(c.ctx, a, g.ID); err != nil {
 		t.Fatal(err)
-	}
-	if n, _ := c.svc.Store.Count(c.ctx, model.KindMember, c.a.ID); n != 0 {
-		t.Errorf("%d memberships left", n)
 	}
 	if gs, _ := c.svc.UserGroups(c.ctx, u1); len(gs) != 0 {
 		t.Errorf("user still in deleted group")
 	}
+	if _, err := c.svc.SweepAll(c.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := activeMembers(t, c.svc, c.a.ID); n != 0 {
+		t.Errorf("%d memberships left", n)
+	}
+}
+
+// activeMembers counts the organization's memberships that are not removed (a removed one is kept until it expires).
+func activeMembers(t *testing.T, svc *service.Service, orgID string) int {
+	t.Helper()
+	ms, err := svc.Members.All(context.Background(), orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, m := range ms {
+		if m.Active() {
+			n++
+		}
+	}
+	return n
 }
 
 func TestGroupValidationAndConflicts(t *testing.T) {

@@ -142,13 +142,10 @@ func (s *Service) UpdateGroup(ctx context.Context, a *Actor, id string, in Group
 	return nil, ErrStale
 }
 
-// DeleteGroup deletes a group and its memberships. The removal of every member is committed first, as a change
-// entry (Clear) on the group's record, so from that moment no reader counts anyone as a member, whatever is still
-// materialized; the group's record then goes with a compare-and-swap on the version that commit gave it, once its
-// memberships are materialized as removed, and their records are tombstoned after it (nothing is left to fence). A
-// deleter that dies between the two leaves an empty group (the deletion did not happen), never memberships of a
-// group that is gone; a deletion racing another change of the group is ErrStale and may be retried from the
-// group's current state.
+// DeleteGroup deletes a group: one compare-and-swap on the group's record as read (a deletion racing another change
+// of the group is ErrStale, and may be retried from the group's current state). Every reader of memberships reads the
+// group first, so its memberships count for nothing from that write, materialized or pending; the orphan sweep
+// removes their records (and the tenant access given to the group) later.
 func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	g, err := s.Groups.Get(ctx, id)
 	if err != nil {
@@ -160,39 +157,8 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	if err := s.clientMayAffectMembers(ctx, a, g); err != nil {
 		return err // deleting the group removes every member from it
 	}
-	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: id}}})
-	if err != nil {
+	if err := s.Groups.DeleteIf(ctx, id, g.Version); err != nil {
 		return mapStore(err)
-	}
-	remaining, err := s.applyGroupChanges(ctx, g)
-	if err != nil && len(remaining) >= maxPendingChanges {
-		return s.unfinished(g, err)
-	}
-	next := *g
-	next.Tags = slices.Clone(g.Tags)
-	next.Seq = g.Seq + 1
-	next.Pending = append(remaining, model.GroupChange{Seq: next.Seq, At: time.Now().UTC(), Clear: true})
-	if err := s.Groups.Update(ctx, &next); err != nil {
-		return mapStore(err)
-	}
-	// Committed: the group has no members for any reader. Materialize that, then remove the group itself.
-	ctx = context.WithoutCancel(ctx)
-	if _, err := s.applyGroupChanges(ctx, &next); err != nil {
-		s.Log.Warn("group deletion: its memberships could not all be marked removed yet; housekeeping finishes them",
-			"group", g.ID, "error", err)
-		return err // the group stays, empty; the deletion is retried
-	}
-	if err := s.Groups.DeleteIf(ctx, id, next.Version); err != nil {
-		return mapStore(err)
-	}
-	// The group is gone: its membership records (marked removed above) have nothing left to fence and go too.
-	for _, m := range ms {
-		_ = s.Members.Delete(ctx, m.ID)
-	}
-	if err := s.deleteAccessWhere(ctx, g.OrgID, "subject_id", id); err != nil {
-		// Cleanup of entries nothing reads once the group is gone: the deletion stands, and the leftovers are
-		// logged (a member's access decision looks up their current groups, never a deleted one's entry).
-		s.Log.WithError(err).Warn("group deleted; some of its access entries were not removed", "group", id)
 	}
 	s.Audit(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil)
 	return nil

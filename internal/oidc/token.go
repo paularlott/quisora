@@ -323,7 +323,12 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 		}
 		return nil, false, unavailable(err)
 	}
-	if !u.Enabled(time.Now()) || u.OrgID != g.OrgID || !u.SessionHolds(g.Epoch) {
+	if u.OrgID != g.OrgID || !u.SessionHolds(g.Epoch) {
+		return u, false, nil
+	}
+	if ok, err := p.svc.UserUsable(ctx, u); err != nil {
+		return nil, false, unavailable(err)
+	} else if !ok {
 		return u, false, nil
 	}
 	want, err := p.svc.SessionStamp(ctx, g.OrgID) // read once: the grant's stamp and its session's are judged by it

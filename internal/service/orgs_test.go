@@ -188,6 +188,17 @@ func TestDeleteOrgCascade(t *testing.T) {
 	if err := c.svc.DeleteOrg(c.ctx, actor(c.super), org.ID, true); err != nil {
 		t.Fatalf("cascade: %v", err)
 	}
+	// Everything of the organization stops counting at once: it stands on the organization.
+	if ok, err := c.svc.SessionUsable(c.ctx, sess, u1); err != nil || ok {
+		t.Errorf("session of a deleted organization usable: %v %v", ok, err)
+	}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, plain); err == nil {
+		t.Error("API token of a deleted organization accepted")
+	}
+	// The orphan sweep is the cascade: one pass removes the rest.
+	if _, err := c.svc.SweepAll(c.ctx); err != nil {
+		t.Fatal(err)
+	}
 	gone := []struct {
 		name string
 		err  error
@@ -197,7 +208,6 @@ func TestDeleteOrgCascade(t *testing.T) {
 		{"user1", func() error { _, e := c.svc.Users.Get(c.ctx, u1.ID); return e }()},
 		{"user2", func() error { _, e := c.svc.Users.Get(c.ctx, u2.ID); return e }()},
 		{"group", func() error { _, e := c.svc.Groups.Get(c.ctx, g.ID); return e }()},
-		{"member", func() error { _, e := c.svc.Members.Get(c.ctx, model.MemberID(g.ID, u1.ID)); return e }()},
 		{"client", func() error { _, e := c.svc.Clients.Get(c.ctx, cl.ID); return e }()},
 		{"provider", func() error { _, e := c.svc.Providers.Get(c.ctx, prov.ID); return e }()},
 		{"apitoken", func() error { _, e := c.svc.APITokens.Get(c.ctx, tok.ID); return e }()},
@@ -211,7 +221,10 @@ func TestDeleteOrgCascade(t *testing.T) {
 			t.Errorf("%s survived the cascade: %v", g.name, g.err)
 		}
 	}
-	for _, k := range []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindClient, model.KindProvider} {
+	if n := activeMembers(t, c.svc, org.ID); n != 0 {
+		t.Errorf("%d memberships survived the cascade", n) // marked removed, they expire like any removed one
+	}
+	for _, k := range []model.Kind{model.KindUser, model.KindGroup, model.KindClient, model.KindProvider} {
 		if n, _ := c.svc.Store.Count(c.ctx, k, org.ID); n != 0 {
 			t.Errorf("%d %s records left in org scope", n, k)
 		}

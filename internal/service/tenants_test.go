@@ -61,8 +61,11 @@ func TestTenantsLifecycleAndRBAC(t *testing.T) {
 	if err := c.svc.DeleteTenant(c.ctx, actor(c.aAdmin), ten.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Cascade org deletion removes tenants.
+	// Cascade org deletion removes tenants (by the orphan sweep).
 	if err := c.svc.DeleteOrg(c.ctx, actor(c.super), c.b.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.SweepAll(c.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := c.svc.Tenants.Count(c.ctx, c.b.ID); n != 0 {

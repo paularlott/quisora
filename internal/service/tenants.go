@@ -202,12 +202,10 @@ func (s *Service) DeleteTenant(ctx context.Context, a *Actor, id string) error {
 	if n > 0 {
 		return ErrTenantInUse
 	}
+	// Its access entries stand on it: a deleted tenant has no clients (ErrTenantInUse above), so nothing decides access
+	// from them, and the orphan sweep removes them.
 	if err := s.Tenants.Delete(ctx, id); err != nil {
 		return mapStore(err)
-	}
-	if err := s.deleteAccessWhere(ctx, t.OrgID, "tenant_id", t.ID); err != nil {
-		// Cleanup: a deleted tenant has no clients (ErrTenantInUse above), so nothing decides access from its entries.
-		s.Log.WithError(err).Warn("tenant deleted; some of its access entries were not removed", "tenant", t.ID)
 	}
 	s.Audit(ctx, a, t.OrgID, "tenant.delete", t.Name, nil)
 	return nil

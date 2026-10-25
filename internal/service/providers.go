@@ -317,11 +317,11 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 	if err != nil {
 		return err
 	}
+	// The links to it stand on it: sign-in through a deleted provider is impossible, and the orphan sweep removes them.
 	if err := s.Providers.Delete(ctx, id); err != nil {
 		return mapStore(err)
 	}
-	n := s.purgeIdentities(ctx, id)
-	s.Audit(ctx, a, p.OrgID, "provider.delete", p.Name, map[string]string{"identities_unlinked": itoa(n)})
+	s.Audit(ctx, a, p.OrgID, "provider.delete", p.Name, nil)
 	return nil
 }
 

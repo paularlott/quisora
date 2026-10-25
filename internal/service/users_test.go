@@ -399,6 +399,7 @@ func TestUserPasswordHashAndSessions(t *testing.T) {
 	}
 }
 
+// Deleting a user deletes the user record: what was theirs stops counting at once, and the orphan sweep removes it.
 func TestDeleteUserRemovesEverything(t *testing.T) {
 	c := newCast(t)
 	u := c.aUser
@@ -406,7 +407,7 @@ func TestDeleteUserRemovesEverything(t *testing.T) {
 	if err := c.svc.SetMembership(c.ctx, actor(c.aAdmin), g.ID, u.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	tok, _, err := c.svc.CreateAPIToken(c.ctx, actor(u), service.APITokenInput{Name: "t", Scopes: []string{"api"}})
+	tok, plain, err := c.svc.CreateAPIToken(c.ctx, actor(u), service.APITokenInput{Name: "t", Scopes: []string{"api"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,6 +418,12 @@ func TestDeleteUserRemovesEverything(t *testing.T) {
 	}
 	if _, err := c.svc.Users.Get(c.ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Error("user remains")
+	}
+	if _, _, err := c.svc.ValidateAPIToken(c.ctx, plain); err == nil {
+		t.Error("token of a deleted user accepted")
+	}
+	if _, err := c.svc.SweepAll(c.ctx); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := c.svc.APITokens.Get(c.ctx, tok.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Error("token remains")

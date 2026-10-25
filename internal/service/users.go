@@ -859,56 +859,18 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	}
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
 	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
-	// last-admin check applied) is refused, instead of deleting an administrator unchecked. What belonged to them
-	// follows.
+	// last-admin check applied) is refused, instead of deleting an administrator unchecked.
 	if err := s.Users.DeleteIf(Durable(ctx), u.ID, u.Version); !store.Applied(err) {
-		// Refused (a newer copy), or not confirmed by a majority: the user may still exist, so nothing of theirs is
-		// removed; a retry decides.
+		// Refused (a newer copy), or not confirmed by a majority: the user may still exist; a retry decides.
 		return mapStore(err)
 	}
-	// The user is gone: what belonged to them goes too. That is best effort (a session or token of a deleted user
-	// works nowhere, as every use looks the user up), so a failure here is logged and does not undo or hide the
-	// deletion, which is audited either way.
-	if err := s.deleteUserData(Durable(ctx), u); err != nil {
-		s.Log.Error("user deleted; some of their records were not removed", "user", u.ID, "error", err)
-	}
+	// The user is gone, and with it everything that was theirs: every session, grant, token, passkey or link stands on
+	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The applications are
+	// told (back-channel logout), and the users they managed get no manager.
+	s.sessionsEnding(Durable(ctx), u.ID, nil)
+	s.clearManagerOf(ctx, u)
 	s.Audit(ctx, a, u.OrgID, "user.delete", u.Username, nil)
 	return nil
-}
-
-func (s *Service) deleteUserData(ctx context.Context, u *model.User) error {
-	s.sessionsEnding(ctx, u.ID, nil)
-	for _, k := range []model.Kind{model.KindSession, model.KindGrant, model.KindPasskey, model.KindIdentity,
-		model.KindAPIToken} {
-		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: u.ID})
-		if err != nil {
-			return err
-		}
-		for _, r := range res.Records {
-			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); err != nil && !errors.Is(err, store.ErrStale) {
-				return err
-			}
-		}
-	}
-	// The user's memberships are tombstoned outside their groups' commit points (ChangeGroup): the user is gone, so
-	// a membership a change of the group materializes meanwhile is one of a user who no longer exists, which is
-	// harmless (members are looked up when read, and such a membership may be removed by anyone, checkMembership)
-	// and nothing a serialised removal could prevent, as the user may be deleted right after the change checked them.
-	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
-	if err != nil {
-		return err
-	}
-	for _, m := range ms {
-		_ = s.Members.Delete(ctx, m.ID)
-	}
-	if err := s.SignIns.Delete(ctx, u.ID); err != nil && !store.Applied(err) && !errors.Is(err, store.ErrStale) {
-		return mapStore(err)
-	}
-	if err := s.deleteAccessWhere(ctx, u.OrgID, "subject_id", u.ID); err != nil {
-		return err
-	}
-	s.clearManagerOf(ctx, u)
-	return mapStore(s.Users.Delete(ctx, u.ID))
 }
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap

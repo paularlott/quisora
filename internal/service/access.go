@@ -148,7 +148,10 @@ func (s *Service) ListAccess(ctx context.Context, a *Actor, tenantID string, q s
 			continue // a super admin's access is not listed below them
 		}
 		e := &AccessEntry{TenantAccess: acc, Expired: !acc.Live(now)}
-		e.Name, e.Detail, _ = s.accessSubject(ctx, a, t.OrgID, acc.SubjectType, acc.SubjectID)
+		var serr error
+		if e.Name, e.Detail, serr = s.accessSubject(ctx, a, t.OrgID, acc.SubjectType, acc.SubjectID); serr != nil {
+			continue // its user or group was deleted: it counts for nothing (the orphan sweep removes it)
+		}
 		if search != "" && !strings.Contains(strings.ToLower(e.Name), search) && !strings.Contains(strings.ToLower(e.Detail), search) {
 			continue
 		}
@@ -297,24 +300,6 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 	}
 	s.Audit(ctx, a, e.OrgID, "tenant.access.remove", name, map[string]string{e.SubjectType: e.Name})
 	return nil
-}
-
-// deleteAccessWhere removes the access records of an org matching one field (a deleted user, group or tenant). It
-// is cleanup: an entry left behind names a subject or tenant that no longer exists, so no access decision reads it
-// (ClientAccess looks entries up by the user and their current groups, in the client's tenant). Failures are
-// returned so the caller can record that the deletion did not finish.
-func (s *Service) deleteAccessWhere(ctx context.Context, orgID, field, value string) error {
-	l, _, err := s.Access.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: field, Value: value}}})
-	if err != nil {
-		return mapStore(err)
-	}
-	var errs []error
-	for _, acc := range l {
-		if err := s.Access.Delete(ctx, acc.ID); err != nil && !store.Applied(err) && !errors.Is(err, store.ErrStale) {
-			errs = append(errs, mapStore(err))
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // AppAccess is what a user gets for one application: whether they may sign in to it, and the roles and tags that

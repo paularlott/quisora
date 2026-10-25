@@ -150,8 +150,9 @@ func modules(ctx context.Context, a *App) []web.Module {
 			} else if n > 0 {
 				a.Log.Info("group changes left unfinished by their writer were finished", "count", n)
 			}
-			// Records whose owner is gone (left by a removal that failed part-way) are found a batch a minute: a pass over
-			// every record of the kinds that do not expire takes about a day at five million users.
+			// Records whose owner is gone (what a deleted organization, user, group, tenant or provider owned: they
+			// stopped counting at its deletion) are found a batch a minute: a pass over every record of the kinds that
+			// do not expire takes about a day at five million users.
 			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); err != nil {
 				a.Log.Error("orphan sweep", "error", err)
 			} else if n > 0 {

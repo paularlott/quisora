@@ -178,9 +178,9 @@ func TestHousekeepingFinishesAbandonedGroupChange(t *testing.T) {
 	}
 }
 
-// Deleting a group commits the removal of every member first: a deletion that cannot finish leaves an empty group
-// (no membership grants anything), and a retry removes it.
-func TestDeleteGroupCommitsRemovalFirst(t *testing.T) {
+// Deleting a group is one write, its record: its memberships stand on it, so they stop counting at once (none is
+// written, so none can fail the deletion), and the orphan sweep marks them removed later.
+func TestDeleteGroupIsOneWrite(t *testing.T) {
 	e := newEnv(t)
 	org := e.org("delete-commit")
 	a, b := e.user(org.ID, "a", model.RoleUser), e.user(org.ID, "b", model.RoleUser)
@@ -190,45 +190,27 @@ func TestDeleteGroupCommitsRemovalFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	inner := e.svc.Members.S
-	e.svc.Members.S = failRecord{Store: inner, suffix: b.ID}
-	if err := e.svc.DeleteGroup(e.ctx, service.System, g.ID); err == nil {
-		t.Fatal("deletion finished with a membership it could not write")
+	e.svc.Members.S = failRecord{Store: inner, suffix: ""} // no membership can be written
+	if err := e.svc.DeleteGroup(e.ctx, service.System, g.ID); err != nil {
+		t.Fatalf("deletion wrote a membership: %v", err)
 	}
-	cur, err := e.svc.Groups.Get(e.ctx, g.ID)
-	if err != nil {
-		t.Fatalf("the group must still exist: %v", err)
-	}
-	if len(cur.Pending) != 1 || !cur.Pending[0].Clear {
-		t.Fatalf("record: %+v", cur)
+	e.svc.Members.S = inner
+	if _, err := e.svc.Groups.Get(e.ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("group: %v", err)
 	}
 	for _, u := range []*model.User{a, b} {
 		if gs, err := e.svc.UserGroups(e.ctx, u); err != nil || len(gs) != 0 {
 			t.Fatalf("%s still granted the group: %v %v", u.Username, gs, err)
 		}
 	}
-	if ids, err := e.svc.GroupMembers(e.ctx, service.System, g.ID); err != nil || len(ids) != 0 {
-		t.Fatalf("members: %v %v", ids, err)
+	if activeMembers(t, e.svc, org.ID) != 2 {
+		t.Fatal("the deletion touched a membership record")
 	}
-	if n, err := e.svc.GroupMemberCount(e.ctx, service.System, cur); err != nil || n != 0 {
-		t.Fatalf("count: %d %v", n, err)
-	}
-	e.svc.Members.S = inner
-	if err := e.svc.DeleteGroup(e.ctx, service.System, g.ID); err != nil {
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Groups.Get(e.ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("group: %v", err)
-	}
-	// b's record, removed by this deletion, went with the group; a's, removed by the first attempt, is kept out of
-	// every index until it expires (model.RemovedMemberRetention), like any removed membership.
-	if _, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, b.ID)); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("b's membership: %v", err)
-	}
-	if m, err := e.svc.Members.Get(e.ctx, model.MemberID(g.ID, a.ID)); err != nil || m.Active() || m.Index().Expires.IsZero() {
-		t.Fatalf("a's membership: %v %+v", err, m)
-	}
-	if _, n, err := e.svc.Members.List(e.ctx, store.ListQuery{Scope: org.ID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}}); err != nil || n != 0 {
-		t.Fatalf("memberships of the deleted group still indexed: %d %v", n, err)
+	if n := activeMembers(t, e.svc, org.ID); n != 0 {
+		t.Fatalf("%d memberships survived the sweep", n)
 	}
 }
 

@@ -333,21 +333,23 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	switch {
 	case err == nil:
 		u, uerr := s.Svc.Users.Get(ctx, ident.UserID)
-		if uerr == nil && !u.Holds(ident.Epoch) {
-			// Linked before the account's sign-in was reset (model.User.CredEpoch): the link counts no more.
-			_ = s.Svc.Identities.Delete(service.Durable(ctx), ident.ID)
-			break
-		}
-		if uerr == nil {
+		if uerr == nil && u.Holds(ident.Epoch) {
 			if u.OrgID != org.ID || !u.Enabled(time.Now()) {
 				return nil, false, ErrDisabled
 			}
 			return u, false, nil
 		}
-		if !errors.Is(uerr, store.ErrNotFound) {
+		if uerr != nil && !errors.Is(uerr, store.ErrNotFound) {
 			return nil, false, uerr
 		}
-		_ = s.Svc.Identities.Delete(ctx, ident.ID) // orphaned link: the user was deleted
+		// The user was deleted, or linked this before the account's sign-in was reset (model.User.CredEpoch): the
+		// link counts for nothing and goes, and the sign-in carries on as unlinked. A link a quorum still counts
+		// (this node is behind) is refused for now.
+		if freed, err := s.Svc.ReleaseUnique(ctx, model.KindIdentity, model.IdentityKey(p.ID, c.Subject)); err != nil {
+			return nil, false, err
+		} else if !freed {
+			return nil, false, service.ErrUnavailable
+		}
 	case !errors.Is(err, store.ErrNotFound):
 		return nil, false, err
 	}

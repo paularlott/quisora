@@ -35,9 +35,12 @@ There is no one-click export yet: gather these into the answer.
 **Correction.** Administrators edit every field; users edit their own profile on the account page (name, locale, time
 zone, phone, addresses).
 
-**Erasure.** Deleting the user (`DELETE /api/orgs/{org}/users/{id}`) removes the user record and everything that
-belongs to it: sessions and refresh grants (applications are told through back-channel logout), passkeys, connected
-providers, API tokens, group memberships, sign-in records and access entries, and clears them as manager of others.
+**Erasure.** Deleting the user (`DELETE /api/orgs/{org}/users/{id}`) removes the user record, ends their sessions
+and refresh grants (applications are told through back-channel logout) and clears them as manager of others.
+Everything else that belonged to them (passkeys, connected providers with the address each gave, API tokens, group
+memberships, sign-in records, access entries) stops working at once, since it stands on the user record, and is removed by
+the orphan sweep, which reaches every record within about a day at five million users (`docs/REPLICATION.md`,
+"Deletion"). Deleting an organization does the same for everything in it.
 
 What remains:
 

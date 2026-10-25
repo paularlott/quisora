@@ -143,7 +143,7 @@ func TestMarkEmailVerifiedAPI(t *testing.T) {
 	if r.JSON["can_verify_email"] != false {
 		t.Fatalf("own account: %s", r.Raw)
 	}
-	wantField(t, w.as("user").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil), 422, "email") // their own
+	wantField(t, w.as("user").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil), 422, "email")                   // their own
 	want(t, w.as("user").post(AU+"/"+w.users["manager"].ID+"/emails/"+url.PathEscape(w.users["manager"].Email)+"/mark-verified", nil), 404) // cannot see others
 	r = w.as("manager").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil)
 	want(t, r, 200)

@@ -257,14 +257,27 @@ func (s *Service) CurrentPasskeys(ctx context.Context, u *model.User) ([]*model.
 	return slices.DeleteFunc(l, func(p *model.Passkey) bool { return !u.Counts(p) }), nil
 }
 
-// CurrentIdentities returns u's links to sign-in providers that count (made in its credential epoch): what every
-// listing of connected providers shows.
+// CurrentIdentities returns u's links to sign-in providers that count (made in its credential epoch, to a provider
+// that still exists: a link stands on both): what every listing of connected providers shows.
 func (s *Service) CurrentIdentities(ctx context.Context, u *model.User) ([]*model.Identity, error) {
 	l, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	return slices.DeleteFunc(l, func(i *model.Identity) bool { return !u.Counts(i) }), nil
+	out := l[:0]
+	for _, i := range l {
+		if !u.Counts(i) {
+			continue
+		}
+		if _, err := s.Providers.Get(ctx, i.ProviderID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue // the provider was deleted: the sweep removes the link
+			}
+			return nil, mapStore(err)
+		}
+		out = append(out, i)
+	}
+	return out, nil
 }
 
 // way names a way in about to be removed: a passkey (id), the links to a provider (id), or the authenticator app.

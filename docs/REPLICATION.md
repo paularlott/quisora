@@ -245,11 +245,9 @@ membership writes) stays pending and is carried forward by later commits; a reco
 further changes (`ErrUnavailable`) until they are applied.
 
 Field changes (a rename, tags, the external id) commit on the same record with the same compare-and-swap, so they
-serialise with changes of the members without a lock and preserve the pending log. A deletion first commits an entry
-removing every member (`Clear`) — from that moment nobody is a member of the group, whatever is materialized — then
-materializes it and removes the group's record with a compare-and-swap on the version that commit gave it (then
-tombstones the membership records); a deleter that dies in between leaves an empty group, never memberships of a
-group that is gone. Creating a group with members
+serialise with changes of the members without a lock and preserve the pending log. A deletion is one conditional
+removal of the group's record: its memberships stand on it, so from that moment nobody is a member of the group,
+and the orphan sweep marks their records removed later ("Deletion" below). Creating a group with members
 creates the record carrying the first entry: the group exists with every member or not at all. One change may add
 and remove at most 1,000 memberships (`service.MaxMembersPerChange`), which keeps the log small; SCIM refuses a
 larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
@@ -266,8 +264,8 @@ not; a committed addition is seen the same way (a user's groups include the orga
 entries, one indexed read, normally empty). A membership of a group that no longer exists names no group and grants
 nothing. The group's version, its SCIM ETag, moves at the commit and once more when the entry is cleared (normally
 within the same request, which returns the final version); a change made from a copy that is no longer the newest
-is refused (`ErrStale`, HTTP 412 with `If-Match`). A deleted user's memberships are tombstoned outside this protocol
-(they are those of a user who no longer exists, harmless and removable by anyone).
+is refused (`ErrStale`, HTTP 412 with `If-Match`). A deleted user's memberships are left to the orphan sweep: they
+name a user who no longer exists, and member lists leave them out.
 
 ### Refresh grants and single-use values
 
@@ -303,6 +301,27 @@ up (copying, catching up) applies the record but does not acknowledge it either.
 confirm in time the write stands on this node, is counted in `unconfirmed` and logged; with
 `cluster.strict_durability = true` it fails with `store.ErrUnconfirmed` instead and is undone where possible (a
 created record is deleted, an updated one gets its previous content back; a deletion stands).
+
+## Deletion
+
+Deleting an organization, user, group, tenant or provider deletes that one record. Everything that was its stands on
+it and stops counting at that write, on every node that has it: a user stands on its organization
+(`service.UserUsable`, checked for every session, refresh grant, access token and API token), a credential or session
+on its user and epoch, a membership on its group and user, an access entry on its tenant and subject, a connected
+provider on its user and provider, an application on its organization. Readers apply this test; nothing else has
+to be written for it.
+
+**The orphan sweep is the one cascade.** The housekeeping leader reads every record of the kinds that do not expire,
+20,000 a minute, owners before what they own (`service.SweepOrphans`): a record whose owner is gone — missing here and
+in a quorum's copies — is removed (a membership is marked removed, fencing stalled group writers), and so is a
+credential, session or refresh grant of an epoch its account has moved past. Only records at least an hour old are
+judged, so an owner created on another node has time to arrive. A pass takes about a day at five million users. It
+also removes what any interrupted write left, so there is no other clean-up path to keep correct.
+
+A unique value held by such a record (a provider identity's subject, a passkey's credential id) does not wait for the
+sweep: a create that finds it taken asks `service.ReleaseUnique`, which removes the holder if, read from a quorum, it
+counts for nothing, and the create is tried once more. Deleting an account never blocks linking its provider
+identity, or registering its authenticator, to another.
 
 ## Unique values
 

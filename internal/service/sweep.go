@@ -11,14 +11,15 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Records that belong to another one (a user's passkeys, a group's memberships, an organization's groups...) are
-// removed with it, but some removals are best effort (a store failure part-way through deleting a user, a node that
-// was away, a stalled group writer materializing a membership after its group went), and a record that does not
-// expire would then stay for ever. The sweep finds them: housekeeping reads every record of the kinds that do not
-// expire on their own, a batch at a time, and removes those whose owner is gone, and the credentials of a credential
-// epoch their account has moved past (model.User.CredEpoch: they count for nothing). Kinds that expire (sessions,
-// refresh grants, links, keys, audit entries, replay records, removed memberships) need nothing more, and are read
-// only when their owner can go before they expire.
+// Records that belong to another one (a user's passkeys, a group's memberships, an organization's groups...) are not
+// removed with it: deleting an organization, user, group, tenant or provider deletes that one record, and everything
+// that was its stops counting at once, because it stands on its parent (a user on its organization:
+// service.UserUsable; a credential on its user and epoch; a membership on its group; a link on its provider; an
+// application on its organization). The sweep is the one cascade, also for what a stalled writer left behind (a group
+// writer materializing a membership after its group went). Housekeeping reads every record of the kinds below, a
+// batch at a time, and removes those whose owner is gone, and the credentials, sessions and refresh grants of an
+// epoch their account has moved past (model.User.Counts). Kinds that expire soon on their own (links, keys, audit
+// entries, replay records, removed memberships) need nothing more.
 
 // sweepKinds are the kinds the sweep reads, in turn.
 var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
@@ -71,7 +72,7 @@ func owners(e model.Entity) []ownerRef {
 	case *model.Passkey:
 		return []ownerRef{{model.KindUser, v.UserID}}
 	case *model.Identity:
-		return []ownerRef{{model.KindUser, v.UserID}}
+		return []ownerRef{{model.KindUser, v.UserID}, {model.KindProvider, v.ProviderID}}
 	case *model.APIToken:
 		return []ownerRef{{model.KindUser, v.UserID}}
 	case *model.SignIn:
@@ -79,7 +80,7 @@ func owners(e model.Entity) []ownerRef {
 	case *model.Session:
 		return []ownerRef{{model.KindUser, v.UserID}}
 	case *model.Grant:
-		return []ownerRef{{model.KindUser, v.UserID}}
+		return []ownerRef{{model.KindUser, v.UserID}, {model.KindClient, v.ClientID}}
 	}
 	return nil
 }
@@ -243,4 +244,62 @@ func (s *Service) removeOrphan(ctx context.Context, e model.Entity) error {
 		return nil
 	}
 	return mapStore(err)
+}
+
+// ReleaseUnique frees a unique value of kind held by a record that counts for nothing (dead): the record is removed
+// now, as the sweep would remove it later, and ReleaseUnique answers true (also when the value was freed meanwhile),
+// so the caller may try its create again once. A holder that counts keeps the value.
+func (s *Service) ReleaseUnique(ctx context.Context, kind model.Kind, value string) (bool, error) {
+	r, err := s.Store.GetByUnique(ctx, kind, value)
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, mapStore(err)
+	}
+	e := model.NewEntity(kind)
+	if e == nil {
+		return false, nil
+	}
+	if err := store.Decode(r, e); err != nil {
+		return false, err
+	}
+	if dead, err := s.dead(ctx, e); err != nil || !dead {
+		return false, err
+	}
+	return true, s.removeOrphan(Durable(ctx), e)
+}
+
+// dead says whether e counts for nothing, from a quorum's copies of its owners: an owner is gone, an owning user's
+// organization is gone, or e is a credential of an epoch its account has moved past (model.User.Counts; judged, as
+// the sweep judges it, only once e is sweepMinAge old: one stored for an invitation still in flight is of an epoch
+// the account has not committed yet).
+func (s *Service) dead(ctx context.Context, e model.Entity) (bool, error) {
+	for _, o := range owners(e) {
+		if o.id == "" {
+			continue
+		}
+		recs, err := s.freshMany(ctx, o.kind, []string{o.id})
+		if err != nil {
+			return false, err
+		}
+		r, ok := recs[o.id]
+		if !ok {
+			return true, nil
+		}
+		if o.kind != model.KindUser {
+			continue
+		}
+		u := &model.User{}
+		if err := store.Decode(r, u); err != nil {
+			return false, err
+		}
+		if c, ok := e.(model.Credential); ok && !u.Counts(c) && time.Since(e.GetMeta().Updated) >= sweepMinAge {
+			return true, nil
+		}
+		if gone, err := s.ownerGone(ctx, ownerRef{model.KindOrg, u.OrgID}); err != nil || gone {
+			return gone, err
+		}
+	}
+	return false, nil
 }

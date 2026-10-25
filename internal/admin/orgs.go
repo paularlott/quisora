@@ -68,7 +68,8 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, orgView{Org: upd})
 }
 
-// deleteOrg deletes an organization; ?cascade=1 also deletes its users, groups, clients and providers.
+// deleteOrg deletes an organization; ?cascade=1 allows one with users (they, its groups, clients and providers stop
+// counting at once and the orphan sweep removes them).
 func (m *Module) deleteOrg(w http.ResponseWriter, r *http.Request) {
 	o, a, found := m.orgFor(w, r)
 	if !found {

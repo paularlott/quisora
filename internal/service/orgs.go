@@ -286,8 +286,9 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 	return o, nil
 }
 
-// DeleteOrg deletes a non-primary organization. Without cascade the org must have no users; with cascade every
-// user, group, membership, client and provider of the org is deleted first.
+// DeleteOrg deletes a non-primary organization. Without cascade the org must have no users; with cascade it may, and
+// they go with it (with its groups, applications, tenants and providers: they stop counting at once, and the orphan
+// sweep removes them).
 func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bool) error {
 	if !a.IsSuper() {
 		return ErrForbidden
@@ -306,31 +307,30 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if n > 0 && !cascade {
 		return ErrNotEmpty
 	}
+	// The organization record is the one thing deleted: its users, groups, applications, tenants and providers stand
+	// on it, so none counts any more from this write (service.UserUsable, and an application of a deleted organization
+	// is unknown), and the orphan sweep removes their records (sweep.go). The applications its users signed in to are
+	// told first (back-channel logout).
 	ctx = Durable(ctx)
-	users, err := s.Users.All(ctx, id)
-	if err != nil {
-		return err
-	}
-	for _, u := range users {
-		if err := s.deleteUserData(ctx, u); err != nil {
-			return err
-		}
-	}
-	for _, k := range []model.Kind{model.KindMember, model.KindGroup, model.KindClient, model.KindTenant, model.KindProvider} {
-		res, err := s.Store.List(ctx, k, store.ListQuery{Scope: id})
+	users := 0
+	for after := ""; ; {
+		page, _, err := s.Users.List(ctx, store.ListQuery{Scope: id, After: after, Limit: 500})
 		if err != nil {
-			return err
+			return mapStore(err)
 		}
-		for _, r := range res.Records {
-			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); err != nil && !errors.Is(err, store.ErrStale) {
-				return err
-			}
+		for _, u := range page {
+			s.sessionsEnding(ctx, u.ID, nil)
 		}
+		users += len(page)
+		if len(page) < 500 {
+			break
+		}
+		after = page[len(page)-1].ID
 	}
 	if err := s.Orgs.Delete(ctx, id); err != nil {
 		return mapStore(err)
 	}
-	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(len(users))})
+	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(users)})
 	return nil
 }
 

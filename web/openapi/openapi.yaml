@@ -159,7 +159,7 @@ paths:
     delete:
       tags: [Organizations]
       summary: Delete an organization
-      description: Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers
+      description: Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers; they stop working at once, and their records are removed in the background within about a day
       operationId: delete_orgs_org
       parameters:
         - name: cascade

@@ -108,11 +108,31 @@ func (s *Service) APITokenStamp(ctx context.Context, orgID string) (model.SignOu
 // sign-in), and not ended by an emergency sign-out (its stamp). u must be the session's user, as recently read. An
 // error is the sign-out counters that could not be read: no verdict (the caller answers 503), never "ended".
 func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) (bool, error) {
+	if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
+		return false, err
+	}
 	want, err := s.SessionStamp(ctx, sess.OrgID)
 	if err != nil {
 		return false, err
 	}
 	return SessionUsableAt(sess, u, want), nil
+}
+
+// UserUsable is the one test of whether a user may be signed in or act (a browser session, a refresh grant, an access
+// or API token): enabled (active, within its dates) and its organization still there. Deleting an organization (or a
+// user) deletes that one record: everything that belonged to it stops counting at once, as it stands on its parent,
+// and the orphan sweep removes the records later (sweep.go). An error is a read that failed: no verdict.
+func (s *Service) UserUsable(ctx context.Context, u *model.User) (bool, error) {
+	if !u.Enabled(time.Now()) {
+		return false, nil
+	}
+	if _, err := s.Orgs.Get(ctx, u.OrgID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, mapStore(err)
+	}
+	return true, nil
 }
 
 // SessionUsableAt is SessionUsable given the organization's sign-out counters as just read (want), for a caller that

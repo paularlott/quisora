@@ -70,33 +70,28 @@ func (rq *request) memberIndex(groups []*model.Group) (map[string][]string, erro
 	return idx, nil
 }
 
-// refs turns user ids into members with display names (one lookup per user for small groups, one scan for large).
+// refs turns user ids into members with display names, read 500 users at a time. A member whose user was deleted
+// is left out: the membership stands on its user, and the orphan sweep removes it later.
 func (rq *request) refs(ids []string) []memberRef {
 	unseen := rq.unseenUsers()
 	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return unseen[id] })
-	out := make([]memberRef, len(ids))
-	for i, id := range ids {
-		out[i].id = id
-	}
-	if len(ids) == 0 {
-		return out
-	}
-	svc := rq.m.srv.Svc
-	if len(ids) <= 200 {
-		for i, id := range ids {
-			if u, err := svc.Users.Get(rq.ctx, id); err == nil {
-				out[i].display = u.FullName()
+	out := make([]memberRef, 0, len(ids))
+	for chunk := range slices.Chunk(ids, 500) {
+		users, err := rq.m.srv.Svc.Users.GetMany(rq.ctx, chunk)
+		if err != nil {
+			for _, id := range chunk { // unreadable now: listed without a name rather than dropped
+				out = append(out, memberRef{id: id})
 			}
+			continue
 		}
-		return out
-	}
-	if users, err := svc.Users.All(rq.ctx, rq.org.ID); err == nil {
-		names := make(map[string]string, len(users))
+		byID := make(map[string]*model.User, len(users))
 		for _, u := range users {
-			names[u.ID] = u.FullName()
+			byID[u.ID] = u
 		}
-		for i := range out {
-			out[i].display = names[out[i].id]
+		for _, id := range chunk {
+			if u := byID[id]; u != nil {
+				out = append(out, memberRef{id: id, display: u.FullName()})
+			}
 		}
 	}
 	return out

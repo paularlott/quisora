@@ -84,7 +84,12 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 	if err != nil && !gone(err) {
 		return nil, unavailable(err)
 	}
-	if err != nil || !u.Enabled(time.Now()) {
+	if err != nil {
+		return nil, badToken("user inactive")
+	}
+	if ok, err := p.svc.UserUsable(ctx, u); err != nil {
+		return nil, unavailable(err)
+	} else if !ok { // disabled, or its organization deleted
 		return nil, badToken("user inactive")
 	}
 	if cl.GID != "" {

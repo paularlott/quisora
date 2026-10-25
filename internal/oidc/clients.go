@@ -64,20 +64,30 @@ func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) 
 	if len(id) == 0 || len(id) > service.MaxMetadataURL {
 		return nil, store.ErrNotFound
 	}
-	if e, ok := p.clients.get(id); ok {
-		return e, nil
+	e, ok := p.clients.get(id)
+	if !ok {
+		c, err := p.svc.Clients.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		e = &clientEntry{c: c}
+		if c.JWKS != "" {
+			if jwks, err := ParseJWKS([]byte(c.JWKS)); err == nil {
+				e.keys = parseKeys(jwks)
+			}
+		}
+		p.clients.put(id, e)
 	}
-	c, err := p.svc.Clients.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	e := &clientEntry{c: c}
-	if c.JWKS != "" {
-		if jwks, err := ParseJWKS([]byte(c.JWKS)); err == nil {
-			e.keys = parseKeys(jwks)
+	// An application stands on its organization: one of a deleted organization is unknown (the orphan sweep removes
+	// its record later). A self-registered one belongs to none until a tenant takes it.
+	if e.c.OrgID != "" {
+		if _, err := p.org(ctx, e.c.OrgID); err != nil {
+			if gone(err) {
+				return nil, store.ErrNotFound
+			}
+			return nil, err
 		}
 	}
-	p.clients.put(id, e)
 	return e, nil
 }
 

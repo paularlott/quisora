@@ -312,10 +312,18 @@ func (s *Service) StoreForInvite(ctx context.Context, u *model.User, reg *Regist
 func (s *Service) createPasskey(ctx context.Context, reg *Registration, epoch uint64) (*model.Passkey, error) {
 	pk := *reg.Passkey
 	pk.Epoch = epoch
-	if err := s.svc.Passkeys.Create(ctx, &pk); err != nil {
+	err := s.svc.Passkeys.Create(ctx, &pk)
+	if errors.Is(err, store.ErrConflict) {
+		// Held by a passkey that counts for nothing (its account was deleted or reset) it is freed; otherwise
+		// it is registered already.
+		if freed, ferr := s.svc.ReleaseUnique(ctx, model.KindPasskey, model.PasskeyCredentialKey(pk.CredentialID)); ferr == nil && freed {
+			err = s.svc.Passkeys.Create(ctx, &pk)
+		}
 		if errors.Is(err, store.ErrConflict) {
 			return nil, fmt.Errorf("%w: credential already registered", ErrVerify)
 		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &pk, nil

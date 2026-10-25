@@ -427,7 +427,12 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, nil, fmt.Errorf("%w: the token's owner could not be read: %v", ErrUnavailable, err)
 	}
-	if err != nil || !u.Enabled(time.Now()) {
+	if err != nil {
+		return refuse("the owner is disabled or gone")
+	}
+	if ok, err := s.UserUsable(ctx, u); err != nil {
+		return nil, nil, fmt.Errorf("%w: the token's owner could not be read: %v", ErrUnavailable, err)
+	} else if !ok { // disabled, or its organization deleted
 		return refuse("the owner is disabled or gone")
 	}
 	if !u.Holds(t.Epoch) {
