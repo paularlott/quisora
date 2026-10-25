@@ -77,7 +77,7 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 	tok := tokenOf(link)
 	res2, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res2, out, 410)
-	if res, _ := b.get(strings.Replace(link, "/invite", "/verify-email", 1)); res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res, _ := b.verifyLink(strings.Replace(link, "/invite", "/verify-email", 1)); res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("invite token verified an address: %q", res.Header.Get("Location"))
 	}
 
@@ -466,9 +466,15 @@ func TestEmailedInvitationVerifiesAddress(t *testing.T) {
 			}
 		}
 		res, out := e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+		if change {
+			// The invitation went to an address that is no longer the account's: it opens nothing (it would have
+			// set the password of an account whose mail now goes elsewhere).
+			wantStatus(t, res, out, 410)
+			continue
+		}
 		wantStatus(t, res, out, 200)
-		if f, _ := e.Svc.Users.Get(ctx, u.ID); f.EmailVerified == change {
-			t.Fatalf("address changed=%v: verified=%v", change, f.EmailVerified)
+		if f, _ := e.Svc.Users.Get(ctx, u.ID); !f.EmailVerified {
+			t.Fatal("an emailed invitation did not verify its address")
 		}
 	}
 }

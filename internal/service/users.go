@@ -619,7 +619,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		if !s.canAssignRole(ctx, a, org, *in.Role) {
 			return nil, ErrForbidden
 		}
-		if privileged(u) && in.Role.Rank() < u.Role.Rank() && a != System && !a.IsSuper() {
+		if u.Role.Privileged() && in.Role.Rank() < u.Role.Rank() && a != System && !a.IsSuper() {
 			return nil, Invalid("role", "only a super admin can lower the role of a manager or administrator")
 		}
 		// Only a lower role can take administration away: a promotion never needs the guard.
@@ -670,7 +670,7 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		// (except the actor's own). A failure is logged and noted in the audit entry; the change itself stands.
 		sessErr = s.endUserSessions(ctx, u.ID, a)
 	}
-	if before.Rank() < model.RoleManager.Rank() && u.Role.Rank() >= model.RoleManager.Rank() {
+	if !before.Privileged() && u.Role.Privileged() {
 		s.dropEmailLinks(ctx, a, u)
 	}
 	action := "user.update"
@@ -1227,11 +1227,16 @@ func (s *Service) dueUsers(ctx context.Context, now time.Time, limit int) ([]*mo
 		}
 	}
 	due, _, err := s.Users.List(ctx, store.ListQuery{Sort: "valid_until", Limit: limit, Filters: []store.Filter{
-		{Field: "expiring", Value: true}, {Field: "active", Value: true}}})
+		{Field: "expiring", Value: true}, ActiveFilter(true)}})
 	return due, err
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// ActiveFilter is the user listing filter for active (or disabled) accounts. It filters on the indexed "inactive"
+// field: the disabled accounts are few, so both are served from a small index set, where a filter on "active" would
+// read the whole organization (model.Field: an indexed bool marks a small set).
+func ActiveFilter(active bool) store.Filter { return store.Filter{Field: "inactive", Value: !active} }
 
 // EndPasskeySessions ends every session that was signed in with the passkey (and the refresh grants made in them),
 // telling the applications (back-channel logout). Used when a passkey turns out to be compromised: whoever holds the

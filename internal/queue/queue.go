@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/paularlott/logger"
+	"github.com/paularlott/quisora/internal/durable"
 	"github.com/paularlott/quisora/internal/secure"
 )
 
@@ -51,11 +52,15 @@ type Queue[T any] struct {
 	o      Options[T]
 	dir    string
 	fileMu sync.Mutex // one change to an item's file at a time: the worker's, or Reseal's
-	queued atomic.Int64
-	kick   chan struct{}
-	stop   chan struct{}
-	wg     sync.WaitGroup
-	once   sync.Once
+	// waiting is when the items this worker has read (or retried) are next due, by file, with the file's modification
+	// time then (under fileMu): an item that is not due is not read and opened again on every pass (which would make
+	// each Add cost the whole backlog) unless its file changed since.
+	waiting map[string]waitingItem
+	queued  atomic.Int64
+	kick    chan struct{}
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	once    sync.Once
 }
 
 // item is a queued item as its file holds it (sealed).
@@ -124,6 +129,9 @@ func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 // (app.ReloadMasterKeys refuses, and this node reports the rotation unfinished). Call it after the master keys change,
 // before the node reports its new key (service.ReportMasterKey). An unreadable queue counts as one.
 func (q *Queue[T]) Reseal() (stale int) {
+	q.fileMu.Lock()
+	q.waiting = nil // the keys changed: every item is read afresh (one that needs a key no longer configured waits)
+	q.fileMu.Unlock()
 	names, err := q.files()
 	if err != nil {
 		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
@@ -170,33 +178,9 @@ func (q *Queue[T]) write(name string, it *item[T]) error {
 }
 
 func (q *Queue[T]) writeSealed(name, sealed string) error {
-	tmp := filepath.Join(q.dir, "."+name+".tmp")
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = f.WriteString(sealed)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, filepath.Join(q.dir, name))
-	}
-	if err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	// Load-bearing: the rename is durable only once the directory is synced. Without it a power loss can lose an
-	// item already accepted ("accepted means on disk").
-	d, err := os.Open(q.dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	// Durable before Add returns: "accepted means on disk". The temporary name is hidden, so a listing never takes
+	// it for an item.
+	return durable.WriteFile(filepath.Join(q.dir, "."+name+".tmp"), filepath.Join(q.dir, name), []byte(sealed))
 }
 
 func (q *Queue[T]) read(name string) (*item[T], error) {
@@ -213,6 +197,7 @@ func (q *Queue[T]) read(name string) (*item[T], error) {
 }
 
 func (q *Queue[T]) remove(name string) {
+	delete(q.waiting, name)
 	if err := os.Remove(filepath.Join(q.dir, name)); err == nil {
 		q.queued.Add(-1)
 	}
@@ -325,6 +310,12 @@ func (q *Queue[T]) deliverDue(ctx context.Context) time.Time {
 func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 	q.fileMu.Lock()
 	defer q.fileMu.Unlock()
+	if w, ok := q.waiting[name]; ok && w.next.After(time.Now()) {
+		if fi, err := os.Stat(filepath.Join(q.dir, name)); err == nil && fi.ModTime().Equal(w.mod) {
+			return w.next
+		}
+	}
+	delete(q.waiting, name)
 	it, err := q.read(name)
 	switch {
 	case errors.Is(err, os.ErrNotExist), errors.Is(err, secure.ErrUnknownKey):
@@ -338,6 +329,7 @@ func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 		return time.Time{}
 	}
 	if it.Next.After(time.Now()) {
+		q.wait(name, it.Next)
 		return it.Next
 	}
 	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
@@ -367,5 +359,20 @@ func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 	if err := q.write(name, it); err != nil {
 		q.o.Log.Error(q.o.Name+": retry not recorded", "error", err)
 	}
+	q.wait(name, it.Next)
 	return it.Next
+}
+
+type waitingItem struct{ next, mod time.Time }
+
+// wait records when the item in file name is next due, as the file is now (under fileMu).
+func (q *Queue[T]) wait(name string, next time.Time) {
+	fi, err := os.Stat(filepath.Join(q.dir, name))
+	if err != nil {
+		return
+	}
+	if q.waiting == nil {
+		q.waiting = map[string]waitingItem{}
+	}
+	q.waiting[name] = waitingItem{next: next, mod: fi.ModTime()}
 }

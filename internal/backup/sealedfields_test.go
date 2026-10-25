@@ -64,7 +64,7 @@ func TestSealedKeysCoversEverySealedField(t *testing.T) {
 			t.Fatalf("%s: encode %s: %v", b, want.kind, err)
 		}
 		need := map[string]bool{}
-		sealedKeys(rec, []string{"ring"}, need)
+		sealedKeys(rec, need)
 		if !need["testkey"] {
 			t.Errorf("%s: sealedKeys does not read %s.%s; a backup would restore without the key it needs", b,
 				want.kind, want.field)

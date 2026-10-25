@@ -61,9 +61,9 @@ type txn interface {
 	Delete(key string)
 	SetAdd(bucket, member string, expMs int64)
 	SetDel(bucket, member string)
-	// Add adds delta to the integer counter at key (absent: 0), deleting it when it reaches 0. Badger reads the key
-	// (so concurrent transactions adding to one counter conflict and one retries); Valkey increments it in place
-	// without a read. A counter is not read in the transaction that adds to it. counterOf decodes one.
+	// Add adds delta to the integer counter at key (absent: 0), deleting it when it reaches 0. The engine reads the
+	// key (so concurrent transactions adding to one counter conflict and one retries). A counter is not read in the
+	// transaction that adds to it. counterOf decodes one.
 	Add(key string, delta int64)
 	// Feed writes the record at recKey and registers it in the change feed under a fresh sequence number assigned
 	// in commit order: body must start with seqHeader reserved bytes, which are overwritten with the sequence

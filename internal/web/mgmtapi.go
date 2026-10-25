@@ -137,7 +137,7 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "The token does not have the " + scope + " scope."})
 				return
 			}
-			next(w, WithActor(r, a))
+			s.auditDenied(w, WithActor(r, a), a, next)
 			return
 		}
 		if User(r) == nil {
@@ -154,8 +154,47 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 			WriteJSON(w, http.StatusForbidden, ErrorBody{Error: MsgConsoleMFA, Field: "mfa"})
 			return
 		}
-		next(w, r)
+		s.auditDenied(w, r, service.ActorForUser(User(r), ClientIP(r)), next)
 	}))
+}
+
+// auditDenied runs next, and records the request as refused when next refused it for want of permission
+// (WriteError with service.ErrForbidden): an access-control event, like the refusals RequireManagement makes itself.
+func (s *Server) auditDenied(w http.ResponseWriter, r *http.Request, a *service.Actor, next http.HandlerFunc) {
+	dw := &deniedWriter{ResponseWriter: w}
+	next(dw, r)
+	if dw.denied {
+		s.auditRefused(r, a, "not permitted")
+	}
+}
+
+// deniedWriter notes that a handler answered "not permitted" (noteDenied).
+type deniedWriter struct {
+	http.ResponseWriter
+	denied bool
+}
+
+func (w *deniedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *deniedWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// noteDenied marks the deniedWriter w is, or wraps, if any.
+func noteDenied(w http.ResponseWriter) {
+	for w != nil {
+		if d, ok := w.(*deniedWriter); ok {
+			d.denied = true
+			return
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return
+		}
+		w = u.Unwrap()
+	}
 }
 
 // BearerToken returns the credentials of an "Authorization: Bearer <token>" header. The scheme name is matched

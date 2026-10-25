@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip"
+	"github.com/paularlott/quisora/internal/durable"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -150,6 +151,7 @@ func (n *Node) loadState() {
 		}
 	}
 	n.lastSync.Store(ps.LastSync)
+	n.savedSync.Store(ps.LastSync)
 	n.copiedAt.Store(ps.CopiedAt)
 	n.joined.Store(ps.Joined)
 	n.formed.Store(ps.Formed)
@@ -292,16 +294,27 @@ func (n *Node) checkDowntime() {
 	}
 }
 
-// advanceSync moves the sync point forward to t (never back).
+// advanceSync moves the sync point forward to t (never back). It is saved once it has moved syncSaveStep past what
+// was saved: it only has to be right to within maxDowntime (days), and a sync point saved a little old only makes a
+// restarted node count its downtime from a little earlier (the safe side), where saving each move would sync the
+// state file to disk every few seconds on an idle node.
 func (n *Node) advanceSync(t int64) {
 	for {
 		cur := n.lastSync.Load()
-		if t <= cur || n.lastSync.CompareAndSwap(cur, t) {
+		if t <= cur {
+			return
+		}
+		if n.lastSync.CompareAndSwap(cur, t) {
 			break
 		}
 	}
-	n.dirty.Store(true)
+	if t-n.savedSync.Load() >= int64(syncSaveStep) {
+		n.dirty.Store(true)
+	}
 }
+
+// syncSaveStep is how far the sync point moves before it is saved again (advanceSync).
+const syncSaveStep = time.Minute
 
 // recomputeSync moves the sync point to the newest time t such that pulls started at t or later have completed
 // from enough peers to make a majority with this node (each with a majority in view): every write a majority held
@@ -330,7 +343,8 @@ func MarkSynced(dataDir, feedID string) error {
 		return err
 	}
 	b, _ := json.Marshal(persisted{LastSync: time.Now().UnixNano(), Cursors: map[string]cursor{}, Self: feedID})
-	return writeSynced(filepath.Join(dataDir, "cluster-state.json"), b) // whole or absent, never torn
+	path := filepath.Join(dataDir, "cluster-state.json")
+	return durable.WriteFile(path+".tmp", path, b) // whole or absent, never torn
 }
 
 func (n *Node) saveState() {
@@ -358,10 +372,12 @@ func (n *Node) saveState() {
 		}
 	}
 	b, _ := json.Marshal(ps)
-	if err := writeSynced(n.stateFile, b); err != nil { // a power loss must not lose "formed" or the cursors
+	if err := durable.WriteFile(n.stateFile+".tmp", n.stateFile, b); err != nil { // a power loss must not lose "formed" or the cursors
 		n.dirty.Store(true)
 		n.log.WithError(err).Warn("save cluster state")
+		return
 	}
+	n.savedSync.Store(ps.LastSync)
 }
 
 func (n *Node) saveLoop() {

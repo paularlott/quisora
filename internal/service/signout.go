@@ -157,10 +157,19 @@ type SignOutOptions struct {
 }
 
 // SignOutOrg ends every session and refresh grant of an organization at once (and its personal API tokens with
-// opt.APITokens): its administrators and super admins. The caller should then run SweepSignOut (in the background).
+// opt.APITokens): its administrators and super admins; the primary organization's, which holds the super admins,
+// super admins only (its administrators would otherwise sign out, and end the API tokens of, those above them). The
+// caller should then run SweepSignOut (in the background).
 func (s *Service) SignOutOrg(ctx context.Context, a *Actor, orgID string, opt SignOutOptions) (*model.SignOutEvent, error) {
 	if !s.canAdminOrg(a, orgID) {
 		return nil, ErrForbidden
+	}
+	if !a.IsSuper() {
+		if p, err := s.PrimaryOrg(ctx); err != nil {
+			return nil, mapStore(err)
+		} else if p.ID == orgID {
+			return nil, ErrForbidden
+		}
 	}
 	return s.pullSignOut(ctx, a, orgID, false, opt)
 }

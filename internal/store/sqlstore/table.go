@@ -270,12 +270,23 @@ func (t *table) ddl(d *dialect) []string {
 			d.quote("ix_"+string(t.kind)+"_tomb"), t.name))
 	}
 	for _, f := range t.fields {
-		if !f.Sort {
+		if f.Sort {
+			if e := d.sortIndexExpr(f); e != "" {
+				idx("s_"+f.Name, "scope, "+e+", id")
+			}
+		}
+		if !f.Index || f.Words { // a Words field is matched with LIKE: no index serves it
 			continue
 		}
-		if e := d.sortIndexExpr(f); e != "" {
-			idx("s_"+f.Name, "scope, "+e+", id")
+		// An Index field is an equality filter on a large kind (model.Field): served by an index, not a scan of
+		// the scope. A bool marks a small set (the true ones): a partial index of those where the dialect has them.
+		col := d.quote(f.Name)
+		if f.Type == model.FieldBool && !d.isMySQL() {
+			out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (scope, id) WHERE %s = TRUE",
+				d.quote("ix_"+string(t.kind)+"_f_"+f.Name), t.name, col))
+			continue
 		}
+		idx("f_"+f.Name, col+", scope, id")
 	}
 	return out
 }

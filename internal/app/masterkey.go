@@ -52,10 +52,9 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 		if err != nil {
 			return fmt.Errorf("checking what still needs %v: %w", gone, err)
 		}
-		if st.Stale > 0 || st.LegacyGrants > 0 {
-			return fmt.Errorf("%d secrets and %d refresh grants still need %v (state %s): keep it in "+
-				"server.previous_master_keys until GET /api/master-key says complete", st.Stale, st.LegacyGrants,
-				gone, st.State)
+		if st.Stale > 0 {
+			return fmt.Errorf("%d secrets still need %v (state %s): keep it in server.previous_master_keys until "+
+				"GET /api/master-key says complete", st.Stale, gone, st.State)
 		}
 	}
 	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {

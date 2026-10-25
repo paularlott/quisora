@@ -16,7 +16,8 @@ data_dir = "/var/lib/quisora"             # required: everything this node keeps
                                           # created by `quisora bootstrap` with the primary organization (which
                                           # requires a second factor). The admin has no password: bootstrap prints the
                                           # invitation link to set one; `quisora invite primary admin@example.com` reissues it
-# allow_private_networks = false          # let back-channel logout / jwks_uri / upstream calls reach private addresses
+# allowed_networks = []                   # private networks (CIDRs or IPs) back-channel logout / jwks_uri / upstream calls may reach, e.g. ["172.16.0.0/12"]
+# allow_private_networks = false          # let them reach every private address (a home lab)
 # extra_ca_file = ""                      # PEM of extra CA certificates trusted for those outbound HTTPS calls (an internal CA)
 # shutdown_drain = 10                     # seconds /readyz answers 503 before stopping, when a load balancer polls it
 # shutdown_timeout = 30                   # seconds requests in flight get to finish at shutdown
@@ -32,7 +33,7 @@ default_theme = "system"                  # light, dark or system
 # footer = '© Example Ltd · <a href="mailto:help@example.com">Support</a>'  # links and <strong>, <em>, <small>, <span>, <br>
 
 [storage]
-backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, mariadb or valkey
+backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql or mariadb
 # [storage.badgerdb]
 # sync_writes = true
 # encryption_key = ""                     # `quisora genkey`: encrypt the files at rest; set when the store is created
@@ -45,21 +46,10 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql, m
 # dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true&tls=true"
 # [storage.mariadb]
 # dsn = "quisora:secret@tcp(db:3306)/quisora?parseTime=true"
-# [storage.valkey]
-# addrs = ["valkey:6379"]
-# username = ""
-# password = ""
-# db = 0
-# tls = false
-# ca_file = ""                            # with tls: a private CA, the name to verify, a client certificate
-# server_name = ""
-# cert_file = ""
-# key_file = ""
-# key_prefix = "quisora:"
 
 [cluster]
 # Two ways to run several nodes:
-#  - share one database server (postgres, mysql, mariadb, valkey) and leave bind empty: no replication, the database
+#  - share one database server (postgres, mysql, mariadb) and leave bind empty: no replication, the database
 #    is the only copy, short-lived sign-in state lives there too; set [cluster.notify] so the nodes tell each other
 #    of changes (caches and live pages follow at once instead of within 5 seconds);
 #  - give every node its own database (any backend) and set bind: the nodes replicate to each other over gossip.
@@ -91,7 +81,7 @@ id_token_ttl = 600
 refresh_ttl = 2592000                     # 30 days
 code_ttl = 60
 key_rotation_days = 30
-api_token_max_days = 0                    # longest personal API token lifetime, days; 0 (default) = no limit, tokens may never expire
+api_token_max_days = 365                  # longest personal API token lifetime, days (a token made without one gets it); 0 = no limit
 
 [session]
 ttl = 604800                              # 7 days from sign-in; also the most an organization may set

@@ -54,7 +54,7 @@ instead of `code` (`access_denied` when the user chose Deny or Cancel, `invalid_
 | `scope` | Space-separated; at most the scopes the client is allowed. Without it, all of them. See [scopes and claims](#scopes-and-claims). |
 | `state`, `nonce` | Up to 2048 and 1024 characters. Recommended: always. |
 | `code_challenge`, `code_challenge_method` | PKCE; the method is `S256`. |
-| `prompt` | `login` (sign in again), `consent` (ask again), `select_account` (sign in again), or `none` (never show a page: `login_required` or `consent_required` instead). |
+| `prompt` | `login` (sign in again), `consent` (ask again), `select_account` (sign in again), or `none` (never show a page: `login_required` or `consent_required` instead). A public client that is not first-party asks for consent at every sign-in (anyone can claim its `client_id`), so `prompt=none` always answers `consent_required` for it: silent renewal needs a first-party or confidential client, or a refresh token. |
 | `max_age` | Seconds: sign in again if the last sign-in is older. |
 | `login_hint` | An email address to fill in on the sign-in page. |
 | `acr_values` | `urn:quisora:acr:mfa` to require a second factor for this sign-in (`urn:quisora:acr:basic`: no requirement). The ID token's `acr` says which was met. |
@@ -149,9 +149,12 @@ taken away): discard the token and sign the user in again. A check Quisora could
 answers 503 `temporarily_unavailable` instead: the token may be good, keep it and retry.
 
 - **Rotation.** By default each refresh returns a new refresh token and the old one stops working; presenting an old
-  one again ends the whole grant (`oauth.refresh.reuse` in the audit log), since only a copy would do that. Public
-  clients always rotate; a confidential client that cannot keep the latest token can turn **Rotate refresh tokens**
-  off.
+  one again ends the whole grant (`oauth.refresh.reuse` in the audit log), since only a copy would do that. One
+  exception keeps a lost response from signing the user out: within 30 seconds of a refresh, the token just before
+  the current one gets the current one again, with nothing rotated, when the caller also proves who it is (a
+  confidential client's credentials, or the DPoP key the grant is bound to). A public client without DPoP has only
+  the token, so for it any old token is reuse. Public clients always rotate; a confidential client that cannot keep
+  the latest token can turn **Rotate refresh tokens** off.
 - **How long.** Without `offline_access`, the grant lasts as long as the user's browser session at Quisora: signing
   out there ends it. With it, refresh tokens outlive the session, for `tokens.refresh_ttl` (30 days by default).
   Either way, signing the user out everywhere, locking them out or an emergency sign-out ends it.

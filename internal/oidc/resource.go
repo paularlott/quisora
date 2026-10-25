@@ -530,7 +530,7 @@ func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok st
 	if err != nil || g.ClientID != caller.ID || g.Revoked || time.Now().After(g.Expires) {
 		return nil, false, nil
 	}
-	if ok, _ := p.authentic(pr, g); !ok { // (a legacy grant is converted when it is next refreshed)
+	if !p.authentic(pr, g) {
 		return nil, false, nil
 	}
 	if pr.counted && pr.counter != g.Counter || !pr.counted && g.Counter != 0 {
@@ -575,6 +575,12 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		cl, err := p.VerifyAccessToken(ctx, tok)
 		if errors.Is(err, service.ErrUnavailable) {
 			writeOAuthError(w, serverError(err)) // whether there is a grant to end could not be read
+			return
+		}
+		if err == nil && cl.ClientID == ce.c.ID && cl.GID == "" && len(cl.Act) == 0 {
+			// A client credentials token has no grant to end, and a JWT cannot be recalled: say so (RFC 7009
+			// §2.2.1) rather than answer 200, which the client would take to mean the token is dead.
+			writeOAuthError(w, oerr("unsupported_token_type", "a client credentials token cannot be revoked: it lasts until it expires"))
 			return
 		}
 		if err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {

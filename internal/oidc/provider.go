@@ -53,11 +53,10 @@ type Provider struct {
 	verified verifiedCache // access tokens whose signature has been checked (verifycache.go)
 
 	// HTTP fetches client JWKS documents and delivers back-channel logout tokens. The default refuses connections to
-	// loopback, private and link-local addresses unless AllowPrivateNetworks is set (SSRF guard). Tests replace it.
-	HTTP *http.Client
-	// AllowPrivateNetworks lets the default HTTP client reach RFC 1918 / loopback hosts (internal relying parties).
-	AllowPrivateNetworks bool
-	roots                *x509.CertPool // system roots plus server.extra_ca_file (nil: system roots)
+	// loopback, private and link-local addresses but those server.allowed_networks and server.allow_private_networks
+	// allow (SSRF guard: config.OutboundReach, read at each connection). Tests replace it.
+	HTTP  *http.Client
+	roots *x509.CertPool // system roots plus server.extra_ca_file (nil: system roots)
 
 	keySet        atomic.Pointer[keySet]
 	keyMu         sync.Mutex
@@ -315,21 +314,27 @@ type ttlItem[T any] struct {
 	exp int64 // unix nanos
 }
 
+// ttlCache keeps entries for ttl in two generations: puts go to m, and once a ttl period (or when m holds max) m
+// becomes old and the old one is dropped. Everything in old is at least that old, so what is expired goes without a
+// sweep (a sweep would hold the lock, and every reader, for the whole map), and the cache holds at most 2×max.
 type ttlCache[T any] struct {
-	mu    sync.RWMutex
-	m     map[string]ttlItem[T]
-	ttl   time.Duration
-	max   int
-	swept int64 // unix nanos of the last sweep of expired entries (mu)
+	mu      sync.RWMutex
+	m, old  map[string]ttlItem[T]
+	ttl     time.Duration
+	max     int
+	rotated int64 // unix nanos when m was started (mu)
 }
 
 func newTTLCache[T any](ttl time.Duration, max int) *ttlCache[T] {
-	return &ttlCache[T]{m: map[string]ttlItem[T]{}, ttl: ttl, max: max}
+	return &ttlCache[T]{m: map[string]ttlItem[T]{}, ttl: ttl, max: max, rotated: time.Now().UnixNano()}
 }
 
 func (c *ttlCache[T]) get(k string) (v T, ok bool) {
 	c.mu.RLock()
 	it, found := c.m[k]
+	if !found {
+		it, found = c.old[k]
+	}
 	c.mu.RUnlock()
 	if !found || time.Now().UnixNano() > it.exp {
 		return v, false
@@ -338,33 +343,27 @@ func (c *ttlCache[T]) get(k string) (v T, ok bool) {
 }
 
 func (c *ttlCache[T]) put(k string, v T) {
-	c.mu.Lock()
 	now := time.Now().UnixNano()
-	// Expired entries go once a ttl period (and when full), so the cache holds what is in use, not max entries.
-	if len(c.m) >= c.max || now-c.swept > int64(c.ttl) {
-		c.swept = now
-		for key, it := range c.m {
-			if now > it.exp {
-				delete(c.m, key)
-			}
-		}
-		if len(c.m) >= c.max { // still full of live entries: start over rather than grow without bound
-			clear(c.m)
-		}
+	c.mu.Lock()
+	if len(c.m) >= c.max || now-c.rotated > int64(c.ttl) {
+		c.old, c.m, c.rotated = c.m, make(map[string]ttlItem[T], len(c.m)), now
 	}
-	c.m[k] = ttlItem[T]{v: v, exp: time.Now().Add(c.ttl).UnixNano()}
+	delete(c.old, k) // the new value is the only one
+	c.m[k] = ttlItem[T]{v: v, exp: now + int64(c.ttl)}
 	c.mu.Unlock()
 }
 
 func (c *ttlCache[T]) del(k string) {
 	c.mu.Lock()
 	delete(c.m, k)
+	delete(c.old, k)
 	c.mu.Unlock()
 }
 
 func (c *ttlCache[T]) clear() {
 	c.mu.Lock()
 	clear(c.m)
+	c.old = nil
 	c.mu.Unlock()
 }
 

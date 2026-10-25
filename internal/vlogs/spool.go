@@ -158,7 +158,8 @@ func (s *spool) store(body []byte) (evicted [][]byte, err error) {
 	for len(segs) > 1 && total > s.maxBytes { // the newest segment (just written) always stays
 		data, _ := os.ReadFile(filepath.Join(s.dir, segs[0].name))
 		if os.Remove(filepath.Join(s.dir, segs[0].name)) == nil {
-			evicted = append(evicted, jsonLines(data)...)
+			good, bad := splitLines(data)
+			evicted = append(append(evicted, good...), bad...)
 			total -= segs[0].size
 		}
 		segs = segs[1:]
@@ -232,50 +233,62 @@ func truncateSynced(path string, size int64) error {
 	return err
 }
 
-// oldest returns the oldest segment's name and its events (the complete JSON lines in it: a line torn by a crash
-// while it was written is left out), or "" when the spool is empty. The segment is sealed: nothing more is appended
-// to it. Remove it once VictoriaLogs has taken it.
-func (s *spool) oldest() (string, []byte) {
+// oldest returns the oldest segment's name, its events (the complete JSON lines in it, as one request body: a line
+// torn by a crash while it was written is left out) and its complete lines that are not JSON (corrupt: they can never
+// be delivered, so the caller logs them when it removes the segment); name is "" when the spool is empty. The segment
+// is sealed: nothing more is appended to it. Remove it once VictoriaLogs has taken it. A segment that cannot be read
+// is an error, not an empty spool.
+func (s *spool) oldest() (name string, body []byte, bad [][]byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for {
 		segs, _ := s.list()
 		if len(segs) == 0 {
-			return "", nil
+			return "", nil, nil, nil
 		}
-		name := segs[0].name
+		name = segs[0].name
 		if name == s.active {
 			s.seal()
 		}
 		data, err := os.ReadFile(filepath.Join(s.dir, name))
 		if err != nil {
-			return "", nil
+			return "", nil, nil, fmt.Errorf("vlogs: spool segment %s: %w", name, err)
 		}
-		var body []byte
-		for _, l := range jsonLines(data) {
+		good, bad := splitLines(data)
+		if len(good)+len(bad) == 0 {
+			os.Remove(filepath.Join(s.dir, name)) // nothing in it but a torn line: nothing was lost
+			continue
+		}
+		for _, l := range good {
 			body = append(append(body, l...), '\n')
 		}
-		if len(body) > 0 {
-			return name, body
-		}
-		os.Remove(filepath.Join(s.dir, name)) // nothing usable in it
+		return name, body, bad, nil
 	}
 }
 
-// jsonLines returns the complete JSON lines in data: each ends with '\n' (every line written does, so one without
-// is the end of a write that was cut short) and is valid JSON. A torn line is left out on its own: the line after
-// it, if any, is judged by itself.
+// jsonLines returns the complete JSON lines in data (splitLines).
 func jsonLines(data []byte) [][]byte {
-	var out [][]byte
+	good, _ := splitLines(data)
+	return good
+}
+
+// splitLines returns the complete lines in data, the JSON ones (good) apart from the others (bad). A complete line
+// ends with '\n' (every line written does, so one without is the end of a write that was cut short: a torn line,
+// left out on its own; the line after it, if any, is judged by itself). Blank lines are neither.
+func splitLines(data []byte) (good, bad [][]byte) {
 	for line := range bytes.Lines(data) {
 		if line[len(line)-1] != '\n' {
 			continue
 		}
-		if l := bytes.TrimSpace(line); len(l) > 0 && json.Valid(l) {
-			out = append(out, l)
+		switch l := bytes.TrimSpace(line); {
+		case len(l) == 0:
+		case json.Valid(l):
+			good = append(good, l)
+		default:
+			bad = append(bad, l)
 		}
 	}
-	return out
+	return good, bad
 }
 
 // syncDir syncs directory dir, making the names created in it durable.
@@ -288,10 +301,15 @@ var syncDir = func(dir string) error {
 	return d.Sync()
 }
 
-func (s *spool) remove(name string) {
+// remove deletes a delivered segment. A segment already gone is not an error (Close may have raced the deliverer); one
+// that cannot be removed is: it would be sent again and again.
+func (s *spool) remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	os.Remove(filepath.Join(s.dir, name))
+	if err := os.Remove(filepath.Join(s.dir, name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("vlogs: remove delivered spool segment: %w", err)
+	}
+	return nil
 }
 
 // empty reports whether nothing is spooled.

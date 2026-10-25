@@ -16,7 +16,7 @@ func TestExampleParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Server.PublicURL != "https://id.example.com" || c.UI.DefaultTheme != "system" || c.Tokens.AccessTTL != 600 ||
-		c.Tokens.APITokenMaxDays != 0 { // personal API tokens: no lifetime limit unless the operator sets one
+		c.Tokens.APITokenMaxDays != 365 { // personal API tokens: a year at most unless the operator says otherwise
 		t.Fatalf("unexpected values: %+v", c.Server)
 	}
 }

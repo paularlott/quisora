@@ -83,7 +83,8 @@ var userAttrs = []attrDef{
 		attr("familyName", "string", "Family name"),
 		attr("givenName", "string", "Given name"),
 	)),
-	attr("displayName", "string", "Name shown in user interfaces"),
+	attr("displayName", "string", "Name shown in user interfaces: the given and family name. What a client sends is "+
+		"ignored, except as the given name when name.givenName is absent", readOnly),
 	attr("title", "string", "Job title"),
 	attr("userType", "string", "Kind of user, for example employee, contractor, guest or service"),
 	attr("preferredLanguage", "string", "Preferred language (Accept-Language form); the first one is kept as the locale when no locale is sent"),

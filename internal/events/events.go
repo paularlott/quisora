@@ -115,6 +115,12 @@ func (h *Hub) Publish(rec *store.Record) {
 	if !streamed[rec.Kind] {
 		return
 	}
+	h.mu.Lock()
+	idle := len(h.subs) == 0
+	h.mu.Unlock()
+	if idle { // nobody to tell: no store read for the user's organization (this runs as replicated writes apply)
+		return
+	}
 	ev := Event{Kind: string(rec.Kind), ID: rec.ID, Op: "put", org: rec.Scope}
 	if rec.Kind == model.KindOrg {
 		ev.org = rec.ID

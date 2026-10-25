@@ -320,7 +320,7 @@ func TestEmailVerification(t *testing.T) {
 		t.Fatal(link)
 	}
 	anon := e.browser(t)
-	res, _ = anon.get(link)
+	res, _ = anon.verifyLink(link)
 	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?email=verified#profile" {
 		t.Fatalf("verify: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -328,7 +328,7 @@ func TestEmailVerification(t *testing.T) {
 	if !fresh.EmailVerified {
 		t.Fatal("not verified")
 	}
-	res, _ = anon.get(link)
+	res, _ = anon.verifyLink(link)
 	if res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("reused link: %q", res.Header.Get("Location"))
 	}
@@ -345,7 +345,7 @@ func TestEmailVerification(t *testing.T) {
 	link2 := linkPath(t, e.nextMail(t))
 	third := "third@example.com"
 	e.Svc.UpdateUser(context.Background(), service.System, pat.ID, service.UserInput{Email: &third})
-	res, _ = anon.get(link2)
+	res, _ = anon.verifyLink(link2)
 	if res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("stale address verified: %q", res.Header.Get("Location"))
 	}

@@ -30,22 +30,21 @@ type stepResp struct {
 	// Alternatives are the other ways this account can give its second factor at a totp or passkey step ("passkey",
 	// "email_code", "recovery"): the page's "Try another way" offers only these.
 	Alternatives []string `json:"alternatives,omitempty"`
-	// Email is the address an email code goes to, masked (a step "email_code", or "email_code" among the alternatives).
+	// Email is the address an email code goes to, masked (a step "email_code").
 	Email string `json:"email,omitempty"`
 }
 
 // alternatives lists the other ways u can give the second factor at step (see stepResp.Alternatives): a passkey
-// instead of the authenticator code, an emailed code (email: the organization allows it for u), and recovery codes
-// when some are left.
-func (m *Module) alternatives(ctx context.Context, u *model.User, step string, email bool) []string {
+// instead of the authenticator code, and recovery codes when some are left. Never an emailed code: an account with an
+// authenticator app or a passkey keeps it as its second factor (a code by email is weaker, and offering it would let
+// whoever reads the mailbox and knows the password past the stronger factor); a lost device is what recovery codes
+// are for.
+func (m *Module) alternatives(ctx context.Context, u *model.User, step string) []string {
 	var out []string
 	if step == "totp" && m.Passkeys != nil {
 		if n, err := m.s.Svc.UsablePasskeys(ctx, u, ""); err == nil && n > 0 {
 			out = append(out, "passkey")
 		}
-	}
-	if (step == "totp" || step == "passkey") && email {
-		out = append(out, "email_code")
 	}
 	if step == "totp" || step == "passkey" {
 		if left, _ := m.s.Svc.RecoveryCodesLeft(ctx, u); left > 0 {
@@ -91,11 +90,14 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		u, _ = m.s.Svc.FindUserByEmail(ctx, org.ID, login)
 	} // else: treated like an unknown user (generic failure after a dummy hash), so a switched-off org or tenant looks the same
 	key := m.lockKeyFor(r, u, lockKey(u, org, login))
-	if m.locked(ctx, key) {
+	n, open := m.charge(ctx, key)
+	if !open {
 		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
 		return
 	}
+	wrong := false
+	defer m.settle(ctx, key, &wrong)
 
 	// Always spend one password hash, whatever is wrong, so timing does not reveal which accounts exist.
 	check := u
@@ -122,7 +124,8 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		case !u.Enabled(time.Now()):
 			reason = "inactive"
 		}
-		m.failed(w, r, key, org, u, login, reason)
+		wrong = true
+		m.failed(w, r, n, org, u, login, reason)
 		return
 	}
 
@@ -173,12 +176,9 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 	if err != nil {
 		return stepResp{}, err
 	}
-	email := m.emailOK(u, eff.EmailCodes)
-	resp := stepResp{Step: t.Step, Ticket: id, Alternatives: m.alternatives(ctx, u, t.Step, email)}
-	if email {
-		resp.Email = maskEmail(u.Email)
-	}
+	resp := stepResp{Step: t.Step, Ticket: id, Alternatives: m.alternatives(ctx, u, t.Step)}
 	if t.Step == "email_code" {
+		resp.Email = maskEmail(u.Email)
 		org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 		if err != nil {
 			return stepResp{}, err
@@ -222,12 +222,10 @@ func (m *Module) afterPassword(w http.ResponseWriter, r *http.Request, u *model.
 	web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
 }
 
-// failed records a failed attempt (counter, audit, lockout event) and answers with the generic message.
-func (m *Module) failed(w http.ResponseWriter, r *http.Request, key string, org *model.Org, u *model.User, login, reason string) {
-	ctx := r.Context()
-	tripped := m.fail(ctx, key)
+// failed records the n-th failed attempt (charge: audit, lockout event) and answers with the generic message.
+func (m *Module) failed(w http.ResponseWriter, r *http.Request, n int64, org *model.Org, u *model.User, login, reason string) {
 	m.audit(r, "login.failure", org, u, login, map[string]string{"reason": reason})
-	if tripped && u != nil {
+	if m.tripped(n) && u != nil {
 		m.audit(r, "login.lockout", org, u, login, map[string]string{"minutes": strconv.Itoa(int(m.lockWindow().Minutes()))})
 	}
 	field := ""
@@ -267,11 +265,14 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	if m.locked(ctx, key) {
+	n, open := m.charge(ctx, key)
+	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
 		return
 	}
+	wrong := false
+	defer m.settle(ctx, key, &wrong)
 	if !m.attempt(ctx, in.Ticket) {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
@@ -282,7 +283,8 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !m.consumeTOTP(ctx, u, string(secret), in.Code) {
-		m.failed(w, r, key, org, u, u.Username, "totp")
+		wrong = true
+		m.failed(w, r, n, org, u, u.Username, "totp")
 		return
 	}
 	if !m.useTicket(ctx, in.Ticket) {
@@ -320,18 +322,22 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	if m.locked(ctx, key) {
+	n, open := m.charge(ctx, key)
+	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
 		return
 	}
+	wrong := false
+	defer m.settle(ctx, key, &wrong)
 	if !m.attempt(ctx, in.Ticket) {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
 	used, left := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.Code)
 	if !used {
-		m.failed(w, r, key, org, u, u.Username, "recovery_code")
+		wrong = true
+		m.failed(w, r, n, org, u, u.Username, "recovery_code")
 		return
 	}
 	if !m.useTicket(ctx, in.Ticket) {
@@ -393,10 +399,14 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
 			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
 			if n, err := m.s.Eph.Incr(ctx, nsForgot, u.ID, 1, time.Hour); err == nil && n <= 5 {
-				if err := m.Mail.SendReset(ctx, u, org); err != nil {
-					m.s.Log.Error("send reset mail", "error", err)
-				}
+				// After the answer, not before: the link is a replicated write and the mail a queued one, and the time
+				// they take must not tell an existing account from an unknown address.
 				m.audit(r, "password.forgot", org, u, u.Username, nil)
+				m.s.Svc.Background(ctx, func(ctx context.Context) {
+					if err := m.Mail.SendReset(ctx, u, org); err != nil {
+						m.s.Log.Error("send reset mail", "error", err)
+					}
+				})
 			}
 		}
 	}

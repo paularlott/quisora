@@ -348,10 +348,13 @@ type changePasswordReq struct {
 func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model.User, password, field string) bool {
 	ctx := r.Context()
 	key := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
-	if m.locked(ctx, key) {
+	n, open := m.charge(ctx, key)
+	if !open {
 		m.lockedResponse(w)
 		return false
 	}
+	wrong := false
+	defer m.settle(ctx, key, &wrong)
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	ok, err := m.s.Svc.VerifyPassword(vctx, u, password)
@@ -365,7 +368,8 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 		return false
 	}
 	if !ok {
-		if m.fail(ctx, key) {
+		wrong = true
+		if m.tripped(n) {
 			org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 			m.audit(r, "login.lockout", org, u, u.Username, nil)
 		}
@@ -537,23 +541,11 @@ func (m *Module) refreshReauth(ctx context.Context, sessID string, gen uint64) {
 	}
 }
 
-// credentialChanged follows a change this session made to a credential kept outside the user record (a passkey or
-// a connected provider, added or removed): the account's security generation moves on, ending whatever is in flight
-// for the account elsewhere, the session's confirmation carries over, and the cached user is dropped.
 // afterCredentialChange keeps the session's re-authentication good after a service operation moved the account's
 // security generation on (a way in removed), and tells the account's other pages.
 func (m *Module) afterCredentialChange(ctx context.Context, a acct) {
 	if fresh, err := m.s.Svc.Users.Get(ctx, a.u.ID); err == nil {
 		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
-	}
-	m.changed(a)
-}
-
-func (m *Module) credentialChanged(ctx context.Context, a acct, userID string) {
-	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, userID); err == nil {
-		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
-	} else {
-		m.s.Log.Error("security generation not advanced", "user", userID, "error", err)
 	}
 	m.changed(a)
 }
@@ -609,17 +601,24 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 	}
 	lockKey := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
 	checkCode := func() bool {
-		if m.locked(ctx, lockKey) {
+		n, open := m.charge(ctx, lockKey)
+		if !open {
 			m.lockedResponse(w)
 			return false
 		}
+		wrong := false
+		defer m.settle(ctx, lockKey, &wrong)
 		secret, err := m.s.Svc.Sealer.OpenFor(service.TOTPBinding(u.ID), u.TOTPSecret)
 		if err != nil {
 			m.internalError(w, r, "open totp secret", err)
 			return false
 		}
 		if !m.consumeTOTP(ctx, u, string(secret), in.Code) {
-			m.fail(ctx, lockKey)
+			wrong = true
+			if m.tripped(n) {
+				org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+				m.audit(r, "login.lockout", org, u, u.Username, nil)
+			}
 			writeErr(w, http.StatusUnprocessableEntity, "That code is incorrect or has already been used.", "code")
 			return false
 		}
@@ -708,6 +707,10 @@ func (m *Module) reauthPasskeyFinish(w http.ResponseWriter, r *http.Request, a a
 		org, _ := m.s.Svc.Orgs.Get(r.Context(), res.User.OrgID)
 		m.audit(r, "passkey.clone", org, res.User, res.User.Username,
 			map[string]string{"passkey": res.Passkey.Name, "during": "reauth"})
+	}
+	if errors.Is(err, service.ErrUnavailable) {
+		unavailableResponse(w)
+		return
 	}
 	if err != nil || res.User.ID != a.u.ID || res.Extra["reauth"] != a.sess.ID {
 		writeErr(w, http.StatusUnprocessableEntity, msgBadPasskey, "")
@@ -1172,7 +1175,7 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	scopes := []string{}
 	for _, sc := range service.APITokenScopes {
-		if (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && a.actor.Role.Rank() < model.RoleManager.Rank() ||
+		if (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && !a.actor.Role.Privileged() ||
 			service.SuperOnlyScope(sc) && !a.actor.IsSuper() {
 			continue
 		}
@@ -1288,12 +1291,6 @@ func (m *Module) revokeApp(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	m.auditSelf(r, a, "account.app.revoke", map[string]string{"client": client})
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// mfaRequired reports whether u must keep a second factor: their organization requires one, or they are a manager
-// or above.
-func (m *Module) mfaRequired(ctx context.Context, u *model.User) bool {
-	return m.s.Svc.MFARequired(ctx, u)
 }
 
 // profileOptions handles GET /api-internal/account/profile-options: the languages, time zones and user types the

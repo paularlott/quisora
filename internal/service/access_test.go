@@ -155,9 +155,9 @@ func TestClientAccessDecision(t *testing.T) {
 	if dec().Allowed {
 		t.Fatal("members-only tenant allowed a non-member")
 	}
-	// A user of another organization (an all-orgs client) is governed by their own organization.
-	if a, _ := c.svc.ClientAccess(c.ctx, ten, cl, c.bAdmin, nil); !a.Allowed {
-		t.Error("other-org user refused")
+	// A user of another organization is never allowed, whatever the tenant's setting.
+	if a, _ := c.svc.ClientAccess(c.ctx, ten, cl, c.bAdmin, nil); a.Allowed {
+		t.Error("other-org user allowed")
 	}
 	if _, err := c.svc.AddAccess(c.ctx, admin, ten.ID, service.AccessInput{SubjectType: model.SubjectGroup, SubjectID: g.ID,
 		Roles: &[]string{"viewer"}, Tags: &[]string{"g"}}); err != nil {

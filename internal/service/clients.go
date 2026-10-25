@@ -445,28 +445,13 @@ func VerifyClientSecret(c *model.Client, secret string) bool {
 // neither produce nor recognise a refresh token. Being a sealed secret like any other, it is re-sealed by a master
 // key rotation (ResealSecrets) while the tokens made from it stay the same.
 func (s *Service) NewGrantKey(g *model.Grant) {
-	g.Key, g.Secret = s.Sealer.SealFor(GrantKeyBinding(g.ID), secure.RandomBytes(32)), nil
+	g.Key = s.Sealer.SealFor(GrantKeyBinding(g.ID), secure.RandomBytes(32))
 }
 
-// GrantRefreshKeys returns the keys g's refresh tokens may be made from: its own (Key), or, for a grant from before
-// grants had one, the key derived from the master key over its seed, under each key of the master keyring (only
-// one of them made it). legacy says it is the latter: ConvertGrantKey stores the one that matched as the grant's own.
-func (s *Service) GrantRefreshKeys(g *model.Grant) (keys [][]byte, legacy bool, err error) {
-	if g.Key != "" {
-		k, err := s.Sealer.OpenFor(GrantKeyBinding(g.ID), g.Key)
-		if err != nil {
-			return nil, false, err
-		}
-		return [][]byte{k}, false, nil
+// GrantRefreshKey returns the key g's refresh tokens are made from (nil: g has none, and issues none).
+func (s *Service) GrantRefreshKey(g *model.Grant) ([]byte, error) {
+	if g.Key == "" {
+		return nil, nil
 	}
-	if len(g.Secret) == 0 {
-		return nil, false, nil
-	}
-	return s.Sealer.MACs("refresh", g.ID, string(g.Secret)), true, nil
-}
-
-// ConvertGrantKey makes key (the legacy key g's tokens are made from) g's own sealed key, so its tokens no longer
-// depend on the master key that derived it. The tokens stay the same. The caller saves g.
-func (s *Service) ConvertGrantKey(g *model.Grant, key []byte) {
-	g.Key, g.Secret = s.Sealer.SealFor(GrantKeyBinding(g.ID), key), nil
+	return s.Sealer.OpenFor(GrantKeyBinding(g.ID), g.Key)
 }

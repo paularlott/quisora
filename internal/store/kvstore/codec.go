@@ -105,8 +105,8 @@ func decodeRecord(b []byte) (*stored, error) {
 	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
 		Created: hlc.Timestamp(w.Created)}
-	// A shared Valkey is written by several nodes with their own clocks: reading a version moves this node's clock
-	// past it, so its next write of the record is newer.
+	// Reading a version (one replicated from another node's clock) moves this node's clock past it, so its next
+	// write of the record is newer.
 	store.Witness(r.Version)
 	if w.Expires != 0 {
 		r.Expires = time.Unix(0, w.Expires)

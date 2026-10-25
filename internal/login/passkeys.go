@@ -8,6 +8,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
+	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -134,6 +135,9 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 			reason = "passkey disabled or unverified"
 		case errors.Is(err, passkey.ErrChallenge):
 			writeErr(w, http.StatusUnauthorized, "That sign-in has expired. Try again.", "")
+			return
+		case errors.Is(err, service.ErrUnavailable):
+			unavailableResponse(w)
 			return
 		}
 		var org *model.Org

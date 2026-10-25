@@ -3,8 +3,8 @@
 // With cluster.bind (mode 2) the node joins a gossip cluster: every node has its own database and replicates its
 // writes to the others, ephemeral state is routed to the node that owns it, and a leader is elected for housekeeping.
 //
-// Without it (mode 1) there is no gossip. On a database server that several nodes share (PostgreSQL, MySQL, MariaDB,
-// Valkey) ephemeral state lives in that database and a lease there picks the housekeeping node; on badger or sqlite
+// Without it (mode 1) there is no gossip. On a database server that several nodes share (PostgreSQL, MySQL, MariaDB)
+// ephemeral state lives in that database and a lease there picks the housekeeping node; on badger or sqlite
 // the node is alone, keeps ephemeral state in memory and always leads.
 package cluster
 
@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -127,7 +128,8 @@ func compatOnlyReply(f gossip.ReplyHandler) gossip.ReplyHandler {
 type Options struct {
 	Log logger.Logger
 	// TombstoneRetention is how long tombstones are kept before they are purged. A node that has not synced for
-	// nearly that long (maxDowntime) stops serving, as it may hold records whose deletion is gone. Default 7 days.
+	// nearly that long (maxDowntime) stops serving, as it may hold records whose deletion is gone. Default (and
+	// most: the removal fences are kept that long) model.TombstoneRetention.
 	TombstoneRetention time.Duration
 	// SyncInterval is how often each peer's change feed is pulled. Default 5 seconds.
 	SyncInterval time.Duration
@@ -150,8 +152,8 @@ func (o *Options) defaults() {
 	if o.Log == nil {
 		o.Log = logger.NewNullLogger()
 	}
-	if o.TombstoneRetention <= 0 {
-		o.TombstoneRetention = 7 * 24 * time.Hour
+	if o.TombstoneRetention <= 0 || o.TombstoneRetention > model.TombstoneRetention {
+		o.TombstoneRetention = model.TombstoneRetention
 	}
 	if o.SyncInterval <= 0 {
 		o.SyncInterval = 5 * time.Second
@@ -235,6 +237,7 @@ type Node struct {
 	peers          map[string]*peerState
 	trigger        chan struct{}
 	lastSync       atomic.Int64           // this node's sync point (persisted.LastSync)
+	savedSync      atomic.Int64           // the sync point as last saved (advanceSync)
 	copiedAt       atomic.Int64           // age of data copied without a sync point (persisted.CopiedAt)
 	forced         atomic.Pointer[string] // this start was forced (quisora force-start): why it was needed
 	forceAudit     atomic.Pointer[forceRecord]
@@ -352,6 +355,11 @@ func (n *Node) buildGossip() error {
 	gcfg.Compressor = snappy.New()
 	gcfg.Logger = n.opt.Log
 	gcfg.TCPDeadline = 2 * time.Second
+	// Every request a peer makes of this node (prepare and commit with their syncs, feed pages, ephemeral
+	// operations, audit pages) runs on these workers, as do gossip's own pings: the library's 8 would let a few slow
+	// syncs hold up the rest, and a delayed ping makes a healthy node look suspect.
+	gcfg.NumIncomingWorkers = max(32, 4*runtime.GOMAXPROCS(0))
+	gcfg.IncomingPacketQueueDepth = 4096
 	gcfg.ApplicationVersion = build.Version // shown per node on the cluster page (compatibility: metaCompat)
 	if n.opt.Gossip != nil {
 		n.opt.Gossip(gcfg)
@@ -404,7 +412,7 @@ func (n *Node) buildGossip() error {
 		t gossip.MessageType
 		f gossip.ReplyHandler
 	}{{msgPush, n.handlePush}, {msgFeed, n.handleFeed}, {msgEph, n.handleEph}, {msgPrepare, n.handlePrepare},
-		{msgCommit, n.handleCommit}, {msgAudit, n.handleAudit}, {msgReload, n.handleReload}} {
+		{msgCommit, n.handleCommit}, {msgAudit, n.handleAudit}, {msgReload, n.handleReload}, {msgReadFew, n.handleReadFew}} {
 		if err := gc.HandleFuncWithReply(h.t, compatOnlyReply(h.f)); err != nil {
 			return err
 		}

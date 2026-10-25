@@ -229,12 +229,12 @@ func TestKeyringRotation(t *testing.T) {
 		t.Fatal("binding not enforced")
 	}
 
-	// a v2 value (no key id) from before keys were named
+	// a value that names no key (the format of development builds before keys were named) is refused
 	a, _ := cipher.NewGCM(must(aes.NewCipher(k1)))
 	nonce := RandomBytes(a.NonceSize())
 	v2 := "v2:" + base64.RawStdEncoding.EncodeToString(a.Seal(nonce, nonce, []byte("legacy"), []byte("b")))
-	if p, err := ring.OpenFor("b", v2); err != nil || string(p) != "legacy" || !ring.Stale(v2) {
-		t.Fatalf("v2 value: %q %v", p, err)
+	if _, err := ring.OpenFor("b", v2); err == nil {
+		t.Fatal("a value that names no key opened")
 	}
 
 	// MACs: the active key's first, then the previous ones

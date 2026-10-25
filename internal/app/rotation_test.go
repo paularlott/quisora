@@ -190,8 +190,8 @@ func testGossipMasterKeyRotation(t *testing.T, reload bool) {
 		if err != nil {
 			return false
 		}
-		keys, legacy, err := s.GrantRefreshKeys(gg)
-		return err == nil && !legacy && string(keys[0]) == string(grantKey) && !stale(gg.Key)
+		key, err := s.GrantRefreshKey(gg)
+		return err == nil && string(key) == string(grantKey) && !stale(gg.Key)
 	}
 	ready := func(n *rotNode) bool { ok, _ := n.app.Node.Ready(); return ok }
 	setKeys := func(n *rotNode, master string, previous ...string) {

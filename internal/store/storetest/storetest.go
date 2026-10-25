@@ -57,7 +57,6 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ListIndexedFilters", testListIndexed},
 		{"ListSortIndexes", testListSortIndexes},
 		{"GetMany", testGetMany},
-		{"RefreshFields", testRefreshFields},
 		{"ListSort", testListSort},
 		{"ListPaging", testListPaging},
 		{"ListPlainScanLarge", testPlainScanLarge},
@@ -473,41 +472,6 @@ func testListFilterOps(t *testing.T, s store.Store) {
 		if _, _, err := audits(s).List(ctx, store.ListQuery{Filters: []store.Filter{bad}}); !errors.Is(err, store.ErrBadQuery) {
 			t.Errorf("filter %+v: %v", bad, err)
 		}
-	}
-}
-
-// RefreshFields fills in index fields a record was written without (a field added to the schema since), from its
-// data, without changing its version.
-func testRefreshFields(t *testing.T, s store.Store) {
-	fr, ok := s.(store.FieldRefresher)
-	if !ok {
-		t.Skip("no FieldRefresher")
-	}
-	e := &model.Audit{OrgID: "org1", Action: "login.failure", Actor: "old", IP: "192.0.2.7", Outcome: "failure"}
-	rec, err := store.Encode(e)
-	must(t, err)
-	delete(rec.Fields, "outcome") // as written by a build that did not index them
-	delete(rec.Fields, "ip")
-	must(t, s.Put(ctx, rec))
-	stale := store.ListQuery{Filters: []store.Filter{{Field: "outcome", Value: ""}}}
-	if _, n, _ := audits(s).List(ctx, stale); n != 1 {
-		t.Fatalf("records without an outcome: %d", n)
-	}
-	n, err := fr.RefreshFields(ctx, model.KindAudit, store.ListQuery{Filters: stale.Filters, Limit: 10})
-	must(t, err)
-	if n != 1 {
-		t.Fatalf("refreshed %d", n)
-	}
-	if _, n, _ := audits(s).List(ctx, stale); n != 0 {
-		t.Fatalf("still without an outcome: %d", n)
-	}
-	l, n, err := audits(s).List(ctx, store.ListQuery{Search: "192.0.2", Filters: []store.Filter{{Field: "outcome", Value: "failure"}}})
-	must(t, err)
-	if n != 1 || l[0].Version != rec.Version {
-		t.Fatalf("after refreshing: %d records, version %v (was %v)", n, l, rec.Version)
-	}
-	if n, err := fr.RefreshFields(ctx, model.KindAudit, store.ListQuery{Filters: stale.Filters, Limit: 10}); err != nil || n != 0 {
-		t.Fatalf("second refresh: %d %v", n, err)
 	}
 }
 

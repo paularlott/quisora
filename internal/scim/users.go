@@ -754,21 +754,32 @@ func userSortField(p attrPath) (field string, ok bool) {
 	return "", false
 }
 
-// narrow derives what the store can do for the top-level AND conjuncts of the filter. The full filter is still
-// evaluated in memory afterwards, so this only has to return a superset of the matches.
-func (rq *request) narrow(f node) (unique string, q store.ListQuery) {
+// narrow derives what the store can do for the top-level AND conjuncts of the filter: one user by id or by a unique
+// value, or a narrower listing. The full filter is still evaluated in memory afterwards, so this only has to return
+// a superset of the matches.
+func (rq *request) narrow(f node) (id, unique string, q store.ListQuery) {
 	if f == nil {
 		return
 	}
 	for _, c := range conjuncts(f) {
 		cn, ok := c.(*cmpNode)
-		if !ok || cn.path.Filter != nil {
+		if !ok {
 			continue
 		}
 		p := cn.path
 		name := strings.ToLower(p.Name)
 		s, isStr := cn.val.(string)
+		if p.Filter != nil {
+			// emails[type eq "work"].value eq "x" (Entra's matching attribute): the address, whatever the type, is
+			// one user at most (every address of a user is a unique value of the organization)
+			if p.URN == "" && name == "emails" && strings.EqualFold(p.Sub, "value") && cn.op == "eq" && isStr && s != "" {
+				unique = model.UserEmailKey(rq.org.ID, s)
+			}
+			continue
+		}
 		switch {
+		case p.URN == "" && p.Sub == "" && name == "id" && cn.op == "eq" && isStr && s != "":
+			id = s
 		case p.URN == "" && p.Sub == "" && name == "username" && cn.op == "eq" && isStr:
 			unique = model.UserUsernameKey(rq.org.ID, s)
 		case p.URN == "" && p.Sub == "" && name == "externalid" && cn.op == "eq" && isStr && s != "":
@@ -777,7 +788,7 @@ func (rq *request) narrow(f node) (unique string, q store.ListQuery) {
 			unique = model.UserEmailKey(rq.org.ID, s)
 		case p.URN == "" && p.Sub == "" && name == "active" && cn.op == "eq":
 			if b, isBool := cn.val.(bool); isBool {
-				q.Filters = append(q.Filters, store.Filter{Field: "active", Value: b})
+				q.Filters = append(q.Filters, service.ActiveFilter(b))
 			}
 		case strings.EqualFold(p.URN, schemaIdpUser) && strings.EqualFold(p.Name, "role") && cn.op == "eq" && isStr:
 			if r := model.Role(strings.ToLower(s)); r.Valid() {
@@ -849,11 +860,17 @@ func (rq *request) listUsers() {
 		}
 	}
 
-	unique, q := rq.narrow(p.filter)
+	id, unique, q := rq.narrow(p.filter)
 	var users []*model.User
-	if unique != "" {
-		u, err := svc.Users.GetByUnique(rq.ctx, unique)
-		if err == nil && svc.Visibility(rq.actor, u) == service.Full {
+	if id != "" || unique != "" {
+		var u *model.User
+		var err error
+		if id != "" {
+			u, err = svc.Users.Get(rq.ctx, id)
+		} else {
+			u, err = svc.Users.GetByUnique(rq.ctx, unique)
+		}
+		if err == nil && u.OrgID == rq.org.ID && svc.Visibility(rq.actor, u) == service.Full {
 			users = []*model.User{u}
 		}
 	} else {

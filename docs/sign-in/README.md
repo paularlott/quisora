@@ -38,7 +38,7 @@ sign-in also give one:
 
 - an **authenticator app** (a 6-digit code: TOTP);
 - a **passkey** after the password;
-- a [code by email](email-codes.md), where the organization allows it;
+- a [code by email](email-codes.md), where the organization allows it, for users with neither of the first two;
 - a [recovery code](recovery-codes.md), in place of either of the first two.
 
 A user without a second factor sets one up during the sign-in (an authenticator app, with a passkey offered), or, where

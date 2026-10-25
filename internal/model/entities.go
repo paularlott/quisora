@@ -3,6 +3,7 @@ package model
 import (
 	"cmp"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -191,9 +192,13 @@ type Removal struct {
 	At   time.Time `msgpack:"t"`
 }
 
-// RemovalRetention is how long a removal is listed after its record is gone: as long as tombstones are kept, so no
-// node can still hand the record back when the entry goes.
-const RemovalRetention = 7 * 24 * time.Hour
+// TombstoneRetention is how long a gossip cluster keeps tombstones before it purges them (cluster.Options): a node
+// that has not synced for nearly that long stops serving. The fences below are kept exactly as long, so no node can
+// still hand a record back once its fence goes: they are defined from it, never apart.
+const TombstoneRetention = 7 * 24 * time.Hour
+
+// RemovalRetention is how long a removal is listed after its record is gone (TombstoneRetention).
+const RemovalRetention = TombstoneRetention
 
 // SetCredEpoch gives the account credential epoch e: every credential made in another stops counting, and the
 // removals listed for the old one are moot.
@@ -306,7 +311,7 @@ func (u *User) Index() Index {
 		Fields: map[string]any{
 			"username": u.Username, "email": u.Email, "name": u.FullName(), "family_name": u.FamilyName,
 			"external_id": u.ExternalID,
-			"role":        string(u.Role), "active": u.Active, "created": u.Created,
+			"role":        string(u.Role), "active": u.Active, "inactive": !u.Active, "created": u.Created,
 			"tags": strings.Join(u.Tags, " "), "user_type": u.UserType, "department": u.Work.Department,
 			"manager_id": u.Work.ManagerID, "employee_number": u.Work.EmployeeNumber,
 			"expiring": u.ValidUntil != nil, "valid_until": validUntilField(u.ValidUntil),
@@ -402,9 +407,9 @@ type Member struct {
 	Removed time.Time `msgpack:"rm" json:"-"`
 }
 
-// RemovedMemberRetention is how long a removed membership's record is kept to fence stalled writers (as long as
-// tombstones are kept for replication).
-const RemovedMemberRetention = 7 * 24 * time.Hour
+// RemovedMemberRetention is how long a removed membership's record is kept to fence stalled writers
+// (TombstoneRetention).
+const RemovedMemberRetention = TombstoneRetention
 
 // Active reports whether the record is a current membership (not removed).
 func (m *Member) Active() bool { return m.Removed.IsZero() }
@@ -447,6 +452,14 @@ type TenantSettings struct {
 	// SelfRegistration lets applications that registered themselves (Client.SelfRegistered, AI clients of an MCP
 	// server, say) sign users in for the tenant's resources (Tenant.Resources). Off by default.
 	SelfRegistration bool `msgpack:"sr,omitempty" json:"self_registration"`
+}
+
+// Equal reports whether s and o are the same settings.
+func (s TenantSettings) Equal(o TenantSettings) bool {
+	if len(s.Providers) == 0 && len(o.Providers) == 0 {
+		s.Providers, o.Providers = nil, nil
+	}
+	return reflect.DeepEqual(s, o)
 }
 
 // DefaultTenantSettings allows every sign-in method the organization allows, for everyone in it, with a second
@@ -637,7 +650,8 @@ func (c *Client) Index() Index {
 	return Index{
 		Scope: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
-			"created": c.Created, "self_registered": c.SelfRegistered},
+			"created": c.Created, "self_registered": c.SelfRegistered,
+			"unused_self_registered": c.SelfRegistered && c.LastUsed.IsZero()},
 	}
 }
 
@@ -857,12 +871,10 @@ type Grant struct {
 	Scopes    []string  `msgpack:"sc" json:"scopes"`
 	AMR       []string  `msgpack:"amr" json:"amr"`
 	AuthTime  time.Time `msgpack:"at" json:"auth_time"`
-	Nonce     string    `msgpack:"nc" json:"-"`
 	Counter   uint64    `msgpack:"n" json:"-"`
 	// Key is the grant's refresh token key, random, sealed with the master key (service.GrantKeyBinding); the tokens
-	// are made from it (oidc refreshToken). Grants from before it existed have Secret instead (see GrantRefreshKeys).
-	Key    string `msgpack:"rk,omitempty" json:"-"`
-	Secret []byte `msgpack:"k,omitempty" json:"-"` // legacy: seed of a key derived from the master key
+	// are made from it (oidc refreshToken).
+	Key string `msgpack:"rk,omitempty" json:"-"`
 	// Resources are the resource indicators (RFC 8707) the user authorized; a refresh may narrow them, never widen.
 	Resources []string `msgpack:"rs" json:"resources,omitempty"`
 	// ClaimsUI and ClaimsID are claims requested one by one (the claims request parameter) for userinfo and for
@@ -995,12 +1007,16 @@ type LinkToken struct {
 	UserID  string    `msgpack:"ui" json:"user_id"`
 	OrgID   string    `msgpack:"o" json:"org_id"`
 	Purpose string    `msgpack:"p" json:"purpose"`
-	Email   string    `msgpack:"e" json:"email,omitempty"` // verification: the address being verified
+	Email   string    `msgpack:"e" json:"email,omitempty"` // the address being verified, or an invitation or reset was mailed to
 	Used    bool      `msgpack:"x" json:"used"`
 	Expires time.Time `msgpack:"ex" json:"expires"`
 	// UserCreated is the creation time of the user the link was issued for: the link works only for that very
 	// account, not for another one that has (or later gets) the same id.
 	UserCreated time.Time `msgpack:"uc" json:"-"`
+	// For is the account's address when an invitation or reset link was issued: the link opens only while that is
+	// still the address on file (service.PeekLink), so one sent to a mistyped address that was then corrected sets
+	// nobody's credentials.
+	For string `msgpack:"f,omitempty" json:"-"`
 	// IssuedBy is the user who issued an invitation ("" for the system or a command): until it is used, nobody else
 	// below a super admin may replace it (service.mayResetSignIn).
 	IssuedBy string `msgpack:"ib,omitempty" json:"-"`

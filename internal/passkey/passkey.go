@@ -196,17 +196,12 @@ func (s *Service) BeginRegistration(ctx context.Context, u *model.User, extra ma
 	return id, creation, err
 }
 
-// FinishRegistration verifies the authenticator's attestation response (the JSON produced by
-// PublicKeyCredential.toJSON()) and stores the new passkey under name.
-func (s *Service) FinishRegistration(ctx context.Context, u *model.User, id string, credential []byte, name string) (*model.Passkey, map[string]string, error) {
-	return s.FinishRegistrationAs(ctx, "", u, id, credential, name)
-}
-
 // PurposeKey is the ceremony Extra key naming what a ceremony is for (login, second-factor, reauth, enrol,
 // register). The *As finishers reject a ceremony begun for another purpose.
 const PurposeKey = "purpose"
 
-// FinishRegistrationAs is FinishRegistration for a ceremony begun with Extra[PurposeKey] == purpose; any other
+// FinishRegistrationAs verifies the authenticator's attestation response (the JSON produced by
+// PublicKeyCredential.toJSON()) and stores the new passkey under name, for a ceremony begun with Extra[PurposeKey] == purpose; any other
 // purpose is ErrChallenge and nothing is stored. An empty purpose accepts any. It is VerifyRegistrationAs followed
 // by StoreRegistration: u must be the user as just read by the caller (see StoreRegistration).
 func (s *Service) FinishRegistrationAs(ctx context.Context, purpose string, u *model.User, id string, credential []byte, name string) (*model.Passkey, map[string]string, error) {
@@ -396,13 +391,9 @@ func (r *LoginResult) AMR() []string {
 	return []string{a}
 }
 
-// FinishLogin verifies an assertion (PublicKeyCredential.toJSON()) against the begun ceremony, checks the sign
-// counter and updates the stored credential. A sign counter that did not increase yields ErrCloneDetected.
-func (s *Service) FinishLogin(ctx context.Context, id string, credential []byte) (*LoginResult, error) {
-	return s.FinishLoginAs(ctx, id, credential)
-}
-
-// FinishLoginAs is FinishLogin for a ceremony begun with Extra[PurposeKey] among purposes; any other purpose is
+// FinishLoginAs verifies an assertion (PublicKeyCredential.toJSON()) against the begun ceremony, checks the sign
+// counter and updates the stored credential (a sign counter that did not increase yields ErrCloneDetected), for a
+// ceremony begun with Extra[PurposeKey] among purposes; any other purpose is
 // ErrChallenge (the challenge is consumed). No purposes accepts any.
 func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byte, purposes ...string) (*LoginResult, error) {
 	c, err := s.take(ctx, id, "login")
@@ -421,10 +412,15 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		pks  []*model.Passkey
 		cred *webauthn.Credential
 	)
+	// The account is read as a quorum holds it (FreshUser), as the code-based sign-in steps read it: in a cluster a
+	// password reset, a lock-out or a disabled account on another node must not be missed for the replication lag.
 	if c.UserID != "" {
-		user, err = s.svc.Users.Get(ctx, c.UserID)
-		if err != nil {
+		user, err = s.svc.FreshUser(ctx, c.UserID)
+		if errors.Is(err, service.ErrNotFound) {
 			return nil, ErrUnknownCredential
+		}
+		if err != nil {
+			return nil, err
 		}
 		if !user.Enabled(time.Now()) {
 			return nil, ErrInactive
@@ -444,7 +440,10 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			if perr != nil {
 				return nil, ErrUnknownCredential
 			}
-			u, uerr := s.svc.Users.Get(ctx, pk.UserID)
+			u, uerr := s.svc.FreshUser(ctx, pk.UserID)
+			if uerr != nil && !errors.Is(uerr, service.ErrNotFound) {
+				return nil, uerr
+			}
 			if uerr != nil || string(userHandle) != u.ID {
 				return nil, ErrUnknownCredential
 			}
@@ -466,6 +465,8 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			return nil, ErrInactive
 		case errors.Is(err, ErrUnknownCredential):
 			return nil, ErrUnknownCredential
+		case errors.Is(err, service.ErrUnavailable):
+			return nil, err // the account could not be read from the cluster: try again, not "wrong passkey"
 		}
 		var unk *protocol.ErrorUnknownCredential
 		if errors.As(err, &unk) {

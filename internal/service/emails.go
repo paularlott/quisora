@@ -146,7 +146,7 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 	if err != nil {
 		return nil, err
 	}
-	if self && u.Role.Rank() < model.RoleManager.Rank() {
+	if self && !u.Role.Privileged() {
 		return nil, ErrForbidden
 	}
 	verified = verified && !self
@@ -189,7 +189,7 @@ func (s *Service) RemoveLinkedEmail(ctx context.Context, a *Actor, userID, addre
 	}
 	if self, err := s.emailActor(ctx, a, u); err != nil {
 		return nil, err
-	} else if self && u.Role.Rank() < model.RoleManager.Rank() {
+	} else if self && !u.Role.Privileged() {
 		return nil, ErrForbidden
 	}
 	address = strings.TrimSpace(address)

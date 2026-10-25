@@ -90,7 +90,7 @@ func TestFreshSpoolAcceptedAppendSurvivesEarlierTornWrite(t *testing.T) {
 	if _, err := s.store([]byte("{\"id\":\"accepted-after-recovery\"}\n")); err != nil {
 		t.Fatal(err)
 	}
-	_, body := s.oldest()
+	_, body, _, _ := s.oldest()
 	if !bytes.Contains(body, []byte("accepted-after-recovery")) {
 		t.Fatalf("successfully synced event lost after earlier partial append: replay body %s", body)
 	}

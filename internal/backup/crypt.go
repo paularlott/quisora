@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/paularlott/quisora/internal/secure"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -21,15 +20,13 @@ import (
 // The key is derived from a password (Options.Password) with argon2id; its salt and cost travel in the header
 // (16-byte salt, uint32 passes, uint32 memory in KiB, one byte of threads), so the cost can change without changing
 // the format. Encryption no longer depends on the master key, so a backup's confidentiality survives the master key
-// (and a master key exposure does not open old backups). Backups made by earlier builds ("QSRBKEN1": no KDF
-// parameters, the key derived from the master key) are still read.
+// (and a master key exposure does not open old backups).
 //
 // Each chunk holds up to chunkSize bytes of plaintext. Its nonce is the prefix, the chunk's 4-byte big-endian index
 // and a final-chunk flag byte, so chunks cannot be reordered, dropped or repeated, and a stream cut after any chunk
 // but the last is refused.
 const (
-	encMagic    = "QSRBKEN1" // read only: the key derived from the master key
-	encMagic2   = "QSRBKEN2" // the key derived from a password
+	encMagic    = "QSRBKEN2" // the key derived from a password
 	prefixLen   = 7
 	saltLen     = 16
 	kdfLen      = saltLen + 4 + 4 + 1
@@ -43,9 +40,6 @@ const (
 )
 
 var (
-	// ErrEncrypted means a backup made with an earlier build cannot be decrypted with this master keyring, or is
-	// damaged.
-	ErrEncrypted = errors.New("backup: encrypted backup cannot be decrypted with this master key, or is damaged")
 	// ErrPassword means the password does not open the backup, or it is damaged.
 	ErrPassword = errors.New("backup: the password does not open this backup, or it is damaged")
 	// ErrNeedPassword means the backup is encrypted with a password and none was given.
@@ -57,14 +51,6 @@ const MinPassword = 12
 
 func passwordKey(password string, salt []byte, t, m uint32, p uint8) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(argon2.IDKey([]byte(password), salt, t, m, p, 32))
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
-func encKey(s *secure.Sealer) (cipher.AEAD, error) {
-	block, err := aes.NewCipher(s.MAC("quisora backup encryption v1"))
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +82,8 @@ func newEncWriter(w io.Writer, password string) (*encWriter, error) {
 	if len(password) < MinPassword {
 		return nil, fmt.Errorf("backup: the password must have at least %d characters", MinPassword)
 	}
-	hdr := make([]byte, 0, len(encMagic2)+kdfLen+prefixLen)
-	hdr = append(hdr, encMagic2...)
+	hdr := make([]byte, 0, len(encMagic)+kdfLen+prefixLen)
+	hdr = append(hdr, encMagic...)
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
@@ -169,56 +155,37 @@ func (e *encWriter) Close() error {
 	return e.flush(true)
 }
 
-// encryption reports how the stream is encrypted, without consuming it: 0 not at all, 1 with the master key (an
-// earlier build), 2 with a password.
-func encryption(br *bufio.Reader) int {
+// encrypted reports whether the stream is encrypted (with a password), without consuming it.
+func encrypted(br *bufio.Reader) bool {
 	b, err := br.Peek(len(encMagic))
-	switch {
-	case err != nil:
-		return 0
-	case string(b) == encMagic:
-		return 1
-	case string(b) == encMagic2:
-		return 2
-	}
-	return 0
+	return err == nil && string(b) == encMagic
 }
 
 // PasswordProtected reports whether a backup that starts with head (its first bytes, at least 8) is encrypted with
 // a password, which restoring it needs.
 func PasswordProtected(head []byte) bool {
-	return len(head) >= len(encMagic2) && string(head[:len(encMagic2)]) == encMagic2
+	return len(head) >= len(encMagic) && string(head[:len(encMagic)]) == encMagic
 }
 
 // decReader opens the chunks of an encrypted backup as they are read; a missing final chunk, trailing data or a
 // chunk that does not authenticate is an error.
 type decReader struct {
 	r      *bufio.Reader
-	aead   cipher.AEAD   // once the first chunk has opened
-	keys   []cipher.AEAD // candidates until then: one per key of the master keyring
-	key    int           // the index in keys of the one that opened it
+	aead   cipher.AEAD
 	prefix []byte
 	n      uint32
 	buf    []byte
 	done   bool
-	bad    error // what a chunk that does not open means (ErrEncrypted, ErrPassword)
 }
 
-// readHeader reads an encrypted backup's header: the nonce prefix, and (format 2) the KDF parameters.
+// readHeader reads an encrypted backup's header: the KDF parameters and the nonce prefix.
 func readHeader(br *bufio.Reader) (prefix, kdf []byte, err error) {
-	n := len(encMagic) + prefixLen
-	if encryption(br) == 2 {
-		n += kdfLen
-	}
-	hdr := make([]byte, n)
+	hdr := make([]byte, len(encMagic)+kdfLen+prefixLen)
 	if _, err := io.ReadFull(br, hdr); err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 	hdr = hdr[len(encMagic):]
-	if n > len(encMagic)+prefixLen {
-		kdf, hdr = hdr[:kdfLen], hdr[kdfLen:]
-	}
-	return hdr, kdf, nil
+	return hdr[kdfLen:], hdr[:kdfLen], nil
 }
 
 // newPasswordDecReader opens a password-encrypted backup.
@@ -238,46 +205,16 @@ func newPasswordDecReader(br *bufio.Reader, password string) (*decReader, error)
 	if err != nil {
 		return nil, err
 	}
-	return &decReader{r: br, keys: []cipher.AEAD{aead}, prefix: prefix, bad: ErrPassword}, nil
+	return &decReader{r: br, aead: aead, prefix: prefix}, nil
 }
 
-// newDecReader opens an encrypted backup with whichever key of the master keyring it was made with (a backup made
-// before a master key rotation, while the old key is still configured as a previous one).
-func newDecReader(br *bufio.Reader, s *secure.Sealer) (*decReader, error) {
-	var keys []cipher.AEAD
-	for _, k := range s.Keys() {
-		aead, err := encKey(k)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, aead)
-	}
-	prefix, _, err := readHeader(br)
-	if err != nil {
-		return nil, err
-	}
-	return &decReader{r: br, keys: keys, prefix: prefix, bad: ErrEncrypted}, nil
-}
-
-// open opens chunk n (as an inner chunk or as the final one), finding the key on the first.
+// open opens chunk n, as an inner chunk or as the final one.
 func (d *decReader) open(ct []byte) (pt []byte, last bool, err error) {
-	try := func(a cipher.AEAD) ([]byte, bool, error) {
-		if pt, err := a.Open(nil, chunkNonce(d.prefix, d.n, false), ct, nil); err == nil {
-			return pt, false, nil
-		}
-		pt, err := a.Open(nil, chunkNonce(d.prefix, d.n, true), ct, nil)
-		return pt, true, err
+	if pt, err := d.aead.Open(nil, chunkNonce(d.prefix, d.n, false), ct, nil); err == nil {
+		return pt, false, nil
 	}
-	if d.aead != nil {
-		return try(d.aead)
-	}
-	for i, a := range d.keys {
-		if pt, last, err := try(a); err == nil {
-			d.aead, d.key = a, i
-			return pt, last, nil
-		}
-	}
-	return nil, false, d.bad
+	pt, err = d.aead.Open(nil, chunkNonce(d.prefix, d.n, true), ct, nil)
+	return pt, true, err
 }
 
 // nextChunk reads one chunk's ciphertext; io.EOF only exactly at a chunk boundary.
@@ -318,7 +255,7 @@ func (d *decReader) Read(p []byte) (int, error) {
 		// A chunk opens either as an inner chunk or as the final one; anything else is damaged or forged.
 		pt, last, err := d.open(ct)
 		if err != nil {
-			return 0, d.bad
+			return 0, ErrPassword
 		}
 		d.done = last
 		d.n++

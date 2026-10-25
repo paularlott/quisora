@@ -289,7 +289,7 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		return nil, errInvalidClient("client authentication required")
 	}
 	if assertion != "" {
-		return p.authAssertion(ctx, form.Get("client_id"), assertion)
+		return p.authAssertion(ctx, form.Get("client_id"), assertion, p.issuer+r.URL.Path)
 	}
 	e, err := p.client(ctx, id)
 	if err != nil || !e.c.Enabled {
@@ -302,8 +302,9 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 	return e, nil
 }
 
-// authAssertion verifies an RFC 7523 private_key_jwt client assertion.
-func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion string) (*clientEntry, *oauthError) {
+// authAssertion verifies an RFC 7523 private_key_jwt client assertion presented at endpoint (the URL of the endpoint
+// called: the token, PAR, introspection or revocation endpoint).
+func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, endpoint string) (*clientEntry, *oauthError) {
 	bad := errInvalidClient("invalid client assertion")
 	pj, err := ParseJWT(assertion)
 	if err != nil {
@@ -337,8 +338,11 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion st
 		cl.Nbf != 0 && time.Unix(int64(cl.Nbf), 0).After(now.Add(leeway)) {
 		return nil, errInvalidClient("assertion not yet valid")
 	}
-	if !cl.Aud.Has(p.tokenURL) && !cl.Aud.Has(p.issuer) {
-		return nil, errInvalidClient("assertion audience must be the token endpoint or issuer")
+	// RFC 7523 §3: the audience identifies this server: its issuer, its token endpoint (the usual choice), or the
+	// endpoint the assertion is presented at (RFC 9126 §2 for PAR; libraries do the same for introspection and
+	// revocation).
+	if !cl.Aud.Has(p.tokenURL) && !cl.Aud.Has(p.issuer) && !cl.Aud.Has(endpoint) {
+		return nil, errInvalidClient("assertion audience must be the issuer, the token endpoint or the endpoint called")
 	}
 	if cl.Jti == "" || len(cl.Jti) > 256 {
 		return nil, errInvalidClient("assertion needs a jti")
@@ -407,11 +411,12 @@ func (p *Provider) verifyWithClientKeys(ctx context.Context, e *clientEntry, pj 
 // Remote JWKS (jwks_uri) with a small cache
 
 type remoteJWKS struct {
-	keys    []pubKey
-	fetched time.Time
-	forced  time.Time
-	retryAt time.Time // no fetch before this after a failure (exponential backoff)
-	fails   int
+	keys     []pubKey
+	fetched  time.Time
+	forced   time.Time
+	retryAt  time.Time // no fetch before this after a failure (exponential backoff)
+	fails    int
+	fetching chan struct{} // closed when the fetch under way ends: callers meanwhile wait for it, not fetch too
 }
 
 const (
@@ -446,14 +451,29 @@ func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pub
 		rj = &remoteJWKS{}
 		p.remoteKey[uri] = rj
 	}
-	rj.forced = now
-	p.jwksMu.Unlock()
-
 	cached := func() []pubKey {
 		p.jwksMu.Lock()
 		defer p.jwksMu.Unlock()
 		return rj.keys
 	}
+	if wait := rj.fetching; wait != nil { // another request is fetching these keys: its answer is this one's too
+		p.jwksMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+		}
+		return cached()
+	}
+	rj.forced = now
+	done := make(chan struct{})
+	rj.fetching = done
+	p.jwksMu.Unlock()
+	defer func() {
+		p.jwksMu.Lock()
+		rj.fetching = nil
+		p.jwksMu.Unlock()
+		close(done)
+	}()
 	fail := func() {
 		p.jwksMu.Lock()
 		rj.fails++
@@ -513,5 +533,5 @@ func (p *Provider) fetch(ctx context.Context, uri string, limit int64) ([]byte, 
 // Outbound HTTP with an SSRF guard
 
 func (p *Provider) safeClient() *http.Client {
-	return secure.OutboundClient(func() bool { return p.AllowPrivateNetworks }, p.roots, p.log)
+	return secure.OutboundClient(p.cfg.OutboundReach, p.roots, p.log)
 }

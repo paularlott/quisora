@@ -105,8 +105,9 @@ disabled: lock it out or end-date it in Quisora for that. GitHub gives no refres
 ## Network
 
 Quisora calls the provider's discovery, token and key endpoints from the server, over https only, without following
-redirects. Addresses on private networks (and loopback) are refused unless `server.allow_private_networks` is set: set
-it for a provider on your own network. A provider whose certificate comes from an internal CA needs that CA in
+redirects. Addresses on private networks (and loopback) are refused unless allowed: list the provider's network in
+`server.allowed_networks` (`allowed_networks = ["172.16.0.0/12"]`, or the provider's address alone), or, in a home
+lab, set `server.allow_private_networks` to allow every private address. A provider whose certificate comes from an internal CA needs that CA in
 `server.extra_ca_file`.
 
 ## Audit

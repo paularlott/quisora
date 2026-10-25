@@ -29,12 +29,12 @@ import (
 	"github.com/paularlott/quisora/internal/webtest"
 )
 
-// Two complete servers on one database server (each of PostgreSQL, MySQL, MariaDB and Valkey) and no gossip, behind an imaginary load balancer: every step of an
+// Two complete servers on one database server (each of PostgreSQL, MySQL and MariaDB) and no gossip, behind an imaginary load balancer: every step of an
 // OAuth sign-in lands on the other node from the one before (flow, sign-in, code, exchange and refresh all cross
 // nodes), exactly one node runs housekeeping, and an administrator's change on one node takes effect on the other
 // within seconds.
 func TestSharedDatabaseNodes(t *testing.T) {
-	for _, backend := range []string{"postgres", "mysql", "mariadb", "valkey"} {
+	for _, backend := range []string{"postgres", "mysql", "mariadb"} {
 		t.Run(backend, func(t *testing.T) {
 			storage := sharedStorage(t, backend)
 			key := base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
@@ -52,31 +52,12 @@ func TestSharedDatabaseNodes(t *testing.T) {
 	}
 }
 
-// sharedStorage returns a configuration hook pointing a node at a fresh database (or Valkey key prefix) on the test
+// sharedStorage returns a configuration hook pointing a node at a fresh database on the test
 // server for backend, or skips when none is configured.
 func sharedStorage(t *testing.T, backend string) func(*config.Config) {
 	t.Helper()
 	db := "qsr_shared_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	switch backend {
-	case "valkey":
-		addr := os.Getenv("QUISORA_TEST_VALKEY_ADDR")
-		if addr == "" {
-			t.Skip("QUISORA_TEST_VALKEY_ADDR not set")
-		}
-		set := func(c *config.Config) {
-			c.Storage.Backend, c.Storage.Valkey.Addrs, c.Storage.Valkey.KeyPrefix = "valkey", []string{addr}, db+"/"
-		}
-		t.Cleanup(func() { // remove the test's keys
-			c := config.Default()
-			set(c)
-			if st, err := OpenStore(context.Background(), c); err == nil {
-				if w, ok := st.(interface{ Wipe(context.Context) error }); ok {
-					_ = w.Wipe(context.Background())
-				}
-				_ = st.Close()
-			}
-		})
-		return set
 	case "postgres":
 		admin := os.Getenv("QUISORA_TEST_POSTGRES_DSN")
 		if admin == "" {

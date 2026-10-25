@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/paularlott/gossip"
@@ -50,9 +51,60 @@ type ephResp struct {
 // this node alone. Hash-routed state lives in its owner's memory only, so when the owner changes (a node stops
 // serving, starts again, or goes) the new owner starts from nothing: a rate limit's window starts again. Nothing that
 // must hold across that, such as a single-use value, is kept here (service.UseOnce keeps those).
+//
+// A counter read (Incr with delta 0: a limit checked before anything else, on every token and API request) is
+// answered from the value this node last had from the owner when that is under counterReadTTL old, so the requests
+// that pass a limit cost no round trip. It may miss attempts counted through other nodes for that long, but never
+// this node's own: every attempt that counts (delta > 0) goes to the owner and its answer replaces the remembered
+// value, so a node lets at most one attempt past a limit reached elsewhere before it refuses too.
 type Ephemeral struct {
 	n     *Node
 	local *ephemeral.Local
+
+	seenMu sync.Mutex
+	seen   map[string]seenCount // ns + "/" + key: the owner's last answer
+}
+
+// seenCount is a counter's value as its owner last answered it.
+type seenCount struct {
+	n  int64
+	at time.Time
+}
+
+// counterReadTTL is how long a counter value from its owner answers this node's reads; seenMax bounds how many are
+// remembered (past it the old ones go, then all: a read then asks the owner).
+const (
+	counterReadTTL = time.Second
+	seenMax        = 100_000
+)
+
+func (e *Ephemeral) remembered(k string) (int64, bool) {
+	e.seenMu.Lock()
+	defer e.seenMu.Unlock()
+	v, ok := e.seen[k]
+	if !ok || time.Since(v.at) >= counterReadTTL {
+		return 0, false
+	}
+	return v.n, true
+}
+
+func (e *Ephemeral) remember(k string, n int64) {
+	e.seenMu.Lock()
+	defer e.seenMu.Unlock()
+	if e.seen == nil {
+		e.seen = map[string]seenCount{}
+	}
+	if len(e.seen) >= seenMax {
+		for key, v := range e.seen {
+			if time.Since(v.at) >= counterReadTTL {
+				delete(e.seen, key)
+			}
+		}
+		if len(e.seen) >= seenMax {
+			clear(e.seen)
+		}
+	}
+	e.seen[k] = seenCount{n: n, at: time.Now()}
 }
 
 var _ ephemeral.Store = (*Ephemeral)(nil)
@@ -90,6 +142,9 @@ func keyHash(ns, key string) uint64 {
 var errNoOwner = errors.New("cluster: no node that serves can own this state now")
 
 // hrw returns the live, serving member with the highest rendezvous weight for (ns, key), or nil when there is none.
+// A member gossip suspects owns nothing hash-routed: its counters go to the next member at once, rather than every
+// request whose counter it held waiting for an answer that does not come until gossip declares it dead (a counter
+// starts again when its owner changes, as it does when a node stops serving).
 func (n *Node) hrw(ns, key string) *member {
 	m := n.mem.Load()
 	kh := keyHash(ns, key)
@@ -97,8 +152,8 @@ func (n *Node) hrw(ns, key string) *member {
 	var best *member
 	var bs uint64
 	for _, mb := range m.routable {
-		if mb == m.self && !selfReady || mb != m.self && !mb.ready {
-			continue // not serving: owns nothing
+		if mb == m.self && !selfReady || mb != m.self && (!mb.ready || mb.state != gossip.NodeAlive) {
+			continue // not serving, or suspected: owns nothing
 		}
 		s := mix64(mb.seed ^ kh)
 		if best == nil || s > bs || (s == bs && mb.id > best.id) {
@@ -237,11 +292,18 @@ func (e *Ephemeral) Incr(ctx context.Context, ns, key string, delta int64, windo
 	if mb.id == e.n.id {
 		return e.local.Incr(ctx, ns, key, delta, window)
 	}
+	k := ns + "/" + key
+	if delta == 0 {
+		if n, ok := e.remembered(k); ok {
+			return n, nil
+		}
+	}
 	r, err := e.call(ctx, mb, &ephReq{Op: opIncr, NS: ns, ID: key, Delta: delta, TTL: window.Milliseconds()})
 	if err != nil {
 		e.n.log.WithError(err).Debug("counter owner unreachable: refusing")
 		return 0, err
 	}
+	e.remember(k, r.N)
 	return r.N, nil
 }
 

@@ -139,17 +139,11 @@ func dedupeStrings(l []string) []string {
 // unusedSelfRegistered is how many self-registered applications nobody has let sign in yet (the cap applies to
 // these only: applications people use are never crowded out by a flood of registrations).
 func (s *Service) unusedSelfRegistered(ctx context.Context) (int, error) {
-	l, _, err := s.Clients.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "self_registered", Value: true}}})
+	ids, _, err := s.Clients.IDs(ctx, store.ListQuery{Filters: []store.Filter{{Field: "unused_self_registered", Value: true}}})
 	if err != nil {
 		return 0, mapStore(err)
 	}
-	n := 0
-	for _, c := range l {
-		if c.LastUsed.IsZero() {
-			n++
-		}
-	}
-	return n, nil
+	return len(ids), nil
 }
 
 // RegisterClient registers an application by dynamic client registration (RFC 7591). The caller limits it per

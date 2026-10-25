@@ -101,6 +101,10 @@ func (rq *request) discovery(segs []string, root bool) {
 		write(rq.w, http.StatusOK, rq.serviceProviderConfig())
 	case "ResourceTypes":
 		list := rq.resourceTypes(scoped)
+		if len(segs) > 2 {
+			writeError(rq.w, notFound("Resource type"))
+			return
+		}
 		if len(segs) == 2 {
 			for _, t := range list {
 				if strings.EqualFold(t.ID, segs[1]) {
@@ -114,6 +118,10 @@ func (rq *request) discovery(segs []string, root bool) {
 		rq.discoveryList(list)
 	case "Schemas":
 		list := rq.schemaDocs(scoped)
+		if len(segs) > 2 {
+			writeError(rq.w, notFound("Schema"))
+			return
+		}
 		if len(segs) == 2 {
 			for _, d := range list {
 				if strings.EqualFold(d.ID, segs[1]) {

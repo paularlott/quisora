@@ -269,7 +269,7 @@ func (c *tcluster) heal() {
 // dropData drops the replication traffic (broadcasts, pushes, feed pulls) between node i and every other node, both
 // ways, while membership gossip goes on: it stays in view (and writable) but exchanges no data with the others.
 func (c *tcluster) dropData(i int, on bool) {
-	data := []gossip.MessageType{msgRecord, msgPush, msgFeed, msgPrepare, msgCommit, msgRead}
+	data := []gossip.MessageType{msgRecord, msgPush, msgFeed, msgPrepare, msgCommit, msgRead, msgReadFew}
 	set := func(from int, to string) {
 		ns := c.net(from)
 		ns.mu.Lock()
@@ -298,7 +298,7 @@ func (c *tcluster) dropDataBetween(i, j int, on bool) {
 		if ns.dropTo[to] == nil {
 			ns.dropTo[to] = map[gossip.MessageType]bool{}
 		}
-		for _, mt := range []gossip.MessageType{msgRecord, msgPush, msgFeed, msgPrepare, msgCommit, msgRead} {
+		for _, mt := range []gossip.MessageType{msgRecord, msgPush, msgFeed, msgPrepare, msgCommit, msgRead, msgReadFew} {
 			ns.dropTo[to][mt] = on
 		}
 		ns.mu.Unlock()

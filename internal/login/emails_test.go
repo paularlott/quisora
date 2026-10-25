@@ -47,7 +47,7 @@ func TestAccountLinkedEmails(t *testing.T) {
 	}
 	link := linkPath(t, m)
 	anon := e.browser(t)
-	res, _ = anon.get(link)
+	res, _ = anon.verifyLink(link)
 	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?email=verified#emails" {
 		t.Fatalf("verify: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -55,7 +55,7 @@ func TestAccountLinkedEmails(t *testing.T) {
 	if l, _ := fresh.LinkedEmail("paul@the7thdream.com"); !l.Verified {
 		t.Fatalf("verified state %+v", fresh.LinkedEmails)
 	}
-	if res, _ = anon.get(link); res.Header.Get("Location") != "/account?email=invalid#emails" && res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res, _ = anon.verifyLink(link); res.Header.Get("Location") != "/account?email=invalid#emails" && res.Header.Get("Location") != "/account?email=invalid#profile" {
 		t.Fatalf("link reused: %q", res.Header.Get("Location"))
 	}
 
@@ -140,7 +140,7 @@ func TestAccountEmailsLocked(t *testing.T) {
 	wantStatus(t, res, out, 422)
 	res, out = b.api("POST", "/api-internal/account/emails/pat.work@example.org/verify", nil)
 	wantStatus(t, res, out, 200)
-	if res, _ = e.browser(t).get(linkPath(t, e.nextMail(t))); res.StatusCode != 303 {
+	if res, _ = e.browser(t).verifyLink(linkPath(t, e.nextMail(t))); res.StatusCode != 303 {
 		t.Fatalf("verify: %d", res.StatusCode)
 	}
 	res, out = b.api("POST", "/api-internal/account/emails/pat.work@example.org/primary", nil)

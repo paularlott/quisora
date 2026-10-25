@@ -134,7 +134,8 @@ paths:
     patch:
       tags: [Organizations]
       summary: Rename an organization or change its sign-in and session settings
-      description: Rename an organization or change its sign-in and session settings (super admin)
+      description: Rename an organization or change its sign-in and session settings (super admin). Settings left out
+        of `settings` keep their current values.
       operationId: patch_orgs_org
       requestBody:
         content:
@@ -1339,7 +1340,8 @@ paths:
     patch:
       tags: [Tenants]
       summary: Update a tenant
-      description: Update a tenant (name, display name, description, sign-in settings, resources)
+      description: Update a tenant (name, display name, description, sign-in settings, resources). Settings left out of
+        `settings` keep their current values.
       operationId: patch_orgs_org_tenants_id
       requestBody:
         content:
@@ -2368,19 +2370,16 @@ paths:
         "409": {$ref: "#/components/responses/ScimConflict"}
     delete:
       tags: [SCIM]
-      summary: Delete an organization (super admins)
+      summary: "Refused: deleting an organization needs the console (re-authentication)"
+      description: Always answers 403. Deleting an organization needs a super admin's re-authentication, which only a
+        console session (or the management API from one) can give.
       operationId: delete_scim_Organizations_id
       security:
         - bearer: [scim]
         - scimClient: [scim]
       responses:
-        "204":
-          description: Deleted
-        "400": {$ref: "#/components/responses/ScimBadRequest"}
         "401": {$ref: "#/components/responses/ScimUnauthorized"}
         "403": {$ref: "#/components/responses/ScimForbidden"}
-        "404": {$ref: "#/components/responses/ScimNotFound"}
-        "409": {$ref: "#/components/responses/ScimConflict"}
   /scim/v2/ResourceTypes:
     get:
       tags: [SCIM]
@@ -3696,9 +3695,6 @@ components:
           type: string
         detail:
           type: string
-        legacy_grants:
-          type: integer
-          description: refresh grants from an earlier version still bound to a previous key
         nodes:
           type: object
           description: the keys every live node reported, by node id
@@ -3727,7 +3723,7 @@ components:
           description: stored secrets sealed with a previous key (being re-sealed)
         state:
           type: string
-          enum: [none, waiting_for_nodes, resealing, unopenable, legacy_grants, complete]
+          enum: [none, waiting_for_nodes, resealing, unopenable, complete]
         unopenable_secrets:
           type: integer
           description: stored secrets no configured key opens

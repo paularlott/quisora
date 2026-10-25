@@ -65,7 +65,7 @@ in with PKCE, naming the MCP server as `resource`.
   people use never count), and a registration never used to sign anyone in is removed after a day. A metadata
   document is read only for a resource whose tenant accepts self-registered apps, at most 20 new documents per address
   and minute and once a minute per URL, with the same SSRF guard as JWKS (no private or loopback addresses unless
-  `server.allow_private_networks`), at most 5 KB; the app is stored only once a user lets it sign in.
+  listed in `server.allowed_networks` or `server.allow_private_networks` is set), at most 5 KB; the app is stored only once a user lets it sign in.
 
 ## Seeing and removing them
 

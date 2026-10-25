@@ -204,7 +204,7 @@ func TestDeepReviewQuorumReadFailsClosedOnPeerStorageError(t *testing.T) {
 	}
 	failing.fail.Store(true)
 	defer failing.fail.Store(false)
-	c.drop(1, 0, true, msgRead)
+	c.drop(1, 0, true, msgRead, msgReadFew)
 	// Node 0 cannot be reached and node 2 cannot read the record: only node 1 itself answers, short of a quorum.
 	recs, err := c.nodes[1].st().Fresh(bg, model.KindUser, []string{u.ID})
 	if errors.Is(err, store.ErrUnconfirmed) {
@@ -294,7 +294,7 @@ func TestDeepReviewLastAdminGuardFailsClosedOnPeerStorageError(t *testing.T) {
 	}
 	failing.fail.Store(true)
 	defer failing.fail.Store(false)
-	c.drop(1, 0, true, msgRead)
+	c.drop(1, 0, true, msgRead, msgReadFew)
 	_, err = svcs[1].UpdateUser(bg, service.System, all[2].ID, service.UserInput{Active: &active})
 	if err == nil {
 		t.Fatal("second super-admin disable succeeded despite only two usable super admins remaining; guard counted a failed read as quorum evidence")
@@ -531,11 +531,11 @@ func TestFresh6PartialStreamDoesNotCountAsQuorumAnswer(t *testing.T) {
 	}
 	fault.fail.Store(true)
 	defer fault.fail.Store(false)
-	c.drop(0, 1, true, msgRead)
+	c.drop(0, 1, true, msgRead, msgReadFew)
 	if _, err := c.nodes[0].st().Fresh(bg, model.KindUser, ids); !errors.Is(err, store.ErrUnconfirmed) {
 		t.Fatalf("partial stream certified a read: %v", err)
 	}
-	c.drop(0, 1, false, msgRead)
+	c.drop(0, 1, false, msgRead, msgReadFew)
 	got, err := c.nodes[0].st().Fresh(bg, model.KindUser, ids)
 	if err != nil || len(got) != len(ids) {
 		t.Fatalf("healthy peer could not supply quorum after partial-stream failure: records=%d err=%v", len(got), err)

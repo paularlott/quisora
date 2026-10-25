@@ -26,6 +26,54 @@ func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 	return rec, notFound(err)
 }
 
+// getManyBatch bounds the ids of one GetMany query (bind parameters: SQLite takes 32766, PostgreSQL 65535).
+const getManyBatch = 500
+
+// GetMany returns the live records of kind among ids, in the order of ids, in one query per getManyBatch ids
+// (store.MultiGetter): a token's groups, a page of users' sign-in records, a group's members.
+func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	t, ok := s.tables[kind]
+	if !ok || len(ids) == 0 {
+		return nil, nil
+	}
+	byID := make(map[string]*store.Record, len(ids))
+	now := time.Now().UnixMicro()
+	for start := 0; start < len(ids); start += getManyBatch {
+		batch := ids[start:min(start+getManyBatch, len(ids))]
+		args := make([]any, 0, len(batch)+1)
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		args = append(args, now)
+		q := s.d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id IN (" + strings.Repeat("?, ", len(batch)-1) +
+			"?) AND deleted = FALSE AND (expires IS NULL OR expires > ?)")
+		rows, err := s.reader().query(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			rec, _, err := t.scan(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			byID[rec.ID] = rec
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]*store.Record, 0, len(ids))
+	for _, id := range ids {
+		if rec, ok := byID[id]; ok {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
 // Lookup returns the stored record whatever its state (store.Store).
 func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
 	t, ok := s.tables[kind]

@@ -135,15 +135,6 @@ const (
 	OpLT     = "lt"     // a time or integer field is before Value
 )
 
-// FieldRefresher is implemented by backends that can recompute a kind's stored index fields in place. A field
-// added to a kind's schema is empty on records written before (see sqlstore.reconcile) until they are rewritten,
-// and some kinds (audit events) never are.
-type FieldRefresher interface {
-	// RefreshFields recomputes, from their data, the index fields of the live records of kind that q selects (q.Limit
-	// of them at most), without changing their version or replicating anything, and returns how many it rewrote.
-	RefreshFields(ctx context.Context, kind model.Kind, q ListQuery) (int, error)
-}
-
 // MultiGetter is optionally implemented by backends that read several records in one round trip. Table.GetMany uses
 // it where available and falls back to one Get per id.
 type MultiGetter interface {

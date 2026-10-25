@@ -103,7 +103,11 @@ func (d *dialect) colType(f model.Field) string {
 	switch f.Type {
 	case model.FieldString:
 		if d.isMySQL() {
-			return "VARCHAR(255) CHARACTER SET utf8mb4" + d.strCollate() + " NOT NULL DEFAULT ''"
+			n := 255 // every queryable string is clipped to 255 characters (service.Audit, model limits)
+			if f.Words {
+				n = model.MaxTagsText // the space-joined tags: never indexed, so not bound by the key length
+			}
+			return fmt.Sprintf("VARCHAR(%d) CHARACTER SET utf8mb4%s NOT NULL DEFAULT ''", n, d.strCollate())
 		}
 		return "TEXT NOT NULL DEFAULT ''"
 	case model.FieldBool:

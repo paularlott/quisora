@@ -18,8 +18,6 @@ import (
 
 const msgPrivilegedReset = "only a super admin can reset the sign-in of a manager or administrator"
 
-func privileged(u *model.User) bool { return u.Role.Rank() >= model.RoleManager.Rank() }
-
 // established reports whether u has a way to sign in (a password, an authenticator app, a passkey, a sign-in
 // provider) or has signed in before.
 func (s *Service) established(ctx context.Context, u *model.User) (bool, error) {
@@ -48,7 +46,7 @@ func (s *Service) established(ctx context.Context, u *model.User) (bool, error) 
 // mayResetSignIn refuses a (not a super admin) resetting the sign-in of a privileged, established account u. The
 // caller has checked that a may manage u.
 func (s *Service) mayResetSignIn(ctx context.Context, a *Actor, u *model.User, field string) error {
-	if a == System || a.IsSuper() || !privileged(u) {
+	if a == System || a.IsSuper() || !u.Role.Privileged() {
 		return nil
 	}
 	est, err := s.established(ctx, u)
@@ -67,7 +65,7 @@ func (s *Service) mayResetSignIn(ctx context.Context, a *Actor, u *model.User, f
 // one.
 func mayReplaceInvite(a *Actor, u *model.User) func(cur *model.LinkToken) error {
 	return func(cur *model.LinkToken) error {
-		if a == System || a.IsSuper() || !privileged(u) {
+		if a == System || a.IsSuper() || !u.Role.Privileged() {
 			return nil
 		}
 		if !cur.Used && time.Now().Before(cur.Expires) && cur.IssuedBy != a.UserID {

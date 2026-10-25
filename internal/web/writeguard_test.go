@@ -26,8 +26,8 @@ func TestWriteGuard(t *testing.T) {
 		{"PATCH", "/scim/v2/Users/x", true},
 		{"GET", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
 		{"HEAD", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
-		{"GET", "/verify-email?token=x", true},
-		{"HEAD", "/verify-email?token=x", true},
+		{"POST", "/verify-email", true},
+		{"GET", "/verify-email?token=x", false}, // the page only: confirming it writes
 		{"HEAD", "/account", false},
 		{"GET", "/api/orgs/acme/users", false},
 		{"GET", "/account", false},

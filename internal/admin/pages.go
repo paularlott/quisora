@@ -153,7 +153,7 @@ func (m *Module) pageHome(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/system", http.StatusSeeOther)
 	case u.Role == model.RoleAdmin:
 		http.Redirect(w, r, "/admin/orgs/"+m.orgName(r, u.OrgID), http.StatusSeeOther)
-	case u.Role.Rank() >= model.RoleManager.Rank():
+	case u.Role.Privileged():
 		http.Redirect(w, r, "/admin/orgs/"+m.orgName(r, u.OrgID)+"/users", http.StatusSeeOther)
 	default:
 		m.errorPage(w, r, http.StatusForbidden)

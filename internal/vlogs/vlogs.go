@@ -317,7 +317,7 @@ func (c *Client) send(batch [][]byte) {
 		if err == nil {
 			return
 		}
-		if try == maxRetries || c.ctx.Err() != nil {
+		if rejectedErr(err) || try == maxRetries || c.ctx.Err() != nil {
 			c.undelivered("VictoriaLogs did not take them: "+err.Error(), jsonLines(body))
 			return
 		}
@@ -340,13 +340,21 @@ func (c *Client) toSpool(body []byte) {
 	c.undelivered("the VictoriaLogs spool is full: the oldest events were removed from it", evicted)
 }
 
-// replay sends spooled segments, oldest first, while VictoriaLogs takes them.
+// replay sends spooled segments, oldest first, while VictoriaLogs takes them. A segment VictoriaLogs rejects for its
+// content (rejected), and a segment's lines that are not JSON (corrupt on disk), can never be delivered: they are
+// logged in full as audit.undelivered and the segment leaves the spool, so they do not hold back the events after
+// them. Anything else (unreachable, a server error, wrong credentials) is an outage: the segment stays, and is tried
+// again after a back-off.
 func (c *Client) replay() {
 	if c.spool == nil || time.Now().Before(c.retryAt) || c.ctx.Err() != nil {
 		return
 	}
 	for range replayPerTick {
-		name, body := c.spool.oldest()
+		name, body, bad, err := c.spool.oldest()
+		if err != nil {
+			c.failed(err)
+			return
+		}
 		if name == "" {
 			if c.spooling {
 				c.spooling = false
@@ -354,13 +362,26 @@ func (c *Client) replay() {
 			}
 			return
 		}
-		if err := c.post(c.insertURL(), body); err != nil {
-			if c.ctx.Err() == nil { // not just Close ending the request
-				c.failed(err)
+		var refused error
+		if len(body) > 0 {
+			if err := c.post(c.insertURL(), body); rejectedErr(err) {
+				refused = err
+			} else if err != nil {
+				if c.ctx.Err() == nil { // not just Close ending the request
+					c.failed(err)
+				}
+				return
 			}
+		}
+		// Logged before the segment goes: a crash between the two logs them twice, never not at all.
+		if refused != nil {
+			c.undelivered(refused.Error(), jsonLines(body))
+		}
+		c.undelivered("the line in the VictoriaLogs spool is not JSON (corrupt on disk)", bad)
+		if err := c.spool.remove(name); err != nil {
+			c.failed(err)
 			return
 		}
-		c.spool.remove(name)
 		c.delivered()
 	}
 }
@@ -401,11 +422,41 @@ func (c *Client) postTimeout(u string, body []byte, timeout time.Duration) error
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("VictoriaLogs answered %s", resp.Status)
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	switch {
+	case resp.StatusCode/100 == 2:
+		return nil
+	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusRequestEntityTooLarge ||
+		resp.StatusCode == http.StatusUnprocessableEntity:
+		return &rejected{status: resp.Status, msg: clip(msg)}
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return fmt.Errorf("VictoriaLogs refused the request (%s): check the credentials in audit.victorialogs_url "+
+			"and the proxy in front of VictoriaLogs (vmauth): %s", resp.Status, clip(msg))
+	default:
+		return fmt.Errorf("VictoriaLogs answered %s: %s", resp.Status, clip(msg))
 	}
-	return nil
+}
+
+// rejected is VictoriaLogs refusing a request for what is in it (400, 413, 422): the same events will never be taken,
+// so trying them again would only hold back every event after them.
+type rejected struct{ status, msg string }
+
+func (e *rejected) Error() string {
+	return "VictoriaLogs rejected the events (" + e.status + "): " + e.msg
+}
+
+func rejectedErr(err error) bool {
+	var r *rejected
+	return errors.As(err, &r)
+}
+
+// clip shortens an answer's body for a log line.
+func clip(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 300 {
+		s = s[:300] + "…"
+	}
+	return s
 }
 
 // ReadAudit reads one page of the audit log from VictoriaLogs (service.AuditReader).
@@ -426,7 +477,8 @@ func (c *Client) ReadAudit(ctx context.Context, q service.AuditQuery) (service.A
 	if err != nil {
 		return service.AuditPage{}, err
 	}
-	counts, err := c.query(ctx, filter+" | stats count() n")
+	// Delivery is at least once, so VictoriaLogs may hold an event twice: count each id once, and list it once.
+	counts, err := c.query(ctx, filter+" | stats count_uniq(id) n")
 	if err != nil {
 		return service.AuditPage{}, err
 	}
@@ -434,7 +486,14 @@ func (c *Client) ReadAudit(ctx context.Context, q service.AuditQuery) (service.A
 	if len(counts) == 1 {
 		page.Total, _ = strconv.Atoi(counts[0]["n"])
 	}
+	seen := make(map[string]bool, len(rows))
 	for _, r := range rows {
+		if id := r["id"]; id != "" {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+		}
 		page.Items = append(page.Items, fromRow(r))
 	}
 	return page, nil

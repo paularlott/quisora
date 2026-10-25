@@ -60,7 +60,7 @@ func (e *env) register(t testing.TB, name string) *virtualauth.Credential {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pk, extra, err := e.pk.FinishRegistration(e.ctx, e.user, id, cred, name)
+	pk, extra, err := e.pk.FinishRegistrationAs(e.ctx, "", e.user, id, cred, name)
 	if err != nil {
 		t.Fatalf("finish registration: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestRegisterAndDiscoverableLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := e.pk.FinishLogin(e.ctx, id, assertion)
+	res, err := e.pk.FinishLoginAs(e.ctx, id, assertion)
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestKnownUserLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pk.FinishLogin(e.ctx, id, assertion); err != nil {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, assertion); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	// A user with no passkeys cannot begin a known-user ceremony.
@@ -161,7 +161,7 @@ func TestWrongOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pk.FinishLogin(e.ctx, id, bad); !errors.Is(err, passkey.ErrVerify) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, bad); !errors.Is(err, passkey.ErrVerify) {
 		t.Fatalf("want ErrVerify, got %v", err)
 	}
 	// Registration from the wrong origin fails too.
@@ -172,7 +172,7 @@ func TestWrongOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.pk.FinishRegistration(e.ctx, e.user, rid, cred, "x"); !errors.Is(err, passkey.ErrVerify) {
+	if _, _, err := e.pk.FinishRegistrationAs(e.ctx, "", e.user, rid, cred, "x"); !errors.Is(err, passkey.ErrVerify) {
 		t.Fatalf("want ErrVerify, got %v", err)
 	}
 }
@@ -182,30 +182,30 @@ func TestReplayedChallenge(t *testing.T) {
 	e.register(t, "Key")
 	id, opts := e.options(t, nil)
 	assertion, _, _ := e.auth.Get(opts)
-	if _, err := e.pk.FinishLogin(e.ctx, id, assertion); err != nil {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, assertion); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pk.FinishLogin(e.ctx, id, assertion); !errors.Is(err, passkey.ErrChallenge) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, assertion); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("replay: want ErrChallenge, got %v", err)
 	}
 	// A failed attempt also burns the challenge.
 	id2, opts2 := e.options(t, nil)
-	if _, err := e.pk.FinishLogin(e.ctx, id2, []byte(`{}`)); err == nil {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id2, []byte(`{}`)); err == nil {
 		t.Fatal("garbage accepted")
 	}
 	a2, _, _ := e.auth.Get(opts2)
-	if _, err := e.pk.FinishLogin(e.ctx, id2, a2); !errors.Is(err, passkey.ErrChallenge) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id2, a2); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("burnt challenge reusable: %v", err)
 	}
 	// A login challenge cannot finish a registration and vice versa.
 	rid, _, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
-	if _, err := e.pk.FinishLogin(e.ctx, rid, assertion); !errors.Is(err, passkey.ErrChallenge) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, rid, assertion); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("cross-purpose: %v", err)
 	}
 	// Registration challenge is bound to the user who began it.
 	rid2, _, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
 	other := &model.User{Meta: model.Meta{ID: "someone-else"}}
-	if _, _, err := e.pk.FinishRegistration(e.ctx, other, rid2, []byte(`{}`), "x"); !errors.Is(err, passkey.ErrChallenge) {
+	if _, _, err := e.pk.FinishRegistrationAs(e.ctx, "", other, rid2, []byte(`{}`), "x"); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("user binding: %v", err)
 	}
 }
@@ -216,7 +216,7 @@ func TestSignCountRegression(t *testing.T) {
 	for want := uint32(1); want <= 3; want++ {
 		id, opts := e.options(t, nil)
 		a, _, _ := e.auth.Get(opts)
-		if _, err := e.pk.FinishLogin(e.ctx, id, a); err != nil {
+		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
 			t.Fatalf("login %d: %v", want, err)
 		}
 	}
@@ -233,7 +233,7 @@ func TestSignCountRegression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := e.pk.FinishLogin(e.ctx, id, stale)
+	res, err := e.pk.FinishLoginAs(e.ctx, id, stale)
 	if !errors.Is(err, passkey.ErrCloneDetected) || res == nil || res.User.ID != e.user.ID {
 		t.Fatalf("want ErrCloneDetected with user, got %v %v", res, err)
 	}
@@ -251,7 +251,7 @@ func TestSignCountRegression(t *testing.T) {
 	}
 	id, opts = e.options(t, nil)
 	a, _, _ := e.auth.Get(opts)
-	if _, err := e.pk.FinishLogin(e.ctx, id, a); !errors.Is(err, passkey.ErrUnusable) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrUnusable) {
 		t.Fatalf("disabled passkey signed in: %v", err)
 	}
 	if _, _, err := e.pk.BeginLogin(e.ctx, e.user, nil); !errors.Is(err, passkey.ErrUnknownCredential) {
@@ -274,7 +274,7 @@ func TestLegacyUnverifiedPasskeyUnusable(t *testing.T) {
 	}
 	id, opts := e.options(t, nil) // discoverable: the authenticator still offers it
 	a, _, _ := e.auth.Get(opts)
-	if _, err := e.pk.FinishLogin(e.ctx, id, a); !errors.Is(err, passkey.ErrUnusable) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrUnusable) {
 		t.Fatalf("unverified passkey signed in: %v", err)
 	}
 }
@@ -287,7 +287,7 @@ func TestZeroCounterSyncedPasskey(t *testing.T) {
 	for range 3 {
 		id, opts := e.options(t, nil)
 		a, _, _ := e.auth.Get(opts)
-		res, err := e.pk.FinishLogin(e.ctx, id, a)
+		res, err := e.pk.FinishLoginAs(e.ctx, id, a)
 		if err != nil {
 			t.Fatalf("zero counters must be accepted: %v", err)
 		}
@@ -307,7 +307,7 @@ func TestUserVerificationRequired(t *testing.T) {
 	e.auth.UserVerified = false
 	id, opts := e.options(t, nil)
 	a, _, _ := e.auth.Get(opts)
-	if _, err := e.pk.FinishLogin(e.ctx, id, a); !errors.Is(err, passkey.ErrVerify) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrVerify) {
 		t.Fatalf("login without UV accepted: %v", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestInactiveUser(t *testing.T) {
 	if err := e.svc.Users.Update(e.ctx, e.user); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pk.FinishLogin(e.ctx, id, a); !errors.Is(err, passkey.ErrInactive) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrInactive) {
 		t.Fatalf("want ErrInactive, got %v", err)
 	}
 }
@@ -351,7 +351,7 @@ func TestUnknownCredentialAndIPHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pk.FinishLogin(e.ctx, id, a); !errors.Is(err, passkey.ErrUnknownCredential) {
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrUnknownCredential) {
 		t.Fatalf("want ErrUnknownCredential, got %v", err)
 	}
 
@@ -373,7 +373,7 @@ func BenchmarkAssertionVerify(b *testing.B) {
 		id, opts := e.options(b, nil)
 		a, _, _ := e.auth.Get(opts)
 		b.StartTimer()
-		if _, err := e.pk.FinishLogin(e.ctx, id, a); err != nil {
+		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -404,7 +404,7 @@ func TestRegistrationRequiresUserVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.pk.FinishRegistration(e.ctx, e.user, id, cred, "No PIN"); !errors.Is(err, passkey.ErrVerify) {
+	if _, _, err := e.pk.FinishRegistrationAs(e.ctx, "", e.user, id, cred, "No PIN"); !errors.Is(err, passkey.ErrVerify) {
 		t.Fatalf("a credential without user verification was registered: %v", err)
 	}
 	if list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID); len(list) != 0 {

@@ -208,7 +208,9 @@ func sqliteDSN(dsn string, writer bool) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
+	// FULL: a commit is on disk when it returns, as with BadgerDB's sync_writes (NORMAL in WAL mode can lose the
+	// last commits to a power cut: a password change, a revocation, a rotated signing key).
+	q.Add("_pragma", "synchronous(FULL)")
 	q.Add("_pragma", "foreign_keys(0)")
 	if writer {
 		q.Add("_txlock", "immediate")

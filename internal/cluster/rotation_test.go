@@ -106,7 +106,7 @@ func TestMasterKeyRotationAcrossCluster(t *testing.T) {
 				if err != nil {
 					return false
 				}
-				if keys, legacy, err := s.GrantRefreshKeys(gg); err != nil || legacy || string(keys[0]) != string(grantKey) {
+				if key, err := s.GrantRefreshKey(gg); err != nil || string(key) != string(grantKey) {
 					return false
 				}
 				if want != "" && (s.Sealer.Stale(pp.ClientSecret) || s.Sealer.Stale(gg.Key)) {

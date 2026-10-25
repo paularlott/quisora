@@ -140,9 +140,10 @@ func TestEmailCodeSendLimit(t *testing.T) {
 	e.noMail(t)
 }
 
-// Users with an authenticator app see codes by email under "Try another way", and sending one there finishes the
-// sign-in. Managers and above, and addresses that are not verified, never get them.
-func TestEmailCodeAlternative(t *testing.T) {
+// Users with an authenticator app keep it as their second factor: codes by email are not among the alternatives,
+// and a ticket of their sign-in cannot ask for one (whoever reads the mailbox and knows the password would get past
+// the stronger factor). Managers and above, and addresses that are not verified, never get them either.
+func TestEmailCodeNotAnAlternative(t *testing.T) {
 	e, org := emailEnv(t, func(s *model.OrgSettings) { s.EmailCodes = true })
 	alts := func(name string) ([]any, string, string) {
 		res, out := e.browser(t).login("acme", name, userPassword)
@@ -156,17 +157,15 @@ func TestEmailCodeAlternative(t *testing.T) {
 	b := e.browser(t)
 	res, out := b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 200)
-	if a, _ := out["alternatives"].([]any); str(out, "step") != "totp" || len(a) != 1 || a[0] != "email_code" {
+	if a, _ := out["alternatives"].([]any); str(out, "step") != "totp" || len(a) != 0 || str(out, "email") != "" {
 		t.Fatalf("alternatives %v", out)
 	}
-	e.noMail(t) // nothing is sent until asked for
 	tk := str(out, "ticket")
 	res, out = b.post("/api-internal/login/email/send", map[string]any{"ticket": tk})
-	wantStatus(t, res, out, 200)
-	res, out = b.post("/api-internal/login/email", map[string]any{"ticket": tk, "code": codeFrom(t, e)})
-	wantStatus(t, res, out, 200)
-	if !b.hasSession() {
-		t.Fatal("no session")
+	wantStatus(t, res, out, 401)
+	e.noMail(t)
+	if b.hasSession() {
+		t.Fatal("session")
 	}
 
 	mgr := e.verifiedUser(t, org, "mgr", model.RoleManager)
@@ -175,7 +174,7 @@ func TestEmailCodeAlternative(t *testing.T) {
 		t.Fatalf("manager: %s %v", step, a)
 	} else {
 		res, out := e.browser(t).post("/api-internal/login/email/send", map[string]any{"ticket": tk})
-		wantStatus(t, res, out, 403)
+		wantStatus(t, res, out, 401)
 	}
 
 	unv := e.user(t, org, "unv", model.RoleUser)

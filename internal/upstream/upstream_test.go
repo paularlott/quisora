@@ -60,7 +60,7 @@ func setup(t *testing.T) *env {
 	eph := ephemeral.NewLocal("n1")
 	t.Cleanup(eph.Close)
 	e := &env{ctx: ctx, svc: svc, org: org, oidc: ut.NewFakeOIDC(t), gh: ut.NewFakeGitHub(t), now: time.Now()}
-	e.up = upstream.New(svc, eph, cfg.Server.PublicURL)
+	e.up = upstream.New(svc, eph, cfg.Server.PublicURL, &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
 	e.up.HTTP = ut.HTTPClient()
 	e.up.GitHubAuthURL, e.up.GitHubTokenURL, e.up.GitHubAPIURL = e.gh.Srv.URL+"/authorize", e.gh.Srv.URL+"/token", e.gh.Srv.URL
 	e.up.Now = func() time.Time { e.mu.Lock(); defer e.mu.Unlock(); return e.now }
@@ -101,7 +101,7 @@ func (e *env) githubProvider(t *testing.T, mut func(*service.ProviderInput)) *mo
 
 // signIn runs Begin, the fake provider and Finish.
 func (e *env) signIn(p *model.Provider, claims map[string]any) (*upstream.Result, error) {
-	authURL, state, err := e.up.Begin(e.ctx, e.org, p, "/next")
+	authURL, state, err := e.up.BeginTenant(e.ctx, e.org, p, "/next", "")
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +251,7 @@ func TestDisabledStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); !errors.Is(err, upstream.ErrDisabled) {
+	if _, _, err := e.up.BeginTenant(e.ctx, e.org, p, "", ""); !errors.Is(err, upstream.ErrDisabled) {
 		t.Fatalf("disabled provider Begin: %v", err)
 	}
 }
@@ -316,7 +316,7 @@ func TestStateHandling(t *testing.T) {
 	e := setup(t)
 	p := e.oidcProvider(t, nil)
 
-	authURL, state, err := e.up.Begin(e.ctx, e.org, p, "/n")
+	authURL, state, err := e.up.BeginTenant(e.ctx, e.org, p, "/n", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestStateHandling(t *testing.T) {
 		t.Fatalf("burnt state: %v", err)
 	}
 
-	authURL, state, _ = e.up.Begin(e.ctx, e.org, p, "/n")
+	authURL, state, _ = e.up.BeginTenant(e.ctx, e.org, p, "/n", "")
 	code = e.oidc.Authorize(authURL, std("s1", "s1@example.com"))
 	if _, err := e.up.Finish(e.ctx, p.ID, state, state, code); err != nil {
 		t.Fatal(err)
@@ -346,7 +346,7 @@ func TestStateHandling(t *testing.T) {
 	}
 	// A response arriving at another provider's callback address is refused (IdP mix-up), and the state is burnt.
 	other := e.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Other SSO") })
-	authURL, state, _ = e.up.Begin(e.ctx, e.org, p, "/n")
+	authURL, state, _ = e.up.BeginTenant(e.ctx, e.org, p, "/n", "")
 	code = e.oidc.Authorize(authURL, std("s1", "s1@example.com"))
 	if _, err := e.up.Finish(e.ctx, other.ID, state, state, code); !errors.Is(err, upstream.ErrState) {
 		t.Fatalf("other provider's callback: %v", err)
@@ -359,7 +359,7 @@ func TestStateHandling(t *testing.T) {
 func TestPKCEIsEnforcedByProvider(t *testing.T) {
 	e := setup(t)
 	p := e.oidcProvider(t, nil)
-	authURL, state, _ := e.up.Begin(e.ctx, e.org, p, "")
+	authURL, state, _ := e.up.BeginTenant(e.ctx, e.org, p, "", "")
 	u, _ := url.Parse(authURL)
 	if u.Query().Get("redirect_uri") != "https://quisora.example.test/login/callback/"+p.ID || u.Query().Get("state") != state {
 		t.Fatalf("authorization url %s", authURL)
@@ -425,7 +425,7 @@ func TestDiscoveryChecks(t *testing.T) {
 	e := setup(t)
 	p := e.oidcProvider(t, nil)
 	e.oidc.IssuerOver = "https://evil.example"
-	if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); !errors.Is(err, upstream.ErrUpstream) {
+	if _, _, err := e.up.BeginTenant(e.ctx, e.org, p, "", ""); !errors.Is(err, upstream.ErrUpstream) {
 		t.Fatalf("issuer mismatch accepted: %v", err)
 	}
 }
@@ -454,7 +454,7 @@ func TestDiscoveryFailureIsShared(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(e.ctx, 100*time.Millisecond)
 			defer cancel()
-			if _, _, err := e.up.Begin(ctx, e.org, p, ""); !errors.Is(err, context.DeadlineExceeded) {
+			if _, _, err := e.up.BeginTenant(ctx, e.org, p, "", ""); !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("abandoned sign-in: %v", err)
 			}
 		}()
@@ -469,7 +469,7 @@ func TestDiscoveryFailureIsShared(t *testing.T) {
 
 	unblock()
 	for range 3 {
-		if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); err == nil {
+		if _, _, err := e.up.BeginTenant(e.ctx, e.org, p, "", ""); err == nil {
 			t.Fatal("failed discovery accepted")
 		}
 	}
@@ -477,7 +477,7 @@ func TestDiscoveryFailureIsShared(t *testing.T) {
 		t.Fatalf("a failed discovery was fetched again within the retry interval: %d", n)
 	}
 	e.advance(31 * time.Second)
-	if _, _, err := e.up.Begin(e.ctx, e.org, p, ""); err == nil {
+	if _, _, err := e.up.BeginTenant(e.ctx, e.org, p, "", ""); err == nil {
 		t.Fatal("failed discovery accepted")
 	}
 	if n := hits.Load(); n != 2 {
@@ -488,7 +488,7 @@ func TestDiscoveryFailureIsShared(t *testing.T) {
 func TestGitHub(t *testing.T) {
 	e := setup(t)
 	p := e.githubProvider(t, nil)
-	authURL, _, err := e.up.Begin(e.ctx, e.org, p, "/gh")
+	authURL, _, err := e.up.BeginTenant(e.ctx, e.org, p, "/gh", "")
 	if err != nil || !strings.HasPrefix(authURL, e.gh.Srv.URL+"/authorize?") {
 		t.Fatalf("auth url %q %v", authURL, err)
 	}
@@ -538,7 +538,7 @@ func TestGitHubEmailRules(t *testing.T) {
 func TestGitHubTokenFailure(t *testing.T) {
 	e := setup(t)
 	p := e.githubProvider(t, nil)
-	authURL, state, _ := e.up.Begin(e.ctx, e.org, p, "")
+	authURL, state, _ := e.up.BeginTenant(e.ctx, e.org, p, "", "")
 	_ = e.gh.Authorize(authURL)
 	if _, err := e.up.Finish(e.ctx, p.ID, state, state, "wrong-code"); !errors.Is(err, upstream.ErrUpstream) {
 		t.Fatalf("want ErrUpstream, got %v", err)
@@ -567,7 +567,7 @@ func TestMicrosoftProvider(t *testing.T) {
 		return c
 	}
 	// the authorization request goes to the "organizations" directory
-	authURL, _, err := e.up.Begin(e.ctx, e.org, p, "")
+	authURL, _, err := e.up.BeginTenant(e.ctx, e.org, p, "", "")
 	if err != nil || !strings.HasPrefix(authURL, e.oidc.Srv.URL+"/authorize") {
 		t.Fatalf("begin: %v %s", err, authURL)
 	}

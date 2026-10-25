@@ -22,8 +22,9 @@ import (
 // both sharper and kinder: the role (whether a second factor is required, whether codes by email are allowed, who
 // may invite: emailOK, Role.Privileged, issuerMayInvite), the primary address and whether it is verified (a code is
 // sent to the address on file now; a link proves the address it was mailed to only while that is still the one on
-// file), and the end date (Enabled). An invitation for an account that was promoted or given another address after
-// it went out is therefore judged on those rules, not simply dead.
+// file), and the end date (Enabled). An invitation for an account that was promoted after it went out is therefore
+// judged on those rules, not simply dead. A change of address does end invitation and reset links (LinkToken.For):
+// they set credentials, and the one mailed to the old address may be in a stranger's mailbox.
 
 // securityState is the part of a user that SecurityGen tracks, in a comparable form.
 type securityState struct {

@@ -149,7 +149,8 @@ func TestPatchSemantics(t *testing.T) {
 	if u.Email != "only@acme.test" {
 		t.Errorf("email must be kept: %q", u.Email)
 	}
-	// Complex attribute: replace whole name object, then add merges.
+	// Complex attribute: replace and add both set the sub-attributes given and keep the others (RFC 7644 §3.5.2.3);
+	// remove of a sub-attribute clears it.
 	r = e.patch(id, op("replace", "name", map[string]any{"givenName": "Pat", "familyName": "Q"}))
 	if r.str("name", "familyName") != "Q" {
 		t.Errorf("replace name: %s", r.Raw)
@@ -159,8 +160,12 @@ func TestPatchSemantics(t *testing.T) {
 		t.Errorf("add name merges: %s", r.Raw)
 	}
 	r = e.patch(id, op("replace", "name", map[string]any{"givenName": "Solo"}))
+	if r.str("name", "givenName") != "Solo" || r.str("name", "familyName") != "Q" {
+		t.Errorf("replace name keeps the sub-attributes it does not name: %s", r.Raw)
+	}
+	r = e.patch(id, map[string]any{"op": "remove", "path": "name.familyName"})
 	if r.str("name", "givenName") != "Solo" || r.str("name", "familyName") != "" {
-		t.Errorf("replace name replaces: %s", r.Raw)
+		t.Errorf("remove name.familyName: %s", r.Raw)
 	}
 	// Read-only attributes are ignored.
 	r = e.patch(id, op("replace", "id", "hacked"), op("replace", "meta.version", "x"), op("add", "groups", []any{map[string]any{"value": "g"}}))

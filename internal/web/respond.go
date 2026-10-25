@@ -37,6 +37,7 @@ func WriteError(w http.ResponseWriter, err error) {
 		}
 		WriteJSON(w, status, ErrorBody{Error: fe.Msg, Field: fe.Field})
 	case errors.Is(err, service.ErrForbidden):
+		noteDenied(w) // audited by RequireManagement
 		WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "You do not have permission to do that."})
 	case errors.Is(err, service.ErrNotFound):
 		WriteJSON(w, http.StatusNotFound, ErrorBody{Error: "Not found."})

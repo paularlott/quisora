@@ -27,6 +27,7 @@ const (
 	msgAudit   gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's audit events
 	msgNotice  gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
 	msgReload  gossip.MessageType = gossip.UserMsg + 12 // request/response: re-read the configuration (check, or apply)
+	msgReadFew gossip.MessageType = gossip.UserMsg + 13 // request/response: records by id (quorum read), at most readFew
 )
 
 // writeFrame writes b to a stream as one length-prefixed frame; readFrame reads it back (io.EOF at the end of a

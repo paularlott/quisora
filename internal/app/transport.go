@@ -1,7 +1,6 @@
 package app
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
@@ -31,27 +30,6 @@ func caPool(file, setting string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("%s: no PEM certificate in %s", setting, file)
 	}
 	return p, nil
-}
-
-// valkeyTLS builds the TLS configuration of a Valkey connection from storage.valkey (nil: the defaults).
-func valkeyTLS(v config.Valkey) (*tls.Config, error) {
-	if v.CAFile == "" && v.ServerName == "" && v.CertFile == "" && v.KeyFile == "" {
-		return nil, nil
-	}
-	t := &tls.Config{ServerName: v.ServerName, MinVersion: tls.VersionTLS12}
-	pool, err := caPool(v.CAFile, "storage.valkey.ca_file")
-	if err != nil {
-		return nil, err
-	}
-	t.RootCAs = pool
-	if v.CertFile != "" || v.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(v.CertFile, v.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("storage.valkey.cert_file / key_file: %w", err)
-		}
-		t.Certificates = []tls.Certificate{cert}
-	}
-	return t, nil
 }
 
 // local reports whether host is this machine (a loopback name or address, or a Unix socket path).
@@ -104,17 +82,6 @@ func transportWarnings(c *config.Config) []string {
 		case mc.TLS != nil && mc.TLS.InsecureSkipVerify:
 			out = append(out, "storage."+st.Backend+": the server's certificate is not verified, or plain text is allowed "+
 				"(tls=true in the DSN, or storage."+st.Backend+".ca_file)")
-		}
-	case "valkey":
-		for _, a := range st.Valkey.Addrs {
-			host, _, err := net.SplitHostPort(a)
-			if err != nil {
-				host = a
-			}
-			if !st.Valkey.TLS && !local(host) {
-				out = append(out, "storage.valkey: the connection to "+host+" is not encrypted (storage.valkey.tls)")
-				break
-			}
 		}
 	}
 	if m := c.Mail; m.SMTPHost != "" && m.TLS == "none" && m.Password != "" && !local(m.SMTPHost) {

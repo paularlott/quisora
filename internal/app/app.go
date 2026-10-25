@@ -169,7 +169,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		// No gossip, so no eviction messages from the other nodes: cached sessions are trusted for 5 seconds.
 		srv.Sessions.CacheTTL = 5 * time.Second
 	}
-	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
 	if c.Mail.Enabled() { // its queue is on disk: messages left by the last run go out now
 		if a.mailer, err = mail.New(c, log, sealer, &mail.SMTP{Cfg: c.Mail}); err != nil {
 			a.Close()
@@ -184,6 +183,9 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	// Every master key report says how many queued items still need a previous key (re-sealing them first).
 	a.Svc.QueuesStale = a.resealQueues
 	srv.Use(modules(bg, a)...)
+	// Replication is already applying records (node.Start): the hook goes in once what it calls (the modules'
+	// caches and their onChange hooks) is built. Until the server starts nothing is cached, so nothing is missed.
+	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
 	if a.OIDC != nil {
 		// Back-channel logouts a relying party did not take are retried from disk, also across restarts.
 		q, err := a.OIDC.OpenLogoutQueue(c.DataPath(config.DirLogoutQueue))
@@ -205,7 +207,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.background(func() { node.RunPurge(bg, 10*time.Minute) })
 	a.background(func() { a.auditForcedStart(bg) })
 	a.background(func() { a.auditRestore(bg) })
-	a.background(func() { refreshAuditIndex(bg, inner, log) })
 	a.closers = append(a.closers, srv.Stop) // the very first: stop taking requests (draining) before anything else
 	return a, nil
 }

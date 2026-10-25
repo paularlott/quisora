@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/http"
+	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -102,9 +103,16 @@ func (m *Module) updateTenant(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	var in service.TenantInput
+	// settings is decoded over a copy of the current ones: a PATCH that names some settings leaves the others as
+	// they are (an omitted members_only must not open the tenant).
+	set := t.Settings
+	set.Providers = slices.Clone(t.Settings.Providers)
+	in := service.TenantInput{Settings: &set}
 	if !web.DecodeJSON(w, r, &in) {
 		return
+	}
+	if in.Settings != nil && in.Settings.Equal(t.Settings) {
+		in.Settings = nil
 	}
 	upd, err := m.s.Svc.UpdateTenant(r.Context(), a, t.ID, in)
 	if err != nil {

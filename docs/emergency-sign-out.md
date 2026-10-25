@@ -14,7 +14,8 @@ What to do around them (finding out what an attacker did, what to rotate) is in 
 
 ### From the console
 
-- **One organization**: its **Overview** page → **Sign everyone out…** (its administrators and super admins).
+- **One organization**: its **Overview** page → **Sign everyone out…** (its administrators and super admins; for
+  the primary organization, which holds the super admins, super admins only).
 - **Every organization**: **System overview** → the same button (super admins).
 
 The dialog asks for a **Reason** (recorded in the audit log), whether to **End personal API tokens too**, and for the
@@ -44,7 +45,7 @@ quisora sign-out --all --reason "Suspected session theft" --api-tokens
 
 It asks you to type the organization's name (or `everyone`) unless given `--yes`, then prints what it removed.
 
-- **Shared database** (PostgreSQL, MySQL, MariaDB, Valkey): run it while the servers run; they follow within seconds.
+- **Shared database** (PostgreSQL, MySQL, MariaDB): run it while the servers run; they follow within seconds.
 - **BadgerDB or SQLite on one node**: stop the server first, run it, start the server.
 - **Gossip cluster**: stop one node, run it there, start the node again; the others receive the change from it.
 

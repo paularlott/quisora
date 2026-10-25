@@ -167,9 +167,8 @@ Super admins see that a rotation is in progress on the **System overview**, whic
 same status is `GET /api/master-key` (super admin). It shows:
 
 - the key every node seals with, and the previous keys every node holds;
-- how many stored secrets are still sealed with a previous key, how many open with no configured key, and how many
-  refresh grants from an earlier version still depend on one;
-- a state: `waiting_for_nodes`, `resealing`, `unopenable`, `legacy_grants`, `complete` (with
+- how many stored secrets are still sealed with a previous key, and how many open with no configured key;
+- a state: `waiting_for_nodes`, `resealing`, `unopenable`, `complete` (with
   `previous_keys_removable: true`: remove them now) or `none` (no rotation in progress).
 
 The housekeeping leader also logs `master key rotation complete … remove server.previous_master_keys now`, and repeats
@@ -223,11 +222,8 @@ a node started with only the old key refuses to start.
 - Queued emails and back-channel logouts are sealed too. One sealed with a key that is no longer configured stays
   queued (the log says `items not re-sealed with the active master key`), to be delivered once its key is back, and
   until then the rotation is not complete. If that key is lost for good, stop the node and run
-  `quisora queue purge-lost` there: it removes those items, and only those, from the node's queues.
-- Refresh grants made by a version from before refresh grants had their own key are converted by the re-seal. During
-  a rotation started straight after upgrading, they are converted only when next used, and the log counts the rest
-  (`refresh grants from an earlier version`); removing the old key ends those, and their users sign in again. Upgrade,
-  let the server run a few minutes, then rotate.
+  `quisora queue purge-lost` there: it removes those items, and only those, from the node's queues, and records how
+  many in the audit log (`queue.purge_lost`). It refuses while a server answers on the node's `server.listen`.
 
 ## Changing the primary organization
 
@@ -255,7 +251,6 @@ must exist.
 | `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go, in `<data-dir>/quisora.db`. | none                                                                   |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
 | `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
-| `valkey`           | As PostgreSQL.                                                 | `storage.valkey.addrs`, `username`, `password`, `db`, `key_prefix`, `tls`, `ca_file`, `server_name`, `cert_file`, `key_file` |
 
 ```bash
 # PostgreSQL (connection strings carry the password: environment or config file, not flags)
@@ -265,10 +260,6 @@ quisora serve --storage postgres
 # MySQL / MariaDB (the collation is set by Quisora)
 export QUISORA_MYSQL_DSN='quisora:secret@tcp(db:3306)/quisora?tls=true'
 quisora serve --storage mysql
-
-# Valkey
-export QUISORA_VALKEY_PASSWORD=secret
-quisora serve --storage valkey --valkey-addrs valkey:6379 --valkey-tls --valkey-key-prefix quisora:
 
 # SQLite (in <data-dir>/quisora.db)
 quisora serve --storage sqlite --data-dir /var/lib/quisora
@@ -287,7 +278,6 @@ Connections to `localhost`, a loopback address or a Unix socket are never warned
 | ------------------ | ------------------------------------------------------------------------------------------------------------ |
 | PostgreSQL         | `sslmode=verify-full` in the DSN; a private CA in `storage.postgres.ca_file` (or `sslrootcert` in the DSN)   |
 | MySQL / MariaDB    | `tls=true` in the DSN; a private CA in `storage.mysql.ca_file` / `storage.mariadb.ca_file` (which also turns TLS on) |
-| Valkey             | `storage.valkey.tls = true`; a private CA in `ca_file`, the name to verify in `server_name`, a client certificate for mutual TLS in `cert_file` / `key_file` |
 
 ### Encryption at rest
 
@@ -304,7 +294,7 @@ protected at rest by the storage:
   ready before the next. A single node: back up, then restore into a new store with the new key.
 - **SQLite**: put the data directory on an encrypted volume (LUKS, FileVault, BitLocker, an encrypted cloud disk), or
   accept plain files for local use.
-- **PostgreSQL, MySQL, MariaDB, Valkey**: encryption at rest is the database's, set up by its administrator: encrypted
+- **PostgreSQL, MySQL, MariaDB**: encryption at rest is the database's, set up by its administrator: encrypted
   tablespaces or tables (MySQL and MariaDB InnoDB encryption), the provider's encrypted storage, or an encrypted
   volume.
 
@@ -314,7 +304,7 @@ Two modes. Do not mix them.
 
 ### Shared database
 
-Several nodes on one PostgreSQL, MySQL, MariaDB or Valkey database, which is the only copy. Leave `cluster.bind`
+Several nodes on one PostgreSQL, MySQL or MariaDB database, which is the only copy. Leave `cluster.bind`
 empty (that is the replicated mode below).
 
 - Short-lived sign-in state (codes, sign-in steps, rate limits) lives in the database too: any node serves any
@@ -507,8 +497,9 @@ victorialogs_spool_max_mb = 256          # default 256
 With VictoriaLogs, every event is written to the spool, `<data-dir>/auditspool`, and synced to disk before the action
 that recorded it goes on (events recorded at the same moment share one sync). A separate sender posts the spool to
 VictoriaLogs about once a second, and an event leaves the spool only once VictoriaLogs has taken it; what VictoriaLogs
-does not take (unreachable, or answering an error) stays there and is sent when VictoriaLogs answers again, oldest
-first. A shutdown does not wait for VictoriaLogs, and the next start sends what is spooled.
+does not take (unreachable, a server error, or refused credentials: 401, 403) stays there and is sent when
+VictoriaLogs answers again, oldest first. A shutdown does not wait for VictoriaLogs, and the next start sends what is
+spooled.
 
 What is guaranteed: **an event whose write to the spool succeeded is on disk, complete, and is sent to
 VictoriaLogs**, through an outage of VictoriaLogs and through a restart or crash of the node, while the spool has
@@ -525,8 +516,12 @@ When the structured log is the fallback (`audit.undelivered`, the event in full 
 - The spool could not be written (a full or failing disk, a failed sync of the file or of the directory). The failed
   write is undone, so the log is that event's only copy; a crash before the log is shipped loses it from VictoriaLogs.
 - The spool had to make room (below), or the spool queue was full.
-- The spool held a batch VictoriaLogs took, and the node crashed before the batch left the spool: it is sent again.
-  Delivery is at least once, and every event has a unique `id` for removing duplicates when reading.
+- VictoriaLogs refused a batch for what is in it (400, 413, 422): it would never take it, so it leaves the spool
+  (logged with VictoriaLogs' answer) rather than hold back everything after it.
+- A line in a spool segment is complete but not JSON (the disk changed it): it can never be sent.
+
+Delivery is at least once: a batch VictoriaLogs took is sent again if the node crashed before the batch left the
+spool. Every event has a unique `id`; the audit pages show and count each once.
 
 - The directory is created (mode 0700) if missing, and Quisora refuses to start if it cannot write there.
 - It is part of the node's data directory, so it is one per node, on that node's own disk.
@@ -598,8 +593,7 @@ QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quiso
   (unencrypted); without one of them it answers 400.
 - `quisora backup quisora.bak` without `--server` reads the configured store directly. On BadgerDB and SQLite, stop the node
   first.
-- BadgerDB, SQLite, PostgreSQL, MySQL and MariaDB give a point-in-time snapshot. Valkey gives every record that
-  existed throughout the backup.
+- Every backend gives a point-in-time snapshot: the backup is consistent.
 
 Quisora has no backup schedule of its own: run `quisora backup --server` from cron (or a systemd timer, or a
 Kubernetes CronJob) on a machine that keeps the files away from the node, and alert when it fails. For example,
@@ -649,7 +643,7 @@ start-up. Wipe it and start clean (or restore a backup made by the new build).
   while it keeps serving. Nodes publish their compatibility, and a node more than one release apart is refused: the
   others log `refusing to serve … upgrade one release at a time` and stop serving until it is upgraded or gone.
 - **Storage is migrated at the first start of the new build**, step by step, each step recorded as it completes (an
-  interrupted upgrade resumes). Nodes that share a database or Valkey do it once, under a lock; with gossip, every
+  interrupted upgrade resumes). Nodes that share a database do it once, under a lock; with gossip, every
   node migrates its own store.
 - **Backups** made by the previous release restore into the new one.
 
@@ -659,7 +653,7 @@ Until the first release, formats change in place. From then on:
 
 - A record field that can be added with a sensible zero value needs nothing: older records read as the zero value.
   Renaming, removing or re-interpreting one needs a migration, on every backend:
-  - BadgerDB and Valkey: append to `formatMigrations` (`internal/store/kvstore/kvstore.go`);
+  - BadgerDB: append to `formatMigrations` (`internal/store/kvstore/kvstore.go`);
   - SQL: append to `migrations()` (`internal/store/sqlstore/migrate.go`): statements, and Go code for data.
 - A backup format change: raise `version`, add `upgrades[old]`, and keep `minVersion` at the previous release's
   version (`internal/backup/backup.go`).

@@ -33,6 +33,10 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 		a.Svc.AuditWriter, a.Svc.AuditReader = vl, vl
 		return nil
 	}
+	// Said at every start, so a deployment that needs an audit trail (SOC 2, or any production one) does not run on
+	// the development one unnoticed.
+	log.Warn("audit events are kept in the database only, for audit.retention_days: not an audit trail for "+
+		"production or SOC 2; set audit.victorialogs_url (docs/SOC2.md)", "retention_days", c.Audit.RetentionDays)
 	if node.Replicating() {
 		a.Svc.AuditReader = clusterAudit{node: node, svc: a.Svc}
 	}
@@ -79,32 +83,4 @@ func (r clusterAudit) ReadAudit(ctx context.Context, q service.AuditQuery) (serv
 		}
 	}
 	return page, nil
-}
-
-// refreshAuditIndex fills in the indexed outcome and IP address (the audit log's filters and search) of audit events
-// recorded before they were indexed, in the background, in batches: events are never rewritten, so nothing else
-// would. Once every event has its outcome there is nothing left to do, and a later start finds none.
-func refreshAuditIndex(ctx context.Context, st store.Store, log logger.Logger) {
-	fr, ok := st.(store.FieldRefresher)
-	if !ok {
-		return
-	}
-	q := store.ListQuery{Filters: []store.Filter{{Field: "outcome", Value: ""}}, Limit: 500}
-	total := 0
-	for ctx.Err() == nil { // Close waits for this: it stops between batches
-		n, err := fr.RefreshFields(ctx, model.KindAudit, q)
-		if err != nil {
-			if ctx.Err() == nil {
-				log.WithError(err).Warn("audit log: indexing older events for filtering (retried at the next start)")
-			}
-			return
-		}
-		total += n
-		if n == 0 {
-			break
-		}
-	}
-	if total > 0 {
-		log.Info("audit log: older events indexed for filtering", "events", total)
-	}
 }

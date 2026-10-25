@@ -27,7 +27,7 @@ var Routes = []Route{
 	{"GET", "/scim/v2/Organizations/{id}", "Organization", "Get an organization (super admins)", false},
 	{"PUT", "/scim/v2/Organizations/{id}", "Organization", "Replace an organization (super admins)", false},
 	{"PATCH", "/scim/v2/Organizations/{id}", "Organization", "Change an organization (super admins)", false},
-	{"DELETE", "/scim/v2/Organizations/{id}", "Organization", "Delete an organization (super admins)", false},
+	{"DELETE", "/scim/v2/Organizations/{id}", "Organization", "Refused: deleting an organization needs the console (re-authentication)", false},
 	{"GET", "/scim/v2/{org}/ServiceProviderConfig", "Discovery", "What this server supports (RFC 7644 §4)", true},
 	{"GET", "/scim/v2/{org}/ResourceTypes", "Discovery", "The resource types", true},
 	{"GET", "/scim/v2/{org}/Schemas", "Discovery", "The schemas, Quisora's extensions included", true},

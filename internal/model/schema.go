@@ -16,7 +16,8 @@ const (
 // may be used to order a listing (strings compare case-insensitively); every field can be used as an equality filter.
 // Index fields are equality filters that must not read the whole kind: the key-value stores, which otherwise answer a
 // filter by reading every record of the kind (or scope), keep one index bucket per value of the field (an index write
-// per record write); the SQL backends index every field already. Mark one only where a filter on it runs on a large
+// per record write); the SQL backends keep an index on it (a partial one of the true values for a bool, where the
+// database has them). Mark one only where a filter on it runs on a large
 // kind or scope. An indexed bool field marks a small set (the records with true): a filter on false is served as the
 // scope with that set left out, so the field must be set on every record of the kind (only the records with true are
 // indexed). SortIndex fields are Sort fields that listings of a large kind order by: the key-value stores keep an
@@ -70,7 +71,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "external_id", Type: FieldString},
 		{Name: "tags", Type: FieldString, Index: true, Words: true},                 // the console's tag filter, without reading the org
 		{Name: "role", Type: FieldString, Sort: true, SortIndex: true, Index: true}, // role filters (SCIM, console)
-		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true, Index: true}, // active filters: the true ones indexed
+		{Name: "active", Type: FieldBool, Sort: true, SortIndex: true},
+		// disabled accounts: the few, so the indexed set (a filter on active is one on inactive: service.ActiveFilter)
+		{Name: "inactive", Type: FieldBool, Index: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "user_type", Type: FieldString, Sort: true},
 		{Name: "department", Type: FieldString, Sort: true},
@@ -112,7 +115,10 @@ var Schemas = map[Kind]Schema{
 		{Name: "tenant_id", Type: FieldString},
 		{Name: "auth_method", Type: FieldString, Sort: true, Index: true, SortIndex: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
-		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (cap, purge)
+		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (purge)
+		// those nobody has let sign in yet: what the registration cap counts (service.MaxSelfRegistered), on an
+		// open endpoint, so it reads at most the cap's worth, not every application ever registered
+		{Name: "unused_self_registered", Type: FieldBool, Index: true},
 	}},
 	KindProvider: {KindProvider, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},

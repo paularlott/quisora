@@ -228,7 +228,7 @@ func TestSpoolSkipsTornLines(t *testing.T) {
 	if _, err := s.store([]byte("{\"id\":\"a\"}\n{\"id\":\"b\"}\n{\"id\":")); err != nil {
 		t.Fatal(err)
 	}
-	name, body := s.oldest()
+	name, body, _, _ := s.oldest()
 	if name == "" || string(body) != "{\"id\":\"a\"}\n{\"id\":\"b\"}\n" {
 		t.Fatalf("replayed %q", body)
 	}

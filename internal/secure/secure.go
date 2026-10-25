@@ -336,43 +336,38 @@ func (s *Sealer) SealFor(binding string, plaintext []byte) string {
 // server.previous_master_keys too early).
 var ErrUnknownKey = errors.New("secure: sealed with a master key that is not configured")
 
-// OpenFor decrypts a value produced by SealFor with the same binding: with the key it names, or (a value sealed
-// before keys were named) with each key of the ring.
+// OpenFor decrypts a value produced by SealFor with the same binding, with the key it names.
 func (s *Sealer) OpenFor(binding, sealed string) ([]byte, error) {
 	if sealed == "" {
 		return nil, nil
 	}
-	if rest, ok := strings.CutPrefix(sealed, "v3:"); ok {
-		kid, raw, ok := strings.Cut(rest, ":")
-		if !ok {
-			return nil, errors.New("secure: unknown sealed format")
-		}
-		for _, k := range s.keys() {
-			if k.kid == kid {
-				return open(k.aead, raw, []byte(binding))
-			}
-		}
-		return nil, ErrUnknownKey
-	}
-	raw, ok := strings.CutPrefix(sealed, "v2:")
+	rest, ok := strings.CutPrefix(sealed, "v3:")
 	if !ok {
 		return nil, errors.New("secure: unknown sealed format")
 	}
-	return s.openAny(raw, []byte(binding))
-}
-
-// SealedKeyID is the id of the key a SealFor value names; legacy is true for a value from before values named their
-// key (any key of the ring that sealed it may be the one). Both are zero for the empty value.
-func SealedKeyID(sealed string) (kid string, legacy bool) {
-	if rest, ok := strings.CutPrefix(sealed, "v3:"); ok {
-		kid, _, _ = strings.Cut(rest, ":")
-		return kid, false
+	kid, raw, ok := strings.Cut(rest, ":")
+	if !ok {
+		return nil, errors.New("secure: unknown sealed format")
 	}
-	return "", sealed != ""
+	for _, k := range s.keys() {
+		if k.kid == kid {
+			return open(k.aead, raw, []byte(binding))
+		}
+	}
+	return nil, ErrUnknownKey
 }
 
-// Stale reports whether a value produced by SealFor is not sealed with the active key (an older key, or a format
-// that names none): Reseal brings it up to date.
+// SealedKeyID is the id of the key a SealFor value names ("" for the empty value, or one that is not SealFor's).
+func SealedKeyID(sealed string) string {
+	rest, ok := strings.CutPrefix(sealed, "v3:")
+	if !ok {
+		return ""
+	}
+	kid, _, _ := strings.Cut(rest, ":")
+	return kid
+}
+
+// Stale reports whether a value produced by SealFor is not sealed with the active key: Reseal brings it up to date.
 func (s *Sealer) Stale(sealed string) bool {
 	return sealed != "" && !strings.HasPrefix(sealed, "v3:"+s.keys()[0].kid+":")
 }

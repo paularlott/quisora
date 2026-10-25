@@ -365,6 +365,17 @@ type way struct {
 	totp              bool
 }
 
+// field is the input field a refusal of x names.
+func (x way) field() string {
+	switch {
+	case x.totp:
+		return "totp"
+	case x.provider != "":
+		return "provider"
+	}
+	return "passkey"
+}
+
 // of returns the credentials of c that x names.
 func (x way) of(c *Creds) []model.Credential {
 	var out []model.Credential
@@ -405,7 +416,8 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 }
 
 // removeWay is the one way a passkey, a connected provider or the authenticator app is removed, by an administrator
-// or by the user on the account page: who may (manageConnections), what may go (done to yourself, your last way in
+// or by the user on the account page: who may (manageConnections; on someone else's established manager or
+// administrator account, a super admin only: mayResetSignIn, as for removing a password), what may go (done to yourself, your last way in
 // stays, and so does your last second factor where one is required; someone else may take them, and send an
 // invitation), and what follows (after: ending sessions, the audit).
 //
@@ -424,6 +436,11 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		}
 		if err := s.manageConnections(ctx, a, u); err != nil {
 			return err
+		}
+		if a != nil && a.UserID != u.ID {
+			if err := s.mayResetSignIn(ctx, a, u, x.field()); err != nil {
+				return err
+			}
 		}
 		c, err := s.UserCreds(ctx, u, true)
 		if err != nil {

@@ -154,15 +154,15 @@ tasks:
       - cd web && node audit.mjs  # npm audit, high and above, with the accepted advisories it lists
 
   test-dbs:
-    desc: Start the PostgreSQL, MySQL, MariaDB and Valkey test containers
+    desc: Start the PostgreSQL, MySQL and MariaDB test containers
     cmds:
-      - scripts/test-dbs.sh up valkey
+      - scripts/test-dbs.sh up
 
   test-all:
     desc: Run every Go test against every storage backend
     deps: [test-dbs]
     cmds:
-      - eval "$(scripts/test-dbs.sh env)" && QUISORA_TEST_VALKEY_ADDR=127.0.0.1:56379 go test -race ./...
+      - eval "$(scripts/test-dbs.sh env)" && go test -race ./...
 
   test-ui:
     desc: Accessibility (axe, WCAG 2.2 AA) and keyboard tests in Chromium

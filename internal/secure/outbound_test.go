@@ -55,8 +55,33 @@ func TestBlockedAddr(t *testing.T) {
 		{"2606:4700::1111", false, false},
 	} {
 		a := netip.MustParseAddr(tc.addr)
-		if BlockedAddr(a, false) != tc.strict || BlockedAddr(a, true) != tc.permit {
-			t.Errorf("%s: blocked %v/%v, want %v/%v", tc.addr, BlockedAddr(a, false), BlockedAddr(a, true), tc.strict, tc.permit)
+		strict, permit := BlockedAddr(a, Reach{}), BlockedAddr(a, Reach{Private: true})
+		if strict != tc.strict || permit != tc.permit {
+			t.Errorf("%s: blocked %v/%v, want %v/%v", tc.addr, strict, permit, tc.strict, tc.permit)
+		}
+	}
+}
+
+// allowed_networks lets through the private networks it lists, and only those; never what is always refused.
+func TestBlockedAddrAllowedNetworks(t *testing.T) {
+	r := Reach{Networks: []netip.Prefix{netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("10.9.8.7/32"),
+		netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fd12::/16")}}
+	for addr, blocked := range map[string]bool{
+		"172.16.4.10":       false, // listed network
+		"172.31.255.1":      false,
+		"::ffff:172.20.0.1": false, // IPv4-mapped
+		"64:ff9b::ac10:40a": false, // NAT64 of 172.16.4.10
+		"fd12:1::1":         false,
+		"10.9.8.7":          false, // listed address
+		"10.9.8.8":          true,  // private, not listed
+		"192.168.1.1":       true,
+		"127.0.0.1":         true,
+		"169.254.169.254":   true, // listed, but link-local and metadata: never
+		"64:ff9b:1::ac10:1": true, // local-use NAT64 outside the listed IPv6 network
+		"8.8.8.8":           false,
+	} {
+		if got := BlockedAddr(netip.MustParseAddr(addr), r); got != blocked {
+			t.Errorf("%s: blocked %v, want %v", addr, got, blocked)
 		}
 	}
 }
@@ -64,29 +89,43 @@ func TestBlockedAddr(t *testing.T) {
 func TestOutboundClientGuard(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer srv.Close()
-	allow := false
+	var reach Reach
 	log := &warnLog{}
-	c := OutboundClient(func() bool { return allow }, nil, log)
+	c := OutboundClient(func() Reach { return reach }, nil, log)
 	_, err := c.Get(srv.URL)
 	if err == nil || !errors.Is(err, ErrDestination) {
 		t.Fatalf("loopback reached: %v", err)
 	}
-	// The error and the log say why: a private address, fixable with allow_private_networks.
+	// The error and the log say why: a private address, fixable with allowed_networks or allow_private_networks.
 	var de *DestinationError
-	if !errors.As(err, &de) || !de.Private || de.Addr.String() != "127.0.0.1" || !strings.Contains(err.Error(), "allow_private_networks") {
+	if !errors.As(err, &de) || !de.Private || de.Addr.String() != "127.0.0.1" || !strings.Contains(err.Error(), "allowed_networks") {
 		t.Fatalf("error does not explain the refusal: %v", err)
 	}
-	if log.count() != 1 || !strings.Contains(log.msgs[0], "allow_private_networks") {
+	if log.count() != 1 || !strings.Contains(log.msgs[0], "allowed_networks") || !strings.Contains(log.msgs[0], "allow_private_networks") {
 		t.Fatalf("warnings: %q", log.msgs)
 	}
 	_, _ = c.Get(srv.URL) // the same host again within a minute: no second warning
 	if log.count() != 1 {
 		t.Fatalf("warning repeated: %q", log.msgs)
 	}
-	allow = true
-	res, err := c.Get(srv.URL)
-	if err != nil || res.StatusCode != 204 {
-		t.Fatalf("allowed: %v", err)
+	for _, r := range []Reach{{Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}, {Private: true}} {
+		reach = r // read at each connection
+		res, err := c.Get(srv.URL)
+		if err != nil || res.StatusCode != 204 {
+			t.Fatalf("allowed by %+v: %v", r, err)
+		}
+		res.Body.Close()
 	}
-	res.Body.Close()
+}
+
+// Special-purpose IPv4 ranges are refused whatever allow_private_networks says.
+func TestBlockedSpecialPurposeRanges(t *testing.T) {
+	for _, s := range []string{"0.1.2.3", "192.0.0.8", "198.18.0.1", "198.19.255.254", "240.0.0.1", "255.255.255.254"} {
+		if !BlockedAddr(netip.MustParseAddr(s), Reach{Private: true}) {
+			t.Errorf("%s allowed", s)
+		}
+	}
+	if BlockedAddr(netip.MustParseAddr("198.20.0.1"), Reach{}) {
+		t.Error("a public address next to the benchmarking range blocked")
+	}
 }

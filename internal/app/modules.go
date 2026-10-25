@@ -29,7 +29,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 		// bound on how long a disabled client, a rotated secret or key keeps working on another node.
 		op.ShortCaches()
 	}
-	op.AllowPrivateNetworks = a.Cfg.Server.AllowPrivateNetworks
 	a.OIDC = op
 	a.onChange = append(a.onChange, func(rec *store.Record) {
 		switch rec.Kind {
@@ -119,11 +118,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 					if r.Failed > 0 && r.Failed != lastResult.Failed {
 						a.Log.Error("master key: secrets that no configured master key opens (sealed with a key that is "+
 							"not in server.previous_master_keys, or damaged)", "count", r.Failed)
-					}
-					if r.Legacy > 0 && r.Legacy != lastResult.Legacy {
-						a.Log.Warn("master key rotation: refresh grants from an earlier version are converted only when "+
-							"next used; removing the previous master keys ends the rest (their users sign in again)",
-							"grants", r.Legacy)
 					}
 					if r.Resealed == 0 {
 						resealEvery = 10 * every

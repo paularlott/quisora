@@ -13,7 +13,6 @@ require (
 	github.com/paularlott/gossip v0.29.0
 	github.com/paularlott/logger v0.4.0
 	github.com/shamaton/msgpack/v3 v3.2.4
-	github.com/valkey-io/valkey-go v1.0.79
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.60.0

@@ -127,8 +127,15 @@ func (m *Module) fromService(err error) *Error {
 	case errors.Is(err, service.ErrTooLarge):
 		// RFC 7644 §3.12: 413, the request is larger than the server processes; the client splits it.
 		return errf(413, "", "%s", capitalise(err.Error()))
-	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg):
+	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
+		errors.Is(err, service.ErrTenantInUse):
 		return errf(409, "", "%s", capitalise(err.Error()))
+	case errors.Is(err, service.ErrNotReplicated):
+		// Saved here, not yet confirmed by the cluster: a retry of a create would find the resource (409), so the
+		// client is told to read it back rather than to treat this as a failure of its own.
+		return errf(503, "", "The change was saved on this server but not yet confirmed by the cluster; read the resource back before retrying")
+	case errors.Is(err, service.ErrUnavailable):
+		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):
 		return badValue("%s", err.Error())
 	}
@@ -192,7 +199,12 @@ type request struct {
 	loaded bool
 }
 
-func (rq *request) fail(err error) { writeError(rq.w, rq.m.fromService(err)) }
+func (rq *request) fail(err error) {
+	if errors.Is(err, service.ErrForbidden) && rq.actor != nil {
+		rq.m.refused(rq.r, rq.actor, "not permitted")
+	}
+	writeError(rq.w, rq.m.fromService(err))
+}
 
 // unseenUsers returns the ids of the org's users the caller does not see in full.
 func (rq *request) unseenUsers() map[string]bool {
@@ -371,7 +383,7 @@ func (m *Module) resolve(r *http.Request, tok, scheme string) (*service.Actor, *
 			return nil, errf(401, "", "The token is invalid or has expired")
 		}
 		actor = service.ActorForToken(t, u, web.ClientIP(r))
-		if actor.Role.Rank() < model.RoleManager.Rank() {
+		if !actor.Role.Privileged() {
 			m.refused(r, actor, "the token's owner no longer has a role that may use SCIM")
 			return nil, errf(403, "", "The token's owner no longer has a role that may use SCIM")
 		}

@@ -206,7 +206,7 @@ func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
 	if org != nil && org.Settings.SessionIdle > 0 && (idle == 0 || org.Settings.SessionIdle < idle) {
 		idle = org.Settings.SessionIdle
 	}
-	if u != nil && u.Role.Rank() >= model.RoleManager.Rank() {
+	if u != nil && u.Role.Privileged() {
 		if cfg.PrivilegedTTL > 0 {
 			ttl = min(ttl, cfg.PrivilegedTTL)
 		}

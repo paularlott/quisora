@@ -315,7 +315,9 @@ func setPlain(base map[string]any, key, op string, info attrInfo, value any) *Er
 		}
 		return nil
 	}
-	if em, ok := existing.(map[string]any); ok && op == "add" {
+	// A complex attribute takes the sub-attributes given and keeps the others, for add and replace alike (RFC 7644
+	// §3.5.2.3: "sub-attributes that are not specified in the value parameter are left unchanged").
+	if em, ok := existing.(map[string]any); ok {
 		if vm, ok := value.(map[string]any); ok {
 			for k, v := range vm {
 				setKey(em, k, v)

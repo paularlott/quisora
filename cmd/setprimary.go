@@ -22,7 +22,7 @@ func setPrimaryCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"organization's super admins become administrators of that organization. The change is audited in both " +
 			"organizations.\n\n" +
 			"Uses the same config file / QUISORA_* environment as serve. With a shared database (postgres, mysql, " +
-			"mariadb, valkey) it works while the servers run: they follow within seconds. With a node-local store " +
+			"mariadb) it works while the servers run: they follow within seconds. With a node-local store " +
 			"(BadgerDB, SQLite) stop the server first. In a gossip cluster stop one node, run it there and start the " +
 			"node again: the others receive the change from it.",
 		Flags: append([]cli.Flag{&cli.StringFlag{Name: "super-admin", AssignTo: &superAdmin, Required: true,

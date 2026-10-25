@@ -13,8 +13,8 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Shared is a Store kept in a database that every node uses (clusters without gossip, on PostgreSQL, MySQL,
-// MariaDB or Valkey), so a sign-in started on one node can finish on any other. Single use and counters rely on the
+// Shared is a Store kept in a database that every node uses (clusters without gossip, on PostgreSQL, MySQL or
+// MariaDB), so a sign-in started on one node can finish on any other. Single use and counters rely on the
 // store's CompareAndPut: of two nodes taking the same code, exactly one wins. Records expire with their TTL and are
 // purged with the other expired records.
 type Shared struct {
@@ -93,7 +93,7 @@ func (s *Shared) Incr(ctx context.Context, ns, key string, delta int64, window t
 		e, err := s.t.Get(ctx, id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			if delta == 0 {
+			if delta <= 0 {
 				return 0, nil
 			}
 			e = &model.Ephemeral{Meta: model.Meta{ID: id}, N: delta, Expires: time.Now().Add(window)}

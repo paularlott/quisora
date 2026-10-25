@@ -22,7 +22,7 @@ import (
 )
 
 const storeNote = "Uses the same config file / QUISORA_* environment as serve. With a shared database (postgres, mysql, " +
-	"mariadb, valkey) it works while the server runs. With a node-local store (BadgerDB, SQLite) stop the server first."
+	"mariadb) it works while the server runs. With a node-local store (BadgerDB, SQLite) stop the server first."
 
 func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 	return &cli.Command{
@@ -34,8 +34,7 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"The file is encrypted (AES-256-GCM, with a key derived from a password by argon2id) unless --plain is " +
 			"given. The password (at least 12 characters) is read from --password-file, else from standard input " +
 			"when it is a pipe, else asked for on the terminal (twice); keep it apart from the backup.\n\n" +
-			"Where the backend has a point-in-time view (BadgerDB, SQLite, PostgreSQL, MySQL, MariaDB) the backup is a " +
-			"consistent snapshot of the whole store; on valkey it reads the live store page by page.\n\n" +
+			"The backup is a consistent snapshot of the whole store (a point-in-time view of the database).\n\n" +
 			"With --server it downloads the backup from a running server (any backend, the server keeps serving), " +
 			"authenticated with a super admin's API token that has the \"backup\" scope (--token or " +
 			"QUISORA_ADMIN_TOKEN; a token without that scope is refused with 403); the download is checked to be " +

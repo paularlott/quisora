@@ -27,7 +27,7 @@ func (s *Service) canAdminOrg(a *Actor, orgID string) bool {
 
 // canManageUsers: create/edit users in the org (managers only for plain users; see canManageUser).
 func (s *Service) canManageUsers(a *Actor, orgID string) bool {
-	return a.IsSuper() || (a.Role.Rank() >= model.RoleManager.Rank() && a.OrgID == orgID)
+	return a.IsSuper() || (a.Role.Privileged() && a.OrgID == orgID)
 }
 
 // canManageUser reports whether a may modify target.

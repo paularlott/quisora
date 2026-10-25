@@ -13,7 +13,7 @@ import (
 var bg = context.Background()
 
 func engines() map[string]func(testing.TB) store.Store {
-	return map[string]func(testing.TB) store.Store{"badger": badgerFactory, "valkey": valkeyFactory}
+	return map[string]func(testing.TB) store.Store{"badger": badgerFactory}
 }
 
 // Expired-but-unpurged records must be skipped by offsets, limits and totals in both directions.

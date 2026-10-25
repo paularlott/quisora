@@ -124,9 +124,9 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	switch v.Get("active") {
 	case "1":
-		q.Filters = append(q.Filters, store.Filter{Field: "active", Value: true})
+		q.Filters = append(q.Filters, service.ActiveFilter(true))
 	case "0":
-		q.Filters = append(q.Filters, store.Filter{Field: "active", Value: false})
+		q.Filters = append(q.Filters, service.ActiveFilter(false))
 	}
 	var (
 		items []*model.User
@@ -398,7 +398,7 @@ func (m *Module) inviteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// An accepted invitation replaces every way its user signs in: for a manager or administrator it takes the same
 	// re-authentication as removing their password (an API token cannot issue one).
-	if u.Role.Rank() >= model.RoleManager.Rank() && u.ID != a.UserID && !m.stepUp(w, r) {
+	if u.Role.Privileged() && u.ID != a.UserID && !m.stepUp(w, r) {
 		return
 	}
 	res, err := m.issueInvite(r, org, a, u, in.Email)

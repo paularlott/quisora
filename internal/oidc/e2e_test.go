@@ -994,25 +994,35 @@ func TestRefreshRotation(t *testing.T) {
 	}
 }
 
+// One token presented many times at once rotates the grant once: the presentations that succeed all get the same
+// next token (a confidential client retrying within refreshRetryGrace is answered again, not forked), so there is
+// never more than one live token of the family.
 func TestRefreshRotationRace(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
 	r, _ := h.login(cl, secret, nil)
 	rt := r.str("refresh_token")
-	var ok atomic.Int32
+	var mu sync.Mutex
+	next := map[string]int{}
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if h.refreshWith(cl, secret, rt).status == 200 {
-				ok.Add(1)
+			if x := h.refreshWith(cl, secret, rt); x.status == 200 {
+				mu.Lock()
+				next[x.str("refresh_token")]++
+				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	if ok.Load() != 1 {
-		t.Fatalf("%d concurrent presentations of one one-time token succeeded", ok.Load())
+	if len(next) != 1 {
+		t.Fatalf("one token rotated into %d different tokens: %v", len(next), next)
+	}
+	gid, _, _ := strings.Cut(rt, ".")
+	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Counter != 1 {
+		t.Fatalf("the grant rotated %v times (%v)", g, err)
 	}
 }
 
@@ -1238,9 +1248,14 @@ func TestSafeClientBlocksPrivateAddresses(t *testing.T) {
 	if _, err := p.fetch(context.Background(), srv.URL, 100); err == nil {
 		t.Fatal("loopback fetch allowed")
 	}
-	p.AllowPrivateNetworks = true
+	h.env.Server.Cfg.Server.AllowedNetworks = []string{"127.0.0.1"} // read at each connection
 	if _, err := p.fetch(context.Background(), srv.URL, 100); err != nil {
-		t.Fatalf("loopback with AllowPrivateNetworks: %v", err)
+		t.Fatalf("loopback in allowed_networks: %v", err)
+	}
+	h.env.Server.Cfg.Server.AllowedNetworks = nil
+	h.env.Server.Cfg.Server.AllowPrivateNetworks = true
+	if _, err := p.fetch(context.Background(), srv.URL, 100); err != nil {
+		t.Fatalf("loopback with allow_private_networks: %v", err)
 	}
 	if _, err := p.fetch(context.Background(), "http://169.254.169.254/latest/meta-data", 100); err == nil {
 		t.Fatal("metadata address reachable")
@@ -2539,8 +2554,8 @@ func TestUserinfoOneTokenMethod(t *testing.T) {
 	}
 }
 
-// The stored grant secret is only a seed: a refresh token built from it directly (a database copy without the master
-// key) is refused.
+// The stored grant key is sealed with the master key: a refresh token built from the stored value (a database copy
+// without the master key) is refused.
 func TestRefreshNotForgeableFromDatabase(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
@@ -2550,9 +2565,9 @@ func TestRefreshNotForgeableFromDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forged := gid + "." + base64.RawURLEncoding.EncodeToString(g.Secret)
+	forged := gid + "." + base64.RawURLEncoding.EncodeToString([]byte(g.Key))
 	if x := h.refreshWith(cl, secret, forged); x.status != 400 {
-		t.Errorf("forged from the stored seed: %d", x.status)
+		t.Errorf("forged from the stored key: %d", x.status)
 	}
 	if x := h.refreshWith(cl, secret, r.str("refresh_token")); x.status != 200 {
 		t.Errorf("genuine: %d %v", x.status, x.m)
@@ -2714,67 +2729,6 @@ func TestRefreshTokenAcrossMasterKeyRotation(t *testing.T) {
 	}
 }
 
-// A refresh grant from before grants had their own key (its key derived from the master key over a stored seed) is
-// converted: by the re-seal pass when there is one master key, or when its token is next used during a rotation. Its
-// token stays the same either way.
-func TestLegacyGrantKeyConversion(t *testing.T) {
-	ctx := context.Background()
-	k0, k1 := secure.RandomBytes(32), secure.RandomBytes(32)
-	h := setupKey(t, nil, k0)
-	cl, secret := h.newClient(nil)
-	legacy := func() (*model.Grant, string) {
-		g := &model.Grant{ClientID: cl.ID, UserID: h.user.ID, OrgID: h.user.OrgID, SessionID: "legacy",
-			Scopes: []string{"openid", "offline_access"}, AMR: []string{"pwd"}, AuthTime: time.Now(),
-			Secret: secure.RandomBytes(32), Expires: time.Now().Add(time.Hour)}
-		g.ID = model.NewID()
-		if err := h.env.Svc.Grants.Create(ctx, g); err != nil {
-			t.Fatal(err)
-		}
-		return g, g.ID + "." + b64.EncodeToString(h.env.Svc.Sealer.MAC("refresh", g.ID, string(g.Secret)))
-	}
-	sessionLive := func(g *model.Grant) { // the grant's session must exist for a refresh
-		t.Helper()
-		_ = h.env.Svc.Sessions.Create(ctx, &model.Session{Meta: model.Meta{ID: g.SessionID}, UserID: g.UserID,
-			OrgID: g.OrgID, AuthTime: time.Now(), Expires: time.Now().Add(time.Hour), LastSeen: time.Now()})
-	}
-
-	// one master key: the re-seal pass converts it
-	g1, t1 := legacy()
-	sessionLive(g1)
-	if r := h.refreshWith(cl, secret, t1); r.status != 200 {
-		t.Fatalf("legacy token: %d %v", r.status, r.m)
-	}
-	g2, t2 := legacy()
-	if res, err := h.env.Svc.ResealSecrets(ctx, 1000); err != nil || !res.Done() {
-		t.Fatalf("reseal: %+v %v", res, err)
-	}
-	if g, _ := h.env.Svc.Grants.Get(ctx, g2.ID); g.Key == "" || len(g.Secret) != 0 {
-		t.Fatalf("not converted: %+v", g)
-	}
-
-	// during a rotation it cannot be converted blind: it waits for its token, and holds the rotation open
-	g3, t3 := legacy()
-	ring, _ := secure.NewKeyring(k1, k0)
-	h.env.Svc.Sealer = ring
-	if res, _ := h.env.Svc.ResealSecrets(ctx, 1000); res.Legacy != 1 || res.Done() {
-		t.Fatalf("legacy grant during a rotation: %+v", res)
-	}
-	if r := h.refreshWith(cl, secret, t3); r.status != 200 {
-		t.Fatalf("legacy token during a rotation: %d %v", r.status, r.m)
-	}
-	if res, _ := h.env.Svc.ResealSecrets(ctx, 1000); !res.Done() {
-		t.Fatalf("after its token was used: %+v", res)
-	}
-	only1, _ := secure.NewSealer(k1)
-	h.env.Svc.Sealer = only1
-	for _, tok := range []string{t1, t2, t3} {
-		if r := h.refreshWith(cl, secret, tok); r.status != 200 {
-			t.Fatalf("converted token %s after the old key was removed: %d %v", tok, r.status, r.m)
-		}
-	}
-	_ = g3
-}
-
 // auditEvents returns the stored audit events of one action.
 func (h *harness) auditEvents(action string) []*model.Audit {
 	h.t.Helper()
@@ -2859,14 +2813,19 @@ func TestOAuthAuditEvents(t *testing.T) {
 	}
 }
 
-// A rotated-out refresh token presented again revokes the grant and is recorded as a failure.
+// A rotated-out refresh token presented again revokes the grant and is recorded as a failure (here one two
+// rotations old: the one just before the current is a retry within refreshRetryGrace).
 func TestRefreshReuseIsAudited(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
 	r, _ := h.login(cl, secret, url.Values{"scope": {"openid profile offline_access"}})
 	old := r.str("refresh_token")
-	if r := h.refreshWith(cl, secret, old); r.status != 200 {
-		t.Fatalf("refresh: %d", r.status)
+	r1 := h.refreshWith(cl, secret, old)
+	if r1.status != 200 {
+		t.Fatalf("refresh: %d", r1.status)
+	}
+	if r := h.refreshWith(cl, secret, r1.str("refresh_token")); r.status != 200 {
+		t.Fatalf("second refresh: %d", r.status)
 	}
 	if r := h.refreshWith(cl, secret, old); r.status != 400 {
 		t.Fatalf("reuse: %d", r.status)

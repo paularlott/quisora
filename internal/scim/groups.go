@@ -198,6 +198,16 @@ func (rq *request) loadGroup(id string) (*model.Group, error) {
 }
 
 // groupWithMembers renders a group with its current members.
+// groupOut is g as a response to this request gives it: with its members unless the request leaves them out
+// (attributes without members, or excludedAttributes=members), in which case none is read.
+func (rq *request) groupOut(g *model.Group) (map[string]any, error) {
+	attrs, excl := rq.getParams()
+	if !wantsAttr(&listParams{attrs: attrs, excluded: excl}, "members") {
+		return rq.groupResource(g, nil, false), nil
+	}
+	return rq.groupWithMembers(g)
+}
+
 func (rq *request) groupWithMembers(g *model.Group) (map[string]any, error) {
 	ids, err := rq.m.srv.Svc.GroupMembers(rq.ctx, rq.actor, g.ID)
 	if err != nil {
@@ -218,7 +228,7 @@ func (rq *request) getGroup(id string) {
 		rq.w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	res, err := rq.groupWithMembers(g)
+	res, err := rq.groupOut(g)
 	if err != nil {
 		rq.fail(err)
 		return
@@ -266,10 +276,20 @@ func (rq *request) updateGroup(id string, keepMembers bool, mutate func(cur map[
 		if e := ifMatch(rq.r, versionTag(g.Version)); e != nil {
 			return e
 		}
-		cur, err := rq.groupWithMembers(g)
+		// The working copy carries the member ids only: the diff below needs no more, and reading every member's
+		// user for a display name made each one-member PATCH of a large group cost the whole group.
+		ids, err := svc.GroupMembershipIDs(rq.ctx, rq.actor, g)
 		if err != nil {
 			return err
 		}
+		unseen := rq.unseenUsers()
+		refs := make([]memberRef, 0, len(ids))
+		for _, id := range ids {
+			if !unseen[id] {
+				refs = append(refs, memberRef{id: id})
+			}
+		}
+		cur := rq.groupResource(g, refs, true)
 		have := map[string]bool{}
 		for _, m := range asSlice(cur["members"]) {
 			have[m.(map[string]any)["value"].(string)] = true
@@ -313,7 +333,7 @@ func (rq *request) updateGroup(id string, keepMembers bool, mutate func(cur map[
 		rq.fail(err)
 		return
 	}
-	res, err := rq.groupWithMembers(result)
+	res, err := rq.groupOut(result)
 	if err != nil {
 		rq.fail(err)
 		return

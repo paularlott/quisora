@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -211,12 +212,23 @@ func (s *Service) visibleMembers(ctx context.Context, a *Actor, g *model.Group) 
 	return slices.DeleteFunc(ids, func(id string) bool { return hidden[id] }), nil
 }
 
-// memberIDs returns the ids of g's committed members that are users of its organization, in id order: the
-// materialized memberships (one indexed read) with g's pending changes applied over them, so a committed change is
-// seen whether or not it is materialized yet, and only those whose user exists (liveUsers): a membership stands on
-// its user as on its group, so a deleted user is no member, whatever the clean-up of their memberships has done.
+// memberIDs returns the ids of g's committed members that are users of its organization, in id order: committedIDs,
+// and only those whose user exists (liveUsers): a membership stands on its user as on its group, so a deleted user
+// is no member, whatever the clean-up of their memberships has done.
 func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, error) {
-	// Ids only: the key-value stores answer from the group_id index without reading a membership record.
+	ids, err := s.committedIDs(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	// Load-bearing: liveUsers is the read side of "a membership stands on its user".
+	return s.liveUsers(ctx, g.OrgID, ids)
+}
+
+// committedIDs returns the user ids of g's committed memberships, in id order, without reading a user: the
+// materialized memberships (one indexed read, ids only: the key-value stores answer from the group_id index without
+// reading a membership record) with g's pending changes applied over them, so a committed change is seen whether or
+// not it is materialized yet (load-bearing: CommittedMembers is the read side of the group commit log).
+func (s *Service) committedIDs(ctx context.Context, g *model.Group) ([]string, error) {
 	ids, _, err := s.Members.IDs(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
 	if err != nil {
 		return nil, mapStore(err)
@@ -224,35 +236,39 @@ func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, erro
 	for i, id := range ids {
 		ids[i] = strings.TrimPrefix(id, g.ID+":") // model.MemberID
 	}
-	// Load-bearing: CommittedMembers is the read side of the group commit log (a committed change is seen before it
-	// is materialized), and liveUsers that of "a membership stands on its user".
-	return s.liveUsers(ctx, g.OrgID, CommittedMembers(g, ids))
+	return CommittedMembers(g, ids), nil
 }
 
-// liveUsers returns those of ids (sorted) that are users of org: ids merged, in order, with the organization's user
-// ids read from its index a page at a time (no user record is read, and no more than a page of ids is held).
+// GroupMembershipIDs returns the user ids of g's committed memberships that a may see, without reading a user (so
+// one of a user deleted meanwhile may be among them): what a change of the group's members is worked out against,
+// at the cost of an index read whatever the size of the organization. For the members themselves: GroupMembers.
+func (s *Service) GroupMembershipIDs(ctx context.Context, a *Actor, g *model.Group) ([]string, error) {
+	ids, err := s.committedIDs(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	hidden, err := s.hiddenSuperAdmins(ctx, a, g.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(ids, func(id string) bool { return hidden[id] }), nil
+}
+
+// liveUsers returns those of ids (in their order) that are users of org, reading the users liveBatch at a time
+// (one read each on the backends that read many at once): the cost follows the group, not the organization.
 func (s *Service) liveUsers(ctx context.Context, org string, ids []string) ([]string, error) {
-	const page = 5000
+	const liveBatch = 1000
 	out := ids[:0]
-	i := 0
-	for after := ""; i < len(ids); {
-		users, _, err := s.Users.IDs(ctx, store.ListQuery{Scope: org, After: after, Limit: page})
+	for start := 0; start < len(ids); start += liveBatch {
+		users, err := s.Users.GetMany(ctx, ids[start:min(start+liveBatch, len(ids))])
 		if err != nil {
 			return nil, mapStore(err)
 		}
-		for _, uid := range users {
-			for i < len(ids) && ids[i] < uid {
-				i++ // not a user (any more)
-			}
-			if i < len(ids) && ids[i] == uid {
-				out = append(out, uid)
-				i++
+		for _, u := range users {
+			if u.OrgID == org {
+				out = append(out, u.ID)
 			}
 		}
-		if len(users) < page {
-			break
-		}
-		after = users[len(users)-1]
 	}
 	return out, nil
 }
@@ -660,14 +676,26 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 				}
 				continue
 			}
+			key := model.MemberID(p.g.ID, userID)
+			if c, ok := s.members.confirmed(key); ok && c.seq == p.g.Seq {
+				// decided by a quorum read against this very change of the group before: still so
+				if c.active {
+					out = append(out, p.g)
+				}
+				continue
+			}
 			var seq uint64
 			if p.m != nil {
 				seq = p.m.Seq
 			}
 			switch {
 			case seq == p.g.Seq && p.m != nil, seq < p.g.Seq && p.fresh, seq == 0 && p.g.Seq == 0:
-				if p.m != nil && p.m.Active() {
+				active := p.m != nil && p.m.Active()
+				if active {
 					out = append(out, p.g)
+				}
+				if p.fresh {
+					s.members.confirm(key, p.g.Seq, active)
 				}
 				continue
 			case seq < p.g.Seq: // the group has moved past this copy: read the membership again, after the group
@@ -725,6 +753,40 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		open = kept
 	}
 	return nil, fmt.Errorf("%w: the user's groups keep changing", ErrUnavailable)
+}
+
+// confirmedMembers remembers what quorum reads of memberships decided (membersAt), against the group change they were
+// decided for (Group.Seq). A group's changes are numbered, and any later change of a user's membership in it is a
+// later number, so while the group is at that change the answer stands: without it, every group change that did not
+// touch a user (a rename, another member) would cost each later token of theirs a quorum read for good. An entry is
+// used only while its group is at its number; a change makes it obsolete, nothing has to remove it.
+type confirmedMembers struct {
+	mu sync.Mutex
+	m  map[string]memberConfirmed // by membership id (model.MemberID)
+}
+
+type memberConfirmed struct {
+	seq    uint64
+	active bool
+}
+
+// confirmedMembersMax bounds the entries kept (past it they all go: later tokens read again).
+const confirmedMembersMax = 200_000
+
+func (c *confirmedMembers) confirmed(id string) (memberConfirmed, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.m[id]
+	return v, ok
+}
+
+func (c *confirmedMembers) confirm(id string, seq uint64, active bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil || len(c.m) >= confirmedMembersMax {
+		c.m = map[string]memberConfirmed{}
+	}
+	c.m[id] = memberConfirmed{seq: seq, active: active}
 }
 
 // dedupe returns ids without repeats, in their first order.

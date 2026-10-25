@@ -29,6 +29,12 @@ func (m *Module) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, service.ErrForbidden)
 		return
 	}
+	// The whole store, every sealed secret in it: from a console session, only after a recent re-authentication (as
+	// key rotation), so a hijacked session cannot take it. A "backup"-scoped API token is its own credential.
+	if web.Session(r) != nil && (m.s.Reauthed == nil || !m.s.Reauthed(r)) {
+		web.WriteReauth(w)
+		return
+	}
 	password := r.Header.Get(backupPasswordHeader)
 	plain := r.URL.Query().Get("plain")
 	switch {

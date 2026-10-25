@@ -1,7 +1,8 @@
 # Codes by email
 
 An organization can let users give their second factor as a 6-digit code emailed to them. It is for people who will
-not or cannot use an authenticator app or a passkey. It is **weaker** than either: whoever can read the user's
+not or cannot use an authenticator app or a passkey, and only for them: a user who has one keeps it as their second
+factor. It is **weaker** than either: whoever can read the user's
 mailbox has the code, and where password resets are on, the password too. So it is off by default, never for
 managers and administrators, and an organization should turn it on only where that risk is acceptable.
 
@@ -12,11 +13,11 @@ as a second factor**, under **Sign-in methods**. Through the management API:
 
 ```bash
 curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"settings":{…the organization'"'"'s settings…,"email_codes":true}}' \
+  -d '{"settings":{"email_codes":true}}' \
   "$QUISORA/api/orgs/acme"
 ```
 
-`settings` is replaced as a whole: send every field, as read from `GET /api/orgs/acme`.
+Settings left out of `settings` keep their values.
 
 The server must be able to send email (`mail.smtp_host`, see [Email](../RUNNING.md#email)). Without it the switch is
 disabled and says why, and the API refuses `email_codes: true` (`needs the server to send email`). If email is taken
@@ -28,7 +29,8 @@ A user can receive codes by email when all of these hold:
 
 - their organization allows it;
 - their primary email address is verified;
-- they are not a manager, administrator or super admin.
+- they are not a manager, administrator or super admin;
+- they have no authenticator app and no passkey.
 
 Everyone else signs in as before.
 
@@ -38,8 +40,9 @@ Everyone else signs in as before.
   after their password, they get a code by email straight away: *"We emailed a 6-digit code to a•••@example.com. It
   expires in 10 minutes."* They type it, and they are in. The code is only in the message itself, never in its
   subject, which phones and mail clients show in notifications and on the lock screen.
-- **They have an authenticator app or a passkey.** Nothing changes, except that **Try another way** at the
-  second-factor step also offers **Email a code to a•••@example.com**.
+- **They have an authenticator app or a passkey.** Nothing changes: no code by email is offered. Whoever reads their
+  mailbox and knows their password must not get past the stronger factor. A lost phone or key is what
+  [recovery codes](recovery-codes.md) are for.
 
 **Send a new code** asks for another; only the newest works.
 

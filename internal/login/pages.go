@@ -119,9 +119,8 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "email_code", "enrol"); ok && t.Provider != "" {
 			if u, err := m.s.Svc.Users.Get(ctx, t.UserID); err == nil && u.OrgID == org.ID {
 				d.Step, d.Ticket = t.Step, c.Value
-				email := m.emailOK(u, org.Settings.EmailCodes)
-				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step, email), " ")
-				if email {
+				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step), " ")
+				if t.Step == "email_code" && m.emailOK(u, org.Settings.EmailCodes) {
 					d.Email = maskEmail(u.Email)
 				}
 			}
@@ -218,12 +217,32 @@ func (m *Module) resetPage(w http.ResponseWriter, r *http.Request) {
 	m.linkPage(w, r, "reset", "Choose a new password", service.LinkReset)
 }
 
-// verifyEmail handles GET /verify-email?token=: marks the address verified and goes to the account page.
+type verifyEmailData struct{ Token string }
+
+// verifyEmailPage handles GET /verify-email?token=: a page with one button that confirms the address. Opening the
+// link uses nothing up: mail scanners and link previews open links too, and would spend it before its owner does.
+func (m *Module) verifyEmailPage(w http.ResponseWriter, r *http.Request) {
+	tok := r.URL.Query().Get("token")
+	if tok == "" || len(tok) > 128 {
+		http.Redirect(w, r, "/account?email=invalid#profile", http.StatusSeeOther)
+		return
+	}
+	m.s.Render.Render(w, http.StatusOK, "verify-email", m.anonPage(w, r, "Confirm your email address", verifyEmailData{Token: tok}))
+}
+
+// verifyEmail handles POST /verify-email (token, csrf: verifyEmailPage's form): marks the address verified and goes
+// to the account page.
 func (m *Module) verifyEmail(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	_ = r.ParseForm()
+	r.Header.Set("X-CSRF-Token", r.PostForm.Get("csrf"))
+	if !m.s.CheckAnonCSRF(r) {
+		writeErr(w, http.StatusForbidden, msgBadCSRF, "")
+		return
+	}
 	result, frag := "invalid", "profile"
 	if m.allowed(r, "link", known{any: true}) {
-		if l, u, err := m.s.Svc.RedeemLink(ctx, r.URL.Query().Get("token")); err == nil {
+		if l, u, err := m.s.Svc.RedeemLink(ctx, r.PostForm.Get("token")); err == nil {
 			// The link names the address it was mailed to: the primary one, or a linked one (verified in place).
 			// An address that has since been removed or replaced verifies nothing.
 			if l.Email == "" {

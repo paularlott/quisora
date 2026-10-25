@@ -60,7 +60,8 @@ type Server struct {
 	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" secret:"true" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
 	TrustProxy           []string `toml:"trust_proxy" flag:"trust-proxy" usage:"Proxies (CIDRs or IPs) whose X-Forwarded-For is honoured"`
 	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" cmd:"bootstrap" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
-	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach private addresses"`
+	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach every private address (a home lab)"`
+	AllowedNetworks      []string `toml:"allowed_networks" flag:"allowed-networks" usage:"Networks (CIDRs or IPs) outbound calls to admin-supplied URLs may reach although private: the internal providers and applications"`
 	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
@@ -78,12 +79,11 @@ type UI struct {
 }
 
 type Storage struct {
-	Backend  string   `toml:"backend" flag:"storage" usage:"Storage backend: badgerdb, sqlite, postgres, mysql, mariadb or valkey"`
+	Backend  string   `toml:"backend" flag:"storage" usage:"Storage backend: badgerdb, sqlite, postgres, mysql or mariadb"`
 	BadgerDB BadgerDB `toml:"badgerdb" flag:"badgerdb"`
 	Postgres SQLDSN   `toml:"postgres" flag:"postgres"`
 	MySQL    SQLDSN   `toml:"mysql" flag:"mysql"`
 	MariaDB  SQLDSN   `toml:"mariadb" flag:"mariadb"`
-	Valkey   Valkey   `toml:"valkey" flag:"valkey"`
 }
 
 type BadgerDB struct {
@@ -98,19 +98,6 @@ type SQLDSN struct {
 	MaxOpenConns int    `toml:"max_open_conns" flag:"max-open-conns" usage:"Maximum open connections (0 = default)"`
 	MaxIdleConns int    `toml:"max_idle_conns" flag:"max-idle-conns" usage:"Maximum idle connections (0 = default)"`
 	CAFile       string `toml:"ca_file" flag:"ca-file" usage:"PEM CA certificates the database server's TLS certificate is verified against (a private CA; MySQL/MariaDB: also turns TLS on)"`
-}
-
-type Valkey struct {
-	Addrs      []string `toml:"addrs" flag:"addrs" usage:"Valkey server addresses (host:port)"`
-	Username   string   `toml:"username" flag:"username" usage:"Valkey username"`
-	Password   string   `toml:"password" flag:"password" secret:"true" usage:"Valkey password"`
-	DB         int      `toml:"db" flag:"db" usage:"Valkey database number"`
-	KeyPrefix  string   `toml:"key_prefix" flag:"key-prefix" usage:"Prefix for every Valkey key"`
-	TLS        bool     `toml:"tls" flag:"tls" usage:"Connect to Valkey with TLS"`
-	CAFile     string   `toml:"ca_file" flag:"ca-file" usage:"PEM CA certificates Valkey's TLS certificate is verified against (a private CA)"`
-	ServerName string   `toml:"server_name" flag:"server-name" usage:"Name Valkey's TLS certificate is verified for (default: the address's host)"`
-	CertFile   string   `toml:"cert_file" flag:"cert-file" usage:"Client certificate (PEM) for Valkey mutual TLS"`
-	KeyFile    string   `toml:"key_file" flag:"key-file" usage:"Client private key (PEM) for Valkey mutual TLS"`
 }
 
 type Cluster struct {
@@ -154,7 +141,7 @@ type Tokens struct {
 	RefreshTTL      int    `toml:"refresh_ttl" flag:"refresh-ttl" usage:"Refresh token lifetime, seconds"`
 	CodeTTL         int    `toml:"code_ttl" flag:"code-ttl" usage:"Authorization code lifetime, seconds"`
 	KeyRotationDays int    `toml:"key_rotation_days" flag:"key-rotation-days" usage:"Rotate the signing key this often, days (0 = by hand)"`
-	APITokenMaxDays int    `toml:"api_token_max_days" flag:"api-token-max-days" usage:"Longest personal API token lifetime, days (default 0: no limit, a token may never expire)"`
+	APITokenMaxDays int    `toml:"api_token_max_days" flag:"api-token-max-days" usage:"Longest personal API token lifetime, days; a token made without a lifetime gets it (0: no limit, a token may never expire)"`
 }
 
 type Session struct {
@@ -235,7 +222,7 @@ func Default() *Config {
 		UI:      UI{SiteName: "Quisora", DefaultTheme: "system"},
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
 		Tokens: Tokens{SigningAlg: "ES256", AccessTTL: 600, IDTokenTTL: 600, RefreshTTL: 30 * 86400, CodeTTL: 60,
-			KeyRotationDays: 30, APITokenMaxDays: 0},
+			KeyRotationDays: 30, APITokenMaxDays: 365},
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
@@ -260,8 +247,8 @@ func masterKeyErrors(master string, previous []string) []error {
 		}
 	}
 	if len(previous) > 0 && master == "" {
-		errs = append(errs, errors.New("server.previous_master_keys needs server.master_key (rotating the generated "+
-			"data_dir/master.key: set its value as a previous key and a new one as server.master_key)"))
+		errs = append(errs, errors.New("server.previous_master_keys needs server.master_key (during a rotation the new "+
+			"key is server.master_key and the old one a previous key)"))
 	}
 	return errs
 }
@@ -346,8 +333,21 @@ func (c *Config) Validate() error {
 		}
 	}
 	for _, p := range c.Server.TrustProxy {
-		if _, err := ParseProxy(p); err != nil {
+		if pr, err := ParseProxy(p); err != nil {
 			errs = append(errs, err)
+		} else if pr.Bits() == 0 {
+			// Every client could then name any address in X-Forwarded-For: the per-address limits (sign-in,
+			// client authentication, bearer tokens) and the audit log's addresses would be the caller's to choose.
+			errs = append(errs, fmt.Errorf("server.trust_proxy %q trusts every address: list your proxies' "+
+				"addresses or their network", p))
+		}
+	}
+	for _, s := range c.Server.AllowedNetworks {
+		if p, err := parseNetwork("server.allowed_networks", s); err != nil {
+			errs = append(errs, err)
+		} else if p.Bits() == 0 {
+			errs = append(errs, fmt.Errorf("server.allowed_networks %q is every address: list the networks of the "+
+				"internal services (server.allow_private_networks allows every private address)", s))
 		}
 	}
 	u, err := url.Parse(c.Server.PublicURL)
@@ -460,16 +460,8 @@ func (c *Config) Validate() error {
 		if c.Storage.MariaDB.DSN == "" {
 			errs = append(errs, errors.New("storage.mariadb.dsn is required"))
 		}
-	case "valkey":
-		if v := c.Storage.Valkey; !v.TLS && (v.CAFile != "" || v.ServerName != "" || v.CertFile != "" || v.KeyFile != "") {
-			errs = append(errs, errors.New("storage.valkey: ca_file, server_name, cert_file and key_file apply to TLS "+
-				"connections only: set storage.valkey.tls = true (without it the connection is not encrypted)"))
-		}
-		if len(c.Storage.Valkey.Addrs) == 0 {
-			errs = append(errs, errors.New("storage.valkey.addrs is required"))
-		}
 	default:
-		errs = append(errs, fmt.Errorf("storage.backend %q: must be badgerdb, sqlite, postgres, mysql, mariadb or valkey",
+		errs = append(errs, fmt.Errorf("storage.backend %q: must be badgerdb, sqlite, postgres, mysql or mariadb",
 			c.Storage.Backend))
 	}
 	positive := func(name string, v int) {
@@ -487,6 +479,7 @@ func (c *Config) Validate() error {
 	}
 	positive("server.shutdown_timeout", c.Server.ShutdownTimeout)
 	positive("tokens.access_ttl", c.Tokens.AccessTTL)
+	positive("limits.ephemeral_mb", c.Limits.EphemeralMB)
 	positive("tokens.id_token_ttl", c.Tokens.IDTokenTTL)
 	positive("tokens.refresh_ttl", c.Tokens.RefreshTTL)
 	positive("tokens.code_ttl", c.Tokens.CodeTTL)
@@ -563,11 +556,6 @@ func (c *Config) Validate() error {
 				"lists every other node", c.Cluster.Size, others))
 		}
 	}
-	for _, a := range c.Storage.Valkey.Addrs {
-		if _, _, err := net.SplitHostPort(a); err != nil {
-			errs = append(errs, fmt.Errorf("storage.valkey.addrs: %q must be host:port", a))
-		}
-	}
 	return errors.Join(errs...)
 }
 
@@ -634,7 +622,7 @@ func (c *Config) LocalStorage() bool {
 }
 
 // SharedStorage reports whether the backend is a database server that several nodes can share (PostgreSQL, MySQL,
-// MariaDB, Valkey).
+// MariaDB).
 func (c *Config) SharedStorage() bool { return !c.LocalStorage() }
 
 // Replicate reports whether nodes replicate their data to each other. Gossip (cluster.bind) means every node has its
@@ -651,20 +639,36 @@ func (t Tokens) Refresh() time.Duration { return time.Duration(t.RefreshTTL) * t
 func (t Tokens) Code() time.Duration    { return time.Duration(t.CodeTTL) * time.Second }
 
 // ParseProxy reads a trust_proxy entry: an IP address or a CIDR range.
-func ParseProxy(s string) (netip.Prefix, error) {
+func ParseProxy(s string) (netip.Prefix, error) { return parseNetwork("server.trust_proxy", s) }
+
+// parseNetwork reads an IP address (a network of that one address) or a CIDR range given for setting.
+func parseNetwork(setting, s string) (netip.Prefix, error) {
 	v := strings.TrimSpace(s)
 	if !strings.Contains(v, "/") {
 		a, err := netip.ParseAddr(v)
 		if err != nil {
-			return netip.Prefix{}, fmt.Errorf("server.trust_proxy %q is not an IP address or CIDR range", s)
+			return netip.Prefix{}, fmt.Errorf("%s %q is not an IP address or CIDR range", setting, s)
 		}
-		return netip.PrefixFrom(a, a.BitLen()), nil
+		return netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()), nil
 	}
 	p, err := netip.ParsePrefix(v)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("server.trust_proxy %q is not an IP address or CIDR range", s)
+		return netip.Prefix{}, fmt.Errorf("%s %q is not an IP address or CIDR range", setting, s)
 	}
 	return p.Masked(), nil
+}
+
+// OutboundReach is what outbound calls to admin-supplied URLs may reach besides the public internet
+// (secure.OutboundClient): every private address with server.allow_private_networks, and the networks of
+// server.allowed_networks (checked by Validate).
+func (c *Config) OutboundReach() secure.Reach {
+	r := secure.Reach{Private: c.Server.AllowPrivateNetworks}
+	for _, s := range c.Server.AllowedNetworks {
+		if p, err := parseNetwork("server.allowed_networks", s); err == nil {
+			r.Networks = append(r.Networks, p)
+		}
+	}
+	return r
 }
 
 // UnknownKeys lists the keys of the configuration file that are not settings, as dotted paths, sorted: walking the

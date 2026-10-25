@@ -167,27 +167,9 @@ func (rq *request) organizations(segs []string) {
 			return cur, nil
 		})
 	case http.MethodDelete:
-		cascade := strings.EqualFold(rq.r.URL.Query().Get("cascade"), "true")
-		if rq.actor.IsSuper() {
-			// what the management API asks a super admin's re-authentication for (others cannot delete one anyway)
-			writeError(rq.w, errNeedsSession("deleting an organization"))
-			return
-		}
-		err := rq.retry(id, func() error {
-			o, err := rq.m.srv.Svc.GetOrg(rq.ctx, rq.actor, id)
-			if err != nil {
-				return err
-			}
-			if e := ifMatch(rq.r, versionTag(o.Version)); e != nil {
-				return e
-			}
-			return rq.m.srv.Svc.DeleteOrg(rq.ctx, rq.actor, id, cascade)
-		})
-		if err != nil {
-			rq.fail(err)
-			return
-		}
-		rq.w.WriteHeader(http.StatusNoContent)
+		// Deleting an organization needs a super admin's re-authentication, which only a console session can give:
+		// never over SCIM (organizations() admits super admins only).
+		writeError(rq.w, errNeedsSession("deleting an organization"))
 	default:
 		rq.allow("GET", "PUT", "PATCH", "DELETE")
 	}

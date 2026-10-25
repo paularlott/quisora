@@ -276,11 +276,6 @@ func boolish(v any) bool {
 	return false
 }
 
-func (s *Service) oidcClaims(ctx context.Context, p *model.Provider, secret, code string, st state) (Claims, error) {
-	c, _, err := s.oidcSignIn(ctx, p, secret, code, st)
-	return c, err
-}
-
 // oidcSignIn exchanges the code and returns the identity, and the provider's refresh token when it gave one.
 func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, code string, st state) (Claims, string, error) {
 	d, err := s.discoverFor(ctx, p)

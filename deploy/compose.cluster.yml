@@ -37,6 +37,11 @@ x-node: &node
   build: ..
   restart: unless-stopped
   depends_on: { postgres: { condition: service_healthy } }
+  # hardening: nothing to write but the data volume and /tmp (a restore from standard input), no capabilities
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
 
 services:
   postgres:

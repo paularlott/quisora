@@ -91,7 +91,7 @@ func TestSpoolShortWriteIsUndone(t *testing.T) {
 	if _, err := s.store(line("b")); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := s.oldest(); strings.Join(ids(body), ",") != "a,b" {
+	if _, body, _, _ := s.oldest(); strings.Join(ids(body), ",") != "a,b" {
 		t.Fatalf("replayed %q", body)
 	}
 }
@@ -113,7 +113,7 @@ func TestSpoolFailedSyncIsUndone(t *testing.T) {
 	if _, err := s.store(line("b")); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := s.oldest(); strings.Join(ids(body), ",") != "a,b" {
+	if _, body, _, _ := s.oldest(); strings.Join(ids(body), ",") != "a,b" {
 		t.Fatalf("replayed %q", body)
 	}
 }
@@ -137,7 +137,7 @@ func TestSpoolFailedNewSegmentIsRemoved(t *testing.T) {
 	if _, err := s.store(line("after")); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := s.oldest(); strings.Join(ids(body), ",") != "after" {
+	if _, body, _, _ := s.oldest(); strings.Join(ids(body), ",") != "after" {
 		t.Fatalf("replayed %q", body)
 	}
 }
@@ -162,7 +162,7 @@ func TestSpoolFailedDirectorySyncIsNotStored(t *testing.T) {
 	if _, err := s.store(line("b")); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := s.oldest(); strings.Join(ids(body), ",") != "b" {
+	if _, body, _, _ := s.oldest(); strings.Join(ids(body), ",") != "b" {
 		t.Fatalf("replayed %q", body)
 	}
 }
@@ -188,7 +188,7 @@ func TestSpoolActiveSegmentRemovedOutside(t *testing.T) {
 	if second == first {
 		t.Fatal("the removed segment was recreated")
 	}
-	if name, body := s.oldest(); name != second || strings.Join(ids(body), ",") != "b" || bytes.IndexByte(body, 0) >= 0 {
+	if name, body, _, _ := s.oldest(); name != second || strings.Join(ids(body), ",") != "b" || bytes.IndexByte(body, 0) >= 0 {
 		t.Fatalf("replayed %s %q", name, body)
 	}
 }
@@ -223,12 +223,12 @@ func TestSpoolNeverAppendsToSegmentFoundOnDisk(t *testing.T) {
 	if s2.active == old {
 		t.Fatal("appended to a segment found on disk")
 	}
-	name, body := s2.oldest()
+	name, body, _, _ := s2.oldest()
 	if name != old || strings.Join(ids(body), ",") != "before-crash" {
 		t.Fatalf("old segment replayed as %s %q", name, body)
 	}
 	s2.remove(name)
-	if name, body := s2.oldest(); name != s2.active && name == old || strings.Join(ids(body), ",") != "after-restart" {
+	if name, body, _, _ := s2.oldest(); name != s2.active && name == old || strings.Join(ids(body), ",") != "after-restart" {
 		t.Fatalf("new segment replayed as %s %q", name, body)
 	}
 }
@@ -287,7 +287,7 @@ func TestSpoolEvictionDuringDelivery(t *testing.T) {
 	if _, err := s.store(line("delivering")); err != nil {
 		t.Fatal(err)
 	}
-	name, body := s.oldest() // the deliverer holds this while posting
+	name, body, _, _ := s.oldest() // the deliverer holds this while posting
 	if name == "" || !bytes.Contains(body, []byte("delivering")) {
 		t.Fatalf("oldest %s %q", name, body)
 	}

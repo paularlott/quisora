@@ -326,29 +326,3 @@ func (s *Store) Wipe(context.Context) error {
 	s.feedID = model.NewID()
 	return nil
 }
-
-// RefreshFields recomputes the index fields of the records q selects from their data (store.FieldRefresher).
-func (s *Store) RefreshFields(ctx context.Context, kind model.Kind, q store.ListQuery) (int, error) {
-	res, err := s.List(ctx, kind, q)
-	if err != nil {
-		return 0, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, r := range res.Records {
-		e := s.records[key{kind, r.ID}]
-		if e == nil || e.rec.Version != r.Version {
-			continue
-		}
-		fields, err := store.IndexFields(e.rec)
-		if err != nil {
-			return n, err
-		}
-		rec := clone(e.rec)
-		rec.Fields = fields
-		e.rec = rec
-		n++
-	}
-	return n, nil
-}

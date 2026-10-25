@@ -17,7 +17,7 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write | Few super admins; reviewed access |
 | Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
 | Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused | `cluster.key` kept like the master key; the gossip port reachable by cluster members only |
-| Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private, loopback or metadata addresses unless `allow_private_networks` | — |
+| Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private or loopback addresses but the networks in `allowed_networks` (or all of them with `allow_private_networks`), and never metadata, link-local or special-purpose addresses | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
 
 Accepted: usernames, email addresses and external ids are unique within an organization, so a manager or
@@ -38,12 +38,14 @@ Before production:
 3. **Database**: verified TLS (no start-up warning about it); encryption at rest (RUNNING.md,
    [Encryption at rest](RUNNING.md#encryption-at-rest)).
 4. **Cluster**: `cluster.key` from a secret store; the gossip port (7946) reachable by the other nodes only.
-5. **Audit**: VictoriaLogs (its spool is always on, in each node's data directory: give it room), retention covering your audit period, and nobody able to delete
+5. **Audit**: VictoriaLogs, which every production deployment needs (the database trail is for development and
+   testing; each start without VictoriaLogs logs a warning). Its spool is always on, in each node's data directory:
+   give it room. Retention covering your audit period, and nobody able to delete
    from it; the structured log shipped too, with an alert on `audit.undelivered` (RUNNING.md, [Audit log](RUNNING.md#audit-log)).
 6. **Monitoring**: `metrics.token` set and the [suggested alerts](RUNNING.md#metrics) in place.
 7. **Backups**: on a schedule, encrypted (the default), the password kept apart from them; a restore tested regularly.
 8. **People**: as few super admins as possible; every administrator with a passkey or authenticator app; API tokens
-   with short lifetimes (set `tokens.api_token_max_days`: there is no limit by default); access reviewed
+   with short lifetimes (`tokens.api_token_max_days`: 365 by default; lower it to what your scripts need); access reviewed
    periodically from the user lists.
 9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
    the mailboxes are at least as well protected as the passwords.

@@ -4,7 +4,6 @@
 # The servers run with relaxed durability (no fsync per commit) so tests and benchmarks are not disk bound.
 #
 #   scripts/test-dbs.sh up        start postgres, mysql and mariadb (idempotent)
-#   scripts/test-dbs.sh up valkey also start valkey
 #   scripts/test-dbs.sh down      stop and remove every container
 #   scripts/test-dbs.sh env       print export lines (use: eval "$(scripts/test-dbs.sh env)")
 set -euo pipefail
@@ -13,13 +12,11 @@ PASS=quisora-test-pass
 PG_PORT=55432
 MYSQL_PORT=53306
 MARIADB_PORT=53307
-VALKEY_PORT=56379
 
 dsns() {
 	echo "export QUISORA_TEST_POSTGRES_DSN='postgres://postgres:${PASS}@127.0.0.1:${PG_PORT}/postgres?sslmode=disable'"
 	echo "export QUISORA_TEST_MYSQL_DSN='root:${PASS}@tcp(127.0.0.1:${MYSQL_PORT})/mysql'"
 	echo "export QUISORA_TEST_MARIADB_DSN='root:${PASS}@tcp(127.0.0.1:${MARIADB_PORT})/mysql'"
-	echo "export QUISORA_TEST_VALKEY_ADDR='127.0.0.1:${VALKEY_PORT}'"
 }
 
 # run NAME PORT:CONTAINER_PORT IMAGE [docker flags...] [-- command args...]; (re)starts the container if it is not
@@ -59,22 +56,19 @@ up)
 		-c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
 	run quisora-test-mysql "${MYSQL_PORT}:3306" paularlott/knot-mysql:9.7 -e MYSQL_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2
 	run quisora-test-mariadb "${MARIADB_PORT}:3306" paularlott/knot-mariadb:11.8 -e MARIADB_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2
-	if [ "${2:-}" = "valkey" ]; then
-		run quisora-test-valkey "${VALKEY_PORT}:6379" paularlott/knot-valkey:9.1 -- valkey-server --bind 0.0.0.0 --protected-mode no
-	fi
 	wait_for quisora-test-postgres "pg_isready -U postgres -h 127.0.0.1"
 	wait_for quisora-test-mysql "mysqladmin ping -h 127.0.0.1 -uroot -p${PASS}"
 	wait_for quisora-test-mariadb "mariadb-admin ping -h 127.0.0.1 -uroot -p${PASS} || mysqladmin ping -h 127.0.0.1 -uroot -p${PASS}"
 	dsns
 	;;
 down)
-	docker rm -f quisora-test-postgres quisora-test-mysql quisora-test-mariadb quisora-test-valkey >/dev/null 2>&1 || true
+	docker rm -f quisora-test-postgres quisora-test-mysql quisora-test-mariadb >/dev/null 2>&1 || true
 	;;
 env)
 	dsns
 	;;
 *)
-	echo "usage: $0 up [valkey] | down | env" >&2
+	echo "usage: $0 up | down | env" >&2
 	exit 2
 	;;
 esac

@@ -275,7 +275,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	}
 	now := time.Now().UTC()
 	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
-		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(), Nonce: cd.Nonce,
+		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
 		g.DPoPJKT = jkt // a public client's refresh tokens need the same key from now on (RFC 9449 §5)
@@ -391,17 +391,19 @@ func (p *Provider) refreshToken(g *model.Grant, rotate bool) (string, error) {
 
 var errNoGrantKey = errors.New("oidc: the grant has no refresh token key")
 
-// grantKey is the grant's refresh token key (see refreshToken). A grant from before grants had their own key is
-// converted (ConvertGrantKey) before it issues a token.
+// refreshRetryGrace is how long after a rotation the token before it still gets the new one again (refresh).
+const refreshRetryGrace = 30 * time.Second
+
+// grantKey is the grant's refresh token key (see refreshToken).
 func (p *Provider) grantKey(g *model.Grant) ([]byte, error) {
-	keys, legacy, err := p.svc.GrantRefreshKeys(g)
+	key, err := p.svc.GrantRefreshKey(g)
 	switch {
 	case err != nil:
 		return nil, err
-	case legacy || len(keys) == 0:
+	case key == nil:
 		return nil, errNoGrantKey
 	}
-	return keys[0], nil
+	return key, nil
 }
 
 func (p *Provider) counterToken(g *model.Grant) (string, error) {
@@ -450,27 +452,16 @@ func parseRefresh(tok string) (parsedRefresh, bool) {
 	return pr, true
 }
 
-// authentic verifies the token's secret or MAC against the grant (nothing about counters yet). For a grant from
-// before grants had their own key, legacy is the derived key that matched: the caller converts the grant to it.
-func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) (ok bool, legacy []byte) {
-	keys, isLegacy, err := p.svc.GrantRefreshKeys(g)
+// authentic verifies the token's secret or MAC against the grant (nothing about counters yet).
+func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) bool {
+	key, err := p.grantKey(g)
 	if err != nil {
-		return false, nil
+		return false
 	}
-	for _, key := range keys {
-		if pr.counted {
-			ok = hmac.Equal(secure.MAC(key, g.ID, strconv.FormatUint(pr.counter, 10)), pr.mac)
-		} else {
-			ok = subtle.ConstantTimeCompare(pr.secret, key) == 1
-		}
-		if ok {
-			if isLegacy {
-				return true, key
-			}
-			return true, nil
-		}
+	if pr.counted {
+		return hmac.Equal(secure.MAC(key, g.ID, strconv.FormatUint(pr.counter, 10)), pr.mac)
 	}
-	return false, nil
+	return subtle.ConstantTimeCompare(pr.secret, key) == 1
 }
 
 func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
@@ -486,8 +477,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		}
 		return nil, serverError(unavailable(err)) // not known to be revoked: the client keeps the token and retries
 	}
-	ok, legacy := p.authentic(pr, g)
-	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !ok {
+	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !p.authentic(pr, g) {
 		return nil, invalid
 	}
 	u, live, err := p.grantLive(ctx, g)
@@ -504,17 +494,6 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	if g.DPoPJKT != "" && g.DPoPJKT != jkt { // checked before any counter moves: a stolen token alone does nothing
 		return nil, oerr("invalid_grant", "the refresh token is bound to a DPoP key: send a proof made with it")
-	}
-	if legacy != nil {
-		// A grant from before grants had their own key: the key its tokens are made from becomes its own (the
-		// tokens stay the same), so they no longer depend on the master key that derived it. Saved with the
-		// rotation's counter below, or here.
-		p.svc.ConvertGrantKey(g, legacy)
-		if !(c.RotateRefresh || c.Public()) {
-			if err := p.svc.Grants.Update(ctx, g); err != nil && !errors.Is(err, store.ErrStale) {
-				return nil, serverError(err)
-			}
-		}
 	}
 	// Authentic token for this client. A static token only works while the grant has never rotated.
 	if !pr.counted && g.Counter != 0 {
@@ -568,6 +547,16 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	var newRefresh string
 	switch {
+	case (c.RotateRefresh || c.Public()) && pr.counted && pr.counter+1 == g.Counter && time.Since(g.Updated) < refreshRetryGrace &&
+		(!c.Public() || g.DPoPJKT != ""):
+		// The token just before the current one, moments after it was rotated, from a caller that also proved who it
+		// is (a confidential client's credentials, or the DPoP key the grant is bound to: a copied token alone is not
+		// enough): the client did not get the answer (a lost response, or a rotation the cluster confirmed late) and
+		// tries again. It gets the same answer — the current token, made from the grant's key and counter — and
+		// nothing rotates. A public client without DPoP has nothing but the token, so for it any old token is reuse.
+		if newRefresh, err = p.counterToken(g); err != nil {
+			return nil, serverError(err)
+		}
 	case c.RotateRefresh || c.Public():
 		if pr.counted && pr.counter != g.Counter {
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family

@@ -107,11 +107,11 @@ func (m *Module) checkEmailCode(ctx context.Context, ticketID, code string) (boo
 	return true, nil
 }
 
-// emailStep loads the sign-in a request continues: its ticket (a second-factor step), user and organization (step:
-// the ticket still bound to the account, within its rate limit), with email codes allowed for them. It writes the
-// error answer itself.
+// emailStep loads the sign-in a request continues: its ticket (an email_code step: only an account with no second
+// factor of its own gets one), user and organization (step: the ticket still bound to the account, within its rate
+// limit), with email codes allowed for them. It writes the error answer itself.
 func (m *Module) emailStep(w http.ResponseWriter, r *http.Request, ticketID string) (*ticket, *model.User, *model.Org, bool) {
-	t, u, org, ok := m.step(w, r, ticketID, "email_code", "totp", "passkey")
+	t, u, org, ok := m.step(w, r, ticketID, "email_code")
 	if !ok {
 		return nil, nil, nil, false
 	}
@@ -175,11 +175,14 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	if m.locked(ctx, key) {
+	n, open := m.charge(ctx, key)
+	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
 		return
 	}
+	wrong := false
+	defer m.settle(ctx, key, &wrong)
 	if !m.attempt(ctx, in.Ticket) {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
@@ -190,7 +193,8 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !good {
-		m.failed(w, r, key, org, u, u.Username, "email_code")
+		wrong = true
+		m.failed(w, r, n, org, u, u.Username, "email_code")
 		return
 	}
 	if !m.useTicket(ctx, in.Ticket) {

@@ -27,7 +27,7 @@ func signOutCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"lever (an organization's page, and the system page for the whole server); this command is for when the " +
 			"console cannot be used. It is audited, with --reason.\n\n" +
 			"Uses the same config file / QUISORA_* environment as serve, and needs the master key. With a shared database " +
-			"(postgres, mysql, mariadb, valkey) it works while the servers run: they follow within seconds. With a " +
+			"(postgres, mysql, mariadb) it works while the servers run: they follow within seconds. With a " +
 			"node-local store (BadgerDB, SQLite) stop the server first. In a gossip cluster stop one node, run it there and " +
 			"start the node again: the others receive the change from it.",
 		Flags: append([]cli.Flag{

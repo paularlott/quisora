@@ -40,12 +40,6 @@ func TestTransportWarnings(t *testing.T) {
 		{"mysql local", func(c *config.Config) {
 			c.Storage.Backend, c.Storage.MySQL.DSN = "mysql", "u:p@tcp(127.0.0.1:3306)/q"
 		}, ""},
-		{"valkey plain", func(c *config.Config) {
-			c.Storage.Backend, c.Storage.Valkey.Addrs = "valkey", []string{"cache.example.com:6379"}
-		}, "not encrypted"},
-		{"valkey tls", func(c *config.Config) {
-			c.Storage.Backend, c.Storage.Valkey.Addrs, c.Storage.Valkey.TLS = "valkey", []string{"cache.example.com:6379"}, true
-		}, ""},
 		{"smtp password without tls", func(c *config.Config) {
 			c.Mail.SMTPHost, c.Mail.TLS, c.Mail.Password = "smtp.example.com", "none", "pw"
 		}, "SMTP password"},

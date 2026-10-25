@@ -11,7 +11,7 @@ import (
 // A crafted header cannot make a verify or restore derive a key at a cost far above what a real backup uses.
 func TestPasswordKDFBounded(t *testing.T) {
 	header := func(tm, mem uint32, p uint8) []byte {
-		b := append([]byte(encMagic2), make([]byte, saltLen)...) // magic, KDF parameters, then the nonce prefix
+		b := append([]byte(encMagic), make([]byte, saltLen)...) // magic, KDF parameters, then the nonce prefix
 		b = binary.BigEndian.AppendUint32(b, tm)
 		b = binary.BigEndian.AppendUint32(b, mem)
 		return append(append(b, p), make([]byte, prefixLen)...)

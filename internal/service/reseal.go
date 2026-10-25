@@ -20,22 +20,17 @@ type ResealResult struct {
 	Resealed int // values re-sealed with the active key
 	Pending  int // stale values left for the next pass (the write limit was reached, or a concurrent change)
 	Failed   int // values no key of the ring opens: sealed with a master key that is not configured, or damaged
-	// Legacy counts refresh grants from before grants had their own key, whose key is derived from the master key
-	// that was active when they were made. Without previous keys that is the active one, and they are converted
-	// (counted in Resealed); during a rotation it cannot be told which key it was, so each is converted the next
-	// time its token is used. Removing the previous keys ends the ones left.
-	Legacy int
 }
 
 // Done reports whether nothing the server holds needs anything but the active key.
-func (r ResealResult) Done() bool { return r.Pending == 0 && r.Failed == 0 && r.Legacy == 0 }
+func (r ResealResult) Done() bool { return r.Pending == 0 && r.Failed == 0 }
 
 // ResealSecrets walks every sealed value and re-seals at most limit of them with the active master key.
 func (s *Service) ResealSecrets(ctx context.Context, limit int) (ResealResult, error) {
 	return s.resealSecrets(ctx, limit, false)
 }
 
-// resealSecrets is ResealSecrets; dry only counts (Pending: what a pass would re-seal; Failed, Legacy) and writes
+// resealSecrets is ResealSecrets; dry only counts (Pending: what a pass would re-seal; Failed) and writes
 // nothing.
 func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (ResealResult, error) {
 	var r ResealResult
@@ -102,28 +97,7 @@ func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (Resea
 		if g.Revoked || now.After(g.Expires) {
 			return nil // never refreshed again
 		}
-		save := func() error { return s.Grants.Update(ctx, g) }
-		if g.Key != "" || len(g.Secret) == 0 {
-			return reseal(GrantKeyBinding(g.ID), &g.Key, save)
-		}
-		if s.Sealer.Previous() {
-			r.Legacy++
-			return nil
-		}
-		if dry || r.Resealed >= limit {
-			r.Pending++
-			return nil
-		}
-		s.ConvertGrantKey(g, s.Sealer.MAC("refresh", g.ID, string(g.Secret)))
-		if err := save(); err != nil {
-			if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) {
-				r.Pending++
-				return nil
-			}
-			return mapStore(err)
-		}
-		r.Resealed++
-		return nil
+		return reseal(GrantKeyBinding(g.ID), &g.Key, func() error { return s.Grants.Update(ctx, g) })
 	})
 	return r, err
 }

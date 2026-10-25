@@ -35,8 +35,10 @@ func linkID(token string) string {
 	return base64.RawURLEncoding.EncodeToString(secure.HashSecret(token))
 }
 
-// IssueLink creates a single-use link token for u. An account has at most one invitation and one reset link: issuing
-// one replaces the record of the earlier one, whose token then finds nothing.
+// IssueLink creates a single-use link token for u. An account has at most one invitation: issuing one replaces the
+// record of the earlier one, whose token then finds nothing. Reset links each stand alone, as verification links
+// do: anyone can ask for one for any address, so a request must not end the link an earlier mail carries; the first
+// one used changes the password, which ends the others (they are bound to the security generation: PeekLink).
 func (s *Service) IssueLink(ctx context.Context, u *model.User, purpose, email string, ttl time.Duration) (string, *model.LinkToken, error) {
 	return s.issueLink(ctx, u, purpose, email, ttl, "", nil)
 }
@@ -56,10 +58,13 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	token := secure.RandomToken(32)
 	l := &model.LinkToken{UserID: u.ID, OrgID: u.OrgID, Purpose: purpose, Email: email, Expires: time.Now().Add(ttl),
 		UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen, TokenHash: linkID(token)}
+	if purpose == LinkInvite || purpose == LinkReset {
+		l.For = u.Email
+	}
 	for _, e := range edit {
 		e(l)
 	}
-	if purpose != LinkInvite && purpose != LinkReset {
+	if purpose != LinkInvite {
 		l.ID = l.TokenHash
 		if err := s.Links.Create(Durable(ctx), l); err != nil {
 			return "", nil, mapStore(err)
@@ -114,6 +119,12 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	// proves an address, and checks that the address is still on the account; a change of role or address is judged
 	// below and by the caller, not here.
 	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && l.Gen != u.SecurityGen {
+		return nil, nil, ErrLink
+	}
+	// It is also bound to the address it was issued for: an invitation mailed to a mistyped address, which an
+	// administrator then corrected, must not set the credentials of the account whose address it no longer is. A
+	// break-glass invitation is handed to whoever runs the command, not to an address.
+	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && !l.BreakGlass && !strings.EqualFold(l.For, u.Email) {
 		return nil, nil, ErrLink
 	}
 	if l.Purpose == LinkInvite && l.IssuedBy != "" && !s.issuerMayInvite(ctx, l.IssuedBy, u) {

@@ -3,7 +3,6 @@
 .task
 bin
 data
-uidemo
 conformance/.run
 web/node_modules
 web/dist
@@ -13,4 +12,5 @@ web/test-results
 test-results
 .env
 .env.*
+.claude
 quisora.toml

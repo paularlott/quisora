@@ -23,8 +23,8 @@ Quisora keeps only hashes of the codes, and a code used on one node is refused o
 ## Using one
 
 At the second-factor step of a sign-in, **Try another way** lists what the account has instead of the authenticator
-code: its passkey, a [code by email](email-codes.md) where the organization allows it, and **Use a recovery code**
-while some are left. The code can be typed loosely: lower case, without the dash, `O` for `0` all work.
+code: its passkey, and **Use a recovery code** while some are left (an account with an authenticator app or a passkey
+is not offered a [code by email](email-codes.md)). The code can be typed loosely: lower case, without the dash, `O` for `0` all work.
 
 A recovery code counts as a second factor: the session's `amr` is `pwd otp mfa`. Wrong codes count towards the
 account's lock-out, as wrong authenticator codes do.

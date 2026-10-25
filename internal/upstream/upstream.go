@@ -112,12 +112,12 @@ type Service struct {
 }
 
 // New returns a service. publicURL is the server's own origin (each provider's redirect URI is
-// publicURL + "/login/callback/<provider id>").
-func New(svc *service.Service, eph ephemeral.Store, publicURL string) *Service {
+// publicURL + "/login/callback/<provider id>"). client makes every request to a provider: provider addresses are
+// entered by organization administrators, so it is the guarded outbound client (secure.OutboundClient), which the
+// caller must give: there is no unguarded default to fall back to.
+func New(svc *service.Service, eph ephemeral.Store, publicURL string, client *http.Client) *Service {
 	return &Service{
-		Svc: svc, Eph: eph, PublicURL: strings.TrimSuffix(publicURL, "/"),
-		HTTP: &http.Client{Timeout: 10 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		Svc: svc, Eph: eph, PublicURL: strings.TrimSuffix(publicURL, "/"), HTTP: client,
 		GitHubAuthURL: "https://github.com/login/oauth/authorize", GitHubTokenURL: "https://github.com/login/oauth/access_token",
 		GitHubAPIURL: "https://api.github.com", MicrosoftAuthority: model.MicrosoftAuthority, Now: time.Now,
 		disc: map[string]*discovery{}, discCalls: map[string]*discoveryCall{}, cache: map[string]*keyCache{},
@@ -149,13 +149,9 @@ func s256(v string) string {
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-// Begin starts a sign-in with p for org and returns the provider URL to send the browser to plus the state value,
-// which the caller must also set as a cookie and present to Finish.
-func (s *Service) Begin(ctx context.Context, org *model.Org, p *model.Provider, next string) (string, string, error) {
-	return s.BeginTenant(ctx, org, p, next, "")
-}
-
-// BeginTenant is Begin for a sign-in made on behalf of a tenant (name); it is carried through the state to Finish.
+// BeginTenant starts a sign-in with p for org (on behalf of a tenant, by name, or ""; carried through the state to
+// Finish) and returns the provider URL to send the browser to plus the state value, which the caller must also set
+// as a cookie and present to Finish.
 func (s *Service) BeginTenant(ctx context.Context, org *model.Org, p *model.Provider, next, tenant string) (string, string, error) {
 	return s.begin(ctx, org, p, state{Next: next, Tenant: tenant})
 }
@@ -287,15 +283,9 @@ func (s *Service) Finish(ctx context.Context, providerID, stateID, browserState,
 	return &Result{User: u, Org: org, Provider: p, Next: st.Next, Tenant: st.Tenant, Provisioned: provisioned, Claims: claims}, nil
 }
 
-// Cancel consumes the state of a sign-in the provider reported as denied or failed (error= on the callback) and
-// returns the org and next path it was started for, for redirecting back. ok is false for an unknown state or one
-// that does not match the browser's cookie.
-func (s *Service) Cancel(ctx context.Context, providerID, stateID, browserState string) (org *model.Org, next string, ok bool) {
-	org, next, _, ok = s.CancelTenant(ctx, providerID, stateID, browserState)
-	return
-}
-
-// CancelTenant is Cancel that also returns the tenant name the sign-in was started for.
+// CancelTenant consumes the state of a sign-in the provider reported as denied or failed (error= on the callback)
+// and returns the org, next path and tenant it was started for, for redirecting back. ok is false for an unknown
+// state or one that does not match the browser's cookie.
 func (s *Service) CancelTenant(ctx context.Context, providerID, stateID, browserState string) (org *model.Org, next, tenant string, ok bool) {
 	b, err := s.Eph.Take(ctx, Namespace, stateID)
 	if err != nil {
@@ -442,7 +432,7 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	if !u.Enabled(time.Now()) {
 		return nil, ErrDisabled
 	}
-	if u.Role.Rank() >= model.RoleManager.Rank() {
+	if u.Role.Privileged() {
 		// Managers and administrators are never linked by email: a provider that an organization administrator
 		// set up could otherwise claim any of their addresses and become them. They connect providers themselves,
 		// signed in (account page).

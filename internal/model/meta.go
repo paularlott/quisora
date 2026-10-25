@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/paularlott/gossip/hlc"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Kind names a type of stored record.
@@ -128,8 +129,10 @@ func ClientIDFromUUID(u uuid.UUID) string {
 	return ClientIDPrefix + string(out[:])
 }
 
-// Lower is used for case-insensitive unique keys.
-func Lower(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+// Lower is the form of a value in a unique key: case-insensitive, and compatibility forms folded (NFKC), so that a
+// full-width "ａｄｍｉｎ" or a ligature claims the same key as "admin" instead of passing for another name. The value
+// itself is stored as given.
+func Lower(s string) string { return strings.ToLower(norm.NFKC.String(strings.TrimSpace(s))) }
 
 // MFA reports whether a sign-in's amr shows two factors: "mfa", a password with a one-time code, or a passkey that
 // verified its user ("hwk"/"swk" with "user"; a passkey without user verification is one factor).

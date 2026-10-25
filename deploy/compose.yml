@@ -28,6 +28,11 @@ services:
     image: quisora
     build: ..
     restart: unless-stopped
+    # hardening: nothing to write but the data volume and /tmp (a restore from standard input), no capabilities
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     environment:
       QUISORA_PUBLIC_URL: ${QUISORA_PUBLIC_URL:-https://localhost:8443}
       QUISORA_MASTER_KEY: ${QUISORA_MASTER_KEY:?set QUISORA_MASTER_KEY (quisora genkey)}

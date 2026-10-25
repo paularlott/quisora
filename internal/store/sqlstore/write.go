@@ -8,7 +8,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -326,45 +325,4 @@ func (s *Store) Wipe(ctx context.Context) error {
 	}
 	s.feedID.Store(feed)
 	return nil
-}
-
-// RefreshFields recomputes the field columns of the records q selects from their data (store.FieldRefresher): a
-// column added by reconcile is empty on rows written before. Only the columns change; a row rewritten meanwhile (its
-// version moved) is left alone.
-func (s *Store) RefreshFields(ctx context.Context, kind model.Kind, q store.ListQuery) (int, error) {
-	res, err := s.List(ctx, kind, q)
-	if err != nil || len(res.Records) == 0 {
-		return 0, err
-	}
-	t := s.tables[kind]
-	sets := make([]string, len(t.fields))
-	for i, f := range t.fields {
-		sets[i] = s.d.quote(f.Name) + " = ?"
-	}
-	stmt := s.d.bind("UPDATE " + t.name + " SET " + strings.Join(sets, ", ") + " WHERE id = ? AND version = ?")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, r := range res.Records {
-		fields, err := store.IndexFields(r)
-		if err != nil {
-			return n, err
-		}
-		args := make([]any, 0, len(t.fields)+2)
-		for _, f := range t.fields {
-			v, err := fieldArg(f, fields[f.Name])
-			if err != nil {
-				return n, err
-			}
-			args = append(args, v)
-		}
-		res, err := s.wdb.ExecContext(ctx, stmt, append(args, r.ID, int64(r.Version))...)
-		if err != nil {
-			return n, err
-		}
-		if c, _ := res.RowsAffected(); c > 0 {
-			n++
-		}
-	}
-	return n, nil
 }

@@ -7,8 +7,8 @@ failures. The code that implements it is `internal/cluster` (node states, sync, 
 rule `KeepsUnique`) and the storage backends. The shared-database mode (no gossip) is covered at the end.
 
 **Pre-release data format.** Quisora has not been released: there is no migration from, and no compatibility with,
-data written by earlier builds. A store written by an earlier build is refused when it is opened (BadgerDB and Valkey
-carry a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 1 (as this build writes them),
+data written by earlier builds. A store written by an earlier build is refused when it is opened (BadgerDB
+carries a format marker, SQL tables must have the `epoch` and `created_v` columns), backups must be format version 1 (as this build writes them),
 and a `cluster-state.json` must name its store (`self`). **Wipe and start clean** (restore from a backup made by this
 build if needed).
 
@@ -29,8 +29,10 @@ build if needed).
    the one created first keeps it; the other is kept, without the value, flagged and audited.
 4. **A node that cannot know its data is current does not act on it.** A node that is copying the cluster's data,
    catching up after a start, cut off from the majority, out of date or misconfigured serves nothing but its health
-   probes (`/readyz` answers 503), makes no replicated write, takes no part in quorum writes, owns no rate-limit
-   counter and seeds no new node. The token, userinfo and introspection endpoints alone keep answering, for a bounded
+   probes (`/readyz` answers 503), makes no replicated write, owns no rate-limit counter and seeds no new node. Only
+   a node cut off from the majority still votes in quorum writes (its data is no staler than when it was cut off, and
+   a vote cannot make a write without the majority); a node that is copying, catching up, out of date or
+   misconfigured does not. The token, userinfo and introspection endpoints alone keep answering, for a bounded
    grace, on a node that was serving and got cut off.
 5. **Every automatic recovery is safe by construction; every operator override is explicit**, one-shot, logged and
    audited (`quisora force-start`). Nothing is ever wiped or emptied automatically.
@@ -128,6 +130,7 @@ prepare has no effect anywhere and there is no compensation step to race with.
 | commit | `UserMsg+7`, request/response | `commitReq{Op, Rec}` | `commitResp{St}` |
 | abort | `UserMsg+8`, one way | `abortReq{Op, Version}` | — |
 | quorum read | `UserMsg+9`, stream | `readReq{Kind, IDs}` (at most 1,000 ids) | a stream of length-prefixed records |
+| small quorum read | `UserMsg+13`, request/response | `readReq{Kind, IDs}` (at most 16 ids) | `readFewResp{Recs}` |
 
 `Op` is the write's identity (a retry keeps it, so it supersedes its own earlier intent; an abort names the stamp it
 aborts, so a late abort of one attempt never releases the next attempt's intent); `Rec` is the encoded,
@@ -165,11 +168,13 @@ caller read).
    Intents of a write that does not commit are released (abort); grants that arrive after the decision are released
    too. Up to here the write runs within its caller's context: a deadline, or a client gone, before a quorum granted
    ends it with `store.ErrUnconfirmed` and nothing committed (the peers' exchanges, dials included, end with it).
-4. **Commit** to every voter that granted, the writer first. From here the write is seen through whatever its caller
-   does, within the transport's timeouts, so it never stops half committed. Each applies the record **only while it still holds the
-   intent** — "applied this exact version over the base" — then releases it. **The write succeeds once a quorum (the
-   writer included) has applied it.** The record is then broadcast to every node; anti-entropy heals anything
-   missed.
+4. **Commit** to every voter that granted, the writer at the same time as its peers (the intents already make the
+   write exclusive, so it waits for one round of syncs, not two). From here the write is seen through whatever its
+   caller does, within the transport's timeouts, so it never stops half committed; a commit that got no answer is
+   sent once more (committing is idempotent). Each applies the record **only while it still holds the intent** —
+   "applied this exact version over the base" — then releases it. **The write succeeds once a quorum (the writer
+   included) has applied it.** The record is then sent to the nodes that were not part of the commit; anti-entropy
+   heals anything missed.
 
 ### What success and failure mean
 
@@ -201,9 +206,11 @@ client assertion or DPoP proof (replay records), an administrative change — an
 to avoid the window altogether.
 
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one fails its
-reply and is not counted, rather than answering as if it held none. The reply is a gossip stream (any size, written
-as each record is read, never held whole in memory or bound by the 4 MB packet limit); a read of more ids is sent
-1,000 ids per request, each batch confirmed by its own quorum. A read ends with its caller's deadline, a dial
+reply and is not counted, rather than answering as if it held none. A read of at most 16 ids (the user at a sign-in
+step, a membership and its group) is one request and one reply over a pooled connection (`readFew`, `UserMsg+13`).
+A larger one is a gossip stream (any size, written as each record is read: the voter never holds it whole, and it
+is not bound by the 4 MB packet limit; the reader collects each voter's records); it is sent 1,000 ids per request,
+each batch confirmed by its own quorum. A read ends with its caller's deadline, a dial
 or a reply still in progress included. Every other reply stays within one packet: a feed page
 (the first full copy of a new node, and catching up) carries at most 1,000 records and 1 MB.
 
@@ -419,10 +426,15 @@ does not rotate refresh tokens, userinfo, introspection), and a code exchange or
 
 Sign-in steps, codes and challenges stay in the memory of the node that made them (their ids carry its prefix) and
 the others forward to it. Hash-routed state — rate-limit and lockout counters — lives on the rendezvous-hash owner
-**among the nodes that are ready** (each publishes `quisora.ready` in gossip metadata). It **fails closed**: when no
-ready node is in view, or the owner cannot be reached, the operation fails (the rate limit or lockout refuses)
-instead of counting on one node. It is in the owner's memory only: when the owner changes (a node stops serving,
-restarts or leaves) the new owner starts from nothing, so a counter's window starts again. Nothing whose safety
+**among the nodes that are ready and alive** (each publishes `quisora.ready` in gossip metadata; a node gossip
+suspects owns nothing, so its counters move at once rather than every request waiting on it). It **fails closed**:
+when no ready node is in view, or the owner cannot be reached, the operation fails (the rate limit or lockout
+refuses) instead of counting on one node. It is in the owner's memory only: when the owner changes (a node stops
+serving, restarts, leaves or is suspected) the new owner starts from nothing, so a counter's window starts again.
+A limit checked before anything else (client authentication, a bearer token) reads the counter from the owner's
+last answer to this node when that is under a second old, so the requests that pass a limit cost no round trip;
+every attempt that counts goes to the owner and refreshes it, so a node lets at most one attempt past a limit reached
+through other nodes before it refuses too. Nothing whose safety
 depends on it surviving that is kept there: single-use values are replay records (quorum compare-and-swap, above).
 
 ## Sync point and ageing
@@ -432,7 +444,8 @@ the tombstone is gone, so a node must not serve data older than the retention al
 point** in `cluster-state.json`:
 
 - **LastSync** moves forward when the node has completed pulls from `quorum − 1` peers, each started with a quorum in
-  view (`recomputeSync`); every write a majority held before then is on this node. Nodes cut off together keep
+  view (`recomputeSync`); every write a majority held before then is on this node. It is saved once it has moved a
+  minute past the saved value: a restarted node may count its downtime from up to a minute early, the safe side. Nodes cut off together keep
   pulling from each other, but that is no sync: their sync point ages.
 - **CopiedAt** is the age of data copied while the node had no LastSync yet (a first copy): the earlier of the
   copy's start and the source's own sync point.
@@ -568,8 +581,7 @@ already match, so after a partial reload (a node that did not answer) reload aga
 
 `quisora backup` and `GET /api/backup` write every live record with its version, generation and origin. Where the
 backend offers a point-in-time view — BadgerDB (one read transaction), SQLite, PostgreSQL, MySQL and MariaDB (one
-read-only repeatable-read transaction) — the backup is a **consistent snapshot**; on Valkey it pages through the live
-store. A backup is encrypted with a password by default (AES-256-GCM in authenticated chunks, the key derived from the
+read-only repeatable-read transaction) — the backup is a **consistent snapshot**. A backup is encrypted with a password by default (AES-256-GCM in authenticated chunks, the key derived from the
 password with argon2id; `--plain` writes it unencrypted, with secrets still sealed by the master key): a truncated,
 reordered or altered file is refused before anything is restored. A remote download is checked for completeness as it
 arrives. The remote download needs a super administrator's API token with the **`backup`** scope. Passwords, the
@@ -577,7 +589,7 @@ schedule and restoring: [RUNNING.md](RUNNING.md#backup-and-restore).
 
 ## Shared-database mode (no gossip)
 
-Several nodes on one PostgreSQL, MySQL, MariaDB or Valkey database: the database is the only copy, nothing is
+Several nodes on one PostgreSQL, MySQL or MariaDB database: the database is the only copy, nothing is
 replicated, and compare-and-swap is the database's own. Tombstones are kept for one hour. The nodes must use the same
 master key (a check value of it is kept in the database).
 

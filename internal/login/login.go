@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	netmail "net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -101,11 +102,11 @@ func New(s *web.Server, o Options) *Module {
 	} else {
 		s.Log.Warn("passkeys disabled", "error", err)
 	}
-	m.Upstream = upstream.New(s.Svc, s.Eph, s.Cfg.Server.PublicURL)
 	// Provider issuers are entered by organization administrators: the same address guard as back-channel logout
-	// and client JWKS (allow_private_networks lets an internal provider through), and the extra CA roots.
+	// and client JWKS (allowed_networks or allow_private_networks lets an internal provider through), and the extra
+	// CA roots.
 	roots, _ := secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
-	m.Upstream.HTTP = secure.OutboundClient(func() bool { return s.Cfg.Server.AllowPrivateNetworks }, roots, s.Log)
+	m.Upstream = upstream.New(s.Svc, s.Eph, s.Cfg.Server.PublicURL, secure.OutboundClient(s.Cfg.OutboundReach, roots, s.Log))
 	if m.Mail != nil && m.Mail.Svc == nil {
 		m.Mail.SetService(s.Svc)
 	}
@@ -130,7 +131,8 @@ func (m *Module) Register(s *web.Server) {
 	mux.Handle("GET /login/callback/{provider}", http.HandlerFunc(m.providerCallback))
 	mux.Handle("GET /invite", http.HandlerFunc(m.invitePage))
 	mux.Handle("GET /reset", http.HandlerFunc(m.resetPage))
-	mux.Handle("GET /verify-email", http.HandlerFunc(m.verifyEmail))
+	mux.Handle("GET /verify-email", http.HandlerFunc(m.verifyEmailPage))
+	mux.Handle("POST /verify-email", http.HandlerFunc(m.verifyEmail))
 	mux.Handle("GET /logout", s.WithSession(http.HandlerFunc(m.logoutPage)))
 	mux.Handle("POST /logout", s.WithSession(http.HandlerFunc(m.logout)))
 	mux.Handle("GET /account", s.RequirePage(m.accountPage))
@@ -357,24 +359,35 @@ func lockKey(u *model.User, org *model.Org, login string) string {
 	return "x:" + id + ":" + base64.RawURLEncoding.EncodeToString(h[:12])
 }
 
-// locked reports whether the account has used up its failed attempts.
-func (m *Module) locked(ctx context.Context, key string) bool {
+// charge counts an attempt against the lockout counter key before the attempt is checked, and reports false when
+// the account has used up its attempts (or the counter cannot be reached: fail closed). Counting first is what makes
+// the limit hold for attempts sent at once: had only finished failures counted, every attempt in a burst would pass
+// the check before the first was charged. The charge is a failure unless it is given back: settle, deferred by the
+// caller, refunds it for every outcome but a wrong credential (n is then this failure's number: tripped).
+func (m *Module) charge(ctx context.Context, key string) (n int64, ok bool) {
 	max := m.s.Cfg.Limits.LockoutAttempts
 	if max <= 0 {
-		return false
-	}
-	n, err := m.s.Eph.Incr(ctx, nsLockout, key, 0, m.lockWindow())
-	return err != nil || n >= int64(max)
-}
-
-// fail records a failed attempt and reports whether this one tripped the lockout.
-func (m *Module) fail(ctx context.Context, key string) (tripped bool) {
-	max := m.s.Cfg.Limits.LockoutAttempts
-	if max <= 0 {
-		return false
+		return 0, true
 	}
 	n, err := m.s.Eph.Incr(ctx, nsLockout, key, 1, m.lockWindow())
-	return err == nil && n == int64(max)
+	if err == nil && n > int64(max) { // refused while locked: not an attempt, so the counter stays at the limit
+		_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, m.lockWindow())
+	}
+	return n, err == nil && n <= int64(max)
+}
+
+// settle gives back a charge (charge) unless *wrong says the attempt was a wrong credential.
+func (m *Module) settle(ctx context.Context, key string, wrong *bool) {
+	if *wrong || m.s.Cfg.Limits.LockoutAttempts <= 0 {
+		return
+	}
+	_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, m.lockWindow())
+}
+
+// tripped reports whether the n-th failure (charge) is the one that locks the account.
+func (m *Module) tripped(n int64) bool {
+	max := m.s.Cfg.Limits.LockoutAttempts
+	return max > 0 && n == int64(max)
 }
 
 func (m *Module) clearLock(ctx context.Context, key string) { _ = m.s.Eph.Delete(ctx, nsLockout, key) }
@@ -385,6 +398,12 @@ func (m *Module) clearLocks(ctx context.Context, userID string) {
 	m.clearLock(ctx, "dev:"+userID)
 }
 
+// unavailableResponse answers a step that could not read the account from its cluster (service.ErrUnavailable).
+func unavailableResponse(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeErr(w, http.StatusServiceUnavailable, "The server cannot check your account right now. Please try again in a moment.", "")
+}
+
 func (m *Module) lockedResponse(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", strconv.Itoa(int(m.lockWindow().Seconds())))
 	writeErr(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.", "")
@@ -393,6 +412,7 @@ func (m *Module) lockedResponse(w http.ResponseWriter) {
 // ---- audit ---------------------------------------------------------------------------------------------------
 
 func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.User, login string, detail map[string]string) {
+	login = auditLogin(login)
 	a := &service.Actor{IP: web.ClientIP(r), Name: login}
 	target := login
 	orgID := ""
@@ -404,6 +424,19 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 		target, orgID = u.Username, u.OrgID
 	}
 	m.s.Svc.Audit(context.WithoutCancel(r.Context()), a, orgID, action, target, detail)
+}
+
+// auditLogin is what an audit event records of a login typed for an account that was not found: the address when it
+// is one (evidence of which addresses are being tried), else a placeholder. People type their password into the
+// address box, and the audit trail and the structured log must never hold one.
+func auditLogin(login string) string {
+	if login == "" {
+		return ""
+	}
+	if a, err := netmail.ParseAddress(login); err == nil && a.Name == "" && a.Address == login && !strings.ContainsAny(login, " \t") {
+		return login
+	}
+	return "(not an email address)"
 }
 
 // ---- tickets -------------------------------------------------------------------------------------------------
@@ -584,8 +617,6 @@ func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what stri
 	m.s.Log.Error(what, "error", err, "path", r.URL.Path)
 	writeErr(w, http.StatusInternalServerError, "Something went wrong. Please try again.", "")
 }
-
-var errNoPasskeys = errors.New("passkeys unavailable")
 
 // passkeysOK answers 404-style when passkeys are switched off.
 func (m *Module) passkeysOK(w http.ResponseWriter) bool {

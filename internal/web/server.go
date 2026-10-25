@@ -195,10 +195,10 @@ func (s *Server) writeGuard(next http.Handler) http.Handler {
 					return
 				}
 			}
-			// GET routes that write (a provider's sign-in callback, an email verification link); HEAD reaches GET
-			// routes too
-			if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
-				(strings.HasPrefix(r.URL.Path, "/login/callback/") || r.URL.Path == "/verify-email") {
+			// Routes that write outside the JSON APIs: a provider's sign-in callback (a GET; HEAD reaches GET routes
+			// too) and the confirmation of an email verification link (a form POST)
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasPrefix(r.URL.Path, "/login/callback/") ||
+				r.Method == http.MethodPost && r.URL.Path == "/verify-email" {
 				w.Header().Set("Retry-After", "5")
 				http.Error(w, "This server cannot reach the rest of the cluster. Go back and try again shortly.",
 					http.StatusServiceUnavailable)
@@ -371,7 +371,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.Path = r.URL.RequestURI()
 		p.IsSuper = u.Role == model.RoleSuperAdmin
 		p.IsAdmin = u.Role.Rank() >= model.RoleAdmin.Rank()
-		p.IsMgr = u.Role.Rank() >= model.RoleManager.Rank()
+		p.IsMgr = u.Role.Privileged()
 		p.KeyRotation = p.IsSuper && s.Svc.Sealer.Previous()
 	} else {
 		p.CSRF = s.AnonCSRF(w, r)

@@ -12,12 +12,11 @@
 // By default the whole compressed stream is encrypted with AES-256-GCM under a key derived from a password (argon2id),
 // in authenticated chunks (a STREAM construction: a truncated, reordered or altered file is refused), so the backup
 // file reveals nothing — not even the names and addresses that are not sealed. Restore and Verify detect an encrypted
-// backup by its magic bytes; backups encrypted under the master key by earlier builds still restore.
+// backup by its magic bytes.
 //
-// Where the backend offers a point-in-time view (store.Snapshotter: Badger, SQLite, PostgreSQL, MySQL, MariaDB) the
-// backup reads through it and is a consistent snapshot of the whole store. Otherwise (Valkey) it reads the live store
-// page by page: every record that existed throughout the backup is in it, records written meanwhile may or may not
-// be.
+// The backup reads through the backend's point-in-time view (store.Snapshotter: every backend has one) and is a
+// consistent snapshot of the whole store. A store without one is read live, page by page: every record that existed
+// throughout the backup is in it, records written meanwhile may or may not be.
 //
 // The format has no compatibility with backups made by earlier pre-release builds (version 4; older versions are
 // refused).
@@ -160,9 +159,9 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 		}
 	}
 	if opt.Password != "" {
-		ew, err := newEncWriter(w, opt.Password)
-		if err != nil {
-			return nil, err
+		ew, eerr := newEncWriter(w, opt.Password)
+		if eerr != nil {
+			return nil, eerr
 		}
 		defer func() {
 			if cerr := ew.Close(); err == nil {
@@ -216,7 +215,7 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 			}
 			after = res.Records[len(res.Records)-1].ID
 			for _, r := range res.Records {
-				sealedKeys(r, ring, need)
+				sealedKeys(r, need)
 				if err := emit(line{Kind: k, ID: r.ID, Version: r.Version, Epoch: r.Epoch, Created: r.Created, Origin: r.Origin,
 					Data: base64.StdEncoding.EncodeToString(r.Data)}); err != nil {
 					return stats, err
@@ -238,11 +237,9 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 	return stats, zw.Close()
 }
 
-// sealedKeys adds to need the master keys rec's sealed secrets need: the key a value names, or, for a value or grant
-// from before values named their key, every key of ring (any of them may be the one).
-func sealedKeys(rec *store.Record, ring []string, need map[string]bool) {
+// sealedKeys adds to need the master keys rec's sealed secrets need: the key each value names.
+func sealedKeys(rec *store.Record, need map[string]bool) {
 	var vals []string
-	legacyGrant := false
 	switch rec.Kind {
 	case model.KindUser:
 		var u model.User
@@ -268,19 +265,11 @@ func sealedKeys(rec *store.Record, ring []string, need map[string]bool) {
 		var g model.Grant
 		if store.Decode(rec, &g) == nil {
 			vals = []string{g.Key}
-			legacyGrant = g.Key == "" && len(g.Secret) > 0
 		}
 	}
 	for _, v := range vals {
-		kid, legacy := secure.SealedKeyID(v)
-		if kid != "" {
+		if kid := secure.SealedKeyID(v); kid != "" {
 			need[kid] = true
-		}
-		legacyGrant = legacyGrant || legacy
-	}
-	if legacyGrant {
-		for _, id := range ring {
-			need[id] = true
 		}
 	}
 }
@@ -317,25 +306,13 @@ func Empty(ctx context.Context, st store.Store) (bool, error) {
 // and (with a sealer) the MAC. fn may be nil.
 func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *store.Record) error) (Stats, error) {
 	br0 := bufio.NewReader(r)
-	var dec *decReader // an earlier build's backup: decrypted with the master key it was made with
-	switch encryption(br0) {
-	case 0:
-		r = br0
-	case 1:
-		if sealer == nil {
-			// Without the master key only the encryption framing can be checked: every chunk present, the last one
-			// marked as such. The content is verified when it is restored (or verified with the key).
-			return nil, checkFraming(br0)
-		}
-		dr, err := newDecReader(br0, sealer)
-		if err != nil {
-			return nil, err
-		}
-		r, dec = dr, dr
-	case 2:
+	r = br0
+	if encrypted(br0) {
 		if password == "" {
 			if sealer == nil {
-				return nil, checkFraming(br0) // as above, without the password
+				// Without the password (or the master key) only the encryption framing can be checked: every chunk
+				// present, the last one marked as such. The content is verified when it is restored.
+				return nil, checkFraming(br0)
 			}
 			return nil, ErrNeedPassword
 		}
@@ -382,11 +359,8 @@ func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *st
 	}
 	if sealer != nil {
 		// The key of the master keyring the backup was made with (a backup from before a master key rotation needs
-		// the old key as one of server.previous_master_keys); an encrypted one was opened with that same key.
+		// the old key as one of server.previous_master_keys).
 		keys := sealer.Keys()
-		if dec != nil {
-			keys = keys[dec.key : dec.key+1]
-		}
 		i := slices.IndexFunc(keys, func(k *secure.Sealer) bool { return h.KeyCheck == keyCheck(k) })
 		if i < 0 {
 			return nil, ErrKey
@@ -479,29 +453,63 @@ func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Re
 			return nil, ErrNotEmpty
 		}
 	}
-	return read(r, sealer, password, func(l line, rec *store.Record) error {
+	// Records are applied restoreBatch at a time, in one write transaction (one sync) each where the backend can
+	// (store.BatchReplicator), with the semantics of one PutReplicated per record.
+	var pending []*store.Record
+	flush := func() error {
+		defer func() { pending = pending[:0] }()
+		if len(pending) == 0 {
+			return nil
+		}
+		var applied []bool
+		var losers [][]string
+		if br, ok := st.(store.BatchReplicator); ok {
+			var err error
+			if applied, losers, err = br.PutReplicatedBatch(ctx, pending); err != nil {
+				return fmt.Errorf("restore: %w", err)
+			}
+		} else {
+			for _, rec := range pending {
+				a, l, err := st.PutReplicated(ctx, rec)
+				if err != nil {
+					return fmt.Errorf("restore %s %s: %w", rec.Kind, rec.ID, err)
+				}
+				applied, losers = append(applied, a), append(losers, l)
+			}
+		}
+		for i, rec := range pending {
+			if !applied[i] && !force {
+				// The store held a newer version or a deletion of it: it was not empty after all (deleted records do
+				// not count as data, but they still win). Say so instead of reporting it restored.
+				return fmt.Errorf("%w: the store already holds a newer version or a deletion of %s %s; restore into a "+
+					"new, empty database", ErrNotEmpty, rec.Kind, rec.ID)
+			}
+			if len(losers[i]) > 0 && !force {
+				return fmt.Errorf("%w: %s %s clashes with another record on a unique value", ErrFormat, rec.Kind, rec.ID)
+			}
+			// Merging (force): a record that lost a unique value to another is kept, without that value in the
+			// index (as after a replication clash); a cluster reports it when it starts serving.
+		}
+		return nil
+	}
+	stats, err := read(r, sealer, password, func(l line, rec *store.Record) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		store.Witness(rec.Version) // versions minted after the restore stay newer than every restored one
-		applied, losers, err := st.PutReplicated(ctx, rec)
-		if err != nil {
-			return fmt.Errorf("restore %s %s: %w", l.Kind, l.ID, err)
+		if pending = append(pending, rec); len(pending) == restoreBatch {
+			return flush()
 		}
-		if !applied && !force {
-			// The store held a newer version or a deletion of it: it was not empty after all (deleted records do not
-			// count as data, but they still win). Say so instead of reporting it restored.
-			return fmt.Errorf("%w: the store already holds a newer version or a deletion of %s %s; restore into a new, "+
-				"empty database", ErrNotEmpty, l.Kind, l.ID)
-		}
-		if len(losers) > 0 && !force {
-			return fmt.Errorf("%w: %s %s clashes with another record on a unique value", ErrFormat, l.Kind, l.ID)
-		}
-		// Merging (force): a record that lost a unique value to another is kept, without that value in the index
-		// (as after a replication clash); a cluster reports it when it starts serving.
 		return nil
 	})
+	if err == nil {
+		err = flush()
+	}
+	return stats, err
 }
+
+// restoreBatch is how many records Restore applies in one write.
+const restoreBatch = 256
 
 // record rebuilds a store record from a backup line. Index values (scope, unique values, query fields, expiry) are
 // derived from the entity again by this build rather than trusted from the file.

@@ -1,7 +1,7 @@
-// Package kvstore implements store.Store once, over a small ordered key-value engine interface, with two engines:
-// BadgerDB (embedded, node-local) and Valkey (shared server).
+// Package kvstore implements store.Store over a small ordered key-value engine interface, with BadgerDB (embedded,
+// node-local) as its engine.
 //
-// Key layout (Valkey keys additionally carry the configured prefix):
+// Key layout:
 //
 //	rec/<kind>/<id>                    -> [8-byte feed seq][msgpack wireRecord]
 //	uq/<kind>/<value>                  -> id
@@ -19,8 +19,7 @@
 //	due/<unix-ms 15 digits>/<kind>/<id>  -> due index (model.Due), range-scanned by ListDue
 //	meta/feed_id, meta/seq
 //
-// Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix in Badger, sorted sets
-// with lexicographic ordering in Valkey. Housekeeping (Purge, Changes) only ever range-scans the exp, tomb and
+// Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix. Housekeeping (Purge, Changes) only ever range-scans the exp, tomb and
 // seq indexes, never the records.
 //
 // Listing: plain ID-ordered scans page through the scope index without loading the scope. An equality filter on an
@@ -31,8 +30,8 @@
 // descending, with the same exclusions: a page costs its offset plus its length in index keys and loads only its
 // own records, whatever the size of the scope. Totals come from the counters when no member of the range carries
 // an expiry (the counters count members, which stay in the indexes until Purge removes the expired ones), and
-// otherwise from a count of the index that excludes the expired members (key-only iteration in Badger, ZLEXCOUNT
-// arithmetic in Valkey), as the index carries each member's expiry.
+// otherwise from a count of the index that excludes the expired members (key-only iteration), as the index carries
+// each member's expiry.
 //
 // A search (a prefix of the Search fields) of a kind whose Search fields all have sort indexes reads, keys only, the
 // range of each index that starts with it: only the matching records are read. A word-list field (tags) is indexed
@@ -87,8 +86,7 @@ func (s *Store) FeedID() string {
 
 // Store format: this backend's layout of records and indexes. It is formatBase plus the number of format
 // migrations; a store at an older format is brought up to this build's at open, one migration after the other, each
-// recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock so that the processes
-// sharing a Valkey store do it once. A store written by a newer build, or by a pre-release build older than
+// recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock. A store written by a newer build, or by a pre-release build older than
 // formatBase, is refused. Never edit or remove a released migration: append one. Format 1 is the first release's;
 // until that release the layout changes in place, and stores from earlier development builds are wiped, not
 // migrated. A migration that rewrites records uses rewriteRecords (TestMigrationScale runs one over five million
@@ -273,20 +271,19 @@ func (s *Store) lockMigration(ctx context.Context) (release func(), err error) {
 	}
 }
 
-// seqOf reads the stored feed counter: 8 bytes big endian (Badger) or a decimal integer (Valkey's INCR).
+// seqOf reads the stored feed counter: 8 bytes big endian (absent: 0).
 func seqOf(b []byte) uint64 {
-	if len(b) == 8 {
-		return binary.BigEndian.Uint64(b)
+	if len(b) != 8 {
+		return 0
 	}
-	n, _ := strconv.ParseUint(string(b), 10, 64)
-	return n
+	return binary.BigEndian.Uint64(b)
 }
 
 func (s *Store) markFormat(ctx context.Context, v int) error {
 	return s.eng.Update(ctx, func(tx txn) error { tx.Set(metaFormat, []byte(strconv.Itoa(v))); return nil })
 }
 
-// Wipe deletes every record and index of this store (only keys under its own prefix for Valkey), restarts the
+// Wipe deletes every record and index of this store, restarts the
 // sequence and assigns a new FeedID so peers restart their cursors. Callers must not write concurrently.
 func (s *Store) Wipe(ctx context.Context) error {
 	id := model.NewID()
@@ -305,8 +302,7 @@ func (s *Store) Wipe(ctx context.Context) error {
 func (s *Store) Close() error { return s.eng.Close() }
 
 // Snapshot returns a read-only, point-in-time view of the whole store (store.Snapshotter): on Badger one read
-// transaction, so a backup taken through it is consistent. Valkey has no such view: ErrNoSnapshot. Close the view
-// when done.
+// transaction, so a backup taken through it is consistent. Close the view when done.
 func (s *Store) Snapshot(context.Context) (store.Reader, error) {
 	e, ok := s.eng.(*badgerEngine)
 	if !ok {
@@ -546,13 +542,12 @@ func counterKey(rng string, expiring bool) string {
 	return "n/" + rng
 }
 
-// counterOf decodes a counter: 8 bytes big endian (Badger) or a decimal integer (Valkey's INCRBY); absent is 0.
+// counterOf decodes a counter: 8 bytes big endian; absent is 0.
 func counterOf(b []byte) int64 {
-	if len(b) == 8 {
-		return int64(binary.BigEndian.Uint64(b))
+	if len(b) != 8 {
+		return 0
 	}
-	n, _ := strconv.ParseInt(string(b), 10, 64)
-	return n
+	return int64(binary.BigEndian.Uint64(b))
 }
 
 // fieldRange is the counted range of a field index bucket's members of one scope (fieldMember: the scope's
@@ -997,7 +992,7 @@ const batchGroup = 256
 
 // PutReplicatedBatch applies recs with the PutReplicated semantics, many per write transaction on Badger (one
 // fsync per group instead of one per record). It implements store.BatchReplicator. Engines without cheap
-// multi-record transactions (Valkey) fall back to one transaction per record.
+// multi-record transactions fall back to one transaction per record.
 func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([]bool, [][]string, error) {
 	applied := make([]bool, len(recs))
 	losers := make([][]string, len(recs))
@@ -1741,52 +1736,4 @@ func retry(ctx context.Context, attempt func() error) error {
 		time.Sleep(time.Duration(i%8+1) * 100 * time.Microsecond)
 	}
 	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
-}
-
-// RefreshFields recomputes the index fields stored with the records q selects, from their data
-// (store.FieldRefresher). The record keeps its version and its place in the change feed; one rewritten meanwhile is
-// left alone.
-func (s *Store) RefreshFields(ctx context.Context, kind model.Kind, q store.ListQuery) (int, error) {
-	res, err := s.List(ctx, kind, q)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, r := range res.Records {
-		fields, err := store.IndexFields(r)
-		if err != nil {
-			return n, err
-		}
-		changed := false
-		err = s.write(ctx, kind, r.ID, func(tx txn) error {
-			k := recKey(kind, r.ID)
-			b, err := tx.Get(k)
-			if err != nil || b == nil {
-				return err
-			}
-			old, err := decodeRecord(b)
-			if err != nil || !live(old) || old.rec.Version != r.Version {
-				return err
-			}
-			rec := *old.rec
-			rec.Fields = fields
-			body, err := encodeRecord(&rec)
-			if err != nil {
-				return err
-			}
-			copy(body[:seqHeader], b[:seqHeader]) // the same feed position
-			tx.Set(k, body)
-			// Index entries that follow the fields (the due, field and sort indexes) follow them here too.
-			reindex(tx, indexEntries(old.rec), indexEntries(&rec))
-			changed = true
-			return nil
-		})
-		if err != nil {
-			return n, err
-		}
-		if changed {
-			n++
-		}
-	}
-	return n, nil
 }

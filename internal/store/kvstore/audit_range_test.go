@@ -22,11 +22,6 @@ func TestAuditFilterPages(t *testing.T) {
 		defer s.Close()
 		auditFilterPages(t, s)
 	})
-	t.Run("Valkey", func(t *testing.T) {
-		s := valkeyFactory(t).(*Store)
-		defer s.Close()
-		auditFilterPages(t, s)
-	})
 }
 
 func auditFilterPages(t *testing.T, s *Store) {

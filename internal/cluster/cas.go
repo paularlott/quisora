@@ -113,6 +113,11 @@ type readReq struct {
 	IDs  []string
 }
 
+// readFewResp answers a quorum read of at most readFew ids in one reply: the encoded records found.
+type readFewResp struct {
+	Recs [][]byte
+}
+
 type intent struct {
 	op      string
 	version hlc.Timestamp
@@ -360,13 +365,37 @@ func (n *Node) handleRead(pkt *gossip.Packet, w io.Writer) error {
 	if err := pkt.Unmarshal(&req); err != nil {
 		return err
 	}
-	if len(req.IDs) > readBatch {
-		return fmt.Errorf("quorum read of %d records: at most %d", len(req.IDs), readBatch)
+	bw := bufio.NewWriter(w)
+	if err := n.readRecords(&req, readBatch, func(b []byte) error { return writeFrame(bw, b) }); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// handleReadFew answers a quorum read of at most readFew ids in one reply (over a pooled connection: no stream is
+// opened for the one record a sign-in step reads).
+func (n *Node) handleReadFew(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
+	var req readReq
+	if err := pkt.Unmarshal(&req); err != nil {
+		return nil, err
+	}
+	var resp readFewResp
+	err := n.readRecords(&req, readFew, func(b []byte) error {
+		resp.Recs = append(resp.Recs, b)
+		return nil
+	})
+	return &resp, err
+}
+
+// readRecords passes the encoded records of req that this node holds to emit, refusing a request of more than max
+// ids, or when this node does not vote (its copies may be out of date).
+func (n *Node) readRecords(req *readReq, max int, emit func([]byte) error) error {
+	if len(req.IDs) > max {
+		return fmt.Errorf("quorum read of %d records: at most %d", len(req.IDs), max)
 	}
 	if !n.votes() {
 		return errNotVoting
 	}
-	bw := bufio.NewWriter(w)
 	for _, id := range req.IDs {
 		r, err := n.st.inner.Lookup(n.ctx, model.Kind(req.Kind), id)
 		if errors.Is(err, store.ErrNotFound) {
@@ -380,11 +409,11 @@ func (n *Node) handleRead(pkt *gossip.Packet, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := writeFrame(bw, b); err != nil {
+		if err := emit(b); err != nil {
 			return err
 		}
 	}
-	return bw.Flush()
+	return nil
 }
 
 // ---- writer ----
@@ -634,42 +663,57 @@ func (s *Store) abort(op string, version hlc.Timestamp, granted []*member) {
 }
 
 // commitAll commits a granted write on this node and on every peer that granted it, and succeeds once a quorum
-// (this node included) has applied it. The record is then broadcast to every node.
+// (this node included) has applied it. This node commits while the peers' commits are on their way: the intents
+// already make the write exclusive, so it waits for one round of syncs, not this node's and then the peers'. The
+// record is then sent to the nodes that were not part of the commit.
 func (s *Store) commitAll(ctx context.Context, op string, rec *store.Record, b []byte, granted []*member) error {
 	n := s.n
-	if st := n.voter.commit(ctx, op, rec, true); st != stGrant {
-		s.abort(op, rec.Version, granted)
-		n.unconfirmed.Add(1)
-		return fmt.Errorf("%w: this node's intent expired before the commit", store.ErrUnconfirmed)
-	}
-	applied := 1
 	var peers []*member
 	for _, mb := range granted {
 		if mb != nil {
 			peers = append(peers, mb)
 		}
 	}
-	results := make(chan bool, len(peers))
+	type result struct {
+		mb *member
+		ok bool
+	}
+	results := make(chan result, len(peers))
 	req := &commitReq{Op: op, Rec: b}
 	for _, mb := range peers {
-		go func(mb *member) {
-			var resp commitResp
-			// Not bounded by ctx: once this node has committed, the peers' commits are seen through (within the
-			// transport's timeouts) even if the caller has gone, so the write is confirmed where it can be.
-			err := n.gc.SendToWithResponse(mb.node, msgCommit, req, &resp)
-			results <- err == nil && resp.St == stGrant
-		}(mb)
+		go func(mb *member) { results <- result{mb, n.commitTo(mb, req)} }(mb)
 	}
+	applied := 0
+	local := n.voter.commit(ctx, op, rec, true) == stGrant
+	if local {
+		applied++
+	}
+	committed := map[string]bool{n.id: true}
 	for range peers {
-		if <-results {
+		r := <-results
+		if r.ok {
 			applied++
+			committed[r.mb.id] = true
 		}
 		if applied >= n.Quorum() {
-			break
+			break // the slower peers' commits are seen through; they may get the record below as well
 		}
 	}
-	if err := n.gc.Send(msgRecord, &recordMsg{B: b}); err != nil {
-		n.log.WithError(err).Debug("broadcast a committed write")
+	var rest []*gossip.Node
+	for _, mb := range n.otherPeers() {
+		if !committed[mb.id] {
+			rest = append(rest, mb.node)
+		}
+	}
+	if len(rest) > 0 {
+		if err := n.gc.SendToPeers(rest, msgRecord, &recordMsg{B: b}); err != nil {
+			n.log.WithError(err).Debug("send a committed write")
+		}
+	}
+	if !local {
+		n.unconfirmed.Add(1)
+		return fmt.Errorf("%w: this node's intent expired before the commit (%d of the %d nodes needed applied the write)",
+			store.ErrUnconfirmed, applied, n.Quorum())
 	}
 	if applied < n.Quorum() {
 		n.unconfirmed.Add(1)
@@ -681,6 +725,20 @@ func (s *Store) commitAll(ctx context.Context, op string, rec *store.Record, b [
 	// has shown of the nodes' readiness: this node is never an origin again.
 	n.markFormed()
 	return nil
+}
+
+// commitTo sends a granted write's commit to one peer and reports whether the peer applied it. A commit that got no
+// answer is sent once more: committing is idempotent (a peer that applied it already answers stGrant: voter.commit),
+// so a lost packet does not turn a write into a partial one. It is not bounded by the caller's context: once the
+// write is committed somewhere, the peers' commits are seen through (within the transport's timeouts).
+func (n *Node) commitTo(mb *member, req *commitReq) bool {
+	for range 2 {
+		var resp commitResp
+		if err := n.gc.SendToWithResponse(mb.node, msgCommit, req, &resp); err == nil {
+			return resp.St == stGrant
+		}
+	}
+	return false
 }
 
 // Fresh returns the newest copies of the records kind/ids held by a quorum of the cluster (this node included):
@@ -710,8 +768,13 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 	return out, nil
 }
 
-// readBatch is the most ids one quorum read request names (a request is one packet; the reply is a stream).
-const readBatch = 1000
+// readBatch is the most ids one quorum read request names (a request is one packet; the reply is a stream). A read of
+// at most readFew ids (a user at a sign-in step, a membership and its group) is one request and one reply over a
+// pooled connection instead: no stream to open, and a reply small enough to hold whole.
+const (
+	readBatch = 1000
+	readFew   = 16
+)
 
 // freshBatch reads ids from enough peers to make a quorum with this node, each reply a stream (handleRead), and
 // merges the newest copy of each record into out (repairing this node's copy). It returns when a quorum has
@@ -767,6 +830,21 @@ func (s *Store) freshBatch(ctx context.Context, kind model.Kind, ids []string, o
 // readFrom reads one peer's reply to a quorum read; any failure (the peer does not vote, a copy it could not read, a
 // broken stream) is an error, and the reply is not counted.
 func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store.Record, error) {
+	if len(req.IDs) <= readFew {
+		var resp readFewResp
+		if err := n.gc.SendToWithResponseContext(ctx, mb.node, msgReadFew, req, &resp); err != nil {
+			return nil, err
+		}
+		recs := make([]*store.Record, 0, len(resp.Recs))
+		for _, b := range resp.Recs {
+			r, err := decodeRecord(b)
+			if err != nil {
+				return nil, err
+			}
+			recs = append(recs, r)
+		}
+		return recs, nil
+	}
 	rc, err := n.gc.OpenStream(ctx, mb.node, msgRead, req)
 	if err != nil {
 		return nil, err

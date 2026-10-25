@@ -104,11 +104,6 @@ func (s *Service) applyAccess(ctx context.Context, t *model.Tenant, acc *model.T
 	return nil
 }
 
-// tenantForAccess returns the tenant when the actor may administer it.
-func (s *Service) tenantForAccess(ctx context.Context, a *Actor, tenantID string) (*model.Tenant, error) {
-	return s.GetTenant(ctx, a, tenantID)
-}
-
 // accessSubject resolves the user or group an access is for, within the tenant's org.
 func (s *Service) accessSubject(ctx context.Context, a *Actor, orgID, typ, id string) (name, detail string, err error) {
 	switch typ {
@@ -132,7 +127,7 @@ func (s *Service) accessSubject(ctx context.Context, a *Actor, orgID, typ, id st
 // is "name" (default), "type", "expires" or "created". Tenants hold at most a few thousand entries, so the list is
 // filtered and paged in memory after one indexed read.
 func (s *Service) ListAccess(ctx context.Context, a *Actor, tenantID string, q store.ListQuery) ([]*AccessEntry, int, error) {
-	t, err := s.tenantForAccess(ctx, a, tenantID)
+	t, err := s.GetTenant(ctx, a, tenantID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -204,7 +199,7 @@ func (s *Service) ListAccess(ctx context.Context, a *Actor, tenantID string, q s
 
 // GetAccess returns one access entry of a tenant.
 func (s *Service) GetAccess(ctx context.Context, a *Actor, tenantID, id string) (*AccessEntry, error) {
-	t, err := s.tenantForAccess(ctx, a, tenantID)
+	t, err := s.GetTenant(ctx, a, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +223,7 @@ func (s *Service) hiddenSubject(ctx context.Context, a *Actor, id string) bool {
 
 // AddAccess gives a user or group access to a tenant.
 func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in AccessInput) (*AccessEntry, error) {
-	t, err := s.tenantForAccess(ctx, a, tenantID)
+	t, err := s.GetTenant(ctx, a, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,10 +307,14 @@ type AppAccess struct {
 
 // ClientAccess decides a user's access to client c of tenant t: the union of the user's own entry and
 // those of their groups that are live and cover the client. A tenant open to everyone allows every user of its
-// organization and does not use its access entries at all (they are kept for when it is made members-only again).
-// Users of other organizations (signing in to an all-orgs client) are governed by their own organization.
+// organization and does not use its access entries at all (they are kept for when it is made members-only again). A
+// user of another organization is never allowed: every caller refuses one before asking, and this does too, so one
+// missed check cannot open a tenant to the whole server.
 func (s *Service) ClientAccess(ctx context.Context, t *model.Tenant, c *model.Client, u *model.User, groupIDs []string) (*AppAccess, error) {
-	if !t.Settings.MembersOnly || u.OrgID != t.OrgID {
+	if u.OrgID != t.OrgID {
+		return &AppAccess{}, nil
+	}
+	if !t.Settings.MembersOnly {
 		return &AppAccess{Allowed: true}, nil
 	}
 	res := &AppAccess{}

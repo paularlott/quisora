@@ -29,6 +29,9 @@ func forceStartCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"others already hold — start that one empty instead.",
 		Flags: flags,
 		Run: func(ctx context.Context, c *cli.Command) error {
+			if err := prepare(ctx, cfg); err != nil {
+				return err
+			}
 			if cfg.Cluster.Bind == "" {
 				return fmt.Errorf("this node is not part of a gossip cluster (cluster.bind is not set): nothing to force")
 			}

@@ -130,7 +130,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 		if !slices.Contains(APITokenScopes, sc) {
 			return nil, "", Invalid("scopes", "unknown scope "+sc)
 		}
-		if (sc == ScopeSCIM || sc == ScopeAdmin) && a.Role.Rank() < model.RoleManager.Rank() {
+		if (sc == ScopeSCIM || sc == ScopeAdmin) && !a.Role.Privileged() {
 			return nil, "", Invalid("scopes", "your role cannot use the "+sc+" scope")
 		}
 		if SuperOnlyScope(sc) && !a.IsSuper() {
@@ -197,7 +197,7 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	}
 	// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
 	for _, sc := range t.Scopes {
-		if (sc == ScopeSCIM || sc == ScopeAdmin) && a.Role.Rank() < model.RoleManager.Rank() ||
+		if (sc == ScopeSCIM || sc == ScopeAdmin) && !a.Role.Privileged() ||
 			SuperOnlyScope(sc) && !a.IsSuper() {
 			return nil, "", Invalid("scopes", "your role can no longer use the "+sc+" scope: revoke this token instead")
 		}
@@ -438,7 +438,7 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if !u.Holds(t.Epoch) {
 		return refuse("the owner's sign-in was reset since the token was made")
 	}
-	if u.Role.Rank() < model.RoleManager.Rank() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
+	if !u.Role.Privileged() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
 		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {
 		return refuse("the owner's role no longer allows the token's scopes") // demoted since the token was made
 	}

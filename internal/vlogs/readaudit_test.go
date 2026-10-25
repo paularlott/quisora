@@ -50,7 +50,7 @@ func (f *fakeSelect) seen() []string {
 	return append([]string(nil), f.queries...)
 }
 
-const countSuffix = " | stats count() n"
+const countSuffix = " | stats count_uniq(id) n"
 
 // answer serves rows to the page query and count to the count query.
 func answer(rows, count string) func(string, http.ResponseWriter) {

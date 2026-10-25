@@ -1686,7 +1686,6 @@ export default function (Alpine) {
     waiting_for_nodes: { title: 'Waiting for the nodes.', cls: 'alert alert-warning' },
     resealing: { title: 'Re-sealing.', cls: 'alert alert-warning' },
     unopenable: { title: 'Secrets no key opens.', cls: 'alert alert-error' },
-    legacy_grants: { title: 'Almost done.', cls: 'alert alert-warning' },
     complete: { title: 'Rotation complete: remove the previous keys.', cls: 'alert alert-success' },
   }
   const countBadge = (n, danger) => (n ? (danger ? 'badge badge-danger' : 'badge badge-warning') : 'badge badge-success')
@@ -1723,7 +1722,6 @@ export default function (Alpine) {
     get previousText() { return (this.st.previous_keys || []).join(', ') || 'None' },
     get staleClass() { return countBadge(this.st.stale_secrets) },
     get unopenableClass() { return countBadge(this.st.unopenable_secrets, true) },
-    get legacyClass() { return countBadge(this.st.legacy_grants) },
     get busyAttr() { return this.loading ? 'true' : 'false' },
     get hasLoadError() { return this.loadError !== '' },
     get updatedText() {

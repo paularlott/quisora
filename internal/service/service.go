@@ -155,6 +155,7 @@ type Service struct {
 	Replays    *store.Table[model.Replay, *model.Replay]
 
 	primary *orgCache
+	members confirmedMembers // memberships a quorum read decided (membersAt)
 
 	// MinSuperAdmins is how many usable super admins must remain after a demotion, disable, deletion or end date (0:
 	// one). The app sets 2 when nodes replicate over gossip: a change one node applied but the majority has not

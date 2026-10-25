@@ -1,7 +1,5 @@
 # Quisora
 
-**This Software is Pre-release:** there is no upgrade path between development builds. Start each build with an empty database.
-
 > Quisora (pronounced "kwih-SOR-ah") comes from the Latin *quis? ōrā*, meaning "who? speak", a sentry's challenge at the gate.
 
 Quisora is a clustered identity provider in one binary: OpenID Connect and OAuth 2 for your applications, passkeys and
@@ -14,7 +12,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   providers and policies. Tenants group applications that share sign-in rules and access lists (users and groups,
   application roles, end dates).
 - **Sign-in.** Passkeys (as the whole sign-in or a second factor), password plus authenticator app (TOTP), recovery
-  codes for a lost second factor, codes by email as a second factor where an organization allows it, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0
+  codes for a lost second factor, codes by email as a second factor for users without an app or passkey where an organization allows it, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0
   and any OpenID Connect provider. Invitation links instead of admin-set passwords. Per-organization and per-tenant
   MFA. Guides: [docs/sign-in](docs/sign-in/README.md).
 - **OpenID Connect and OAuth 2.** Authorization code with PKCE, refresh tokens, client credentials, introspection,
@@ -30,10 +28,11 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   document, and personal API tokens with scopes. Keys and passwords can be read from HashiCorp Vault or 1Password
   (Connect, or a service account in the 1Password build) and rotated without a restart.
 - **Roles.** Super admin, admin, manager and user. Managers and above always use a second factor. Only a super admin
-  can reset a manager's or administrator's sign-in (a new invitation, removing the password) or lower their role, so
-  one administrator cannot take over another's account.
+  can reset a manager's or administrator's sign-in (a new invitation, removing the password, an authenticator app,
+  a passkey or a provider link) or lower their role, so one administrator cannot take over another's account, and
+  only a super admin can sign out the primary organization, which holds the super admins.
 - **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs.
-- **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL, MariaDB or Valkey.
+- **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL or MariaDB.
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip,
   with quorum writes for security-sensitive records.
 - **Audit log.** In the database, or in VictoriaLogs for real deployments. Every event also goes to the structured log.
@@ -87,8 +86,8 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 
 ## Clusters
 
-- **Shared database:** point every node at the same PostgreSQL, MySQL, MariaDB or Valkey database and give them the
-  same `--master-key`. Nothing is replicated: the database is the only copy. Optional `cluster.notify` gossip only
+- **Shared database:** point every node at the same PostgreSQL, MySQL or MariaDB database and give them the
+  same master key (`QUISORA_MASTER_KEY` or `server.master_key`, from a secret store: not a flag, which shows in `ps`). Nothing is replicated: the database is the only copy. Optional `cluster.notify` gossip only
   tells the other nodes what changed, so their caches update at once.
 - **Replicated:** every node has its own database (any backend, e.g. BadgerDB) and sets `cluster.bind`, `cluster.peers` (every node), `cluster.size` and `cluster.key`. Run `quisora bootstrap --new-cluster` on one node first.
 
@@ -102,6 +101,31 @@ Connecting applications (sign-in, client credentials, device sign-in, token exch
 [docs/sign-in](docs/sign-in/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md).
 Keys and passwords in Vault or 1Password: [docs/secret-stores.md](docs/secret-stores.md). Reporting a vulnerability:
 [SECURITY.md](SECURITY.md).
+
+## Operating it
+
+| | |
+| --- | --- |
+| `quisora invite <org> <email>` | A new invitation link for a user (`--break-glass`: get back into a server nobody can sign in to, even as a disabled super admin) |
+| `quisora sign-out` | Emergency sign-out of an organization or every organization ([docs/emergency-sign-out.md](docs/emergency-sign-out.md)) |
+| `quisora backup`, `quisora restore` | Online backups, encrypted with a password, of the whole store; a restore is verified before anything is written ([Backup and restore](docs/RUNNING.md#backup-and-restore)) |
+| `quisora set-primary` | Make another organization the primary one, which holds the super admins ([docs/RUNNING.md](docs/RUNNING.md#changing-the-primary-organization)) |
+| `quisora force-start` | Start a gossip node on its own data once, after an outage ([docs/REPLICATION.md](docs/REPLICATION.md)) |
+| `quisora queue purge-lost` | Give up queued mail and back-channel logouts sealed with a lost master key (node stopped; audited) |
+| `quisora healthcheck [--ready]` | Exit 0 when this node is alive (or ready): for container health checks |
+| `quisora genkey` | A new master key, cluster key or BadgerDB encryption key |
+| `/healthz`, `/readyz` | Liveness, and readiness for load balancers (with the clock offset and cluster state) |
+| `/metrics` | Prometheus metrics, with `metrics.token` as a bearer token ([Metrics](docs/RUNNING.md#metrics)) |
+| `/api-docs`, `/api/openapi.json` | The management API's reference and its OpenAPI document |
+| SIGHUP | Reload the master keys and, in a gossip cluster, the cluster key and size (read from the secret store again where they name one), and the TLS certificate, without a restart ([Rotating the master key](docs/RUNNING.md#rotating-the-master-key)) |
+
+Behind a load balancer set `server.trust_proxy` to its addresses (the per-address limits and the audit log's
+addresses come from `X-Forwarded-For` only then), and `server.shutdown_drain` to how long it takes to stop sending
+traffic to a node that is stopping. `server.allowed_networks` lists the private networks sign-in providers and applications
+may be on (calls to other private addresses are refused; `server.allow_private_networks` allows them all, for a home
+lab), and `server.extra_ca_file` adds private CA roots for them; `server.restore_from` restores a backup at the first start of an empty node. The console's look is a
+skin (`ui.skin`, with a logo and a footer: [web/skins](web/skins/README.md)). Every setting:
+[quisora.toml.example](quisora.toml.example) and `quisora serve --help`.
 
 ## Audit log and VictoriaLogs
 
@@ -135,7 +159,7 @@ retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
 
 ```bash
 task test         # go vet + all tests with the race detector
-task test-all     # also against PostgreSQL, MySQL, MariaDB and Valkey in Docker
+task test-all     # also against PostgreSQL, MySQL and MariaDB in Docker
 task test-ui      # accessibility (axe) and keyboard tests in Chromium
 task bench        # Go benchmarks
 ```

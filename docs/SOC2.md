@@ -19,9 +19,25 @@ below say which records, and the queries that produce most of them.
 | Encryption (CC6.1, CC6.7) | Secrets sealed with the master key; TLS for every connection it makes; key rotation without downtime | Keep the master key in a secret store; rotate it on schedule |
 | Availability (A1.2) | Clustering, quorum writes, backups verified before restore | Run backups; test a restore each period |
 | Monitoring (CC7.2) | Prometheus metrics for readiness, audit delivery, queues, failures | Alert on them; keep the alert history |
-| Time (CC7.2) | Refuses to start with a clock before 2025; checks every node's clock against the others' and refuses to serve when it is off | Run NTP on every node |
+| Time (CC7.2) | Refuses to start with a clock before 2025; in a cluster, checks every node's clock against the others' and refuses to serve when it is off | Run NTP on every node (a single node has only its own clock: monitor its NTP sync) |
 
 ## The audit log
+
+### Settings
+
+- `audit.victorialogs_url` set: without it every start logs a warning that the database trail is not an audit trail.
+- `audit.logins = true` (the default): successful sign-ins are the evidence of access reviews and monitoring. Failed
+  ones, lock-outs and refusals are always recorded.
+- `audit.tokens = true` if you must show every refresh and client credentials token issued (off by default: new
+  grants, revocations and reuse are always recorded).
+
+### What it records, and when
+
+An event is recorded when the action has been made, as its last step: a node that crashes between the two (a power
+cut in that window of one request) leaves a change without its event, and without a gap in the numbering below, since
+the event never got a number. Every request the API refuses for the actor (a token without the scope, a missing CSRF
+header, a console session without a second factor, an action the actor's role does not permit) is recorded as
+`api.request.refused`, at most once a minute per actor and reason.
 
 ### Completeness
 
@@ -54,6 +70,15 @@ What the query cannot see on its own:
 
 So the check needs the structured log alongside VictoriaLogs, kept as long. Keep the queries and their results for
 the period (monthly is common).
+
+When VictoriaLogs refuses events, the spool decides by the answer:
+
+- **For what the events are** (400, 413, 422: it will never take them): they are written in full to the structured
+  log as `audit.undelivered`, with VictoriaLogs' reason, and leave the spool, so they do not hold back the events
+  after them.
+- **For who is asking** (401, 403: wrong credentials, or vmauth misconfigured): nothing is dropped. Every event waits
+  in the spool until the credentials are fixed, and the log says which. Alert on `quisora_audit_spool_bytes` growing:
+  past `audit.victorialogs_spool_max_mb` the oldest events leave the spool as `audit.undelivered`.
 
 The shipped structured log is the other half: alert on `audit.undelivered` and keep those lines as long as the audit
 log itself.
@@ -96,6 +121,9 @@ victorialogs_url = "op://Infra/Quisora VictoriaLogs/url"   # https://quisora:<pa
 - Restrict the host and volume VictoriaLogs runs on to the people who operate it, and keep that list as evidence.
 - Back up VictoriaLogs' data directory (a filesystem snapshot) to storage that cannot be changed for the retention
   period (object storage with object lock, say).
+- The events carry no signature or hash chain: their integrity rests on the access controls above. Until VictoriaLogs
+  has taken them they are in each node's spool (`<data_dir>/auditspool`), where whoever has access to the node's data
+  directory could change them: list node host access as a control too.
 
 ### Retention
 
@@ -112,11 +140,11 @@ read through the `auditor` vmauth user with LogsQL.
 | Control | Evidence | How |
 | --- | --- | --- |
 | Access reviews (CC6.2, CC6.3) | Each organization's administrators, managers and their last sign-in, reviewed and signed off each quarter | `GET /api/orgs/<org>/users?role=admin` (and `manager`, `super_admin`), saved with the reviewer's sign-off; changes made as a result show as `user.update` events |
-| Joiners and leavers (CC6.2) | Accounts created, disabled, ended and deleted, matched to HR records | `action:user.create OR action:user.provision OR action:user.update OR action:user.expire OR action:user.delete` |
-| Privileged changes (CC6.3) | Role changes | `action:user.update AND detail.changed.role:*` |
+| Joiners and leavers (CC6.2) | Accounts created, invited, disabled, locked out, ended and deleted, matched to HR records | `action:user.create OR action:user.provision OR action:user.invite OR action:user.update OR action:user.password OR action:user.locked_out OR action:user.expire OR action:user.delete` |
+| Privileged changes (CC6.3) | Role changes (an update that also sets a password is recorded as `user.password`) | `detail.changed.role:*` |
 | Authentication policy (CC6.1) | MFA required where the policy says | `action:org.update AND detail.changed.settings.require_mfa:*`; the organization settings pages |
 | Change management (CC8.1) | Configuration changes, each matched to an approved change request | `action:org.update OR action:tenant.* OR action:client.* OR action:provider.* OR action:cluster.reload OR action:keys.*`; your change tickets |
-| Security events (CC7.2, CC7.3) | Alerts raised and how each was handled | Alerts on `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `passkey.clone`, `apitoken.refused` ([alerts](RUNNING.md#metrics)); your incident tickets |
+| Security events (CC7.2, CC7.3) | Alerts raised and how each was handled | Alerts on `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `passkey.clone`, `apitoken.refused`, `api.request.refused` ([alerts](RUNNING.md#metrics)); your incident tickets |
 | Incident response (CC7.4) | Emergency sign-outs and what followed | `action:org.signout OR action:server.signout OR action:signout.sweep`; [emergency-sign-out.md](emergency-sign-out.md) |
 | Audit log completeness (CC7.2) | The sequence check above, each month, with the boots and last numbers from the structured log; no `audit.undelivered` lines, or each one explained | The queries above; your log pipeline |
 | Backups and recovery (A1.2, A1.3) | Backups made on schedule; a restore tested each period | `action:backup.download`, `action:backup.restore`; the record of the restore test |

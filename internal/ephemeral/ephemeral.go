@@ -36,8 +36,10 @@ type Store interface {
 	Take(ctx context.Context, ns, id string) ([]byte, error)
 	// Delete removes the id.
 	Delete(ctx context.Context, ns, id string) error
-	// Incr adds delta to a counter that resets window after its first increment, returning the new value. A counter
-	// too contended to update reports a value above any limit (Contended) rather than an error: callers fail closed.
+	// Incr adds delta to a counter that resets window after its first increment, returning the new value. Only a
+	// positive delta starts a counter: on a counter that does not exist (or has expired) a zero delta (a read) or a
+	// negative one (an attempt given back after the counter was cleared) does nothing and returns 0. A counter too
+	// contended to update reports a value above any limit (Contended) rather than an error: callers fail closed.
 	Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error)
 }
 
@@ -200,7 +202,7 @@ func (l *Local) Incr(_ context.Context, ns, key string, delta int64, window time
 	now := time.Now()
 	v, ok := s.m[k]
 	if !ok || now.After(v.expires) {
-		if delta == 0 { // a read: nothing to count yet, and nothing to keep
+		if delta <= 0 { // a read, or a give-back: nothing to count yet, and nothing to keep
 			if ok {
 				delete(s.m, k)
 				l.used.Add(-v.size(k))

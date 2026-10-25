@@ -109,16 +109,14 @@ type MasterKeyStatus struct {
 	Nodes      map[string]NodeKeys `json:"nodes"`
 	NodesAgree bool                `json:"nodes_agree"`
 	// Stale counts stored secrets sealed with a previous key (the housekeeping leader re-seals them); Unopenable
-	// those no configured key opens; LegacyGrants the refresh grants from an earlier version still bound to a
-	// previous key (converted when next used).
-	Stale        int `json:"stale_secrets"`
-	Unopenable   int `json:"unopenable_secrets"`
-	LegacyGrants int `json:"legacy_grants"`
+	// those no configured key opens.
+	Stale      int `json:"stale_secrets"`
+	Unopenable int `json:"unopenable_secrets"`
 	// QueueStale counts the items of the nodes' queues on disk still sealed with a previous key (NodeKeys.QueueStale).
 	QueueStale int `json:"queued_items_stale"`
 	// Removable says the previous keys can be removed now: every node seals with the active key and nothing stored
 	// needs another one. State is one of none (no previous keys), waiting_for_nodes, resealing, unopenable,
-	// legacy_grants, complete; Detail says what to do.
+	// complete; Detail says what to do.
 	Removable bool   `json:"previous_keys_removable"`
 	State     string `json:"state"`
 	Detail    string `json:"detail"`
@@ -148,7 +146,7 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 	if err != nil {
 		return nil, err
 	}
-	st.Stale, st.Unopenable, st.LegacyGrants = r.Pending, r.Failed, r.Legacy
+	st.Stale, st.Unopenable = r.Pending, r.Failed
 	switch {
 	case !st.NodesAgree:
 		st.State = "waiting_for_nodes"
@@ -166,10 +164,6 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		st.State = "resealing"
 		st.Detail = itoa(st.QueueStale) + " queued messages on " + strings.Join(queued, ", ") + " are still sealed " +
 			"with a previous key (their re-seal failed: see that node's log; it is tried again at its next report)."
-	case st.LegacyGrants > 0:
-		st.State = "legacy_grants"
-		st.Detail = itoa(st.LegacyGrants) + " refresh grants from an earlier version still depend on a previous key " +
-			"until they are next used; removing the previous keys now ends them (their users sign in again)."
 	case len(st.Previous) == 0:
 		st.State = "none"
 		st.Detail = "No previous master keys are configured on this node: no rotation in progress."

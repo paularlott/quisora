@@ -23,11 +23,15 @@ func queueCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 				"When the key is lost for good, this gives those items up: it removes them and nothing else (every item " +
 				"a configured key opens stays queued).\n\n" +
 				"Uses the same config file / QUISORA_* environment as serve, and needs the master keys. Run it on the " +
-				"node whose queues hold the items, with the node stopped (the queues are in its data directory), then " +
-				"start it again.",
+				"node whose queues hold the items, with the node stopped (the queues are in its data directory: it " +
+				"refuses while a server answers on server.listen), then start it again. It is recorded in the audit " +
+				"log (queue.purge_lost), with how many items it removed.",
 			Flags: flags,
 			Run: func(ctx context.Context, c *cli.Command) error {
-				mail, logout, err := app.PurgeLostQueueItems(cfg)
+				if err := prepare(ctx, cfg); err != nil {
+					return err
+				}
+				mail, logout, err := app.PurgeLostQueueItems(ctx, cfg, logger(cfg))
 				if err != nil {
 					return err
 				}

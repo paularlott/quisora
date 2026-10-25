@@ -48,7 +48,7 @@ func TestFreshSpoolRecoversAfterRealPartialWriteError(t *testing.T) {
 		if _, err := s.store([]byte("{\"id\":\"accepted-after-recovery\"}\n")); err != nil {
 			t.Fatal(err)
 		}
-		_, body := s.oldest()
+		_, body, _, _ := s.oldest()
 		if !bytes.Contains(body, []byte("accepted-after-recovery")) {
 			t.Fatalf("accepted event lost after real partial-write error %v: replay %s", writeErr, body)
 		}

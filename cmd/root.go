@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/paularlott/cli"
@@ -29,7 +30,7 @@ func Root() *cli.Command { return newRoot(config.Default()) }
 func newRoot(cfg *config.Config) *cli.Command {
 	flags := config.Flags(cfg)
 	cfgFile, configFlag := config.NewConfigFile(cfg)
-	server := flags.Server
+	server := slices.Clip(flags.Server) // full: each command's append(server, ...) gets its own copy
 	return &cli.Command{
 		Name:        "quisora",
 		Version:     build.Version,

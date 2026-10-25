@@ -35,14 +35,6 @@ func OpenStore(ctx context.Context, c *config.Config) (store.Store, error) {
 		}
 		return sqlstore.Open(ctx, sqlstore.Config{Driver: st.Backend, DSN: db.DSN, RootCAs: pool,
 			MaxOpenConns: db.MaxOpenConns, MaxIdleConns: db.MaxIdleConns, Feed: c.Replicate()})
-	case "valkey":
-		v := st.Valkey
-		t, err := valkeyTLS(v)
-		if err != nil {
-			return nil, err
-		}
-		return kvstore.OpenValkey(ctx, kvstore.ValkeyConfig{Addrs: v.Addrs, Username: v.Username, Password: v.Password,
-			DB: v.DB, KeyPrefix: v.KeyPrefix, TLS: v.TLS, TLSConfig: t})
 	}
 	return nil, fmt.Errorf("unknown storage backend %q", st.Backend)
 }

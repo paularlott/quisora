@@ -14,6 +14,17 @@ type orgView struct {
 	Users *int `json:"users,omitempty"`
 }
 
+// viewOf is o as a sees it: the last emergency sign-out (who pulled it, and why) is for those who manage the
+// organization's users, not for everyone in it.
+func (m *Module) viewOf(a *service.Actor, o *model.Org) orgView {
+	if o.LastSignOut != nil && !m.s.Svc.CanManageUsers(a, o.ID) {
+		cp := *o
+		cp.LastSignOut = nil
+		o = &cp
+	}
+	return orgView{Org: o}
+}
+
 func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
 	a := web.Actor(r)
 	items, total, err := m.s.Svc.ListOrgs(r.Context(), a, listQuery(r))
@@ -23,7 +34,7 @@ func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]orgView, len(items))
 	for i, o := range items {
-		out[i] = orgView{Org: o}
+		out[i] = m.viewOf(a, o)
 		if a.IsSuper() {
 			if n, err := m.s.Svc.Users.Count(r.Context(), o.ID); err == nil {
 				out[i].Users = &n
@@ -52,12 +63,18 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	var in service.OrgInput
+	// settings is decoded over a copy of the current ones: a PATCH that names some settings leaves the others as
+	// they are (an omitted switch must not read as "off").
+	set := o.Settings
+	in := service.OrgInput{Settings: &set}
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
+	if in.Settings != nil && *in.Settings == o.Settings {
+		in.Settings = nil
+	}
 	// The primary organization's sign-in policy covers the super admins themselves.
-	if o.Primary && in.Settings != nil && *in.Settings != o.Settings && a.IsSuper() && !m.stepUp(w, r) {
+	if o.Primary && in.Settings != nil && a.IsSuper() && !m.stepUp(w, r) {
 		return
 	}
 	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, o.ID, in)
@@ -91,7 +108,7 @@ func (m *Module) getOrg(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	v := orgView{Org: o}
+	v := m.viewOf(a, o)
 	if a.IsSuper() {
 		if n, err := m.s.Svc.Users.Count(r.Context(), o.ID); err == nil {
 			v.Users = &n
