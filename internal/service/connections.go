@@ -149,22 +149,11 @@ func (s *Service) RemoveUserApp(ctx context.Context, a *Actor, userID, clientID 
 }
 
 // DisconnectProvider unlinks every identity the user has at one provider (removeWay). It returns how many links it
-// removed; 0 means none.
+// removed.
 func (s *Service) DisconnectProvider(ctx context.Context, a *Actor, userID, providerID string) (int, error) {
 	n := 0
-	err := s.removeWay(ctx, a, userID, way{provider: providerID}, func(u *model.User, w *Ways) error {
-		for _, id := range w.Providers {
-			if id.ProviderID != providerID {
-				continue
-			}
-			if err := s.Identities.Delete(Durable(ctx), id.ID); err != nil {
-				return mapStore(err)
-			}
-			n++
-		}
-		if n == 0 {
-			return nil
-		}
+	err := s.removeWay(ctx, a, userID, way{provider: providerID}, func(u *model.User, gone []model.Credential) error {
+		n = len(gone)
 		name := providerID
 		if p, err := s.Providers.Get(ctx, providerID); err == nil {
 			name = p.Name
@@ -199,14 +188,8 @@ func (s *Service) UserPasskeys(ctx context.Context, a *Actor, userID string) ([]
 // error with a count is a passkey removed whose sessions did not all end.
 func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID, keepSession string) (int, error) {
 	ended := 0
-	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, w *Ways) error {
-		p, err := s.Passkeys.Get(ctx, passkeyID)
-		if err != nil || p.UserID != u.ID {
-			return ErrNotFound
-		}
-		if err := s.Passkeys.Delete(Durable(ctx), p.ID); err != nil {
-			return mapStore(err)
-		}
+	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, gone []model.Credential) error {
+		p := gone[0].(*model.Passkey)
 		// The passkey is gone; the sessions it signed in end after it, best effort, and a failure there is recorded
 		// with the removal (and returned: the caller says the sign-outs did not all happen), not hidden by it.
 		var serr error
@@ -222,10 +205,27 @@ func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID
 	return ended, err
 }
 
+// RemoveTOTP removes the user's authenticator app (removeWay: done to yourself, not your last second factor where
+// one is required).
+func (s *Service) RemoveTOTP(ctx context.Context, a *Actor, userID string) error {
+	return s.removeWay(ctx, a, userID, way{totp: true}, func(u *model.User, _ []model.Credential) error {
+		s.Audit(ctx, a, u.OrgID, selfOr(a, u, "account.totp.disable", "user.totp.remove"), u.Username, nil)
+		return nil
+	})
+}
+
+// Creds is what an account holds, read once: its passkeys and provider links that count (model.User.Counts; links
+// only to providers that still exist), able to sign in or not, and whether each linked provider is on. Listings show
+// these; what can sign the user in is worked out from them (Ways).
+type Creds struct {
+	Passkeys   []*model.Passkey
+	Links      []*model.Identity
+	ProviderOn map[string]bool // by provider id
+}
+
 // Ways is what can sign a user in: the password, the authenticator app, the passkeys that can sign in
-// (model.Passkey.Usable) and the connected providers, each passkey and provider only if it counts (made in the
-// account's credential epoch: model.User.Counts). It is the one definition of a usable way in: the credential
-// listings, the last-way guards and the second-factor checks all take it from here (sign-in takes the same passkeys:
+// (model.Passkey.Usable) and the links to providers that are on. It is the one definition of a usable way in: the
+// last-way guards and the second-factor checks all take it from here (sign-in takes the same passkeys:
 // passkey.Service).
 type Ways struct {
 	Password, TOTP bool
@@ -233,22 +233,114 @@ type Ways struct {
 	Providers      []*model.Identity
 }
 
-// UserWays returns u's ways in.
-func (s *Service) UserWays(ctx context.Context, u *model.User) (*Ways, error) {
+// Ways returns what of c, with u's password and authenticator app, can sign u in.
+func (c *Creds) Ways(u *model.User) *Ways {
 	w := &Ways{Password: u.PasswordHash != "", TOTP: u.HasTOTP()}
-	pks, err := s.CurrentPasskeys(ctx, u)
+	for _, p := range c.Passkeys {
+		if p.Usable() {
+			w.Passkeys = append(w.Passkeys, p)
+		}
+	}
+	for _, i := range c.Links {
+		if c.ProviderOn[i.ProviderID] {
+			w.Providers = append(w.Providers, i)
+		}
+	}
+	return w
+}
+
+// UserWays returns u's ways in, from this node's copies.
+func (s *Service) UserWays(ctx context.Context, u *model.User) (*Ways, error) {
+	c, err := s.UserCreds(ctx, u, false)
 	if err != nil {
 		return nil, err
 	}
-	w.Passkeys = slices.DeleteFunc(pks, func(p *model.Passkey) bool { return !p.Usable() })
-	if w.Providers, err = s.CurrentIdentities(ctx, u); err != nil {
-		return nil, err
-	}
-	return w, nil
+	return c.Ways(u), nil
 }
 
-// CurrentPasskeys returns u's passkeys that count (made in its credential epoch: model.User.Counts), able to sign in
-// or not (a disabled one is listed, to be removed): what every listing of passkeys shows.
+// UserCreds reads u's credentials. With quorum, every record (passkeys, links, providers) is read from a quorum's
+// copies — u must have been read so too (FreshUser) — so a removal, a disabled key or a provider turned off that a
+// majority confirmed anywhere is seen, even before it reaches this node. (A credential added elsewhere that has not
+// reached this node is missed: what counts can only be too little, which refuses a removal rather than allowing a
+// wrong one.)
+func (s *Service) UserCreds(ctx context.Context, u *model.User, quorum bool) (*Creds, error) {
+	pks, err := s.Passkeys.All(ctx, u.ID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	links, err := s.Identities.All(ctx, u.ID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if quorum {
+		if pks, err = quorumCopies(ctx, s, model.KindPasskey, pks); err != nil {
+			return nil, err
+		}
+		if links, err = quorumCopies(ctx, s, model.KindIdentity, links); err != nil {
+			return nil, err
+		}
+	}
+	c := &Creds{ProviderOn: map[string]bool{}}
+	c.Passkeys = slices.DeleteFunc(pks, func(p *model.Passkey) bool { return !u.Counts(p) })
+	links = slices.DeleteFunc(links, func(i *model.Identity) bool { return !u.Counts(i) })
+	var provIDs []string
+	for _, i := range links {
+		if !slices.Contains(provIDs, i.ProviderID) {
+			provIDs = append(provIDs, i.ProviderID)
+		}
+	}
+	provs, err := s.Providers.GetMany(ctx, provIDs)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if quorum {
+		if provs, err = quorumCopies(ctx, s, model.KindProvider, provs); err != nil {
+			return nil, err
+		}
+	}
+	exists := map[string]bool{}
+	for _, p := range provs {
+		exists[p.ID], c.ProviderOn[p.ID] = true, p.Enabled
+	}
+	c.Links = slices.DeleteFunc(links, func(i *model.Identity) bool { return !exists[i.ProviderID] }) // a deleted provider: the sweep removes the link
+	return c, nil
+}
+
+// quorumCopies replaces this node's copies es with a quorum's (freshMany), leaving out those a quorum no longer holds.
+func quorumCopies[T any, PT interface {
+	*T
+	model.Entity
+}](ctx context.Context, s *Service, kind model.Kind, es []PT) ([]PT, error) {
+	recs, err := s.freshMany(ctx, kind, ids(es))
+	if err != nil {
+		return nil, err
+	}
+	out := es[:0]
+	for _, e := range es {
+		r := recs[e.GetMeta().ID]
+		if r == nil {
+			continue
+		}
+		v := PT(new(T))
+		if err := store.Decode(r, v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// ids returns the ids of es.
+func ids[E model.Entity](es []E) []string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.GetMeta().ID
+	}
+	return out
+}
+
+// CurrentPasskeys returns u's passkeys that count (model.User.Counts), able to sign in or not (a disabled one is
+// listed, to be removed): what every listing of passkeys shows, and what sign-in offers.
 func (s *Service) CurrentPasskeys(ctx context.Context, u *model.User) ([]*model.Passkey, error) {
 	l, err := s.Passkeys.All(ctx, u.ID)
 	if err != nil {
@@ -257,33 +349,36 @@ func (s *Service) CurrentPasskeys(ctx context.Context, u *model.User) ([]*model.
 	return slices.DeleteFunc(l, func(p *model.Passkey) bool { return !u.Counts(p) }), nil
 }
 
-// CurrentIdentities returns u's links to sign-in providers that count (made in its credential epoch, to a provider
-// that still exists: a link stands on both): what every listing of connected providers shows.
+// CurrentIdentities returns u's links to sign-in providers that count (to a provider that still exists, on or off):
+// what every listing of connected providers shows.
 func (s *Service) CurrentIdentities(ctx context.Context, u *model.User) ([]*model.Identity, error) {
-	l, err := s.Identities.All(ctx, u.ID)
+	c, err := s.UserCreds(ctx, u, false)
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, err
 	}
-	out := l[:0]
-	for _, i := range l {
-		if !u.Counts(i) {
-			continue
-		}
-		if _, err := s.Providers.Get(ctx, i.ProviderID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue // the provider was deleted: the sweep removes the link
-			}
-			return nil, mapStore(err)
-		}
-		out = append(out, i)
-	}
-	return out, nil
+	return c.Links, nil
 }
 
-// way names a way in about to be removed: a passkey (id), the links to a provider (id), or the authenticator app.
+// way names what a removal takes: a passkey (id), the links to a provider (id), or the authenticator app.
 type way struct {
 	passkey, provider string
 	totp              bool
+}
+
+// of returns the credentials of c that x names.
+func (x way) of(c *Creds) []model.Credential {
+	var out []model.Credential
+	for _, p := range c.Passkeys {
+		if x.passkey != "" && p.ID == x.passkey {
+			out = append(out, p)
+		}
+	}
+	for _, i := range c.Links {
+		if x.provider != "" && i.ProviderID == x.provider {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // without returns w less the way x.
@@ -312,92 +407,90 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 // removeWay is the one way a passkey, a connected provider or the authenticator app is removed, by an administrator
 // or by the user on the account page: who may (manageConnections), what may go (done to yourself, your last way in
 // stays, and so does your last second factor where one is required; someone else may take them, and send an
-// invitation), the removal itself (remove), and what follows from it: what is in flight for the account ends (its
-// security generation moves on), and the recovery codes go with the last second factor.
+// invitation), and what follows (after: ending sessions, the audit).
 //
-// Removals of one account's ways in are serialised across the cluster (a lease, waysLockTTL) and decided on the ways a
-// quorum holds (freshWays): two removals at once, on any nodes, cannot each leave the other's way as the last one
-// and so remove both.
-func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way, remove func(*model.User, *Ways) error) error {
-	l, err := s.lock(ctx, "ways/"+userID, waysLockTTL, 10*time.Second, "another change of this account's ways in is in progress")
-	if err != nil {
-		return err
-	}
-	defer l.release(ctx)
-	u, err := s.FreshUser(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if err := s.manageConnections(ctx, a, u); err != nil {
-		return err
-	}
-	w, err := s.freshWays(ctx, u)
-	if err != nil {
-		return err
-	}
-	left := w.without(x)
-	if a != nil && a != System && a.UserID == u.ID {
-		what, other := "passkey", "Set up an Authenticator App first."
+// The removal is one compare-and-swap of the user record, on the copy a quorum holds, decided on the credentials a
+// quorum holds (UserCreds): it lists the passkeys and links taken (model.User.Removed: they stop counting at that
+// write), clears the authenticator app, drops the recovery codes with the last second factor and moves the security
+// generation on (what is in flight for the account ends). Two removals at once, on any nodes, however long either
+// stalls, cannot both commit on the copy they decided on: the second is refused (store.ErrStale), decides again on
+// the account as the first left it, and so never takes the last way in. The records are deleted after the commit, as
+// tidying (the orphan sweep removes any left).
+func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way, after func(u *model.User, gone []model.Credential) error) error {
+	for attempt := 0; ; attempt++ {
+		u, err := s.FreshUser(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if err := s.manageConnections(ctx, a, u); err != nil {
+			return err
+		}
+		c, err := s.UserCreds(ctx, u, true)
+		if err != nil {
+			return err
+		}
+		gone := x.of(c)
 		switch {
-		case x.provider != "":
-			what = "provider"
-		case x.totp:
-			what, other = "totp", "Add a passkey first."
+		case x.totp && !u.HasTOTP():
+			return &conflictErr{Invalid("totp", "No Authenticator App is set up.")}
+		case !x.totp && len(gone) == 0:
+			return ErrNotFound
 		}
-		switch {
-		case !left.any():
-			return &conflictErr{Invalid(what, "This is your only way to sign in. Add another way in, or ask an administrator for an invitation first.")}
-		case w.secondFactor() && !left.secondFactor() && s.MFARequired(ctx, u):
-			return &conflictErr{Invalid(what, "You need a second factor. "+other)}
+		w := c.Ways(u)
+		left := w.without(x)
+		if a != nil && a != System && a.UserID == u.ID {
+			what, other := "passkey", "Set up an Authenticator App first."
+			switch {
+			case x.provider != "":
+				what = "provider"
+			case x.totp:
+				what, other = "totp", "Add a passkey first."
+			}
+			switch {
+			case !left.any():
+				return &conflictErr{Invalid(what, "This is your only way to sign in. Add another way in, or ask an administrator for an invitation first.")}
+			case w.secondFactor() && !left.secondFactor() && s.MFARequired(ctx, u):
+				return &conflictErr{Invalid(what, "You need a second factor. "+other)}
+			}
 		}
-	}
-	rerr := remove(u, w)
-	if rerr != nil && errors.Is(rerr, ErrNotFound) {
-		return rerr
-	}
-	if _, err := s.AdvanceSecurity(ctx, u.ID); err != nil { // a way in is gone: what is in flight for the account ends
-		return errors.Join(rerr, err)
-	}
-	if w.secondFactor() && !left.secondFactor() {
-		if err := s.DropRecoveryCodes(ctx, u.ID); err != nil {
-			s.Log.Warn("recovery codes not removed with the last second factor", "user", u.ID, "error", err)
+		now := time.Now().UTC()
+		u.Removed = s.liveRemovals(ctx, u.Removed, now)
+		for _, g := range gone {
+			u.Removed = append(u.Removed, model.Removal{Kind: g.Kind(), ID: g.GetMeta().ID, At: now})
 		}
+		if x.totp {
+			u.TOTPSecret, u.MFAEnrolledAt = "", nil
+		}
+		if w.secondFactor() && !left.secondFactor() {
+			u.RecoveryCodes, u.RecoveryCreated = nil, nil
+		}
+		u.BumpSecurity()
+		err = s.Users.Update(Durable(ctx), u)
+		if errors.Is(err, store.ErrStale) && attempt < 7 {
+			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy
+		}
+		if !store.Applied(err) {
+			return mapStore(err)
+		}
+		for _, g := range gone { // tidying: they count for nothing already
+			if err := s.Store.Put(Durable(ctx), store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil && !store.Applied(err) {
+				s.Log.Warn("a removed credential's record is left to the orphan sweep", "user", u.ID, "id", g.GetMeta().ID, "error", err)
+			}
+		}
+		return after(u, gone)
 	}
-	return rerr
 }
 
-// waysLockTTL bounds how long an account's ways-in lock is held when its holder dies.
-const waysLockTTL = 30 * time.Second
-
-// freshWays is UserWays (u read from a quorum) less the passkeys and links a quorum no longer holds: a removal
-// confirmed by a majority anywhere is counted, even before it reaches this node. (A way added elsewhere that has not
-// reached this node is missed: the count can only be too low, which refuses a removal rather than allowing a wrong
-// one.)
-func (s *Service) freshWays(ctx context.Context, u *model.User) (*Ways, error) {
-	w, err := s.UserWays(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	pks, err := s.freshMany(ctx, model.KindPasskey, ids(w.Passkeys))
-	if err != nil {
-		return nil, err
-	}
-	w.Passkeys = slices.DeleteFunc(w.Passkeys, func(p *model.Passkey) bool { return pks[p.ID] == nil })
-	links, err := s.freshMany(ctx, model.KindIdentity, ids(w.Providers))
-	if err != nil {
-		return nil, err
-	}
-	w.Providers = slices.DeleteFunc(w.Providers, func(i *model.Identity) bool { return links[i.ID] == nil })
-	return w, nil
-}
-
-// ids returns the ids of es.
-func ids[E model.Entity](es []E) []string {
-	out := make([]string, len(es))
-	for i, e := range es {
-		out[i] = e.GetMeta().ID
-	}
-	return out
+// liveRemovals returns rs less the entries whose record has been gone for RemovalRetention (no node can hand it
+// back any more), so the list stays as short as the removals still being tidied.
+func (s *Service) liveRemovals(ctx context.Context, rs []model.Removal, now time.Time) []model.Removal {
+	return slices.DeleteFunc(rs, func(r model.Removal) bool {
+		if now.Sub(r.At) < model.RemovalRetention {
+			return false
+		}
+		_, err := s.Store.Get(ctx, r.Kind, r.ID)
+		return errors.Is(err, store.ErrNotFound)
+	})
 }
 
 // selfOr is the audit action for a change a made to u: self when a is u (the account page), other otherwise.
@@ -406,31 +499,6 @@ func selfOr(a *Actor, u *model.User, self, other string) string {
 		return self
 	}
 	return other
-}
-
-// RemoveTOTP removes the user's authenticator app (removeWay: done to yourself, not your last second factor where
-// one is required).
-func (s *Service) RemoveTOTP(ctx context.Context, a *Actor, userID string) error {
-	return s.removeWay(ctx, a, userID, way{totp: true}, func(u *model.User, w *Ways) error {
-		if !w.TOTP {
-			return &conflictErr{Invalid("totp", "No Authenticator App is set up.")}
-		}
-		for attempt := 0; ; attempt++ {
-			u.TOTPSecret, u.MFAEnrolledAt = "", nil
-			err := s.Users.Update(Durable(ctx), u)
-			if store.Applied(err) {
-				break
-			}
-			if !errors.Is(err, store.ErrStale) || attempt == 7 {
-				return mapStore(err)
-			}
-			if u, err = s.Users.Get(ctx, userID); err != nil {
-				return mapStore(err)
-			}
-		}
-		s.Audit(ctx, a, u.OrgID, selfOr(a, u, "account.totp.disable", "user.totp.remove"), u.Username, nil)
-		return nil
-	})
 }
 
 // SetTOTP gives u, as read, the authenticator app with secret, whose code at step was just checked against it: one

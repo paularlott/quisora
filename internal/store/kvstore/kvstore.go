@@ -405,7 +405,7 @@ func indexEntries(r *store.Record) []indexEntry {
 				}
 			}
 		} else if f.Index && (f.Type != model.FieldBool || r.Fields[f.Name] == true) { // a bool's false records: never read
-			if v, ok := fieldKey(r.Fields[f.Name]); ok {
+			if v, ok := fieldKey(r.Fields[f.Name]); ok && v != "" { // nor an empty string's (sparse: most users have no manager)
 				b := fieldBucket(r.Kind, f.Name, v)
 				out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, fieldRange(b, r.Scope)})
 			}
@@ -605,7 +605,8 @@ func fieldKey(v any) (string, bool) {
 // indexBuckets returns the field index buckets that serve the filters of q: in is the bucket of the first equality
 // filter on an indexed field (the records it can match are only those, whatever else the query asks), and out the
 // buckets of the records each filter on false of an indexed bool field leaves out (the records with true: the small
-// set such a field is indexed for; a filter on false is never served from the large "false" bucket). The two
+// set such a field is indexed for; a filter on false is never served from the large "false" bucket; nor is an empty
+// string indexed: a filter on "" scans). The two
 // classes are exclusive: when out covers every filter and in is "", the query is a plain page of the scope with
 // those records skipped.
 func indexBuckets(kind model.Kind, q store.ListQuery) (in string, out []string) {
@@ -623,7 +624,7 @@ func indexBuckets(kind model.Kind, q store.ListQuery) (in string, out []string) 
 			}
 			if f.Type == model.FieldBool && flt.Value == false {
 				out = append(out, fieldBucket(kind, f.Name, "true"))
-			} else if ok && in == "" {
+			} else if ok && v != "" && in == "" { // a filter on "" scans: empty strings are not indexed
 				in = fieldBucket(kind, f.Name, v)
 			}
 		}

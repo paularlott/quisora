@@ -333,7 +333,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	switch {
 	case err == nil:
 		u, uerr := s.Svc.Users.Get(ctx, ident.UserID)
-		if uerr == nil && u.Holds(ident.Epoch) {
+		if uerr == nil && u.Counts(ident) {
 			if u.OrgID != org.ID || !u.Enabled(time.Now()) {
 				return nil, false, ErrDisabled
 			}

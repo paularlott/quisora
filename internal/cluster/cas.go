@@ -705,31 +705,40 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 const readBatch = 1000
 
 // freshBatch reads ids from enough peers to make a quorum with this node, each reply a stream (handleRead), and
-// merges the newest copy of each record into out (repairing this node's copy).
+// merges the newest copy of each record into out (repairing this node's copy). It returns when a quorum has
+// answered, when too few can, or when ctx ends (a dial or a reply still in progress is abandoned).
 func (s *Store) freshBatch(ctx context.Context, kind model.Kind, ids []string, out map[string]*store.Record) error {
 	n := s.n
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // the replies not needed for the quorum are abandoned
 	peers := n.otherPeers()
-	answers := make(chan []*store.Record, len(peers))
+	type answer struct {
+		recs []*store.Record
+		err  error
+	}
+	answers := make(chan answer, len(peers))
 	req := &readReq{Kind: string(kind), IDs: ids}
 	for _, mb := range peers {
 		go func(mb *member) {
 			recs, err := n.readFrom(ctx, mb, req)
-			if err != nil {
-				recs = nil
-			}
-			answers <- recs
+			answers <- answer{recs, err}
 		}(mb)
 	}
 	got := 1
+	var errs []error
 	for range peers {
-		recs := <-answers
-		if recs == nil {
+		var a answer
+		select {
+		case a = <-answers:
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %d of the %d nodes needed answered: %w", store.ErrUnconfirmed, got, n.Quorum(), ctx.Err())
+		}
+		if a.err != nil {
+			errs = append(errs, a.err)
 			continue
 		}
 		got++
-		for _, r := range recs {
+		for _, r := range a.recs {
 			if r.Kind != kind {
 				continue
 			}
@@ -742,7 +751,8 @@ func (s *Store) freshBatch(ctx context.Context, kind model.Kind, ids []string, o
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.Quorum())
+	err := fmt.Errorf("%w: %d of the %d nodes needed answered", store.ErrUnconfirmed, got, n.Quorum())
+	return errors.Join(append([]error{err}, errs...)...)
 }
 
 // readFrom reads one peer's reply to a quorum read; any failure (the peer does not vote, a copy it could not read, a
@@ -754,7 +764,7 @@ func (n *Node) readFrom(ctx context.Context, mb *member, req *readReq) ([]*store
 	}
 	defer rc.Close()
 	br := bufio.NewReader(rc)
-	recs := []*store.Record{} // non-nil: an answer, even with no records
+	var recs []*store.Record
 	for {
 		b, err := readFrame(br)
 		if errors.Is(err, io.EOF) {

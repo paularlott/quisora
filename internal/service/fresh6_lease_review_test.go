@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -18,17 +19,19 @@ type fresh6RemovalStall struct {
 	entered, resume chan struct{}
 }
 
-func (g *fresh6RemovalStall) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	r, err := g.Store.Get(ctx, kind, id)
-	if kind == model.KindPasskey && id == g.id && g.once.CompareAndSwap(false, true) {
+// CompareAndPut pauses the first removal at its commit (the user record's compare-and-swap), after its guard has
+// decided. (It paused at the passkey read that followed the guard when a lease guarded the removal; the removal now
+// commits on the user record, and there is no lease to expire: the second removal runs while the first is paused.)
+func (g *fresh6RemovalStall) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindUser && r.ID == g.id && g.once.CompareAndSwap(false, true) {
 		close(g.entered)
 		select {
 		case <-g.resume:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 	}
-	return r, err
+	return g.Store.CompareAndPut(ctx, r, expect)
 }
 
 func TestFresh6ExpiredWaysLeaseCannotRemoveLastCredential(t *testing.T) {
@@ -42,8 +45,8 @@ func TestFresh6ExpiredWaysLeaseCannotRemoveLastCredential(t *testing.T) {
 		return p
 	}
 	a, b := makeKey("fresh6-key-a"), makeKey("fresh6-key-b")
-	g := &fresh6RemovalStall{Store: e.svc.Store, id: a.ID, entered: make(chan struct{}), resume: make(chan struct{})}
-	e.svc.Passkeys.S = g
+	g := &fresh6RemovalStall{Store: e.svc.Store, id: u.ID, entered: make(chan struct{}), resume: make(chan struct{})}
+	e.svc.Users.S = g
 	t.Cleanup(func() {
 		select {
 		case <-g.resume:
@@ -59,9 +62,8 @@ func TestFresh6ExpiredWaysLeaseCannotRemoveLastCredential(t *testing.T) {
 	select {
 	case <-g.entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("removal did not reach post-guard read")
+		t.Fatal("removal did not reach its commit")
 	}
-	time.Sleep(31 * time.Second) // production waysLockTTL=30s; no clock or lock-state edits
 	_, second := e.svc.RemovePasskey(service.SelfService(e.ctx), actor(u), u.ID, b.ID, "")
 	close(g.resume)
 	first := <-done

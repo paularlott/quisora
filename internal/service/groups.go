@@ -164,41 +164,12 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	return nil
 }
 
-// GroupMemberCount returns how many of group g's users a may see (no permission check: the caller has read g). One
-// indexed count, less the super admins among them for those who may not see super admins; a group with pending
-// changes is counted from its member list (rare: a writer died mid-change).
+// GroupMemberCount returns how many of group g's users a may see (no permission check: the caller has read g): its
+// committed members that are users (memberIDs), less the super admins among them for those who may not see super
+// admins.
 func (s *Service) GroupMemberCount(ctx context.Context, a *Actor, g *model.Group) (int, error) {
-	if len(g.Pending) > 0 {
-		ids, err := s.memberIDs(ctx, g)
-		if err != nil {
-			return 0, err
-		}
-		hidden, err := s.hiddenSuperAdmins(ctx, a, g.OrgID)
-		if err != nil {
-			return 0, err
-		}
-		n := 0
-		for _, id := range ids {
-			if !hidden[id] {
-				n++
-			}
-		}
-		return n, nil
-	}
-	_, n, err := s.Members.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
-	if err != nil || seesSuperAdmins(a) {
-		return n, mapStore(err)
-	}
-	hidden, err := s.hiddenSuperAdmins(ctx, a, g.OrgID)
-	if err != nil || len(hidden) == 0 {
-		return n, err
-	}
-	for id := range hidden {
-		if m, err := s.Members.Get(ctx, model.MemberID(g.ID, id)); err == nil && m.Active() {
-			n--
-		}
-	}
-	return n, nil
+	ids, err := s.visibleMembers(ctx, a, g)
+	return len(ids), err
 }
 
 // hiddenSuperAdmins returns the ids of the super admins of org that a may not see (only the primary organization has
@@ -224,6 +195,11 @@ func (s *Service) GroupMembers(ctx context.Context, a *Actor, groupID string) ([
 	if err != nil {
 		return nil, err
 	}
+	return s.visibleMembers(ctx, a, g)
+}
+
+// visibleMembers is memberIDs less the super admins a may not see.
+func (s *Service) visibleMembers(ctx context.Context, a *Actor, g *model.Group) ([]string, error) {
 	ids, err := s.memberIDs(ctx, g)
 	if err != nil {
 		return nil, err
@@ -235,8 +211,10 @@ func (s *Service) GroupMembers(ctx context.Context, a *Actor, groupID string) ([
 	return slices.DeleteFunc(ids, func(id string) bool { return hidden[id] }), nil
 }
 
-// memberIDs returns the ids of g's committed members, in id order: the materialized memberships (one indexed read)
-// with g's pending changes applied over them, so a committed change is seen whether or not it is materialized yet.
+// memberIDs returns the ids of g's committed members that are users of its organization, in id order: the
+// materialized memberships (one indexed read) with g's pending changes applied over them, so a committed change is
+// seen whether or not it is materialized yet, and only those whose user exists (liveUsers): a membership stands on
+// its user as on its group, so a deleted user is no member, whatever the clean-up of their memberships has done.
 func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, error) {
 	// Ids only: the key-value stores answer from the group_id index without reading a membership record.
 	ids, _, err := s.Members.IDs(ctx, store.ListQuery{Scope: g.OrgID, Filters: []store.Filter{{Field: "group_id", Value: g.ID}}})
@@ -246,7 +224,35 @@ func (s *Service) memberIDs(ctx context.Context, g *model.Group) ([]string, erro
 	for i, id := range ids {
 		ids[i] = strings.TrimPrefix(id, g.ID+":") // model.MemberID
 	}
-	return CommittedMembers(g, ids), nil
+	return s.liveUsers(ctx, g.OrgID, CommittedMembers(g, ids))
+}
+
+// liveUsers returns those of ids (sorted) that are users of org: ids merged, in order, with the organization's user
+// ids read from its index a page at a time (no user record is read, and no more than a page of ids is held).
+func (s *Service) liveUsers(ctx context.Context, org string, ids []string) ([]string, error) {
+	const page = 5000
+	out := ids[:0]
+	i := 0
+	for after := ""; i < len(ids); {
+		users, _, err := s.Users.IDs(ctx, store.ListQuery{Scope: org, After: after, Limit: page})
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		for _, uid := range users {
+			for i < len(ids) && ids[i] < uid {
+				i++ // not a user (any more)
+			}
+			if i < len(ids) && ids[i] == uid {
+				out = append(out, uid)
+				i++
+			}
+		}
+		if len(users) < page {
+			break
+		}
+		after = users[len(users)-1]
+	}
+	return out, nil
 }
 
 // CommittedMembers applies g's pending changes to the materialized member ids, returning the committed members in id

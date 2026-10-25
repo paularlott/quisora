@@ -74,7 +74,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "user_type", Type: FieldString, Sort: true},
 		{Name: "department", Type: FieldString, Sort: true},
-		{Name: "manager_id", Type: FieldString},
+		{Name: "manager_id", Type: FieldString, Index: true}, // a user's reports (deleting the manager): sparse, as empty strings are never indexed
 		{Name: "employee_number", Type: FieldString},
 		{Name: "expiring", Type: FieldBool},
 		{Name: "valid_until", Type: FieldTime, Sort: true},

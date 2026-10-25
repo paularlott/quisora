@@ -201,7 +201,8 @@ to avoid the window altogether.
 A quorum read counts only voters that answered with every copy asked for: a voter that cannot read one fails its
 reply and is not counted, rather than answering as if it held none. The reply is a gossip stream (any size, written
 as each record is read, never held whole in memory or bound by the 4 MB packet limit); a read of more ids is sent
-1,000 ids per request, each batch confirmed by its own quorum. Every other reply stays within one packet: a feed page
+1,000 ids per request, each batch confirmed by its own quorum. A read ends with its caller's deadline, a dial
+or a reply still in progress included. Every other reply stays within one packet: a feed page
 (the first full copy of a new node, and catching up) carries at most 1,000 records and 1 MB.
 
 ### Sign-in stamps
@@ -226,10 +227,16 @@ this node. Two demotions on two nodes are therefore serialised, and the second s
 ### The last way in
 
 A user removing one of their own ways to sign in (a passkey, a connected provider, the authenticator app) may not
-remove the last one, nor their last second factor where one is required. Removals of one account's ways in take the
-account's lock (`ways/<user id>`, as the admin lock) and count the ways from a quorum's copies of the user, its
-passkeys and its links: two removals on two nodes, each of a different one of the last two passkeys, are serialised,
-and the second is refused.
+remove the last one, nor their last second factor where one is required. A removal is one compare-and-swap of the
+user record (a quorum one in a gossip cluster), on the copy a quorum holds, decided on the credentials a quorum holds
+(their contents: a key disabled, a provider turned off, a link of a passed epoch count for nothing). The write lists
+the passkeys and links removed (`model.User.Removed`: they stop counting at that write, on every node), clears the
+authenticator app, drops the recovery codes with the last second factor and moves the security generation on. Two
+removals at once, however long either stalls, cannot both commit on the copy they decided on: the second is refused
+(`ErrStale`), decides again on the account as the first left it, and is refused as the last way in. The records are
+deleted after the commit, as tidying (the orphan sweep removes any left); an entry leaves the list once its record
+has been gone for the tombstone retention, and a new credential epoch clears it. No lock is involved, so nothing
+depends on a lease outliving a stalled request.
 
 ### Groups and their members
 
@@ -331,9 +338,12 @@ also removes what any interrupted write left, so there is no other clean-up path
 
 Deleting an organization sends no back-channel logout: a user signs in only to applications of their own
 organization, and those are deleted with it (their tokens stop working at once), so the deletion is one write
-whatever the organization's size. Deleting a user tells the applications at once, and marks the user's memberships
-removed at once (the sweep's own removal), so group member lists and counts, which are read from the membership
-index, never count a deleted user.
+whatever the organization's size. Deleting a user tells the applications at once. Their memberships stand on them:
+every reader of a group's members (lists, counts, SCIM) keeps only members that are users of the organization, by
+merging the member ids with the organization's user ids read from its index a page at a time (no user record is
+read), so a deleted user is never a member, whatever the clean-up has done (a pending addition that materializes
+after the deletion included). A manager reference is cleared through the sparse `manager_id` index: only the
+deleted user's reports are read.
 
 A unique value held by such a record (a provider identity's subject, a passkey's credential id) does not wait for the
 sweep: a create that finds it taken asks `service.ReleaseUnique`, which removes the holder if, read from a quorum, it

@@ -176,6 +176,37 @@ type User struct {
 	// credentials and sign-ins are valid.
 	CredEpoch    uint64 `msgpack:"ce,omitempty" json:"-"`
 	SessionEpoch uint64 `msgpack:"se,omitempty" json:"-"`
+	// Removed lists the passkeys and provider links removed one by one in the current credential epoch. Removing one
+	// is a compare-and-swap of this record that adds it here (service.removeWay): it stops counting at that write,
+	// and a removal decided on an older copy of the account is refused, so two removals at once cannot each take
+	// what the other counted on. The record is deleted after (the orphan sweep removes any left); an entry is dropped
+	// once its record is gone for good (RemovalRetention). A new credential epoch clears the list (SetCredEpoch).
+	Removed []Removal `msgpack:"rm,omitempty" json:"-"`
+}
+
+// Removal is one credential removed from an account (User.Removed).
+type Removal struct {
+	Kind Kind      `msgpack:"k"`
+	ID   string    `msgpack:"i"`
+	At   time.Time `msgpack:"t"`
+}
+
+// RemovalRetention is how long a removal is listed after its record is gone: as long as tombstones are kept, so no
+// node can still hand the record back when the entry goes.
+const RemovalRetention = 7 * 24 * time.Hour
+
+// SetCredEpoch gives the account credential epoch e: every credential made in another stops counting, and the
+// removals listed for the old one are moot.
+func (u *User) SetCredEpoch(e uint64) { u.CredEpoch, u.Removed = e, nil }
+
+// removed reports whether the credential id is listed in Removed.
+func (u *User) removed(id string) bool {
+	for _, r := range u.Removed {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Holds reports whether a credential (passkey, connected provider, API token) made in epoch still counts for the
@@ -193,13 +224,13 @@ type Credential interface {
 	MadeIn() (epoch uint64, session bool) // its epoch, and whether that is a session epoch
 }
 
-// Counts reports whether c, one of u's, still counts: made in the account's epoch of its kind.
+// Counts reports whether c, one of u's, still counts: made in the account's epoch of its kind, and not removed.
 func (u *User) Counts(c Credential) bool {
 	e, session := c.MadeIn()
 	if session {
 		return u.SessionHolds(e)
 	}
-	return u.Holds(e)
+	return u.Holds(e) && !u.removed(c.GetMeta().ID)
 }
 
 func (p *Passkey) Owner() string           { return p.UserID }
