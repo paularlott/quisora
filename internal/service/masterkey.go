@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,10 +27,12 @@ const (
 func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
 	id := masterKeyReportPrefix + nodeID
 	for range 5 {
-		// "<active>,<previous>...|<queued items needing a previous key>" (QueuesStale)
+		// "<active>,<previous>...|<queued items needing a previous key>|<queued items needing a key not configured>"
+		// (QueuesStale)
 		until, keys := time.Now().Add(MasterKeyReportTTL), strings.Join(s.Sealer.KeyIDs(), ",")
 		if s.QueuesStale != nil {
-			keys += "|" + strconv.Itoa(s.QueuesStale())
+			stale, lost := s.QueuesStale()
+			keys += "|" + strconv.Itoa(stale) + "|" + strconv.Itoa(lost)
 		}
 		l, err := s.Locks.Get(ctx, id)
 		switch {
@@ -51,8 +54,10 @@ type NodeKeys struct {
 	Active   string   `json:"active_key"`
 	Previous []string `json:"previous_keys"`
 	// QueueStale counts the items of the node's queues on disk (mail, back-channel logouts) still sealed with a
-	// previous key: the previous keys cannot go while any node has one.
+	// previous key: the previous keys cannot go while any node has one. QueueLost counts those sealed with a key no
+	// longer configured: they need none of the configured keys, and the node gives them up once they are 8 days old.
 	QueueStale int `json:"queued_items_stale"`
+	QueueLost  int `json:"queued_items_lost"`
 }
 
 // MasterKeyNodes returns the master keys each live node reported, by node id.
@@ -72,10 +77,16 @@ func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, erro
 				return out, nil // past the reports
 			}
 			if r.Until.After(now) {
-				keys, stale, _ := strings.Cut(r.Holder, "|")
-				ids := strings.Split(keys, ",")
-				n, _ := strconv.Atoi(stale)
-				out[node] = NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...), QueueStale: n}
+				parts := strings.Split(r.Holder, "|")
+				ids := strings.Split(parts[0], ",")
+				k := NodeKeys{Active: ids[0], Previous: append([]string{}, ids[1:]...)}
+				if len(parts) > 1 {
+					k.QueueStale, _ = strconv.Atoi(parts[1])
+				}
+				if len(parts) > 2 {
+					k.QueueLost, _ = strconv.Atoi(parts[2])
+				}
+				out[node] = k
 			}
 		}
 		if len(l) < 100 {
@@ -112,8 +123,11 @@ type MasterKeyStatus struct {
 	// those no configured key opens.
 	Stale      int `json:"stale_secrets"`
 	Unopenable int `json:"unopenable_secrets"`
-	// QueueStale counts the items of the nodes' queues on disk still sealed with a previous key (NodeKeys.QueueStale).
+	// QueueStale counts the items of the nodes' queues on disk still sealed with a previous key (NodeKeys.QueueStale);
+	// QueueLost those sealed with a key no longer configured, which only a warning in Detail mentions
+	// (NodeKeys.QueueLost).
 	QueueStale int `json:"queued_items_stale"`
+	QueueLost  int `json:"queued_items_lost"`
 	// Removable says the previous keys can be removed now: every node seals with the active key and nothing stored
 	// needs another one. State is one of none (no previous keys), waiting_for_nodes, resealing, unopenable,
 	// complete; Detail says what to do.
@@ -131,7 +145,7 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		return nil, err
 	}
 	st.Nodes, st.NodesAgree = nodes, true
-	var others, queued []string
+	var others, queued, lost []string
 	for node, k := range nodes {
 		if k.Active != st.Active {
 			st.NodesAgree = false
@@ -140,6 +154,10 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		if k.QueueStale > 0 {
 			st.QueueStale += k.QueueStale
 			queued = append(queued, node)
+		}
+		if k.QueueLost > 0 {
+			st.QueueLost += k.QueueLost
+			lost = append(lost, node)
 		}
 	}
 	r, err := s.resealSecrets(ctx, 0, true)
@@ -177,6 +195,12 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 			st.State, st.Removable = "complete", true
 			st.Detail = "This node has no previous keys, but some nodes still do: remove them there."
 		}
+	}
+	if st.QueueLost > 0 { // a warning: they need no configured key, so they hold the rotation back in nothing
+		sort.Strings(lost)
+		st.Detail += " Warning: " + itoa(st.QueueLost) + " queued messages on " + strings.Join(lost, ", ") + " are " +
+			"sealed with a master key that is not configured: put it back in server.previous_master_keys, or they " +
+			"are given up once they are 8 days old."
 	}
 	return st, nil
 }

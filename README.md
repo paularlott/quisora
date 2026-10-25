@@ -114,7 +114,6 @@ release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 | `quisora backup`, `quisora restore` | Online backups, encrypted with a password, of the whole store; a restore is verified before anything is written ([Backup and restore](docs/RUNNING.md#backup-and-restore)) |
 | `quisora set-primary` | Make another organization the primary one, which holds the super admins ([docs/RUNNING.md](docs/RUNNING.md#changing-the-primary-organization)) |
 | `quisora force-start` | Start a gossip node on its own data once, after an outage ([docs/REPLICATION.md](docs/REPLICATION.md)) |
-| `quisora queue purge-lost` | Give up queued mail and back-channel logouts sealed with a lost master key (node stopped; audited) |
 | `quisora healthcheck [--ready]` | Exit 0 when this node is alive (or ready): for container health checks |
 | `quisora genkey` | A new master key, cluster key or BadgerDB encryption key |
 | `/healthz`, `/readyz` | Liveness, and readiness for load balancers (with the clock offset and cluster state) |

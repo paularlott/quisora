@@ -58,9 +58,6 @@ func TestOfflineCommandsNeedMasterKey(t *testing.T) {
 	if _, _, err := openForCommand(ctx, c); err == nil || !strings.Contains(err.Error(), "previous_master_keys") {
 		t.Fatalf("bad previous key: %v", err)
 	}
-	if _, _, err := PurgeLostQueueItems(ctx, c, logger.NewNullLogger()); err == nil {
-		t.Fatal("purge-lost accepted a bad previous key")
-	}
 	c.Server.PreviousMasterKeys = nil
 	c.Storage.Backend = "nonesuch"
 	if _, _, err := openForCommand(ctx, c); err == nil || !strings.Contains(err.Error(), "storage:") {

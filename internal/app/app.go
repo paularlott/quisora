@@ -207,6 +207,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.background(func() { node.RunPurge(bg, 10*time.Minute) })
 	a.background(func() { a.auditForcedStart(bg) })
 	a.background(func() { a.auditRestore(bg) })
+	a.background(func() { a.purgeLostDaily(bg) })
 	a.closers = append(a.closers, srv.Stop) // the very first: stop taking requests (draining) before anything else
 	return a, nil
 }

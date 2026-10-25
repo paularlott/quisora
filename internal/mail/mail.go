@@ -99,9 +99,13 @@ func (m *Mailer) Close() { m.q.Close() }
 // Queued returns how many messages are waiting to be sent.
 func (m *Mailer) Queued() int { return m.q.Queued() }
 
-// Reseal re-seals the queued messages with the active master key, returning how many still need another key
-// (queue.Queue.Reseal).
-func (m *Mailer) Reseal() int { return m.q.Reseal() }
+// Reseal re-seals the queued messages with the active master key, returning how many still need a previous key and
+// how many need one that is not configured (queue.Queue.Reseal).
+func (m *Mailer) Reseal() (stale, lost int) { return m.q.Reseal() }
+
+// PurgeLost removes the queued messages no configured master key opens that were queued before before
+// (queue.Queue.PurgeLost).
+func (m *Mailer) PurgeLost(before time.Time) (int, error) { return m.q.PurgeLost(before) }
 
 // ErrQueueFull is returned when the queue is full.
 var ErrQueueFull = queue.ErrFull

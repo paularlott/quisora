@@ -103,11 +103,6 @@ func TestBootstrapInviteSignOutBackupRestore(t *testing.T) {
 		t.Fatal("set-primary of an unknown organization succeeded")
 	}
 
-	// queue purge-lost on an empty queue
-	if _, errOut, err = e.run(t, "", "queue", "purge-lost"); err != nil || !strings.Contains(errOut, "Removed 0 email(s) and 0 back-channel") {
-		t.Fatalf("queue: %v %q", err, errOut)
-	}
-
 	// backup (plain, encrypted with a password file), then restore into a fresh installation with the same key
 	pwf := filepath.Join(e.dir, "pw")
 	_ = os.WriteFile(pwf, []byte("correct horse battery\nignored\n"), 0o600)

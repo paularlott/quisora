@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,31 +125,38 @@ func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 }
 
 // Reseal re-seals every queued item with the active master key, and returns how many are still not sealed with it:
-// one no configured key opens (kept, and delivered once its key is configured again), or one whose rewrite failed (a
-// full or failing disk). Either still needs a previous key: while the count is not 0 no previous key may be removed
-// (app.ReloadMasterKeys refuses, and this node reports the rotation unfinished). Call it after the master keys change,
-// before the node reports its new key (service.ReportMasterKey). An unreadable queue counts as one.
-func (q *Queue[T]) Reseal() (stale int) {
+// stale, those whose rewrite failed (a full or failing disk), which still need the configured previous key they are
+// sealed with: while any is left no previous key may be removed (app.ReloadMasterKeys refuses, and this node reports
+// the rotation unfinished); and lost, those no configured key opens, which need no configured key, so they hold
+// nothing back: they wait for their key to be configured again, and are given up once their links have expired
+// (PurgeLost, the node's daily sweep). Call it after the master keys change, before the node reports its new key
+// (service.ReportMasterKey). An unreadable queue counts as one stale item.
+func (q *Queue[T]) Reseal() (stale, lost int) {
 	q.fileMu.Lock()
 	q.waiting = nil // the keys changed: every item is read afresh (one that needs a key no longer configured waits)
 	q.fileMu.Unlock()
 	names, err := q.files()
 	if err != nil {
 		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
-		return 1
+		return 1, 0
 	}
 	for _, name := range names {
-		if err := q.reseal(name); err != nil {
+		switch err := q.reseal(name); {
+		case errors.Is(err, secure.ErrUnknownKey):
+			lost++
+		case err != nil:
 			stale++
 		}
 	}
 	if stale > 0 {
-		q.o.Log.Error(q.o.Name+": items not re-sealed with the active master key keep needing their key (a key "+
-			"not configured: put it back in server.previous_master_keys, or, if it is lost for good, give them up with "+
-			"\"quisora queue purge-lost\"; or a write that failed: it is tried again)",
-			"items", stale)
+		q.o.Log.Error(q.o.Name+": items not re-sealed with the active master key (a write that failed: it is tried "+
+			"again); their previous key stays needed", "items", stale)
 	}
-	return stale
+	if lost > 0 {
+		q.o.Log.Warn(q.o.Name+": items sealed with a master key that is not configured: put it back in "+
+			"server.previous_master_keys, or they are given up once they are 8 days old", "items", lost)
+	}
+	return stale, lost
 }
 
 func (q *Queue[T]) reseal(name string) error {
@@ -230,12 +238,24 @@ func (q *Queue[T]) removeTemp() {
 	}
 }
 
-// PurgeLost removes from the queue in dir the items no key of sealer opens: sealed with a master key that is lost
-// (not in server.master_key nor server.previous_master_keys, and never coming back). Such items are kept otherwise,
-// to be delivered once their key is configured again, and they keep a previous key from being retired (Reseal);
-// purging them gives them up for good. It returns how many it removed. Run it with the node stopped ("quisora queue
-// purge-lost"): the node counts its items when it starts.
-func PurgeLost(dir string, sealer *secure.Sealer) (int, error) {
+// PurgeLost removes the items no configured master key opens that were queued before before (see the package
+// PurgeLost), one file at a time as the worker changes them, so it runs while the queue does.
+func (q *Queue[T]) PurgeLost(before time.Time) (int, error) {
+	q.fileMu.Lock()
+	defer q.fileMu.Unlock()
+	n, err := PurgeLost(q.dir, q.o.Sealer, before)
+	if names, ferr := q.files(); ferr == nil { // counted again: what is on disk is the queue
+		q.queued.Store(int64(len(names)))
+	}
+	return n, err
+}
+
+// PurgeLost removes from the queue in dir the items no key of sealer opens (sealed with a master key that is not in
+// server.master_key nor server.previous_master_keys) that were queued before before: the time is in the file's name,
+// which retries and re-seals keep. Such items are kept otherwise, to be delivered once their key is configured again;
+// purging them gives them up for good. It returns how many it removed. A queue that is open is purged through it
+// (Queue.PurgeLost); this is for one no worker runs on.
+func PurgeLost(dir string, sealer *secure.Sealer, before time.Time) (int, error) {
 	q := &Queue[struct{}]{dir: dir}
 	names, err := q.files()
 	if errors.Is(err, os.ErrNotExist) {
@@ -246,6 +266,9 @@ func PurgeLost(dir string, sealer *secure.Sealer) (int, error) {
 	}
 	n := 0
 	for _, name := range names {
+		if !queuedBefore(name, before) {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return n, err
@@ -259,6 +282,14 @@ func PurgeLost(dir string, sealer *secure.Sealer) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// queuedBefore reports whether the item in file name (Add: "<unix nanoseconds>-<random>.item") was queued before t.
+// A name that is not one of those is not judged old.
+func queuedBefore(name string, t time.Time) bool {
+	at, _, ok := strings.Cut(name, "-")
+	ns, err := strconv.ParseInt(at, 10, 64)
+	return ok && err == nil && time.Unix(0, ns).Before(t)
 }
 
 // idleCheck bounds how long the worker sleeps: it notices a retry that is due, or files put there by hand.

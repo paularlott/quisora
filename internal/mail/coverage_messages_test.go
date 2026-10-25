@@ -156,8 +156,8 @@ func TestRetryThenDeliver(t *testing.T) {
 	if m.Queued() != 0 {
 		t.Fatalf("%d still queued", m.Queued())
 	}
-	if n := m.Reseal(); n != 0 {
-		t.Fatalf("reseal left %d", n)
+	if stale, lost := m.Reseal(); stale+lost != 0 {
+		t.Fatalf("reseal left %d stale, %d lost", stale, lost)
 	}
 }
 

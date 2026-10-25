@@ -3710,6 +3710,12 @@ components:
                 type: array
                 items:
                   type: string
+              queued_items_stale:
+                type: integer
+                description: items of the node's queues still sealed with a previous key
+              queued_items_lost:
+                type: integer
+                description: items of the node's queues sealed with a key that is not configured
         nodes_agree:
           type: boolean
           description: every live node seals with active_key
@@ -3721,6 +3727,12 @@ components:
         previous_keys_removable:
           type: boolean
           description: the previous keys can be removed now
+        queued_items_lost:
+          type: integer
+          description: queued messages (every node) sealed with a key that is not configured; a warning only, they are given up once 8 days old
+        queued_items_stale:
+          type: integer
+          description: queued messages (every node) still sealed with a previous key; the previous keys stay until they are re-sealed
         stale_secrets:
           type: integer
           description: stored secrets sealed with a previous key (being re-sealed)

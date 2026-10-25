@@ -9,19 +9,16 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
-	"errors"
+	"fmt"
 	"math/big"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/secure"
-	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -102,75 +99,72 @@ func TestOpenStoreErrors(t *testing.T) {
 	st.Close()
 }
 
+// The daily sweep gives up, while the node runs, the queued items no configured key opens that are older than
+// lostItemAge; it leaves younger ones (their key may be put back) and every item a configured key opens, and records
+// in the audit log only a sweep that removed something.
 func TestPurgeLostQueueItems(t *testing.T) {
-	c := config.Default()
-	c.Server.DataDir, c.Server.Listen = t.TempDir(), "127.0.0.1:1" // nothing listens there
-	c.Server.MasterKey = base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
-	// no queue directories yet: nothing to do
-	if m, l, err := PurgeLostQueueItems(context.Background(), c, logger.NewNullLogger()); err != nil || m != 0 || l != 0 {
-		t.Fatalf("empty: %d %d %v", m, l, err)
-	}
-	key, _ := masterKey(c)
-	mine, _ := newSealer(c, key)
+	a, _, _ := startAppWith(t, "badgerdb", nil)
+	ctx := context.Background()
+	c := a.Cfg
 	foreign, _ := secure.NewKeyring(secure.RandomBytes(32))
-	put := func(dir, name string, s *secure.Sealer) string {
+	named := func(at time.Time) string { return fmt.Sprintf("%020d-ab", at.UnixNano()) }
+	put := func(dir string, at time.Time, s *secure.Sealer) string {
 		d := c.DataPath(dir)
 		_ = os.MkdirAll(d, 0o700)
-		p := filepath.Join(d, name+".item")
+		p := filepath.Join(d, named(at)+".item")
 		if err := os.WriteFile(p, []byte(s.SealFor("", []byte("x"))), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	lostMail1, lostMail2 := put(config.DirMailQueue, "a", foreign), put(config.DirMailQueue, "b", foreign)
-	keptMail := put(config.DirMailQueue, "c", mine)
-	lostLogout := put(config.DirLogoutQueue, "a", foreign)
-	m, l, err := PurgeLostQueueItems(context.Background(), c, logger.NewNullLogger())
-	if err != nil || m != 2 || l != 1 {
-		t.Fatalf("purged %d mail, %d logout: %v", m, l, err)
+	sweeps := func() int {
+		evs, _, _ := a.Svc.Audits.List(ctx, store.ListQuery{})
+		n := 0
+		for _, e := range evs {
+			if e.Action == "queue.purge_lost" {
+				n++
+			}
+		}
+		return n
 	}
-	for _, p := range []string{lostMail1, lostMail2, lostLogout} {
-		if _, err := os.Stat(p); err == nil {
-			t.Fatalf("%s not purged", p)
+	old := time.Now().Add(-lostItemAge - time.Hour)
+	// No SMTP server here: no worker on the mail queue, so an item the active key opens stays there untouched.
+	oldMail := put(config.DirMailQueue, old, foreign)
+	keptMail := put(config.DirMailQueue, old.Add(time.Second), a.Svc.Sealer)
+	oldLogout := put(config.DirLogoutQueue, old, foreign)
+	youngLogout := put(config.DirLogoutQueue, time.Now().Add(-time.Hour), foreign)
+	before := time.Now().Add(-lostItemAge)
+	if m, l, err := a.purgeLostQueueItems(ctx, before); err != nil || m != 1 || l != 1 {
+		t.Fatalf("sweep: %d mail, %d logout: %v", m, l, err)
+	}
+	for _, p := range []string{oldMail, oldLogout} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s not given up", filepath.Base(p))
 		}
 	}
-	if _, err := os.Stat(keptMail); err != nil {
-		t.Fatal("an item of the active key was purged")
+	for _, p := range []string{keptMail, youngLogout} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%s given up", filepath.Base(p))
+		}
 	}
-	// recorded in the audit log
-	st, err := OpenStore(context.Background(), c)
-	if err != nil {
-		t.Fatal(err)
+	if q := a.logoutQueue.Load(); q == nil || q.Queued() != 1 {
+		t.Fatal("the logout queue does not count what is left")
 	}
-	evs, _, _ := service.New(c, st, mine).Audits.List(context.Background(), store.ListQuery{})
-	st.Close()
+	evs, _, _ := a.Svc.Audits.List(ctx, store.ListQuery{})
 	found := false
 	for _, e := range evs {
-		found = found || e.Action == "queue.purge_lost" && e.Detail["emails"] == "2" && e.Detail["logouts"] == "1"
+		found = found || e.Action == "queue.purge_lost" && e.Detail["emails"] == "1" && e.Detail["logouts"] == "1" &&
+			e.Detail["queued_before"] != ""
 	}
 	if !found {
 		t.Fatalf("not audited: %+v", evs)
 	}
-	// refused while a server answers on server.listen
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	if _, _, err := a.purgeLostQueueItems(ctx, before); err != nil || sweeps() != 1 {
+		t.Fatalf("a sweep that removed nothing is audited: %v", err)
 	}
-	defer ln.Close()
-	running := *c
-	running.Server.Listen = ln.Addr().String()
-	if _, _, err := PurgeLostQueueItems(context.Background(), &running, logger.NewNullLogger()); !errors.Is(err, ErrServerRunning) {
-		t.Fatalf("a running node: %v", err)
-	}
-	// a queue directory that is not a directory is an error
-	c2 := config.Default()
-	c2.Server.DataDir, c2.Server.MasterKey, c2.Server.Listen = t.TempDir(), c.Server.MasterKey, c.Server.Listen
-	_ = os.WriteFile(c2.DataPath(config.DirMailQueue), nil, 0o600)
-	if _, _, err := PurgeLostQueueItems(context.Background(), c2, logger.NewNullLogger()); err == nil {
-		t.Fatal("unreadable mail queue accepted")
-	}
-	c2.Server.MasterKey = ""
-	if _, _, err := PurgeLostQueueItems(context.Background(), c2, logger.NewNullLogger()); err == nil {
-		t.Fatal("no master key accepted")
+	// The young lost item does not hold the rotation back: it is a warning only.
+	st, err := a.Svc.RotationStatus(ctx)
+	if err != nil || st.QueueLost != 1 || st.QueueStale != 0 || !strings.Contains(st.Detail, "given up once") {
+		t.Fatalf("status: %+v %v", st, err)
 	}
 }

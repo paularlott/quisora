@@ -2,64 +2,72 @@ package app
 
 import (
 	"context"
-	"errors"
-	"net"
 	"strconv"
 	"time"
 
-	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// ErrServerRunning means a server answers on this node's server.listen: its queue workers own the queue files.
-var ErrServerRunning = errors.New("a server answers on this node's server.listen: stop it, then run this command again")
+// lostItemAge is how old an item of this node's queues (mail, back-channel logouts) that no configured master key
+// opens is when the daily sweep gives it up: older than any link a queued email carries (an invitation,
+// service.InviteTTL) and than either queue's retries, so it would be worthless even if its key came back. A younger
+// one stays, to go out if its key is put back in server.previous_master_keys. Such items hold nothing back meanwhile:
+// they need none of the configured keys (queue.Queue.Reseal).
+const lostItemAge = service.InviteTTL + 24*time.Hour
 
-// PurgeLostQueueItems is "quisora queue purge-lost": it removes from this node's mail and back-channel logout queues
-// the items sealed with a master key that is not configured (queue.PurgeLost), returns how many of each, and records
-// it in the audit log (queue.purge_lost: the items, invitations and reset links among them, are gone for good). It
-// refuses while the node runs: its workers would be delivering the same files.
-func PurgeLostQueueItems(ctx context.Context, c *config.Config, log logger.Logger) (mail, logout int, err error) {
-	if listening(c.Server.Listen) {
-		return 0, 0, ErrServerRunning
+// purgeLostDaily runs the sweep of lost items (purgeLostQueueItems) on this node's queues, once a day from shortly
+// after the start, until ctx ends.
+func (a *App) purgeLostDaily(ctx context.Context) {
+	t := time.NewTimer(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if _, _, err := a.purgeLostQueueItems(ctx, time.Now().Add(-lostItemAge)); err != nil {
+			a.Log.Warn("queues: giving up items sealed with a lost master key", "error", err)
+		}
+		t.Reset(24 * time.Hour)
 	}
-	st, sealer, err := openForCommand(ctx, c) // a BadgerDB store the node holds is refused here too
-	if err != nil {
-		return 0, 0, err
+}
+
+// purgeLostQueueItems removes from this node's queues the items no configured master key opens that were queued
+// before before, as its delivery workers go on (queue.Queue.PurgeLost). When it removed any (or failed) it records it
+// in the audit log (queue.purge_lost: the items, invitations and reset links among them, are gone for good) and
+// reports this node's master keys again, with the warning about them gone.
+func (a *App) purgeLostQueueItems(ctx context.Context, before time.Time) (mail, logout int, err error) {
+	sealer := a.Svc.Sealer
+	if a.mailer != nil {
+		mail, err = a.mailer.PurgeLost(before)
+	} else { // no SMTP server: no worker on the directory, which may still hold mail from before
+		mail, err = queue.PurgeLost(a.Cfg.DataPath(config.DirMailQueue), sealer, before)
 	}
-	defer st.Close()
-	svc := service.New(c, st, sealer)
-	svc.Origin = service.CommandOrigin("queue purge-lost")
-	defer cliAudit(c, svc, log)()
-	if mail, err = queue.PurgeLost(c.DataPath(config.DirMailQueue), sealer); err == nil {
-		logout, err = queue.PurgeLost(c.DataPath(config.DirLogoutQueue), sealer)
+	if err == nil {
+		if q := a.logoutQueue.Load(); q != nil {
+			logout, err = q.PurgeLost(before)
+		} else {
+			logout, err = queue.PurgeLost(a.Cfg.DataPath(config.DirLogoutQueue), sealer, before)
+		}
 	}
-	detail := map[string]string{"emails": strconv.Itoa(mail), "logouts": strconv.Itoa(logout)}
+	if mail+logout == 0 && err == nil {
+		return 0, 0, nil
+	}
+	detail := map[string]string{"emails": strconv.Itoa(mail), "logouts": strconv.Itoa(logout), "node": a.Node.ID(),
+		"queued_before": before.UTC().Format(time.RFC3339)}
 	if err != nil {
 		detail["error"] = err.Error()
 	}
 	org := ""
-	if p, perr := svc.PrimaryOrg(ctx); perr == nil {
+	if p, perr := a.Svc.PrimaryOrg(ctx); perr == nil {
 		org = p.ID
 	}
-	svc.Audit(ctx, service.System, org, "queue.purge_lost", "queues", detail)
+	a.Svc.Audit(ctx, service.System, org, "queue.purge_lost", "queues", detail)
+	if rerr := a.Svc.ReportMasterKey(context.WithoutCancel(ctx), a.Node.ID()); rerr != nil {
+		a.Log.Warn("master key: reporting this node's key (retried)", "error", rerr)
+	}
 	return mail, logout, err
-}
-
-// listening reports whether something answers on listen (host:port; an empty or wildcard host is this machine).
-func listening(listen string) bool {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return false
-	}
-	if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
-		host = "127.0.0.1"
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 500*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
 }

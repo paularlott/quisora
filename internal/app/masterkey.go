@@ -8,17 +8,17 @@ import (
 )
 
 // resealQueues re-seals this node's queues on disk (mail, back-channel logouts) with the active master key and
-// returns how many of their items still need another key (service.Service.QueuesStale reports it with this node's
-// keys).
-func (a *App) resealQueues() int {
-	n := 0
+// returns how many of their items still need a previous key, and how many one that is not configured
+// (queue.Queue.Reseal; service.Service.QueuesStale reports both with this node's keys).
+func (a *App) resealQueues() (stale, lost int) {
 	if a.mailer != nil {
-		n += a.mailer.Reseal()
+		stale, lost = a.mailer.Reseal()
 	}
 	if q := a.logoutQueue.Load(); q != nil {
-		n += q.Reseal()
+		s, l := q.Reseal()
+		stale, lost = stale+s, lost+l
 	}
-	return n
+	return stale, lost
 }
 
 // ReloadMasterKeys switches the running server to the master keys master and previous (server.master_key and
@@ -64,7 +64,7 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 	// active key before a key is dropped (an item that could not be moved off a key being dropped refuses the
 	// reload: it would be lost) and with the new one before this node reports it (one left behind keeps the rotation
 	// reported unfinished: service.Service.QueuesStale).
-	if n := a.resealQueues(); n > 0 && len(dropped(cur.KeyIDs(), next.KeyIDs())) > 0 {
+	if n, _ := a.resealQueues(); n > 0 && len(dropped(cur.KeyIDs(), next.KeyIDs())) > 0 {
 		return fmt.Errorf("%d queued messages (mail, back-channel logouts) could not be re-sealed with the active "+
 			"master key and still need a key being removed: keep it in server.previous_master_keys (the log says why)", n)
 	}

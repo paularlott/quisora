@@ -219,11 +219,13 @@ a node started with only the old key refuses to start.
 - A secret that no configured key opens (the old key removed before the rotation completed, or a damaged value) is
   logged at error level (`secrets that no configured master key opens`); put the missing key back in
   `previous_master_keys`.
-- Queued emails and back-channel logouts are sealed too. One sealed with a key that is no longer configured stays
-  queued (the log says `items not re-sealed with the active master key`), to be delivered once its key is back, and
-  until then the rotation is not complete. If that key is lost for good, stop the node and run
-  `quisora queue purge-lost` there: it removes those items, and only those, from the node's queues, and records how
-  many in the audit log (`queue.purge_lost`). It refuses while a server answers on the node's `server.listen`.
+- Queued emails and back-channel logouts are sealed too, and re-sealed by their node. One sealed with a key that is no
+  longer configured (removed too early) stays queued, to be delivered once its key is back: the node logs `items
+  sealed with a master key that is not configured`, and `GET /api/master-key` counts them (`queued_items_lost`) with a
+  warning in its `detail`. They need none of the configured keys, so they do not hold the rotation back. Each node
+  gives them up once they are more than 8 days old (a daily sweep): by then every link they carry has expired (an
+  invitation lasts 7 days) and their retries would have ended, so they are worthless even if the key comes back. A
+  sweep that removed any is recorded in the audit log (`queue.purge_lost`, with how many and `queued_before`).
 
 ## Changing the primary organization
 

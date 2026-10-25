@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -138,7 +139,7 @@ func TestSurvivesRestart(t *testing.T) {
 }
 
 // A master key rotation re-seals the queue, so the previous key can go without losing an item; an item sealed with a
-// key that is not configured is kept, not dropped.
+// key that is not configured is kept, not dropped, and counted as lost (it needs no configured key), not as stale.
 func TestSurvivesKeyRotation(t *testing.T) {
 	dir := t.TempDir()
 	oldKey, newKey := secure.RandomBytes(32), secure.RandomBytes(32)
@@ -150,8 +151,8 @@ func TestSurvivesKeyRotation(t *testing.T) {
 	q.Close()
 
 	q2 := open(t, dir, sealer(t, newKey), down, time.Hour) // the old key removed too early
-	if n := q2.Reseal(); n != 1 || q2.Queued() != 1 {
-		t.Fatalf("unopenable %d, queued %d", n, q2.Queued())
+	if stale, lost := q2.Reseal(); stale != 0 || lost != 1 || q2.Queued() != 1 {
+		t.Fatalf("stale %d, lost %d, queued %d", stale, lost, q2.Queued())
 	}
 	q2.Close()
 
@@ -209,20 +210,54 @@ func TestPurgeLost(t *testing.T) {
 	q.Close()
 	q = open(t, dir, sealer(t, key), down, time.Hour)
 	_ = q.Add("kept", time.Hour, 0)
-	if n := q.Reseal(); n != 1 {
-		t.Fatalf("lost items before the purge: %d", n)
+	if _, lost := q.Reseal(); lost != 1 {
+		t.Fatalf("lost items before the purge: %d", lost)
 	}
 	q.Close()
 
-	if n, err := PurgeLost(dir, sealer(t, key)); err != nil || n != 1 {
+	if n, err := PurgeLost(dir, sealer(t, key), time.Now()); err != nil || n != 1 {
 		t.Fatalf("purged %d: %v", n, err)
 	}
 	q = open(t, dir, sealer(t, key), down, time.Hour)
 	defer q.Close()
-	if q.Queued() != 1 || q.Reseal() != 0 {
+	if stale, lost := q.Reseal(); q.Queued() != 1 || stale+lost != 0 {
 		t.Fatalf("after the purge: queued %d", q.Queued())
 	}
-	if n, err := PurgeLost(filepath.Join(dir, "missing"), sealer(t, key)); err != nil || n != 0 {
+	if n, err := PurgeLost(filepath.Join(dir, "missing"), sealer(t, key), time.Now()); err != nil || n != 0 {
 		t.Fatalf("a queue never made: %d %v", n, err)
+	}
+}
+
+// With a time, only the lost items queued before it go (their names say when), while the queue runs; a younger lost
+// item stays, to go out if its key is configured again, and a name that is not a queued item's is never judged old.
+func TestPurgeLostOlderThan(t *testing.T) {
+	dir := t.TempDir()
+	lost, key := sealer(t, secure.RandomBytes(32)), sealer(t, secure.RandomBytes(32))
+	q := open(t, dir, key, &sink{}, time.Hour)
+	defer q.Close()
+	put := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(lost.SealFor("", []byte("x"))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	stamp := func(at time.Time) string { return fmt.Sprintf("%020d-%s%s", at.UnixNano(), "ab", ext) }
+	old := put(stamp(time.Now().Add(-10 * 24 * time.Hour)))
+	young := put(stamp(time.Now().Add(-time.Hour)))
+	odd := put("not-a-time" + ext)
+	if n, err := q.PurgeLost(time.Now().Add(-8 * 24 * time.Hour)); err != nil || n != 1 {
+		t.Fatalf("purged %d: %v", n, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("the old lost item stayed")
+	}
+	for _, p := range []string{young, odd} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%s was purged", filepath.Base(p))
+		}
+	}
+	if q.Queued() != 2 {
+		t.Fatalf("queued %d", q.Queued())
 	}
 }

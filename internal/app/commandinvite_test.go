@@ -70,8 +70,9 @@ func TestInviteThroughRunningServer(t *testing.T) {
 	mine, _ := newSealer(c, key)
 	other, _ := secure.NewSealer(secure.RandomBytes(32))
 	req := func(s *secure.Sealer, at time.Time) commandInvite {
-		ci := commandInvite{Org: "primary", Email: "admin@example.com", At: at.Unix(), Nonce: secure.RandomToken(18)}
-		ci.sign(s)
+		ci := commandInvite{Org: "primary", Email: "admin@example.com",
+			commandSig: commandSig{At: at.Unix(), Nonce: secure.RandomToken(18)}}
+		signCommand(&ci, s)
 		return ci
 	}
 	if got := post(req(other, time.Now())); got != http.StatusUnauthorized {

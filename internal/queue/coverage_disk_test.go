@@ -125,7 +125,7 @@ func TestResealUnreadableAndInvalidFiles(t *testing.T) {
 	s := sealer(t, secure.RandomBytes(32))
 	q := idle(dir, Options[string]{Sealer: s})
 	put(t, dir, "00000000000000000001-aa"+ext, "this is not a sealed value")
-	if n := q.Reseal(); n != 1 {
+	if n, _ := q.Reseal(); n != 1 {
 		t.Fatalf("an unsealable file counts as not re-sealed: %d", n)
 	}
 	// The file vanishing between listing and reading is a delivery, not a failure.
@@ -139,7 +139,7 @@ func TestResealUnreadableAndInvalidFiles(t *testing.T) {
 	if err := q.reseal(name); err == nil {
 		t.Fatal("unreadable file re-sealed")
 	}
-	if n := q.Reseal(); n != 2 {
+	if n, _ := q.Reseal(); n != 2 {
 		t.Fatalf("stale %d", n)
 	}
 }
@@ -150,7 +150,7 @@ func TestResealUnreadableQueue(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	if n := q.Reseal(); n != 1 {
+	if n, _ := q.Reseal(); n != 1 {
 		t.Fatalf("an unreadable queue counts as one: %d", n)
 	}
 	if _, err := q.read("none" + ext); err == nil {
@@ -324,7 +324,7 @@ func TestPurgeLostFailures(t *testing.T) {
 
 	base := t.TempDir()
 	put(t, base, "file", "x")
-	if _, err := PurgeLost(filepath.Join(base, "file"), key); err == nil {
+	if _, err := PurgeLost(filepath.Join(base, "file"), key, time.Now()); err == nil {
 		t.Fatal("a regular file is not a queue directory")
 	}
 
@@ -333,7 +333,7 @@ func TestPurgeLostFailures(t *testing.T) {
 	put(t, dir, "00000000000000000001-aa"+ext, lostItem)
 	put(t, dir, "00000000000000000002-bb"+ext, "x")
 	chmod(t, filepath.Join(dir, "00000000000000000002-bb"+ext), 0)
-	if n, err := PurgeLost(dir, key); err == nil || n != 1 {
+	if n, err := PurgeLost(dir, key, time.Now()); err == nil || n != 1 {
 		t.Fatalf("purged %d, err %v", n, err)
 	}
 
@@ -341,7 +341,7 @@ func TestPurgeLostFailures(t *testing.T) {
 	dir = t.TempDir()
 	put(t, dir, "00000000000000000001-aa"+ext, lostItem)
 	chmod(t, dir, 0o500)
-	if n, err := PurgeLost(dir, key); err == nil || n != 0 {
+	if n, err := PurgeLost(dir, key, time.Now()); err == nil || n != 0 {
 		t.Fatalf("purged %d, err %v", n, err)
 	}
 }
@@ -353,7 +353,7 @@ func TestPurgeLostKeepsOpenableAndForeignItems(t *testing.T) {
 	put(t, dir, "00000000000000000002-bb"+ext, key.SealFor("other/queue", []byte("another binding")))
 	put(t, dir, "00000000000000000003-cc"+ext, "not sealed at all")
 	put(t, dir, "notes.txt", "ignored")
-	if n, err := PurgeLost(dir, key); err != nil || n != 0 {
+	if n, err := PurgeLost(dir, key, time.Now()); err != nil || n != 0 {
 		t.Fatalf("purged %d: %v", n, err)
 	}
 	ents, _ := os.ReadDir(dir)

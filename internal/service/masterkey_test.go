@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/secure"
@@ -16,8 +17,8 @@ func TestRotationWaitsForStaleQueues(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.svc.Sealer.Replace(ring)
-	stale := 2
-	e.svc.QueuesStale = func() int { return stale }
+	stale, lost := 2, 0
+	e.svc.QueuesStale = func() (int, int) { return stale, lost }
 	if err := e.svc.ReportMasterKey(e.ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -34,5 +35,15 @@ func TestRotationWaitsForStaleQueues(t *testing.T) {
 	}
 	if st, err = e.svc.RotationStatus(e.ctx); err != nil || !st.Removable {
 		t.Fatalf("once re-sealed: %+v %v", st, err)
+	}
+	// Items sealed with a key that is not configured need none of the configured keys: the rotation completes, with
+	// a warning to put their key back before they are given up.
+	lost = 3
+	if err := e.svc.ReportMasterKey(e.ctx, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = e.svc.RotationStatus(e.ctx); err != nil || !st.Removable || st.State != "complete" || st.QueueLost != 3 ||
+		!strings.Contains(st.Detail, "3 queued messages on node-a") {
+		t.Fatalf("with lost queued items: %+v %v", st, err)
 	}
 }

@@ -33,7 +33,7 @@ func TestFreshReviewFailedResealStillNeedsPreviousKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ring.Replace(sealer(t, newKey, oldKey))
-	failures := q.Reseal()
+	failures, _ := q.Reseal()
 	if failures != 1 {
 		t.Fatalf("failures=%d", failures)
 	}
