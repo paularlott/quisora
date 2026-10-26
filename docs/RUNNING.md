@@ -244,11 +244,11 @@ quisora set-primary acme --super-admin alice@acme.example
 - `alice@acme.example` (a user of `acme`) becomes its super admin; the previous primary organization's super admins
   become administrators of that organization. The change is audited in both. The server's emergency sign-out
   counters move with it.
-- **It can be run again.** The change is four writes (the new primary marked, its super admin promoted, the old primary
-  unmarked, the old super admins demoted) in the global partition and two organizations' partitions, with no transaction
-  over them. If it stops part-way (a node lost, the store refusing a write), the state is safe at every step (until the
-  end there are two primary organizations at worst, and every node chooses the same one, logging an error), and running
-  the same command again finishes what is left and audits it. When nothing is left it says the organization is the
+- **It can be run again.** The change is four writes (the new primary marked, its super admin promoted, the old super
+  admins demoted, the old primary unmarked) in the global partition and two organizations' partitions, with no
+  transaction over them. If it stops part-way (a node lost, the store refusing a write), the command fails and the state
+  is safe at every step: until the last write both organizations are marked primary, every node chooses the same one
+  and logs an error until it is finished, and running the same command again finishes what is left and audits it. When nothing is left it says the organization is the
   primary already.
 - On a shared database it works while the servers run; they follow within seconds. On BadgerDB or SQLite stop the
   server first. In a gossip cluster run it while the nodes run: it asks a running node (`server.public_url`, or

@@ -40,6 +40,9 @@ type codeData struct {
 	ClaimsUI    []string `json:"cu,omitempty"`
 	ClaimsID    []string `json:"ci,omitempty"`
 	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt of the authorization request
+	// Abandoned are grants an exchange that failed on our side may have stored without handing out their tokens
+	// (userGrant): the retry that succeeds removes them, else they would stay until they expire.
+	Abandoned []string `json:"ab,omitempty"`
 }
 
 func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +232,10 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	switch {
 	case oe != nil && oe.status >= 500:
 		// Nothing was decided (a store that could not be read or written): the code is put back for the client's
-		// retry, rather than spent on our failure.
+		// retry, rather than spent on our failure, with the grant this attempt may have stored.
+		if len(cd.Abandoned) > 0 {
+			raw, _ = json.Marshal(cd)
+		}
 		_ = p.s.Eph.Set(ctx, nsCode, code, raw, p.codeTTL(c))
 	case oe == nil:
 		_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(gid), usedTTL)
@@ -245,7 +251,8 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 
 // userGrant makes the grant a user authorized (cd: from an authorization code, or an approved device sign-in, via
 // naming its grant type) and issues its tokens for res, checking again that the user, their session and their access
-// to the application are still there. It returns the grant's id.
+// to the application are still there. It returns the grant's id. A failure of ours (5xx) once the grant may be stored
+// adds it to cd.Abandoned, for the caller to keep with what it puts back for the retry; a success removes those.
 func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res []string, jkt, via string) (*tokenResponse, string, *oauthError) {
 	// Each of these is a decision: a read that fails (as opposed to one that finds the record gone) makes none, and
 	// says so (503), rather than telling the client the user, session or organization is gone.
@@ -298,6 +305,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	g.ID = model.NewID() // the key is sealed bound to the id
 	p.svc.NewGrantKey(g)
 	if err := p.svc.Grants.Create(ctx, g); err != nil {
+		cd.Abandoned = append(cd.Abandoned, g.ID) // its outcome may be unknown
 		return nil, "", serverError(err)
 	}
 	detail := map[string]string{"grant": g.ID, "user_id": u.ID, "scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID}
@@ -312,14 +320,33 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
+		cd.Abandoned = append(cd.Abandoned, g.ID)
 		return nil, "", serverError(err)
 	}
 	if slices.Contains(c.GrantTypes, "refresh_token") {
 		if tr.refresh, err = p.refreshToken(g, c.RotateRefresh || c.Public()); err != nil {
+			cd.Abandoned = append(cd.Abandoned, g.ID)
 			return nil, "", serverError(err)
 		}
 	}
+	p.dropAbandoned(ctx, cd.Abandoned)
 	return tr, g.ID, nil
+}
+
+// dropAbandoned removes, in the background, the grants earlier attempts of a successful exchange may have stored
+// (codeData.Abandoned): nobody holds their tokens. Each is in the organization's partition the new grant was just
+// committed to, so by now it is either stored or never will be. One that cannot be removed now expires.
+func (p *Provider) dropAbandoned(ctx context.Context, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	p.svc.Background(ctx, func(ctx context.Context) {
+		for _, id := range ids {
+			if err := p.svc.Grants.Delete(ctx, id); err != nil {
+				p.log.Warn("oidc: removing a grant a failed attempt left", "grant", id, "error", err)
+			}
+		}
+	})
 }
 
 // grantLive is the one test of whether a refresh grant still stands for its user, wherever one is used (a refresh, an

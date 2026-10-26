@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -543,4 +544,38 @@ func (h *harness) resetCredentialsWithFailingCleanup() {
 		h.t.Fatal("reset did not commit a new epoch")
 	}
 	h.p.InvalidateUser(h.user.ID)
+}
+
+// landsUnconfirmed stores a grant and then answers that its outcome is unknown (the cluster lost contact before it
+// confirmed the write).
+type landsUnconfirmed struct{ store.Store }
+
+func (s landsUnconfirmed) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if err := s.Store.CompareAndPut(ctx, r, expect); err != nil || r.Kind != model.KindGrant {
+		return err
+	}
+	return store.ErrUnconfirmed
+}
+
+// A code exchange that failed on our side once its grant may be stored puts the code back for the retry; the retry
+// that succeeds removes that grant (nobody holds its tokens), so only the grant it hands out is left.
+func TestCodeExchangeRetryRemovesTheGrantItAbandoned(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, cl, ch, nil)
+	good := h.env.Svc.Grants.S
+	h.env.Svc.Grants.S = landsUnconfirmed{good}
+	expectUnavailable(t, "unconfirmed grant", h.exchangeCode(cl, secret, code, v))
+	h.env.Svc.Grants.S = good
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
+		t.Fatalf("retry: %d %v", r.status, r.m)
+	}
+	h.env.Svc.WaitBackground()
+	grants, err := h.env.Svc.Store.List(context.Background(), model.KindGrant, store.ListQuery{})
+	if err != nil || len(grants.Records) != 1 {
+		t.Fatalf("grants left: %v %v", grants, err)
+	}
 }

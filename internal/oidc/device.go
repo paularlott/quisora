@@ -59,6 +59,7 @@ type deviceGrant struct {
 	SessionID string   `json:"s,omitempty"`
 	AuthTime  int64    `json:"at,omitempty"`
 	AMR       []string `json:"amr,omitempty"`
+	Abandoned []string `json:"ab,omitempty"` // codeData.Abandoned
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -237,6 +238,9 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 	}
 	restore := func(oe *oauthError) *oauthError {
 		if left := d.ttl(); oe != nil && oe.status >= 500 && left > 0 {
+			if len(d.Abandoned) > 0 {
+				raw, _ = json.Marshal(d)
+			}
 			_ = p.s.Eph.Set(ctx, nsDevice, deviceCode, raw, left)
 		}
 		return oe
@@ -252,8 +256,9 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, Scopes: d.Scopes, Resources: d.Resources}
+		AMR: d.AMR, Scopes: d.Scopes, Resources: d.Resources, Abandoned: d.Abandoned}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, jkt, "device_code")
+	d.Abandoned = cd.Abandoned
 	return tr, restore(oe)
 }
 

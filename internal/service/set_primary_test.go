@@ -132,8 +132,8 @@ func TestSetPrimaryOrgResumesAtEveryStep(t *testing.T) {
 	}{
 		{"new primary marked", func(m *primaryMove) (model.Kind, string) { return model.KindOrg, m.acme.ID }},
 		{"new super admin promoted", func(m *primaryMove) (model.Kind, string) { return model.KindUser, m.boss.ID }},
-		{"old primary unmarked", func(m *primaryMove) (model.Kind, string) { return model.KindOrg, m.primary.ID }},
 		{"old super admins demoted", func(m *primaryMove) (model.Kind, string) { return model.KindUser, m.second.ID }},
+		{"old primary unmarked", func(m *primaryMove) (model.Kind, string) { return model.KindOrg, m.primary.ID }},
 	}
 	for i, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -150,6 +150,10 @@ func TestSetPrimaryOrgResumesAtEveryStep(t *testing.T) {
 			if p, err := m.svc.PrimaryOrg(m.ctx); err != nil || (p.ID != m.acme.ID && p.ID != m.primary.ID) {
 				t.Fatalf("primary in between: %v %v", p, err)
 			}
+			// Once anything has changed, both are marked until the rerun: every node logs that at error level.
+			if marked, err := m.svc.Store.List(m.ctx, model.KindOrg, store.ListQuery{Filters: []store.Filter{{Field: "primary", Value: true}}}); i > 0 && (err != nil || len(marked.Records) != 2) {
+				t.Fatalf("organizations marked primary after an interruption: %v %v", marked, err)
+			}
 			m.h.beforeCAS = nil
 			old, demoted, err := m.svc.SetPrimaryOrg(m.ctx, m.acme.ID, m.boss.ID)
 			if err != nil {
@@ -161,10 +165,13 @@ func TestSetPrimaryOrgResumesAtEveryStep(t *testing.T) {
 			}
 			// What the first run had demoted already is not demoted again; everything the rerun demoted is reported.
 			wantDemoted := 2
-			if i == 3 {
+			switch i {
+			case 2:
 				wantDemoted = 1 // the failing write was the second super admin's (the order of the two is not fixed)
+			case 3:
+				wantDemoted = 0 // both were demoted before the old primary was unmarked
 			}
-			if i == 3 && len(demoted) < wantDemoted || i < 3 && len(demoted) != wantDemoted {
+			if i == 2 && len(demoted) < wantDemoted || i != 2 && len(demoted) != wantDemoted {
 				t.Errorf("demoted %d users", len(demoted))
 			}
 			if len(m.audited(m.acme.ID, "org.primary")) != 1 || len(m.audited(m.primary.ID, "org.primary")) != 1 {

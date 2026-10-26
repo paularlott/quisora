@@ -193,7 +193,9 @@ func updateFresh[T any, PT interface {
 // transaction covers them, so it is written to be run again: it reads what is done (the organizations marked
 // primary, the super admins outside orgID) and finishes the rest, in an order whose every prefix is safe: the new
 // primary is marked first (there is never a moment without one; two for a moment is harmless, PrimaryOrg chooses one
-// the same way everywhere), then its super admin, then the old primary is unmarked, then its super admins demoted.
+// the same way everywhere), then its super admin, then the old primary's super admins are demoted, and the old primary
+// is unmarked last: a change that stopped part-way leaves two organizations marked primary, which every node logs at
+// error level until it is run again.
 // Each write that is refused as stale is made again on a fresh copy. When nothing is left to do it refuses: the
 // organization is the primary already.
 func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string) (old *model.Org, demoted []*model.User, err error) {
@@ -315,15 +317,6 @@ func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *mode
 	if err != nil {
 		return err
 	}
-	for _, o := range others {
-		if _, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
-			write := o.Primary
-			o.Primary = false
-			return write, nil
-		}); err != nil {
-			return err
-		}
-	}
 	for _, u := range supers {
 		changed := false
 		demotion := func(context.Context, *Actor, error) {}
@@ -340,6 +333,15 @@ func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *mode
 		}
 		if changed {
 			*demoted = append(*demoted, got)
+		}
+	}
+	for _, o := range others {
+		if _, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
+			write := o.Primary
+			o.Primary = false
+			return write, nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

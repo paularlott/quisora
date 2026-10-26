@@ -621,14 +621,15 @@ func noteSession(ctx context.Context, sess *model.Session) {
 }
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
-	m.s.Log.Error(what, "error", err, "path", r.URL.Path)
 	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrNotWritable) ||
 		errors.Is(err, service.ErrOutcomeUnknown) || errors.Is(err, service.ErrUnavailable) {
 		// the cluster could not confirm the change in time: trying again is safe, and the answer says so
+		m.s.Log.Warn(what, "error", err, "path", r.URL.Path)
 		w.Header().Set("Retry-After", "5")
 		writeErr(w, http.StatusServiceUnavailable, "We could not complete this just now. Please try again in a moment.", "")
 		return
 	}
+	m.s.Log.Error(what, "error", err, "path", r.URL.Path)
 	writeErr(w, http.StatusInternalServerError, "Something went wrong. Please try again.", "")
 }
 
