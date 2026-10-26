@@ -113,7 +113,6 @@ func TestMatrixRoleChange(t *testing.T) {
 	for _, ac := range c.actors() {
 		for _, ch := range changes {
 			target := c.user(c.a.ID, c.next("r"), ch.from)
-			// A second admin so the last-admin guard is not what is being tested.
 			_, err := c.svc.UpdateUser(c.ctx, actor(ac.u), target.ID, service.UserInput{Role: ptr(ch.to)})
 			want := "denied"
 			switch {

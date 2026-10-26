@@ -158,7 +158,8 @@ func TestWritesOnOneCluster(t *testing.T) {
 }
 
 // A write made from a copy that has fallen behind is refused by the owner, which compares against its committed data:
-// an administrator's change is never erased by an update made from an older copy.
+// an administrator's change is never erased by an update made from an older copy. A node that cannot catch up with the
+// owner's refusal within the staleness bound fails closed (store.ErrNotWritable, retry) instead of answering stale.
 func testStaleCopyUpdateIsRefused(t *testing.T, c *tcluster) {
 	org, _ := c.orgNotOwnedBy(1)
 	u := newUser(org, "alice")
@@ -178,10 +179,19 @@ func testStaleCopyUpdateIsRefused(t *testing.T, c *tcluster) {
 		t.Fatal("test set-up: node 1 must not have the change yet")
 	}
 	stale.GivenName = "signed in"
+	begin := time.Now()
+	if err := users(c.nodes[1]).Update(bg, stale); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("a write from an outdated copy on a node that cannot catch up: %v, want store.ErrNotWritable", err)
+	}
+	if d := time.Since(begin); d < 250*time.Millisecond {
+		t.Fatalf("the node did not wait to catch up with the refusal: %s", d)
+	}
+	c.lagBehind(1, false)
+	c.waitUser(t, u.ID, func(x *model.User) bool { return !x.Active && x.Version == admin.Version })
+	// caught up, the same write is refused as stale
 	if err := users(c.nodes[1]).Update(bg, stale); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("a write from an outdated copy: %v, want store.ErrStale", err)
 	}
-	c.lagBehind(1, false)
 	c.waitUser(t, u.ID, func(x *model.User) bool { return !x.Active && x.GivenName == "" && x.Version == admin.Version })
 }
 

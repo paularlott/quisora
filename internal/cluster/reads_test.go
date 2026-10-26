@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip"
-	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -195,12 +194,9 @@ func TestFreshInAsksOnlyThePartitionOwner(t *testing.T) {
 }
 
 // A follower that keeps failing to catch one partition up stops serving that partition's records (sessions here) while
-// it still serves the others and the other nodes serve it; after unreadableGrace it is not ready, saying why; once it
-// catches up it serves and is ready again.
+// it still serves the others and the other nodes serve it; it stays ready (an unreadable partition is counted, not a
+// reason to leave the load balancer); once it catches up it serves again.
 func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
-	saved := unreadableGrace
-	unreadableGrace = 2 * time.Second
-	t.Cleanup(func() { unreadableGrace = saved })
 	var fs faults
 	c := newTCluster(t, 3, fs.over(badgerBackend()))
 	c.startAll()
@@ -254,14 +250,10 @@ func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
 			t.Fatalf("node %d: %v", i, err)
 		}
 	}
-	waitFor(t, 15*time.Second, "node 1 not ready after the grace", func() bool {
-		ok, why := c.nodes[1].n.Ready()
-		return !ok && strings.Contains(why, "unreadable") && strings.Contains(why, fmt.Sprint(p))
-	})
 	st := c.nodes[1].n.Status()
-	if st.PartitionsUnreadable == 0 || st.Partitions[p].Readable || st.Partitions[p].LagMs == 0 || st.Reason == "" {
-		t.Fatalf("status of the trailing node: unreadable %d, partition %+v, reason %q", st.PartitionsUnreadable,
-			st.Partitions[p], st.Reason)
+	if st.PartitionsUnreadable == 0 || st.Partitions[p].Readable || st.Partitions[p].LagMs == 0 || !st.Ready {
+		t.Fatalf("status of the trailing node: unreadable %d, partition %+v, ready %v (%s)", st.PartitionsUnreadable,
+			st.Partitions[p], st.Ready, st.Reason)
 	}
 	for _, i := range []int{0, 2} {
 		if ok, why := c.nodes[i].n.Ready(); !ok {
@@ -278,53 +270,6 @@ func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
 		_, err := sessions(c.nodes[1]).Get(bg, later.ID)
 		return err == nil
 	})
-}
-
-// A node cut off from the majority hears no owner, so its partitions are unreadable; for cluster.minority_grace, which
-// it counts from when it saw the cut (after the cut was made), it still serves tokens and the copies it is not known to
-// trail (the token endpoints' grace), and after it, neither.
-func TestCutOffNodeServesOnlyWithinTheMinorityGrace(t *testing.T) {
-	const grace = 3 * time.Second
-	c := newTCluster(t, 3, badgerBackend())
-	for i := range c.addrs {
-		c.nodes = append(c.nodes, c.build(i, "", func(cfg *config.Config) { cfg.Cluster.MinorityGrace = int(grace / time.Second) }))
-	}
-	t.Cleanup(c.closeAll)
-	c.start(c.nodes...)
-	c.waitReady()
-	n0 := c.nodes[0].n
-	if !n0.ServesTokens() {
-		t.Fatal("a healthy node must serve tokens")
-	}
-	sess := newSession("org1")
-	if err := sessions(c.nodes[1]).Create(bg, sess); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, 10*time.Second, "the session on node 0", func() bool { _, err := sessions(c.nodes[0]).Get(bg, sess.ID); return err == nil })
-	cut := time.Now()
-	c.partition([]int{0}, []int{1, 2})
-	waitFor(t, 15*time.Second, "node 0 cut off", func() bool { return !n0.Writable() })
-	// the grace starts when the cut is seen, with no request asking
-	waitFor(t, 2*time.Second, "the cut to be recorded", func() bool { return n0.cutOff.Load() != 0 })
-	waitFor(t, 5*time.Second, "the partition unreadable", func() bool { return !n0.manager().CanRead(partitionNum("org1")) })
-	if d := time.Since(cut); d >= grace {
-		t.Fatalf("test set-up: node 0 took %s to see the cut, longer than the grace", d)
-	}
-	if !n0.ServesTokens() {
-		t.Fatalf("tokens refused %s after the cut, within the grace", time.Since(cut))
-	}
-	if _, err := sessions(c.nodes[0]).Get(bg, sess.ID); err != nil {
-		t.Fatalf("within the grace: %v", err)
-	}
-	waitFor(t, 10*time.Second, "the grace to end", func() bool { return !n0.ServesTokens() })
-	if d := time.Since(cut); d < grace {
-		t.Fatalf("the grace ended %s after the cut, want %s", d, grace)
-	}
-	if _, err := sessions(c.nodes[0]).Get(bg, sess.ID); !errors.Is(err, store.ErrNotWritable) {
-		t.Fatalf("after the grace: %v", err)
-	}
-	c.heal()
-	c.waitReady()
 }
 
 // A partition that diverged on a node (its copy holds a write the owner does not have: a disk restored wrongly) makes

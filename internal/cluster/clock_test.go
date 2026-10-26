@@ -49,7 +49,7 @@ func testClockOffRefusesToServe(t *testing.T, c *tcluster) {
 	for _, p := range []string{"x1", "x2", "x3"} { // now most peers say this node is a minute behind
 		read(p, time.Minute)
 	}
-	if ok, why := n.Ready(); ok || !strings.Contains(why, "behind") || n.Writable() || n.ServesTokens() {
+	if ok, why := n.Ready(); ok || !strings.Contains(why, "behind") || n.Writable() {
 		t.Fatalf("a node a minute behind the cluster: ready %v (%s), writable %v", ok, why, n.Writable())
 	}
 

@@ -42,6 +42,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ImportInBatches", testPartImportBatches},
 		{"ExportRefusedWhileAnImportIsUnfinished", testPartExportUnfinished},
 		{"ImportFullInBatches", testPartImportFullBatches},
+		{"ExportRefusedAfterAFullImportReset", testPartExportAfterReset},
 		{"ImportFullRestartedAtTheSamePosition", testPartImportFullSamePosition},
 		{"Purge", testPartPurge},
 		{"Tombstones", testPartTombstones},
@@ -1073,8 +1074,9 @@ func testPartImportBatches(t *testing.T, f Factory) {
 	}
 }
 
-// A full import in several calls removes, at its end, exactly the records no batch brought, tells which, and is not
-// fooled by what an import that did not finish left behind.
+// A full import in several calls resets the partition at its First call (every record of it removed, and told), stores
+// what the batches bring, moves the position only with the Final call, and is not fooled by what an import that did not
+// finish left behind: the partition ends up exactly as the source's records.
 func testPartImportFullBatches(t *testing.T, f Factory) {
 	s := f(t)
 	defer s.Close()
@@ -1103,42 +1105,55 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 	recs = append(recs, store.PartitionRecord{Record: nu, Seq: 7})
 	bs := batches(recs, 4)
 
-	// An earlier import of the same partition that stopped after one batch, which brought a record the new one does not.
+	// report collects what an import tells it removed.
+	var removed []string
+	report := func(k model.Kind, id string) { removed = append(removed, string(k)+"/"+id) }
+	sorted := func(rs ...*store.Record) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, rkey(r))
+		}
+		slices.Sort(out)
+		return out
+	}
+
+	// An earlier import of the same partition that stopped after one batch, which brought a record the new one does not
+	// (and one it does not bring back): its reset removed everything the partition held.
 	stale := urec(t, org, "fb-stale")
 	must(t, ps.ImportPartition(ctx, 83, []store.PartitionRecord{{Record: stale, Seq: 3}, {Record: drop[0], Seq: 3}}, pos(2, 8),
-		store.ImportStep{Full: true, First: true}))
+		store.ImportStep{Full: true, First: true, Removed: report}))
+	slices.Sort(removed)
+	if want := sorted(append(slices.Clone(keep), drop...)...); !slices.Equal(removed, want) {
+		t.Fatalf("the first import's reset removed %v, want %v", removed, want)
+	}
+	removed = nil
 
-	var removed []string
 	step := func(i int) store.ImportStep {
-		st := store.ImportStep{Full: true, First: i == 0, Final: i == len(bs)-1}
-		if st.Final {
-			st.Removed = func(k model.Kind, id string) { removed = append(removed, string(k)+"/"+id) }
-		}
-		return st
+		return store.ImportStep{Full: true, First: i == 0, Final: i == len(bs)-1, Removed: report}
 	}
 	for i, b := range bs[:len(bs)-1] {
 		must(t, ps.ImportPartition(ctx, 83, b, pos(3, 9), step(i)))
-		if st, _ := ps.PartitionState(ctx, 83); st.Committed != pos(1, 1) {
-			t.Fatalf("the position moved before the last batch: %+v", st.Committed)
+		if st, _ := ps.PartitionState(ctx, 83); st.Committed != pos(1, 1) || st.Purged != 0 {
+			t.Fatalf("the position moved before the last batch: %+v", st)
 		}
-		if len(removed) != 0 {
-			t.Fatalf("records removed before the end: %v", removed)
+		if i == 0 {
+			// the reset of this import removed what the earlier one left
+			slices.Sort(removed)
+			if want := sorted(stale, drop[0]); !slices.Equal(removed, want) {
+				t.Fatalf("the reset removed %v, want %v", removed, want)
+			}
+			if _, err := s.Lookup(ctx, model.KindUser, stale.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("a record of the earlier import survived the reset: %v", err)
+			}
+		}
+		if err := ps.ExportPartition(ctx, 83, 0, func(store.PartitionPos) error { return nil }, func(store.PartitionRecord) error { return nil }); !errors.Is(err, store.ErrImportUnfinished) {
+			t.Fatalf("an export before the last batch: %v", err)
 		}
 	}
-	// nothing is removed until the last batch
-	if _, err := s.Lookup(ctx, model.KindUser, drop[5].ID); err != nil {
-		t.Fatalf("a record removed before the end: %v", err)
-	}
+	removed = removed[:0]
 	must(t, ps.ImportPartition(ctx, 83, bs[len(bs)-1], pos(3, 9), step(len(bs)-1)))
-	var want []string
-	for _, d := range drop {
-		want = append(want, rkey(d))
-	}
-	want = append(want, rkey(stale))
-	slices.Sort(want)
-	slices.Sort(removed)
-	if !slices.Equal(removed, want) {
-		t.Fatalf("removed %v, want %v", removed, want)
+	if len(removed) != 0 {
+		t.Fatalf("records removed by the last batch: %v", removed)
 	}
 	got, at := exported(t, ps, 83, 0)
 	var wantKeys []string
@@ -1160,6 +1175,10 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 			t.Fatalf("the unique values of %s not released: %v", d.ID, err)
 		}
 	}
+	// the records it brought back hold their unique values again
+	if u, err := s.GetByUnique(ctx, model.KindUser, model.UserEmailKey(org, keep[3].Fields["username"].(string)+"@example.com")); err != nil || u.ID != keep[3].ID {
+		t.Fatalf("the unique value of a record brought back: %v %v", err, u)
+	}
 	if r, err := s.Get(ctx, model.KindUser, keep[3].ID); err != nil || string(r.Data) != "new" {
 		t.Fatalf("a kept record: %v %+v", err, r)
 	}
@@ -1169,7 +1188,7 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 	if _, err := s.Get(ctx, model.KindUser, plain.ID); err != nil {
 		t.Fatalf("a record of no partition write: %v", err)
 	}
-	// another full import right after: the marks of the first are gone, so it removes what it does not bring
+	// another full import right after resets again, so it holds only what it brings
 	must(t, ps.ImportPartition(ctx, 83, recs[:2], pos(4, 10), whole))
 	if got, _ := exported(t, ps, 83, 0); len(got) != 2 {
 		t.Fatalf("second full import left %v", keysOf(got))
@@ -1177,7 +1196,7 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 }
 
 // A full import that starts again at the same position as one that did not finish (the next catch-up from the same
-// source) is not fooled by what the first left behind: a record only the first brought is removed at its end.
+// source) is not fooled by what the first left behind: the reset removes it all, and only what the second brings is there.
 func testPartImportFullSamePosition(t *testing.T, f Factory) {
 	s := f(t)
 	defer s.Close()
@@ -1193,14 +1212,20 @@ func testPartImportFullSamePosition(t *testing.T, f Factory) {
 		store.ImportStep{Full: true, First: true, Final: true, Removed: func(k model.Kind, id string) {
 			removed = append(removed, string(k)+"/"+id)
 		}}))
-	if !slices.Equal(removed, []string{rkey(extra)}) {
-		t.Fatalf("removed %v, want %v", removed, []string{rkey(extra)})
+	want := []string{rkey(kept), rkey(extra)}
+	slices.Sort(want)
+	slices.Sort(removed)
+	if !slices.Equal(removed, want) {
+		t.Fatalf("removed %v, want %v", removed, want)
 	}
 	if _, err := s.Lookup(ctx, model.KindUser, extra.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a record only the unfinished import brought is still there: %v", err)
 	}
 	if _, err := s.Get(ctx, model.KindUser, kept.ID); err != nil {
 		t.Fatalf("the record the import brought: %v", err)
+	}
+	if got, at := exported(t, ps, 85, 0); at != pos(1, 4) || len(got) != 1 || got[rkey(kept)].Seq != 1 {
+		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
 	}
 }
 
@@ -1347,4 +1372,69 @@ func testPartExportUnfinished(t *testing.T, f Factory) {
 	if at != pos(1, 2) || len(got) != 1 || got[rkey(r2)].Seq != 2 || got[rkey(r2)].Version != r2.Version {
 		t.Fatalf("export after the import: %+v %v", at, got)
 	}
+}
+
+// resetImport sets up partition p for a full import whose reset removes records before the position moves: a and b
+// committed at (1, 2), then a full import to (2, 5) that brings only a, at its old sequence, so that nothing it stored lies
+// above the committed position. during is called after the reset's removal of each record has committed and before the
+// position is written (the Removed step of the import, the only moment a test can reach). It returns the import's
+// arguments.
+func resetImport(t testing.TB, ps store.PartitionStore, p int, org string, during func()) (a, b *store.Record, imp func() error) {
+	a, b = urec(t, org, "sw-a"), urec(t, org, "sw-b")
+	must(t, ps.ApplyPartition(ctx, p, []*store.Record{a}, pos(1, 1)))
+	must(t, ps.ApplyPartition(ctx, p, []*store.Record{b}, pos(1, 2)))
+	step := whole
+	step.Removed = func(model.Kind, string) { during() }
+	imp = func() error {
+		return ps.ImportPartition(ctx, p, []store.PartitionRecord{{Record: a, Seq: 1}}, pos(2, 5), step)
+	}
+	return a, b, imp
+}
+
+// While a full import's reset has removed records but the position has not moved (a crash here leaves the old position with
+// records missing, and nothing above it), an export never advertises the old position: it is refused, or (a backend whose
+// reset and position are one step) it already shows the new one.
+func testPartExportAfterReset(t *testing.T, f Factory) {
+	s := f(t)
+	defer s.Close()
+	ps := pstore(t, s)
+	calls := 0
+	a, b, imp := resetImport(t, ps, 85, "osw", func() {
+		calls++
+		got, at, err := exportOf(ps, 85)
+		if errors.Is(err, store.ErrImportUnfinished) {
+			return
+		}
+		if err != nil || at != pos(2, 5) || len(got) != 1 {
+			t.Errorf("an export between the reset and the position: %v %+v %v", err, at, got)
+		}
+	})
+	must(t, imp())
+	if calls != 2 {
+		t.Fatalf("%d records reported removed, want 2", calls)
+	}
+	got, at := exported(t, ps, 85, 0)
+	if at != pos(2, 5) || len(got) != 1 || got[rkey(a)].Seq != 1 {
+		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+	if _, err := s.Lookup(ctx, model.KindUser, b.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the record the import did not bring: %v", err)
+	}
+	// A reset with nothing yet brought leaves nothing above the position either: only the marker says the import is
+	// unfinished, until its Final call.
+	c := urec(t, "osw", "sw-c")
+	must(t, ps.ApplyPartition(ctx, 86, []*store.Record{c}, pos(1, 1)))
+	must(t, ps.ImportPartition(ctx, 86, nil, pos(2, 5), store.ImportStep{Full: true, First: true}))
+	refusesExport(t, s, 86)
+	must(t, ps.ImportPartition(ctx, 86, []store.PartitionRecord{{Record: c, Seq: 1}}, pos(2, 5), store.ImportStep{Full: true, Final: true}))
+	if got, at := exported(t, ps, 86, 0); at != pos(2, 5) || len(got) != 1 {
+		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+}
+
+// exportOf exports a whole partition, returning the records, the position the export started with and its error.
+func exportOf(ps store.PartitionStore, p int) (map[string]store.PartitionRecord, store.PartitionPos, error) {
+	out := map[string]store.PartitionRecord{}
+	at, err := exportAfter(ps, p, 0, func(r store.PartitionRecord) error { out[rkey(r.Record)] = r; return nil })
+	return out, at, err
 }

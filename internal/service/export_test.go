@@ -27,3 +27,10 @@ var SelfRegRedirect = selfRegRedirect
 
 // WeakPassword is passwordcheck's test of a password against what it must not contain.
 var WeakPassword = weakPassword
+
+// SetPrimaryChoiceTTL sets how long PrimaryOrg remembers its choice, until the test ends.
+func SetPrimaryChoiceTTL(t interface{ Cleanup(func()) }, d time.Duration) {
+	old := primaryChoiceTTL
+	primaryChoiceTTL = d
+	t.Cleanup(func() { primaryChoiceTTL = old })
+}

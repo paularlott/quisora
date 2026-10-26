@@ -51,9 +51,17 @@ func (s *Store) partitionDDL() []string {
 			d.keyType(191) + " NOT NULL,\n  PRIMARY KEY (part, kind, id)\n)" + tableSuffix(d)}
 }
 
-// importTable holds the records a full import has brought so far (what its sweep at the end keeps): one row per record, per
-// partition, cleared when an import starts and when it ends.
-const importTable = "qsr_import"
+// importTable says that a full import is in progress: a row with the kind importActive is the marker, written by the
+// First call (in the transaction that checks the position, before anything is removed) and deleted in the transaction
+// that commits the final position. The reset that starts an import deletes rows in transactions of their own, before the
+// position moves, so without it a crash between them leaves no row above the committed position, and an export would
+// advertise a position the data no longer matches. (The table has kind and id columns from when a full import marked each
+// record it brought; only the marker row is used now, and the table is kept as it is to spare databases that have it a
+// migration.)
+const (
+	importTable  = "qsr_import"
+	importActive = "" // the kind of the marker row (no record kind is empty)
+)
 
 const stateCols = "promised_c, promised_n, committed_c, committed_n, committed_seq, pending_seq, pending, purged"
 
@@ -343,6 +351,19 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 			return store.ErrImportUnfinished
 		}
 	}
+	// So is a full import's marker: its reset removes rows before the position moves, leaving nothing above it.
+	rows, err := r.query(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE part = ? AND kind = ?"), p, importActive)
+	if err != nil {
+		return err
+	}
+	active := rows.Next()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if active {
+		return store.ErrImportUnfinished
+	}
 	if err := start(st.Committed); err != nil {
 		return err
 	}
@@ -391,6 +412,11 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 	if err := store.CheckImport(p, recs, upTo); err != nil {
 		return err
 	}
+	if step.Full && step.First {
+		if err := s.resetPartition(ctx, p, upTo, step.Removed); err != nil {
+			return err
+		}
+	}
 	kinds := make([]model.Kind, len(recs))
 	for i, r := range recs {
 		kinds[i] = r.Kind
@@ -399,45 +425,42 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 	if err != nil {
 		return err
 	}
-	// The batch: its records (a full import marks them) and, unless a sweep of what the import did not bring has to come
-	// first, the committed position.
-	together := step.Final && !step.Full
-	err = s.partitionTx(ctx, true, tables, func(r runner) error {
+	// The batch and, with the Final one, the committed position (a full import also raises the purge point and ends).
+	return s.partitionTx(ctx, true, tables, func(r runner) error {
 		st, err := s.lockState(ctx, r, p)
 		if err != nil {
 			return err
 		}
 		if upTo.Seq <= st.Committed.Seq {
 			return store.ErrPartitionBehind
-		}
-		if step.Full && step.First {
-			if _, err := r.exec(ctx, s.d.bind("DELETE FROM "+importTable+" WHERE part = ?"), p); err != nil {
-				return err
-			}
 		}
 		now := time.Now().UnixMicro()
 		for _, rec := range recs {
 			if err := s.putPartition(ctx, r, rec.Record, p, rec.Seq, now); err != nil {
 				return err
 			}
-			if step.Full {
-				if _, err := r.exec(ctx, s.d.bind(s.d.insertIgnore(importTable, "part, kind, id", "?, ?, ?")), p, string(rec.Kind), rec.ID); err != nil {
-					return err
-				}
-			}
 		}
-		if !together {
+		if !step.Final {
 			return nil
+		}
+		if step.Full {
+			if _, err := r.exec(ctx, s.d.bind("DELETE FROM "+importTable+" WHERE part = ?"), p); err != nil {
+				return err
+			}
+			st.Purged = max(st.Purged, upTo.Seq)
 		}
 		return s.commitState(ctx, r, p, &st, upTo)
 	})
-	if err != nil || !step.Final || !step.Full {
-		return err
-	}
-	if err := s.sweepImport(ctx, p, step.Removed); err != nil {
-		return err
-	}
-	return s.partitionTx(ctx, true, nil, func(r runner) error {
+}
+
+// resetPageSize is how many rows one transaction of the reset that starts a full import removes.
+const resetPageSize = 500
+
+// resetPartition starts a full import: it sets the import marker (refusing, changing nothing, if upTo is not above the
+// committed position), then removes every row of partition p, a page to a transaction, and reports each after its
+// transaction is committed. A reset an earlier import left unfinished is simply done again.
+func (s *Store) resetPartition(ctx context.Context, p int, upTo store.PartitionPos, removed func(model.Kind, string)) error {
+	err := s.partitionTx(ctx, true, nil, func(r runner) error {
 		st, err := s.lockState(ctx, r, p)
 		if err != nil {
 			return err
@@ -445,29 +468,20 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 		if upTo.Seq <= st.Committed.Seq {
 			return store.ErrPartitionBehind
 		}
-		if _, err := r.exec(ctx, s.d.bind("DELETE FROM "+importTable+" WHERE part = ?"), p); err != nil {
-			return err
-		}
-		st.Purged = max(st.Purged, upTo.Seq)
-		return s.commitState(ctx, r, p, &st, upTo)
+		_, err = r.exec(ctx, s.d.bind(s.d.insertIgnore(importTable, "part, kind, id", "?, ?, ?")), p, importActive, "")
+		return err
 	})
-}
-
-// sweepImportPage is how many rows one transaction of the sweep at the end of a full import removes.
-const sweepImportPage = 500
-
-// sweepImport removes the rows of partition p that the batches of a full import did not bring (not in importTable), a
-// page to a transaction, and reports each after its transaction is committed.
-func (s *Store) sweepImport(ctx context.Context, p int, removed func(model.Kind, string)) error {
+	if err != nil {
+		return err
+	}
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
-		q := s.d.bind("SELECT k.id FROM " + t.name + " k WHERE k.pnum = ? AND k.pseq > 0 AND NOT EXISTS (SELECT 1 FROM " + importTable +
-			" m WHERE m.part = ? AND m.kind = ? AND m.id = k.id) ORDER BY k.id LIMIT " + strconv.Itoa(sweepImportPage))
+		q := s.d.bind("SELECT id FROM " + t.name + " WHERE pnum = ? AND pseq > 0 ORDER BY id LIMIT " + strconv.Itoa(resetPageSize))
 		for {
 			var ids []string
 			err := s.partitionTx(ctx, true, []*table{t}, func(r runner) error {
 				ids = ids[:0]
-				rows, err := r.query(ctx, q, p, p, string(k))
+				rows, err := r.query(ctx, q, p)
 				if err != nil {
 					return err
 				}
@@ -499,7 +513,7 @@ func (s *Store) sweepImport(ctx context.Context, p int, removed func(model.Kind,
 					removed(k, id)
 				}
 			}
-			if len(ids) < sweepImportPage {
+			if len(ids) < resetPageSize {
 				break
 			}
 		}

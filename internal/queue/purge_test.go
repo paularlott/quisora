@@ -119,3 +119,19 @@ func TestPurgeLostKeepsOpenableAndForeignItems(t *testing.T) {
 		t.Fatalf("%d files left", len(ents))
 	}
 }
+
+// The daily sweep subtracts what it removed: a place an add has taken but not yet written to disk stays taken.
+func TestPurgeLostKeepsPlacesOfAddsInFlight(t *testing.T) {
+	q := idle(t.TempDir(), Options[string]{Sealer: sealer(t, secure.RandomBytes(32)), Max: 1})
+	q.queued.Add(1) // an add between taking its place and writing its file
+	q.inflight.Add(1)
+	if _, err := q.PurgeLost(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if q.Queued() != 1 {
+		t.Fatalf("queued %d after the sweep, want the add in flight's 1", q.Queued())
+	}
+	if err := q.Add("x", 0, 0); err != ErrFull {
+		t.Fatalf("a second add while the first holds the only place: %v", err)
+	}
+}

@@ -56,12 +56,13 @@ type Queue[T any] struct {
 	// waiting is when the items this worker has read (or retried) are next due, by file, with the file's modification
 	// time then (under fileMu): an item that is not due is not read and opened again on every pass (which would make
 	// each Add cost the whole backlog) unless its file changed since.
-	waiting map[string]waitingItem
-	queued  atomic.Int64
-	kick    chan struct{}
-	stop    chan struct{}
-	wg      sync.WaitGroup
-	once    sync.Once
+	waiting  map[string]waitingItem
+	queued   atomic.Int64
+	inflight atomic.Int64 // adds that have taken their place and not yet written their file (PurgeLost)
+	kick     chan struct{}
+	stop     chan struct{}
+	wg       sync.WaitGroup
+	once     sync.Once
 }
 
 // item is a queued item as its file holds it (sealed).
@@ -112,6 +113,8 @@ func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 		q.queued.Add(-1)
 		return ErrFull
 	}
+	q.inflight.Add(1)
+	defer q.inflight.Add(-1)
 	var r [6]byte
 	_, _ = rand.Read(r[:])
 	name := fmt.Sprintf("%020d-%s%s", time.Now().UnixNano(), hex.EncodeToString(r[:]), ext) // oldest first when listed
@@ -246,8 +249,10 @@ func (q *Queue[T]) PurgeLost(before time.Time) (int, error) {
 	q.fileMu.Lock()
 	defer q.fileMu.Unlock()
 	n, err := PurgeLost(q.dir, q.o.Sealer, before)
-	if names, ferr := q.files(); ferr == nil { // counted again: what is on disk is the queue
-		q.queued.Store(int64(len(names)))
+	// Counted again: what is on disk, and the places adds in flight hold before their files show (an add finishing
+	// meanwhile may count twice until the next sweep: too many only refuses an add early, never lets one too many in).
+	if names, ferr := q.files(); ferr == nil {
+		q.queued.Store(int64(len(names)) + q.inflight.Load())
 	}
 	return n, err
 }

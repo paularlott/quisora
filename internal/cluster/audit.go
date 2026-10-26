@@ -162,28 +162,22 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 		}
 	}
 	want := min(max(q.Limit, 1), auditPageMax)
-	replies := make(chan auditAnswer, len(peers))
-	ctx, cancel := context.WithTimeout(ctx, auditWait)
+	// Every ask ends by auditWait (the context's deadline), as not answered: a slow node is left out, not an error.
+	askCtx, cancel := context.WithTimeout(ctx, auditWait)
 	defer cancel()
+	replies := make(chan auditAnswer, len(peers))
 	for _, mb := range peers {
-		go func(mb *member) { replies <- n.askAudit(ctx, mb.node, req, want) }(mb)
+		go func(mb *member) { replies <- n.askAudit(askCtx, mb.node, req, want) }(mb)
 	}
-	timeout := time.NewTimer(auditWait)
-	defer timeout.Stop()
 	for range peers {
-		select {
-		case rp := <-replies:
-			if !rp.answered {
-				continue
-			}
+		if rp := <-replies; rp.answered {
 			answered++
 			total += rp.total
 			recs = append(recs, rp.recs...)
-		case <-timeout.C:
-			return mergeAudit(recs, q), total, nodes, answered, nil
-		case <-ctx.Done():
-			return nil, 0, 0, 0, ctx.Err()
 		}
+	}
+	if err := ctx.Err(); err != nil { // the caller went away: that is an error, a slow node is not
+		return nil, 0, 0, 0, err
 	}
 	return mergeAudit(recs, q), total, nodes, answered, nil
 }

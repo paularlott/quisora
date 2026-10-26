@@ -40,6 +40,12 @@ func TestOperatorCommandsEndToEnd(t *testing.T) {
 		if _, _, err = e.run(t, "", "invite", "primary", "nobody@example.com"); err == nil {
 			t.Fatal("invite for an unknown user succeeded")
 		}
+		if _, _, err = e.run(t, "", "invite", "--super-admin", "primary", "admin@example.com"); err == nil || !strings.Contains(err.Error(), "--break-glass") {
+			t.Fatalf("--super-admin without --break-glass: %v", err)
+		}
+		if out, _, err = e.run(t, "", "invite", "--break-glass", "--super-admin", "primary", "admin@example.com"); err != nil || !strings.HasPrefix(strings.TrimSpace(out), "https://") {
+			t.Fatalf("invite --break-glass --super-admin: %v %q", err, out)
+		}
 	})
 
 	// argument validation, the missing terminal and the real thing

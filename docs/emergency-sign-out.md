@@ -93,13 +93,9 @@ clocks, and it cannot be half done. The counters are part of backups and move wi
 - **It needs a majority of the cluster.** The counter is a write like any other (to the organization's record, in the
   global partition), committed only when a majority of `cluster.size` has stored it. With fewer than a majority of the
   nodes up the lever is refused, nothing ends and nothing is half done: get a majority running and pull it again.
-- **A node cut off from the majority is bound by `cluster.minority_grace`** (300 seconds by default, `[cluster]
-  minority_grace`). It cannot learn of a sign-out the others made. Its pages and APIs stop answering at once (it is not
-  ready: 503), but its token, userinfo and introspection endpoints keep answering for up to `minority_grace` after it
-  lost the majority, from the counters it last had, and so can honour for that long a session, grant or API token that the
-  lever ended elsewhere. Past it they stop too, and when the node meets the others again it learns the counters and refuses
-  what they ended. Lower `minority_grace` if that window matters more to you than a cut-off node serving its
-  applications through an outage ([Cluster size](REPLICATION.md#cluster-size)); `0` stops it at once.
+- **A node cut off from the majority cannot learn of a sign-out the others made, and serves nothing.** It is not ready:
+  its pages, APIs and token, userinfo and introspection endpoints all answer 503 at once, so it honours no session, grant or
+  API token the lever ended elsewhere; when it meets the others again it learns the counters and refuses what they ended.
 
 ## Locking out one person
 

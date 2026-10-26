@@ -118,6 +118,18 @@ func TestAuditIsNodeLocalAndMerged(t *testing.T) {
 		t.Fatalf("a silent node: %d records, %d of %d answered, %v", len(recs), answered, nodes, err)
 	}
 	c.drop(0, 1, false, msgAudit)
+	// a node that is slow, not down, is left out too once the wait is over: the answer comes at the deadline, not as an
+	// error
+	c.hold(0, 1, true, msgAudit)
+	start := time.Now()
+	recs, _, nodes, answered, err = c.nodes[0].n.AuditQuery(bg, store.ListQuery{Limit: 100})
+	if err != nil || len(recs) != 6 || nodes != 3 || answered != 2 {
+		t.Fatalf("a slow node: %d records, %d of %d answered, %v", len(recs), answered, nodes, err)
+	}
+	if d := time.Since(start); d < auditWait-100*time.Millisecond {
+		t.Fatalf("the query did not wait for the slow node: %s", d)
+	}
+	c.hold(0, 1, false, msgAudit)
 	// the caller going away ends the query
 	ctx, cancel := context.WithCancel(bg)
 	cancel()

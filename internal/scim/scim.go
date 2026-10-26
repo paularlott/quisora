@@ -127,7 +127,7 @@ func (m *Module) fromService(err error) *Error {
 	case errors.Is(err, service.ErrTooLarge):
 		// RFC 7644 §3.12: 413, the request is larger than the server processes; the client splits it.
 		return errf(413, "", "%s", capitalise(err.Error()))
-	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
+	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
 		return errf(409, "", "%s", capitalise(err.Error()))
 	case errors.Is(err, service.ErrOutcomeUnknown):

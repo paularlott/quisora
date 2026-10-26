@@ -237,16 +237,13 @@ type Node struct {
 	genesis      atomic.Pointer[string] // the data set this node holds (persisted.Genesis; nil: none yet)
 	dataSetWait  atomic.Pointer[string] // why a node without a data set has not started the partition protocol
 	formed       atomic.Bool            // it takes part in its data set's majorities (persisted.Formed, the protocol's)
-	cutOff       atomic.Int64           // unix nanos since this node stopped being writable (0: writable)
 
 	hooks  atomic.Pointer[[]func(*store.Record, bool)]
 	hookMu sync.Mutex
 
 	// The partitions this node cannot vouch for (partstatus.go): partOff says why it is not ready because of them (a
-	// partition diverged here, or one has been unreadable for longer than unreadableGrace); unreadable[p] is when p
-	// became unreadable here (unix nanos, 0: readable); divergedSeen[p] that p's divergence has been logged.
+	// partition diverged here); divergedSeen[p] that p's divergence has been logged.
 	partOff      atomic.Pointer[string]
-	unreadable   [partitions]atomic.Int64
 	divergedSeen [partitions]atomic.Bool
 
 	// The start counter (rollback.go): this start's number, the highest number this node has seen each peer publish,
@@ -258,6 +255,9 @@ type Node struct {
 	startsShown   atomic.Bool
 	startedIntact atomic.Bool
 
+	// staleAfter is the partition protocol's StaleAfter (newManager): how long this node waits to have caught up with
+	// a refusal (Store.awaitRefused).
+	staleAfter atomic.Int64
 	// tcpDeadline is the gossip transport's TCPDeadline (checked against the partition protocol's need: newManager).
 	tcpDeadline time.Duration
 
@@ -431,7 +431,9 @@ func (n *Node) newManager() (*partition.Manager, error) {
 	if n.genesis.Load() == nil {
 		return nil, errors.New("cluster: no data set") // (joinDataSet starts none before there is one)
 	}
-	pm, err := partition.New(n.gc, n.partitionConfig())
+	pc := n.partitionConfig()
+	n.staleAfter.Store(int64(staleAfter(pc)))
+	pm, err := partition.New(n.gc, pc)
 	if err != nil {
 		return nil, fmt.Errorf("cluster: %w", err)
 	}
@@ -474,6 +476,22 @@ func transportDeadline(pc partition.Config) time.Duration {
 		hb = partition.DefaultHeartbeatInterval
 	}
 	return wt + hb + time.Second
+}
+
+// staleAfter is the partition protocol's StaleAfter for a configuration pc (partition.Config's defaulting: the owner
+// timeout, three heartbeats).
+func staleAfter(pc partition.Config) time.Duration {
+	if pc.StaleAfter > 0 {
+		return pc.StaleAfter
+	}
+	if pc.OwnerTimeout > 0 {
+		return pc.OwnerTimeout
+	}
+	hb := pc.HeartbeatInterval
+	if hb <= 0 {
+		hb = partition.DefaultHeartbeatInterval
+	}
+	return 3 * hb
 }
 
 // checkTransport refuses a transport deadline shorter than the partition protocol needs: a change forwarded to an owner
@@ -918,7 +936,6 @@ func (n *Node) rebuild() {
 	}
 	n.syncEligible()
 	n.checkPartitions()
-	n.trackWritable()
 	n.publishReady()
 }
 
@@ -1046,38 +1063,6 @@ func (n *Node) publishReady() {
 	if md := n.gc.LocalMetadata(); md.GetBool(metaReady) != ok {
 		md.SetBool(metaReady, ok)
 	}
-}
-
-// trackWritable records when this node stopped being writable. Only rebuild calls it: it runs on every membership
-// change, where a majority is lost or regained, and at least every second (the partition protocol stops being ready
-// without a gossip event), so the time is the moment the cut was seen, not that of the first request after it.
-func (n *Node) trackWritable() {
-	if n.Writable() {
-		n.cutOff.Store(0)
-		return
-	}
-	n.cutOff.CompareAndSwap(0, time.Now().UnixNano())
-}
-
-// ServesTokens reports whether the token, userinfo and introspection endpoints may answer. They keep working on a
-// node that cannot accept writes (cut off from the majority) for cluster.minority_grace, so
-// applications ride out a short partition; after that they refuse too, because changes made on the majority side
-// (a user or client disabled, access removed) cannot reach this node and it would keep honouring what was revoked.
-func (n *Node) ServesTokens() bool {
-	if n.mixed.Load() != nil || n.foreign.Load() != nil || n.unfit.Load() != nil || n.otherCluster.Load() != nil ||
-		n.sizeOff.Load() != nil || n.compatOff.Load() != nil || n.clockOff.Load() != nil {
-		return false
-	}
-	if n.gc == nil {
-		return true
-	}
-	if pm := n.manager(); pm == nil || !pm.Ready() || pm.Resyncing() {
-		// Not yet caught up since it started: its data may predate changes (a user disabled, access removed) made
-		// while it was down. The grace below is for a node that was serving and then got cut off.
-		return false
-	}
-	since := n.cutOff.Load()
-	return n.Writable() || since == 0 || time.Since(time.Unix(0, since)) < time.Duration(n.cfg.Cluster.MinorityGrace)*time.Second
 }
 
 func sortMembers(ms []*member) {

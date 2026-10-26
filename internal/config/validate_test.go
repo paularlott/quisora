@@ -61,7 +61,6 @@ func TestValidateMessages(t *testing.T) {
 			c.Cluster.Bind, c.Cluster.Peers, c.Cluster.Size = ":7946", []string{"a:1"}, 2
 		}, "cluster.advertise"},
 		"node id":        {func(c *Config) { c.Cluster.NodeID = "x" }, "node_id"},
-		"grace":          {func(c *Config) { c.Cluster.MinorityGrace = -1 }, "minority_grace"},
 		"bad bind":       {func(c *Config) { c.Cluster.Bind = "x" }, "cluster.bind"},
 		"bad peer":       {func(c *Config) { c.Cluster.Peers = []string{"x"} }, "cluster.peers"},
 		"master missing": {func(c *Config) { c.Cluster.Bind, c.Cluster.Key = "10.0.0.1:1", good }, "server.master_key is required"},

@@ -42,7 +42,6 @@ func TestWriteErrorMapsServiceErrors(t *testing.T) {
 		"not found":        {service.ErrNotFound, 404, "Not found.", ""},
 		"conflict":         {wrap(service.ErrConflict), 409, "That already exists.", ""},
 		"stale":            {service.ErrStale, 409, "Someone else changed this. Reload and try again.", ""},
-		"last admin":       {service.ErrLastAdmin, 409, "Cannot remove the last super admin.", ""},
 		"not empty":        {service.ErrNotEmpty, 409, "Organization still has users.", ""},
 		"outcome unknown":  {service.ErrOutcomeUnknown, 503, "This server lost contact", ""},
 		"unavailable":      {service.ErrUnavailable, 503, "This server cannot make changes right now", ""},

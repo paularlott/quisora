@@ -131,45 +131,14 @@ func (s *Service) NoteTOTPStep(ctx context.Context, u *model.User, step int64) e
 	})
 }
 
-// adminLockTTL bounds how long an organization's admin lock is held when its holder dies.
-const adminLockTTL = 30 * time.Second
-
-// lockAdmins takes the organization's admin lock (a lease, lock.go), so changes that could remove a super admin the
-// server needs are serialised across every node. It waits up to ten seconds for another holder. The caller releases
-// the lease, and fences the write it decided on (lease.fence): the lease serialises the decisions, the fence undoes a
-// write that landed after it lapsed and would be refused now.
-func (s *Service) lockAdmins(ctx context.Context, orgID string) (*lease, error) {
-	return s.lock(ctx, "admins/"+orgID, adminLockTTL, 10*time.Second,
-		"another change of this organization's administrators is in progress")
-}
-
-// usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
-// the owners' copies (store.QuorumReader, a fresh read) of the users this node lists with it: a demotion, disabling, end date or
-// deletion confirmed by a majority anywhere is counted, even if it has not reached this node yet. (A promotion that
-// has not reached this node is missed: the count can only be too low, which refuses a change rather than allowing a
-// wrong one.)
-func (s *Service) usableAdmins(ctx context.Context, orgID string, role model.Role) ([]*model.User, error) {
-	// admin_rank is indexed (administrators and super admins: a handful), so this reads only them, not the
-	// organization; role and active are checked on each below.
-	l, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "admin_rank", Value: true}}})
-	if err != nil {
-		return nil, mapStore(err)
+// pause waits d, or until ctx ends (its error).
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
-	ids := make([]string, len(l))
-	for i, u := range l {
-		ids[i] = u.ID
-	}
-	recs, err := s.freshMany(ctx, model.KindUser, orgID, ids)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	var out []*model.User
-	for _, r := range recs {
-		u := &model.User{}
-		if store.Decode(r, u) == nil && u.OrgID == orgID && u.Role == role && u.Enabled(now) {
-			out = append(out, u)
-		}
-	}
-	return out, nil
 }

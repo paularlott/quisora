@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
@@ -267,6 +268,7 @@ func TestPrimaryOrgChoosesDeterministicallyWhenTwoAreMarked(t *testing.T) {
 // While two organizations are marked primary (an interrupted set-primary), every server chooses the same one, the one
 // with the lowest id, whatever it chose before: a server running since the earlier primary and one just started agree.
 func TestTwoPrimariesChooseTheSameOnEveryServer(t *testing.T) {
+	service.SetPrimaryChoiceTTL(t, 50*time.Millisecond)
 	e := newEnv(t)
 	first := e.primary
 	acme := e.org("acme") // created after the primary: a higher id
@@ -287,6 +289,7 @@ func TestTwoPrimariesChooseTheSameOnEveryServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := service.New(e.svc.Cfg, e.svc.Store, e.svc.Sealer)
+	time.Sleep(60 * time.Millisecond) // past the time a server remembers its choice
 	for name, svc := range map[string]*service.Service{"running": e.svc, "just started": fresh} {
 		if p, err := svc.PrimaryOrg(e.ctx); err != nil || p.ID != min(first.ID, acme.ID) {
 			t.Errorf("%s server: %v %v, want the lowest id %s", name, p.ID, err, min(first.ID, acme.ID))

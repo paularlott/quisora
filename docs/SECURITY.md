@@ -144,6 +144,18 @@ and the servers keep running:
    from, and `detail.command` and `detail.authenticated`, so it is told from what the system does by itself), the
    account enabled again, and the sign-ins after it. Then give a second person super admin so this is not needed again.
 
+   If no super admin is left at all (two removed each other at the same moment on different nodes, or the last one's end
+   date passed: the service protects super admins by rank, not by a count), add `--super-admin`:
+
+   ```bash
+   quisora invite --break-glass --super-admin primary admin@example.com
+   ```
+
+   The account becomes an enabled super admin at once (its end date is cleared if it had passed), and the command still
+   prints the invitation link for step 2. It needs `--break-glass`, and refuses a user who is not in the primary
+   organization. It is audited as `user.update` (the role and status change) and `user.invite.break_glass`
+   (`detail.super_admin=granted`), both by `command:invite`.
+
 Without `--break-glass`, `quisora invite` issues an ordinary invitation (7 days) the same way, and refuses a disabled
 account. `quisora set-primary` (making another organization the primary one, when the primary's super admins are all
 gone) is the same kind of request, **signed with the master key and sent to a running node** (in a gossip cluster the

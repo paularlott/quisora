@@ -199,6 +199,7 @@ type netsim struct {
 	inner  gossip.Transport
 	cut    map[string]bool
 	dropTo map[string]map[gossip.MessageType]bool
+	holdTo map[string]map[gossip.MessageType]bool // requests sent to a node that never answers (until the caller's context ends)
 }
 
 func (ns *netsim) tr() gossip.Transport {
@@ -232,6 +233,17 @@ func (ns *netsim) blocked(nd *gossip.Node, mt gossip.MessageType) bool {
 		}
 	}
 	return false
+}
+
+// held reports whether requests of type mt to nd hang (c.hold).
+func (ns *netsim) held(nd *gossip.Node, mt gossip.MessageType) bool {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	if nd == nil {
+		return false
+	}
+	a := nd.GetAddress()
+	return ns.holdTo[nd.AdvertisedAddr()][mt] || ns.holdTo[a.String()][mt]
 }
 
 func (ns *netsim) Send(tt gossip.TransportType, nd *gossip.Node, p *gossip.Packet) error {
@@ -272,6 +284,10 @@ func (ns *netsim) SetStreamHandler(h func(*gossip.Packet, io.Writer) error) {
 func (ns *netsim) SendWithReplyContext(ctx context.Context, nd *gossip.Node, p *gossip.Packet) (*gossip.Packet, error) {
 	if ns.blocked(nd, p.MessageType) {
 		return nil, errUnreachable
+	}
+	if ns.held(nd, p.MessageType) {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	if ct, ok := ns.tr().(gossip.ContextTransport); ok {
 		return ct.SendWithReplyContext(ctx, nd, p)
@@ -320,7 +336,7 @@ func (c *tcluster) heal() {
 	for i := range c.addrs {
 		ns := c.net(i)
 		ns.mu.Lock()
-		ns.cut, ns.dropTo = map[string]bool{}, map[string]map[gossip.MessageType]bool{}
+		ns.cut, ns.dropTo, ns.holdTo = map[string]bool{}, map[string]map[gossip.MessageType]bool{}, nil
 		ns.mu.Unlock()
 	}
 }
@@ -336,6 +352,24 @@ func (c *tcluster) drop(i, j int, on bool, types ...gossip.MessageType) {
 	}
 	for _, mt := range types {
 		ns.dropTo[to][mt] = on
+	}
+}
+
+// hold makes requests of the given types from node i to node j hang until the caller's context ends (a node that is
+// slow, not down), or answer again.
+func (c *tcluster) hold(i, j int, on bool, types ...gossip.MessageType) {
+	ns := c.net(i)
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	to := c.addrs[j]
+	if ns.holdTo == nil {
+		ns.holdTo = map[string]map[gossip.MessageType]bool{}
+	}
+	if ns.holdTo[to] == nil {
+		ns.holdTo[to] = map[gossip.MessageType]bool{}
+	}
+	for _, mt := range types {
+		ns.holdTo[to][mt] = on
 	}
 }
 

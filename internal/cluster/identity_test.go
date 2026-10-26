@@ -104,7 +104,7 @@ func TestGossipNodesSharingADatabaseRefuse(t *testing.T) {
 	waitFor(t, 15*time.Second, "one refuses", func() bool {
 		refusing := 0
 		for _, tn := range c.nodes {
-			if ok, why := tn.n.Ready(); !ok && strings.Contains(why, "belongs to node") && !tn.n.Writable() && !tn.n.ServesTokens() {
+			if ok, why := tn.n.Ready(); !ok && strings.Contains(why, "belongs to node") && !tn.n.Writable() {
 				refusing++
 			}
 		}

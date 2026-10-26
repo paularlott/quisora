@@ -205,7 +205,7 @@ func TestInviteRecheckedAgainstIssuer(t *testing.T) {
 	admin := e.user(p, "inv-admin", model.RoleAdmin)
 	setRole := func(u *model.User, r model.Role) {
 		t.Helper()
-		if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: &r}); err != nil {
+		if _, err := e.svc.UpdateUser(e.ctx, actor(e.super), u.ID, service.UserInput{Role: &r}); err != nil {
 			t.Fatalf("role %s for %s: %v", r, u.Username, err)
 		}
 	}
@@ -398,11 +398,11 @@ func TestBreakGlassInviteAndMarkLinkSent(t *testing.T) {
 	if _, _, err := c.svc.CreateInvite(c.ctx, actor(c.super), c.pAdmin.ID); !isInvalid(err) {
 		t.Fatalf("normal invite of a disabled account: %v", err)
 	}
-	link, exp, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pAdmin.ID)
+	link, exp, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pAdmin.ID, false)
 	if err != nil || !exp.After(time.Now()) {
 		t.Fatalf("break glass: %v", err)
 	}
-	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, "nobody"); !errors.Is(err, service.ErrNotFound) {
+	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, "nobody", false); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("unknown user: %v", err)
 	}
 	ev := c.audited(c.pAdmin.OrgID, "user.invite.break_glass")
@@ -467,7 +467,7 @@ func TestLinksStopWhenTheAddressChanges(t *testing.T) {
 	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(invite), service.LinkInvite); err != nil {
 		t.Fatalf("new invitation: %v", err)
 	}
-	bg, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID)
+	bg, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,5 +476,48 @@ func TestLinksStopWhenTheAddressChanges(t *testing.T) {
 	}
 	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(bg), service.LinkInvite); err != nil {
 		t.Fatalf("break-glass invitation: %v", err)
+	}
+}
+
+// A break-glass invitation with superAdmin makes a user of the primary organization an enabled super admin (an end date
+// that has passed is cleared), audited; a user of another organization is refused and left as they were.
+func TestBreakGlassInviteMakesASuperAdmin(t *testing.T) {
+	c := newCast(t)
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), c.pUser.ID, service.UserInput{ValidUntil: ptr(past)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), c.pUser.ID, service.UserInput{Active: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, c.aAdmin.ID, true); !isInvalid(err) || !strings.Contains(err.Error(), "primary organization") {
+		t.Fatalf("a user of another organization: %v", err)
+	}
+	if got := c.fresh(c.aAdmin); got.Role != model.RoleAdmin {
+		t.Fatalf("the refused user is now %s", got.Role)
+	}
+	link, _, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pUser.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.fresh(c.pUser)
+	if got.Role != model.RoleSuperAdmin || !got.Active || got.ValidUntil != nil {
+		t.Fatalf("after recovery: role %s active %v end %v", got.Role, got.Active, got.ValidUntil)
+	}
+	if _, _, err := c.svc.PeekLink(c.ctx, link[strings.Index(link, "token=")+6:], service.LinkInvite); err != nil {
+		t.Fatalf("the invitation does not open: %v", err)
+	}
+	if ev := c.audited(c.primary.ID, "user.invite.break_glass"); len(ev) != 1 || ev[0].Detail["super_admin"] != "granted" {
+		t.Fatalf("invite audit %+v", ev)
+	}
+	if ev := c.audited(c.primary.ID, "user.update"); len(ev) == 0 {
+		t.Fatal("the promotion was not audited")
+	}
+	// without the flag the role stays as it is
+	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pManager.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.fresh(c.pManager); got.Role != model.RoleManager {
+		t.Fatalf("plain break-glass changed the role to %s", got.Role)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/paularlott/logger"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -39,12 +40,12 @@ func TestInviteThroughRunningServer(t *testing.T) {
 	a.OIDC.InvalidateUser(admin.ID)
 
 	// an ordinary invitation is refused for the disabled account, by the running server
-	if _, _, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", false); err == nil ||
+	if _, _, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", false, false); err == nil ||
 		!strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("ordinary invitation for a disabled account: %v (%s)", err, how)
 	}
 	// break-glass works, through the server (its self-signed certificate trusted from the data directory)
-	link, expires, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", true)
+	link, expires, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", true, false)
 	if err != nil || how != "the running server" || !strings.HasPrefix(link, base+"/invite?token=") ||
 		time.Until(expires) > service.BreakGlassTTL {
 		t.Fatalf("break-glass: %q %v %s %v", link, expires, how, err)
@@ -97,12 +98,75 @@ func TestInviteThroughRunningServer(t *testing.T) {
 
 	// with the server stopped, the command uses the store itself
 	a.Close()
-	link, _, how, err = Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", false)
+	link, _, how, err = Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", false, false)
 	if err != nil || how != "the store" || link == "" {
 		t.Fatalf("server stopped: %v %s", err, how)
 	}
 	// --server names a server: no falling back to the store when it does not answer
-	if _, _, _, err := Invite(ctx, c, log, base, "", false, "primary", "admin@example.com", false); err == nil {
+	if _, _, _, err := Invite(ctx, c, log, base, "", false, "primary", "admin@example.com", false, false); err == nil {
 		t.Fatal("--server that does not answer fell back to the store")
+	}
+}
+
+// "quisora invite --break-glass --super-admin" through the running server: the account becomes an enabled super admin
+// (audited as the command's action), only for a user of the primary organization, and only with --break-glass.
+func TestInviteSuperAdminThroughRunningServer(t *testing.T) {
+	a, _, _ := startAppWith(t, "badgerdb", nil)
+	ctx := context.Background()
+	c, log := a.Cfg, logger.NewNullLogger()
+	primary, err := a.Svc.PrimaryOrg(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the only super admin is gone: demoted and disabled behind the server's back (what two administrators removing
+	// each other on two nodes can leave)
+	admin, err := a.Svc.FindUserByEmail(ctx, primary.ID, "admin@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.Role, admin.Active = model.RoleUser, false
+	if err := a.Svc.Users.Update(ctx, admin); err != nil {
+		t.Fatal(err)
+	}
+	a.OIDC.InvalidateUser(admin.ID)
+
+	if _, _, _, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", false, true); err == nil ||
+		!strings.Contains(err.Error(), "--break-glass") {
+		t.Fatalf("--super-admin without --break-glass: %v", err)
+	}
+	if got, _ := a.Svc.Users.Get(ctx, admin.ID); got.Role == model.RoleSuperAdmin || got.Active {
+		t.Fatal("a refused command changed the account")
+	}
+	// a user of another organization cannot become a super admin
+	name := "acme"
+	org, err := a.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, email := "pat", "pat@acme.example"
+	pat, err := a.Svc.CreateUser(ctx, service.System, org.ID, service.UserInput{Username: &user, Email: &email, GivenName: &user})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Invite(ctx, c, log, "", "", false, "acme", email, true, true); err == nil ||
+		!strings.Contains(err.Error(), "primary organization") {
+		t.Fatalf("a user of another organization: %v", err)
+	}
+	if got, _ := a.Svc.Users.Get(ctx, pat.ID); got.Role == model.RoleSuperAdmin {
+		t.Fatal("a user of another organization was made a super admin")
+	}
+
+	link, _, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", true, true)
+	if err != nil || how != "the running server" || link == "" {
+		t.Fatalf("break-glass super admin: %q %s %v", link, how, err)
+	}
+	got, err := a.Svc.Users.Get(ctx, admin.ID)
+	if err != nil || got.Role != model.RoleSuperAdmin || !got.Active {
+		t.Fatalf("the account after recovery: %+v %v", got, err)
+	}
+	requireCommandActor(t, a, "user.invite.break_glass", "invite")
+	requireCommandActor(t, a, "user.update", "invite")
+	if _, _, err := a.Svc.PeekLink(ctx, link[strings.Index(link, "token=")+6:], service.LinkInvite); err != nil {
+		t.Fatalf("the invitation does not open: %v", err)
 	}
 }

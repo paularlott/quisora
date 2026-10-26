@@ -263,16 +263,42 @@ func (s *Service) LinkURL(path, token string) string {
 // Unlike CreateInvite it works for a disabled account (a super admin locked out, or past their end date), whose
 // invitation enables it again when used; it lasts BreakGlassTTL. Earlier invitations stop working, and accepting it
 // replaces every credential of the account, as any invitation does.
-func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string) (string, time.Time, error) {
+//
+// With superAdmin (--super-admin) the account is also made an enabled super admin now, when it is a user of the primary
+// organization (the only place super admins live; any other is refused): the recovery for a server whose last super
+// admins removed each other (two removing each other at the same moment on different nodes can leave none).
+func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string, superAdmin bool) (string, time.Time, error) {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
 		return "", time.Time{}, mapStore(err)
+	}
+	detail := map[string]string{"role": string(u.Role)}
+	if superAdmin {
+		org, err := s.PrimaryOrg(ctx)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if u.OrgID != org.ID {
+			return "", time.Time{}, Invalid("user", "a super admin must be a user of the primary organization ("+org.Name+")")
+		}
+		was := snapshot(u)
+		if u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+			u.Role, u.Active = model.RoleSuperAdmin, true
+			if u.ValidUntil != nil && !time.Now().Before(*u.ValidUntil) {
+				u.ValidUntil = nil // ended: the account must be usable again to be recovered
+			}
+			noteStatus(u, System, "break-glass: made a super admin")
+			return nil
+		}); err != nil {
+			return "", time.Time{}, err
+		}
+		s.Audit(ctx, System, u.OrgID, "user.update", u.Username, addChanges(map[string]string{"break_glass": "made a super admin"}, was, u))
+		detail["super_admin"] = "granted"
 	}
 	token, l, err := s.issueLink(ctx, u, LinkInvite, "", BreakGlassTTL, "", nil, func(l *model.LinkToken) { l.BreakGlass = true })
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	detail := map[string]string{"role": string(u.Role)}
 	if !u.Enabled(time.Now()) {
 		detail["account"] = "disabled: enabled again when the invitation is used"
 	}

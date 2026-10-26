@@ -353,9 +353,11 @@ Run `quisora bootstrap` once, against the database, before the first node starts
 Every node has its own database (BadgerDB is the usual choice). The data is split into 64 partitions; each partition has one
 owner node that orders its writes and commits each on a majority of the nodes before it is visible, and every node keeps a copy
 of everything and reads from it.
-As in every mode, the last super admin cannot be demoted, disabled, deleted or end-dated (see
-[protecting administrators](sign-in/README.md#protecting-administrators)); make a second one before you rely on the cluster
-anyway, so that losing one account never needs the break-glass procedure.
+As in every mode, super admins are protected by rank: nobody removes their own access, only a super admin removes a super
+admin, and the system never does (see [protecting administrators](sign-in/README.md#protecting-administrators)). That is
+not a guarantee that one always remains: two super admins removing each other at the same moment on different nodes can
+leave none, and `quisora invite --break-glass --super-admin primary <email>` recovers. Keep a second super admin anyway,
+so that losing one account never needs the break-glass procedure.
 
 ```toml
 [server]
@@ -373,8 +375,8 @@ key = "…"                 # quisora genkey, identical on every node
 How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator needs from it:
 
 - **Run three or five nodes.** A write needs a majority of `cluster.size` (it never shrinks): three nodes tolerate one down,
-  five tolerate two. Without a majority a node makes no replicated write, and the token, userinfo and introspection endpoints
-  keep answering for `cluster.minority_grace` (300 s). ([Cluster size](REPLICATION.md#cluster-size))
+  five tolerate two. Without a majority a node is not ready: it makes no replicated write and refuses everything but its health
+  probes, the token endpoints included. ([Cluster size](REPLICATION.md#cluster-size))
 - **When a node is lost, its partitions move within a few seconds**: writes to them wait for that (up to 5 s) and then fail with
   503; reads of what the node already has go on. A node you stop with SIGTERM hands over at once.
 - **A starting node** serves only `/healthz` and `/readyz` until it has caught up and been stable for a few seconds. Restart
@@ -398,8 +400,8 @@ New cluster:
 
 1. `quisora bootstrap --new-cluster` on one node, with an empty database.
 2. Start every node. The others start with empty databases, adopt the first node's data set and copy from it (started before it,
-   they wait: "no data set"). Until the data set has formed (a majority holds it), a new node copies from the first node alone;
-   after that, replacements copy from a majority of the others as above.
+   they wait: "no data set"). The data set forms once every node has started: until then a new node copies from the first
+   node alone; after that, replacements copy from a majority of the others as above.
 
 Replacing a node: start the replacement with an empty database and the same configuration. It copies everything.
 

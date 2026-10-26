@@ -35,6 +35,8 @@ func RunPartitionDurable(t *testing.T, f DurableFactory) {
 		{"ImportAndPurgeSurviveReopen", testDurImportPurge},
 		{"UnfinishedImportRefusesExportAfterReopen", testDurUnfinishedImport},
 		{"AppliedThenSyncedStateSurvivesCrash", testDurCrash},
+		{"FullImportInterruptedAfterItsResetRefusesExport", testDurResetImport},
+		{"FullImportInterruptedAfterABatchRepeatsFromFirst", testDurFullImportRepeated},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,5 +167,93 @@ func testDurUnfinishedImport(t *testing.T, d *Durable) {
 	must(t, ps.ImportPartition(ctx, 14, []store.PartitionRecord{{Record: r2, Seq: 2}}, pos(1, 2), finish))
 	if got, at := exported(t, ps, 14, 0); at != pos(1, 2) || len(got) != 1 || got[rkey(r2)].Seq != 2 {
 		t.Fatalf("export after the import: %+v %v", at, got)
+	}
+}
+
+// refusesExport checks that s refuses to export partition p because an import into it has not finished.
+func refusesExport(t *testing.T, s store.Store, p int) {
+	t.Helper()
+	called := false
+	err := pstore(t, s).ExportPartition(ctx, p, 0, func(store.PartitionPos) error { called = true; return nil }, func(store.PartitionRecord) error { return nil })
+	if !errors.Is(err, store.ErrImportUnfinished) || called {
+		t.Fatalf("an export of a partition whose full import has not finished: %v (start called: %v)", err, called)
+	}
+}
+
+// A full import that stopped between its reset (which removed records) and the write of its position refuses exports, in the
+// crash image taken at that moment and after a restart, until an import finishes.
+func testDurResetImport(t *testing.T, d *Durable) {
+	ps := pstore(t, d.Store)
+	interrupted := errors.New("interrupted")
+	a, b, imp := resetImport(t, ps, 15, "og2", func() {
+		if d.Crash != nil {
+			c := d.Crash()
+			defer c.Close()
+			refusesExport(t, c, 15)
+		}
+		panic(interrupted)
+	})
+	func() {
+		defer func() {
+			if r := recover(); r != interrupted {
+				t.Fatalf("the import was not interrupted: %v", r)
+			}
+		}()
+		_ = imp()
+	}()
+	if st, _ := ps.PartitionState(ctx, 15); st.Committed != pos(1, 2) {
+		t.Fatalf("the position moved: %+v", st.Committed)
+	}
+	s := d.Reopen()
+	defer s.Close()
+	refusesExport(t, s, 15)
+	ps = pstore(t, s)
+	// the import repeated (the next catch-up) completes it
+	must(t, ps.ImportPartition(ctx, 15, []store.PartitionRecord{{Record: a, Seq: 1}}, pos(2, 5), whole))
+	if got, at := exported(t, ps, 15, 0); at != pos(2, 5) || len(got) != 1 || got[rkey(a)].Seq != 1 {
+		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+	if _, err := s.Lookup(ctx, model.KindUser, b.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the record the import did not bring: %v", err)
+	}
+}
+
+// A full import that stopped after its reset and a batch, before its final call, refuses exports in the crash image and
+// after a restart (the old position's data is gone and a record the import stored may lie below the position, so nothing
+// else tells), and the import repeated from its First call completes with exactly the source's records: what the
+// interrupted attempt stored and the source does not have is gone.
+func testDurFullImportRepeated(t *testing.T, d *Durable) {
+	ps := pstore(t, d.Store)
+	const org = "og3"
+	old1, old2 := urec(t, org, "fi-old1"), urec(t, org, "fi-old2")
+	must(t, ps.ApplyPartition(ctx, 16, []*store.Record{old1, old2}, pos(1, 1)))
+	x, y, z := urec(t, org, "fi-x"), urec(t, org, "fi-y"), urec(t, org, "fi-z")
+	// the interrupted attempt brought x and z (below the new position)
+	must(t, ps.ImportPartition(ctx, 16, []store.PartitionRecord{{Record: x, Seq: 1}, {Record: z, Seq: 2}}, pos(2, 3),
+		store.ImportStep{Full: true, First: true}))
+	if d.Crash != nil {
+		c := d.Crash()
+		refusesExport(t, c, 16)
+		c.Close()
+	}
+	s := d.Reopen()
+	defer s.Close()
+	refusesExport(t, s, 16)
+	if st, _ := pstore(t, s).PartitionState(ctx, 16); st.Committed != pos(1, 1) {
+		t.Fatalf("the position moved: %+v", st.Committed)
+	}
+	ps = pstore(t, s)
+	// the source has x and y: the import again, from the start, in two calls
+	must(t, ps.ImportPartition(ctx, 16, []store.PartitionRecord{{Record: x, Seq: 1}}, pos(2, 3), store.ImportStep{Full: true, First: true}))
+	refusesExport(t, s, 16)
+	must(t, ps.ImportPartition(ctx, 16, []store.PartitionRecord{{Record: y, Seq: 3}}, pos(2, 3), store.ImportStep{Full: true, Final: true}))
+	got, at := exported(t, ps, 16, 0)
+	if at != pos(2, 3) || len(got) != 2 || got[rkey(x)].Seq != 1 || got[rkey(y)].Seq != 3 {
+		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+	for _, r := range []*store.Record{old1, old2, z} {
+		if _, err := s.Lookup(ctx, model.KindUser, r.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s survived: %v", r.ID, err)
+		}
 	}
 }

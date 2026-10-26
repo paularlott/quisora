@@ -22,7 +22,10 @@ var ErrStoreLocked = errors.New("the data store is in use by another process: " 
 // InviteUser issues a fresh invitation for the user as the system and returns its URL and expiry. Earlier unused
 // invitations of that user stop working. The user may be new (no password yet) or existing (password removed, or
 // locked out of everything else).
-func InviteUser(ctx context.Context, svc *service.Service, orgName, email string, breakGlass bool) (string, time.Time, error) {
+func InviteUser(ctx context.Context, svc *service.Service, orgName, email string, breakGlass, superAdmin bool) (string, time.Time, error) {
+	if superAdmin && !breakGlass {
+		return "", time.Time{}, errors.New("--super-admin is a recovery: it needs --break-glass")
+	}
 	org, err := svc.OrgByName(ctx, strings.ToLower(strings.TrimSpace(orgName)))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("organization %q: %w", orgName, err)
@@ -32,13 +35,13 @@ func InviteUser(ctx context.Context, svc *service.Service, orgName, email string
 		return "", time.Time{}, fmt.Errorf("user %q in organization %q: %w", email, org.Name, err)
 	}
 	if breakGlass {
-		return svc.CreateBreakGlassInvite(ctx, u.ID)
+		return svc.CreateBreakGlassInvite(ctx, u.ID, superAdmin)
 	}
 	return svc.CreateInvite(ctx, service.System, u.ID)
 }
 
 // IssueInvite opens the configured store (as serve does), issues the invitation and closes the store again.
-func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgName, email string, breakGlass bool) (string, time.Time, error) {
+func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgName, email string, breakGlass, superAdmin bool) (string, time.Time, error) {
 	key, err := masterKey(c)
 	if err != nil {
 		return "", time.Time{}, err
@@ -59,7 +62,7 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 	svc := service.New(c, st, sealer)
 	svc.Origin = service.CommandOrigin("invite")
 	defer cliAudit(c, svc, log)()
-	return InviteUser(ctx, svc, orgName, email, breakGlass)
+	return InviteUser(ctx, svc, orgName, email, breakGlass, superAdmin)
 }
 
 // Bootstrap ("quisora bootstrap") opens the configured store, creates the primary organization, its default tenant

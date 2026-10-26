@@ -565,7 +565,7 @@ func TestUnpartitionedDatabaseIsRefused(t *testing.T) {
 	if ok, why := tn.n.Ready(); ok || !strings.Contains(why, "no partition write made") {
 		t.Fatalf("ready %v: %q", ok, why)
 	}
-	if tn.n.Writable() || tn.n.ServesTokens() {
+	if tn.n.Writable() {
 		t.Fatal("a database the node cannot trust is served")
 	}
 	// an empty one, or one with records seeded as the first writes of their partitions, is fine
@@ -634,7 +634,7 @@ func TestSeparatelyBootstrappedNodeNeverExchangesData(t *testing.T) {
 	if ok, why := tn.n.Ready(); ok || !strings.Contains(why, "another data set") {
 		t.Fatalf("a node of another data set: ready %v (%s)", ok, why)
 	}
-	if tn.n.Writable() || tn.n.ServesTokens() {
+	if tn.n.Writable() {
 		t.Fatal("a node of another data set serves")
 	}
 	for _, id := range append(slices.Clone(ids), more...) {

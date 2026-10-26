@@ -100,7 +100,7 @@ its **Confirm it is you** dialog), and an API token can never make them, through
 - changing the primary organization's sign-in settings;
 - making someone an administrator or super admin, or creating one;
 - demoting, disabling or deleting another administrator or super admin (management API only: a directory offboarding
-  an administrator through SCIM still can, within the service's guards on the last super admins);
+  an administrator through SCIM still can, within the service's rules: it never touches a super admin);
 - removing another user's password;
 - issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
 
@@ -119,9 +119,12 @@ and an account whose second factor is a passkey confirms with the passkey, not t
 - **Not linked by email.** Upstream providers never link a manager's or administrator's account by its email address:
   they connect the provider themselves ([providers](providers.md#who-signs-in-as-whom)).
 - **No codes by email** and **no trusted provider second factor** for them: they always give their own.
-- **Super admins the server keeps.** Demoting, disabling, deleting or end-dating a super admin is refused when no other
-  usable super admin would remain, in every mode (the count is made through the owner of the primary organization's
-  partition, under the organization's admin lock, so a change on another node is counted). Make someone else a super
-  admin first. Organizations need no administrator of their own: super admins administer every one, so an
-  organization's last administrator can be demoted or removed.
+- **Who may remove a super admin.** Nobody demotes, disables, locks out, end-dates or deletes themselves (nor changes their
+  own end date), and only a super admin does any of that to a super admin: an administrator, a manager or a SCIM client
+  cannot. The system never does either (the sweep that disables accounts past their end date skips super admins; their end
+  date still stops sign-in). These are rules about who acts on whom, not a count: there is no guarantee that a super admin
+  always remains. Two super admins removing each other at the same moment on different nodes can leave none, as can an end
+  date passing on the last one; `quisora invite --break-glass --super-admin primary <email>` recovers (see below).
+  Organizations need no administrator of their own: super admins administer every one, so an organization's last
+  administrator can be demoted or removed.
 - **Locked out of the console entirely**: the [break-glass procedure](../SECURITY.md#incident-response).

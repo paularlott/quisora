@@ -62,7 +62,7 @@ type NodeKeys struct {
 
 // MasterKeyNodes returns the master keys each live node reported, by node id.
 func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, error) {
-	// Only the reports' range of ids, read in id order: other lock records (the admin lock, groups' locks) are not
+	// Only the reports' range of ids, read in id order: other lock records are not
 	// read at all.
 	now := time.Now()
 	out := map[string]NodeKeys{}

@@ -96,8 +96,6 @@ func outcome(err error) string {
 		return "forbidden"
 	case errors.Is(err, service.ErrNotFound):
 		return "notfound"
-	case errors.Is(err, service.ErrLastAdmin):
-		return "lastadmin"
 	case errors.Is(err, service.ErrInvalid):
 		return "invalid"
 	case errors.Is(err, service.ErrConflict):
@@ -350,12 +348,6 @@ func (e *env) lastAudit(action string) *model.Audit {
 		e.t.Fatalf("no %s event", action)
 	}
 	return all[len(all)-1]
-}
-
-// ghostSuper is a super admin who is no one of the stored users: what a guard against removing the last super admin
-// sees when the actor is not the one being removed.
-func (e *env) ghostSuper() *service.Actor {
-	return &service.Actor{UserID: "someone-else", OrgID: e.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
 }
 
 // badScopes are no valid scope tokens (RFC 6749): blanks, quotes, backslashes, non-ASCII or control characters, or

@@ -156,8 +156,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.Server = srv
 	srv.Bearer = bearer(a.Svc)
 	srv.Health = &health{node: node, svc: a.Svc}
-	srv.Writable = node.Writable
-	srv.ServesTokens = node.ServesTokens
 	srv.Status = func() any { return readyzStatus(node.Status()) }
 	srv.Site.Clustered = !node.Status().Standalone
 	a.registerMetrics()
@@ -355,15 +353,19 @@ func readyzStatus(st cluster.Status) readyzCluster {
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the
 // primary organization exists, made by "quisora bootstrap" or received from the cluster).
 type health struct {
-	node *cluster.Node
-	svc  *service.Service
+	node  *cluster.Node
+	svc   *service.Service
+	setUp atomic.Bool // a primary organization was found: once set up, always (readiness checks it on every request)
 }
 
 func (h *health) Ready() (bool, string) {
 	if ok, why := h.node.Ready(); !ok {
 		return ok, why
 	}
-	// Cached once found; until then a store read, bounded: a database that hangs makes the node unready, not the probe.
+	if h.setUp.Load() {
+		return true, ""
+	}
+	// Until found, a store read, bounded: a database that hangs makes the node unready, not the probe.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := h.svc.PrimaryOrg(ctx); err != nil {
@@ -372,6 +374,7 @@ func (h *health) Ready() (bool, string) {
 		}
 		return false, "not set up: run \"quisora bootstrap\""
 	}
+	h.setUp.Store(true)
 	return true, ""
 }
 

@@ -122,7 +122,7 @@ func TestUsers(t *testing.T) {
 	wantField(t, ad.patch(AU+"/"+id, map[string]any{"email": "nope"}), 422, "email")
 	want(t, ad.patch(AU+"/"+id, map[string]any{"role": "overlord"}), 422)
 
-	// guards: not yourself, not the last admin
+	// guards: not yourself
 	adminID := w.users["admin"].ID
 	want(t, ad.delete(AU+"/"+adminID), 422)
 	want(t, ad.patch(AU+"/"+adminID, map[string]any{"role": "user"}), 422)

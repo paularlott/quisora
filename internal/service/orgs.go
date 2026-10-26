@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -104,8 +105,16 @@ func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
 // between its writes: running it again finishes it) every node chooses the same, the one with the lowest id, and logs
 // at error level every time; the choice is not remembered while it is in doubt.
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
-	// Read every time (an indexed lookup of one or two records), not remembered: a node that remembered one primary
-	// would keep it while another, choosing afresh, picks the other of two.
+	// The choice is remembered for primaryChoiceTTL at most (finding the primary reads every organization): servers
+	// that remembered different primaries of two agree again within it. The organization itself is read every time.
+	s.primary.mu.Lock()
+	id, at := s.primary.id, s.primary.at
+	s.primary.mu.Unlock()
+	if id != "" && time.Since(at) < primaryChoiceTTL {
+		if o, err := s.Orgs.Get(ctx, id); err == nil && o.Primary {
+			return o, nil
+		}
+	}
 	orgs, err := s.primaryOrgs(ctx)
 	if err != nil {
 		return nil, err
@@ -121,9 +130,21 @@ func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
 		s.Log.Error("more than one organization is marked primary (an interrupted set-primary): using "+orgs[0].Name+
 			"; run quisora set-primary again for the organization that should be primary to finish it",
 			"organizations", strings.Join(names, " "))
-		return orgs[0], nil
 	}
+	s.primary.mu.Lock()
+	s.primary.id, s.primary.at = orgs[0].ID, time.Now()
+	s.primary.mu.Unlock()
 	return orgs[0], nil
+}
+
+// primaryChoiceTTL bounds how long PrimaryOrg remembers which organization is primary. A variable for tests.
+var primaryChoiceTTL = time.Second
+
+// primaryChoice is PrimaryOrg's remembered choice (an id and when it was made).
+type primaryChoice struct {
+	mu sync.Mutex
+	id string
+	at time.Time
 }
 
 // updateFresh changes entity e of table t and writes it with a compare-and-swap. A write refused as stale (another
@@ -273,6 +294,9 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 			demoted = append(demoted, got)
 		}
 	}
+	s.primary.mu.Lock()
+	s.primary.id = "" // chosen afresh at the next read
+	s.primary.mu.Unlock()
 	s.InvalidateSignOut()
 	names := make([]string, len(demoted))
 	for i, u := range demoted {

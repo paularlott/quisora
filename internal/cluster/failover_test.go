@@ -71,7 +71,7 @@ func TestAloneAfterAllStopped(t *testing.T) {
 	})
 	consistently(t, time.Second, "a node alone is neither ready nor writable, and issues no tokens", func() bool {
 		ok, _ := tn.n.Ready()
-		return !ok && !tn.n.Writable() && !tn.n.ServesTokens()
+		return !ok && !tn.n.Writable()
 	})
 	if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrNotWritable) {
 		t.Fatalf("%v", err)

@@ -471,8 +471,8 @@ func TestIfMatchHoldsAgainstConcurrentWriteDuringPatch(t *testing.T) {
 	r := e.do("PATCH", path, e.admA, patchBody(op("replace", "name.givenName", "Stale request")), "If-Match", tag)
 	// The interleave is placed by counting reads: if a PATCH comes to read the user a different number of times,
 	// check the second read still falls after the If-Match check before changing this count.
-	if hook.gets != 3 {
-		t.Fatalf("the PATCH read the user %d times, the interleave assumes 3", hook.gets)
+	if hook.gets != 2 {
+		t.Fatalf("the PATCH read the user %d times, the interleave assumes 2", hook.gets)
 	}
 	if r.Status != 412 {
 		t.Fatalf("stale conditional PATCH overwrote concurrent edit: status=%d body=%s", r.Status, r.Raw)

@@ -293,8 +293,8 @@ func TestStandaloneEphemeralDirect(t *testing.T) {
 	if _, err := e.Get(bg, "ns", id); !errors.Is(err, ephemeral.ErrNotFound) {
 		t.Fatalf("%v", err)
 	}
-	if !n.ServesTokens() {
-		t.Fatal("a standalone node serves tokens")
+	if ok, why := n.Ready(); !ok {
+		t.Fatalf("a standalone node is ready: %s", why)
 	}
 	n.rebuild() // nothing to rebuild without gossip
 	n.publishReady()

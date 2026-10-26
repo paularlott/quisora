@@ -492,39 +492,6 @@ func (e *conflictErr) Is(target error) bool {
 }
 func (e *conflictErr) Unwrap() error { return e.error }
 
-// UpdateUser changes a user. Users may change their own profile fields but not role, active, external id or
-// verified state.
-func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserInput) (*model.User, error) {
-	before, err := s.Users.Get(ctx, id)
-	if err != nil {
-		return s.updateUser(ctx, a, id, in, nil)
-	}
-	// A new manager holds the organization's managers lock (cluster-wide), and its loop check reads the chain from a
-	// the owners' copies (setManager): two changes on two nodes (A reports to B, B to A) can never both pass it. Taken
-	// before the admin lock, always, so the two never wait on each other.
-	if w := in.Work; w != nil && w.ManagerID != nil && strings.TrimSpace(*w.ManagerID) != "" &&
-		strings.TrimSpace(*w.ManagerID) != before.Work.ManagerID {
-		l, err := s.lock(ctx, "managers/"+before.OrgID, adminLockTTL, 10*time.Second,
-			"another change of this organization's managers is in progress")
-		if err != nil {
-			return nil, err
-		}
-		defer l.release(ctx)
-	}
-	var al *lease
-	if before.Role == model.RoleSuperAdmin && (in.Role != nil || in.Active != nil || in.ValidUntil != nil) {
-		// A change that can remove a super admin holds the primary organization's admin lock (cluster-wide), and its
-		// last-super-admin check counts from the owners' copies: two such changes on two nodes can never both pass it.
-		// The write is fenced on the lease (lease.fence): one that lands after the lease lapsed is judged again.
-		al, err = s.lockAdmins(ctx, before.OrgID)
-		if err != nil {
-			return nil, err
-		}
-		defer al.release(ctx)
-	}
-	return s.updateUser(ctx, a, id, in, al)
-}
-
 // dropUnchanged clears the fields of in that equal u's, so a form saving the whole record changes only what differs
 // (the rules about changing yourself then see only real changes).
 func dropUnchanged(u *model.User, in *UserInput) {
@@ -581,7 +548,7 @@ func dropUnchanged(u *model.User, in *UserInput) {
 // CurbsAdmin reports whether in demotes or disables u, an administrator or super admin, or ends their account sooner. Like granting the role, that
 // takes a recently re-authenticated console session in the management API (a stolen token or an unattended session
 // must not lock the other administrators out). SCIM does not ask for it: a directory offboarding an administrator
-// (disabling or deleting them) must work with its token, and the service's own guards (the last super admins) apply.
+// (disabling or deleting them) must work with its token, and the service's own rules (nobody curbs their own account, only a super admin curbs a super admin) apply.
 func CurbsAdmin(u *model.User, in UserInput) bool {
 	if !isAdminRank(u) {
 		return false
@@ -603,9 +570,9 @@ func isAdminRank(u *model.User) bool {
 	return u.Role == model.RoleAdmin || u.Role == model.RoleSuperAdmin
 }
 
-// updateUser is UpdateUser under the locks it took: al is the admin lock, held while the change can remove a super
-// admin (nil otherwise), which the write is fenced on.
-func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserInput, al *lease) (*model.User, error) {
+// UpdateUser changes a user. Users may change their own profile fields but not role, active, external id or
+// verified state.
+func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserInput) (*model.User, error) {
 	u, err := s.Users.Get(ctx, id)
 	if err != nil {
 		return nil, mapStore(err)
@@ -623,12 +590,6 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	before := u.Role
 	was := snapshot(u)
 	secWas := stateOf(u) // the security generation moves on below if the change touches what signs the account in
-	var prev *model.User // the copy the last-admin guard judged, for the fence after the write
-	if al != nil {
-		if prev, err = cloneUser(u); err != nil {
-			return nil, err
-		}
-	}
 	if in.Role != nil && *in.Role != u.Role {
 		org, err := s.Orgs.Get(ctx, u.OrgID)
 		if err != nil {
@@ -644,8 +605,8 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 			return nil, Invalid("role", "only a super admin can lower the role of a manager or administrator")
 		}
 	}
-	if err := s.guardAdminChange(ctx, u, in); err != nil {
-		return nil, err
+	if a == System && u.Role == model.RoleSuperAdmin && CurbsAdmin(u, in) {
+		return nil, errSparesSuperAdmins
 	}
 	if in.Role != nil {
 		u.Role = *in.Role
@@ -665,27 +626,9 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		noteStatus(u, a, reason)
 	}
 	noteSecurity(secWas, u)
-	err = s.Users.Update(ctx, u)
-	// The commit boundary of a change the admin lock guarded (lease.fence): a write that landed after the lease lapsed
-	// is judged again on the copy the guard judged, and undone if it would be refused now. So is one whose outcome is
-	// unknown (it may have landed): the check reads the owners' copies, which settle it first.
-	fence := func() error {
-		return al.fence(ctx, func(ctx context.Context) error { return s.guardAdminChange(ctx, prev, in) },
-			func(ctx context.Context) error { return s.restoreUser(ctx, prev, u) })
-	}
-	if err != nil {
+	if err := s.Users.Update(ctx, u); err != nil {
 		s.auditUnknown(ctx, err, a, u.OrgID, "user.update", u.Username, addChanges(nil, was, u))
-		if al != nil && outcomeUnknown(err) {
-			if ferr := fence(); ferr != nil {
-				return nil, ferr
-			}
-		}
 		return nil, s.userConflict(ctx, err, u)
-	}
-	if al != nil {
-		if err := fence(); err != nil {
-			return nil, err
-		}
 	}
 	// From here the change is in effect (perhaps not yet confirmed by a peer): what follows from it happens anyway.
 	var sessErr error
@@ -782,10 +725,13 @@ func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in Use
 	if self && ((in.Role != nil && *in.Role != u.Role) || (in.Active != nil && !*in.Active)) {
 		return Invalid("role", "you cannot change your own role or disable yourself")
 	}
-	if self && (in.ValidUntil != nil || in.UserType != nil || in.Work != nil) && a != System && !a.IsSuper() {
+	if self && in.ValidUntil != nil {
+		return Invalid("valid_until", "your own end date is set by someone else") // nobody ends or extends their own access
+	}
+	if self && (in.UserType != nil || in.Work != nil) && a != System && !a.IsSuper() {
 		// Applications may trust these (a department, a manager): someone above you sets them. Super admins have
 		// nobody above them.
-		return Invalid("work", "your work details, user type and end date are set by an administrator")
+		return Invalid("work", "your work details and user type are set by an administrator")
 	}
 	if self && (in.Tags != nil || in.Username != nil || in.ExternalID != nil) && a != System && !a.IsSuper() {
 		// The same for the tags and username every application receives and the id provisioning matches on. Users
@@ -795,129 +741,9 @@ func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in Use
 	return nil
 }
 
-// guardAdminChange applies guardLastAdmin to the change in of u (as read, before the change): only a lower role,
-// disabling, or a sooner end date can take administration away; a promotion never needs the guard.
-func (s *Service) guardAdminChange(ctx context.Context, u *model.User, in UserInput) error {
-	if in.Role != nil && in.Role.Rank() < u.Role.Rank() || in.Active != nil && !*in.Active && u.Active {
-		if err := s.guardLastAdmin(ctx, u); err != nil {
-			return err
-		}
-	}
-	if in.ValidUntil != nil {
-		return s.guardEndDate(ctx, u, *in.ValidUntil)
-	}
-	return nil
-}
-
-// cloneUser is a copy of u that later changes of u leave untouched.
-func cloneUser(u *model.User) (*model.User, error) {
-	r, err := store.EncodeAsIs(u)
-	if err != nil {
-		return nil, err
-	}
-	c := &model.User{}
-	if err := store.Decode(r, c); err != nil {
-		return nil, err
-	}
-	return c, nil
-}
-
-// restoreUser undoes a guarded change of a user (lease.fence): prev is the user as the guard judged them, u the copy
-// the change wrote. The copy written is put back as prev; a copy changed since (a newer version) gets back only what
-// the guard judged — role, active state, end date and the status note — unless it is a usable super admin again.
-func (s *Service) restoreUser(ctx context.Context, prev, u *model.User) error {
-	prev.Version = u.Version
-	err := s.Users.Update(ctx, prev)
-	for attempt := 0; err != nil; attempt++ {
-		if !errors.Is(err, store.ErrStale) || attempt == 4 {
-			return mapStore(err)
-		}
-		if u, err = s.Users.Get(ctx, u.ID); err != nil {
-			return mapStore(err)
-		}
-		if u.Role == model.RoleSuperAdmin && u.Enabled(time.Now()) {
-			return nil
-		}
-		u.Role, u.Active, u.ValidUntil, u.StatusChanged = prev.Role, prev.Active, prev.ValidUntil, prev.StatusChanged
-		err = s.Users.Update(ctx, u)
-	}
-	return nil
-}
-
-// recreateUser undoes a guarded deletion of a user (lease.fence): u, as read before the deletion, is created again (a
-// new generation of the record over its tombstone).
-func (s *Service) recreateUser(ctx context.Context, u *model.User) error {
-	err := s.Users.Create(ctx, u)
-	if err != nil {
-		if _, gerr := s.Users.Get(ctx, u.ID); gerr == nil {
-			return nil // still there: a deletion whose outcome was unknown did not land
-		}
-	}
-	return mapStore(err)
-}
-
-// guardLastAdmin refuses to demote, disable, delete or end-date a super admin when fewer than MinSuperAdmins usable
-// super admins would remain (one unless the service is told otherwise). A usable super admin is active and not past
-// their end date. One without an end date may only stop being one while enough others without an end date remain: otherwise end
-// dates set on each other would leave none once the last one passes. Organizations need no administrator: super admins
-// administer every one of them. The caller holds the primary organization's admin lock (lockAdmins).
-func (s *Service) guardLastAdmin(ctx context.Context, u *model.User) error {
-	now := time.Now()
-	if u.Role != model.RoleSuperAdmin || !u.Enabled(now) {
-		return nil // not a usable super admin: removing them takes nothing away
-	}
-	need := max(s.MinSuperAdmins, 1)
-	supers, err := s.usableAdmins(ctx, u.OrgID, model.RoleSuperAdmin)
-	if err != nil {
-		return err
-	}
-	others, lasting := 0, 0
-	for _, o := range supers {
-		if o.ID == u.ID {
-			continue
-		}
-		others++
-		if o.ValidUntil == nil {
-			lasting++
-		}
-	}
-	if others < need || (u.ValidUntil == nil && lasting < need) {
-		return lastSuperAdminErr{need}
-	}
-	return nil
-}
-
-// lastSuperAdminErr is ErrLastAdmin saying how many super admins the server keeps.
-type lastSuperAdminErr struct{ need int }
-
-func (e lastSuperAdminErr) Error() string {
-	if e.need > 1 {
-		return "the server keeps at least " + strconv.Itoa(e.need) + " super admins: make someone else a super admin first"
-	}
-	return "this is the last super admin: make someone else a super admin first"
-}
-
-func (e lastSuperAdminErr) Is(target error) bool { return target == ErrLastAdmin }
-
-// guardEndDate applies guardLastAdmin to a change of u's end date to v (the UserInput value: "" clears it). Clearing
-// an end date, or moving it later, never removes a super admin.
-func (s *Service) guardEndDate(ctx context.Context, u *model.User, v string) error {
-	if u.Role != model.RoleSuperAdmin {
-		return nil
-	}
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return nil
-	}
-	end, err := parseEndDate(v)
-	if err != nil {
-		return nil // apply reports the invalid value
-	}
-	if u.ValidUntil != nil && !end.Before(*u.ValidUntil) {
-		return nil
-	}
-	return s.guardLastAdmin(ctx, u)
-}
+// errSparesSuperAdmins is what the system (housekeeping, bootstrap, commands that act as System) gets when it would
+// demote, disable, end-date or delete a super admin: only another super admin does that.
+var errSparesSuperAdmins = Invalid("user", "automatic changes never demote, disable, end-date or delete a super admin")
 
 // parseEndDate reads an end date: an RFC 3339 time or a date (YYYY-MM-DD, the start of that day UTC).
 func parseEndDate(v string) (time.Time, error) {
@@ -936,45 +762,22 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	if err != nil {
 		return mapStore(err)
 	}
-	var al *lease
-	if u.Role == model.RoleSuperAdmin {
-		if al, err = s.lockAdmins(ctx, u.OrgID); err != nil {
-			return err
-		}
-		defer al.release(ctx)
-	}
 	if a.UserID == id {
 		return Invalid("user", "you cannot delete yourself")
 	}
 	if !s.canManageUser(a, u) {
 		return s.denied(a, u) // not found for users a may not see (other organizations, super admins)
 	}
-	if err := s.guardLastAdmin(ctx, u); err != nil {
-		return err
+	if a == System && u.Role == model.RoleSuperAdmin {
+		return errSparesSuperAdmins
 	}
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
-	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
-	// last-admin check applied) is refused, instead of deleting an administrator unchecked.
-	// The commit boundary of a deletion the admin lock guarded (lease.fence): one that landed after the lease lapsed,
-	// or whose outcome is unknown, is judged again, and the user created again if it would be refused now.
-	fence := func() error {
-		return al.fence(ctx, func(ctx context.Context) error { return s.guardLastAdmin(ctx, u) },
-			func(ctx context.Context) error { return s.recreateUser(ctx, u) })
-	}
+	// read on a node that has not seen the user's promotion to administrator yet, so the rank rules above did not
+	// apply) is refused, instead of deleting an administrator unchecked.
 	if err := s.Users.DeleteIf(ctx, u.ID, u.Version); err != nil {
 		// Refused (a newer copy), or not confirmed by a majority: the user may still exist; a retry decides.
 		s.auditUnknown(ctx, err, a, u.OrgID, "user.delete", u.Username, nil)
-		if al != nil && outcomeUnknown(err) {
-			if ferr := fence(); ferr != nil {
-				return ferr
-			}
-		}
 		return mapStore(err)
-	}
-	if al != nil {
-		if err := fence(); err != nil {
-			return err
-		}
 	}
 	// The user is gone, and with it everything that was theirs: every session, grant, token, passkey or link stands on
 	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The applications are
@@ -1243,8 +1046,9 @@ func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 }
 
 // setManager sets u's manager: another user of the same organization, and never one who reports to u (directly or
-// further down), which would make a loop. "" clears it. The chain is read from the owners' copies (FreshUser), under
-// the managers lock UpdateUser holds, so a change confirmed on another node is seen.
+// further down), which would make a loop. "" clears it. The chain is read from the owners' copies (FreshUser), so a
+// change confirmed on another node is seen, and bounded (maxManagerChain). Two changes at once on two nodes can still
+// make a loop (a reporting line is directory data only; the walk above is bounded, so a loop harms nothing).
 func (s *Service) setManager(ctx context.Context, u *model.User, id string) error {
 	if id == "" {
 		u.Work.ManagerID = ""
@@ -1313,7 +1117,7 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 	endReached := "The end date was reached."
 	now := time.Now()
 	n := 0
-	// Users this pass could not end (the last super admin(s) are never disabled, though their end date still stops
+	// Users this pass could not end (super admins are never disabled by the system, though their end date still stops
 	// sign-in; or a write that failed) stay at the front of the due list: they are skipped, and each read asks for
 	// that many more, so they never hide the users behind them.
 	stuck := map[string]bool{}
@@ -1327,6 +1131,9 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 		for _, u := range due {
 			if u.ValidUntil == nil || u.ValidUntil.After(now) {
 				return n, nil // sorted by end date: the rest end later
+			}
+			if u.Role == model.RoleSuperAdmin {
+				stuck[u.ID] = true
 			}
 			if stuck[u.ID] {
 				continue

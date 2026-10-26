@@ -49,11 +49,6 @@ type Server struct {
 	Mux      *http.ServeMux
 	Health   Health
 	Bearer   BearerFunc // resolves bearer tokens for the management API (set by the app)
-	// ServesTokens reports whether the token, userinfo and introspection endpoints may answer while this node is not
-	// writable (a grace period on the minority side of a partition). Nil: always.
-	ServesTokens func() bool
-	// Writable reports whether this node may accept writes (false on the minority side of a partition).
-	Writable func() bool
 	// Reauthed reports whether the request's session signed in or re-authenticated recently (set by the login module,
 	// which owns re-authentication); false without a session (API tokens). Changes to your own account made from the
 	// admin pages ask for it, as the account page does.
@@ -129,7 +124,7 @@ func (s *Server) Use(mods ...Module) {
 func (s *Server) Handler() http.Handler {
 	// recoverer inside observe: a request that panics is answered 500 and is still logged and counted as one.
 	return requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
-		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.writeGuard(s.Mux)))))))
+		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.Mux))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold
@@ -139,18 +134,11 @@ func alwaysServed(p string) bool {
 		p == "/favicon.ico"
 }
 
-// tokenPaths keep answering on a node cut off from the majority for cluster.minority_grace (ServesTokens).
-func tokenPath(p string) bool {
-	return p == "/oauth/token" || p == "/oauth/userinfo" || p == "/oauth/introspect"
-}
-
 // serveGate answers 503 (Retry-After: 5) to everything but the probes and static files while this node is not
 // ready (Health): a node that is starting, catching up, copying its first data, out of date, misconfigured or cut
 // off from the majority must not hand data it cannot vouch for — partial, stale or since deleted — to a caller that
-// bypasses the load balancer (admin and management API reads, SCIM, the authorization pages, discovery, JWKS). The
-// token, userinfo and introspection endpoints keep answering on a node that was serving and got cut off, for the
-// grace of cluster.minority_grace (ServesTokens): only what needs no write succeeds there (a write is refused
-// without a majority).
+// bypasses the load balancer (admin and management API reads, SCIM, the authorization pages, discovery, JWKS, the
+// token endpoints). Ready is the single gate: a ready node is also writable (Node.Writable).
 func (s *Server) serveGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
@@ -159,10 +147,6 @@ func (s *Server) serveGate(next http.Handler) http.Handler {
 			return
 		}
 		if ok, _ := s.Health.Ready(); ok {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if tokenPath(p) && s.ServesTokens != nil && s.ServesTokens() {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -177,48 +161,6 @@ func (s *Server) serveGate(next http.Handler) http.Handler {
 		default:
 			http.Error(w, "This server is not ready to serve. Please try again shortly.", http.StatusServiceUnavailable)
 		}
-	})
-}
-
-// writeGuard refuses state-changing requests while this node cannot reach a majority of the cluster, so a
-// partitioned minority never diverges (admin and SCIM writes, sign-ins, including a provider's sign-in callback,
-// which is a GET). The token endpoint (refresh, code exchange), userinfo and introspection keep working for a grace
-// period (ServesTokens), so applications ride out a short partition: what they write is new records, not edits that
-// could conflict, and refresh token reuse detection still holds once the partition heals. After it they refuse
-// too: revocations made on the majority side cannot reach this node. Signing out and revocation keep working.
-func (s *Server) writeGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Writable != nil && !s.Writable() {
-			switch r.URL.Path {
-			case "/oauth/token", "/oauth/userinfo", "/oauth/introspect":
-				if s.ServesTokens != nil && !s.ServesTokens() {
-					w.Header().Set("Retry-After", "5")
-					WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable",
-						"error_description": "this server cannot reach the rest of the cluster"})
-					return
-				}
-			}
-			// Routes that write outside the JSON APIs: a provider's sign-in callback (a GET; HEAD reaches GET routes
-			// too) and the confirmation of an email verification link (a form POST)
-			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasPrefix(r.URL.Path, "/login/callback/") ||
-				r.Method == http.MethodPost && r.URL.Path == "/verify-email" {
-				w.Header().Set("Retry-After", "5")
-				http.Error(w, "This server cannot reach the rest of the cluster. Go back and try again shortly.",
-					http.StatusServiceUnavailable)
-				return
-			}
-			switch r.Method {
-			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-				p := r.URL.Path
-				if APIPath(p) || strings.HasPrefix(p, "/scim/") {
-					w.Header().Set("Retry-After", "5")
-					WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{
-						Error: "This server cannot reach the rest of the cluster. Please try again shortly."})
-					return
-				}
-			}
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 

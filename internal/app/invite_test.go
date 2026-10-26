@@ -115,12 +115,12 @@ func inviteService(t *testing.T) *service.Service {
 func TestInviteUserCore(t *testing.T) {
 	svc := inviteService(t)
 	ctx := context.Background()
-	first, exp, err := InviteUser(ctx, svc, "Primary", "root@example.com", false)
+	first, exp, err := InviteUser(ctx, svc, "Primary", "root@example.com", false, false)
 	if err != nil || !strings.Contains(first, "/invite?token=") || time.Until(exp) < 6*24*time.Hour {
 		t.Fatalf("invite: %q %v %v", first, exp, err)
 	}
 	// A second invitation (by upper-case email address this time) revokes the first.
-	second, _, err := InviteUser(ctx, svc, "primary", "ROOT@example.com", false)
+	second, _, err := InviteUser(ctx, svc, "primary", "ROOT@example.com", false, false)
 	if err != nil || second == first {
 		t.Fatalf("second invite: %v", err)
 	}
@@ -130,10 +130,10 @@ func TestInviteUserCore(t *testing.T) {
 	if _, _, err := svc.PeekLink(ctx, second[strings.Index(second, "token=")+6:], service.LinkInvite); err != nil {
 		t.Fatalf("newest invitation: %v", err)
 	}
-	if _, _, err := InviteUser(ctx, svc, "nope", "admin@example.com", false); err == nil || !strings.Contains(err.Error(), "organization") {
+	if _, _, err := InviteUser(ctx, svc, "nope", "admin@example.com", false, false); err == nil || !strings.Contains(err.Error(), "organization") {
 		t.Fatalf("unknown org: %v", err)
 	}
-	if _, _, err := InviteUser(ctx, svc, "primary", "ghost", false); err == nil || !strings.Contains(err.Error(), "ghost") {
+	if _, _, err := InviteUser(ctx, svc, "primary", "ghost", false, false); err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("unknown user: %v", err)
 	}
 	// Disabled accounts are refused.
@@ -145,7 +145,7 @@ func TestInviteUserCore(t *testing.T) {
 	if _, err := svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Active: &off}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := InviteUser(ctx, svc, "primary", "pat", false); err == nil {
+	if _, _, err := InviteUser(ctx, svc, "primary", "pat", false, false); err == nil {
 		t.Fatal("invited a disabled account")
 	}
 }
@@ -182,13 +182,13 @@ func TestIssueInviteStoreLockedAndFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = IssueInvite(ctx, c, log, "primary", "admin@example.com", false)
+	_, _, err = IssueInvite(ctx, c, log, "primary", "admin@example.com", false, false)
 	if !errors.Is(err, ErrStoreLocked) {
 		t.Fatalf("a locked store: %v", err)
 	}
 	a.Close()
 
-	link, _, err := IssueInvite(ctx, c, log, "primary", "admin@example.com", false)
+	link, _, err := IssueInvite(ctx, c, log, "primary", "admin@example.com", false, false)
 	if err != nil || !strings.HasPrefix(link, "https://quisora.example.test/invite?token=") {
 		t.Fatalf("free store: %q %v", link, err)
 	}

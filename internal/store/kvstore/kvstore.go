@@ -73,8 +73,8 @@ type Store struct {
 	eng    engine
 	mu     sync.RWMutex
 	feedID string
-	// plocks serialises the transactions that rewrite a partition's state (one *sync.Mutex per partition): they all
-	// read and write its one state key, so run side by side on a busy partition they conflict until retries run out.
+	// plocks holds one *sync.RWMutex per partition: its protocol writes (group committed, so they never conflict with each
+	// other) share it, and an import or purge of the partition holds it exclusively.
 	plocks sync.Map
 }
 

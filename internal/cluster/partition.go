@@ -738,8 +738,9 @@ const importBatch = 1000
 // Import applies a stream Export made, importBatch records at a time as they arrive (memory is bounded by a batch, not
 // by the partition). The committed position moves only when the stream ends with its marker: a stream that ends early
 // leaves the position where it was, with the batches before it already applied (committed data of the source, never
-// uncommitted data, which the next catch-up, repeating the import, completes). A full copy removes every record of p it
-// does not bring, and the hooks hear of each removal (a cached session or grant that is gone must not be served).
+// uncommitted data, which the next catch-up, repeating the import, completes). A full copy first removes every record of p
+// (the backend resets the partition), and the hooks hear of each removal (a cached session or grant that is gone must not be
+// served); what the stream brings is applied, and heard of, after that.
 func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error {
 	if p < 0 || p >= partitions {
 		return fmt.Errorf("cluster: partition %d out of range", p)
@@ -753,7 +754,7 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 	apply := func(final bool) error {
 		step := store.ImportStep{Full: full, First: first, Final: final, Removed: removed}
 		// Until an import completes, the partition's exports are refused by the backend (store.ErrImportUnfinished): its
-		// records above the committed position are the mark.
+		// records above the committed position, or its full-import marker, say so.
 		if err := s.pst.ImportPartition(s.n.ctx, p, batch, fromPos(upTo), step); err != nil {
 			return err
 		}

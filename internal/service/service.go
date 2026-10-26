@@ -27,12 +27,10 @@ var (
 	ErrForbidden = errors.New("forbidden")
 	ErrNotFound  = errors.New("not found")
 	// ErrLimit: a server-wide cap is reached (self-registered applications); try again later.
-	ErrLimit    = errors.New("limit reached")
-	ErrInvalid  = errors.New("invalid")
-	ErrConflict = errors.New("already exists")
-	ErrStale    = errors.New("changed by someone else, reload and try again")
-	// ErrLastAdmin: the change would leave fewer usable super admins than the server keeps (Service.MinSuperAdmins).
-	ErrLastAdmin  = errors.New("cannot remove the last super admin")
+	ErrLimit      = errors.New("limit reached")
+	ErrInvalid    = errors.New("invalid")
+	ErrConflict   = errors.New("already exists")
+	ErrStale      = errors.New("changed by someone else, reload and try again")
 	ErrNotEmpty   = errors.New("organization still has users")
 	ErrPrimaryOrg = errors.New("the primary organization cannot be deleted")
 	// ErrOutcomeUnknown: the change was sent, and the node that decides it was lost before it answered: it may or may not
@@ -171,17 +169,12 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
+	primary primaryChoice    // the primary organization PrimaryOrg chose, for primaryChoiceTTL
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 
-	// MinSuperAdmins is how many usable super admins must remain after a demotion, disable, deletion or end date (0:
-	// one, which is every mode's value: the app leaves it unset). The guard counts them through the owner of the
-	// organization's partition under the admin lock (docs/REPLICATION.md, "The last-administrator guard"), so a
-	// change that only some node has applied can never be what it counts; a larger value is a policy of the
-	// deployment, not a protection the gossip mode needs.
-	MinSuperAdmins int
-	signOut        signOutCache   // emergency sign-out counters (signout.go)
-	bg             sync.WaitGroup // Background work
-	tokenTouching  sync.Map       // ids of API tokens whose last use is being recorded (touchAPIToken)
+	signOut       signOutCache   // emergency sign-out counters (signout.go)
+	bg            sync.WaitGroup // Background work
+	tokenTouching sync.Map       // ids of API tokens whose last use is being recorded (touchAPIToken)
 
 	// Writable reports whether this node may change replicated data now (cluster.Node.Writable; nil: always). Writes
 	// made in passing while serving reads (a session's or token's last use, a sign-in's last-login stamp) are skipped

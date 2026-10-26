@@ -162,3 +162,25 @@ b = 2
 		t.Fatalf("validate: %v", err)
 	}
 }
+
+// A configuration file that still sets a removed setting keeps starting: Validate does not refuse it, and
+// RemovedSettingWarnings names it so the process warns.
+func TestRemovedSettingIsWarnedAbout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quisora.toml")
+	if err := os.WriteFile(path, []byte("[cluster]\nminority_grace = 300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parse(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := cfg.UnknownKeys(); len(u) != 0 {
+		t.Fatalf("unknown keys %v", u)
+	}
+	if w := cfg.RemovedSettingWarnings(); len(w) != 1 || !strings.Contains(w[0], "cluster.minority_grace") {
+		t.Fatalf("warnings %v", w)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}

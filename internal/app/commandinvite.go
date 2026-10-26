@@ -25,11 +25,12 @@ type commandInvite struct {
 	Org        string `json:"org"`
 	Email      string `json:"email"`
 	BreakGlass bool   `json:"break_glass,omitempty"`
+	SuperAdmin bool   `json:"super_admin,omitempty"`
 	commandSig
 }
 
 func (ci *commandInvite) message() []string {
-	return []string{"quisora command: invite v1", ci.Org, ci.Email, strconv.FormatBool(ci.BreakGlass),
+	return []string{"quisora command: invite v2", ci.Org, ci.Email, strconv.FormatBool(ci.BreakGlass), strconv.FormatBool(ci.SuperAdmin),
 		strconv.FormatInt(ci.At, 10), ci.Nonce}
 }
 
@@ -43,7 +44,7 @@ func (m commandModule) invite(w http.ResponseWriter, r *http.Request) {
 	if !m.accept(w, r, &in) {
 		return
 	}
-	link, expires, err := InviteUser(service.WithCommand(r.Context(), "invite", commandAuth), m.a.Svc, in.Org, in.Email, in.BreakGlass)
+	link, expires, err := InviteUser(service.WithCommand(r.Context(), "invite", commandAuth), m.a.Svc, in.Org, in.Email, in.BreakGlass, in.SuperAdmin)
 	if err != nil {
 		status := http.StatusUnprocessableEntity
 		if errors.Is(err, service.ErrNotFound) {
@@ -58,7 +59,7 @@ func (m commandModule) invite(w http.ResponseWriter, r *http.Request) {
 // RemoteInvite asks the server at server (default: server.public_url) to issue the invitation, signing the request
 // with the configured master key (commandClient says which certificates it trusts).
 func RemoteInvite(ctx context.Context, c *config.Config, server, caFile string, insecure bool, orgName, email string,
-	breakGlass bool) (string, time.Time, error) {
+	breakGlass, superAdmin bool) (string, time.Time, error) {
 	if server == "" {
 		server = c.Server.PublicURL
 	}
@@ -71,7 +72,7 @@ func RemoteInvite(ctx context.Context, c *config.Config, server, caFile string, 
 		return "", time.Time{}, err
 	}
 	var out commandInviteReply
-	req := &commandInvite{Org: orgName, Email: email, BreakGlass: breakGlass, commandSig: newCommandSig()}
+	req := &commandInvite{Org: orgName, Email: email, BreakGlass: breakGlass, SuperAdmin: superAdmin, commandSig: newCommandSig()}
 	if err := postCommand(ctx, c, client, u, commandInvitePath, req, &out); err != nil {
 		return "", time.Time{}, err
 	}
@@ -86,9 +87,9 @@ func RemoteInvite(ctx context.Context, c *config.Config, server, caFile string, 
 // directly (a shared database, which every node reads, or the store of a stopped node). A gossip cluster's data is
 // changed only through a running node: a write that bypassed the partition protocol would reach no other node.
 func Invite(ctx context.Context, c *config.Config, log logger.Logger, server, caFile string, insecure bool, orgName,
-	email string, breakGlass bool) (link string, expires time.Time, how string, err error) {
+	email string, breakGlass, superAdmin bool) (link string, expires time.Time, how string, err error) {
 	if server != "" || !c.SharedStorage() || c.Replicate() {
-		link, expires, err = RemoteInvite(ctx, c, server, caFile, insecure, orgName, email, breakGlass)
+		link, expires, err = RemoteInvite(ctx, c, server, caFile, insecure, orgName, email, breakGlass, superAdmin)
 		if err == nil {
 			return link, expires, "the running server", nil
 		}
@@ -100,6 +101,6 @@ func Invite(ctx context.Context, c *config.Config, log logger.Logger, server, ca
 				"nodes, or a majority of them, and run the command again)", err)
 		}
 	}
-	link, expires, err = IssueInvite(ctx, c, log, orgName, email, breakGlass)
+	link, expires, err = IssueInvite(ctx, c, log, orgName, email, breakGlass, superAdmin)
 	return link, expires, "the store", err
 }

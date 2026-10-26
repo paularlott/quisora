@@ -20,12 +20,16 @@ func inviteCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"primary admin@example.com\") or to give a user whose password was removed a way back in.\n\n" +
 			"--break-glass is for getting back into a server nobody can sign in to: the invitation (valid 24 hours) works " +
 			"even for a disabled account, such as a super admin that was locked out, and enables it again when used.\n\n" +
+			"--super-admin (only with --break-glass) also makes the account an enabled super admin, at once: for a server " +
+			"left with none (\"quisora invite --break-glass --super-admin primary admin@example.com\"). The account must be " +
+			"a user of the primary organization.\n\n" +
 			"Uses the same config file / QUISORA_* environment as serve, and needs the master key. The servers keep " +
 			"running: with a node's own store (BadgerDB, SQLite, or any database of a gossip cluster) the command asks " +
 			"the running server at server.public_url (or --server), signing the request with the master key; when no " +
 			"server answers, or with a shared database, it writes to the store itself.",
 		Flags: append(flags,
 			&cli.BoolFlag{Name: "break-glass", Usage: "Recover access: the invitation also works for a disabled account, and enables it"},
+			&cli.BoolFlag{Name: "super-admin", Usage: "With --break-glass: make the account an enabled super admin (a user of the primary organization)"},
 			&cli.StringFlag{Name: "server", Usage: "Ask this running server (https URL) instead of server.public_url"},
 			&cli.StringFlag{Name: "ca-file", Usage: "PEM file of extra CA certificates trusted for the server"},
 			&cli.BoolFlag{Name: "insecure", Usage: "Do not verify the server's certificate"},
@@ -35,12 +39,15 @@ func inviteCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			&cli.StringArg{Name: "email", Usage: "Email address of the user", Required: true},
 		},
 		Run: func(ctx context.Context, c *cli.Command) error {
+			if c.GetBool("super-admin") && !c.GetBool("break-glass") {
+				return fmt.Errorf("--super-admin is a recovery: it needs --break-glass")
+			}
 			if err := prepare(ctx, cfg); err != nil {
 				return err
 			}
 			log := logslog.New(logslog.Config{Level: "error", Format: cfg.Log.Format})
 			link, expires, how, err := app.Invite(ctx, cfg, log, c.GetString("server"), c.GetString("ca-file"),
-				c.GetBool("insecure"), c.GetStringArg("org"), c.GetStringArg("email"), c.GetBool("break-glass"))
+				c.GetBool("insecure"), c.GetStringArg("org"), c.GetStringArg("email"), c.GetBool("break-glass"), c.GetBool("super-admin"))
 			if err != nil {
 				return err
 			}

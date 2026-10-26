@@ -57,9 +57,10 @@ type PartitionStore interface {
 	// memory. It returns ErrPartitionPurged, without calling start, if afterSeq is not 0 and is below the partition's
 	// purge point (PartitionState.Purged): tombstones the caller needs may be gone, so it must ask again for everything.
 	// It returns ErrImportUnfinished, without calling start, if the snapshot holds a record of p above the committed
-	// position: commits write records and position together, so only an import that has not finished leaves one, and the
-	// snapshot may lack records the committed position promises (one the import overwrote). An error from start or fn
-	// stops the export and is returned.
+	// position (commits write records and position together, so only an import that has not finished leaves one, and the
+	// snapshot may lack records the committed position promises: one the import overwrote), or if a full import of p is in
+	// progress (it began by removing records, which leaves nothing above the position). An error from start or fn stops
+	// the export and is returned.
 	ExportPartition(ctx context.Context, p int, afterSeq uint64, start func(PartitionPos) error, fn func(PartitionRecord) error) error
 
 	// ImportPartition applies what ExportPartition returned, one batch of it per call, so that a partition of any size
@@ -68,10 +69,15 @@ type PartitionStore interface {
 	// every call of one import with the same upTo, First on the first, Final on the last, one batch being both). Every
 	// call fails, changing nothing, with ErrPartitionBehind unless upTo.Seq is above the stored committed sequence.
 	//
-	// With step.Full the copy replaces the partition: the Final call removes (not tombstones) every record of p that no
-	// batch of this import brought, calls step.Removed for each after its removal is committed, and raises the purge
-	// point to upTo.Seq (the copy holds the tombstones its source still had, and the backend does not know which the
-	// source had purged). The backends know which records the import brought by marking them as the batches arrive.
+	// With step.Full the copy replaces the partition, by reset then import: the First call, in one transaction, durably
+	// marks the import as in progress (ExportPartition refuses, ErrImportUnfinished, until it ends), and then removes (not
+	// tombstones) every record of p, in as many transactions as it takes, calling step.Removed for each after its removal
+	// is committed; the batches then store the source's records into the emptied partition; the Final call sets the
+	// committed position, raises the purge point to upTo.Seq (the copy holds the tombstones its source still had, and the
+	// backend does not know which the source had purged) and clears the marker, in one transaction. A record the reset
+	// removed and a batch brings back is reported removed all the same. The partition is not a copy of anything while the
+	// import runs (it holds only what the batches brought), and a full import that did not finish (a crash, a failed
+	// call) is repeated from its First call, which resets again.
 	//
 	// Atomicity: one batch is atomic, an import is not: a crash between its calls leaves the committed position where it
 	// was with the batches already applied stored (committed data of the source, never uncommitted data: every record
@@ -156,12 +162,12 @@ type PartitionState struct {
 
 // ImportStep says where one ImportPartition call lies in an import (see ImportPartition).
 type ImportStep struct {
-	// Full replaces the partition's data: what the import does not bring is removed by the Final call.
+	// Full replaces the partition's data: the First call removes every record of it before the batches bring theirs.
 	Full bool
-	// First is the first call of the import (a Full import forgets the marks of an earlier one that did not finish);
-	// Final is the last one, which sets the committed position (and, Full, removes what was not brought).
+	// First is the first call of the import (a Full import resets the partition, whatever an earlier import that did not
+	// finish left); Final is the last one, which sets the committed position (and, Full, ends the import).
 	First, Final bool
-	// Removed, with Full and Final, is called for every record the import removed, after the removal is committed.
+	// Removed, with Full and First, is called for every record the reset removed, after the removal is committed.
 	Removed func(kind model.Kind, id string)
 }
 

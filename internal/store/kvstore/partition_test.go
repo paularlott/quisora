@@ -255,10 +255,12 @@ func TestBusyPartitionStateWritesNeverConflict(t *testing.T) {
 }
 
 // Commits on many partitions at once, each adding records of one kind (so all of them move that kind's counters),
-// all succeed: transactions that conflict on a counter back off at random rather than retry in step.
+// all succeed, with durable commits as in production: the committer applies them one after another, so they never conflict
+// on a counter (run on their own, they exhausted the retries under load).
 func TestConcurrentPartitionCommitsOnSharedCountersSucceed(t *testing.T) {
-	s := openBadger(t, BadgerOptions{NoSync: true})
+	s := openBadger(t, BadgerOptions{}) // durable: every commit is fsynced
 	ctx := context.Background()
+	before := retryConflicts.Load()
 	const parts, each = 64, 40
 	errs := make(chan error, parts*each)
 	var wg sync.WaitGroup
@@ -282,5 +284,8 @@ func TestConcurrentPartitionCommitsOnSharedCountersSucceed(t *testing.T) {
 	}
 	if n, err := s.Count(ctx, model.KindLink, "sc"); err != nil || n != parts*each {
 		t.Fatalf("count after the commits: %d %v", n, err)
+	}
+	if n := retryConflicts.Load() - before; n != 0 {
+		t.Fatalf("%d commits conflicted", n)
 	}
 }

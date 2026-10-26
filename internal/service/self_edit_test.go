@@ -9,8 +9,8 @@ import (
 )
 
 // Editing yourself from the users page sends the whole form: fields left as they are are not changes, so the rules
-// about changing yourself apply only to what differs. A super admin may set their own work details, user type and end
-// date (nobody is above them); anyone else may not.
+// about changing yourself apply only to what differs. A super admin may set their own work details and user type
+// (nobody is above them); anyone else may not, and nobody sets their own end date.
 func TestSelfEditWholeForm(t *testing.T) {
 	e := newEnv(t)
 	acme := e.org("acme")

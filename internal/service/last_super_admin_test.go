@@ -2,15 +2,11 @@ package service_test
 
 import (
 	"errors"
-	"fmt"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/store"
 )
 
 // Organizations need no administrator (super admins administer every one): an organization's last administrator can
@@ -30,175 +26,126 @@ func TestLastOrgAdminNotProtected(t *testing.T) {
 	}
 }
 
-// Deactivating a super admin (disabling, locking out, or an end date in the past) is refused when fewer usable super
-// admins than the server keeps would remain: one, or two in a gossip cluster.
-func TestSuperAdminDeactivationThreshold(t *testing.T) {
+// Nobody curbs their own account: a super admin cannot demote, disable, end-date, lock out or delete themselves, nor
+// change their own end date at all.
+func TestSuperAdminCannotCurbThemselves(t *testing.T) {
 	c := newCast(t)
-	ghost := c.ghostSuper()
-	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	deactivations := map[string]func(id string) error{
-		"disable": func(id string) error {
-			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{Active: ptr(false)})
+	c.user(c.primary.ID, "second", model.RoleSuperAdmin)
+	me := actor(c.super)
+	later := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	for name, f := range map[string]func() error{
+		"demote": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, me, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
 			return err
 		},
-		"lock out": func(id string) error { _, err := c.svc.LockOutUser(c.ctx, ghost, id, "x"); return err },
-		"delete":   func(id string) error { return c.svc.DeleteUser(c.ctx, ghost, id) },
-		"end date": func(id string) error {
-			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{ValidUntil: ptr(past)})
+		"disable": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, me, c.super.ID, service.UserInput{Active: ptr(false)})
 			return err
 		},
-	}
-	// one super admin: none of them
-	for name, f := range deactivations {
-		if err := f(c.super.ID); !errors.Is(err, service.ErrLastAdmin) {
-			t.Errorf("%s the only super admin: %v", name, err)
+		"end date": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, me, c.super.ID, service.UserInput{ValidUntil: ptr(later)})
+			return err
+		},
+		"lock out": func() error { _, err := c.svc.LockOutUser(c.ctx, me, c.super.ID, "x"); return err },
+		"delete":   func() error { return c.svc.DeleteUser(c.ctx, me, c.super.ID) },
+	} {
+		if err := f(); !errors.Is(err, service.ErrInvalid) {
+			t.Errorf("%s yourself: want a refusal, got %v", name, err)
 		}
 	}
-	// a server that keeps two: with two, still none
-	c.svc.MinSuperAdmins = 2
-	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
-	for name, f := range deactivations {
-		if err := f(s2.ID); !errors.Is(err, service.ErrLastAdmin) {
-			t.Errorf("%s one of two super admins the server keeps two of: %v", name, err)
-		}
-	}
-	if got, _ := c.svc.Users.Get(c.ctx, s2.ID); !got.Active || got.ValidUntil != nil {
-		t.Error("a refused deactivation changed the super admin")
-	}
-	// with three, one may go
-	c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
-	if err := deactivations["disable"](s2.ID); err != nil {
-		t.Errorf("disable one of three super admins the server keeps two of: %v", err)
+	if got, err := c.svc.Users.Get(c.ctx, c.super.ID); err != nil || got.Role != model.RoleSuperAdmin || !got.Active || got.ValidUntil != nil {
+		t.Errorf("a refused change altered the super admin: %+v %v", got, err)
 	}
 }
 
-// The server keeps as many super admins as it is told to (Service.MinSuperAdmins; the app leaves it at one), and the
-// error says so.
-func TestMinSuperAdmins(t *testing.T) {
+// Only a super admin curbs a super admin: an administrator or manager, in the primary organization or not, cannot
+// demote, disable, end-date, lock out or delete one. A super admin can curb another.
+func TestOnlyASuperAdminCurbsASuperAdmin(t *testing.T) {
 	c := newCast(t)
-	c.svc.MinSuperAdmins = 2
-	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
-	s3 := c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s3.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Fatalf("three super admins, one demoted: %v", err)
-	}
-	_, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
-	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "at least 2 super admins") {
-		t.Fatalf("two super admins the server keeps two of: %v", err)
-	}
-	c.svc.MinSuperAdmins = 0
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Fatalf("one super admin is enough by default: %v", err)
-	}
-	ghost := c.ghostSuper()
-	_, err = c.svc.UpdateUser(c.ctx, ghost, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
-	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "last super admin") {
-		t.Fatalf("the last super admin: %v", err)
-	}
-	// the system's own work is guarded the same way
-	if _, err := c.svc.UpdateUser(c.ctx, service.System, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Fatalf("the system demoting the last super admin: %v", err)
-	}
-}
-
-// End dates count against the last-super-admin guard: two super admins cannot end-date each other (none would be left
-// once the dates pass), one past their end date is not usable, and the only one cannot be given an end date.
-func TestEndDatesCountAgainstTheLastSuperAdminGuard(t *testing.T) {
-	c := newCast(t)
-	root := c.super
-	other := c.user(c.primary.ID, "esa", model.RoleSuperAdmin)
-	next := time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339)
-
-	if _, err := c.svc.UpdateUser(c.ctx, actor(root), other.ID, service.UserInput{ValidUntil: ptr(next)}); err != nil {
-		t.Fatalf("end-date the other while one without an end date remains: %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(other), root.ID, service.UserInput{ValidUntil: ptr(next)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Fatalf("mutual end-dating: want ErrLastAdmin, got %v", err)
-	}
-	// Disabling the only one without an end date next to an end-dated one is refused too.
-	if _, err := c.svc.UpdateUser(c.ctx, actor(other), root.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Fatalf("disable the last lasting super admin: want ErrLastAdmin, got %v", err)
-	}
-	// Moving the end date later, or clearing it, is always fine.
-	later := time.Now().Add(60 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(root), other.ID, service.UserInput{ValidUntil: ptr(later)}); err != nil {
-		t.Fatalf("extend end date: %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(root), other.ID, service.UserInput{ValidUntil: ptr("")}); err != nil {
-		t.Fatalf("clear end date: %v", err)
-	}
-
-	// One past their end date is not usable: with only such a colleague, the remaining one is the last.
-	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(root), other.ID, service.UserInput{ValidUntil: ptr(past)}); err != nil {
-		t.Fatalf("end-date the other in the past: %v", err)
-	}
-	ghost := c.ghostSuper()
-	if _, err := c.svc.UpdateUser(c.ctx, ghost, root.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Fatalf("disable next to an expired super admin: want ErrLastAdmin, got %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, ghost, root.ID, service.UserInput{Role: ptr(model.RoleUser)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Fatalf("demote next to an expired super admin: want ErrLastAdmin, got %v", err)
-	}
-
-	t.Run("the_only_super_admin", func(t *testing.T) {
-		c := newCast(t)
-		next := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-		if _, err := c.svc.UpdateUser(c.ctx, c.ghostSuper(), c.super.ID, service.UserInput{ValidUntil: ptr(next)}); !errors.Is(err, service.ErrLastAdmin) {
-			t.Fatalf("end-date the last super admin: want ErrLastAdmin, got %v", err)
-		}
-	})
-}
-
-// Concurrent removals of two super admins, where the server keeps all but one of the super admins it has: the admin lock
-// serialises them and the count is fresh, so exactly one succeeds and the server keeps its minimum. The lock is
-// released afterwards.
-func TestConcurrentSuperAdminRemovalsLeaveTheMinimum(t *testing.T) {
-	for _, keep := range []int{1, 2} {
-		t.Run(fmt.Sprintf("keeping_%d", keep), func(t *testing.T) {
-			for round := range 20 {
-				e := newEnv(t)
-				e.svc.MinSuperAdmins = keep
-				supers := []*model.User{e.super}
-				for range keep {
-					supers = append(supers, e.user(e.primary.ID, e.next("sa"), model.RoleSuperAdmin))
-				}
-				// the two removals are of the last two super admins, one by a demotion and the other by disabling
-				targets := supers[len(supers)-2:]
-				errs := make([]error, 2)
-				var wg sync.WaitGroup
-				for i, u := range targets {
-					wg.Go(func() {
-						in := service.UserInput{Role: ptr(model.RoleUser)}
-						if i == 1 {
-							in = service.UserInput{Active: ptr(false)}
-						}
-						_, errs[i] = e.svc.UpdateUser(e.ctx, service.System, u.ID, in)
-					})
-				}
-				wg.Wait()
-				ok := 0
-				for _, err := range errs {
-					if err == nil {
-						ok++
-					} else if !errors.Is(err, service.ErrLastAdmin) {
-						t.Fatalf("round %d: %v", round, err)
-					}
-				}
-				if ok != 1 {
-					t.Fatalf("round %d: %d removals succeeded, want exactly 1", round, ok)
-				}
-				_, n, err := e.svc.Users.List(e.ctx, store.ListQuery{Scope: e.primary.ID, Filters: []store.Filter{
-					{Field: "role", Value: "super_admin"}, {Field: "active", Value: true}}})
-				if err != nil || n != keep {
-					t.Fatalf("round %d: %d active super admins left, want %d (%v)", round, n, keep, err)
-				}
-				// Released: the holder deletes the lock record (lease.release).
-				if l, err := e.svc.Locks.Get(e.ctx, "admins/"+e.primary.ID); !errors.Is(err, store.ErrNotFound) {
-					t.Fatalf("round %d: the admin lock was not released: %+v %v", round, l, err)
-				}
+	target := c.user(c.primary.ID, "target", model.RoleSuperAdmin)
+	later := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	for _, role := range []model.Role{model.RoleAdmin, model.RoleManager} {
+		by := actor(c.user(c.primary.ID, c.next("by"), role))
+		for name, f := range map[string]func() error{
+			"demote": func() error {
+				_, err := c.svc.UpdateUser(c.ctx, by, target.ID, service.UserInput{Role: ptr(model.RoleUser)})
+				return err
+			},
+			"disable": func() error {
+				_, err := c.svc.UpdateUser(c.ctx, by, target.ID, service.UserInput{Active: ptr(false)})
+				return err
+			},
+			"end date": func() error {
+				_, err := c.svc.UpdateUser(c.ctx, by, target.ID, service.UserInput{ValidUntil: ptr(later)})
+				return err
+			},
+			"lock out": func() error { _, err := c.svc.LockOutUser(c.ctx, by, target.ID, "x"); return err },
+			"delete":   func() error { return c.svc.DeleteUser(c.ctx, by, target.ID) },
+		} {
+			if err := f(); !errors.Is(err, service.ErrForbidden) && !errors.Is(err, service.ErrNotFound) {
+				t.Errorf("%s: %s a super admin: want a refusal, got %v", role, name, err)
 			}
-		})
+		}
+	}
+	if got, err := c.svc.Users.Get(c.ctx, target.ID); err != nil || got.Role != model.RoleSuperAdmin || !got.Active || got.ValidUntil != nil {
+		t.Fatalf("a refused change altered the super admin: %+v %v", got, err)
+	}
+	// another super admin may
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), target.ID, service.UserInput{ValidUntil: ptr(later)}); err != nil {
+		t.Errorf("a super admin end-dating another: %v", err)
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), target.ID, service.UserInput{Active: ptr(false)}); err != nil {
+		t.Errorf("a super admin disabling another: %v", err)
+	}
+	if err := c.svc.DeleteUser(c.ctx, actor(c.super), target.ID); err != nil {
+		t.Errorf("a super admin deleting another: %v", err)
+	}
+}
+
+// The system (housekeeping and the like) never demotes, disables, end-dates or deletes a super admin, and the end-date
+// sweep leaves one whose end date has passed alone (the end date still stops its sign-in) while it disables others.
+func TestSystemSparesSuperAdmins(t *testing.T) {
+	c := newCast(t)
+	target := c.user(c.primary.ID, "target", model.RoleSuperAdmin)
+	later := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	for name, f := range map[string]func() error{
+		"demote": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, service.System, target.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
+			return err
+		},
+		"disable": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, service.System, target.ID, service.UserInput{Active: ptr(false)})
+			return err
+		},
+		"end date": func() error {
+			_, err := c.svc.UpdateUser(c.ctx, service.System, target.ID, service.UserInput{ValidUntil: ptr(later)})
+			return err
+		},
+		"delete": func() error { return c.svc.DeleteUser(c.ctx, service.System, target.ID) },
+	} {
+		if err := f(); !errors.Is(err, service.ErrInvalid) {
+			t.Errorf("the system: %s a super admin: want a refusal, got %v", name, err)
+		}
+	}
+	// what is not a curb is fine
+	if _, err := c.svc.UpdateUser(c.ctx, service.System, target.ID, service.UserInput{ValidUntil: ptr("")}); err != nil {
+		t.Errorf("the system clearing nothing: %v", err)
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	plain := c.user(c.primary.ID, "plain", model.RoleUser)
+	for _, id := range []string{target.ID, plain.ID} {
+		if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), id, service.UserInput{ValidUntil: ptr(past)}); err != nil {
+			t.Fatalf("end-date %s: %v", id, err)
+		}
+	}
+	if n, err := c.svc.ExpireUsers(c.ctx); err != nil || n != 1 {
+		t.Fatalf("the end-date sweep disabled %d, %v: want the plain user only", n, err)
+	}
+	if got, _ := c.svc.Users.Get(c.ctx, target.ID); !got.Active {
+		t.Error("the end-date sweep disabled a super admin")
+	}
+	if got, _ := c.svc.Users.Get(c.ctx, plain.ID); got.Active {
+		t.Error("the end-date sweep left a plain user active")
 	}
 }
 

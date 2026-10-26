@@ -109,7 +109,7 @@ release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 
 | | |
 | --- | --- |
-| `quisora invite <org> <email>` | A new invitation link for a user (`--break-glass`: get back into a server nobody can sign in to, even as a disabled super admin) |
+| `quisora invite <org> <email>` | A new invitation link for a user (`--break-glass`: get back into a server nobody can sign in to, even as a disabled super admin; with `--super-admin`, also make the account a super admin of the primary organization) |
 | `quisora sign-out` | Emergency sign-out of an organization or every organization ([docs/emergency-sign-out.md](docs/emergency-sign-out.md)) |
 | `quisora backup`, `quisora restore` | Online backups, encrypted with a password, of the whole store; a restore is verified before anything is written ([Backup and restore](docs/RUNNING.md#backup-and-restore)) |
 | `quisora set-primary` | Make another organization the primary one, which holds the super admins ([docs/RUNNING.md](docs/RUNNING.md#changing-the-primary-organization)) |

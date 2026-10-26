@@ -61,7 +61,7 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, r *store.
 	case err != nil:
 		return r, err
 	}
-	if gerr := s.n.readable(ctx, p); gerr != nil {
+	if gerr := s.n.readable(p); gerr != nil {
 		return nil, gerr
 	}
 	return r, err
@@ -117,11 +117,11 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if err != nil || s.n.gc == nil || localOnly(kind) {
 		return recs, err
 	}
-	if err := s.n.readable(ctx, -1); err != nil {
+	if err := s.n.readable(-1); err != nil {
 		return nil, err
 	}
 	for _, r := range recs {
-		if err := s.n.readable(ctx, recPartition(r)); err != nil {
+		if err := s.n.readable(recPartition(r)); err != nil {
 			return nil, err
 		}
 	}
@@ -291,9 +291,12 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		if errors.As(err, &re) && re.Code == whyNothing {
 			return nil // deleted already
 		}
-		s.awaitRefused(ctx, p, err)
+		behind := s.awaitRefused(ctx, p, err)
 		if !errors.Is(err, store.ErrUnconfirmed) { // (an unknown outcome may be a write that took effect: keep its claims)
 			s.releaseAll(ctx, rec, claimed)
+		}
+		if behind != nil {
+			return behind
 		}
 		return storeErr(err)
 	}
@@ -302,7 +305,7 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		return err
 	}
 	rec.Version, rec.Epoch, rec.Created = hlc.Timestamp(rep.Version), hlc.Timestamp(rep.Epoch), hlc.Timestamp(rep.Created)
-	s.waitApplied(ctx, p, res.Pos)
+	s.waitWritten(ctx, p, res.Pos)
 	for _, g := range globalsOf(old) {
 		if !slices.Contains(globals, g) {
 			s.release(ctx, rec.Kind, rec.ID, g)
@@ -348,16 +351,22 @@ func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result,
 	return res, err
 }
 
-// waitApplied waits until this node has applied the committed write at pos, so that the writer reads its own write
-// here. The write is committed whether or not this node sees it in time: that is not an error.
-func (s *Store) waitApplied(ctx context.Context, p int, pos partition.Pos) {
+// waitApplied waits until this node has applied the committed write at pos, for at most bound (or until the Manager
+// stops), and returns the wait's error.
+func (s *Store) waitApplied(ctx context.Context, p int, pos partition.Pos, bound time.Duration) error {
 	pm := s.n.manager()
 	if pm == nil {
-		return
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyWait)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound)
 	defer cancel()
-	if err := pm.WaitApplied(ctx, p, pos); err != nil {
+	return pm.WaitApplied(ctx, p, pos)
+}
+
+// waitWritten waits until this node has applied the write it just made at pos, so that the writer reads its own write
+// here. The write is committed whether or not this node sees it in time: that is not an error.
+func (s *Store) waitWritten(ctx context.Context, p int, pos partition.Pos) {
+	if err := s.waitApplied(ctx, p, pos, applyWait); err != nil {
 		s.n.log.Debug("a committed write has not reached this node yet", "partition", p, "position", pos.String())
 	}
 }
@@ -366,13 +375,19 @@ func (s *Store) waitApplied(ctx context.Context, p int, pos partition.Pos) {
 // record is gone), until this node has applied what the owner had committed when it refused (RefusedError.Pos): the
 // caller's next step is to read again, and a copy that is a message behind would show it the same stale state, on which
 // it would build the retry, or from which it would miss what made the change stale (a refresh token presented again
-// after its rotation, say). Bounded like the wait for a write (applyWait); a node that cannot catch up by then is
-// refused its reads by the staleness gate soon enough.
-func (s *Store) awaitRefused(ctx context.Context, p int, err error) {
+// after its rotation, say). It waits for the partition's staleness bound (partition.Config.StaleAfter, past which this
+// node refuses its reads of the partition anyway) and fails closed: a node that cannot catch up by then returns
+// store.ErrNotWritable, to be retried, instead of the refusal the caller would judge by a copy it cannot trust. nil: the
+// copy is current (or the error was not a refusal).
+func (s *Store) awaitRefused(ctx context.Context, p int, err error) error {
 	var re *partition.RefusedError
-	if errors.As(err, &re) {
-		s.waitApplied(ctx, p, re.Pos)
+	if !errors.As(err, &re) {
+		return nil
 	}
+	if werr := s.waitApplied(ctx, p, re.Pos, time.Duration(s.n.staleAfter.Load())); werr != nil {
+		return fmt.Errorf("%w: this node is behind on partition %d", store.ErrNotWritable, p)
+	}
+	return nil
 }
 
 // holdsAlready reports whether the claim of the global value g for rec can be skipped, saving a write to the
@@ -400,12 +415,14 @@ func (s *Store) claim(ctx context.Context, rec *store.Record, g string) (created
 	var re *partition.RefusedError
 	switch {
 	case err == nil:
-		s.waitApplied(ctx, p, res.Pos)
+		s.waitWritten(ctx, p, res.Pos)
 		return true, nil
 	case errors.As(err, &re) && re.Code == whyHeld:
 		return false, nil
 	}
-	s.awaitRefused(ctx, p, err)
+	if behind := s.awaitRefused(ctx, p, err); behind != nil {
+		return false, behind
+	}
 	return false, storeErr(err)
 }
 

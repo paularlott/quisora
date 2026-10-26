@@ -151,7 +151,7 @@ func TestGossipCommandsNeedARunningNode(t *testing.T) {
 	c.Cluster.Bind, c.Cluster.Size = "127.0.0.1:1", 3
 	c.Server.PublicURL = "https://127.0.0.1:1" // nothing listens
 	log := logger.NewNullLogger()
-	if _, _, _, err := Invite(context.Background(), c, log, "", "", false, "primary", "a@b.test", false); err == nil ||
+	if _, _, _, err := Invite(context.Background(), c, log, "", "", false, "primary", "a@b.test", false, false); err == nil ||
 		!strings.Contains(err.Error(), "running node") {
 		t.Fatalf("invite: %v", err)
 	}

@@ -17,7 +17,7 @@ type partState struct {
 	pending    []byte
 	pendingSeq uint64
 	purged     uint64
-	brought    map[key]bool // a full import's records so far (what the sweep at its end keeps)
+	importing  bool // a full import of the partition has begun and not finished (the marker)
 }
 
 func (s *Store) part(p int) *partState {
@@ -119,6 +119,10 @@ func (s *Store) ExportPartition(_ context.Context, p int, afterSeq uint64, start
 	st := s.parts[p]
 	if st != nil {
 		pos = st.committed
+		if st.importing { // a full import not finished: its reset has emptied the partition, its batches are not all in
+			s.mu.RUnlock()
+			return store.ErrImportUnfinished
+		}
 		if !store.ExportAllowed(st.purged, afterSeq) {
 			s.mu.RUnlock()
 			return store.ErrPartitionPurged
@@ -158,29 +162,23 @@ func (s *Store) ImportPartition(_ context.Context, p int, recs []store.Partition
 		if upTo.Seq <= st.committed.Seq {
 			return store.ErrPartitionBehind
 		}
-		if step.Full && step.First {
-			st.brought = map[key]bool{}
+		if step.Full && step.First { // a new full import resets the partition: every record of it goes, under the marker
+			st.importing = true
+			for k, e := range s.records {
+				if e.pseq > 0 && e.pnum == p {
+					s.remove(k, e)
+					gone = append(gone, k)
+				}
+			}
 		}
 		for _, r := range recs {
 			s.putPartition(r.Record, p, r.Seq)
-			if step.Full {
-				if st.brought == nil {
-					st.brought = map[key]bool{}
-				}
-				st.brought[key{r.Kind, r.ID}] = true
-			}
 		}
 		if !step.Final {
 			return nil
 		}
 		if step.Full {
-			for k, e := range s.records {
-				if e.pseq > 0 && e.pnum == p && !st.brought[k] {
-					s.remove(k, e)
-					gone = append(gone, k)
-				}
-			}
-			st.brought = nil
+			st.importing = false
 			st.purged = max(st.purged, upTo.Seq)
 		}
 		st.committed = upTo

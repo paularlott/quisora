@@ -11,7 +11,7 @@ Shared-database mode (one database server, Galera, or a primary with replicas) i
 Gossip mode, where each node has its own database, is where the serious bugs keep coming from. Its write path is
 leaderless: any node writes any record through a quorum compare-and-swap (prepare, commit, abort across a majority),
 with HLC versions and last-writer-wins. That spreads consistency logic over every write, and the last review rounds
-found bugs there (an expired lease letting the last super admin be disabled; a quorum read reply larger than a
+found bugs there (a quorum read reply larger than a
 packet).
 
 This design replaces the write path with a simpler model: **every record has exactly one node that writes it, and a
@@ -47,8 +47,8 @@ partition, which fences the old owner and tells the new one about every write th
 - **Rendezvous hashing:** the owner of partition `p` is the ready node with the highest `hash(p, nodeID)`, computed by
   every node from its own view of membership. When a node leaves or joins, only the partitions whose highest hash was
   or becomes that node move.
-- **Ready nodes only:** a node is eligible to own partitions once it has caught up (below) and has been stable for a
-  hold-down, so a flapping node does not drag partitions back and forth. Readiness is gossiped in node metadata.
+- **Ready nodes only:** a node is eligible to own partitions once it has caught up (below) and has passed a
+  hold-down (slept once at start-up, after the catch-up). Readiness is gossiped in node metadata.
   Readiness gates **ownership only**: a node that is not ready but holds its data still promises, stores writes and
   serves catch-up, or a 3-node cluster could not write while one node restarts.
 - **Owner heartbeats:** each owner tells every node, about once a second, which partitions it owns, at which epoch,
@@ -104,7 +104,7 @@ A node whose view makes it the owner of `p`, after its backoff:
 2. **The owner checks the change against its committed state.** A change carries the expected version of every record
    its decision depended on (not only those it writes): the landing node read them locally, possibly a moment stale,
    and the owner refuses the change if any has moved since. Checks that must not run on stale data (an account
-   disabled, an organization deleted, the last administrator) are made by the owner itself as part of the change.
+   disabled, an organization deleted) are made by the owner itself as part of the change.
    Unique values within the partition are checked here too.
 3. **The owner writes one change at a time per partition.** It confirms its own `promised` is still its epoch, assigns
    the next sequence, and sends `Write(p, e, seq, records, committed)` to every node, `committed` being its own commit
@@ -152,8 +152,7 @@ the rest is the orphan sweep).
   client, checking a session or an API token. They lag the owner by the time until the follower learns of the commit
   (the next write or heartbeat: about a second at most).
 - **Reads that must see the latest state happen in the owner's change** (step 2 of the write path): redeeming an
-  authorization code or a one-time link, rotating a refresh token, counting a failed password, the last administrator
-  check. An owner replaced without knowing it cannot commit (the nodes promised a newer epoch), so nothing stale is
+  authorization code or a one-time link, rotating a refresh token, counting a failed password. An owner replaced without knowing it cannot commit (the nodes promised a newer epoch), so nothing stale is
   acted on.
 - **Bounded staleness:** a node that has not heard from `p`'s owner within the owner timeout, and cannot see a
   majority, stops serving `p`'s reads (as today's cluster stops serving past its downtime bound). A node cut off from
@@ -277,7 +276,7 @@ Built and tested in the gossip library first; Quisora moves to it only if this h
 4. *How long a write waits for an ownership change:* the library's write timeout, 5 s.
 5. *The owner timeout, heartbeat interval, backoff and staleness bound:* a heartbeat every 500 ms, an owner timeout of
    three heartbeats, a rank delay of 1 s and a random backoff of up to 1.5 s (a takeover about 3.5 s after a crash), and
-   a node that cannot see a majority stops being ready at once and stops serving tokens after `cluster.minority_grace`.
+   a node that cannot see a majority stops being ready at once and serves nothing (the token endpoints included).
 
 ## Plan (done)
 

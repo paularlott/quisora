@@ -5,13 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,153 +42,48 @@ func (g *promotionGate) CompareAndPut(ctx context.Context, r *store.Record, expe
 	return g.Store.CompareAndPut(ctx, r, expected)
 }
 
-// The guard that keeps a cluster's minimum of super admins (two here) holds across nodes: the super admins' lock is
-// cluster-wide and the check reads them fresh, from the owner of their partition. Two nodes' services race to remove
-// one of the two super admins next to the bootstrap one, round after round: at most one removal succeeds, and every
-// node keeps seeing at least two active super admins. A deletion decided on a copy read before the user was made a
-// super admin is refused by the owner, not applied unchecked.
-func TestSuperAdminsAreGuardedClusterWide(t *testing.T) {
+// A deletion decided on a copy read before the user was made a super admin is refused by the owner of the record,
+// not applied unchecked: the rank rules (only a super admin deletes a super admin) were judged on the older copy.
+func TestDeletionRefusesACopyPromotedMeanwhile(t *testing.T) {
 	c := started(t, badgerBackend())
 	cfg := config.Default()
 	cfg.Limits.PasswordWorkers = 1
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
-	svcs := []*service.Service{service.New(cfg, c.nodes[0].st(), sealer), service.New(cfg, c.nodes[1].st(), sealer)}
-	for _, s := range svcs {
-		s.MinSuperAdmins = 2
-	}
-	root, _, err := svcs[0].Bootstrap(bg, "root@example.com")
+	svc := service.New(cfg, c.nodes[0].st(), sealer)
+	root, _, err := svc.Bootstrap(bg, "root@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.waitUser(t, root.ID, func(u *model.User) bool { return u.Role == model.RoleSuperAdmin && u.Active })
-	primary, err := svcs[0].PrimaryOrg(bg)
+	primary, err := svc.PrimaryOrg(bg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	super := model.RoleSuperAdmin
-	// race runs rounds of race(i, us) on node i at once against two new super admins us.
-	race := func(t *testing.T, rounds int, race func(i int, us []*model.User) error) {
-		for round := range rounds {
-			var us []*model.User
-			for i := range 2 {
-				un, em := fmt.Sprintf("super%d-%d", round, i), fmt.Sprintf("super%d-%d@example.com", round, i)
-				u, err := svcs[0].CreateUser(bg, service.System, primary.ID, service.UserInput{Username: &un, Email: &em,
-					GivenName: &un, Role: &super})
-				if err != nil {
-					t.Fatal(err)
-				}
-				us = append(us, u)
-			}
-			for _, u := range us {
-				c.waitUser(t, u.ID, func(u *model.User) bool { return u.Role == model.RoleSuperAdmin && u.Active })
-			}
-			var wg sync.WaitGroup
-			errs := make([]error, 2)
-			for i := range 2 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					errs[i] = race(i, us)
-				}()
-			}
-			wg.Wait()
-			ok := 0
-			for _, err := range errs {
-				if err == nil {
-					ok++
-				} else if !errors.Is(err, service.ErrLastAdmin) && !errors.Is(err, service.ErrUnavailable) &&
-					!errors.Is(err, service.ErrStale) {
-					t.Fatalf("round %d: %v", round, err)
-				}
-			}
-			if ok > 1 {
-				t.Fatalf("round %d: both removals succeeded", round)
-			}
-			// once every node has what the owners committed, each sees at least two super admins
-			ids := []string{root.ID, us[0].ID, us[1].ID}
-			committed, err := c.nodes[2].st().Fresh(bg, model.KindUser, ids)
-			if err != nil {
-				t.Fatal(err)
-			}
-			waitFor(t, 15*time.Second, "the outcome on every node", func() bool {
-				for _, tn := range c.nodes {
-					for _, id := range ids {
-						r, err := tn.st().Inner().Lookup(bg, model.KindUser, id)
-						if err != nil || committed[id] == nil || r.Version != committed[id].Version {
-							return false
-						}
-					}
-				}
-				return true
-			})
-			for i, tn := range c.nodes {
-				n := 0
-				for _, id := range ids {
-					if u, err := users(tn).Get(bg, id); err == nil && u.Role == model.RoleSuperAdmin && u.Active {
-						n++
-					}
-				}
-				if n < 2 {
-					t.Fatalf("round %d: node %d sees %d super admins, fewer than the cluster keeps", round, i, n)
-				}
-			}
-			// back to the bootstrap super admin alone for the next round (directly: the guard would refuse it)
-			for _, u := range us {
-				_ = svcs[0].Users.Delete(bg, u.ID)
-			}
-			waitFor(t, 15*time.Second, "the round's super admins gone everywhere", func() bool {
-				for _, tn := range c.nodes {
-					for _, u := range us {
-						if _, err := users(tn).Get(bg, u.ID); !errors.Is(err, store.ErrNotFound) {
-							return false
-						}
-					}
-				}
-				return true
-			})
+	makeUser := func(name string, role model.Role) *model.User {
+		email := name + "@example.test"
+		u, err := svc.CreateUser(bg, service.System, primary.ID, service.UserInput{Username: &name, GivenName: &name,
+			Email: &email, Role: &role})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	admin := makeUser("admin", model.RoleAdmin)
+	target := makeUser("target", model.RoleUser)
+	gate := &promotionGate{Store: svc.Users.S, id: target.ID}
+	gate.beforeDelete = func() { // an ordinary administrator's deletion, decided before the promotion
+		if _, err := svc.UpdateUser(bg, service.System, target.ID, service.UserInput{Role: &super}); err != nil {
+			t.Error(err)
 		}
 	}
-	user := model.RoleUser
-	t.Run("demoted at once", func(t *testing.T) {
-		race(t, 4, func(i int, us []*model.User) error {
-			_, err := svcs[i].UpdateUser(bg, service.System, us[i].ID, service.UserInput{Role: &user})
-			return err
-		})
-	})
-	t.Run("deleting each other at once", func(t *testing.T) {
-		race(t, 3, func(i int, us []*model.User) error {
-			return svcs[i].DeleteUser(bg, service.ActorForUser(us[i], ""), us[1-i].ID)
-		})
-	})
-	// (last: the promoted user stays a super admin)
-	t.Run("a deletion rechecks a concurrent promotion", func(t *testing.T) {
-		svc := service.New(cfg, c.nodes[0].st(), sealer)
-		svc.MinSuperAdmins = 2
-		makeUser := func(name string, role model.Role) *model.User {
-			email := name + "@example.test"
-			u, err := svc.CreateUser(bg, service.System, primary.ID, service.UserInput{Username: &name, GivenName: &name,
-				Email: &email, Role: &role})
-			if err != nil {
-				t.Fatal(err)
-			}
-			return u
-		}
-		admin := makeUser("admin", model.RoleAdmin)
-		target := makeUser("target", model.RoleUser)
-		gate := &promotionGate{Store: svc.Users.S, id: target.ID}
-		gate.beforeDelete = func() { // an ordinary administrator's deletion, decided before the promotion
-			if _, err := svc.UpdateUser(bg, service.System, target.ID, service.UserInput{Role: &super}); err != nil {
-				t.Error(err)
-			}
-		}
-		svc.Users.S = gate
-		if err := svc.DeleteUser(bg, service.ActorForUser(admin, ""), target.ID); err == nil {
-			t.Fatal("an ordinary administrator deleted a user made a super admin meanwhile, unchecked")
-		}
-		if u, err := users(c.nodes[0]).Get(bg, target.ID); err != nil || u.Role != model.RoleSuperAdmin {
-			t.Fatalf("the promoted user after the refused deletion: %v %v", u, err)
-		}
-	})
+	svc.Users.S = gate
+	if err := svc.DeleteUser(bg, service.ActorForUser(admin, ""), target.ID); err == nil {
+		t.Fatal("an ordinary administrator deleted a user made a super admin meanwhile, unchecked")
+	}
+	if u, err := users(c.nodes[0]).Get(bg, target.ID); err != nil || u.Role != model.RoleSuperAdmin {
+		t.Fatalf("the promoted user after the refused deletion: %v %v", u, err)
+	}
 }
 
 // oidcSite is one node's service and OpenID provider, as the application wires them.

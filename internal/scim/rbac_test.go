@@ -147,18 +147,18 @@ func TestSCIMRBAC(t *testing.T) {
 		t.Errorf("super creates in B: %d", r.Status)
 	}
 
-	// Guards through SCIM: the super admins the server keeps (two here, as in a gossip cluster), self.
-	e.Svc.MinSuperAdmins = 2
-	if r := e.do("DELETE", "/scim/v2/primary/Users/"+super2.ID, e.super, nil); r.Status != 409 {
-		t.Errorf("delete a super admin the server needs: %d %s", r.Status, r.Raw)
+	// Guards through SCIM: a super admin cannot curb themselves, and only a super admin curbs a super admin.
+	for name, r := range map[string]resp{
+		"delete self":                  e.do("DELETE", "/scim/v2/primary/Users/"+e.Admin.ID, e.super, nil),
+		"disable self":                 e.do("PATCH", "/scim/v2/primary/Users/"+e.Admin.ID, e.super, patchBody(op("replace", "active", false))),
+		"demote self":                  e.do("PATCH", "/scim/v2/primary/Users/"+e.Admin.ID, e.super, patchBody(op("replace", quisoraURN+":role", "user"))),
+		"admin deletes a super admin":  e.do("DELETE", "/scim/v2/primary/Users/"+super2.ID, e.admA, nil),
+		"admin disables a super admin": e.do("PATCH", "/scim/v2/primary/Users/"+super2.ID, e.admA, patchBody(op("replace", "active", false))),
+	} {
+		if r.Status < 400 {
+			t.Errorf("%s: %d %s", name, r.Status, r.Raw)
+		}
 	}
-	if r := e.do("PATCH", "/scim/v2/primary/Users/"+super2.ID, e.super, patchBody(op("replace", "active", false))); r.Status != 409 {
-		t.Errorf("disable a super admin the server needs: %d %s", r.Status, r.Raw)
-	}
-	if r := e.do("PATCH", "/scim/v2/primary/Users/"+super2.ID, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); r.Status != 409 {
-		t.Errorf("demote a super admin the server needs: %d %s", r.Status, r.Raw)
-	}
-	e.Svc.MinSuperAdmins = 0
 	// an organization's last administrator is not guarded: super admins administer every organization
 	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", "active", false))); r.Status != 200 {
 		t.Errorf("disable an organization's last admin: %d %s", r.Status, r.Raw)

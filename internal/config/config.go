@@ -113,8 +113,6 @@ type Cluster struct {
 	// commits every write is computed from it and does not change when a node leaves, stops or restarts: only when
 	// every node's size is changed by one and the configuration reloaded (see docs/REPLICATION.md, "Cluster size").
 	Size int `toml:"size" flag:"size" usage:"With cluster.bind: the number of nodes in the cluster (required; identical on every node; the quorum is size/2+1)"`
-	// MinorityGrace bounds how long a node cut off from the majority keeps serving tokens.
-	MinorityGrace int `toml:"minority_grace" flag:"minority-grace" usage:"Seconds a node cut off from the majority keeps serving the token, userinfo and introspection endpoints (0: refuse at once)"`
 	// Notify links nodes that share one database server by a gossip network of their own that carries only change
 	// notices (no data): each node's caches and live admin pages then follow the others' changes within moments.
 	// Ignored, with a warning, when cluster.bind is set (replication delivers the changes already).
@@ -216,7 +214,6 @@ func (c *Config) DataPath(name ...string) string {
 func Default() *Config {
 	return &Config{
 		Server:  Server{Listen: ":8443", DataDir: "data", ShutdownDrain: 10, ShutdownTimeout: 30},
-		Cluster: Cluster{MinorityGrace: 300},
 		UI:      UI{SiteName: "Quisora", DefaultTheme: "system"},
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
 		Tokens: Tokens{SigningAlg: "ES256", AccessTTL: 600, IDTokenTTL: 600, RefreshTTL: 30 * 86400, CodeTTL: 60,
@@ -377,9 +374,6 @@ func (c *Config) Validate() error {
 		if _, err := uuid.Parse(c.Cluster.NodeID); err != nil {
 			errs = append(errs, errors.New("cluster.node_id must be a UUID"))
 		}
-	}
-	if c.Cluster.MinorityGrace < 0 {
-		errs = append(errs, errors.New("cluster.minority_grace must be 0 or more seconds"))
 	}
 	if c.Cluster.Bind != "" && c.Cluster.Size < 2 {
 		errs = append(errs, errors.New("cluster.size is required with cluster.bind: the number of nodes in the cluster "+
@@ -678,8 +672,32 @@ func (c *Config) OutboundReach() secure.Reach {
 	return r
 }
 
+// removedSettings are settings that no longer exist, and what to tell an operator whose configuration file still sets
+// one: such a file keeps starting (the key is ignored) instead of failing as an unknown setting.
+var removedSettings = map[string]string{
+	"cluster.minority_grace": "cluster.minority_grace is no longer used and is ignored: a node cut off from the majority " +
+		"is simply not ready and refuses what it cannot serve (remove it from the configuration file)",
+}
+
+// RemovedSettingWarnings lists a warning for each removed setting the configuration file still sets, sorted.
+func (c *Config) RemovedSettingWarnings() []string {
+	if c.ConfigFile == nil || c.ConfigFile.FileUsed() == "" {
+		return nil
+	}
+	var w []string
+	for path, msg := range removedSettings {
+		section, key, _ := strings.Cut(path, ".")
+		if slices.Contains(c.ConfigFile.GetKeys(section), key) {
+			w = append(w, msg)
+		}
+	}
+	slices.Sort(w)
+	return w
+}
+
 // UnknownKeys lists the keys of the configuration file that are not settings, as dotted paths, sorted: walking the
-// file the cli package read, every table must be a section of settings and every value a setting.
+// file the cli package read, every table must be a section of settings and every value a setting. Removed settings
+// (removedSettings) are not unknown.
 func (c *Config) UnknownKeys() []string {
 	known, sections := map[string]bool{}, map[string]bool{}
 	for _, st := range settings(c) {
@@ -699,7 +717,7 @@ func (c *Config) UnknownKeys() []string {
 				path = prefix + "." + k
 			}
 			switch {
-			case known[path]:
+			case known[path], removedSettings[path] != "":
 			case sections[path] && c.ConfigFile.GetKeys(path) != nil:
 				walk(path)
 			default:

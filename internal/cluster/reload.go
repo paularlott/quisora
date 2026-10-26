@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/paularlott/gossip"
 )
@@ -16,9 +15,6 @@ import (
 // majority of the old size and any majority of the new one then share a node. The partition protocol carries the
 // cluster size in every message and ignores a node configured with another, so while the nodes disagree about it (a
 // reload takes a moment on every node) writes pause; they resume as soon as every node has the new size.
-
-// reloadWait is how long a node is given to answer each phase of a cluster-wide reload.
-const reloadWait = 10 * time.Second
 
 // ReloadReport is one node's answer to a configuration reload.
 type ReloadReport struct {
@@ -125,7 +121,7 @@ func (n *Node) ReloadCluster(ctx context.Context) ([]ReloadReport, error) {
 }
 
 // reloadPhase runs one phase on this node and on peers, and returns every node's report (a node that does not
-// answer in time gets one with an error).
+// answer gets one with an error: a request waits at most as long as the transport's deadline).
 func (n *Node) reloadPhase(ctx context.Context, gc *gossip.Cluster, peers []*member, req reloadReq) []ReloadReport {
 	replies := make(chan ReloadReport, len(peers))
 	for _, mb := range peers {
@@ -139,26 +135,8 @@ func (n *Node) reloadPhase(ctx context.Context, gc *gossip.Cluster, peers []*mem
 		}(mb)
 	}
 	out := []ReloadReport{n.reload(ctx, req.Apply, req.Want)}
-	timeout := time.NewTimer(reloadWait)
-	defer timeout.Stop()
-	pending := map[string]bool{}
-	for _, mb := range peers {
-		pending[mb.id] = true
-	}
-collect:
-	for range peers {
-		select {
-		case r := <-replies:
-			delete(pending, r.Node)
-			out = append(out, r)
-		case <-timeout.C:
-			break collect
-		case <-ctx.Done():
-			break collect
-		}
-	}
-	for id := range pending {
-		out = append(out, ReloadReport{Node: id, Error: "did not answer in time"})
+	for range peers { // every ask replies once: the transport's deadline (or ctx) ends one that hangs
+		out = append(out, <-replies)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Node < out[j].Node })
 	return out

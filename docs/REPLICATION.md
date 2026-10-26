@@ -52,9 +52,9 @@ fact.
    afterwards.
 4. **A node that cannot know its data is current does not act on it.** A node that is copying the cluster's data
    (a new node, a lost disk), catching up after a start, cut off from the majority or misconfigured serves nothing but
-   its health probes (`/readyz` answers 503), makes no replicated write and owns no rate-limit counter. The token,
-   userinfo and introspection endpoints alone keep answering, for a bounded grace, on a node that was serving and got
-   cut off.
+   its health probes (`/readyz` answers 503), makes no replicated write and owns no rate-limit counter. Readiness is the
+   single gate: the token, userinfo and introspection endpoints refuse too (503 `temporarily_unavailable`), and clients
+   retry on another node.
 5. **Every automatic recovery is safe by construction; every operator override is explicit**, one-shot, logged and
    audited (`quisora force-start`). Nothing is ever wiped or emptied automatically.
 6. **A write whose outcome is not known says so.** When the owner is lost or a reply times out after the write was sent,
@@ -81,7 +81,7 @@ node included, however the list names it), or the node refuses to start. A write
 a fourth node adds a node to lose without letting any more fail. A cluster of two tolerates no failure at all.
 
 - The size is **authoritative**: it decides how many nodes must store a write, how many a node must see to be ready and
-  writable, and when it is cut off (and the minority grace starts). It **never shrinks** when nodes leave, stop or
+  writable, and when it is cut off. It **never shrinks** when nodes leave, stop or
   restart, so a minority can never form a majority on its own. It changes only when the operator changes it in the
   configuration and reloads it, **one node at a time** (see [Changing the cluster size](#changing-the-cluster-size)).
 - **Every node must agree.** Each node publishes its size in gossip metadata (`quisora.size`) and the partition
@@ -115,8 +115,10 @@ real CPU cost of a sign-in, stays on the node that took the request.
 
 The owner of a partition is the ready node with the highest rendezvous hash of (partition, node id), computed by every
 node from its own view of the membership; when a node leaves or joins, only the partitions whose highest hash was or
-becomes that node move. A node is a candidate once it has caught up and has been stable for a hold-down
-(`ReadyHoldDown`, 3 s by default, so a flapping node does not drag partitions back and forth). Readiness gates
+becomes that node move. A node is a candidate once it has caught up and a hold-down has passed
+(`ReadyHoldDown`, 3 s by default: slept once, after the start-up catch-up and before the node publishes that it is ready,
+so a node that crash-loops does not claim partitions between its starts; it does not apply when a running node loses and
+regains a majority). Readiness gates
 **ownership only**: a node that is not ready but holds its data still promises, stores writes and serves catch-up, or a
 three-node cluster could not write while one node restarts.
 
@@ -157,9 +159,11 @@ record's partition (`partition.Manager.Write`) and return when it has committed:
 4. **The writer reads its own write**: `Store.Put` waits until this node has applied the write (bounded, 5 s) before it
    returns, so `Get` after `Put` sees it on the same node. Other nodes see it a message later.
 5. **A refusal is read after what caused it.** When the owner refuses a change (a stale version, a unique value in use,
-   a record gone), its refusal carries the owner's committed position; the landing node waits (bounded, 5 s) until it
-   has applied that position before it returns `store.ErrStale` (or the other refusal), so the caller's re-read sees what
-   made the change stale instead of the same old copy. A refresh token presented again after its rotation, on a node
+   a record gone), its refusal carries the owner's committed position; the landing node waits (bounded by the
+   partition's staleness bound, `StaleAfter`, 1.5 s) until it has applied that position before it returns `store.ErrStale`
+   (or the other refusal), so the caller's re-read sees what made the change stale instead of the same old copy. A node
+   that cannot catch up in that time fails closed: it returns `store.ErrNotWritable` (503, retry), never a refusal the
+   caller would judge by a copy it cannot trust. A refresh token presented again after its rotation, on a node
    whose copy of the grant is a message behind, is therefore detected as reuse (the grant ends and it is audited), while
    a client retrying, within the grace, the token whose answer it lost is given the token it missed.
 
@@ -169,7 +173,7 @@ timeout plus a heartbeat and a second to spare (6.5 s), and a node whose configu
 protocol needs (`partition.Manager.MinTransportDeadline`) refuses to start. With a shorter deadline a change that takes
 longer (an owner waiting for its partition, a slow follower) would be reported unknown while the owner commits it. Quisora's
 own requests over the cluster bound themselves with shorter contexts: an ephemeral operation 2 s, a clock reading 3 s, an
-audit page `auditWait`, a configuration reload 10 s per phase, and fresh reads the protocol's write timeout.
+audit page `auditWait`, a configuration reload the transport's deadline per phase, and fresh reads the protocol's write timeout.
 
 One write at a time is in flight per partition (several hundred a second on a LAN with a fast disk, times 64
 partitions); an owner holds at most 32 forwarded changes of one partition at once and 256 in all, and answers more
@@ -225,17 +229,19 @@ partitions.
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
   the cluster, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
   not in a partition and are exempt; a reservation follows the partition of its own id. Listings and counts are not
-  gated (they are not decisions about one record). A read of a partition that has no live owner while the node sees a
-  majority and is not behind on it (an owner handing it over, a takeover running) waits up to 2 s for the new owner, and is
-  refused after that (an owner that crashed takes a few seconds to replace; writes to the partition fail meanwhile too). A node that is cut off from the majority hears no owner, so its partitions are unreadable;
-  within `cluster.minority_grace` it still serves the copies it is not known to trail and that have not diverged (the grace
-  the token endpoints are given to ride out a short split), and after it nothing.
-- **Readiness follows.** A node is not ready while a partition has diverged on it, or while a partition has been unreadable
-  on it for 30 s (an owner that cannot be replaced, a catch-up that keeps failing); `GET /api/cluster` says which and why,
-  and the log has it (a divergence at warn level, once per partition).
-- **Bounded staleness.** A node that cannot see a majority is not ready: `/readyz` says 503 and, after
-  `cluster.minority_grace`, so do the token endpoints, so a node cut off does not serve revoked sessions or disabled
-  accounts for longer than that.
+  gated (they are not decisions about one record). A follower keeps serving a partition while its owner hands it over
+  (freshness counts from the last owner heard, within the staleness limit, as between heartbeats); a partition whose owner
+  crashed is refused once that limit passes, until its new owner is heard (writes to it fail meanwhile too).
+  A node that is cut off from the majority hears no owner, so its partitions are unreadable, and it is not ready.
+- **Readiness follows divergence, not unreadability.** A node is not ready while a partition has diverged on it (only an
+  operator can clear that); `GET /api/cluster` says which and why, and the log has it (a divergence at warn level, once per
+  partition). A partition that is merely unreadable on a node (an owner that cannot be replaced, a catch-up that keeps
+  failing) does not take the node out of rotation: its records answer 503 one by one while every other partition keeps
+  working, and an unreadable partition is usually unreadable on every node, which would otherwise turn the loss of one
+  partition (1/64 of the organizations) into a total outage. `partitions_unreadable` in `GET /api/cluster` and
+  `quisora_partitions_unreadable` stay: alert on them.
+- **Bounded staleness.** A node that cannot see a majority is not ready: `/readyz` says 503 and so does everything else but
+  the probes, the token endpoints included, so a node cut off serves no revoked session or disabled account.
 - **Hot records.** A sign-in's stamps (the last sign-in, the last TOTP step) are in a record of their own
   (`model.SignIn`), and failed attempts and lockouts in short-lived state, so sign-ins do not make an administrator's change
   of the user fail on the user's expected version.
@@ -388,9 +394,10 @@ expired are removed by every node from its own copy.
   which are still read; set durably through the protocol's `Config.SetFormed` before its first promise is stored, or when it
   has synchronised with an intact majority); until then it is *unformed*, and says so in its answers. A node copying a data
   set counts only intact answers from formed nodes toward its quorum, except in formation: when it is unformed itself and
-  every node that answered is unformed too (intact or not), at least one intact (the founder), it copies from the founder
-  alone, because no write can have been committed without an unformed node (every commit needs a takeover, every takeover a
-  majority of promises, and a promise forms its giver). One formed answer rules that out. The founder is the node seeded
+  every other node of the cluster answered unformed too (intact or not), at least one intact (the founder), it copies from
+  the founder alone, because no write can have been committed without an unformed node (every commit needs a takeover,
+  every takeover a majority of promises, and a promise forms its giver). One formed answer rules that out, and so does a
+  node that does not answer (it may have formed with another): a new cluster forms once every node has started. The founder is the node seeded
   by `StartNewCluster` (bootstrap, restore, the load test's seed); it and every node that adopts its data set start
   unformed, and from then on every node is formed and the quorum applies again. A formed node holds a data set and is never
   made the first node of another (`CheckNewCluster`), nor is one that adopted a data set and is still copying it (not
@@ -461,8 +468,9 @@ With 3 nodes (with 5, read "up to two"):
 | **resyncing** | its data is not intact (new, lost, restored, forced) until it has copied from the others | no / no | none |
 | **catching up** | every start, until caught up and the hold-down has passed | no / no | none |
 | **ready** | caught up, a majority in view, every node agrees on the size and runs a compatible build | yes / yes | all |
-| **cut off** | fewer than a majority in view | no / for `cluster.minority_grace` (default 300 s) | none |
-| **partition unreadable** | a partition diverged here, or has been unreadable here for 30 s | no / yes, except that partition's records | all |
+| **cut off** | fewer than a majority in view | no / no | none |
+| **partition diverged** | a partition diverged here | no / no | none |
+| **partition unreadable** | a partition cannot be read here (no owner heard, catch-up failing); `partitions_unreadable` counts them | yes / yes, except that partition's records | all |
 | **misconfigured** | database shared with another gossip node, owned by another node id, mixed with non-gossip nodes, holding records no partition write made, set up apart from the cluster, prefix collision, **size or build disagreement**, clock off | no / no | none |
 
 Only node-local records (`KindEphemeral`) are written on a node that is not ready. A refused write returns
@@ -489,24 +497,22 @@ accepted by exactly one, and a node that has not yet received a use is refused b
 step cannot be recorded the code is refused (fails closed). Failed attempts and lockouts are counted in short-lived
 state (below), not in records.
 
-### The last-administrator guard
+### Super admins are protected by rank, not by a count
 
-Changes that can remove an organization's last usable administrator — one who is active and not past an end date —
-(demoting, disabling, deleting or end-dating an administrator; an administrator without an end date may go only
-while another one without an end date remains) take the organization's **admin lock** — the lock record `admins/<org id>`, written with a
-compare-and-swap (its owner decides), held for at most 30 s and waited for up to 10 s — and count the administrators from
-**the owners' copies** (a fresh read through the owner of each user's partition): a demotion committed anywhere is counted
-even before it has reached this node. Two demotions on two nodes are therefore serialised, and the second sees the first.
+There is no cluster-wide guarantee that a usable super admin always remains. What holds instead, on every node and in
+every mode, are rules about who may act on whom, none of which needs a lock or another node's answer:
 
-The lock serialises the decisions, not the writes: a holder paused (or a store slow) for longer than the lease can
-land its write after the next holder decided on the records as they were before it, each of two disables judged while
-the other administrator was still usable. So the write is **fenced** on the lease: once it has landed, a holder whose
-lease is no longer its own (another holder's, or lapsed, a second of clock skew allowed for) makes the decision
-again on the records as they are now, and a change it would now refuse is undone — the user put back as they were,
-a deleted user created again — and reported refused (`ErrLastAdmin`). A change made within the lease stands without a
-second decision. The undo is a compare-and-swap on the copy the change wrote; a copy changed since gets back only what
-the guard judged (role, active state, end date). The change was visible between its write and its undo, but nothing
-irreversible follows the write before the fence: sessions end, and the audit entry is written, only after it.
+- nobody demotes, disables, locks out, end-dates or deletes **themselves** (nor changes their own end date);
+- only a **super admin** demotes, disables, locks out, end-dates or deletes a super admin (an administrator, a manager or a
+  provisioning client such as SCIM cannot);
+- the **system** (housekeeping, the end-date sweep, commands acting as the system) never does either: the sweep that
+  disables accounts past their end date leaves super admins alone (their end date still stops their sign-in).
+
+A deletion is one compare-and-swap on the version the rules were judged on, checked by the owner, so a user promoted
+to super admin meanwhile is not deleted on the strength of the older copy. What the rules cannot prevent: **two super
+admins removing each other at the same moment** (on different nodes, or one disabling the other while the other
+disables them) can leave none, and so can a super admin's end date passing. The recovery is outside the service, with the
+master key: `quisora invite --break-glass --super-admin <primary org> <email>` (see SECURITY.md, incident response).
 
 ### The last way in
 
@@ -637,11 +643,9 @@ Until a node is ready, **every path except `/healthz`, `/readyz`, `/assets/…`,
 answers 503** with `Retry-After: 5` (JSON `temporarily_unavailable` for `/oauth/…` and `/.well-known/…`, JSON
 `{"error": …}` for `/api/…` and `/scim/…`, plain text otherwise): management and SCIM reads, the authorization and
 sign-in pages, discovery and JWKS alike, so a client that bypasses the load balancer never receives partial, stale or
-deleted data (`web.Server.serveGate`). On a node that **was serving and got cut off**, `/oauth/token`,
-`/oauth/userinfo` and `/oauth/introspect` keep answering for `cluster.minority_grace`; as no replicated write is
-allowed without a majority, only requests that need none succeed there (client credentials, a refresh of a client that
-does not rotate refresh tokens, userinfo, introspection), and a code exchange or a rotating refresh answers 503
-`temporarily_unavailable`. A restarting node issues no tokens until it has caught up.
+deleted data (`web.Server.serveGate`), the token, userinfo and introspection endpoints included: a node cut off from the
+majority issues no tokens and answers no introspection, and clients retry on another node. A restarting node issues no
+tokens until it has caught up.
 
 ### Short-lived state
 
@@ -886,9 +890,8 @@ dates are compare-and-swap updates and purging is idempotent. Keep clock skew be
 - **Membership comes from the gossip library's failure detector**; a node that is alive but cannot exchange data still counts as in
   view for gossip (the partition protocol then refuses its writes rather than losing them).
 - The retention (7 days) is fixed; it only decides how far behind a node may be to catch up without copying a partition whole.
-- The admin lock is held for at most 30 s; a holder stalled for longer overlaps the next holder, and its write is judged again once it
-  lands (the fence above): a change the next holder's made unsafe is undone, after having been visible for a moment. An undo that
-  fails (the store unavailable at that moment) is logged, and the change stands.
+- Two super admins removing each other at the same moment on different nodes can leave none (see "Super admins are protected by
+  rank"): `quisora invite --break-glass --super-admin` recovers.
 - A group change's sequence fence rests on the removed membership record being kept: a writer stalled for longer than 7 days
   (`model.RemovedMemberRetention`) could re-create a membership removed since, as any write that old could undo a purged tombstone. A
   membership a stalled writer materializes for a group or user deleted meanwhile is inert (readers resolve the group and user) but

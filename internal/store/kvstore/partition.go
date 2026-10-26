@@ -1,9 +1,7 @@
 package kvstore
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"slices"
 	"strconv"
@@ -24,7 +22,7 @@ import (
 //
 // Sequence index: every record written by ApplyPartition or ImportPartition is a member of the ordered set ps/<p>,
 // "<20-digit sequence>/<kind>/<id>", maintained with the record's other index entries (indexEntries), so ExportPartition
-// is a range scan from the caller's sequence and PurgePartition and a full import reach the partition's records without
+// is a range scan from the caller's sequence and PurgePartition and the reset that starts a full import reach the partition's records without
 // reading the others.
 //
 // Durability: Badger fsyncs every commit (BadgerOptions.NoSync off, the default, which a gossip node requires), so every
@@ -105,17 +103,37 @@ func (s *Store) PartitionState(ctx context.Context, p int) (store.PartitionState
 	return view(st), err
 }
 
-// lockPartition holds partition p's state lock (Store.plocks) until the returned function is called.
+// partitionLock returns partition p's lock (Store.plocks) read-locked, and lockPartition holds it exclusively until the
+// returned function is called: an import or a purge of the partition is not interleaved with its protocol writes, which
+// share it among themselves.
+func (s *Store) partitionLock(p int) *sync.RWMutex {
+	m, _ := s.plocks.LoadOrStore(p, new(sync.RWMutex))
+	mu := m.(*sync.RWMutex)
+	mu.RLock()
+	return mu
+}
+
 func (s *Store) lockPartition(p int) func() {
-	m, _ := s.plocks.LoadOrStore(p, new(sync.Mutex))
-	mu := m.(*sync.Mutex)
+	m, _ := s.plocks.LoadOrStore(p, new(sync.RWMutex))
+	mu := m.(*sync.RWMutex)
 	mu.Lock()
 	return mu.Unlock
 }
 
+// writePartition runs fn as a write of partition p's state and records: through the engine's group commit when it has one,
+// so that the protocol's writes (the next write's pending while the last one commits, applies of many partitions, each moving
+// the counters of the kinds it adds to) are applied one after another by the committer, in the order they were queued, and
+// never conflict with each other.
+func (s *Store) writePartition(ctx context.Context, p int, fn func(tx txn) error) error {
+	defer s.partitionLock(p).RUnlock()
+	if g, ok := s.eng.(grouper); ok {
+		return g.Group(ctx, "pstate", strconv.Itoa(p), fn)
+	}
+	return s.eng.Update(ctx, fn)
+}
+
 func (s *Store) SetPartitionPromised(ctx context.Context, p int, e store.PartitionEpoch) error {
-	defer s.lockPartition(p)()
-	return s.eng.Update(ctx, func(tx txn) error {
+	return s.writePartition(ctx, p, func(tx txn) error {
 		st, err := loadState(tx, p)
 		if err != nil {
 			return err
@@ -129,8 +147,7 @@ func (s *Store) SetPartitionPromised(ctx context.Context, p int, e store.Partiti
 }
 
 func (s *Store) SetPartitionPending(ctx context.Context, p int, seq uint64, pending []byte) error {
-	defer s.lockPartition(p)()
-	return s.eng.Update(ctx, func(tx txn) error {
+	return s.writePartition(ctx, p, func(tx txn) error {
 		st, err := loadState(tx, p)
 		if err != nil {
 			return err
@@ -167,8 +184,7 @@ func (s *Store) ApplyPartition(ctx context.Context, p int, recs []*store.Record,
 	if err := store.CheckApply(p, committed); err != nil {
 		return err
 	}
-	defer s.lockPartition(p)()
-	return s.eng.Update(ctx, func(tx txn) error {
+	return s.writePartition(ctx, p, func(tx txn) error {
 		st, err := loadState(tx, p)
 		if err != nil {
 			return err
@@ -240,6 +256,12 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	} else if len(above) > 0 {
 		return store.ErrImportUnfinished
 	}
+	// So is a full import's marker: its reset removes records before the position moves, leaving nothing above it.
+	if active, err := eng.Get(ctx, importActiveKey(p)); err != nil {
+		return err
+	} else if active != nil {
+		return store.ErrImportUnfinished
+	}
 	if err := start(st.Committed); err != nil {
 		return err
 	}
@@ -285,31 +307,24 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 // importFallbacks counts batches that did not fit one transaction (tests).
 var importFallbacks atomic.Int64
 
-// importMark is the key of the mark a full import puts on a record it brought: its value names the import (its
-// position), so that a mark an unfinished import left means nothing to a later one.
-func importMark(p int, kind model.Kind, id string) string {
-	return "pimp/" + strconv.Itoa(p) + "/" + string(kind) + "/" + id
-}
-
-func importGen(upTo store.PartitionPos) []byte {
-	b := binary.BigEndian.AppendUint64(make([]byte, 0, 32), upTo.Epoch.Counter)
-	b = append(b, upTo.Epoch.Node[:]...)
-	return binary.BigEndian.AppendUint64(b, upTo.Seq)
-}
+// importActiveKey is the key of the marker that a full import of p is in progress: the First call sets it, in the
+// transaction that checks the position, before anything is removed, and the transaction that commits the final position
+// deletes it. The reset that starts an import removes records in transactions of their own, before the position moves, so
+// without the marker a crash between them leaves nothing above the committed position, and an export would advertise a
+// position the data no longer matches.
+func importActiveKey(p int) string { return "pimp-active/" + strconv.Itoa(p) }
 
 func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.PartitionRecord, upTo store.PartitionPos, step store.ImportStep) error {
 	if err := store.CheckImport(p, recs, upTo); err != nil {
 		return err
 	}
 	defer s.lockPartition(p)() // (the whole import: its state writes are the partition's, as Commit's)
-	gen := importGen(upTo)
 	if step.Full && step.First {
-		// A new import: the marks an earlier one left (it did not finish) mean nothing to it, whatever its position.
-		if err := s.clearImportMarks(ctx, p); err != nil {
+		if err := s.resetPartition(ctx, p, upTo, step.Removed); err != nil {
 			return err
 		}
 	}
-	// put stores recs (a full import marks them) and, with setState, moves the position.
+	// put stores recs and, with setState, moves the position (a full import also raises the purge point and ends).
 	put := func(tx txn, recs []store.PartitionRecord, setState bool) error {
 		st, err := loadState(tx, p)
 		if err != nil {
@@ -322,21 +337,17 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 			if err := putPartition(tx, r.Record, p, r.Seq); err != nil {
 				return err
 			}
-			if step.Full {
-				tx.Set(importMark(p, r.Kind, r.ID), gen)
-			}
 		}
 		if !setState {
 			return nil
 		}
 		if step.Full {
 			st.Purged = max(st.Purged, upTo.Seq)
+			tx.Delete(importActiveKey(p)) // with the position
 		}
 		return commitState(tx, p, &st, upTo)
 	}
-	// The position goes with the records unless a sweep of what the import did not bring has to come first.
-	together := step.Final && !step.Full
-	err := s.eng.Update(ctx, func(tx txn) error { return put(tx, recs, together) })
+	err := s.eng.Update(ctx, func(tx txn) error { return put(tx, recs, step.Final) })
 	if isTxnTooBig(err) {
 		// Too big for one Badger transaction: the records in as many as it takes, the position after them (so a crash
 		// leaves the old position, and repeating the import completes it).
@@ -348,17 +359,11 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 			}
 			size /= 2
 		}
-		if err == nil && together {
+		if err == nil && step.Final {
 			err = s.eng.Update(ctx, func(tx txn) error { return put(tx, nil, true) })
 		}
 	}
-	if err != nil || !step.Final || !step.Full {
-		return err
-	}
-	if err := s.sweepImport(ctx, p, gen, step.Removed); err != nil {
-		return err
-	}
-	return s.eng.Update(ctx, func(tx txn) error { return put(tx, nil, true) })
+	return err
 }
 
 // importChunks stores recs, size to a transaction.
@@ -374,9 +379,25 @@ func (s *Store) importChunks(ctx context.Context, size int, recs []store.Partiti
 	return nil
 }
 
-// sweepImport ends a full import: it removes the records of p that the import's batches did not mark (and reports each
-// after its removal is committed), and clears the marks. It walks the partition's sequence index a page at a time.
-func (s *Store) sweepImport(ctx context.Context, p int, gen []byte, removed func(model.Kind, string)) error {
+// resetPartition starts a full import: it sets the import marker (refusing, changing nothing, if upTo is not above the
+// committed position), then removes every record of p, a page to a transaction (and reports each after its removal is
+// committed). It walks the partition's sequence index a page at a time. A reset an earlier import left unfinished is
+// simply done again.
+func (s *Store) resetPartition(ctx context.Context, p int, upTo store.PartitionPos, removed func(model.Kind, string)) error {
+	err := s.eng.Update(ctx, func(tx txn) error {
+		st, err := loadState(tx, p)
+		if err != nil {
+			return err
+		}
+		if upTo.Seq <= st.Committed.Seq {
+			return store.ErrPartitionBehind
+		}
+		tx.Set(importActiveKey(p), []byte{1})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	bucket := psBucket(uint32(p))
 	page := batchGroup
 	for from := ""; ; {
@@ -394,17 +415,6 @@ func (s *Store) sweepImport(ctx context.Context, p int, gen []byte, removed func
 				seq, kind, id, err := psMember(m)
 				if err != nil {
 					return err
-				}
-				mk := importMark(p, kind, id)
-				mark, err := tx.Get(mk)
-				if err != nil {
-					return err
-				}
-				if mark != nil {
-					tx.Delete(mk)
-				}
-				if bytes.Equal(mark, gen) {
-					continue
 				}
 				old, err := loadRec(tx, kind, id)
 				if err != nil {
@@ -430,45 +440,6 @@ func (s *Store) sweepImport(ctx context.Context, p int, gen []byte, removed func
 			for _, g := range gone {
 				removed(g.kind, g.id)
 			}
-		}
-		from = members[len(members)-1] + "\x00"
-	}
-}
-
-// clearImportMarks removes the marks an import of p left on the records of the partition (they are found through its
-// sequence index: a full import marks only records it stores there), a page to a transaction.
-func (s *Store) clearImportMarks(ctx context.Context, p int) error {
-	bucket := psBucket(uint32(p))
-	page := batchGroup
-	for from := ""; ; {
-		members, err := s.eng.Range(ctx, bucket, from, "", page)
-		if err != nil {
-			return err
-		}
-		if len(members) == 0 {
-			return nil
-		}
-		err = s.eng.Update(ctx, func(tx txn) error {
-			for _, m := range members {
-				_, kind, id, err := psMember(m)
-				if err != nil {
-					return err
-				}
-				mk := importMark(p, kind, id)
-				if mark, err := tx.Get(mk); err != nil {
-					return err
-				} else if mark != nil {
-					tx.Delete(mk)
-				}
-			}
-			return nil
-		})
-		if isTxnTooBig(err) && page > 1 {
-			page /= 2
-			continue
-		}
-		if err != nil {
-			return err
 		}
 		from = members[len(members)-1] + "\x00"
 	}

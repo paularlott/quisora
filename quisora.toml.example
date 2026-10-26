@@ -63,8 +63,6 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql or
 #                                         # (changing it: docs/REPLICATION.md)
 # key = ""                                # `quisora genkey`; identical on every node
 # previous_keys = []                      # during a cluster key rotation only (docs/RUNNING.md#rotating-the-cluster-key)
-# minority_grace = 300                    # seconds a node cut off from the majority keeps answering the token,
-#                                         # userinfo and introspection endpoints (requests that need no write)
 
 [cluster.notify]
 # Shared database only (ignored, with a warning, when cluster.bind is set): a gossip network of its own that carries

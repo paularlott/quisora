@@ -657,7 +657,8 @@ func TestImportStreamsInBatches(t *testing.T) {
 	}
 }
 
-// A full copy in batches removes at its end what the batches did not bring, and says which (the hooks).
+// A full copy in batches resets the partition at its start: every record it held is removed and the hooks are told (what the
+// copy brings back is applied, and told, after that); what the batches did not bring stays removed.
 func TestFullImportInBatchesReportsRemovedRecords(t *testing.T) {
 	src, dst := newTestNode(t), newTestNode(t)
 	w := watched(dst)
@@ -689,7 +690,7 @@ func TestFullImportInBatchesReportsRemovedRecords(t *testing.T) {
 	if err := dst.pst.Import(p, rc, pos, true); err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 7 {
+	if len(removed) != 7+13 { // what dst held: the 7 the source lacks and the 13 both hold
 		t.Fatalf("removals reported: %v", removed)
 	}
 	for i := range 7 {

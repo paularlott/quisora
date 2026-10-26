@@ -23,12 +23,10 @@ func (f *fakeHealth) Ready() (bool, string) {
 
 // A node that is not ready (starting, catching up, copying, out of date, cut off) serves nothing but the probes
 // and static files — management and SCIM reads, authorization pages, discovery and JWKS alike — so a caller that
-// bypasses the load balancer never gets partial or resurrected data. The token, userinfo and introspection endpoints
-// answer only within the grace of a node that was serving and got cut off.
+// bypasses the load balancer never gets partial or resurrected data, the token endpoints included.
 func TestServeGate(t *testing.T) {
 	h := &fakeHealth{}
-	tokens := false
-	s := &Server{Health: h, ServesTokens: func() bool { return tokens }}
+	s := &Server{Health: h}
 	gate := s.serveGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(299) }))
 	do := func(method, path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -49,15 +47,6 @@ func TestServeGate(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 			t.Errorf("not ready, %s %s: %d, want 503 with Retry-After", c.method, c.path, rec.Code)
 		}
-	}
-	tokens = true // cut off after serving, within the grace
-	for _, p := range []string{"/oauth/token", "/oauth/userinfo", "/oauth/introspect"} {
-		if c := do("POST", p).Code; c != 299 {
-			t.Errorf("within the grace, %s: %d", p, c)
-		}
-	}
-	if c := do("GET", "/oauth/jwks").Code; c != http.StatusServiceUnavailable {
-		t.Errorf("within the grace, jwks: %d", c)
 	}
 	h.ready = true
 	if c := do("GET", "/api/orgs/acme/users").Code; c != 299 {
@@ -121,49 +110,6 @@ func TestReadyzReportsClusterStatus(t *testing.T) {
 		if rec.Code != want || body.Cluster["size"] != 3 || body.Cluster["quorum"] != 2 || body.Cluster["unconfirmed"] != 1 {
 			t.Fatalf("ready %v: %d %s", ready, rec.Code, rec.Body.String())
 		}
-	}
-}
-
-// A node cut off from the majority refuses state-changing requests (management and SCIM writes, sign-ins including a
-// provider's callback) but keeps serving reads, the token endpoint and sign-out.
-func TestWriteGuard(t *testing.T) {
-	writable := false
-	s := &Server{Writable: func() bool { return writable }}
-	h := s.writeGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(299) }))
-	do := func(method, path string) int {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
-		return rec.Code
-	}
-	for _, c := range []struct {
-		method, path string
-		refused      bool
-	}{
-		{"POST", "/api-internal/login/password", true},
-		{"DELETE", "/api/orgs/acme/users/x", true},
-		{"PATCH", "/scim/v2/Users/x", true},
-		{"GET", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
-		{"HEAD", "/login/callback/0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b", true},
-		{"POST", "/verify-email", true},
-		{"GET", "/verify-email?token=x", false}, // the page only: confirming it writes
-		{"HEAD", "/account", false},
-		{"GET", "/api/orgs/acme/users", false},
-		{"GET", "/account", false},
-		{"POST", "/oauth/token", false},
-		{"POST", "/oauth/introspect", false},
-		{"POST", "/oauth/logout/confirm", false},
-	} {
-		want := 299
-		if c.refused {
-			want = http.StatusServiceUnavailable
-		}
-		if got := do(c.method, c.path); got != want {
-			t.Errorf("%s %s: %d, want %d", c.method, c.path, got, want)
-		}
-	}
-	writable = true
-	if got := do("GET", "/login/callback/x"); got != 299 {
-		t.Errorf("writable node refused the callback: %d", got)
 	}
 }
 

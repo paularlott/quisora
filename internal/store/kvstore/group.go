@@ -233,6 +233,7 @@ func (c *committer) run(ops []*groupOp) {
 		if err = c.runOnce(ops); !errors.Is(err, errConflict) {
 			break
 		}
+		retryConflicts.Add(1)
 		time.Sleep(conflictBackoff(attempt))
 	}
 	if errors.Is(err, errConflict) {

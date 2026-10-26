@@ -409,6 +409,14 @@ var errNoGrantKey = errors.New("oidc: the grant has no refresh token key")
 // refreshRetryGrace is how long after a rotation the token before it still gets the new one again (refresh).
 const refreshRetryGrace = 30 * time.Second
 
+// isRefreshRetry reports whether a refresh token presented with counter is the token just before the grant g's current
+// one, moments after it was rotated, from a caller that also proved who it is (a confidential client's credentials, or
+// the DPoP key the grant is bound to: a copied token alone is not enough): the client did not get the answer (a lost
+// response) and tries again. A public client without DPoP has nothing but the token, so for it any old token is reuse.
+func isRefreshRetry(c *model.Client, g *model.Grant, counter uint64) bool {
+	return counter+1 == g.Counter && time.Since(g.Rotated) < refreshRetryGrace && (!c.Public() || g.DPoPJKT != "")
+}
+
 // grantKey is the grant's refresh token key (see refreshToken).
 func (p *Provider) grantKey(g *model.Grant) ([]byte, error) {
 	key, err := p.svc.GrantRefreshKey(g)
@@ -562,13 +570,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	var newRefresh string
 	switch {
-	case (c.RotateRefresh || c.Public()) && pr.counted && pr.counter+1 == g.Counter && time.Since(g.Rotated) < refreshRetryGrace &&
-		(!c.Public() || g.DPoPJKT != ""):
-		// The token just before the current one, moments after it was rotated, from a caller that also proved who it
-		// is (a confidential client's credentials, or the DPoP key the grant is bound to: a copied token alone is not
-		// enough): the client did not get the answer (a lost response, or a rotation the cluster confirmed late) and
-		// tries again. It gets the same answer — the current token, made from the grant's key and counter — and
-		// nothing rotates. A public client without DPoP has nothing but the token, so for it any old token is reuse.
+	case (c.RotateRefresh || c.Public()) && pr.counted && isRefreshRetry(c, g, pr.counter):
+		// A retry of the last rotation (isRefreshRetry): it gets the same answer — the current token, made from the
+		// grant's key and counter — and nothing rotates.
 		if newRefresh, err = p.counterToken(g); err != nil {
 			return nil, serverError(err)
 		}
@@ -598,10 +602,11 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			if ferr != nil || fresh.Revoked {
 				return nil, invalid
 			}
-			// This node's copy was a message behind: the token was rotated moments ago, on another node. A retry is judged
-			// on the grant as it is now, as the first case above does (the store waited until this node has the write
-			// that made the rotation stale): the client gets the token it missed, and nothing rotates again.
-			if pr.counter+1 == fresh.Counter && time.Since(fresh.Rotated) < refreshRetryGrace && (!c.Public() || fresh.DPoPJKT != "") {
+			// The token was rotated moments ago, on another node, and this node's copy did not show it yet: the store
+			// waited until this node had the write that made the change stale (Store.awaitRefused), so fresh is the
+			// grant as it is now, and a retry is judged on it as in the first case above: the client gets the token it
+			// missed, and nothing rotates again.
+			if isRefreshRetry(c, fresh, pr.counter) {
 				g = fresh
 				break
 			}
