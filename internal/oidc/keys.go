@@ -153,7 +153,9 @@ func (p *Provider) reloadKeys(ctx context.Context, force bool) (*keySet, error) 
 	}
 	ks, err := p.loadKeys(ctx)
 	if err != nil {
-		if old := p.keySet.Load(); old != nil {
+		// The keys last loaded stand in while the store cannot be read, but not when this node cannot vouch for them
+		// (it trails the cluster: a key may have been revoked since): it answers unavailable rather than publish them.
+		if old := p.keySet.Load(); old != nil && !errors.Is(err, store.ErrNotWritable) {
 			return old, nil
 		}
 		return nil, err

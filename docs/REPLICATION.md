@@ -229,7 +229,9 @@ partitions.
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
   the cluster, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
   not in a partition and are exempt; a reservation follows the partition of its own id. Listings and counts are not
-  gated (they are not decisions about one record). A follower keeps serving a partition while its owner hands it over
+  gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
+  the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
+  revoked key). Its JWKS then answers 503 rather than the keys it last loaded. A follower keeps serving a partition while its owner hands it over
   (freshness counts from the last owner heard, within the staleness limit, as between heartbeats); a partition whose owner
   crashed is refused once that limit passes, until its new owner is heard (writes to it fail meanwhile too).
   A node that is cut off from the majority hears no owner, so its partitions are unreadable, and it is not ready.

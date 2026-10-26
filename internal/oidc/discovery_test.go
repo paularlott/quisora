@@ -1,15 +1,20 @@
 package oidc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // The discovery documents and the key set are read-only views of the default configuration, so the subtests share one
@@ -105,4 +110,47 @@ func TestDiscovery(t *testing.T) {
 			t.Errorf("registration: %v %v", d["registration_endpoint"], d["client_id_metadata_document_supported"])
 		}
 	})
+}
+
+// keyListErr fails every listing of the signing keys with err.
+type keyListErr struct {
+	store.Store
+	err error
+}
+
+func (s keyListErr) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if kind == model.KindKey {
+		return nil, s.err
+	}
+	return s.Store.List(ctx, kind, q)
+}
+
+// A node that cannot vouch for the signing keys (it trails the cluster: one may have been revoked) answers the JWKS
+// unavailable rather than publish the keys it last loaded; a store that merely cannot be read keeps them standing in.
+func TestJWKSNotServedFromCacheWhenTheNodeCannotVouchForTheKeys(t *testing.T) {
+	h := setup(t, nil)
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != 200 {
+		t.Fatalf("setup: %d", resp.StatusCode)
+	}
+	good := h.env.Svc.Keys.S
+	stale := func() { // the cached set is due for a reload
+		ks := *h.p.keySet.Load()
+		ks.loaded = time.Time{}
+		h.p.keySet.Store(&ks)
+	}
+	h.env.Svc.Keys.S = keyListErr{good, errors.New("database hiccup")}
+	stale()
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != 200 {
+		t.Fatalf("a store that cannot be read: %d, want the keys last loaded", resp.StatusCode)
+	}
+	h.env.Svc.Keys.S = keyListErr{good, store.ErrNotWritable}
+	stale()
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a node that cannot vouch for the keys: %d, want 503", resp.StatusCode)
+	}
+	h.env.Svc.Keys.S = good
+	stale()
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != 200 {
+		t.Fatalf("once it can vouch again: %d", resp.StatusCode)
+	}
 }

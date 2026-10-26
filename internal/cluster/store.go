@@ -165,8 +165,18 @@ func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, err
 }
 
 func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	// Listings are not gated, except of the kinds held only in the global partition: a node that cannot vouch for it
+	// must not answer with organizations or signing keys the majority has changed (a key it revoked, in the JWKS).
+	if s.n.gc != nil && globalOnly(kind) {
+		if err := s.n.readable(globalPartition); err != nil {
+			return nil, err
+		}
+	}
 	return s.inner.List(ctx, kind, q)
 }
+
+// globalOnly reports whether every record of kind is in the global partition (model: an empty partition key).
+func globalOnly(kind model.Kind) bool { return kind == model.KindOrg || kind == model.KindKey }
 
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
 	return s.inner.Count(ctx, kind, scope)

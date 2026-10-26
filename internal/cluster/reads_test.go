@@ -320,3 +320,42 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 		}
 	}
 }
+
+// Signing keys are listed through the gate of the global partition: a node that trails it (a key revoked meanwhile, a
+// catch-up that keeps failing) refuses the listing, so it never publishes a key set the majority has changed.
+func TestTrailingNodeRefusesToListSigningKeys(t *testing.T) {
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.startAll()
+	c.waitReady()
+	keys := func(tn *tnode) *store.Table[model.SigningKey, *model.SigningKey] {
+		return store.NewTable[model.SigningKey](tn.st())
+	}
+	k1 := &model.SigningKey{Meta: model.Meta{ID: "k1"}, Alg: "ES256"}
+	if err := keys(c.nodes[0]).Create(bg, k1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "the key listed everywhere", func() bool {
+		for _, tn := range c.nodes {
+			if ks, _, err := keys(tn).List(bg, store.ListQuery{}); err != nil || len(ks) != 1 {
+				return false
+			}
+		}
+		return true
+	})
+	// node 1 misses the key's removal, and every catch-up of the global partition fails
+	fs.of(c.nodes[1]).failImport.Store(int64(globalPartition) + 1)
+	for _, j := range []int{0, 2} {
+		c.drop(j, 1, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	}
+	if err := keys(c.nodes[0]).Delete(bg, k1.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "node 1 to refuse listing the keys", func() bool {
+		_, _, err := keys(c.nodes[1]).List(bg, store.ListQuery{})
+		return errors.Is(err, store.ErrNotWritable)
+	})
+	if ks, _, err := keys(c.nodes[0]).List(bg, store.ListQuery{}); err != nil || len(ks) != 0 {
+		t.Fatalf("the majority's listing: %d keys, %v", len(ks), err)
+	}
+}
