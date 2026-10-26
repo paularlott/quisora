@@ -66,6 +66,7 @@ func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) 
 	}
 	e, ok := p.clients.get(id)
 	if !ok {
+		tok := p.clients.token(id)
 		c, err := p.svc.Clients.Get(ctx, id)
 		if err != nil {
 			return nil, err
@@ -76,7 +77,7 @@ func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) 
 				e.keys = parseKeys(jwks)
 			}
 		}
-		p.clients.put(id, e)
+		p.clients.putIf(id, e, tok)
 	}
 	// An application stands on its organization: one of a deleted organization is unknown (the orphan sweep removes
 	// its record later). A self-registered one belongs to none until a tenant takes it.

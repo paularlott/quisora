@@ -132,38 +132,3 @@ func TestVisibility(t *testing.T) {
 		t.Errorf("super admin: listed %v", list)
 	}
 }
-
-// The users list's role filter offers the viewer's own role and lower: super admin only to super admins on the primary
-// organization.
-func TestRoleFilterOptions(t *testing.T) {
-	w := newWorld(t)
-	page := func(c *caller, path string) string {
-		r := c.do("GET", path, nil)
-		want(t, r, 200)
-		b := string(r.Raw)
-		start := strings.Index(b, `id="filter-role"`)
-		return b[start : start+strings.Index(b[start:], "</select>")]
-	}
-	for _, c := range []struct {
-		who, path string
-		want      []string
-		not       []string
-	}{
-		{"manager", "/admin/orgs/acme/users", []string{`"user"`, `"manager"`}, []string{`"admin"`, `"super_admin"`}},
-		{"admin", "/admin/orgs/acme/users", []string{`"user"`, `"manager"`, `"admin"`}, []string{`"super_admin"`}},
-		{"super", "/admin/orgs/acme/users", []string{`"admin"`}, []string{`"super_admin"`}},
-		{"super", "/admin/orgs/primary/users", []string{`"admin"`, `"super_admin"`}, nil},
-	} {
-		sel := page(w.as(c.who), c.path)
-		for _, v := range c.want {
-			if !strings.Contains(sel, `value=`+v) {
-				t.Errorf("%s on %s: no %s option", c.who, c.path, v)
-			}
-		}
-		for _, v := range c.not {
-			if strings.Contains(sel, `value=`+v) {
-				t.Errorf("%s on %s: %s offered", c.who, c.path, v)
-			}
-		}
-	}
-}

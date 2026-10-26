@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -11,8 +12,9 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Audit events stay on the node that records them (localOnly): an audit page asks every node for its newest
-// matching events and merges them (AuditQuery).
+// Audit events stay on the node that records them (localOnly: a local write, never part of a partition write, export,
+// import or seeding): an audit page asks every node of the same data set for its newest matching events and merges
+// them (AuditQuery). The request travels as gossip, encrypted and authenticated with the cluster key like every message.
 
 // auditWait bounds how long an audit page waits for the other nodes.
 const auditWait = 3 * time.Second
@@ -22,8 +24,11 @@ type auditReq struct {
 	Search  string
 	Sort    string // "created" or "action"
 	Desc    bool
-	Limit   int
+	Limit   int // the most events to return, from Offset on
 	Filters []auditFilter
+	// Offset is how many of this node's matching events, in the request's order, come before the ones asked for: a
+	// page cut short by the reply's size (auditResp.More) is followed by one that starts where it ended.
+	Offset int
 }
 
 // auditFilter is a store.Filter on the wire: a string value, or a time (UnixMicro).
@@ -41,6 +46,9 @@ type auditResp struct {
 	// Filtered says the node applied the request's filters: a node of an older build ignores them and answers with
 	// unfiltered events, which are left out of the page (it counts as not answering).
 	Filtered bool
+	// More says the node had more of the events asked for than fit one reply (auditReplyBytes): ask again from
+	// the offset after the ones received.
+	More bool
 }
 
 func toAuditFilters(fs []store.Filter) []auditFilter {
@@ -70,8 +78,21 @@ func fromAuditFilters(fs []auditFilter) []store.Filter {
 	return out
 }
 
-// handleAudit answers with this node's newest audit events matching the request.
-func (n *Node) handleAudit(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
+// errOtherDataSet refuses an audit request from a node of another data set (or none): its cluster is not this one.
+var errOtherDataSet = errors.New("cluster: the asking node holds another data set")
+
+// sameDataSet reports whether nd publishes the data set this node holds (a node that holds none matches nobody).
+func (n *Node) sameDataSet(nd *gossip.Node) bool {
+	g := n.genesis.Load()
+	return g != nil && nd != nil && nd.Metadata != nil && nd.Metadata.GetString(metaGenesis) == *g
+}
+
+// handleAudit answers with this node's newest audit events matching the request: in a gossip cluster only to a node of
+// the same data set.
+func (n *Node) handleAudit(sender *gossip.Node, pkt *gossip.Packet) (any, error) {
+	if n.gc != nil && !n.sameDataSet(sender) {
+		return nil, errOtherDataSet
+	}
 	var req auditReq
 	if err := pkt.Unmarshal(&req); err != nil {
 		return nil, err
@@ -81,18 +102,36 @@ func (n *Node) handleAudit(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 		return nil, err
 	}
 	resp := &auditResp{Total: total, Filtered: true}
+	size := 0
 	for _, r := range recs {
-		if b, err := encodeRecord(r); err == nil {
-			resp.Recs = append(resp.Recs, b)
+		b, err := encodeRecord(r)
+		if err != nil {
+			continue
 		}
+		if size+len(b) > auditReplyBytes && len(resp.Recs) > 0 { // (a reply holds at least one event)
+			resp.More = true
+			break
+		}
+		size += len(b)
+		resp.Recs = append(resp.Recs, b)
 	}
 	return resp, nil
 }
 
+// auditReplyBytes bounds the events in one audit reply (one message, the cluster's packet limit being 4 MB, with
+// room for the rest of the reply): a node with more matching events than fit says so (auditResp.More) and the
+// asker pages. A variable for tests.
+var auditReplyBytes = 3 << 20
+
+// auditPageMax is the most events one node returns for a page, over however many replies (a page asks each node for
+// its first offset+limit).
+const auditPageMax = 5000
+
+// localAudit reads this node's own newest audit events matching req, from req.Offset.
 func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, int, error) {
-	limit := min(max(req.Limit, 1), 5000)
+	limit := min(max(req.Limit, 1), auditPageMax)
 	res, err := n.st.inner.List(ctx, model.KindAudit, store.ListQuery{Scope: req.Scope, Search: req.Search,
-		Filters: fromAuditFilters(req.Filters), Sort: req.Sort, Desc: req.Desc, Limit: limit})
+		Filters: fromAuditFilters(req.Filters), Sort: req.Sort, Desc: req.Desc, Limit: limit, Offset: max(req.Offset, 0)})
 	if err != nil {
 		return nil, 0, err
 	}
@@ -102,7 +141,8 @@ func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, i
 // AuditQuery returns the first q.Limit audit events matching q (scope, search, sort; q.Offset is ignored: ask for
 // offset+limit and skip) across every node of the cluster, this one included, merged in q's order, with the total
 // of matches on the nodes that answered. nodes is the cluster size and answered how many nodes answered within
-// auditWait (this one counts): a node that is down or slow is missing from the page, not an error.
+// auditWait (this one counts): a node that is down or slow is missing from the page, not an error. Only the nodes that
+// publish this node's data set are asked: a node set up apart is not part of this cluster's log.
 func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store.Record, total, nodes, answered int, err error) {
 	req := auditReq{Scope: q.Scope, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Limit: q.Limit,
 		Filters: toAuditFilters(q.Filters)}
@@ -115,36 +155,30 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 		return recs, total, nodes, answered, nil
 	}
 	nodes = n.Size()
-	peers := n.otherPeers()
-	type reply struct {
-		resp auditResp
-		err  error
+	var peers []*member
+	for _, mb := range n.otherPeers() {
+		if n.sameDataSet(mb.node) {
+			peers = append(peers, mb)
+		}
 	}
-	replies := make(chan reply, len(peers))
+	want := min(max(q.Limit, 1), auditPageMax)
+	replies := make(chan auditAnswer, len(peers))
 	ctx, cancel := context.WithTimeout(ctx, auditWait)
 	defer cancel()
 	for _, mb := range peers {
-		go func(mb *member) {
-			var resp auditResp
-			err := n.gc.SendToWithResponseContext(ctx, mb.node, msgAudit, &req, &resp)
-			replies <- reply{resp, err}
-		}(mb)
+		go func(mb *member) { replies <- n.askAudit(ctx, mb.node, req, want) }(mb)
 	}
 	timeout := time.NewTimer(auditWait)
 	defer timeout.Stop()
 	for range peers {
 		select {
 		case rp := <-replies:
-			if rp.err != nil || (len(req.Filters) > 0 && !rp.resp.Filtered) {
+			if !rp.answered {
 				continue
 			}
 			answered++
-			total += rp.resp.Total
-			for _, b := range rp.resp.Recs {
-				if r, err := decodeRecord(b); err == nil && r.Kind == model.KindAudit {
-					recs = append(recs, r)
-				}
-			}
+			total += rp.total
+			recs = append(recs, rp.recs...)
 		case <-timeout.C:
 			return mergeAudit(recs, q), total, nodes, answered, nil
 		case <-ctx.Done():
@@ -152,6 +186,43 @@ func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store
 		}
 	}
 	return mergeAudit(recs, q), total, nodes, answered, nil
+}
+
+// auditAnswer is what one node's replies to an audit request add up to.
+type auditAnswer struct {
+	recs     []*store.Record
+	total    int
+	answered bool
+}
+
+// askAudit asks one node for its first want events matching req, a reply at a time (the node cuts a reply by size:
+// auditResp.More). Events are kept once each, whatever shifts between the pages (a newer event pushes the later ones
+// down). A node that fails part-way, or of an older build that ignores the filters, does not count as answering.
+func (n *Node) askAudit(ctx context.Context, nd *gossip.Node, req auditReq, want int) (rp auditAnswer) {
+	seen := map[string]bool{}
+	for len(rp.recs) < want {
+		page := req
+		page.Offset, page.Limit = len(seen), want-len(seen)
+		var resp auditResp
+		if err := n.gc.SendToWithResponseContext(ctx, nd, msgAudit, &page, &resp); err != nil ||
+			(len(req.Filters) > 0 && !resp.Filtered) {
+			return rp
+		}
+		rp.total = resp.Total
+		fresh := 0
+		for _, b := range resp.Recs {
+			if r, err := decodeRecord(b); err == nil && r.Kind == model.KindAudit && !seen[r.ID] {
+				seen[r.ID] = true
+				rp.recs = append(rp.recs, r)
+				fresh++
+			}
+		}
+		if !resp.More || fresh == 0 {
+			break
+		}
+	}
+	rp.answered = true
+	return rp
 }
 
 // mergeAudit orders events from several nodes as q asks (by creation time or action, ties by id) and keeps the

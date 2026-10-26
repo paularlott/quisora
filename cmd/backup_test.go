@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,22 +85,42 @@ func TestRemoteBackup(t *testing.T) {
 	}
 }
 
-// Secrets given as flags are warned about (named with the environment variable and config key to use instead);
-// other flags, and a VictoriaLogs URL without credentials, are not.
-func TestWarnSecretFlags(t *testing.T) {
-	cfg := config.Default()
-	var b strings.Builder
-	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--master-key=x", "--smtp-password", "y", "--data-dir", "d",
-		"--audit-victorialogs-url", "http://vl:9428"))
-	out := b.String()
-	if !strings.Contains(out, "--master-key") || !strings.Contains(out, "QUISORA_MASTER_KEY") ||
-		!strings.Contains(out, "--smtp-password") || strings.Contains(out, "data-dir") || strings.Contains(out, "victorialogs") {
-		t.Fatalf("warnings:\n%s", out)
+func TestBackupPassword(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "pw")
+	for body, want := range map[string]string{"secret pass 1\n": "secret pass 1", "a b\r\nrest": "a b", "nolf": "nolf"} {
+		_ = os.WriteFile(f, []byte(body), 0o600)
+		if got, err := backupPassword(f, true, false); err != nil || got != want {
+			t.Fatalf("%q: %q %v", body, got, err)
+		}
 	}
-	cfg.Audit.VictoriaLogs = "http://user:pw@vl:9428"
-	b.Reset()
-	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs))
-	if !strings.Contains(b.String(), "--audit-victorialogs-url") {
-		t.Fatal("a VictoriaLogs URL with credentials was not warned about")
+	_ = os.WriteFile(f, []byte("  \nx"), 0o600)
+	if _, err := backupPassword(f, true, false); err == nil || !strings.Contains(err.Error(), "no backup password") {
+		t.Fatalf("blank: %v", err)
+	}
+	if _, err := backupPassword(filepath.Join(dir, "none"), true, false); err == nil || !strings.Contains(err.Error(), "--password-file") {
+		t.Fatalf("missing file: %v", err)
+	}
+	// standard input as a pipe
+	old := os.Stdin
+	defer func() { os.Stdin = old }()
+	r, w, _ := os.Pipe()
+	_, _ = io.WriteString(w, "from a pipe pw\nmore")
+	w.Close()
+	os.Stdin = r
+	if got, err := backupPassword("", true, true); err != nil || got != "from a pipe pw" {
+		t.Fatalf("stdin: %q %v", got, err)
+	}
+	r, w, _ = os.Pipe()
+	w.Close()
+	os.Stdin = r
+	if _, err := backupPassword("", true, false); err == nil {
+		t.Fatal("empty stdin accepted")
+	}
+}
+
+func TestSummaryOrdered(t *testing.T) {
+	if got := summary(backup.Stats{"users": 2, "orgs": 1}); got != "orgs 1, users 2" {
+		t.Fatal(got)
 	}
 }

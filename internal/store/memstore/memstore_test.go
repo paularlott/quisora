@@ -11,5 +11,6 @@ func factory(testing.TB) store.Store { return New() }
 
 func TestConformance(t *testing.T) { storetest.Run(t, factory) }
 func TestBatch(t *testing.T)       { storetest.RunBatch(t, factory) }
+func TestPartition(t *testing.T)   { storetest.RunPartition(t, factory) }
 
 func BenchmarkStore(b *testing.B) { storetest.Bench(b, factory) }

@@ -11,16 +11,6 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-func (e *env) tenant(t testing.TB, org *model.Org, name string, set model.TenantSettings) *model.Tenant {
-	t.Helper()
-	tn, err := e.Svc.CreateTenant(context.Background(), service.System, org.ID,
-		service.TenantInput{Name: ptr(name), Settings: &set})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tn
-}
-
 const passwordForm = `autocomplete="current-password"`
 
 func TestTenantPasswordRefused(t *testing.T) {

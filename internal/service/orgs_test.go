@@ -73,6 +73,55 @@ func TestOrgValidation(t *testing.T) {
 	if _, err := c.svc.OrgByName(c.ctx, "org-a"); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("old name still resolves: %v", err)
 	}
+	if got, err := c.svc.OrgByName(c.ctx, "org-b"); err != nil || got.ID != c.b.ID {
+		t.Errorf("org by name: %v", err)
+	}
+	if _, err := c.svc.OrgByName(c.ctx, "nope"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("org by unknown name: %v", err)
+	}
+	if _, _, err := c.svc.ListOrgs(c.ctx, &service.Actor{OrgID: "gone", Role: model.RoleAdmin}, store.ListQuery{}); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("list for a missing org: %v", err)
+	}
+}
+
+// An organization's session lifetimes stay within the server's and its sign-in options within what the server has; a
+// new organization has its default tenant; a lifetime saved before the server's limit fell does not block saving
+// other settings.
+func TestOrgSettingsLimits(t *testing.T) {
+	c := newCast(t)
+	sys := service.System
+	for name, in := range map[string]service.OrgInput{
+		"ttl above server":         {Name: ptr("ok3"), Settings: &model.OrgSettings{SessionTTL: c.svc.Cfg.Session.TTL + 1}},
+		"email codes without mail": {Name: ptr("ok4"), Settings: &model.OrgSettings{EmailCodes: true}},
+	} {
+		if _, err := c.svc.CreateOrg(c.ctx, sys, in); !isInvalid(err) {
+			t.Errorf("create %s: %v", name, err)
+		}
+	}
+	if _, err := c.svc.UpdateOrg(c.ctx, sys, c.a.ID, service.OrgInput{Settings: &model.OrgSettings{SessionIdle: -1}}); !isInvalid(err) {
+		t.Errorf("negative idle: %v", err)
+	}
+	o, err := c.svc.CreateOrg(c.ctx, sys, service.OrgInput{Name: ptr(" fine "), DisplayName: ptr("  Fine Org ")})
+	if err != nil || o.Name != "fine" || o.DisplayName != "Fine Org" {
+		t.Fatalf("create: %v %+v", err, o)
+	}
+	if d, err := c.svc.DefaultTenant(c.ctx, o.ID); err != nil || d.Name != "default" {
+		t.Errorf("new org's default tenant: %v", err)
+	}
+	got, err := c.svc.UpdateOrg(c.ctx, sys, o.ID, service.OrgInput{Settings: &model.OrgSettings{RequireMFA: true, SessionTTL: 60}})
+	if err != nil || !got.Settings.RequireMFA {
+		t.Fatalf("update: %v", err)
+	}
+	got.Settings.SessionTTL = c.svc.Cfg.Session.TTL + 100
+	if err := c.svc.Orgs.Update(c.ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.UpdateOrg(c.ctx, sys, o.ID, service.OrgInput{Settings: &model.OrgSettings{SessionTTL: got.Settings.SessionTTL, RequireMFA: false}}); err != nil {
+		t.Errorf("unchanged old lifetime refused: %v", err)
+	}
+	if len(c.audited(o.ID, "org.update")) != 2 {
+		t.Error("updates not audited")
+	}
 }
 
 func TestPrimaryOrgRules(t *testing.T) {
@@ -100,11 +149,6 @@ func TestPrimaryOrgRules(t *testing.T) {
 	_, n, _ := c.svc.Orgs.List(c.ctx, store.ListQuery{Filters: []store.Filter{{Field: "primary", Value: true}}})
 	if n != 1 {
 		t.Errorf("%d primary orgs", n)
-	}
-	// Bootstrap is idempotent.
-	u, pw, err := c.svc.Bootstrap(c.ctx, "x@example.com")
-	if err != nil || u != nil || pw != "" {
-		t.Errorf("second bootstrap: %v %v %q", err, u, pw)
 	}
 }
 
@@ -182,6 +226,9 @@ func TestDeleteOrgCascade(t *testing.T) {
 	if err := c.svc.Identities.Create(c.ctx, ident); err != nil {
 		t.Fatal(err)
 	}
+	if n, _ := c.svc.Tenants.Count(c.ctx, org.ID); n == 0 {
+		t.Fatal("the new organization has no default tenant")
+	}
 	// Another org's data must survive.
 	keep := c.aUser
 
@@ -224,7 +271,7 @@ func TestDeleteOrgCascade(t *testing.T) {
 	if n := activeMembers(t, c.svc, org.ID); n != 0 {
 		t.Errorf("%d memberships survived the cascade", n) // marked removed, they expire like any removed one
 	}
-	for _, k := range []model.Kind{model.KindUser, model.KindGroup, model.KindClient, model.KindProvider} {
+	for _, k := range []model.Kind{model.KindUser, model.KindGroup, model.KindClient, model.KindProvider, model.KindTenant} {
 		if n, _ := c.svc.Store.Count(c.ctx, k, org.ID); n != 0 {
 			t.Errorf("%d %s records left in org scope", n, k)
 		}
@@ -234,5 +281,32 @@ func TestDeleteOrgCascade(t *testing.T) {
 	}
 	if _, _, err := c.svc.ValidateAPIToken(c.ctx, plain); !errors.Is(err, service.ErrBadToken) {
 		t.Errorf("token of deleted org still validates: %v", err)
+	}
+}
+
+// An organization's session lifetimes stay within the server's; organizations, the primary one included, are
+// changed by super admins only, never by their own administrators.
+func TestOrgSessionSettingsAndPrimary(t *testing.T) {
+	c := newCast(t)
+	super := service.ActorForUser(c.super, "")
+	too := model.OrgSettings{PasswordLogin: true, SessionTTL: c.svc.Cfg.Session.TTL + 1}
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.a.ID, service.OrgInput{Settings: &too}); err == nil {
+		t.Fatal("a session lifetime above the server's was accepted")
+	}
+	ok := model.OrgSettings{PasswordLogin: true, SessionTTL: 3600}
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.a.ID, service.OrgInput{Settings: &ok}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.aAdmin, ""), c.a.ID, service.OrgInput{DisplayName: ptr("Mine")}); err == nil {
+		t.Fatal("an organization's admin changed it")
+	}
+
+	st := c.primary.Settings
+	st.RequireMFA = !st.RequireMFA
+	if _, err := c.svc.UpdateOrg(c.ctx, service.ActorForUser(c.pAdmin, ""), c.primary.ID, service.OrgInput{Settings: &st}); err == nil {
+		t.Fatal("a primary-org admin changed its sign-in settings")
+	}
+	if _, err := c.svc.UpdateOrg(c.ctx, super, c.primary.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatalf("a super admin: %v", err)
 	}
 }

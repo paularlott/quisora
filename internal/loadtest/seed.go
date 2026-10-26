@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -126,6 +127,11 @@ func Seed(ctx context.Context, svc *service.Service, o SeedOptions, out io.Write
 	}
 	start := time.Now()
 	s := &seeder{svc: svc, o: o}
+	if svc.Cfg.Cluster.Bind != "" { // before anything is written: a node that has run cannot be seeded
+		if err := cluster.CheckNewCluster(svc.Cfg.Server.DataDir, svc.Store); err != nil {
+			return nil, err
+		}
+	}
 
 	adminTok, err := s.bootstrap(ctx)
 	if err != nil {
@@ -207,6 +213,15 @@ feed:
 	}
 	cancel()
 	<-progressDone
+
+	// A gossip node's records must be writes of their partitions to reach the other nodes: the seeded node becomes the
+	// first node of a new cluster, and the others, started with empty databases, copy everything from it.
+	if svc.Cfg.Cluster.Bind != "" {
+		fmt.Fprintln(out, "gossip node: making the seeded records the first writes of their partitions")
+		if err := cluster.StartNewCluster(context.WithoutCancel(ctx), svc.Cfg.Server.DataDir, svc.Store); err != nil {
+			return nil, fmt.Errorf("starting the cluster: %w", err)
+		}
+	}
 
 	sum := &SeedSummary{OrgsCreated: int(s.orgsOK.Load()), OrgsSkipped: int(s.skipped.Load()), Records: s.records.Load(),
 		Users: s.users.Load(), Grants: s.grants.Load(), Elapsed: time.Since(start)}

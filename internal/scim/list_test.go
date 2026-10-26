@@ -10,62 +10,6 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-type seed struct {
-	name, given, family, email, title, dept, ext string
-	role                                         model.Role
-	inactive                                     bool
-}
-
-// seedOrg creates a small set of distinct users in org A and returns the group ids.
-func seedOrg(e *env) {
-	t := e.t
-	people := []seed{
-		{"alice", "Alice", "Anderson", "alice@acme.test", "Engineer", "Tech", "ext-A", model.RoleUser, false},
-		{"bob", "Bob", "Brown", "bob@acme.test", "Designer", "Design", "ext-b", model.RoleUser, false},
-		{"carol", "Carol", "Clark", "carol@other.test", "", "Tech", "", model.RoleUser, true},
-		{"dave", "Dave", "Davis", "dave@acme.test", "Manager", "Ops", "", model.RoleManager, false},
-		{"erin", "Erin", "Evans", "erin@acme.test", "Engineer", "", "", model.RoleUser, false},
-	}
-	for _, p := range people {
-		in := service.UserInput{Username: &p.name, GivenName: &p.given, FamilyName: &p.family, Role: &p.role}
-		if p.email != "" {
-			in.Email = &p.email
-		}
-		if p.ext != "" {
-			in.ExternalID = &p.ext
-		}
-		if p.inactive {
-			in.Active = ptr(false)
-		}
-		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, in); err != nil {
-			t.Fatal(err)
-		}
-	}
-	g1, err := e.Svc.CreateGroup(e.ctx, service.System, e.orgA.ID, service.GroupInput{DisplayName: ptr("Engineering")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, n := range []string{"alice", "bob"} {
-		u, _ := e.Svc.FindUserByEmail(e.ctx, e.orgA.ID, n+"@acme.test")
-		if err := e.Svc.SetMembership(e.ctx, service.System, g1.ID, u.ID, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func (e *env) usernames(filter string, extra ...string) ([]string, resp) {
-	path := "/scim/v2/acme/Users?count=1000&sortBy=userName&filter=" + qs(filter)
-	for _, x := range extra {
-		path += "&" + x
-	}
-	r := e.do("GET", path, e.admA, nil)
-	var out []string
-	for _, n := range r.names("userName") {
-		out = append(out, n)
-	}
-	return out, r
-}
-
 func TestFilterOperators(t *testing.T) {
 	e := newEnv(t)
 	seedOrg(e)
@@ -87,7 +31,7 @@ func TestFilterOperators(t *testing.T) {
 		{`externalId eq "ext-a"`, nil},
 		{`userName gt "dave" and userName lt "zzz"`, []string{"erin", "mgr-a"}}, // gt lt
 		{`userName ge "dave" and userName le "erin"`, []string{"dave", "erin"}}, // ge le
-		{`userName lt "bob" and userName ge "alice"`, []string{"alice", "adm-a"}[:1]},
+		{`userName lt "bob" and userName ge "alice"`, []string{"alice"}},
 		{`active eq false`, []string{"carol"}},
 		{`active eq "false"`, []string{"carol"}},
 		{`active eq true and userName sw "a"`, []string{"adm-a", "alice"}},
@@ -113,6 +57,14 @@ func TestFilterOperators(t *testing.T) {
 		{`meta.resourceType eq "User" and userName eq "bob"`, []string{"bob"}},
 		{`meta.created gt "2000-01-01T00:00:00Z" and userName eq "bob"`, []string{"bob"}},
 		{`meta.created lt "2000-01-01T00:00:00Z"`, nil},
+		{`meta.created ge "2000-01-01T00:00:00Z" and userName eq "bob"`, []string{"bob"}},
+		{`meta.created le "2000-01-01T00:00:00Z"`, nil},
+		{`meta.created eq "2000-01-01T00:00:00Z"`, nil},
+		{`title eq "engineer"`, []string{"alice", "erin"}},
+		{`title pr`, []string{"alice", "bob", "dave", "erin"}},
+		{`title eq null`, []string{"adm-a", "carol", "mgr-a"}},
+		{`active eq 5`, nil},   // a number never equals a boolean
+		{`userName eq 5`, nil}, // nor a string
 		{`meta.lastModified ge "2000-01-01T00:00:00+01:00" and userName eq "bob"`, []string{"bob"}},
 		{`externalId eq null and userName sw "c"`, []string{"carol"}},
 		{`externalId ne null and userName sw "a"`, []string{"alice"}},
@@ -136,40 +88,58 @@ func TestFilterOperators(t *testing.T) {
 		if !slices.Equal(got, want) && !(len(got) == 0 && len(want) == 0) {
 			t.Errorf("%s: got %v want %v", tc.filter, got, want)
 		}
-		if r.total() != len(tc.want) && !(tc.filter == `userName lt "bob" and userName ge "alice"`) {
+		if r.total() != len(tc.want) {
 			t.Errorf("%s: totalResults %d want %d", tc.filter, r.total(), len(tc.want))
 		}
 	}
 }
 
-func TestFilterByID(t *testing.T) {
+// id eq and an email value path find the user, and stay within the organization.
+func TestFilterByIDAndEmailValueStaysInOrganization(t *testing.T) {
 	e := newEnv(t)
 	seedOrg(e)
 	bob, _ := e.Svc.FindUserByEmail(e.ctx, e.orgA.ID, "bob@acme.test")
-	names, r := e.usernames(`id eq "` + bob.ID + `"`)
-	if r.Status != 200 || !slices.Equal(names, []string{"bob"}) {
-		t.Errorf("id eq: %v %s", names, r.Raw)
+	other := e.mkUser(e.orgB, "elsewhere", model.RoleUser)
+	for _, tc := range []struct {
+		filter string
+		want   []string
+	}{
+		{`id eq "` + bob.ID + `"`, []string{"bob"}},
+		{`id eq "` + other.ID + `"`, nil}, // another organization's user
+		{`emails[type eq "work"].value eq "bob@acme.test"`, []string{"bob"}},
+		{`emails[type eq "work"].value eq "elsewhere@example.com"`, nil},
+		{`emails[type eq "work"].value eq "nobody@acme.test"`, nil},
+	} {
+		names, r := e.usernames(tc.filter)
+		if r.Status != 200 || !slices.Equal(names, tc.want) {
+			t.Errorf("%s: %v %s", tc.filter, names, r.Raw)
+		}
 	}
 }
 
+// Malformed filters and list parameters are refused with the scimType saying why, on Users and Groups alike.
+// filter_test.go:TestParseFilterRejectsMalformed covers the parser itself; these check the handlers' mapping.
 func TestInvalidFilters(t *testing.T) {
 	e := newEnv(t)
-	for _, f := range []string{
-		`userName eq`, `userName`, `eq "x"`, `userName foo "x"`, `(userName eq "a"`, `userName eq "a")`, `userName eq "unterminated`,
-		`userName eq "a" and`, `userName eq "a" userName eq "b"`, `not userName eq "a"`, `userName eq 12abc`,
-		`emails[type eq "work"`, `emails[].value eq "a"`, `user name eq "a"`, `userName co`, `and userName eq "a"`,
-		`userName eq "\x"`, strings.Repeat("(", 100) + `userName pr` + strings.Repeat(")", 100),
-	} {
-		r := e.do("GET", "/scim/v2/acme/Users?filter="+qs(f), e.admA, nil)
-		if r.Status != 400 || r.str("scimType") != "invalidFilter" {
-			t.Errorf("%q: %d %s", f, r.Status, r.Raw)
+	for _, res := range []string{"Users", "Groups"} {
+		for _, f := range []string{
+			`userName eq`, `userName`, `eq "x"`, `userName foo "x"`, `(userName eq "a"`, `userName eq "a")`, `userName eq "unterminated`,
+			`userName eq "a" and`, `userName eq "a" userName eq "b"`, `not userName eq "a"`, `userName eq 12abc`,
+			`emails[type eq "work"`, `emails[].value eq "a"`, `user name eq "a"`, `userName co`, `and userName eq "a"`,
+			`userName eq "\x"`, strings.Repeat("(", 100) + `userName pr` + strings.Repeat(")", 100),
+			`userName eq "` + strings.Repeat("a", 9000) + `"`,
+		} {
+			r := e.do("GET", "/scim/v2/acme/"+res+"?filter="+qs(f), e.admA, nil)
+			if r.Status != 400 || r.str("scimType") != "invalidFilter" {
+				t.Errorf("%s %.40q: %d %s", res, f, r.Status, r.Raw)
+			}
 		}
-	}
-	for q, typ := range map[string]string{"sortBy=%5B&": "invalidPath", "sortOrder=sideways&": "invalidValue",
-		"startIndex=abc&": "invalidValue", "count=abc&": "invalidValue"} {
-		r := e.do("GET", "/scim/v2/acme/Users?"+q, e.admA, nil)
-		if r.Status != 400 || r.str("scimType") != typ {
-			t.Errorf("%q: %d %s", q, r.Status, r.Raw)
+		for q, typ := range map[string]string{"sortBy=%5B&": "invalidPath", "sortOrder=sideways&": "invalidValue",
+			"startIndex=abc&": "invalidValue", "count=abc&": "invalidValue"} {
+			r := e.do("GET", "/scim/v2/acme/"+res+"?"+q, e.admA, nil)
+			if r.Status != 400 || r.str("scimType") != typ {
+				t.Errorf("%s %q: %d %s", res, q, r.Status, r.Raw)
+			}
 		}
 	}
 }
@@ -179,7 +149,7 @@ func TestSortAndPaging(t *testing.T) {
 	for i := range 25 {
 		name := fmt.Sprintf("user%02d", i)
 		fam := fmt.Sprintf("Fam%02d", 24-i) // reverse of username order
-		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: ptr(name + "@acme.test"), FamilyName: &fam}); err != nil {
+		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: ptr(name + "@acme.test"), FamilyName: &fam}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -231,8 +201,10 @@ func TestSortAndPaging(t *testing.T) {
 	if z := e.do("GET", "/scim/v2/acme/Users?count=0", e.admA, nil); z.total() != 27 || len(z.list("Resources")) != 0 {
 		t.Errorf("count=0: %s", z.Raw)
 	}
-	if z := e.do("GET", "/scim/v2/acme/Users?startIndex=0&count=1", e.admA, nil); z.Body["startIndex"].(float64) != 1 || len(z.list("Resources")) != 1 {
-		t.Errorf("startIndex=0: %s", z.Raw)
+	for _, start := range []string{"0", "-5"} {
+		if z := e.do("GET", "/scim/v2/acme/Users?startIndex="+start+"&count=1", e.admA, nil); z.Body["startIndex"].(float64) != 1 || len(z.list("Resources")) != 1 {
+			t.Errorf("startIndex=%s: %s", start, z.Raw)
+		}
 	}
 	if z := e.do("GET", "/scim/v2/acme/Users?startIndex=100", e.admA, nil); z.total() != 27 || len(z.list("Resources")) != 0 {
 		t.Errorf("past the end: %s", z.Raw)
@@ -247,7 +219,8 @@ func TestSortAndPaging(t *testing.T) {
 		t.Errorf("default count: %d", len(z.list("Resources")))
 	}
 	// sort by creation time and by id are accepted too
-	for _, by := range []string{"meta.created", "id", "emails.value", "displayName", "active", "meta.lastModified"} {
+	for _, by := range []string{"meta.created", "id", "emails.value", "emails", "displayName", "active", "meta.lastModified", "title",
+		"name.givenName", "groups"} {
 		if z := e.do("GET", "/scim/v2/acme/Users?count=2&sortBy="+by, e.admA, nil); z.Status != 200 || len(z.list("Resources")) != 2 {
 			t.Errorf("sortBy %s: %d", by, z.Status)
 		}
@@ -258,7 +231,7 @@ func TestDefaultCountIs100(t *testing.T) {
 	e := newEnv(t)
 	for i := range 130 {
 		name := fmt.Sprintf("u%03d", i)
-		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: ptr(name + "@acme.test")}); err != nil {
+		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: ptr(name + "@acme.test")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -300,7 +273,7 @@ func TestAttributeSelection(t *testing.T) {
 		}
 	}
 	// excludedAttributes
-	r = e.do("GET", f+"&excludedAttributes=groups,name.familyName,emails", e.admA, nil)
+	r = e.do("GET", f+"&excludedAttributes=groups,name.familyName,emails,"+qs(entURN+":department"), e.admA, nil)
 	res = r.list("Resources")[0].(map[string]any)
 	if res["groups"] != nil || res["emails"] != nil || res["userName"] != "alice" || res["meta"] == nil {
 		t.Errorf("excluded: %v", res)
@@ -308,10 +281,8 @@ func TestAttributeSelection(t *testing.T) {
 	if n := res["name"].(map[string]any); n["familyName"] != nil || n["givenName"] != "Alice" {
 		t.Errorf("excluded sub-attribute: %v", n)
 	}
-	if res[entURN] != nil {
-		if _, has := res[entURN].(map[string]any)["department"]; has {
-			t.Error("excluded extension attribute returned")
-		}
+	if ext, _ := res[entURN].(map[string]any); ext["department"] != nil {
+		t.Error("excluded extension attribute returned")
 	}
 	// id and schemas cannot be excluded.
 	r = e.do("GET", f+"&excludedAttributes=id,schemas", e.admA, nil)
@@ -331,8 +302,52 @@ func TestAttributeSelection(t *testing.T) {
 	if len(gr) != 1 || gr[0].(map[string]any)["display"] != "Engineering" || !strings.HasSuffix(gr[0].(map[string]any)["$ref"].(string), "/Groups/"+gr[0].(map[string]any)["value"].(string)) {
 		t.Errorf("groups: %s", g.Raw)
 	}
-	// Unknown attributes are ignored.
-	if r := e.do("GET", f+"&attributes=nope,also.nope", e.admA, nil); r.Status != 200 {
-		t.Errorf("unknown attributes: %d", r.Status)
+	// Schema URNs select or exclude a whole extension or one attribute of it; unknown or malformed names are
+	// ignored. id and schemas are always returned.
+	for _, tc := range []struct {
+		query        string
+		want, forbid [][]string
+	}{
+		{"attributes=" + qs(quisoraURN), [][]string{{quisoraURN, "role"}}, [][]string{{"userName"}, {entURN}}},
+		{"attributes=" + qs(quisoraURN+":role"), [][]string{{quisoraURN, "role"}}, [][]string{{"userName"}, {quisoraURN, "tags"}}},
+		{"attributes=" + qs(entURN), [][]string{{entURN, "department"}}, [][]string{{"userName"}, {quisoraURN}}},
+		{"attributes=nope,also.nope", nil, [][]string{{"userName"}}},
+		{"attributes=nonsense,a[", nil, [][]string{{"userName"}}},
+		{"excludedAttributes=emails.value", [][]string{{"emails"}, {"userName"}}, [][]string{{"emails", "value"}}},
+		{"excludedAttributes=" + qs(quisoraURN), [][]string{{"userName"}, {entURN, "department"}}, [][]string{{quisoraURN}}},
+		{"excludedAttributes=" + qs(quisoraURN+":role"), [][]string{{quisoraURN, "tags"}}, [][]string{{quisoraURN, "role"}}},
+		{"excludedAttributes=nonsense,a[,groups", [][]string{{"userName"}}, [][]string{{"groups"}}},
+	} {
+		r := e.do("GET", "/scim/v2/acme/Users/"+id+"?"+tc.query, e.admA, nil)
+		has := func(path []string) bool {
+			v := any(r.Body)
+			for _, p := range path {
+				switch x := v.(type) {
+				case map[string]any:
+					v = x[p]
+				case []any: // a multi-valued attribute: look in its first element
+					if len(x) == 0 {
+						return false
+					}
+					v = x[0].(map[string]any)[p]
+				default:
+					return false
+				}
+			}
+			return v != nil
+		}
+		if r.Status != 200 || !has([]string{"id"}) || !has([]string{"schemas"}) {
+			t.Errorf("%s: %d %s", tc.query, r.Status, r.Raw)
+		}
+		for _, w := range tc.want {
+			if !has(w) {
+				t.Errorf("%s: %v missing: %s", tc.query, w, r.Raw)
+			}
+		}
+		for _, f := range tc.forbid {
+			if has(f) {
+				t.Errorf("%s: %v returned: %s", tc.query, f, r.Raw)
+			}
+		}
 	}
 }

@@ -35,8 +35,8 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   only a super admin can sign out the primary organization, which holds the super admins.
 - **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs.
 - **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL or MariaDB.
-- **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip,
-  with quorum writes for security-sensitive records.
+- **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip: the data
+  is split into partitions, each owned by one node that commits every write on a majority of the cluster.
 - **Audit log.** In the database, or in VictoriaLogs for real deployments. Every event also goes to the structured log.
 - **Backups.** Online, encrypted with a password by default, verified before restore, into any backend.
 
@@ -91,7 +91,7 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 - **Shared database:** point every node at the same PostgreSQL, MySQL or MariaDB database and give them the
   same master key (`QUISORA_MASTER_KEY` or `server.master_key`, from a secret store: not a flag, which shows in `ps`). Nothing is replicated: the database is the only copy. Optional `cluster.notify` gossip only
   tells the other nodes what changed, so their caches update at once.
-- **Replicated:** every node has its own database (any backend, e.g. BadgerDB) and sets `cluster.bind`, `cluster.peers` (every node), `cluster.size` and `cluster.key`. Run `quisora bootstrap --new-cluster` on one node first.
+- **Replicated:** every node has its own database (any backend, e.g. BadgerDB) and sets `cluster.bind`, `cluster.peers` (every node), `cluster.size` and `cluster.key`. Run `quisora bootstrap --new-cluster` on one node first; start three or five nodes.
 
 Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.md](docs/RUNNING.md). Replication rules
 and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it securely (threat model, hardening checklist, incident
@@ -113,7 +113,7 @@ release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 | `quisora sign-out` | Emergency sign-out of an organization or every organization ([docs/emergency-sign-out.md](docs/emergency-sign-out.md)) |
 | `quisora backup`, `quisora restore` | Online backups, encrypted with a password, of the whole store; a restore is verified before anything is written ([Backup and restore](docs/RUNNING.md#backup-and-restore)) |
 | `quisora set-primary` | Make another organization the primary one, which holds the super admins ([docs/RUNNING.md](docs/RUNNING.md#changing-the-primary-organization)) |
-| `quisora force-start` | Start a gossip node on its own data once, after an outage ([docs/REPLICATION.md](docs/REPLICATION.md)) |
+| `quisora force-start` | Start a gossip node whose disk was lost once by copying from whichever nodes answer, when too few others are up for a majority ([docs/REPLICATION.md](docs/REPLICATION.md)) |
 | `quisora healthcheck [--ready]` | Exit 0 when this node is alive (or ready): for container health checks |
 | `quisora genkey` | A new master key, cluster key or BadgerDB encryption key |
 | `/healthz`, `/readyz` | Liveness, and readiness for load balancers (with the clock offset and cluster state) |
@@ -131,8 +131,9 @@ skin (`ui.skin`, with a logo and a footer: [web/skins](web/skins/README.md)). Ev
 
 ## Audit log and VictoriaLogs
 
-By default audit events are kept in the database for 7 days (`audit.retention_days`). In a gossip cluster each node
-keeps its own, and the audit page merges them. That built-in audit trail is for development, home labs and testing:
+By default audit events are kept in the database for 7 days (`audit.retention_days`). In a gossip cluster they are
+not replicated: each node keeps the events it records in its own database, and the audit page asks every node and merges
+what they answer (a node that is down is missing from the page, which says so). That built-in audit trail is for development, home labs and testing:
 its pages read through every event they search (fine for thousands of users, not for millions).
 
 **Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there

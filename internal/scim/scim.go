@@ -130,10 +130,10 @@ func (m *Module) fromService(err error) *Error {
 	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
 		return errf(409, "", "%s", capitalise(err.Error()))
-	case errors.Is(err, service.ErrNotReplicated):
-		// Saved here, not yet confirmed by the cluster: a retry of a create would find the resource (409), so the
-		// client is told to read it back rather than to treat this as a failure of its own.
-		return errf(503, "", "The change was saved on this server but not yet confirmed by the cluster; read the resource back before retrying")
+	case errors.Is(err, service.ErrOutcomeUnknown):
+		// Sent, but the node that decides it was lost before it answered: a retry of a create would find the resource
+		// (409), so the client is told to read it back rather than to treat this as a failure of its own.
+		return errf(503, "", "The change may or may not have been made (the cluster lost the node that decides it); read the resource back before retrying")
 	case errors.Is(err, service.ErrUnavailable):
 		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,7 @@ func (h *harness) userinfoDPoP(auth, proof string) *http.Response {
 }
 
 func TestDPoPCodeFlowAndUserinfo(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
 	k := newDPoPKey(t, AlgES256)
@@ -174,6 +176,7 @@ func (h *harness) login1(cl *model.Client, secret string) string {
 }
 
 func TestDPoPPublicClientRefreshBound(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	pub := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(true) })
 	k := newDPoPKey(t, AlgEdDSA)
@@ -201,6 +204,7 @@ func TestDPoPPublicClientRefreshBound(t *testing.T) {
 }
 
 func TestDPoPProofChecks(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
 	k := newDPoPKey(t, AlgES256)
@@ -219,28 +223,51 @@ func TestDPoPProofChecks(t *testing.T) {
 		return p[:strings.LastIndexByte(p, '.')] + o[strings.LastIndexByte(o, '.'):]
 	}()
 	for name, edit := range map[string]func(hdr, c map[string]any){
-		"typ":         func(hd, _ map[string]any) { hd["typ"] = "JWT" },
-		"no jwk":      func(hd, _ map[string]any) { hd["jwk"] = nil },
-		"private jwk": func(hd, _ map[string]any) { hd["jwk"] = withD },
-		"other jwk":   func(hd, _ map[string]any) { hd["jwk"] = other.jwk },
-		"alg":         func(hd, _ map[string]any) { hd["alg"] = AlgEdDSA },
-		"htm":         func(_, c map[string]any) { c["htm"] = "GET" },
-		"htu":         func(_, c map[string]any) { c["htu"] = "https://evil.example/oauth/token" },
-		"no jti":      func(_, c map[string]any) { c["jti"] = nil },
-		"old iat":     func(_, c map[string]any) { c["iat"] = time.Now().Add(-dpopMaxAge - time.Minute).Unix() },
-		"future iat":  func(_, c map[string]any) { c["iat"] = time.Now().Add(5 * time.Minute).Unix() },
-		"no iat":      func(_, c map[string]any) { c["iat"] = nil },
+		"typ":               func(hd, _ map[string]any) { hd["typ"] = "JWT" },
+		"no jwk":            func(hd, _ map[string]any) { hd["jwk"] = nil },
+		"private jwk":       func(hd, _ map[string]any) { hd["jwk"] = withD },
+		"other jwk":         func(hd, _ map[string]any) { hd["jwk"] = other.jwk },
+		"alg":               func(hd, _ map[string]any) { hd["alg"] = AlgEdDSA },
+		"htm":               func(_, c map[string]any) { c["htm"] = "GET" },
+		"htu":               func(_, c map[string]any) { c["htu"] = "https://evil.example/oauth/token" },
+		"no jti":            func(_, c map[string]any) { c["jti"] = nil },
+		"old iat":           func(_, c map[string]any) { c["iat"] = time.Now().Add(-dpopMaxAge - time.Minute).Unix() },
+		"future iat":        func(_, c map[string]any) { c["iat"] = time.Now().Add(5 * time.Minute).Unix() },
+		"no iat":            func(_, c map[string]any) { c["iat"] = nil },
+		"too large":         func(_, c map[string]any) { c["pad"] = strings.Repeat("a", maxDPoPProof) },
+		"jwk not an object": func(hd, _ map[string]any) { hd["jwk"] = "x" },
+		"jwk member of the wrong type": func(hd, _ map[string]any) {
+			hd["jwk"] = map[string]any{"kty": "EC", "crv": 1}
+		},
+		"jwk not a point on the curve": func(hd, _ map[string]any) {
+			hd["jwk"] = map[string]any{"kty": "EC", "crv": "P-256", "x": "AA", "y": "AA"}
+		},
 	} {
 		if r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", "/oauth/token", edit)); r.m["error"] != "invalid_dpop_proof" {
 			t.Errorf("%s: %d %v", name, r.status, r.m)
 		}
 	}
-	for name, proof := range map[string]string{"replay": used, "signature": badSig, "garbage": "x.y.z"} {
+	// claims that are not an object
+	hb, _ := json.Marshal(map[string]any{"typ": dpopTyp, "alg": k.alg, "jwk": k.jwk})
+	notObject, err := signJWT(k.alg, k.priv, b64.EncodeToString(hb), []byte(`[1]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, proof := range map[string]string{"replay": used, "signature": badSig, "garbage": "x.y.z", "claims not an object": notObject} {
 		if r := h.tokenDPoP(cc, cl, secret, proof); r.m["error"] != "invalid_dpop_proof" {
 			t.Errorf("%s: %d %v", name, r.status, r.m)
 		}
 	}
-	for name, n := range map[string]any{"expired nonce": oldNonce, "forged nonce": "999.AAAA", "future nonce": h.p.dpopNonce(time.Now().Add(time.Hour))} {
+	cur := time.Now().Unix() / int64(dpopNonceStep/time.Second)
+	for name, n := range map[string]any{
+		"expired nonce": oldNonce,
+		"forged nonce":  "999.AAAA",
+		"future nonce":  h.p.dpopNonce(time.Now().Add(time.Hour)),
+		"not a number":  "abc.def",
+		"no dot":        "12345",
+		"wrong mac":     strconv.FormatInt(cur, 10) + "." + b64.EncodeToString(make([]byte, 16)),
+		"not base64":    strconv.FormatInt(cur, 10) + ".!!!",
+	} {
 		r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", "/oauth/token", func(_, c map[string]any) { c["nonce"] = n }))
 		if r.m["error"] != "use_dpop_nonce" || r.hdr.Get("DPoP-Nonce") == "" {
 			t.Errorf("%s: %d %v", name, r.status, r.m)
@@ -262,6 +289,7 @@ func TestDPoPProofChecks(t *testing.T) {
 }
 
 func TestDPoPBoundClient(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(func(in *service.ClientInput) { in.DPoPBound = ptr(true) })
 	cc := url.Values{"grant_type": {"client_credentials"}}
@@ -291,6 +319,7 @@ func TestDPoPBoundClient(t *testing.T) {
 }
 
 func TestDPoPJKTBindsCode(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
 	k := newDPoPKey(t, AlgES256)
@@ -336,27 +365,34 @@ func TestDPoPJKTBindsCode(t *testing.T) {
 	if r := exchange(u.Query().Get("code"), v, ""); r.m["error"] != "invalid_grant" {
 		t.Fatalf("pushed with proof, redeemed without: %v", r.m)
 	}
-	// a pushed dpop_jkt that is not the proof's key is refused
+	// a pushed dpop_jkt that is the proof's key is accepted, one that is not is refused
+	f.Set("dpop_jkt", k.jkt)
+	if pr := h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", nil)); pr.status != 201 {
+		t.Fatalf("matching dpop_jkt: %d %v", pr.status, pr.m)
+	}
 	f.Set("dpop_jkt", newDPoPKey(t, AlgEdDSA).jkt)
 	if pr := h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", nil)); pr.m["error"] != "invalid_dpop_proof" {
 		t.Fatalf("mismatched dpop_jkt: %v", pr.m)
 	}
+	// a proof without the server's nonce gets one
+	f.Del("dpop_jkt")
+	pr = h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", func(_, c map[string]any) { c["nonce"] = nil }))
+	if pr.m["error"] != "use_dpop_nonce" || pr.hdr.Get("DPoP-Nonce") == "" {
+		t.Fatalf("proof without a nonce: %d %v", pr.status, pr.m)
+	}
 }
 
-func TestDPoPDiscoveryAndThumbprint(t *testing.T) {
-	h := setup(t, nil)
-	var d map[string]any
-	_ = json.Unmarshal([]byte(body(h.get(h.http, "/.well-known/openid-configuration"))), &d)
-	if algs, _ := d["dpop_signing_alg_values_supported"].([]any); len(algs) != 4 {
-		t.Fatalf("%v", d["dpop_signing_alg_values_supported"])
-	}
+func TestThumbprintAndSameHTU(t *testing.T) {
+	t.Parallel()
 	// RFC 7638 §3.1 example
 	j := JWK{Kty: "RSA", E: "AQAB", N: "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw"}
 	if got := thumbprint(j); got != "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs" {
 		t.Fatalf("thumbprint %s", got)
 	}
 	if !sameHTU("HTTPS://Example.com:443/oauth/token?x=1#f", "https://example.com/oauth/token") ||
-		sameHTU("https://example.com/oauth/token/", "https://example.com/oauth/token") {
+		!sameHTU("https://a.example", "https://a.example/") ||
+		sameHTU("https://example.com/oauth/token/", "https://example.com/oauth/token") ||
+		sameHTU("::", "https://a.example/") || sameHTU("/path", "https://a.example/path") {
 		t.Fatal("htu comparison")
 	}
 }

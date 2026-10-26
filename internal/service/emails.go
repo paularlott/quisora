@@ -119,7 +119,7 @@ func (s *Service) modifyUser(ctx context.Context, id string, f func(u *model.Use
 			return nil, err
 		}
 		noteSecurity(was, u)
-		err = s.Users.Update(Durable(ctx), u)
+		err = s.Users.Update(ctx, u)
 		switch {
 		case err == nil:
 			return u, nil

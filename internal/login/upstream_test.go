@@ -15,83 +15,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
-	ut "github.com/paularlott/quisora/internal/upstream/upstreamtest"
 )
-
-type upEnv struct {
-	*env
-	org  *model.Org
-	oidc *ut.FakeOIDC
-	gh   *ut.FakeGitHub
-}
-
-func newUpEnv(t *testing.T, mut func(*config.Config)) *upEnv {
-	e := newEnv(t, mut)
-	u := &upEnv{env: e, org: e.org(t, "acme", nil), oidc: ut.NewFakeOIDC(t), gh: ut.NewFakeGitHub(t)}
-	e.Mod.Upstream.HTTP = ut.HTTPClient()
-	e.Mod.Upstream.GitHubAuthURL, e.Mod.Upstream.GitHubTokenURL, e.Mod.Upstream.GitHubAPIURL =
-		u.gh.Srv.URL+"/authorize", u.gh.Srv.URL+"/token", u.gh.Srv.URL
-	return u
-}
-
-func ptr[T any](v T) *T { return &v }
-
-func (u *upEnv) oidcProvider(t *testing.T, mut func(*service.ProviderInput)) *model.Provider {
-	in := service.ProviderInput{Type: ptr(model.ProviderOIDC), Name: ptr("Corp SSO"), Issuer: ptr(u.oidc.Srv.URL), ClientID: ptr("cid"),
-		ClientSecret: ptr("s3cret"), AutoProvision: ptr(true)}
-	if mut != nil {
-		mut(&in)
-	}
-	p, err := u.Svc.CreateProvider(context.Background(), service.System, u.org.ID, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-func claims(sub, email string) map[string]any {
-	return map[string]any{"sub": sub, "email": email, "email_verified": true, "name": "Pat Doe"}
-}
-
-// via runs the provider round trip and returns the callback response.
-func (b *browser) via(t *testing.T, u *upEnv, p *model.Provider, org, next string, c map[string]any) *http.Response {
-	t.Helper()
-	path := "/login/" + org + "/provider/" + p.ID
-	if next != "" {
-		path += "?next=" + url.QueryEscape(next)
-	}
-	res, _ := b.get(path)
-	if res.StatusCode != 302 {
-		t.Fatalf("provider start: %d %q", res.StatusCode, res.Header.Get("Location"))
-	}
-	loc := res.Header.Get("Location")
-	state := ""
-	if lu, err := url.Parse(loc); err == nil {
-		state = lu.Query().Get("state")
-	}
-	var code string
-	if p.Type == model.ProviderGitHub {
-		code = u.gh.Authorize(loc)
-	} else {
-		code = u.oidc.Authorize(loc, c)
-	}
-	res2, _ := b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(state) + "&code=" + url.QueryEscape(code))
-	return res2
-}
-
-// viaTenant is via for a sign-in made on behalf of a tenant.
-func (b *browser) viaTenant(t *testing.T, u *upEnv, p *model.Provider, org, tenant, next string, c map[string]any) *http.Response {
-	t.Helper()
-	res, _ := b.get("/login/" + org + "/provider/" + p.ID + "?tenant=" + tenant + "&next=" + url.QueryEscape(next))
-	if res.StatusCode != 302 {
-		t.Fatalf("provider start: %d %q", res.StatusCode, res.Header.Get("Location"))
-	}
-	loc := res.Header.Get("Location")
-	lu, _ := url.Parse(loc)
-	code := u.oidc.Authorize(loc, c)
-	res2, _ := b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=" + url.QueryEscape(code))
-	return res2
-}
 
 func TestUpstreamOIDCSignIn(t *testing.T) {
 	u := newUpEnv(t, func(c *config.Config) { c.Audit.Logins = true })
@@ -167,7 +91,7 @@ func TestUpstreamFailuresRedirectToLoginWithMessage(t *testing.T) {
 	})
 	existing := "taken@corp.example"
 	name := "taken"
-	if _, err := u.Svc.CreateUser(context.Background(), service.System, u.org.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: &existing}); err != nil {
+	if _, err := u.Svc.CreateUser(context.Background(), service.System, u.org.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: &existing}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +106,6 @@ func TestUpstreamFailuresRedirectToLoginWithMessage(t *testing.T) {
 		{"domain", domains, claims("x2", "new@evil.example"), "domain", "email domain is not allowed"},
 		{"unverified", domains, map[string]any{"sub": "x3", "email": "a@corp.example", "email_verified": false}, "unverified", "not verified your email"},
 		{"email already used", domains, claims("x4", existing), "exists", "already exists"},
-		{"bad token", domains, map[string]any{"sub": "x5", "email": "a@corp.example", "email_verified": true, "aud": "other"}, "failed", "did not work"},
 	} {
 		b := u.browser(t)
 		res := b.via(t, u, tc.p, "acme", "/back", tc.c)
@@ -200,7 +123,7 @@ func TestUpstreamFailuresRedirectToLoginWithMessage(t *testing.T) {
 	if ids, _ := u.Svc.Identities.All(context.Background(), ""); len(ids) != 0 {
 		t.Fatalf("identities created: %d", len(ids))
 	}
-	if n := len(u.audits(t, "login.failure")); n != 5 {
+	if n := len(u.audits(t, "login.failure")); n != 4 {
 		t.Fatalf("failure audits %d", n)
 	}
 	// An arbitrary error code in the URL is never reflected.
@@ -236,6 +159,16 @@ func TestUpstreamStateProtection(t *testing.T) {
 		if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "/?error=") {
 			t.Fatalf("callback %q: %d %q", q, res.StatusCode, res.Header.Get("Location"))
 		}
+	}
+	// A callback for a provider id that does not exist, and a denial with a state that was never issued.
+	b0 := u.browser(t)
+	res, _ = b0.get("/login/callback/nope?state=x&code=y")
+	if res.StatusCode != 302 || b0.hasSession() {
+		t.Fatalf("callback for unknown provider: %d", res.StatusCode)
+	}
+	res, _ = u.browser(t).get("/login/callback/" + p.ID + "?error=access_denied&state=unknown")
+	if res.Header.Get("Location") != "/?error=failed" {
+		t.Fatalf("denied with an unknown state: %q", res.Header.Get("Location"))
 	}
 	// The user denied access at the provider.
 	b = u.browser(t)
@@ -279,8 +212,6 @@ func TestUpstreamProviderScoping(t *testing.T) {
 		t.Fatalf("disabled provider start: %q", res.Header.Get("Location"))
 	}
 }
-
-func (u *upEnv) org2(t *testing.T) *model.Org { return u.env.org(t, "other", nil) }
 
 func TestUpstreamInactiveLinkedUser(t *testing.T) {
 	u := newUpEnv(t, nil)
@@ -397,172 +328,178 @@ func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 	}
 }
 
-func attr(body, name string) string {
-	i := strings.Index(body, name+`="`)
-	if i < 0 {
-		return ""
-	}
-	rest := body[i+len(name)+2:]
-	return rest[:strings.IndexByte(rest, '"')]
-}
-
-// An administrator (never linked by email) connects a provider from the account page, after re-authenticating; the
-// identity then signs them in (with their second factor). An identity already linked to someone else is refused, and
-// the last way to sign in cannot be disconnected.
-func TestConnectProviderToAccount(t *testing.T) {
-	u := newUpEnv(t, nil)
-	p := u.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false) })
-	admin := u.user(t, u.org, "ada", model.RoleAdmin)
-	b := u.signedIn(t, admin)
-
-	// by email: refused for an administrator
-	if br := u.browser(t); !strings.Contains(br.via(t, u, p, "acme", "", claims("ada-sub", admin.Email)).Header.Get("Location"), "error=") || br.hasSession() {
-		t.Fatal("an admin was signed in through an unconnected provider")
-	}
-	// connecting needs a recent re-authentication
-	res, out := b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
-	wantStatus(t, res, out, 403)
-	b.markReauth()
-	res, out = b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
-	wantStatus(t, res, out, 200)
-	code := u.oidc.Authorize(str(out, "url"), claims("ada-sub", "ada@elsewhere.example"))
-	lu, _ := url.Parse(str(out, "url"))
-	res, _ = b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=" + url.QueryEscape(code))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?provider=connected#providers" {
-		t.Fatalf("connect callback: %d %q", res.StatusCode, res.Header.Get("Location"))
-	}
-	res, out = b.api("GET", "/api-internal/account/providers", nil)
-	if it := items(t, out); len(it) != 1 || it[0]["connected"] != true {
-		t.Fatalf("providers: %v", out["_raw"])
-	}
-	if len(u.audits(t, "account.provider.connect")) != 1 {
-		t.Error("connect not audited")
-	}
-	// the identity now signs Ada in, and as an administrator she continues with a second factor (she has none yet,
-	// so the sign-in page asks her to set one up) even though the organization does not require one
-	if res := u.browser(t).via(t, u, p, "acme", "/x", claims("ada-sub", "whatever@x.example")); !strings.Contains(res.Header.Get("Location"), "step=1") {
-		t.Fatalf("sign-in with the connected identity: %q", res.Header.Get("Location"))
-	}
-
-	// someone else cannot take that identity
-	bob := u.user(t, u.org, "bob", model.RoleUser)
-	bb := u.signedIn(t, bob)
-	bb.markReauth()
-	_, out = bb.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
-	code = u.oidc.Authorize(str(out, "url"), claims("ada-sub", "bob@corp.example"))
-	lu, _ = url.Parse(str(out, "url"))
-	res, _ = bb.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=" + url.QueryEscape(code))
-	if res.Header.Get("Location") != "/account?provider=taken#providers" {
-		t.Fatalf("taken identity: %q", res.Header.Get("Location"))
-	}
-
-	// disconnect: needs reauth; refused when it is the last way in
-	b.markReauth() // (Ada has a password: the test helper sets one)
-	res, out = b.api("DELETE", "/api-internal/account/providers/"+p.ID, nil)
-	wantStatus(t, res, out, 204)
-	solo := u.user(t, u.org, "solo", model.RoleUser)
-	fresh, _ := u.Svc.Users.Get(context.Background(), solo.ID)
-	fresh.PasswordHash = ""
-	_ = u.Svc.Users.Update(context.Background(), fresh)
-	_ = u.Svc.Identities.Create(context.Background(), model.NewIdentity(solo, p, "solo-sub", "", "admin"))
-	sb := u.signedIn(t, solo)
-	sb.markReauth()
-	res, out = sb.api("DELETE", "/api-internal/account/providers/"+p.ID, nil)
-	wantStatus(t, res, out, 409)
-}
-
-// A tenant that requires a second factor asks for one after a provider sign-in, unless the provider is marked as
-// counting as one (TrustMFA): then the user's own code is not asked for either, and the session carries "mfa".
-func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
+// Leaver detection: the provider's refresh token, kept from the sign-in, is replayed; a rotated one replaces it, a
+// transient failure changes nothing, and invalid_grant ends the user's sessions and refresh grants.
+func TestUpstreamLeaverDetection(t *testing.T) {
 	u := newUpEnv(t, nil)
 	ctx := context.Background()
-	if d, err := u.Svc.DefaultTenant(ctx, u.org.ID); err != nil || !d.Settings.RequireMFA {
-		t.Fatalf("a new organization's default tenant should require a second factor: %+v %v", d, err)
-	}
-
-	// Not trusted: the tenant's requirement holds after the provider.
-	plain := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Plain SSO") })
+	u.oidc.IssueRefresh, u.oidc.RotateRefresh = true, true
+	p := u.oidcProvider(t, nil)
 	b := u.browser(t)
-	res := b.viaTenant(t, u, plain, "acme", "default", "/x", claims("sub-p", "lee@corp.example"))
-	if loc := res.Header.Get("Location"); res.StatusCode != 303 || !strings.Contains(loc, "step=1") || b.hasSession() {
-		t.Fatalf("untrusted provider: %d %q session=%v", res.StatusCode, loc, b.hasSession())
+	if res := b.via(t, u, p, "acme", "/x", claims("leaver-sub", "lee@corp.example")); res.StatusCode != 303 || !b.hasSession() {
+		t.Fatalf("sign-in: %d", res.StatusCode)
+	}
+	lee, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "lee@corp.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ident, err := u.Svc.Identities.GetByUnique(ctx, model.IdentityKey(p.ID, "leaver-sub"))
+	if err != nil || ident.Refresh == "" || strings.Contains(ident.Refresh, "rt-") {
+		t.Fatalf("refresh token not kept (sealed): %+v %v", ident, err)
+	}
+	sid := b.sessionID()
+	g := &model.Grant{ClientID: "rp", UserID: lee.ID, OrgID: lee.OrgID, SessionID: sid, Scopes: []string{"openid"},
+		Expires: time.Now().Add(time.Hour)}
+	if err := u.Svc.Grants.Create(ctx, g); err != nil {
+		t.Fatal(err)
 	}
 
-	// Trusted: straight in, even for a user with a code of their own, and the session satisfies the requirement.
-	trusted := u.oidcProvider(t, func(in *service.ProviderInput) { in.TrustMFA = ptr(true) })
-	if res := u.browser(t).via(t, u, trusted, "acme", "/x", claims("sub-t", "kim@corp.example")); res.StatusCode != 303 {
+	// Nothing is due within the interval.
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, time.Hour); err != nil || r.Checked != 0 {
+		t.Fatalf("check within the interval: %+v %v", r, err)
+	}
+	// Accepted, and rotated: the new token replaces the old one.
+	before := u.oidc.LiveRefresh()
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("first check: %+v %v", r, err)
+	}
+	after := u.oidc.LiveRefresh()
+	if len(before) != 1 || len(after) != 1 || before[0] == after[0] {
+		t.Fatalf("rotation: %v -> %v", before, after)
+	}
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("check with the rotated token: %+v %v", r, err)
+	}
+	// A transient failure ends nothing.
+	u.oidc.Mu.Lock()
+	u.oidc.RefreshFail = 503
+	u.oidc.Mu.Unlock()
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Failed != 1 || r.Ended != 0 {
+		t.Fatalf("transient failure: %+v %v", r, err)
+	}
+	if _, err := u.Svc.Sessions.Get(ctx, sid); err != nil {
+		t.Fatal("a transient failure ended the session")
+	}
+	u.oidc.Mu.Lock()
+	u.oidc.RefreshFail = 0
+	u.oidc.Mu.Unlock()
+
+	// The account is gone at the provider: its sessions and grants end here.
+	u.oidc.RevokeRefresh()
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Ended != 1 {
+		t.Fatalf("leaver: %+v %v", r, err)
+	}
+	if _, err := u.Svc.Sessions.Get(ctx, sid); err == nil {
+		t.Fatal("the leaver's session survived")
+	}
+	if _, err := u.Svc.Grants.Get(ctx, g.ID); err == nil {
+		t.Fatal("the leaver's refresh grant survived")
+	}
+	if res, _ := b.get("/account"); res.StatusCode == 200 {
+		t.Fatal("the browser is still signed in")
+	}
+	if id, _ := u.Svc.Identities.Get(ctx, ident.ID); id == nil || id.Refresh != "" {
+		t.Fatalf("the refused token was kept: %+v", id)
+	}
+	if len(u.audits(t, "identity.refresh.refused")) != 1 {
+		t.Fatal("not audited")
+	}
+	// With no session through the provider, nothing is replayed.
+	refreshCalls := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.RefreshCalls }
+	calls := refreshCalls()
+	if r, _ := u.Mod.Upstream.CheckSessions(ctx, 0); r.Checked != 0 || refreshCalls() != calls {
+		t.Fatalf("replayed without a session: %+v", r)
+	}
+}
+
+// An ID token that does not match the request it answers (another nonce or audience), has expired, comes from another
+// issuer or says nothing about its nonce or subject signs nobody in and links nothing.
+func TestUpstreamRejectsInvalidIDTokens(t *testing.T) {
+	u := newUpEnv(t, auditLogins)
+	p := u.oidcProvider(t, nil)
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"nonce mismatch", map[string]any{"nonce": "somebody-elses-nonce"}},
+		{"no nonce", map[string]any{"nonce": nil}},
+		{"expired", map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}},
+		{"wrong issuer", map[string]any{"iss": "https://evil.example"}},
+		{"another audience", map[string]any{"aud": "other"}},
+		{"no subject", map[string]any{"sub": nil}},
+		{"not yet issued", map[string]any{"nbf": time.Now().Add(time.Hour).Unix()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := claims("sub-"+tc.name, "x@corp.example")
+			for k, v := range tc.extra {
+				c[k] = v
+			}
+			b := u.browser(t)
+			res := b.via(t, u, p, "acme", "", c)
+			loc := res.Header.Get("Location")
+			if res.StatusCode != http.StatusFound || loc != "/login/acme?error=failed" || b.hasSession() {
+				t.Fatalf("%d %q session=%v", res.StatusCode, loc, b.hasSession())
+			}
+			if _, body := b.get(loc); !strings.Contains(body, "did not work") {
+				t.Fatalf("page does not show the message: %.500s", body)
+			}
+		})
+	}
+	if ids, _ := u.Svc.Identities.All(context.Background(), ""); len(ids) != 0 {
+		t.Fatalf("identities created from rejected tokens: %d", len(ids))
+	}
+	if n := len(u.audits(t, "login.failure")); n != len(cases) {
+		t.Fatalf("failures audited: %d", n)
+	}
+}
+
+// The step a provider sign-in leaves behind is only shown for its own organization, and a ticket from a password
+// sign-in (which is no provider's) is never shown through the step cookie.
+func TestProviderStepCookieIsScoped(t *testing.T) {
+	u := newUpEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
+	p := u.oidcProvider(t, nil)
+	b := u.browser(t)
+	if res := b.via(t, u, p, "acme", "/x", claims("sub-1", "kim@corp.example")); !b.hasSession() || res.StatusCode != 303 {
 		t.Fatalf("first sign-in: %d", res.StatusCode)
 	}
-	kim, _ := u.Svc.FindUserByEmail(ctx, u.org.ID, "kim@corp.example")
+	kim, _ := u.Svc.FindUserByEmail(t.Context(), u.org.ID, "kim@corp.example")
 	u.giveTOTP(t, kim)
 	b2 := u.browser(t)
-	res = b2.viaTenant(t, u, trusted, "acme", "default", "/x", claims("sub-t", "kim@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/x" || !b2.hasSession() {
-		t.Fatalf("trusted provider: %d %q session=%v", res.StatusCode, res.Header.Get("Location"), b2.hasSession())
+	res := b2.via(t, u, p, "acme", "/x", claims("sub-1", "kim@corp.example"))
+	loc := res.Header.Get("Location")
+	if _, body := b2.get(loc); !strings.Contains(body, `data-step="totp"`) {
+		t.Fatalf("the step is not shown to its own browser: %.400s", body)
 	}
-	ok := false
-	for _, s := range sessionsOf(t, u.env, kim) {
-		ok = ok || (slices.Contains(s.AMR, "fed") && model.MFA(s.AMR) && s.Provider == trusted.ID)
+	// the same cookie at another organization's page shows nothing
+	other := u.org2(t)
+	if _, body := b2.get("/login/" + other.Name + "?step=1"); strings.Contains(body, "data-ticket") {
+		t.Fatal("step shown for another organization")
 	}
-	if !ok {
-		t.Fatalf("sessions: %+v", sessionsOf(t, u.env, kim))
+	// without ?step=1 nothing is shown either
+	if _, body := b2.get("/login/acme"); strings.Contains(body, `data-step="totp"`) {
+		t.Fatal("step shown without step=1")
 	}
-}
 
-// A sign-in through a provider trusted as a second factor (TrustMFA) skips the user's own code, so it does not count
-// as the recent re-authentication that connecting another provider needs: that would let it add further ways in that
-// skip the code too. A re-authentication (which asks for the code) does; and an account with no second factor of its
-// own connects straight after any sign-in, as before.
-func TestConnectNeedsOwnSecondFactor(t *testing.T) {
-	u := newUpEnv(t, nil)
-	ctx := context.Background()
-	trusted := u.oidcProvider(t, func(in *service.ProviderInput) { in.TrustMFA = ptr(true) })
-	other := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Other SSO"); in.AutoProvision = ptr(false) })
-	if res := u.browser(t).via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); res.StatusCode != 303 {
-		t.Fatalf("first sign-in: %d", res.StatusCode)
+	// a password sign-in's ticket planted in the step cookie is not a provider step
+	pat := u.user(t, u.org, "pat", model.RoleUser)
+	u.giveTOTP(t, pat)
+	b3 := u.browser(t)
+	_, out := b3.login("acme", "pat", userPassword)
+	tk := str(out, "ticket")
+	if tk == "" {
+		t.Fatalf("no ticket: %v", out)
 	}
-	kim, _ := u.Svc.FindUserByEmail(ctx, u.org.ID, "kim@corp.example")
-
-	// no second factor of her own yet: a fresh provider sign-in is enough
-	b := u.browser(t)
-	if res := b.via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); !b.hasSession() {
-		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
+	hu, _ := url.Parse(u.URL)
+	b3.c.Jar.SetCookies(hu, []*http.Cookie{{Name: "__Host-quisora_step", Value: tk, Path: "/", Secure: true}})
+	if _, body := b3.get("/login/acme?step=1"); strings.Contains(body, "data-ticket") {
+		t.Fatal("a password ticket was shown through the step cookie")
 	}
-	sessionCSRF(t, b)
-	res, out := b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
-	wantStatus(t, res, out, 200)
-
-	// with an authenticator, the trusted provider's sign-in no longer is
-	u.giveTOTP(t, kim)
-	b = u.browser(t)
-	if res := b.via(t, u, trusted, "acme", "/x", claims("sub-k", "kim@corp.example")); !b.hasSession() {
-		t.Fatalf("sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
-	}
-	sessionCSRF(t, b)
-	res, out = b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
-	wantStatus(t, res, out, 403)
-	if str(out, "field") != "reauth" {
-		t.Fatalf("refusal: %v", out["_raw"])
-	}
-	// nor does it let that sign-in add another way in that skips the code (a passkey), or replace the code
-	for _, path := range []string{"/api-internal/account/passkeys/register/begin", "/api-internal/account/totp/begin"} {
-		res, out = b.post(path, map[string]any{})
-		if res.StatusCode != 403 || str(out, "field") != "reauth" {
-			t.Fatalf("%s after a trusted provider sign-in: %d %v", path, res.StatusCode, out["_raw"])
+	// oversized and unknown values are ignored
+	for _, v := range []string{strings.Repeat("a", 300), "n1.unknown"} {
+		b3.c.Jar.SetCookies(hu, []*http.Cookie{{Name: "__Host-quisora_step", Value: v, Path: "/", Secure: true}})
+		if res, body := b3.get("/login/acme?step=1"); res.StatusCode != 200 || strings.Contains(body, "data-ticket") {
+			t.Fatalf("cookie %.10q: %d", v, res.StatusCode)
 		}
 	}
-	b.markReauth()
-	res, out = b.post("/api-internal/account/providers/"+other.ID+"/connect", nil)
-	wantStatus(t, res, out, 200)
-}
-
-// sessionCSRF loads the account page into b's CSRF token (refresh is for signed-out pages).
-func sessionCSRF(t *testing.T, b *browser) {
-	t.Helper()
-	_, body := b.get("/account")
-	m := metaRe.FindStringSubmatch(body)
-	if m == nil {
-		t.Fatalf("no csrf meta on the account page: %.300s", body)
-	}
-	b.csrf = m[1]
 }

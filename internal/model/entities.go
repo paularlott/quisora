@@ -49,8 +49,9 @@ type Org struct {
 func (o *Org) Kind() Kind { return KindOrg }
 func (o *Org) Index() Index {
 	return Index{
-		Unique: []string{OrgNameKey(o.Name)},
-		Fields: map[string]any{"name": o.Name, "display_name": o.DisplayName, "primary": o.Primary, "created": o.Created},
+		Partition: "", // global: every organization's page and sign-in reads the organization list
+		Unique:    []string{OrgNameKey(o.Name)},
+		Fields:    map[string]any{"name": o.Name, "display_name": o.DisplayName, "primary": o.Primary, "created": o.Created},
 	}
 }
 
@@ -306,8 +307,9 @@ func (u *User) Index() Index {
 		uq = append(uq, UserExternalIDKey(u.OrgID, u.ExternalID))
 	}
 	return Index{
-		Scope:  u.OrgID,
-		Unique: uq,
+		Scope:     u.OrgID,
+		Partition: u.OrgID,
+		Unique:    uq,
 		Fields: map[string]any{
 			"username": u.Username, "email": u.Email, "name": u.FullName(), "family_name": u.FamilyName,
 			"external_id": u.ExternalID,
@@ -366,8 +368,9 @@ func (g *Group) Index() Index {
 		uq = append(uq, GroupExternalIDKey(g.OrgID, g.ExternalID))
 	}
 	return Index{
-		Scope:  g.OrgID,
-		Unique: uq,
+		Scope:     g.OrgID,
+		Partition: g.OrgID,
+		Unique:    uq,
 		Fields: map[string]any{"display_name": g.DisplayName, "external_id": g.ExternalID, "created": g.Created,
 			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0},
 	}
@@ -419,12 +422,13 @@ func (m *Member) Index() Index {
 	if !m.Active() {
 		// Out of both membership indexes, so "members of a group" and "groups of a user" never list it, and it
 		// expires once no writer could still be stalled on an older change.
-		return Index{Scope: m.OrgID, Fields: map[string]any{"group_id": "", "user_id": "", "created": m.Created},
+		return Index{Scope: m.OrgID, Partition: m.OrgID, Fields: map[string]any{"group_id": "", "user_id": "", "created": m.Created},
 			Expires: m.Removed.Add(RemovedMemberRetention)}
 	}
 	return Index{
-		Scope:  m.OrgID,
-		Fields: map[string]any{"group_id": m.GroupID, "user_id": m.UserID, "created": m.Created},
+		Scope:     m.OrgID,
+		Partition: m.OrgID,
+		Fields:    map[string]any{"group_id": m.GroupID, "user_id": m.UserID, "created": m.Created},
 	}
 }
 
@@ -491,9 +495,10 @@ func (t *Tenant) Index() Index {
 		uniq = append(uniq, TenantResourceKey(r))
 	}
 	return Index{
-		Scope:  t.OrgID,
-		Unique: uniq,
-		Fields: map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created},
+		Scope:     t.OrgID,
+		Partition: t.OrgID,
+		Unique:    uniq,
+		Fields:    map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created},
 	}
 }
 
@@ -501,7 +506,13 @@ func TenantNameKey(orgID, name string) string { return orgID + "/n/" + Lower(nam
 
 // TenantResourceKey is the unique value claiming a resource for one tenant (server-wide): its canonical form, so
 // "https://MCP.example.com/mcp/" cannot be claimed by another tenant than "https://mcp.example.com/mcp".
-func TenantResourceKey(resource string) string { return "res/" + CanonicalResource(resource) }
+func TenantResourceKey(resource string) string {
+	return tenantResourcePrefix + CanonicalResource(resource)
+}
+
+// tenantResourcePrefix starts every TenantResourceKey. The other unique keys of a tenant start with an organization id,
+// a UUID, which never reads "res/".
+const tenantResourcePrefix = "res/"
 
 // CanonicalResource is a resource indicator compared loosely: scheme and host lower case, no default port, no
 // trailing slash on the path (the MCP authorization spec's canonical server URI). Not a URI: s itself.
@@ -549,7 +560,8 @@ type TenantAccess struct {
 func (a *TenantAccess) Kind() Kind { return KindAccess }
 func (a *TenantAccess) Index() Index {
 	return Index{
-		Scope: a.OrgID,
+		Scope:     a.OrgID,
+		Partition: a.OrgID,
 		Fields: map[string]any{"tenant_id": a.TenantID, "subject_id": a.SubjectID, "subject_type": a.SubjectType,
 			"created": a.Created},
 	}
@@ -637,6 +649,16 @@ type Client struct {
 	UsedIn []string `msgpack:"ui,omitempty" json:"-"`
 }
 
+// SelfRegisteredClientID reports whether a client id is that of a self-registered application: a dynamically registered
+// one ("dyn-" and a random part) or the URL of a Client ID Metadata Document. Such a client belongs to no organization,
+// so its record (and its partition key) is global: partition 0.
+func SelfRegisteredClientID(id string) bool {
+	return strings.HasPrefix(id, DynamicClientPrefix) || strings.HasPrefix(id, "https://")
+}
+
+// DynamicClientPrefix starts the id of a dynamically registered (RFC 7591) client.
+const DynamicClientPrefix = "dyn-"
+
 // IsMetadataClient reports whether the client's id is the URL of its Client ID Metadata Document.
 func (c *Client) IsMetadataClient() bool {
 	return c.SelfRegistered && strings.HasPrefix(c.ID, "https://")
@@ -648,7 +670,8 @@ func (c *Client) RequirePKCE() bool { return !c.PKCEOptional || c.Public() }
 func (c *Client) Kind() Kind { return KindClient }
 func (c *Client) Index() Index {
 	return Index{
-		Scope: c.OrgID,
+		Scope:     c.OrgID, // a self-registered client has none: global
+		Partition: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
 			"created": c.Created, "self_registered": c.SelfRegistered,
 			"unused_self_registered": c.SelfRegistered && c.LastUsed.IsZero()},
@@ -708,9 +731,10 @@ func (p *Provider) OIDC() bool { return p.Type != ProviderGitHub }
 func (p *Provider) Kind() Kind { return KindProvider }
 func (p *Provider) Index() Index {
 	return Index{
-		Scope:  p.OrgID,
-		Unique: []string{p.OrgID + "/n/" + Lower(p.Name)},
-		Fields: map[string]any{"name": p.Name, "type": p.Type, "enabled": p.Enabled, "created": p.Created},
+		Scope:     p.OrgID,
+		Partition: p.OrgID,
+		Unique:    []string{p.OrgID + "/n/" + Lower(p.Name)},
+		Fields:    map[string]any{"name": p.Name, "type": p.Type, "enabled": p.Enabled, "created": p.Created},
 	}
 }
 
@@ -748,9 +772,10 @@ func (p *Passkey) Usable() bool { return p.UserVerified && !p.Disabled }
 func (p *Passkey) Kind() Kind { return KindPasskey }
 func (p *Passkey) Index() Index {
 	return Index{
-		Scope:  p.UserID,
-		Unique: []string{PasskeyCredentialKey(p.CredentialID)},
-		Fields: map[string]any{"name": p.Name, "created": p.Created, "last_used": p.LastUsed},
+		Scope:     p.UserID,
+		Partition: p.OrgID, // the credential id is unique across organizations: a reservation holds it (GlobalUnique)
+		Unique:    []string{PasskeyCredentialKey(p.CredentialID)},
+		Fields:    map[string]any{"name": p.Name, "created": p.Created, "last_used": p.LastUsed},
 	}
 }
 
@@ -798,9 +823,10 @@ func NewIdentity(u *User, p *Provider, subject, email, via string) *Identity {
 func (i *Identity) Kind() Kind { return KindIdentity }
 func (i *Identity) Index() Index {
 	return Index{
-		Scope:  i.UserID,
-		Unique: []string{IdentityKey(i.ProviderID, i.Subject)},
-		Fields: map[string]any{"provider_id": i.ProviderID, "created": i.Created},
+		Scope:     i.UserID,
+		Partition: i.OrgID,
+		Unique:    []string{IdentityKey(i.ProviderID, i.Subject)},
+		Fields:    map[string]any{"provider_id": i.ProviderID, "created": i.Created},
 	}
 }
 
@@ -839,9 +865,10 @@ type Session struct {
 func (s *Session) Kind() Kind { return KindSession }
 func (s *Session) Index() Index {
 	return Index{
-		Scope:   s.UserID,
-		Fields:  map[string]any{"ip": s.IP, "created": s.Created, "last_seen": s.LastSeen},
-		Expires: s.Expires,
+		Scope:     s.UserID,
+		Partition: s.OrgID,
+		Fields:    map[string]any{"ip": s.IP, "created": s.Created, "last_seen": s.LastSeen},
+		Expires:   s.Expires,
 	}
 }
 
@@ -896,9 +923,10 @@ type Grant struct {
 func (g *Grant) Kind() Kind { return KindGrant }
 func (g *Grant) Index() Index {
 	return Index{
-		Scope:   g.UserID,
-		Fields:  map[string]any{"client_id": g.ClientID, "session_id": g.SessionID, "created": g.Created},
-		Expires: g.Expires,
+		Scope:     g.UserID,
+		Partition: g.OrgID,
+		Fields:    map[string]any{"client_id": g.ClientID, "session_id": g.SessionID, "created": g.Created},
+		Expires:   g.Expires,
 	}
 }
 
@@ -930,9 +958,10 @@ type APIToken struct {
 func (t *APIToken) Kind() Kind { return KindAPIToken }
 func (t *APIToken) Index() Index {
 	return Index{
-		Scope:   t.UserID,
-		Fields:  map[string]any{"name": t.Name, "created": t.Created, "last_used": t.LastUsed},
-		Expires: t.Expires,
+		Scope:     t.UserID,
+		Partition: t.OrgID,
+		Fields:    map[string]any{"name": t.Name, "created": t.Created, "last_used": t.LastUsed},
+		Expires:   t.Expires,
 	}
 }
 
@@ -951,7 +980,7 @@ type SigningKey struct {
 
 func (k *SigningKey) Kind() Kind { return KindKey }
 func (k *SigningKey) Index() Index {
-	return Index{Fields: map[string]any{"alg": k.Alg, "created": k.Created}, Expires: k.Expires}
+	return Index{Partition: "", Fields: map[string]any{"alg": k.Alg, "created": k.Created}, Expires: k.Expires}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -990,7 +1019,8 @@ func AuditOutcome(action string) string {
 func (a *Audit) Kind() Kind { return KindAudit }
 func (a *Audit) Index() Index {
 	return Index{
-		Scope: a.OrgID,
+		Scope:     a.OrgID,
+		Partition: a.OrgID, // a server-level event with no organization is global
 		Fields: map[string]any{"action": a.Action, "actor": a.Actor, "target": a.Target, "created": a.Created,
 			"outcome": cmp.Or(a.Outcome, AuditOutcome(a.Action)), "ip": a.IP}, // older events may carry no outcome
 		Expires: a.Expires,
@@ -1041,13 +1071,13 @@ func LinkTokenKey(hash string) string { return "t/" + hash }
 
 func (l *LinkToken) Kind() Kind { return KindLink }
 func (l *LinkToken) Index() Index {
-	return Index{Scope: l.UserID, Unique: []string{LinkTokenKey(l.TokenHash)},
+	return Index{Scope: l.UserID, Partition: l.OrgID, Unique: []string{LinkTokenKey(l.TokenHash)},
 		Fields: map[string]any{"purpose": l.Purpose, "created": l.Created}, Expires: l.Expires}
 }
 
 // SignIn holds a user's sign-in stamps, kept apart from the user record (ID is the user's id). A sign-in writes
 // only this record, so it can never overwrite (or be overwritten by) an administrator's change of the user; in a
-// replicated cluster it is written with a cluster-wide compare-and-swap like the user itself (QuorumCAS), which makes
+// replicated cluster it is written with a cluster-wide compare-and-swap like the user itself (checked by its owner), which makes
 // the TOTP step a replay guard on every node at once. Failed attempts and lockouts are counted in ephemeral state
 // (login rate limits), not here.
 type SignIn struct {
@@ -1061,10 +1091,10 @@ type SignIn struct {
 
 func (s *SignIn) Kind() Kind { return KindSignIn }
 func (s *SignIn) Index() Index {
-	return Index{Scope: s.OrgID, Fields: map[string]any{"last_login": s.LastLogin}}
+	return Index{Scope: s.OrgID, Partition: s.OrgID, Fields: map[string]any{"last_login": s.LastLogin}}
 }
 
-// Lock is a cluster-wide lock record (written with QuorumCAS): Holder holds it until Until. Used to serialise
+// Lock is a cluster-wide lock record (a compare-and-swap its owner decides): Holder holds it until Until. Used to serialise
 // decisions that read more than one record (the super admins the server keeps).
 type Lock struct {
 	Meta
@@ -1073,10 +1103,10 @@ type Lock struct {
 }
 
 func (l *Lock) Kind() Kind   { return KindLock }
-func (l *Lock) Index() Index { return Index{} }
+func (l *Lock) Index() Index { return Index{Partition: l.ID} }
 
 // Replay records that a single-use value (a client assertion's or a DPoP proof's jti) was used, until it expires:
-// creating it again is refused while it lives. It is written with QuorumCAS, so in a cluster a majority confirms it
+// creating it again is refused while it lives. It is written with a compare-and-swap its owner decides, so in a cluster it is committed on a majority
 // before the value is accepted, and no node accepts the value again whichever node it reaches and whatever nodes come
 // and go meanwhile. Its id is derived from the value (service.UseOnce).
 type Replay struct {
@@ -1085,7 +1115,7 @@ type Replay struct {
 }
 
 func (r *Replay) Kind() Kind   { return KindReplay }
-func (r *Replay) Index() Index { return Index{Expires: r.Expires} }
+func (r *Replay) Index() Index { return Index{Partition: r.ID, Expires: r.Expires} }
 
 // Ephemeral is one item of short-lived state kept in a shared database (see KindEphemeral): a value, or a counter.
 // Its id is derived from the namespace and key (ephemeral.Shared), never chosen by a client.
@@ -1106,4 +1136,36 @@ func validUntilField(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// Reservation claims a unique value that must hold across organizations (GlobalUnique) in a cluster that replicates by
+// partition: the record with ID = the reserved key names the record that holds the value, by kind and id. Its
+// partition key is the reserved key itself, so one node (the owner of that key's partition) decides every claim of a
+// value, and the claims spread over the partitions. A reservation whose holder no longer exists, or no longer lists
+// the value among its unique values, is free: the next claim takes it over when its copy of the holder shows that, and
+// the housekeeping leader's sweep releases it when the holder is gone (cluster.Node.SweepReservations).
+type Reservation struct {
+	Meta
+	// HolderKind and HolderID name the record that holds the reserved key.
+	HolderKind Kind   `msgpack:"hk" json:"holder_kind"`
+	HolderID   string `msgpack:"hi" json:"holder_id"`
+}
+
+func (r *Reservation) Kind() Kind { return KindReservation }
+func (r *Reservation) Index() Index {
+	return Index{Partition: r.ID}
+}
+
+// GlobalUnique reports whether key, a unique value of a record of kind, must be unique across organizations. Every
+// other unique value is prefixed by the organization (or by an id of one organization's record) and so lives in one
+// partition; these two are looked up with no organization at hand (a tenant's resource indicator in an authorization
+// request, a discoverable passkey's credential id on the landing page) and are reserved (KindReservation).
+func GlobalUnique(kind Kind, key string) bool {
+	switch kind {
+	case KindTenant:
+		return strings.HasPrefix(key, tenantResourcePrefix)
+	case KindPasskey:
+		return true
+	}
+	return false
 }

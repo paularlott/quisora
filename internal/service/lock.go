@@ -11,8 +11,8 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// A lease is a cluster-wide lock this request holds: a lock record (model.Lock) written with a compare-and-swap (a
-// quorum one in a gossip cluster), so whatever it guards is serialised across every node, on every backend. It lasts
+// A lease is a cluster-wide lock this request holds: a lock record (model.Lock) written with a compare-and-swap (in
+// a gossip cluster the write is checked by the owner of the record's partition), so whatever it guards is serialised across every node, on every backend. It lasts
 // ttl unless released, so a holder that dies blocks the others for at most ttl. It guards a decision that needs more than
 // one record read consistently (the admin lock, signin.go); a change of several records is not made under one, as a
 // lease fences no write by itself: a holder that pauses, or a store that is slow, can land its write after the lease

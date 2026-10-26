@@ -240,18 +240,19 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	// The id is deterministic, so a removed entry leaves a tombstone: adding it again is a create, which starts a new
 	// generation of the record whose epoch is the removal this node has seen (a plain put over the tombstone is
 	// refused: store.ErrDeleted). A removal made elsewhere that this node had not seen yet still wins: the add is then
-	// refused (ErrDeleted from the quorum), reported as a concurrent change to retry.
+	// refused (ErrDeleted from the owner), reported as a concurrent change to retry.
 	alreadyThere := &conflictErr{Invalid("subject_id", name+" already has access to this tenant")}
 	if _, err := s.Access.Get(ctx, acc.ID); err == nil {
 		return nil, alreadyThere
 	}
-	if err := s.Access.Create(Durable(ctx), acc); err != nil {
+	if err := s.Access.Create(ctx, acc); err != nil {
 		if errors.Is(err, store.ErrStale) {
 			return nil, alreadyThere // added concurrently
 		}
 		if errors.Is(err, store.ErrDeleted) {
 			return nil, ErrStale
 		}
+		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name})
 		return nil, mapStore(err)
 	}
 	s.Audit(ctx, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name})
@@ -271,7 +272,8 @@ func (s *Service) UpdateAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if err := s.applyAccess(ctx, t, e.TenantAccess, in); err != nil {
 		return nil, err
 	}
-	if err := s.Access.Update(Durable(ctx), e.TenantAccess); err != nil {
+	if err := s.Access.Update(ctx, e.TenantAccess); err != nil {
+		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.access.update", t.Name, map[string]string{e.SubjectType: e.Name})
 		return nil, mapStore(err)
 	}
 	e.Expired = !e.Live(time.Now())
@@ -285,7 +287,8 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if err != nil {
 		return err
 	}
-	if err := s.Access.Delete(Durable(ctx), id); err != nil {
+	if err := s.Access.Delete(ctx, id); err != nil {
+		s.auditUnknown(ctx, err, a, e.OrgID, "tenant.access.remove", e.TenantID, map[string]string{e.SubjectType: e.Name})
 		return mapStore(err)
 	}
 	t, _ := s.Tenants.Get(ctx, e.TenantID)

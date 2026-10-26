@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -14,7 +13,7 @@ import (
 
 // Sign-in stamps live in each user's SignIn record (model.SignIn), never on the user: a sign-in writes only that
 // record, so it can neither overwrite nor be overwritten by an administrator's change of the user. In a gossip
-// cluster both kinds are written with a quorum compare-and-swap (model.QuorumCAS).
+// cluster both kinds are written with a compare-and-swap that the owner of their partition checks.
 
 // WithSignIn fills in the users' LastLogin from their sign-in records (one batch read; a user without one, or a
 // failed read, keeps the zero value).
@@ -66,7 +65,7 @@ func (s *Service) updateSignIn(ctx context.Context, u *model.User, fn func(si *m
 		if !errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		// Changed meanwhile (perhaps on another node): the newer copy is here now (read repair); apply fn to it.
+		// Changed meanwhile (perhaps on another node): read the newer copy and apply fn to it.
 		if err := pause(ctx, time.Duration(1+rand.IntN(5*(attempt+1)))*time.Millisecond); err != nil {
 			return err
 		}
@@ -145,7 +144,7 @@ func (s *Service) lockAdmins(ctx context.Context, orgID string) (*lease, error) 
 }
 
 // usableAdmins returns the users of org with the role that are usable now (active and not past their end date), from
-// a quorum's copies (store.QuorumReader) of the users this node lists with it: a demotion, disabling, end date or
+// the owners' copies (store.QuorumReader, a fresh read) of the users this node lists with it: a demotion, disabling, end date or
 // deletion confirmed by a majority anywhere is counted, even if it has not reached this node yet. (A promotion that
 // has not reached this node is missed: the count can only be too low, which refuses a change rather than allowing a
 // wrong one.)
@@ -160,7 +159,7 @@ func (s *Service) usableAdmins(ctx context.Context, orgID string, role model.Rol
 	for i, u := range l {
 		ids[i] = u.ID
 	}
-	recs, err := s.freshMany(ctx, model.KindUser, ids)
+	recs, err := s.freshMany(ctx, model.KindUser, orgID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -173,82 +172,4 @@ func (s *Service) usableAdmins(ctx context.Context, orgID string, role model.Rol
 		}
 	}
 	return out, nil
-}
-
-// ResolveUniqueClash handles a record that lost a unique value to another record created before it (the cluster
-// replicated two records claiming one email address, username, name...): the value is removed from it (or, where
-// it cannot be, the record is disabled), it is flagged for administrators (model.Meta.Conflict) and the change is
-// audited. Nothing is deleted. Every node that sees the clash calls it; the compare-and-swap lets one of them make
-// the change and the others find it done.
-func (s *Service) ResolveUniqueClash(ctx context.Context, kind model.Kind, id string) {
-	if !s.CanWrite() {
-		return
-	}
-	for range 5 {
-		r, err := s.Store.Get(ctx, kind, id)
-		if err != nil {
-			return
-		}
-		e := model.NewEntity(kind)
-		if e == nil || store.Decode(r, e) != nil {
-			return
-		}
-		var lost []string
-		for _, u := range e.Index().Unique {
-			if h, err := s.Store.GetByUnique(ctx, kind, u); err == nil && h.ID != id {
-				lost = append(lost, u)
-			}
-		}
-		if len(lost) == 0 {
-			return // resolved (elsewhere, or the other record changed)
-		}
-		changed := false
-		for _, u := range lost {
-			if model.ReleaseUnique(e, u) {
-				changed = true
-			}
-		}
-		if !changed {
-			return
-		}
-		e.GetMeta().Conflict = "a unique value (" + strings.Join(lost, ", ") + ") was claimed first by another " +
-			"record of the same kind: it was removed from this one on " + time.Now().UTC().Format(time.RFC3339)
-		rec, err := store.Encode(e)
-		if err != nil {
-			return
-		}
-		err = s.Store.CompareAndPut(ctx, rec, r.Version)
-		if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrConflict) {
-			continue
-		}
-		if !store.Applied(err) {
-			s.Log.WithError(err).Warn("could not resolve a unique value clash", "kind", string(kind), "id", id)
-			return
-		}
-		org := orgOf(e)
-		s.Audit(ctx, System, org, "unique.conflict", string(kind)+" "+id, map[string]string{
-			"values": strings.Join(lost, ", "), "resolution": "removed from the record created later"})
-		return
-	}
-}
-
-// orgOf is the organization an entity belongs to (for the audit log), "" when it has none.
-func orgOf(e model.Entity) string {
-	switch v := e.(type) {
-	case *model.Org:
-		return v.ID
-	case *model.User:
-		return v.OrgID
-	case *model.Group:
-		return v.OrgID
-	case *model.Tenant:
-		return v.OrgID
-	case *model.Provider:
-		return v.OrgID
-	case *model.Passkey:
-		return v.OrgID
-	case *model.Identity:
-		return v.OrgID
-	}
-	return ""
 }

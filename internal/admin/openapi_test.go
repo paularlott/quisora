@@ -303,3 +303,49 @@ func TestOpenAPIMatchesModel(t *testing.T) {
 		}
 	}
 }
+
+// The OpenAPI document matches what the handlers do: the rotate response (TestKeyRotationHooks), the member schema,
+// the backup scope and the 503 answers.
+func TestOpenAPISecurityResponsesAndSchemas(t *testing.T) {
+	raw := openAPISpec(t)
+	var doc struct {
+		Comps struct {
+			Schemas map[string]struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	type op struct {
+		Security   []map[string][]string      `json:"security"`
+		Responses  map[string]json.RawMessage `json:"responses"`
+		Parameters []struct {
+			Name string `json:"name"`
+			In   string `json:"in"`
+		} `json:"parameters"`
+	}
+	var backup, createUser op
+	openAPIOp(t, raw, "/api/backup", "get", &backup)
+	openAPIOp(t, raw, "/api/orgs/{org}/users", "post", &createUser)
+	if b := backup; len(b.Security) != 2 || b.Security[1]["bearer"][0] != "backup" {
+		t.Errorf("backup security: %+v", b.Security)
+	}
+	in := map[string]string{}
+	for _, p := range backup.Parameters {
+		in[p.Name] = p.In
+	}
+	if in["plain"] != "query" || in["X-Backup-Password"] != "header" {
+		t.Errorf("backup parameters: %v", in)
+	}
+	if _, ok := createUser.Responses["503"]; !ok {
+		t.Error("no 503 response")
+	}
+	if p := doc.Comps.Schemas["Member"].Properties; p["name"] == nil || p["display_name"] != nil {
+		t.Errorf("Member schema: %v", p)
+	}
+	if !strings.Contains(string(raw), `"#/components/schemas/KeyRotated"`) || doc.Comps.Schemas["KeyRotated"].Properties["rotated"] == nil {
+		t.Error("rotate response schema")
+	}
+}

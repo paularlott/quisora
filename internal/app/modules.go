@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"time"
 
+	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/admin"
+	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/events"
 
 	"github.com/paularlott/quisora/internal/login"
@@ -84,18 +87,20 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var lastOthers string
 	var lastRing string
 	var sweep service.Sweep
+	var resvSweep cluster.ReservationSweep
+	hk := housekeepingLog{log: a.Log}
 	every := housekeepingEvery // read once: the closure below runs on its own goroutine
 	a.background(func() {
 		a.Node.RunHousekeeping(ctx, every, func(ctx context.Context) {
+			a.passes.Add(1)
 			if ring := strings.Join(a.Svc.Sealer.KeyIDs(), ","); ring != lastRing { // started, or keys reloaded (SIGHUP)
 				lastRing, resealed, resealEvery, lastRemind, lastOthers = ring, false, 0, time.Time{}, ""
 			}
 			if !(resealed && !a.Svc.Sealer.Previous()) && time.Since(lastReseal) >= resealEvery {
 				lastReseal, resealEvery = time.Now(), every
-				agreed, others, err := a.Svc.MasterKeyAgreed(ctx)
+				agreed, others, err := a.Svc.MasterKeyAgreed(ctx, a.Node.ID())
 				switch {
-				case err != nil:
-					a.Log.Error("master key: reading the nodes' keys", "error", err)
+				case !hk.ok("master key: reading the nodes' keys", err):
 				case !agreed:
 					if o := fmt.Sprint(others); o != lastOthers {
 						lastOthers = o
@@ -107,8 +112,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 				default:
 					lastOthers = ""
 					r, err := a.Svc.ResealSecrets(ctx, 1000)
-					if err != nil {
-						a.Log.Error("master key: re-sealing secrets", "error", err)
+					if !hk.ok("master key: re-sealing secrets", err) {
 						break
 					}
 					if r.Resealed > 0 || r.Pending > 0 {
@@ -131,28 +135,26 @@ func modules(ctx context.Context, a *App) []web.Module {
 					"sealed with it; nothing needs the previous keys any more: remove server.previous_master_keys now on "+
 					"every node (keep the old keys only with backups made before the rotation)", "key", a.Svc.Sealer.ActiveKeyID())
 			}
-			if err := op.EnsureKeys(ctx); err != nil {
-				a.Log.Error("signing key rotation", "error", err)
-			}
-			if n, err := a.Svc.ExpireUsers(ctx); err != nil {
-				a.Log.Error("user end dates", "error", err)
-			} else if n > 0 {
+			hk.ok("signing key rotation", op.EnsureKeys(ctx))
+			if n, err := a.Svc.ExpireUsers(ctx); hk.ok("user end dates", err) && n > 0 {
 				a.Log.Info("users past their end date disabled", "count", n)
 			}
 			// A change of a group's members whose writer died after committing it is finished here (it is visible
 			// to every reader meanwhile): its membership records are written and the entry cleared.
-			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); err != nil {
-				a.Log.Error("finishing group changes", "error", err)
-			} else if n > 0 {
+			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); hk.ok("finishing group changes", err) && n > 0 {
 				a.Log.Info("group changes left unfinished by their writer were finished", "count", n)
 			}
 			// Records whose owner is gone (what a deleted organization, user, group, tenant or provider owned: they
 			// stopped counting at its deletion) are found a batch a minute: a pass over every record of the kinds that
 			// do not expire takes about a day at five million users.
-			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); err != nil {
-				a.Log.Error("orphan sweep", "error", err)
-			} else if n > 0 {
+			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); hk.ok("orphan sweep", err) && n > 0 {
 				a.Log.Info("removed records whose owner is gone", "count", n)
+			}
+			// Global unique values (a tenant's resource, a passkey's credential id) reserved for a record that was never
+			// written or is gone are released here, a batch a minute (claims take a reservation over only when they see
+			// its holder does not hold it).
+			if n, err := a.Node.SweepReservations(ctx, &resvSweep, 20_000); hk.ok("reservation sweep", err) && n > 0 {
+				a.Log.Info("reserved values whose holder is gone were released", "count", n)
 			}
 			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
 			if time.Since(lastSelfReg) >= time.Hour {
@@ -163,9 +165,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 			}
 			if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 && time.Since(lastLeaverRun) >= min(every, 5*time.Minute) {
 				lastLeaverRun = time.Now()
-				if r, err := lm.Upstream.CheckSessions(ctx, every); err != nil {
-					a.Log.Error("upstream session check", "error", err)
-				} else if r.Ended > 0 || r.Failed > 0 {
+				if r, err := lm.Upstream.CheckSessions(ctx, every); hk.ok("upstream session check", err) && (r.Ended > 0 || r.Failed > 0) {
 					a.Log.Info("upstream session check", "checked", r.Checked, "ended", r.Ended, "failed", r.Failed)
 				}
 			}
@@ -203,6 +203,39 @@ func (a adminMailer) SendInviteLink(ctx context.Context, org *model.Org, u *mode
 
 func (a adminMailer) SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error {
 	return a.m.SendVerifyAddress(ctx, u, org, address)
+}
+
+// housekeepingLog reports the outcome of the housekeeping tasks. A task that fails because the cluster cannot take
+// writes for a reason it knows (it is forming, so a partition has no owner yet while other nodes copy their data; it has
+// no majority; this node is catching up) is logged once at warn level, and tried again quietly at the next run until it
+// succeeds; any other failure is an error, every time.
+type housekeepingLog struct {
+	log     logger.Logger
+	waiting map[string]bool // the tasks waiting for a writable cluster (logged once)
+}
+
+// ok reports whether err is nil, logging it as above.
+func (h *housekeepingLog) ok(task string, err error) bool {
+	if err == nil {
+		if h.waiting[task] {
+			delete(h.waiting, task)
+			h.log.Info(task + ": the cluster takes writes again")
+		}
+		return true
+	}
+	if !errors.Is(err, store.ErrNotWritable) && !errors.Is(err, service.ErrUnavailable) {
+		h.log.Error(task, "error", err)
+		return false
+	}
+	if !h.waiting[task] {
+		if h.waiting == nil {
+			h.waiting = map[string]bool{}
+		}
+		h.waiting[task] = true
+		h.log.Warn(task+": waiting for the cluster to take writes (tried again every run, logged again once it succeeds)",
+			"reason", err)
+	}
+	return false
 }
 
 // housekeepingEvery is how often the housekeeping leader runs (tests shorten it).

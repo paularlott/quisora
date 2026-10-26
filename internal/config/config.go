@@ -109,17 +109,12 @@ type Cluster struct {
 	// PreviousKeys still decrypt gossip, never encrypt: a cluster key rotation (docs/RUNNING.md). SIGHUP reloads
 	// both settings.
 	PreviousKeys []string `toml:"previous_keys" flag:"previous-keys" secret:"true" usage:"Earlier cluster keys (base64), during a cluster key rotation: they still decrypt gossip, never encrypt"`
-	// Size is the number of nodes the cluster is made of, required with cluster.bind. The quorum (size/2+1) is
-	// computed from it and does not change when a node leaves, stops or restarts: only when every node's size is
-	// changed by one and the configuration reloaded (see docs/REPLICATION.md, "Changing the cluster size").
+	// Size is the number of nodes the cluster is made of, required with cluster.bind. The majority (size/2+1) that
+	// commits every write is computed from it and does not change when a node leaves, stops or restarts: only when
+	// every node's size is changed by one and the configuration reloaded (see docs/REPLICATION.md, "Cluster size").
 	Size int `toml:"size" flag:"size" usage:"With cluster.bind: the number of nodes in the cluster (required; identical on every node; the quorum is size/2+1)"`
 	// MinorityGrace bounds how long a node cut off from the majority keeps serving tokens.
 	MinorityGrace int `toml:"minority_grace" flag:"minority-grace" usage:"Seconds a node cut off from the majority keeps serving the token, userinfo and introspection endpoints (0: refuse at once)"`
-	// StrictDurability makes a durable write of a kind that is not quorum-committed (sessions, refresh grants, links,
-	// identities, groups, keys) fail when a majority does not confirm it (undone where possible) instead of standing
-	// on this node and reaching the others later. Security-sensitive kinds (users, credentials, clients, providers,
-	// organizations, tenants, access, memberships) are always quorum compare-and-swaps.
-	StrictDurability bool `toml:"strict_durability" flag:"strict-durability" usage:"With cluster.bind: a durable write of a kind that is not quorum-committed fails when a majority does not confirm it (undone where possible), instead of standing here and replicating later"`
 	// Notify links nodes that share one database server by a gossip network of their own that carries only change
 	// notices (no data): each node's caches and live admin pages then follow the others' changes within moments.
 	// Ignored, with a warning, when cluster.bind is set (replication delivers the changes already).
@@ -557,6 +552,11 @@ func (c *Config) Validate() error {
 		if others == 0 {
 			errs = append(errs, errors.New("cluster.peers must list the other nodes of the cluster (every node lists every other); "+
 				"a single node runs without cluster.bind"))
+		}
+		if c.Storage.Backend == "badgerdb" && !c.Storage.BadgerDB.SyncWrites {
+			// A node's promises and the writes it acknowledges must survive a power cut (docs/REPLICATION.md).
+			errs = append(errs, errors.New("storage.badgerdb.sync_writes must be true with cluster.bind: a gossip node's "+
+				"promises and the writes it acknowledges are lost in a power cut otherwise"))
 		}
 		if c.Cluster.Size >= 2 && others+1 < c.Cluster.Size {
 			errs = append(errs, fmt.Errorf("cluster.size is %d but cluster.peers lists only %d other nodes: every node "+

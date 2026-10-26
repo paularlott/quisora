@@ -5,54 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
-
-// invitee creates a user without a password and returns it with the path+query of a fresh invitation.
-func (e *env) invitee(t testing.TB, org *model.Org, name string) (*model.User, string) {
-	t.Helper()
-	email := name + "@example.com"
-	u, err := e.Svc.CreateUser(context.Background(), service.System, org.ID, service.UserInput{Username: &name, Email: &email, GivenName: &name})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u, e.invite(t, u)
-}
-
-func (e *env) invite(t testing.TB, u *model.User) string {
-	t.Helper()
-	link, _, err := e.Svc.CreateInvite(context.Background(), service.System, u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimPrefix(link, e.Cfg.Server.PublicURL)
-}
-
-func tokenOf(link string) string { return link[strings.Index(link, "token=")+len("token="):] }
-
-// invitePasskey runs the passkey ceremony of an invitation and returns the completion request body.
-func (b *browser) invitePasskeyBody(token string, extra map[string]any) (map[string]any, int, map[string]any) {
-	b.t.Helper()
-	res, begin := b.post("/api-internal/invite/passkey/begin", map[string]any{"token": token})
-	if res.StatusCode != 200 {
-		return nil, res.StatusCode, begin
-	}
-	opts, _ := json.Marshal(begin["options"])
-	cred, _, err := b.auth.Create(opts)
-	if err != nil {
-		b.t.Fatal(err)
-	}
-	body := map[string]any{"token": token, "challenge": begin["challenge"], "name": "Key", "credential": json.RawMessage(cred)}
-	for k, v := range extra {
-		body[k] = v
-	}
-	return body, 200, nil
-}
 
 func TestInviteSignUpWithPassword(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Audit.Logins = true; c.Limits.LoginPerIPMin = 0 })
@@ -476,5 +438,166 @@ func TestEmailedInvitationVerifiesAddress(t *testing.T) {
 		if f, _ := e.Svc.Users.Get(ctx, u.ID); !f.EmailVerified {
 			t.Fatal("an emailed invitation did not verify its address")
 		}
+	}
+}
+
+// Invitation links: unknown tokens give nothing, a passkey that does not verify does not use the link up, and a
+// ceremony begun for one invitation does not complete another.
+func TestInvitePasskeyRefusedCeremonies(t *testing.T) {
+	e := newEnv(t, noIPLimit)
+	org := e.org(t, "acme", nil)
+	u, link := e.invitee(t, org, "newbie")
+	tok := tokenOf(link)
+	_, link2 := e.invitee(t, org, "other")
+	tok2 := tokenOf(link2)
+	b := e.browser(t)
+
+	for _, token := range []string{"bogus", ""} {
+		res, out := b.post("/api-internal/invite/passkey/begin", map[string]any{"token": token})
+		wantStatus(t, res, out, 410)
+	}
+	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tok})
+	wantStatus(t, res, out, 422) // neither a password nor a passkey
+
+	t.Run("a ceremony begun with another invitation's token", func(t *testing.T) {
+		body, status, o := b.invitePasskeyBody(tok2, nil)
+		if status != 200 {
+			t.Fatalf("begin: %v", o)
+		}
+		body["token"] = tok
+		res, out := b.post("/api-internal/invite/complete", body)
+		wantStatus(t, res, out, 422)
+	})
+	t.Run("no user verification", func(t *testing.T) {
+		b.auth.UserVerified = false
+		defer func() { b.auth.UserVerified = true }()
+		body, status, o := b.invitePasskeyBody(tok, nil)
+		if status != 200 {
+			t.Fatalf("begin: %v", o)
+		}
+		res, out := b.post("/api-internal/invite/complete", body)
+		wantStatus(t, res, out, 422)
+	})
+	if b.hasSession() || e.passkeyCount(t, u) != 0 {
+		t.Fatal("a refused invitation left a session or a passkey")
+	}
+
+	// the refusals did not burn the link: it still takes a proper ceremony, once
+	body, status, o := b.invitePasskeyBody(tok, nil)
+	if status != 200 {
+		t.Fatalf("link burnt by refusals: %v", o)
+	}
+	res, out = b.post("/api-internal/invite/complete", body)
+	wantStatus(t, res, out, 200)
+	res, out = b.post("/api-internal/invite/passkey/begin", map[string]any{"token": tok})
+	wantStatus(t, res, out, 410)
+}
+
+// The invite passkey path is refused where passkeys are switched off for the organization, and nothing is burnt or
+// stored by the refusal.
+func TestInvitePasskeyRefusedWhereOrgDisablesPasskeys(t *testing.T) {
+	e := newEnv(t, noIPLimit)
+	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasskeyLogin = false })
+	u, link := e.invitee(t, org, "newbie")
+	b := e.browser(t)
+	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "challenge": "x", "credential": json.RawMessage(`{"id":"x"}`)})
+	wantStatus(t, res, out, 403)
+	if b.hasSession() || e.passkeyCount(t, u) != 0 {
+		t.Fatal("the refusal left a session or a passkey")
+	}
+	// the link is still good for the other ways the organization allows
+	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a long enough password"})
+	wantStatus(t, res, out, 200)
+}
+
+// inviteGate pauses the first write of a passkey for userID (the last step before the flow commits the account change)
+// until release is closed.
+type inviteGate struct {
+	store.Store
+	userID  string
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *inviteGate) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindPasskey && r.Scope == s.userID && s.armed.CompareAndSwap(true, false) {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.CompareAndPut(ctx, r, expect)
+}
+
+// The losing acceptance must neither replace the winner's passkey nor register a usable credential.
+func TestInviteLosingConcurrentCompletionDoesNotReplaceWinnerPasskey(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
+	org := e.org(t, "acme", nil)
+	u, link := e.invitee(t, org, "newbie")
+	a, b := e.browser(t), e.browser(t)
+	bodyA, st, out := a.invitePasskeyBody(tokenOf(link), nil)
+	if st != 200 {
+		t.Fatalf("begin A: %d %v", st, out)
+	}
+	bodyB, st, out := b.invitePasskeyBody(tokenOf(link), nil)
+	if st != 200 {
+		t.Fatalf("begin B: %d %v", st, out)
+	}
+	gate := &inviteGate{Store: e.Svc.Store, userID: u.ID, entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+	}()
+	e.Svc.Store = gate
+	e.Svc.Passkeys.S = gate
+	gate.armed.Store(true)
+	done := make(chan int, 1)
+	go func() {
+		res, _, err := a.send(http.MethodPost, "/api-internal/invite/complete", bodyA, nil)
+		if err != nil {
+			done <- -1
+			return
+		}
+		done <- res.StatusCode
+	}()
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request A did not reach storing its passkey")
+	}
+	res, out := b.post("/api-internal/invite/complete", bodyB)
+	wantStatus(t, res, out, 200)
+	winner, err := e.Svc.Passkeys.All(context.Background(), u.ID)
+	if err != nil || len(winner) != 1 {
+		t.Fatalf("winner passkeys: %v %v", winner, err)
+	}
+	close(gate.release)
+	select {
+	case st = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request A did not finish")
+	}
+	if st != 410 {
+		t.Fatalf("loser status: %d", st)
+	}
+	remaining, err := e.Svc.Passkeys.All(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := e.browser(t)
+	probe.auth = a.auth
+	loserStatus, loserOut := probe.passkeyLogin(map[string]any{"org": "acme"})
+	if len(remaining) != 1 || remaining[0].ID != winner[0].ID || loserStatus == 200 {
+		ids := make([]string, 0, len(remaining))
+		for _, pk := range remaining {
+			ids = append(ids, pk.ID)
+		}
+		t.Fatalf("rejected completion replaced winner credential: winner=%s remaining=%v rejected passkey login=%d %v", winner[0].ID, ids, loserStatus, loserOut)
 	}
 }

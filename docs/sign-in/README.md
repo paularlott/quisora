@@ -119,9 +119,9 @@ and an account whose second factor is a passkey confirms with the passkey, not t
 - **Not linked by email.** Upstream providers never link a manager's or administrator's account by its email address:
   they connect the provider themselves ([providers](providers.md#who-signs-in-as-whom)).
 - **No codes by email** and **no trusted provider second factor** for them: they always give their own.
-- **Super admins the server keeps.** Demoting, disabling, deleting or end-dating a super admin is refused when fewer
-  usable super admins than the server needs would remain: one on a single node or nodes sharing a database, two in a
-  gossip cluster (a change one node made but the majority has not confirmed yet must never leave none). Make someone
-  else a super admin first. Organizations need no administrator of their own: super admins administer every one, so an
+- **Super admins the server keeps.** Demoting, disabling, deleting or end-dating a super admin is refused when no other
+  usable super admin would remain, in every mode (the count is made through the owner of the primary organization's
+  partition, under the organization's admin lock, so a change on another node is counted). Make someone else a super
+  admin first. Organizations need no administrator of their own: super admins administer every one, so an
   organization's last administrator can be demoted or removed.
 - **Locked out of the console entirely**: the [break-glass procedure](../SECURITY.md#incident-response).

@@ -16,9 +16,17 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers |
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write | Few super admins; reviewed access |
 | Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
-| Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused | `cluster.key` kept like the master key; the gossip port reachable by cluster members only |
+| Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused; a catch-up stream goes from the database to the other node's database without touching the disk in between | `cluster.key` kept like the master key; the gossip port reachable by cluster members only; BadgerDB with `storage.badgerdb.sync_writes = true` |
 | Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private or loopback addresses but the networks in `allowed_networks` (or all of them with `allow_private_networks`), and never metadata, link-local or special-purpose addresses | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
+
+In a gossip cluster (`cluster.bind`): **BadgerDB must run with `storage.badgerdb.sync_writes = true`** (the default; a gossip
+node refuses to start without it), because a node's promises and the writes it acknowledges to the owner of a partition
+must be on disk when it answers (RUNNING.md, [Choosing a store](RUNNING.md#replicated-gossip)). And **a node writes no
+export files**: another node's catch-up is streamed from the database as it is read and never spooled to the data
+directory, so nothing a node holds sits outside the store's own encryption at rest (BadgerDB's `encryption_key`, or the
+encrypted volume). An older build left `export-*.tmp` files there when it crashed during a catch-up; a node deletes them
+at start.
 
 Accepted: usernames, email addresses and external ids are unique within an organization, so a manager or
 administrator creating or editing a user learns that a value is taken even when the account holding it is one they do
@@ -132,11 +140,18 @@ and the servers keep running:
 3. It works even when the account is disabled (locked out, or past its end date), and using it enables the account
    again (its end date is cleared if it had passed). Like any invitation, accepting it removes the account's old
    password, authenticator app and passkeys and ends its sessions and API tokens: whoever held the old ones is out.
-4. Check the audit log: `user.invite.break_glass` (issued by the system), the account enabled again, and the sign-ins
-   after it. Then give a second person super admin so this is not needed again.
+4. Check the audit log: `user.invite.break_glass` (recorded with the actor `command:invite`, the address the request came
+   from, and `detail.command` and `detail.authenticated`, so it is told from what the system does by itself), the
+   account enabled again, and the sign-ins after it. Then give a second person super admin so this is not needed again.
 
 Without `--break-glass`, `quisora invite` issues an ordinary invitation (7 days) the same way, and refuses a disabled
-account. Whoever runs either command holds the master key, and with it everything the server protects: keep the
+account. `quisora set-primary` (making another organization the primary one, when the primary's super admins are all
+gone) is the same kind of request, **signed with the master key and sent to a running node** (in a gossip cluster the
+data is changed only through a node: a write to a stopped node's database would belong to no partition write and reach
+no other node); it is recorded as `org.primary` by the actor `command:set-primary`. So is `quisora sign-out` (the
+emergency sign-out), recorded as `org.signout` or `server.signout` by `command:sign-out`. `quisora force-start`, which makes a
+node copy its data from fewer nodes than a majority, is recorded as `cluster.force_start` by `command:force-start`.
+Whoever runs any of these commands holds the master key (or the node's data directory), and with it everything the server protects: keep the
 configuration and the key as protected as the break-glass step they enable. A user who is only locked out by failed
 attempts needs nothing: the lock ends after `limits.lockout_minutes` (default 15).
 

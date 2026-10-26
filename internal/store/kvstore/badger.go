@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -50,8 +50,6 @@ func (quietLogger) Debugf(string, ...any)   {}
 
 type badgerEngine struct {
 	db   *badger.DB
-	mu   sync.Mutex // held from seq assignment until the commit is enqueued, so seq order == commit order
-	seq  uint64
 	stop chan struct{}
 	wg   sync.WaitGroup
 	once sync.Once
@@ -140,20 +138,15 @@ func (e *badgerEngine) init() (string, error) {
 			}
 			feedID = string(b)
 		case errors.Is(err, badger.ErrKeyNotFound):
+			// A new store: it has an identity and the current format (a store without them was made by an earlier build).
 			feedID = model.NewID()
 			if err := t.Set([]byte(metaFeed), []byte(feedID)); err != nil {
 				return err
 			}
-		default:
-			return err
-		}
-		if it, err := t.Get([]byte(metaSeq)); err == nil {
-			b, err := it.ValueCopy(nil)
-			if err != nil || len(b) != 8 {
-				return fmt.Errorf("kvstore: corrupt %s", metaSeq)
+			if err := t.Set([]byte(metaFormat), []byte(strconv.Itoa(currentFormat()))); err != nil {
+				return err
 			}
-			e.seq = binary.BigEndian.Uint64(b)
-		} else if !errors.Is(err, badger.ErrKeyNotFound) {
+		default:
 			return err
 		}
 		return nil
@@ -411,18 +404,6 @@ func (e *badgerEngine) Update(ctx context.Context, fn func(tx txn) error) error 
 	})
 }
 
-type feedOp struct {
-	recKey string
-	body   []byte
-	entry  string
-	oldSeq uint64
-}
-
-// pendingSeq marks the sequence number in the header of a record written earlier in the same, not yet committed,
-// transaction: the low bits are the index of that write's feed operation, resolved to the real number at commit.
-// A later operation of the transaction that rewrites the record passes it on as oldSeq.
-const pendingSeq = uint64(1) << 63
-
 // bwrite is a buffered write: a value (nil for an ordered-set member without expiry) or a deletion.
 type bwrite struct {
 	val []byte
@@ -438,29 +419,22 @@ type undoEntry struct {
 
 // badgerBatch is one Badger write transaction carrying the writes of one or more operations (group commit); it is
 // the txn every operation runs against. Writes are buffered here rather than in the Badger transaction until
-// commit, so each operation reads what the operations before it wrote (including records written through Feed,
-// whose sequence numbers are only assigned at commit), and an operation that fails is rolled back (rollback)
-// without touching the others.
+// commit, so each operation reads what the operations before it wrote, and an operation that fails is rolled back
+// (rollback) without touching the others.
 type badgerBatch struct {
-	e      *badgerEngine
 	t      *badger.Txn
 	reads  map[string][]byte // values read from the transaction's snapshot (nil = absent)
 	writes map[string]bwrite // buffered writes
-	feeds  []feedOp
-	undo   []undoEntry // writes of the running operation, newest last
-	mark   int         // len(feeds) when the running operation began
-	rerr   error       // a read error met by an operation that could not return it (Add); fails the commit
+	undo   []undoEntry       // writes of the running operation, newest last
+	rerr   error             // a read error met by an operation that could not return it (Add); fails the commit
 }
 
 func (e *badgerEngine) newBatch() *badgerBatch {
-	return &badgerBatch{e: e, t: e.db.NewTransaction(true)}
+	return &badgerBatch{t: e.db.NewTransaction(true)}
 }
 
 // begin starts an operation: its writes can be rolled back until the next begin.
-func (b *badgerBatch) begin() {
-	b.undo = b.undo[:0]
-	b.mark = len(b.feeds)
-}
+func (b *badgerBatch) begin() { b.undo = b.undo[:0] }
 
 // rollback drops every write of the running operation.
 func (b *badgerBatch) rollback() {
@@ -471,8 +445,6 @@ func (b *badgerBatch) rollback() {
 			delete(b.writes, u.key)
 		}
 	}
-	clear(b.feeds[b.mark:])
-	b.feeds = b.feeds[:b.mark]
 	b.undo = b.undo[:0]
 }
 
@@ -540,44 +512,12 @@ func (b *badgerBatch) Add(key string, delta int64) {
 	b.put(key, bwrite{val: binary.BigEndian.AppendUint64(make([]byte, 0, 8), uint64(n))})
 }
 
-// Feed buffers the record (readable by later operations, with a pending sequence number) and its feed entry. A key
-// written through Feed must not also be written with Set or Delete.
-func (b *badgerBatch) Feed(recKey string, body []byte, entry string, oldSeq uint64) {
-	if body == nil {
-		b.put(recKey, bwrite{del: true})
-	} else {
-		binary.BigEndian.PutUint64(body, pendingSeq|uint64(len(b.feeds)))
-		b.put(recKey, bwrite{val: body})
-	}
-	b.feeds = append(b.feeds, feedOp{recKey, body, entry, oldSeq})
-}
+func (b *badgerBatch) empty() bool { return len(b.writes) == 0 }
 
-func (b *badgerBatch) empty() bool { return len(b.writes) == 0 && len(b.feeds) == 0 }
-
-// fedSet returns a test for the keys this batch writes through Feed.
-func (b *badgerBatch) fedSet() func(string) bool {
-	if len(b.feeds) <= 8 {
-		return func(k string) bool {
-			for i := range b.feeds {
-				if b.feeds[i].recKey == k {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	m := make(map[string]struct{}, len(b.feeds))
-	for i := range b.feeds {
-		m[b.feeds[i].recKey] = struct{}{}
-	}
-	return func(k string) bool { _, ok := m[k]; return ok }
-}
-
-// commit moves the buffered writes into the Badger transaction and commits it. Feed operations are applied under
-// the engine mutex, in order, assigning sequence numbers in enqueue order (which Badger preserves as commit order);
-// then it waits until the commit is durable (fsync with SyncWrites). The Badger transaction is always finished.
+// commit moves the buffered writes into the Badger transaction and commits it, then waits until the commit is durable
+// (fsync with SyncWrites). The Badger transaction is always finished.
 func (b *badgerBatch) commit() error {
-	t, e := b.t, b.e
+	t := b.t
 	if b.rerr != nil {
 		t.Discard()
 		return b.rerr
@@ -586,11 +526,7 @@ func (b *badgerBatch) commit() error {
 		t.Discard()
 		return nil
 	}
-	fed := b.fedSet()
 	for k, w := range b.writes {
-		if fed(k) {
-			continue
-		}
 		var err error
 		if w.del {
 			err = t.Delete([]byte(k))
@@ -603,51 +539,7 @@ func (b *badgerBatch) commit() error {
 		}
 	}
 	done := make(chan error, 1)
-	if len(b.feeds) > 0 {
-		e.mu.Lock()
-		seq := atomic.LoadUint64(&e.seq)
-		var buf [16]uint64
-		assigned := buf[:0]
-		if len(b.feeds) > len(buf) {
-			assigned = make([]uint64, 0, len(b.feeds))
-		}
-		assigned = assigned[:len(b.feeds)]
-		var err error
-		note := func(e error) {
-			if err == nil {
-				err = e
-			}
-		}
-		for i, f := range b.feeds {
-			old := f.oldSeq
-			if old&pendingSeq != 0 { // written earlier in this batch: the number it was just given (0 if deleted)
-				old = assigned[old&^pendingSeq]
-			}
-			if old > 0 {
-				note(t.Delete(memberKey(feedBkt, seqMember(old, f.entry))))
-			}
-			if f.body == nil {
-				note(t.Delete([]byte(f.recKey)))
-				continue
-			}
-			seq++
-			assigned[i] = seq
-			binary.BigEndian.PutUint64(f.body, seq)
-			note(t.Set([]byte(f.recKey), f.body))
-			note(t.Set(memberKey(feedBkt, seqMember(seq, f.entry)), nil))
-		}
-		note(t.Set([]byte(metaSeq), binary.BigEndian.AppendUint64(nil, seq)))
-		if err != nil {
-			e.mu.Unlock()
-			t.Discard()
-			return err
-		}
-		atomic.StoreUint64(&e.seq, seq)
-		t.CommitWith(func(err error) { done <- err })
-		e.mu.Unlock()
-	} else {
-		t.CommitWith(func(err error) { done <- err })
-	}
+	t.CommitWith(func(err error) { done <- err })
 	err := <-done
 	if errors.Is(err, badger.ErrConflict) {
 		return errConflict
@@ -656,22 +548,10 @@ func (b *badgerBatch) commit() error {
 }
 
 func (e *badgerEngine) wipe(_ context.Context, newFeedID string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if err := e.db.DropAll(); err != nil {
 		return fmt.Errorf("kvstore: wipe badger: %w", err)
 	}
-	err := e.db.Update(func(t *badger.Txn) error {
-		if err := t.Set([]byte(metaFeed), []byte(newFeedID)); err != nil {
-			return err
-		}
-		return t.Set([]byte(metaSeq), binary.BigEndian.AppendUint64(nil, 0))
-	})
-	if err != nil {
-		return err
-	}
-	atomic.StoreUint64(&e.seq, 0)
-	return nil
+	return e.db.Update(func(t *badger.Txn) error { return t.Set([]byte(metaFeed), []byte(newFeedID)) })
 }
 
 func isTxnTooBig(err error) bool { return errors.Is(err, badger.ErrTxnTooBig) }

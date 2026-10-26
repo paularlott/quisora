@@ -65,7 +65,8 @@ func IssueInvite(ctx context.Context, c *config.Config, log logger.Logger, orgNa
 // Bootstrap ("quisora bootstrap") opens the configured store, creates the primary organization, its default tenant
 // and its first super admin when they do not exist, and closes the store. It returns the admin's invitation link,
 // or "" when everything existed already (a second run does nothing). Serving never does this. In a gossip cluster
-// run it for the first node, before the others start; a run anywhere else changes nothing that exists.
+// run it on one node, with an empty database: it creates the cluster's data set (cluster.StartNewCluster), which the
+// other nodes adopt and copy; a node that already holds a data set is refused.
 func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, link string, err error) {
 	st, sealer, err := openForCommand(ctx, c)
 	if err != nil {
@@ -76,6 +77,10 @@ func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, 
 	svc.Origin = service.CommandOrigin("bootstrap")
 	defer cliAudit(c, svc, log)()
 	if c.Cluster.Bind != "" {
+		// A node that already holds a data set is refused before anything is written (StartNewCluster would, after).
+		if err := cluster.CheckNewCluster(c.Server.DataDir, st); err != nil {
+			return "", "", err
+		}
 		// Only an empty database becomes a new cluster's first node: one that holds data belongs to a cluster
 		// already (or holds part of a copy), and declaring it synced now would make whatever it holds the
 		// cluster's. A second run on the first node finds everything there and changes nothing.
@@ -97,19 +102,20 @@ func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, 
 		return "", "", err
 	}
 	if c.Cluster.Bind != "" {
-		// The first node of a new gossip cluster: its data is the cluster's, as of now (a gossip node whose data
-		// has no sync time refuses to start).
-		if err := cluster.MarkSynced(c.Server.DataDir, st.FeedID()); err != nil {
+		// The first node of a new gossip cluster: its records become the first writes of their partitions and its data
+		// is the cluster's (a gossip node whose records no partition write made refuses to start).
+		if err := cluster.StartNewCluster(ctx, c.Server.DataDir, st); err != nil {
 			return "", "", err
 		}
 	}
 	return u.Email, link, nil
 }
 
-// storeEmpty reports whether st holds no records (node-local short-lived state aside).
+// storeEmpty reports whether st holds no records (node-local short-lived state and the node's own audit events aside: a
+// gossip node records those whether it holds a data set or not).
 func storeEmpty(ctx context.Context, st store.Store) (bool, error) {
 	for _, k := range model.Kinds() {
-		if k == model.KindEphemeral {
+		if k == model.KindEphemeral || k == model.KindAudit {
 			continue
 		}
 		n, err := st.Count(ctx, k, "")
@@ -147,6 +153,13 @@ func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgNam
 	svc := service.New(c, st, sealer)
 	svc.Origin = service.CommandOrigin("set-primary")
 	defer cliAudit(c, svc, log)()
+	return SetPrimaryOrg(ctx, svc, orgName, email)
+}
+
+// SetPrimaryOrg makes the organization named orgName primary with the user email as its super admin, and returns the
+// previous primary's name ("" when this finished an interrupted change that no longer says which it was) and the
+// emails of its super admins, now administrators.
+func SetPrimaryOrg(ctx context.Context, svc *service.Service, orgName, email string) (string, []string, error) {
 	org, err := svc.OrgByName(ctx, orgName)
 	if err != nil {
 		return "", nil, fmt.Errorf("no organization %q", orgName)
@@ -162,6 +175,9 @@ func SetPrimary(ctx context.Context, c *config.Config, log logger.Logger, orgNam
 	names := make([]string, len(demoted))
 	for i, d := range demoted {
 		names[i] = d.Email
+	}
+	if old == nil { // an interrupted change finished: nothing says which organization was primary
+		return "", names, nil
 	}
 	return old.Name, names, nil
 }

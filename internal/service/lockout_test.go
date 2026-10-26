@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestLockOutUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess := e.session(alan)
-	grant := e.grant(alan, sess.ID)
+	e.grant(alan, sess.ID)
 	tok := e.apiToken(alan)
 	if err := e.svc.Passkeys.Create(e.ctx, &model.Passkey{UserID: alan.ID, OrgID: acme.ID, Name: "key"}); err != nil {
 		t.Fatal(err)
@@ -57,7 +58,6 @@ func TestLockOutUser(t *testing.T) {
 			t.Errorf("%s left: %d", name, n)
 		}
 	}
-	_ = grant
 
 	// enabled again: still no way in, until a new invitation
 	if _, err := e.svc.UpdateUser(e.ctx, actor(admin), alan.ID, service.UserInput{Active: ptr(true)}); err != nil {
@@ -81,6 +81,7 @@ func TestLockOutUserRules(t *testing.T) {
 	admin, admin2 := e.user(acme.ID, "admin", model.RoleAdmin), e.user(acme.ID, "admin2", model.RoleAdmin)
 	mgr, alan := e.user(acme.ID, "mgr", model.RoleManager), e.user(acme.ID, "alan", model.RoleUser)
 	gadmin := e.user(globex.ID, "gadmin", model.RoleAdmin)
+	peer := e.user(acme.ID, "peer", model.RoleUser)
 	// admin2 is established: a password set, so it can sign in (an administrator's sign-in is reset only by a super admin)
 	if _, err := e.svc.UpdateUser(e.ctx, service.System, admin2.ID, service.UserInput{Password: ptr("correct horse battery")}); err != nil {
 		t.Fatal(err)
@@ -92,6 +93,7 @@ func TestLockOutUserRules(t *testing.T) {
 		want   string
 	}{
 		{"a user", actor(alan), mgr.ID, "notfound"},
+		{"a peer user", actor(peer), alan.ID, "notfound"},
 		{"a manager on an administrator", actor(mgr), admin.ID, "forbidden"},
 		{"another organization's admin", actor(gadmin), alan.ID, "notfound"},
 		{"yourself", actor(admin), admin.ID, "invalid"},
@@ -104,8 +106,14 @@ func TestLockOutUserRules(t *testing.T) {
 			t.Errorf("%s: a refused lock-out disabled the user", c.name)
 		}
 	}
+	if _, err := e.svc.LockOutUser(e.ctx, actor(admin), "nobody", "x"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("an unknown user: %v", err)
+	}
 	if _, err := e.svc.LockOutUser(e.ctx, actor(mgr), alan.ID, ""); err != nil {
 		t.Errorf("a manager on a user: %v", err)
+	}
+	if n := len(e.audited(acme.ID, "user.locked_out")); n != 1 {
+		t.Errorf("%d lock-outs audited, want 1", n)
 	}
 	if _, err := e.svc.LockOutUser(e.ctx, actor(e.super), admin2.ID, "x"); err != nil {
 		t.Errorf("a super admin on an established admin: %v", err)

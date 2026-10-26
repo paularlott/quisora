@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -62,13 +63,13 @@ func TestLinkedEmailUniquenessAndLimit(t *testing.T) {
 	if _, err := c.svc.UpdateUser(c.ctx, adm, c.aManager.ID, service.UserInput{Email: ptr("x@example.org")}); !errors.Is(err, service.ErrConflict) {
 		t.Errorf("primary onto a linked address: %v", err)
 	}
-	for _, bad := range []string{"", "nope", "Name <a@b.com>"} {
+	for _, bad := range []string{"", "nope", "Name <a@b.com>", "a b@example.com", "a@@example.com"} {
 		if _, err := c.svc.AddLinkedEmail(c.ctx, adm, c.aUser.ID, bad, true); !errors.Is(err, service.ErrInvalid) {
 			t.Errorf("%q: %v", bad, err)
 		}
 	}
 	for i := 1; i < model.MaxLinkedEmails; i++ {
-		if _, err := c.svc.AddLinkedEmail(c.ctx, adm, c.aUser.ID, "n"+itoa(i)+"@example.org", true); err != nil {
+		if _, err := c.svc.AddLinkedEmail(c.ctx, adm, c.aUser.ID, "n"+strconv.Itoa(i)+"@example.org", true); err != nil {
 			t.Fatalf("address %d: %v", i, err)
 		}
 	}
@@ -253,29 +254,6 @@ func TestUsersByVerifiedEmail(t *testing.T) {
 	}
 }
 
-func TestFullNameAndGivenNameRequired(t *testing.T) {
-	c := newCast(t)
-	adm := actor(c.aAdmin)
-	if _, err := c.svc.CreateUser(c.ctx, adm, c.a.ID, service.UserInput{Email: ptr("noname@example.org")}); !errors.Is(err, service.ErrInvalid) {
-		t.Fatalf("create without a first name: %v", err)
-	}
-	empty := " "
-	if _, err := c.svc.UpdateUser(c.ctx, adm, c.aUser.ID, service.UserInput{GivenName: &empty}); !errors.Is(err, service.ErrInvalid) {
-		t.Fatalf("clearing the first name: %v", err)
-	}
-	u, err := c.svc.CreateUser(c.ctx, adm, c.a.ID, service.UserInput{Email: ptr("one@example.org"), GivenName: ptr("Cher")})
-	if err != nil || u.FullName() != "Cher" {
-		t.Fatalf("single name: %v %q", err, u.FullName())
-	}
-	u, _ = c.svc.UpdateUser(c.ctx, adm, u.ID, service.UserInput{FamilyName: ptr("Sarkisian")})
-	if u.FullName() != "Cher Sarkisian" {
-		t.Fatal(u.FullName())
-	}
-	if (&model.User{Username: "u", Email: "e@x.test"}).FullName() != "u" || (&model.User{Email: "e@x.test"}).FullName() != "e@x.test" {
-		t.Fatal("full name fallbacks")
-	}
-}
-
 func TestMarkEmailVerified(t *testing.T) {
 	c := newCast(t)
 	self := service.SelfService(c.ctx)
@@ -336,5 +314,178 @@ func TestMarkEmailVerified(t *testing.T) {
 	}
 	if u, err := c.svc.MarkEmailVerified(c.ctx, actor(c.super), c.aManager.ID, c.aManager.Email); err != nil || !u.EmailVerified {
 		t.Errorf("super admin: %v", err)
+	}
+}
+
+// Who may add, remove, make primary and mark verified the addresses of an account: its organization's admins and
+// managers and super admins; a foreign admin is told nothing, a peer is denied; an unknown account is not found.
+func TestLinkedEmailAuthorizationMatrix(t *testing.T) {
+	c := newCast(t)
+	target := c.aUser
+	for _, tc := range []struct {
+		name string
+		u    *model.User
+		want string
+	}{
+		{"org admin", c.aAdmin, "ok"}, {"org manager", c.aManager, "ok"}, {"super", c.super, "ok"},
+		{"foreign admin", c.bAdmin, "notfound"}, {"peer", c.e2(c.a.ID), "denied"},
+	} {
+		addr := c.next("x") + "@example.com"
+		_, err := c.svc.AddLinkedEmail(c.ctx, actor(tc.u), target.ID, addr, false)
+		c.check(t, tc.name+" add", err, tc.want)
+		if tc.want == "ok" {
+			_, err = c.svc.RemoveLinkedEmail(c.ctx, actor(tc.u), target.ID, addr)
+			c.check(t, tc.name+" remove", err, "ok")
+			continue
+		}
+		// a denied caller cannot touch an address that exists
+		if _, err := c.svc.RemoveLinkedEmail(c.ctx, actor(tc.u), target.ID, "nothing@example.com"); !match(outcome(err), "denied") {
+			t.Errorf("%s remove: %v", tc.name, err)
+		}
+		if _, err := c.svc.MakePrimary(c.ctx, actor(tc.u), target.ID, "nothing@example.com"); !match(outcome(err), "denied") {
+			t.Errorf("%s make primary: %v", tc.name, err)
+		}
+		if _, err := c.svc.MarkEmailVerified(c.ctx, actor(tc.u), target.ID, target.Email); !match(outcome(err), "denied") {
+			t.Errorf("%s mark verified: %v", tc.name, err)
+		}
+	}
+	if got := c.fresh(target); len(got.LinkedEmails) != 0 || got.Email != target.Email {
+		t.Errorf("addresses changed by denied callers: %+v", got.LinkedEmails)
+	}
+	for _, f := range []func() error{
+		func() error {
+			_, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), "nobody", "a@example.com", false)
+			return err
+		},
+		func() error {
+			_, err := c.svc.RemoveLinkedEmail(c.ctx, actor(c.aAdmin), "nobody", "a@example.com")
+			return err
+		},
+		func() error {
+			_, err := c.svc.MakePrimary(c.ctx, actor(c.aAdmin), "nobody", "a@example.com")
+			return err
+		},
+		func() error {
+			_, err := c.svc.MarkEmailVerified(c.ctx, actor(c.aAdmin), "nobody", "a@example.com")
+			return err
+		},
+	} {
+		if err := f(); !errors.Is(err, service.ErrNotFound) {
+			t.Errorf("unknown user: %v", err)
+		}
+	}
+}
+
+// Verifying an address twice is no second event, the primary can be verified, and an address that is not on the account
+// is not found; making an address primary is audited.
+func TestVerifyEmailAddressIsIdempotentAndAudited(t *testing.T) {
+	c := newCast(t)
+	self := service.SelfService(c.ctx)
+	if _, err := c.svc.AddLinkedEmail(self, actor(c.aManager), c.aManager.ID, "m2@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.VerifyEmailAddress(c.ctx, c.aManager.ID, "m2@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.VerifyEmailAddress(c.ctx, c.aManager.ID, "m2@example.com"); err != nil { // already: no second event
+		t.Fatal(err)
+	}
+	if n := len(c.audited(c.a.ID, "user.email.verify")); n != 1 {
+		t.Errorf("verify events %d", n)
+	}
+	if err := c.svc.VerifyEmailAddress(c.ctx, c.aManager.ID, c.aManager.Email); err != nil {
+		t.Errorf("verifying the primary: %v", err)
+	}
+	if _, err := c.svc.MakePrimary(self, actor(c.aManager), c.aManager.ID, "unknown@example.com"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("primary of an unknown address: %v", err)
+	}
+	if _, err := c.svc.MakePrimary(self, actor(c.aManager), c.aManager.ID, "m2@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.audited(c.a.ID, "user.email.primary")) != 1 {
+		t.Error("primary change not audited")
+	}
+}
+
+// A bulk replacement of an account's addresses (through UpdateUser) is all or nothing, and keeps the account's own
+// pending address while it skips the primary and duplicates.
+func TestBulkLinkedEmailReplacementRules(t *testing.T) {
+	c := newCast(t)
+	many := make([]string, model.MaxLinkedEmails+1)
+	for i := range many {
+		many[i] = "bulk" + strconv.Itoa(i) + "@example.com"
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aManager.ID, service.UserInput{LinkedEmails: &many}); !isInvalid(err) {
+		t.Errorf("bulk over the limit: %v", err)
+	}
+	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aManager.ID, service.UserInput{LinkedEmails: &[]string{"nope"}}); !isInvalid(err) {
+		t.Errorf("bulk bad address: %v", err)
+	}
+	if got := c.fresh(c.aManager); len(got.LinkedEmails) != 0 {
+		t.Errorf("linked after refused updates: %d", len(got.LinkedEmails))
+	}
+	pending, err := c.svc.AddLinkedEmail(service.SelfService(c.ctx), actor(c.aManager), c.aManager.ID, "mine@example.com", false)
+	if err != nil || len(pending.LinkedEmails) != 1 {
+		t.Fatal(err)
+	}
+	set := []string{c.aManager.Email, "dir@example.com", "DIR@example.com"}
+	got, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), c.aManager.ID, service.UserInput{LinkedEmails: &set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verified, unverified []string
+	for _, l := range got.LinkedEmails {
+		if l.Verified {
+			verified = append(verified, l.Address)
+		} else {
+			unverified = append(unverified, l.Address)
+		}
+	}
+	if len(verified) != 1 || verified[0] != "dir@example.com" || len(unverified) != 1 || unverified[0] != "mine@example.com" {
+		t.Errorf("verified %v unverified %v", verified, unverified)
+	}
+}
+
+// An address on the account is verified by a link bound to it: the primary (in any case) and an unverified linked
+// address, once; a verified one needs none, and a link is used once.
+func TestEmailVerificationLinks(t *testing.T) {
+	c := newCast(t)
+	u := c.fresh(c.aUser)
+	if u.EmailVerified {
+		t.Fatal("setup: the primary address of a user an admin created starts unverified")
+	}
+	tok, err := c.svc.IssueEmailLink(c.ctx, u, strings.ToUpper(u.Email))
+	if err != nil || tok == "" {
+		t.Fatalf("primary link: %v", err)
+	}
+	l, got, err := c.svc.RedeemLink(c.ctx, tok)
+	if err != nil || got.ID != u.ID || l.Email == "" {
+		t.Fatalf("redeem: %v", err)
+	}
+	if _, _, err := c.svc.RedeemLink(c.ctx, tok); !errors.Is(err, service.ErrLink) {
+		t.Errorf("redeemed twice: %v", err)
+	}
+	if _, _, err := c.svc.RedeemLink(c.ctx, "garbage"); !errors.Is(err, service.ErrLink) {
+		t.Errorf("garbage token: %v", err)
+	}
+	if err := c.svc.VerifyEmailAddress(c.ctx, u.ID, l.Email); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.IssueEmailLink(c.ctx, c.fresh(c.aUser), u.Email); !errors.Is(err, service.ErrConflict) {
+		t.Errorf("already verified primary: %v", err)
+	}
+	// a linked address: verified ones are refused too
+	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), u.ID, "l1@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), u.ID, "l2@example.com", true); err != nil {
+		t.Fatal(err)
+	}
+	cur := c.fresh(c.aUser)
+	if _, err := c.svc.IssueEmailLink(c.ctx, cur, "l1@example.com"); err != nil {
+		t.Errorf("unverified linked address: %v", err)
+	}
+	if _, err := c.svc.IssueEmailLink(c.ctx, cur, "l2@example.com"); !errors.Is(err, service.ErrConflict) {
+		t.Errorf("verified linked address: %v", err)
 	}
 }

@@ -453,15 +453,16 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if err := s.apply(ctx, u, in); err != nil {
 		return nil, err
 	}
-	if err := s.Users.Create(ctx, u); err != nil {
-		return nil, s.userConflict(ctx, err, u)
-	}
 	detail := map[string]string{"role": string(role)}
 	if len(u.Tags) > 0 {
 		detail["tags"] = strings.Join(u.Tags, " ")
 	}
 	if imported != "" {
 		detail["password"] = "imported " + imported
+	}
+	if err := s.Users.Create(ctx, u); err != nil {
+		s.auditUnknown(ctx, err, a, orgID, "user.create", u.Username, detail)
+		return nil, s.userConflict(ctx, err, u)
 	}
 	s.Audit(ctx, a, orgID, "user.create", u.Username, detail)
 	return u, nil
@@ -499,7 +500,7 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		return s.updateUser(ctx, a, id, in, nil)
 	}
 	// A new manager holds the organization's managers lock (cluster-wide), and its loop check reads the chain from a
-	// quorum's copies (setManager): two changes on two nodes (A reports to B, B to A) can never both pass it. Taken
+	// the owners' copies (setManager): two changes on two nodes (A reports to B, B to A) can never both pass it. Taken
 	// before the admin lock, always, so the two never wait on each other.
 	if w := in.Work; w != nil && w.ManagerID != nil && strings.TrimSpace(*w.ManagerID) != "" &&
 		strings.TrimSpace(*w.ManagerID) != before.Work.ManagerID {
@@ -513,7 +514,7 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	var al *lease
 	if before.Role == model.RoleSuperAdmin && (in.Role != nil || in.Active != nil || in.ValidUntil != nil) {
 		// A change that can remove a super admin holds the primary organization's admin lock (cluster-wide), and its
-		// last-super-admin check counts from a quorum's copies: two such changes on two nodes can never both pass it.
+		// last-super-admin check counts from the owners' copies: two such changes on two nodes can never both pass it.
 		// The write is fenced on the lease (lease.fence): one that lands after the lease lapsed is judged again.
 		al, err = s.lockAdmins(ctx, before.OrgID)
 		if err != nil {
@@ -619,7 +620,6 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if err := s.mayChange(ctx, a, u, in, self); err != nil {
 		return nil, err
 	}
-	critical := in.Password != nil || (in.Active != nil && *in.Active != u.Active) || in.ValidUntil != nil
 	before := u.Role
 	was := snapshot(u)
 	secWas := stateOf(u) // the security generation moves on below if the change touches what signs the account in
@@ -643,7 +643,6 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		if u.Role.Privileged() && in.Role.Rank() < u.Role.Rank() && a != System && !a.IsSuper() {
 			return nil, Invalid("role", "only a super admin can lower the role of a manager or administrator")
 		}
-		critical = true
 	}
 	if err := s.guardAdminChange(ctx, u, in); err != nil {
 		return nil, err
@@ -666,11 +665,9 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 		noteStatus(u, a, reason)
 	}
 	noteSecurity(secWas, u)
-	if critical {
-		ctx = Durable(ctx)
-	}
 	err = s.Users.Update(ctx, u)
-	if !store.Applied(err) {
+	if err != nil {
+		s.auditUnknown(ctx, err, a, u.OrgID, "user.update", u.Username, addChanges(nil, was, u))
 		return nil, s.userConflict(ctx, err, u)
 	}
 	if al != nil {
@@ -820,10 +817,9 @@ func cloneUser(u *model.User) (*model.User, error) {
 // the change wrote. The copy written is put back as prev; a copy changed since (a newer version) gets back only what
 // the guard judged — role, active state, end date and the status note — unless it is a usable super admin again.
 func (s *Service) restoreUser(ctx context.Context, prev, u *model.User) error {
-	ctx = Durable(ctx)
 	prev.Version = u.Version
 	err := s.Users.Update(ctx, prev)
-	for attempt := 0; !store.Applied(err); attempt++ {
+	for attempt := 0; err != nil; attempt++ {
 		if !errors.Is(err, store.ErrStale) || attempt == 4 {
 			return mapStore(err)
 		}
@@ -842,12 +838,12 @@ func (s *Service) restoreUser(ctx context.Context, prev, u *model.User) error {
 // recreateUser undoes a guarded deletion of a user (lease.fence): u, as read before the deletion, is created again (a
 // new generation of the record over its tombstone).
 func (s *Service) recreateUser(ctx context.Context, u *model.User) error {
-	return mapStore(s.Users.Create(Durable(ctx), u))
+	return mapStore(s.Users.Create(ctx, u))
 }
 
 // guardLastAdmin refuses to demote, disable, delete or end-date a super admin when fewer than MinSuperAdmins usable
-// super admins would remain (one, or two in a gossip cluster). A usable super admin is active and not past their end
-// date. One without an end date may only stop being one while enough others without an end date remain: otherwise end
+// super admins would remain (one unless the service is told otherwise). A usable super admin is active and not past
+// their end date. One without an end date may only stop being one while enough others without an end date remain: otherwise end
 // dates set on each other would leave none once the last one passes. Organizations need no administrator: super admins
 // administer every one of them. The caller holds the primary organization's admin lock (lockAdmins).
 func (s *Service) guardLastAdmin(ctx context.Context, u *model.User) error {
@@ -881,7 +877,7 @@ type lastSuperAdminErr struct{ need int }
 
 func (e lastSuperAdminErr) Error() string {
 	if e.need > 1 {
-		return "a gossip cluster keeps at least " + strconv.Itoa(e.need) + " super admins (a change one server made but the others have not confirmed must never leave none): make someone else a super admin first"
+		return "the server keeps at least " + strconv.Itoa(e.need) + " super admins: make someone else a super admin first"
 	}
 	return "this is the last super admin: make someone else a super admin first"
 }
@@ -944,8 +940,9 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
 	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
 	// last-admin check applied) is refused, instead of deleting an administrator unchecked.
-	if err := s.Users.DeleteIf(Durable(ctx), u.ID, u.Version); !store.Applied(err) {
+	if err := s.Users.DeleteIf(ctx, u.ID, u.Version); err != nil {
 		// Refused (a newer copy), or not confirmed by a majority: the user may still exist; a retry decides.
+		s.auditUnknown(ctx, err, a, u.OrgID, "user.delete", u.Username, nil)
 		return mapStore(err)
 	}
 	if al != nil {
@@ -960,7 +957,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The applications are
 	// told (back-channel logout), and the users they managed get no manager. Their memberships stand on them too:
 	// every reader of a group's members leaves out those whose user is gone (memberIDs).
-	s.sessionsEnding(Durable(ctx), u.ID, nil)
+	s.sessionsEnding(ctx, u.ID, nil)
 	s.clearManagerOf(ctx, u)
 	s.Audit(ctx, a, u.OrgID, "user.delete", u.Username, nil)
 	return nil
@@ -974,7 +971,6 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 // (clearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised account
 // therefore evicts whoever had it, at once.
 func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
-	ctx = Durable(ctx)
 	for attempt := 0; ; attempt++ {
 		u, err := s.Users.Get(ctx, userID)
 		if err != nil {
@@ -991,7 +987,7 @@ func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 		u.SessionEpoch = NewCredEpoch()
 		u.BumpSecurity()
 		err = s.Users.Update(ctx, u)
-		if store.Applied(err) {
+		if err == nil {
 			return s.clearCredentials(ctx, userID, was.CredEpoch, was.SessionEpoch)
 		}
 		// re-read and retried when a concurrent change (a profile edit, a sign-in's stamp) got there first
@@ -1008,10 +1004,9 @@ func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 // parties are told of the ended sessions. Doing it again is harmless. Every removal is tried even when one fails; the
 // errors are returned together. A write that is applied but not yet confirmed by a peer is no failure.
 func (s *Service) clearCredentials(ctx context.Context, userID string, cred, sess uint64) error {
-	ctx = Durable(ctx)
 	errs := []error{s.endSessionsOf(ctx, userID, sess)}
 	fail := func(err error) {
-		if !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+		if err != nil && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, err)
 		}
 	}
@@ -1050,7 +1045,7 @@ func (s *Service) endSessionsOf(ctx context.Context, userID string, sess uint64)
 			s.sessionsEnding(ctx, userID, ended)
 		}
 		for _, id := range ended {
-			if err := s.Store.Put(Durable(ctx), store.Tombstone(k, id)); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			if err := s.Store.Put(ctx, store.Tombstone(k, id)); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, fmt.Errorf("end %s %s: %w", k, id, err))
 			}
 		}
@@ -1100,7 +1095,7 @@ func (s *Service) endUserSessions(ctx context.Context, userID string, a *Actor) 
 			continue
 		}
 		for _, r := range res.Records {
-			if err := s.Store.Put(Durable(ctx), store.Tombstone(k, r.ID)); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			if err := s.Store.Put(ctx, store.Tombstone(k, r.ID)); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, fmt.Errorf("end %s %s: %w", k, r.ID, err))
 			}
 		}
@@ -1137,7 +1132,7 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 	n := 0
 	var errs []error
 	for _, g := range mine {
-		if err := s.Grants.Delete(Durable(ctx), g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+		if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, mapStore(err))
 			continue
 		}
@@ -1217,7 +1212,7 @@ func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 		if id.Via != "email" && id.Via != "" {
 			continue
 		}
-		if err := s.Identities.Delete(Durable(ctx), id.ID); store.Applied(err) {
+		if err := s.Identities.Delete(ctx, id.ID); err == nil {
 			s.Audit(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
 				"reason": "promoted to " + string(u.Role)})
 		}
@@ -1225,7 +1220,7 @@ func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 }
 
 // setManager sets u's manager: another user of the same organization, and never one who reports to u (directly or
-// further down), which would make a loop. "" clears it. The chain is read from a quorum's copies (FreshUser), under
+// further down), which would make a loop. "" clears it. The chain is read from the owners' copies (FreshUser), under
 // the managers lock UpdateUser holds, so a change confirmed on another node is seen.
 func (s *Service) setManager(ctx context.Context, u *model.User, id string) error {
 	if id == "" {
@@ -1238,7 +1233,7 @@ func (s *Service) setManager(ctx context.Context, u *model.User, id string) erro
 	if id == u.Work.ManagerID {
 		return nil // unchanged
 	}
-	m, err := s.FreshUser(ctx, id)
+	m, err := s.FreshUserIn(ctx, u.OrgID, id)
 	if errors.Is(err, ErrUnavailable) {
 		return err
 	}
@@ -1249,7 +1244,7 @@ func (s *Service) setManager(ctx context.Context, u *model.User, id string) erro
 		if next == u.ID || n == maxManagerChain {
 			return Invalid("work.manager_id", "that person reports to this user")
 		}
-		up, err := s.FreshUser(ctx, next)
+		up, err := s.FreshUserIn(ctx, u.OrgID, next)
 		if errors.Is(err, ErrUnavailable) {
 			return err
 		}
@@ -1366,7 +1361,6 @@ func ActiveFilter(active bool) store.Filter { return store.Filter{Field: "inacti
 // that could not be deleted still works (for the copy's holder too), so the caller records that the sign-out did not
 // finish rather than only how many did.
 func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, keepSession string) (int, error) {
-	ctx = Durable(ctx)
 	sessions, err := s.Sessions.All(ctx, userID)
 	if err != nil {
 		return 0, mapStore(err)
@@ -1388,14 +1382,14 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, kee
 	}
 	for _, g := range grants {
 		if slices.Contains(ids, g.SessionID) {
-			if err := s.Grants.Delete(ctx, g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
 			}
 		}
 	}
 	n := 0
 	for _, id := range ids {
-		if err := s.Sessions.Delete(ctx, id); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+		if err := s.Sessions.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, fmt.Errorf("end session %s: %w", id, mapStore(err)))
 			continue
 		}

@@ -5,7 +5,7 @@
 // master keys the sealed secrets need and an HMAC, under a key derived from the master key, of every line before it
 // and of the trailer's count and keys. A truncated, altered or forged backup (or one with anything after its end) is
 // refused as a whole before anything is written. Records keep their ids, versions, generations (Epoch, Created) and
-// origins, so a restored node rejoins a cluster without its data looking newer than it is. Secrets stay sealed with
+// origins, so what is restored is the data as it was (versions are only compared when a restore is forced over a store that holds records). Secrets stay sealed with
 // the master key: the header carries a check value derived from it, and a restore with a different key is refused
 // (the sealed data would be unreadable).
 //
@@ -285,10 +285,11 @@ func (l liveReader) Count(ctx context.Context, k model.Kind, scope string) (int,
 }
 func (liveReader) Close() error { return nil }
 
-// Empty reports whether st holds no live record.
+// Empty reports whether st holds no live record, audit events aside: a node records its own (with gossip, every node
+// keeps its own) from its first start, and they are no data a restore could clash with.
 func Empty(ctx context.Context, st store.Store) (bool, error) {
 	for _, k := range model.Kinds() {
-		if skipped(k) {
+		if skipped(k) || k == model.KindAudit {
 			continue
 		}
 		n, err := st.Count(ctx, k, "")
@@ -435,8 +436,8 @@ func Verify(r io.Reader, sealer *secure.Sealer, password string) (Stats, error) 
 // Restore loads a backup from r into st. The whole backup is verified first (structure, master key, integrity MAC)
 // and nothing is written unless it passes; r is then read again from the start. The store must be empty unless
 // force is set, in which case records from the backup replace stored ones with an older version, records the backup
-// does not hold are left alone, and of two different records claiming one unique value the one created first keeps
-// it and the other is kept without it (as in replication: a record is never deleted over a unique clash).
+// does not hold are left alone, and a record whose unique value another stored record holds fails the restore
+// (ErrConflict: nothing is merged by guessing which record should keep the value).
 func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.ReadSeeker, force bool, password string) (Stats, error) {
 	if _, err := Verify(r, sealer, password); err != nil {
 		return nil, err
@@ -454,7 +455,8 @@ func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Re
 		}
 	}
 	// Records are applied restoreBatch at a time, in one write transaction (one sync) each where the backend can
-	// (store.BatchReplicator), with the semantics of one PutReplicated per record.
+	// (store.BatchReplicator), with the semantics of one PutReplicated per record. Into an empty store every record
+	// applies; the store's versions only matter with force, over data.
 	var pending []*store.Record
 	flush := func() error {
 		defer func() { pending = pending[:0] }()
@@ -462,19 +464,18 @@ func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Re
 			return nil
 		}
 		var applied []bool
-		var losers [][]string
 		if br, ok := st.(store.BatchReplicator); ok {
 			var err error
-			if applied, losers, err = br.PutReplicatedBatch(ctx, pending); err != nil {
+			if applied, err = br.PutReplicatedBatch(ctx, pending); err != nil {
 				return fmt.Errorf("restore: %w", err)
 			}
 		} else {
 			for _, rec := range pending {
-				a, l, err := st.PutReplicated(ctx, rec)
+				a, err := st.PutReplicated(ctx, rec)
 				if err != nil {
 					return fmt.Errorf("restore %s %s: %w", rec.Kind, rec.ID, err)
 				}
-				applied, losers = append(applied, a), append(losers, l)
+				applied = append(applied, a)
 			}
 		}
 		for i, rec := range pending {
@@ -484,11 +485,6 @@ func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Re
 				return fmt.Errorf("%w: the store already holds a newer version or a deletion of %s %s; restore into a "+
 					"new, empty database", ErrNotEmpty, rec.Kind, rec.ID)
 			}
-			if len(losers[i]) > 0 && !force {
-				return fmt.Errorf("%w: %s %s clashes with another record on a unique value", ErrFormat, rec.Kind, rec.ID)
-			}
-			// Merging (force): a record that lost a unique value to another is kept, without that value in the
-			// index (as after a replication clash); a cluster reports it when it starts serving.
 		}
 		return nil
 	}

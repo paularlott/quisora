@@ -44,10 +44,25 @@ type env struct {
 
 // newEnv starts a test server with the login module and a capturing mailer. The public URL host is "localhost"
 // (WebAuthn forbids IP addresses as RP ids).
-func newEnv(t testing.TB, mut func(*config.Config)) *env { return newEnvWith(t, mut, false) }
+func newEnv(t testing.TB, mut ...func(*config.Config)) *env { return newEnvWith(t, false, mut...) }
+
+// Configuration mutators for newEnv.
+var (
+	// noIPLimit lifts the per-address sign-in limit, for tests that sign in many times.
+	noIPLimit = func(c *config.Config) { c.Limits.LoginPerIPMin = 0 }
+	// auditLogins records successful sign-ins too.
+	auditLogins = func(c *config.Config) { c.Audit.Logins = true }
+	// withSMTP makes the server send mail (the capturing transport takes it).
+	withSMTP = func(c *config.Config) { c.Mail.SMTPHost = "smtp.example.com" }
+)
+
+// lockoutAfter locks an account after n failed sign-ins (0: never).
+func lockoutAfter(n int) func(*config.Config) {
+	return func(c *config.Config) { c.Limits.LockoutAttempts = n }
+}
 
 // newEnvWith can keep webtest's default 127.0.0.1 public URL (keepIP), which cannot be a WebAuthn relying party.
-func newEnvWith(t testing.TB, mut func(*config.Config), keepIP bool) *env {
+func newEnvWith(t testing.TB, keepIP bool, mut ...func(*config.Config)) *env {
 	t.Helper()
 	e := &env{mailCh: make(chan mail.Message, 64)}
 	e.Env = webtest.New(t, webtest.Options{
@@ -56,8 +71,10 @@ func newEnvWith(t testing.TB, mut func(*config.Config), keepIP bool) *env {
 				u, _ := url.Parse(c.Server.PublicURL)
 				c.Server.PublicURL = "https://localhost:" + u.Port()
 			}
-			if mut != nil {
-				mut(c)
+			for _, m := range mut {
+				if m != nil {
+					m(c)
+				}
 			}
 		},
 		Modules: func(s *web.Server) []web.Module {
@@ -103,12 +120,31 @@ func (e *env) nextMail(t testing.TB) mail.Message {
 	return mail.Message{}
 }
 
+// mailSettle is how long noMail and drainMails wait for a mail still on its way: the sign-in handlers send theirs in the
+// background, after the response.
+const mailSettle = 150 * time.Millisecond
+
+// drainMails returns how many mails arrive: it waits for the first, then until none has for mailSettle.
+func (e *env) drainMails(t testing.TB) int {
+	t.Helper()
+	e.nextMail(t)
+	n := 1
+	for {
+		select {
+		case <-e.mailCh:
+			n++
+		case <-time.After(mailSettle):
+			return n
+		}
+	}
+}
+
 func (e *env) noMail(t testing.TB) {
 	t.Helper()
 	select {
 	case m := <-e.mailCh:
 		t.Fatalf("unexpected mail to %s: %s", m.To, m.Subject)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(mailSettle):
 	}
 }
 
@@ -209,8 +245,18 @@ func (b *browser) get(path string) (*http.Response, string) {
 
 type hdrs map[string]string
 
+// do sends a request, failing the test when it cannot be sent.
 func (b *browser) do(method, path string, body any, h hdrs) (*http.Response, map[string]any) {
 	b.t.Helper()
+	res, out, err := b.send(method, path, body, h)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return res, out
+}
+
+// send is do for goroutines other than the test's: the error is returned.
+func (b *browser) send(method, path string, body any, h hdrs) (*http.Response, map[string]any, error) {
 	var rd io.Reader
 	if body != nil {
 		switch v := body.(type) {
@@ -236,14 +282,14 @@ func (b *browser) do(method, path string, body any, h hdrs) (*http.Response, map
 	}
 	res, err := b.c.Do(req)
 	if err != nil {
-		b.t.Fatal(err)
+		return nil, nil, err
 	}
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(res.Body)
 	out := map[string]any{}
 	_ = json.Unmarshal(raw, &out)
 	out["_raw"] = string(raw)
-	return res, out
+	return res, out, nil
 }
 
 func (b *browser) post(path string, body any) (*http.Response, map[string]any) {
@@ -384,4 +430,264 @@ func (e *env) member(t testing.TB) *model.User {
 		t.Fatal(err)
 	}
 	return e.user(t, org, "member", model.RoleUser)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func (b *browser) api(method, path string, body any) (*http.Response, map[string]any) {
+	return b.do(method, path, body, nil)
+}
+
+func items(t testing.TB, out map[string]any) []map[string]any {
+	t.Helper()
+	raw, _ := out["items"].([]any)
+	var r []map[string]any
+	for _, x := range raw {
+		r = append(r, x.(map[string]any))
+	}
+	return r
+}
+
+func sessionsOf(t testing.TB, e *env, u *model.User) []*model.Session {
+	t.Helper()
+	s, err := e.Svc.Sessions.All(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+var mailCodeRe = regexp.MustCompile(`\b(\d{6})\b`)
+
+// emailEnv is a server that sends mail, with an organization whose settings mut sets.
+func emailEnv(t *testing.T, mut func(*model.OrgSettings)) (*env, *model.Org) {
+	e := newEnv(t, func(c *config.Config) { c.Mail.SMTPHost = "smtp.example.com"; c.Audit.Logins = true })
+	return e, e.org(t, "acme", mut)
+}
+
+// verifiedUser creates a user whose address is verified.
+func (e *env) verifiedUser(t *testing.T, org *model.Org, name string, role model.Role) *model.User {
+	t.Helper()
+	u := e.user(t, org, name, role)
+	yes := true
+	u, err := e.Svc.UpdateUser(context.Background(), service.System, u.ID, service.UserInput{Verified: &yes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func codeFrom(t *testing.T, e *env) string {
+	t.Helper()
+	m := e.nextMail(t)
+	if !strings.Contains(m.Subject, "sign-in code") {
+		t.Fatalf("not a code: %q", m.Subject)
+	}
+	g := mailCodeRe.FindStringSubmatch(m.Text)
+	if g == nil {
+		t.Fatalf("no code in %q", m.Text)
+	}
+	if strings.Contains(m.Subject, g[1]) {
+		t.Fatalf("the code is in the subject (shown in notification previews): %q", m.Subject)
+	}
+	return g[1]
+}
+
+// invitee creates a user without a password and returns it with the path+query of a fresh invitation.
+func (e *env) invitee(t testing.TB, org *model.Org, name string) (*model.User, string) {
+	t.Helper()
+	email := name + "@example.com"
+	u, err := e.Svc.CreateUser(context.Background(), service.System, org.ID, service.UserInput{Username: &name, Email: &email, GivenName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u, e.invite(t, u)
+}
+
+func (e *env) invite(t testing.TB, u *model.User) string {
+	t.Helper()
+	link, _, err := e.Svc.CreateInvite(context.Background(), service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimPrefix(link, e.Cfg.Server.PublicURL)
+}
+
+func tokenOf(link string) string { return link[strings.Index(link, "token=")+len("token="):] }
+
+// invitePasskey runs the passkey ceremony of an invitation and returns the completion request body.
+func (b *browser) invitePasskeyBody(token string, extra map[string]any) (map[string]any, int, map[string]any) {
+	b.t.Helper()
+	res, begin := b.post("/api-internal/invite/passkey/begin", map[string]any{"token": token})
+	if res.StatusCode != 200 {
+		return nil, res.StatusCode, begin
+	}
+	opts, _ := json.Marshal(begin["options"])
+	cred, _, err := b.auth.Create(opts)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	body := map[string]any{"token": token, "challenge": begin["challenge"], "name": "Key", "credential": json.RawMessage(cred)}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return body, 200, nil
+}
+
+// registerPasskey enrols a passkey for the signed-in browser's user through the account API.
+func (b *browser) registerPasskey(name string) *virtualauth.Credential {
+	b.t.Helper()
+	b.markReauth() // registering a passkey needs a recent re-authentication
+	res, out := b.post("/api-internal/account/passkeys/register/begin", nil)
+	wantStatus(b.t, res, out, 200)
+	opts, _ := json.Marshal(out["options"])
+	cred, c, err := b.auth.Create(opts)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	res, out = b.post("/api-internal/account/passkeys/register/finish", map[string]any{"challenge": out["challenge"], "name": name,
+		"credential": json.RawMessage(cred)})
+	wantStatus(b.t, res, out, 201)
+	return c
+}
+
+// passkeyLogin runs begin+finish on an anonymous browser and returns the finish response.
+func (b *browser) passkeyLogin(begin map[string]any) (int, map[string]any) {
+	b.t.Helper()
+	res, out := b.post("/api-internal/login/passkey/begin", begin)
+	if res.StatusCode != 200 {
+		return res.StatusCode, out
+	}
+	opts, _ := json.Marshal(out["options"])
+	cred, _, err := b.auth.Get(opts)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	res, out2 := b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": out["challenge"], "credential": json.RawMessage(cred)})
+	return res.StatusCode, out2
+}
+
+// refused is the answer of a step whose ticket, link or confirmation no longer binds to the account.
+func refused(t *testing.T, res *http.Response, body map[string]any) {
+	t.Helper()
+	switch res.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusGone:
+	default:
+		t.Fatalf("status %d, want a refusal: %v", res.StatusCode, body["_raw"])
+	}
+}
+
+func (e *env) securityGen(t *testing.T, id string) uint64 {
+	t.Helper()
+	u, err := e.Svc.Users.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.SecurityGen
+}
+
+var formField = regexp.MustCompile(`name="(csrf|token)" value="([^"]*)"`)
+
+// verifyLink follows an emailed verification link as a person does: opens it (a page that uses nothing up), then
+// presses its button. It returns the answer to the press.
+func (b *browser) verifyLink(path string) (*http.Response, string) {
+	b.t.Helper()
+	res, page := b.get(path)
+	if res.StatusCode != http.StatusOK {
+		return res, page
+	}
+	form := url.Values{}
+	for _, m := range formField.FindAllStringSubmatch(page, -1) {
+		form.Set(m[1], strings.ReplaceAll(m[2], "&amp;", "&"))
+	}
+	res, err := b.c.PostForm(b.e.URL+"/verify-email", form)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return res, string(body)
+}
+
+func (e *env) tenant(t testing.TB, org *model.Org, name string, set model.TenantSettings) *model.Tenant {
+	t.Helper()
+	tn, err := e.Svc.CreateTenant(context.Background(), service.System, org.ID,
+		service.TenantInput{Name: ptr(name), Settings: &set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tn
+}
+
+// accountEnv is a server that audits sign-ins, does not limit them per address and locks an account after the given
+// number of failures (0: never), with the organization "acme".
+func accountEnv(t *testing.T, attempts int) (*env, *model.Org) {
+	e := newEnv(t, noIPLimit, auditLogins, lockoutAfter(attempts))
+	return e, e.org(t, "acme", nil)
+}
+
+// mfaEnv is accountEnv without a lockout, for the organization "acme" that requires a second factor.
+func mfaEnv(t *testing.T) (*env, *model.Org) {
+	e := newEnv(t, noIPLimit, auditLogins, lockoutAfter(0))
+	return e, e.org(t, "acme", func(s *model.OrgSettings) { s.RequireMFA = true })
+}
+
+func (e *env) passkeyCount(t *testing.T, u *model.User) int {
+	t.Helper()
+	l, err := e.Svc.Passkeys.All(context.Background(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(l)
+}
+
+// passkeyEnv is a server with a user "pat" in "acme" who has registered a passkey, and his signed-in browser.
+func passkeyEnv(t *testing.T) (*env, *model.User, *browser) {
+	e := newEnv(t, noIPLimit, auditLogins)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	signed := e.signedIn(t, pat)
+	signed.registerPasskey("Laptop")
+	return e, pat, signed
+}
+
+// lockEnv is a server that sends mail, locks an account after 3 failures and does not limit sign-ins per address,
+// with the organization "acme" using e-mailed codes.
+func lockEnv(t *testing.T) (*env, *model.Org) {
+	e := newEnv(t, withSMTP, noIPLimit, auditLogins, lockoutAfter(3))
+	return e, e.org(t, "acme", func(s *model.OrgSettings) { s.EmailCodes = true })
+}
+
+// lockedReasons counts the sign-in failures audited as "locked".
+func (e *env) lockedReasons(t *testing.T) int {
+	t.Helper()
+	n := 0
+	for _, a := range e.audits(t, "login.failure") {
+		if a.Detail["reason"] == "locked" {
+			n++
+		}
+	}
+	return n
+}
+
+// deviceCookie returns the known-device cookie the browser holds.
+func (b *browser) deviceCookie() *http.Cookie {
+	b.t.Helper()
+	u, _ := url.Parse(b.e.URL)
+	for _, ck := range b.c.Jar.Cookies(u) {
+		if ck.Name == "__Host-quisora_dev" {
+			return ck
+		}
+	}
+	b.t.Fatal("no device cookie")
+	return nil
+}
+
+// browserWithDevice is a fresh browser that holds only the given known-device cookie value.
+func (e *env) browserWithDevice(t testing.TB, value string) *browser {
+	t.Helper()
+	b := e.browser(t)
+	u, _ := url.Parse(e.URL)
+	b.c.Jar.SetCookies(u, []*http.Cookie{{Name: "__Host-quisora_dev", Value: value, Path: "/", Secure: true}})
+	return b
 }

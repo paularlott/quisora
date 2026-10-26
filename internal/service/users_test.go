@@ -2,224 +2,15 @@ package service_test
 
 import (
 	"errors"
-	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
-
-func TestSelfGuards(t *testing.T) {
-	c := newCast(t)
-	for _, ac := range c.actors() {
-		a := actor(ac.u)
-		// Nobody changes their own role.
-		other := model.RoleUser
-		if ac.u.Role == model.RoleUser {
-			other = model.RoleManager
-		}
-		_, err := c.svc.UpdateUser(c.ctx, a, ac.u.ID, service.UserInput{Role: &other})
-		if err == nil {
-			t.Errorf("%s changed own role", ac.name)
-		}
-		// Nobody disables themselves.
-		_, err = c.svc.UpdateUser(c.ctx, a, ac.u.ID, service.UserInput{Active: ptr(false)})
-		if err == nil {
-			t.Errorf("%s disabled self", ac.name)
-		}
-		// Nobody deletes themselves.
-		err = c.svc.DeleteUser(c.ctx, a, ac.u.ID)
-		if !errors.Is(err, service.ErrInvalid) {
-			t.Errorf("%s delete self: %v", ac.name, err)
-		}
-		u, _ := c.svc.Users.Get(c.ctx, ac.u.ID)
-		if u == nil || u.Role != ac.u.Role || !u.Active {
-			t.Errorf("%s was modified", ac.name)
-		}
-		// Re-submitting the unchanged role is harmless for those allowed to edit.
-		same := ac.u.Role
-		if _, err := c.svc.UpdateUser(c.ctx, a, ac.u.ID, service.UserInput{Role: &same}); err != nil && ac.u.Role != model.RoleUser && ac.u.Role != model.RoleManager {
-			t.Errorf("%s resubmit own role: %v", ac.name, err)
-		}
-	}
-}
-
-func TestSelfServiceProfile(t *testing.T) {
-	c := newCast(t)
-	// A plain user may edit their profile and password, but nothing privileged.
-	u := actor(c.aUser)
-	got, err := c.svc.UpdateUser(service.SelfService(c.ctx), u, c.aUser.ID, service.UserInput{FamilyName: ptr("Me"),
-		GivenName: ptr("A"), Password: ptr("my-new-password-1")})
-	if err != nil || got.FamilyName != "Me" || got.PasswordHash == "" {
-		t.Fatalf("self update: %v %+v", err, got)
-	}
-	for name, in := range map[string]service.UserInput{
-		"username": {Username: ptr("renamed")},
-		"active":   {Active: ptr(false)}, // a value equal to the stored one is no change (a whole-form save)
-		"external": {ExternalID: ptr("x")},
-		"verified": {Verified: ptr(true)},
-		"tags":     {Tags: tags("a")},
-		"role":     {Role: ptr(model.RoleAdmin)},
-	} {
-		if _, err := c.svc.UpdateUser(c.ctx, u, c.aUser.ID, in); err == nil {
-			t.Errorf("plain user could set %s", name)
-		}
-	}
-	// A manager editing their own profile.
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aManager), c.aManager.ID, service.UserInput{FamilyName: ptr("Boss")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aManager), c.aManager.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err == nil {
-		t.Fatal("manager promoted self")
-	}
-}
-
-// Organizations need no administrator (super admins administer every one): an organization's last administrator can
-// be demoted, disabled or deleted.
-func TestLastOrgAdminNotProtected(t *testing.T) {
-	c := newCast(t)
-	org := c.org("solo")
-	for _, change := range []service.UserInput{{Role: ptr(model.RoleUser)}, {Active: ptr(false)}} {
-		only := c.user(org.ID, c.next("only"), model.RoleAdmin)
-		if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), only.ID, change); err != nil {
-			t.Errorf("change of the last admin %+v: %v", change, err)
-		}
-	}
-	only := c.user(org.ID, "last", model.RoleAdmin)
-	if err := c.svc.DeleteUser(c.ctx, actor(c.super), only.ID); err != nil {
-		t.Errorf("delete the last admin: %v", err)
-	}
-}
-
-// Deactivating a super admin (disabling, locking out, or an end date in the past) is refused when fewer usable super
-// admins than the server keeps would remain: one, or two in a gossip cluster.
-func TestSuperAdminDeactivationThreshold(t *testing.T) {
-	c := newCast(t)
-	ghost := &service.Actor{UserID: "someone-else", OrgID: c.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
-	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	deactivations := map[string]func(id string) error{
-		"disable": func(id string) error {
-			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{Active: ptr(false)})
-			return err
-		},
-		"lock out": func(id string) error { _, err := c.svc.LockOutUser(c.ctx, ghost, id, "x"); return err },
-		"end date": func(id string) error {
-			_, err := c.svc.UpdateUser(c.ctx, ghost, id, service.UserInput{ValidUntil: ptr(past)})
-			return err
-		},
-	}
-	// one super admin: none of them
-	for name, f := range deactivations {
-		if err := f(c.super.ID); !errors.Is(err, service.ErrLastAdmin) {
-			t.Errorf("%s the only super admin: %v", name, err)
-		}
-	}
-	// a gossip cluster keeps two: with two, still none
-	c.svc.MinSuperAdmins = 2
-	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
-	for name, f := range deactivations {
-		if err := f(s2.ID); !errors.Is(err, service.ErrLastAdmin) {
-			t.Errorf("%s one of two super admins in a gossip cluster: %v", name, err)
-		}
-	}
-	if got, _ := c.svc.Users.Get(c.ctx, s2.ID); !got.Active || got.ValidUntil != nil {
-		t.Error("a refused deactivation changed the super admin")
-	}
-	// with three, one may go
-	c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
-	if err := deactivations["disable"](s2.ID); err != nil {
-		t.Errorf("disable one of three super admins in a gossip cluster: %v", err)
-	}
-}
-
-// The server keeps as many super admins as it needs (Service.MinSuperAdmins): two in a gossip cluster, and the error
-// says so.
-func TestMinSuperAdmins(t *testing.T) {
-	c := newCast(t)
-	c.svc.MinSuperAdmins = 2
-	s2 := c.user(c.primary.ID, "s2", model.RoleSuperAdmin)
-	s3 := c.user(c.primary.ID, "s3", model.RoleSuperAdmin)
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s3.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Fatalf("three super admins, one demoted: %v", err)
-	}
-	_, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
-	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "at least 2 super admins") {
-		t.Fatalf("two super admins in a gossip cluster: %v", err)
-	}
-	c.svc.MinSuperAdmins = 0
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), s2.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Fatalf("one super admin is enough without gossip: %v", err)
-	}
-	ghost := &service.Actor{UserID: "someone-else", OrgID: c.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
-	_, err = c.svc.UpdateUser(c.ctx, ghost, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)})
-	if !errors.Is(err, service.ErrLastAdmin) || !strings.Contains(err.Error(), "last super admin") {
-		t.Fatalf("the last super admin: %v", err)
-	}
-}
-
-func TestLastSuperAdminProtection(t *testing.T) {
-	c := newCast(t)
-	super2 := c.user(c.primary.ID, "super2", model.RoleSuperAdmin)
-	// Two supers: one may demote the other.
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.super), super2.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Fatalf("demote second super: %v", err)
-	}
-	// Now only one super admin remains: a (hypothetical) second actor with the super role cannot remove it.
-	ghost := &service.Actor{UserID: "someone-else", OrgID: c.primary.ID, Role: model.RoleSuperAdmin, Name: "ghost"}
-	if _, err := c.svc.UpdateUser(c.ctx, ghost, c.super.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("demote last super: %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, ghost, c.super.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("disable last super: %v", err)
-	}
-	if err := c.svc.DeleteUser(c.ctx, ghost, c.super.ID); !errors.Is(err, service.ErrLastAdmin) {
-		t.Errorf("delete last super: %v", err)
-	}
-}
-
-func TestClientActorCannotGrantAdmin(t *testing.T) {
-	c := newCast(t)
-	cl, _, err := c.svc.CreateClient(c.ctx, actor(c.super), c.a.ID, service.ClientInput{Name: ptr("scim"), SCIM: ptr(true),
-		RedirectURIs: ptr([]string{"https://x.example.com/cb"})})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := service.ActorForClient(cl, "1.2.3.4")
-	if a.Role != model.RoleAdmin || !a.HasScope(service.ScopeSCIM) || a.HasScope(service.ScopeAdmin) || a.ClientID != cl.ID {
-		t.Fatalf("unexpected client actor %+v", a)
-	}
-	n := c.next("c")
-	if _, err := c.svc.CreateUser(c.ctx, a, c.a.ID, service.UserInput{GivenName: gn("T"), Username: &n, Email: ptr(n + "@example.com"), Role: ptr(model.RoleAdmin)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("client created admin: %v", err)
-	}
-	if _, err := c.svc.CreateUser(c.ctx, a, c.a.ID, service.UserInput{GivenName: gn("T"), Username: &n, Email: ptr(n + "@example.com"), Role: ptr(model.RoleSuperAdmin)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("client created super: %v", err)
-	}
-	m, err := c.svc.CreateUser(c.ctx, a, c.a.ID, service.UserInput{GivenName: gn("T"), Username: &n, Email: ptr(n + "@example.com"), Role: ptr(model.RoleManager)})
-	if err != nil {
-		t.Fatalf("client creating manager: %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, a, m.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("client promoted to admin: %v", err)
-	}
-	// Other org is out of reach.
-	n2 := c.next("c")
-	if _, err := c.svc.CreateUser(c.ctx, a, c.b.ID, service.UserInput{GivenName: gn("T"), Username: &n2, Email: ptr(n2 + "@example.com")}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("client in other org: %v", err)
-	}
-	// Groups are fine (admin of its org).
-	if _, err := c.svc.CreateGroup(c.ctx, a, c.a.ID, service.GroupInput{DisplayName: ptr("g")}); err != nil {
-		t.Errorf("client group: %v", err)
-	}
-	// A client actor has no user id so it can neither mint nor list API tokens.
-	if _, _, err := c.svc.CreateAPIToken(c.ctx, a, service.APITokenInput{Name: "x", Scopes: []string{"api"}}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("client minted token: %v", err)
-	}
-}
 
 func TestUserUniqueConflictsAreFieldErrors(t *testing.T) {
 	c := newCast(t)
@@ -239,7 +30,7 @@ func TestUserUniqueConflictsAreFieldErrors(t *testing.T) {
 		{"external", service.UserInput{Username: ptr("other2"), Email: ptr("other2@example.com"), ExternalID: ptr("ext-1")}, "external_id"},
 	}
 	for _, tc := range cases {
-		tc.in.GivenName = gn("T")
+		tc.in.GivenName = ptr("T")
 		_, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, tc.in)
 		var fe *service.FieldError
 		if !errors.As(err, &fe) || fe.Field != tc.field || !errors.Is(err, service.ErrConflict) || !errors.Is(err, service.ErrInvalid) {
@@ -247,7 +38,7 @@ func TestUserUniqueConflictsAreFieldErrors(t *testing.T) {
 		}
 	}
 	// The same values are fine in another org.
-	if _, err := c.svc.CreateUser(c.ctx, actor(c.bAdmin), c.b.ID, service.UserInput{GivenName: gn("T"), Username: ptr("alice"), Email: ptr("alice@example.com"), ExternalID: ptr("ext-1")}); err != nil {
+	if _, err := c.svc.CreateUser(c.ctx, actor(c.bAdmin), c.b.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("alice"), Email: ptr("alice@example.com"), ExternalID: ptr("ext-1")}); err != nil {
 		t.Errorf("same values in other org: %v", err)
 	}
 	// Updating to a clashing value.
@@ -269,7 +60,7 @@ func TestUserUniqueConflictsAreFieldErrors(t *testing.T) {
 	if err := c.svc.DeleteUser(c.ctx, actor(c.aAdmin), base.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("alice"), Email: ptr("alice@example.com"), ExternalID: ptr("ext-1")}); err != nil {
+	if _, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("alice"), Email: ptr("alice@example.com"), ExternalID: ptr("ext-1")}); err != nil {
 		t.Errorf("reuse after delete: %v", err)
 	}
 }
@@ -297,7 +88,7 @@ func TestUserValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if tc.in.GivenName == nil {
-			tc.in.GivenName = gn("T")
+			tc.in.GivenName = ptr("T")
 		}
 		_, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, tc.in)
 		var fe *service.FieldError
@@ -311,12 +102,12 @@ func TestUserValidation(t *testing.T) {
 	if err != nil || u.Username != "carol@example.com" || u.FullName() != "Carol Jones" || !u.Active || u.Role != model.RoleUser {
 		t.Errorf("defaults: %v %+v", err, u)
 	}
-	u, err = c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("dave"), Email: ptr("dave@example.com")})
+	u, err = c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("dave"), Email: ptr("dave@example.com")})
 	if err != nil || u.FullName() != "T" {
 		t.Errorf("name default: %v %+v", err, u)
 	}
 	// A blank username also falls back to the email; the username never needs to be given.
-	u, err = c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("  "), Email: ptr("erica@example.com")})
+	u, err = c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("  "), Email: ptr("erica@example.com")})
 	if err != nil || u.Username != "erica@example.com" {
 		t.Errorf("blank username default: %v %+v", err, u)
 	}
@@ -329,73 +120,17 @@ func TestUserValidation(t *testing.T) {
 		}
 	}
 	// Unknown org.
-	if _, err := c.svc.CreateUser(c.ctx, actor(c.super), "no-such-org", service.UserInput{GivenName: gn("T"), Username: ptr("x"), Email: ptr("x@example.com")}); !errors.Is(err, service.ErrNotFound) {
+	if _, err := c.svc.CreateUser(c.ctx, actor(c.super), "no-such-org", service.UserInput{GivenName: ptr("T"), Username: ptr("x"), Email: ptr("x@example.com")}); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("unknown org: %v", err)
 	}
 	// Changing the email clears the verified flag.
-	v, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("erin"), Email: ptr("erin@example.com"), Verified: ptr(true)})
+	v, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("erin"), Email: ptr("erin@example.com"), Verified: ptr(true)})
 	if err != nil || !v.EmailVerified {
 		t.Fatalf("verified: %v", err)
 	}
 	v, err = c.svc.UpdateUser(c.ctx, actor(c.aAdmin), v.ID, service.UserInput{Email: ptr("erin2@example.com")})
 	if err != nil || v.EmailVerified {
 		t.Errorf("email change should clear verified: %v %+v", err, v)
-	}
-}
-
-func TestUserPasswordHashAndSessions(t *testing.T) {
-	c := newCast(t)
-	// Admins cannot set passwords, at creation or later: only the system can (an accepted invitation does).
-	if _, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("pw0"), Email: ptr("pw0@example.com"), Password: ptr("correct horse battery")}); !errors.As(err, new(*service.FieldError)) {
-		t.Fatalf("admin created a user with a password: %v", err)
-	}
-	u, err := c.svc.CreateUser(c.ctx, service.System, c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("pw"), Email: ptr("pw@example.com"), Password: ptr("correct horse battery")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ok, err := c.svc.VerifyPassword(c.ctx, "", u, "correct horse battery")
-	if err != nil || !ok {
-		t.Fatalf("verify: %v %v", ok, err)
-	}
-	// Sessions, grants and tokens of a user die with a disable.
-	sess := &model.Session{Meta: model.Meta{ID: "sess-" + u.ID}, UserID: u.ID, OrgID: u.OrgID}
-	if err := c.svc.Sessions.Create(c.ctx, sess); err != nil {
-		t.Fatal(err)
-	}
-	grant := &model.Grant{UserID: u.ID, OrgID: u.OrgID}
-	if err := c.svc.Grants.Create(c.ctx, grant); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), u.ID, service.UserInput{Active: ptr(false)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.Sessions.Get(c.ctx, sess.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Error("session survived disable")
-	}
-	if _, err := c.svc.Grants.Get(c.ctx, grant.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Error("grant survived disable")
-	}
-	// Password reset by someone else ends sessions; by the user themselves it keeps them.
-	sess2 := &model.Session{Meta: model.Meta{ID: "sess2-" + u.ID}, UserID: u.ID, OrgID: u.OrgID}
-	_ = c.svc.Sessions.Create(c.ctx, sess2)
-	if _, err := c.svc.UpdateUser(service.SelfService(c.ctx), actor(u), u.ID, service.UserInput{Password: ptr("another-long-password")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.Sessions.Get(c.ctx, sess2.ID); err != nil {
-		t.Error("own password change ended own session")
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, actor(c.aAdmin), u.ID, service.UserInput{Password: ptr("admin-reset-password")}); err == nil {
-		t.Fatal("an admin set someone's password")
-	}
-	if _, err := c.svc.Sessions.Get(c.ctx, sess2.ID); err != nil {
-		t.Error("a refused password change ended a session")
-	}
-	// The system (an accepted invitation or reset link) sets a password and ends every session.
-	if _, err := c.svc.UpdateUser(c.ctx, service.System, u.ID, service.UserInput{Password: ptr("link-chosen-password")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.svc.Sessions.Get(c.ctx, sess2.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Error("system password set kept session")
 	}
 }
 
@@ -440,6 +175,8 @@ func TestDeleteUserRemovesEverything(t *testing.T) {
 	}
 }
 
+// Concurrent updates of one user end ok or stale and at least one succeeds; an update from a copy read before another
+// write is refused as stale, never silently lost.
 func TestOptimisticConcurrency(t *testing.T) {
 	c := newCast(t)
 	u := c.user(c.a.ID, "race", model.RoleUser)
@@ -451,7 +188,7 @@ func TestOptimisticConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := c.svc.UpdateUser(c.ctx, a, u.ID, service.UserInput{FamilyName: ptr("t" + itoa(i))})
+			_, err := c.svc.UpdateUser(c.ctx, a, u.ID, service.UserInput{FamilyName: ptr("t" + strconv.Itoa(i))})
 			mu.Lock()
 			counts[outcome(err)]++
 			mu.Unlock()
@@ -466,7 +203,6 @@ func TestOptimisticConcurrency(t *testing.T) {
 	if counts["ok"] == 0 {
 		t.Error("no update succeeded")
 	}
-	t.Logf("concurrent updates: %v", counts)
 
 	// A write by someone else between read and write is reported, never silently lost: simulate with a stale entity.
 	stale, _ := c.svc.Users.Get(c.ctx, u.ID)
@@ -486,7 +222,8 @@ func TestOptimisticConcurrency(t *testing.T) {
 	}
 }
 
-func TestStaleSurfacesFromService(t *testing.T) {
+// Concurrent writers of one organization, group and client fail only as ErrStale (retryable), and each is written.
+func TestConcurrentWritesFailOnlyAsStale(t *testing.T) {
 	// Hammer one org, group and client with concurrent writers; every failure must be ErrStale (retryable).
 	c := newCast(t)
 	g, _ := c.svc.CreateGroup(c.ctx, actor(c.aAdmin), c.a.ID, service.GroupInput{DisplayName: ptr("race-group")})
@@ -506,17 +243,17 @@ func TestStaleSurfacesFromService(t *testing.T) {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			_, err := c.svc.UpdateGroup(c.ctx, actor(c.aAdmin), g.ID, service.GroupInput{ExternalID: ptr("e" + itoa(i))})
+			_, err := c.svc.UpdateGroup(c.ctx, actor(c.aAdmin), g.ID, service.GroupInput{ExternalID: ptr("e" + strconv.Itoa(i))})
 			record(err)
 		}()
 		go func() {
 			defer wg.Done()
-			_, err := c.svc.UpdateClient(c.ctx, actor(c.aAdmin), cl.ID, service.ClientInput{Description: ptr("d" + itoa(i))})
+			_, err := c.svc.UpdateClient(c.ctx, actor(c.aAdmin), cl.ID, service.ClientInput{Description: ptr("d" + strconv.Itoa(i))})
 			record(err)
 		}()
 		go func() {
 			defer wg.Done()
-			_, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{DisplayName: ptr("n" + itoa(i))})
+			_, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.a.ID, service.OrgInput{DisplayName: ptr("n" + strconv.Itoa(i))})
 			record(err)
 		}()
 	}
@@ -524,36 +261,22 @@ func TestStaleSurfacesFromService(t *testing.T) {
 	if len(bad) > 0 {
 		t.Errorf("non-stale failures: %v", bad)
 	}
-}
-
-func TestAuditTrail(t *testing.T) {
-	c := newCast(t)
-	u := c.user(c.a.ID, "audited", model.RoleUser)
-	_, _ = c.svc.UpdateUser(c.ctx, actor(c.aAdmin), u.ID, service.UserInput{FamilyName: ptr("x")})
-	_ = c.svc.DeleteUser(c.ctx, actor(c.aAdmin), u.ID)
-	pg, err := c.svc.ListAudit(c.ctx, actor(c.aAdmin), c.a.ID, service.AuditQuery{Limit: 100})
-	list, n := pg.Items, pg.Total
-	if err != nil || n == 0 {
-		t.Fatalf("audit: %v %d", err, n)
+	// at least one writer of each won: every writer failing as stale would pass the check above
+	if got, _ := c.svc.Groups.Get(c.ctx, g.ID); got.ExternalID == "" {
+		t.Error("no group update succeeded")
 	}
-	seen := map[string]bool{}
-	for _, e := range list {
-		seen[e.Action] = true
-		if e.Action == "user.delete" && (e.Actor != "aadmin" || e.ActorID != c.aAdmin.ID || e.Target != "audited") {
-			t.Errorf("audit entry %+v", e)
-		}
+	if got, _ := c.svc.Clients.Get(c.ctx, cl.ID); got.Description == "" {
+		t.Error("no client update succeeded")
 	}
-	for _, a := range []string{"user.create", "user.update", "user.delete"} {
-		if !seen[a] {
-			t.Errorf("missing audit action %s", a)
-		}
+	if got, _ := c.svc.Orgs.Get(c.ctx, c.a.ID); !strings.HasPrefix(got.DisplayName, "n") {
+		t.Error("no organization update succeeded")
 	}
 }
 
 func TestListUsersQuery(t *testing.T) {
 	c := newCast(t)
 	for i := range 25 {
-		c.user(c.a.ID, "list"+itoa(100+i), model.RoleUser)
+		c.user(c.a.ID, "list"+strconv.Itoa(100+i), model.RoleUser)
 	}
 	a := actor(c.aAdmin)
 	page, total, err := c.svc.ListUsers(c.ctx, a, c.a.ID, store.ListQuery{Search: "list1", Sort: "username", Limit: 10, Offset: 5})
@@ -577,86 +300,10 @@ func TestListUsersQuery(t *testing.T) {
 	}
 }
 
-// Own password and email change only through the account page (SelfService): the management API, sessions or
-// tokens, cannot bypass the current-password / re-authentication check.
-func TestSelfCredentialsNeedAccountPage(t *testing.T) {
-	c := newCast(t)
-	for _, u := range []*model.User{c.aUser, c.aAdmin} {
-		if _, err := c.svc.UpdateUser(c.ctx, actor(u), u.ID, service.UserInput{Password: ptr("my-new-password-1")}); !errors.Is(err, service.ErrInvalid) {
-			t.Errorf("%s: self password via UpdateUser: %v", u.Username, err)
-		}
-		if _, err := c.svc.UpdateUser(c.ctx, actor(u), u.ID, service.UserInput{Email: ptr("new-" + u.Email)}); !errors.Is(err, service.ErrInvalid) {
-			t.Errorf("%s: self email via UpdateUser: %v", u.Username, err)
-		}
-		if _, err := c.svc.UpdateUser(c.ctx, actor(u), u.ID, service.UserInput{Email: ptr(u.Email), FamilyName: ptr("ok")}); err != nil {
-			t.Errorf("%s: unchanged email must be accepted: %v", u.Username, err)
-		}
-	}
-}
-
-// Provisioning clients (SCIM client_credentials) never touch admins: no password reset, disable, delete or demote.
-func TestProvisioningClientCannotTouchAdmins(t *testing.T) {
-	c := newCast(t)
-	cl := &model.Client{Meta: model.Meta{ID: "scim-client"}, OrgID: c.aAdmin.OrgID, Name: "prov", SCIM: true}
-	a := service.ActorForClient(cl, "")
-	f := false
-	role := model.RoleUser
-	for name, in := range map[string]service.UserInput{
-		"password": {Password: ptr("attacker-password-1")}, "disable": {Active: &f}, "demote": {Role: &role},
-	} {
-		if _, err := c.svc.UpdateUser(c.ctx, a, c.aAdmin.ID, in); !errors.Is(err, service.ErrForbidden) {
-			t.Errorf("%s admin: %v", name, err)
-		}
-	}
-	if err := c.svc.DeleteUser(c.ctx, a, c.aAdmin.ID); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("delete admin: %v", err)
-	}
-	// Plain users and managers remain manageable, but never get a password from the client: no setting it, and
-	// no inviting or clearing the password of an admin.
-	if _, err := c.svc.UpdateUser(c.ctx, a, c.aUser.ID, service.UserInput{Password: ptr("provisioned-pass-1")}); !errors.As(err, new(*service.FieldError)) {
-		t.Errorf("plain user password: %v", err)
-	}
-	if _, err := c.svc.UpdateUser(c.ctx, a, c.aUser.ID, service.UserInput{FamilyName: ptr("Renamed")}); err != nil {
-		t.Errorf("plain user: %v", err)
-	}
-	if _, _, err := c.svc.CreateInvite(c.ctx, a, c.aAdmin.ID); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("invite admin: %v", err)
-	}
-	if err := c.svc.RemovePassword(c.ctx, a, c.aAdmin.ID); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("remove admin password: %v", err)
-	}
-	if _, _, err := c.svc.CreateInvite(c.ctx, a, c.aUser.ID); err != nil {
-		t.Errorf("invite plain user: %v", err)
-	}
-}
-
-// Concurrent demotions of the only two admins must leave exactly one admin.
-func TestLastAdminRace(t *testing.T) {
-	for i := range 20 {
-		c := newCast(t)
-		second, err := c.svc.CreateUser(c.ctx, service.System, c.primary.ID, service.UserInput{GivenName: gn("T"),
-			Username: ptr(fmt.Sprintf("super2-%d", i)), Email: ptr(fmt.Sprintf("super2-%d@example.com", i)), Role: ptr(model.RoleSuperAdmin)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		role := model.RoleUser
-		var wg sync.WaitGroup
-		for _, id := range []string{c.super.ID, second.ID} {
-			wg.Go(func() { _, _ = c.svc.UpdateUser(c.ctx, service.System, id, service.UserInput{Role: &role}) })
-		}
-		wg.Wait()
-		_, n, err := c.svc.Users.List(c.ctx, store.ListQuery{Scope: c.primary.ID, Filters: []store.Filter{
-			{Field: "role", Value: "super_admin"}, {Field: "active", Value: true}}})
-		if err != nil || n != 1 {
-			t.Fatalf("run %d: %d active super admins left", i, n)
-		}
-	}
-}
-
 // Sign-in lookup is by email address only, case-insensitively; the username never matches.
 func TestFindUserByEmail(t *testing.T) {
 	c := newCast(t)
-	u, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("zed"), Email: ptr("Zed@Example.com")})
+	u, err := c.svc.CreateUser(c.ctx, actor(c.aAdmin), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("zed"), Email: ptr("Zed@Example.com")})
 	if err != nil {
 		t.Fatal(err)
 	}

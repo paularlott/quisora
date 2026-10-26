@@ -50,7 +50,9 @@ func seedCmd(cfg *config.Config, serverFlags []cli.Flag) *cli.Command {
 		Name:  "seed",
 		Usage: "Write orgs, users, groups, clients and refresh grants straight into the configured store",
 		Description: "Takes the same settings as serve (flags, QUISORA_* environment, config file). The server must not be " +
-			"running on a node-local store (BadgerDB, SQLite). Safe to repeat: organizations that exist are skipped.",
+			"running on a node-local store (BadgerDB, SQLite). Safe to repeat: organizations that exist are skipped. With " +
+			"cluster.bind (a gossip node) the seeded records become the first writes of their partitions, and nodes " +
+			"started afterwards with empty databases copy them; a node that has run in a cluster is refused.",
 		Flags: append([]cli.Flag{
 			&cli.IntFlag{Name: "orgs", DefaultValue: d.Orgs, Usage: "Organizations (org-00001 ...)"},
 			&cli.IntFlag{Name: "users", DefaultValue: d.Users, Usage: "Users per organization"},

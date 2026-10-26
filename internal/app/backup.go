@@ -2,12 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/paularlott/quisora/internal/cluster"
 
@@ -68,6 +68,17 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool,
 	if err := os.WriteFile(marker, []byte("quisora restore\n"), 0o600); err != nil {
 		return nil, err
 	}
+	if force && c.Cluster.Bind != "" {
+		_ = os.Remove(marker)
+		return nil, errors.New("a gossip node's backup is restored into an empty database (the first node of a new cluster), " +
+			"never over data: its records would be written outside the partitions the others copy")
+	}
+	if c.Cluster.Bind != "" { // a node that already holds a data set is refused before anything is written
+		if err := cluster.CheckNewCluster(c.Server.DataDir, st); err != nil {
+			_ = os.Remove(marker)
+			return nil, err
+		}
+	}
 	stats, err := backup.Restore(ctx, st, sealer, r, force, password)
 	if err != nil {
 		if stats.Total() == 0 {
@@ -75,7 +86,9 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool,
 		}
 		return stats, err
 	}
-	forgetClusterState(c)
+	if err := seedRestored(ctx, c, st); err != nil {
+		return stats, err // not complete: the marker stays
+	}
 	name := ""
 	if f, ok := r.(interface{ Name() string }); ok {
 		name = f.Name()
@@ -100,19 +113,21 @@ func checkRestoreIncomplete(c *config.Config) error {
 	return nil
 }
 
-// forgetClusterState prepares a gossip node for its restored data: its saved replication progress goes (it is a new
-// member, not a node whose database was swapped behind its back), and the restored marker makes it offer the data to
-// new, empty members only and refuse a cluster that already holds data (restore goes into an empty cluster).
-func forgetClusterState(c *config.Config) {
-	_ = os.Remove(filepath.Join(c.Server.DataDir, "cluster-state.json"))
-	_ = os.MkdirAll(c.Server.DataDir, 0o700)
-	_ = os.WriteFile(filepath.Join(c.Server.DataDir, cluster.RestoredMarker), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
+// seedRestored makes a restored gossip node the first node of a new cluster: its restored records become the first
+// writes of their partitions and its state says that its data is the cluster's (cluster.StartNewCluster). The other
+// nodes start with empty databases and copy everything from it. Without gossip there is nothing to do.
+func seedRestored(ctx context.Context, c *config.Config, st store.Store) error {
+	if c.Cluster.Bind == "" {
+		return nil
+	}
+	return cluster.StartNewCluster(ctx, c.Server.DataDir, st)
 }
 
 // restoreAtStart loads server.restore_from into the store before anything else uses it, when the store is empty.
 // A store that already holds data is left alone, so the setting can stay in place across restarts. The records go
-// in with their versions (PutReplicated), so in a cluster with node-local stores the other nodes copy them like any
-// other change; start the first node of a new cluster with it, not a node joining a running cluster.
+// in with their versions (PutReplicated); a gossip node then makes them the first writes of their partitions
+// (seedRestored), and the other nodes copy them from it. Start the first node of a new cluster with it, not a node
+// joining a running cluster.
 func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, sealer *secure.Sealer, log logger.Logger) error {
 	file := c.Server.RestoreFrom
 	if file == "" {
@@ -126,6 +141,11 @@ func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, seale
 	if !empty {
 		log.Info("restore skipped: the store already holds data", "file", file)
 		return nil
+	}
+	if c.Cluster.Bind != "" { // a node that already holds a data set (copying it, say) is refused before anything is written
+		if err := cluster.CheckNewCluster(c.Server.DataDir, st); err != nil {
+			return fmt.Errorf("restore from %s: %w", file, err)
+		}
 	}
 	f, err := os.Open(file)
 	if err != nil {
@@ -142,7 +162,9 @@ func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, seale
 		}
 		return fmt.Errorf("restore from %s: %w", file, err)
 	}
-	forgetClusterState(c)
+	if err := seedRestored(ctx, c, st); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
 	if err := noteRestore(c, file, stats.Total(), false, "serve --restore-from"); err != nil {
 		return err
 	}

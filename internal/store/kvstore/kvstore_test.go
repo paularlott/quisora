@@ -8,14 +8,6 @@ import (
 	"github.com/paularlott/quisora/internal/store/storetest"
 )
 
-func badgerFactory(t testing.TB) store.Store {
-	s, err := OpenBadger(context.Background(), t.TempDir(), BadgerOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
 func TestBadgerConformance(t *testing.T) { storetest.Run(t, badgerFactory) }
 func TestBadgerBatch(t *testing.T)       { storetest.RunBatch(t, badgerFactory) }
 

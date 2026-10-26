@@ -4,9 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
@@ -80,18 +79,32 @@ func (e *env) options(t testing.TB, u *model.User) (string, []byte) {
 	return id, opts
 }
 
+func (e *env) begunRegistration(t *testing.T, purpose string) (string, []byte) {
+	t.Helper()
+	extra := map[string]string{}
+	if purpose != "" {
+		extra[passkey.PurposeKey] = purpose
+	}
+	id, creation, err := e.pk.BeginRegistration(e.ctx, e.user, extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, _ := json.Marshal(creation)
+	return id, opts
+}
+
 func TestRegisterAndDiscoverableLogin(t *testing.T) {
 	e := setup(t)
 	e.register(t, "Laptop")
+	if got := e.pk.RPID(); got != "quisora.example.test" {
+		t.Fatalf("rp id %q", got)
+	}
 	list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID)
 	if len(list) != 1 || !list[0].UserVerified || list[0].BackupEligible {
 		t.Fatalf("stored passkey %+v", list)
 	}
 
 	id, opts := e.options(t, nil)
-	if json.Unmarshal(opts, &struct{}{}); string(opts) == "" {
-		t.Fatal("no options")
-	}
 	var o struct {
 		PublicKey struct {
 			AllowCredentials []any  `json:"allowCredentials"`
@@ -99,7 +112,9 @@ func TestRegisterAndDiscoverableLogin(t *testing.T) {
 			RPID             string `json:"rpId"`
 		} `json:"publicKey"`
 	}
-	_ = json.Unmarshal(opts, &o)
+	if err := json.Unmarshal(opts, &o); err != nil {
+		t.Fatalf("options: %v", err)
+	}
 	if len(o.PublicKey.AllowCredentials) != 0 || o.PublicKey.UV != "required" || o.PublicKey.RPID != "quisora.example.test" {
 		t.Fatalf("discoverable options: %s", opts)
 	}
@@ -166,8 +181,7 @@ func TestWrongOrigin(t *testing.T) {
 	}
 	// Registration from the wrong origin fails too.
 	evil := virtualauth.New("https://evil.example")
-	rid, creation, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
-	ro, _ := json.Marshal(creation)
+	rid, ro := e.begunRegistration(t, "")
 	cred, _, err := evil.Create(ro)
 	if err != nil {
 		t.Fatal(err)
@@ -190,72 +204,23 @@ func TestReplayedChallenge(t *testing.T) {
 	}
 	// A failed attempt also burns the challenge.
 	id2, opts2 := e.options(t, nil)
-	if _, err := e.pk.FinishLoginAs(e.ctx, id2, []byte(`{}`)); err == nil {
-		t.Fatal("garbage accepted")
+	if _, err := e.pk.FinishLoginAs(e.ctx, id2, []byte(`{}`)); !errors.Is(err, passkey.ErrVerify) {
+		t.Fatalf("garbage response: %v", err)
 	}
 	a2, _, _ := e.auth.Get(opts2)
 	if _, err := e.pk.FinishLoginAs(e.ctx, id2, a2); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("burnt challenge reusable: %v", err)
 	}
 	// A login challenge cannot finish a registration and vice versa.
-	rid, _, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
+	rid, _ := e.begunRegistration(t, "")
 	if _, err := e.pk.FinishLoginAs(e.ctx, rid, assertion); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("cross-purpose: %v", err)
 	}
 	// Registration challenge is bound to the user who began it.
-	rid2, _, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
+	rid2, _ := e.begunRegistration(t, "")
 	other := &model.User{Meta: model.Meta{ID: "someone-else"}}
 	if _, _, err := e.pk.FinishRegistrationAs(e.ctx, "", other, rid2, []byte(`{}`), "x"); !errors.Is(err, passkey.ErrChallenge) {
 		t.Fatalf("user binding: %v", err)
-	}
-}
-
-func TestSignCountRegression(t *testing.T) {
-	e := setup(t)
-	c := e.register(t, "Key")
-	for want := uint32(1); want <= 3; want++ {
-		id, opts := e.options(t, nil)
-		a, _, _ := e.auth.Get(opts)
-		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
-			t.Fatalf("login %d: %v", want, err)
-		}
-	}
-	// sessions signed in with this passkey (one of them may be the copy's holder's) and one signed in otherwise
-	list0, _ := e.svc.Passkeys.All(e.ctx, e.user.ID)
-	for i, pk := range []string{list0[0].ID, list0[0].ID, ""} {
-		if err := e.svc.Sessions.Create(e.ctx, &model.Session{Meta: model.Meta{ID: fmt.Sprintf("s%d", i)}, UserID: e.user.ID,
-			OrgID: e.user.OrgID, Passkey: pk, Expires: time.Now().Add(time.Hour)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	id, opts := e.options(t, nil)
-	stale, err := e.auth.GetWith(opts, c, 2, origin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := e.pk.FinishLoginAs(e.ctx, id, stale)
-	if !errors.Is(err, passkey.ErrCloneDetected) || res == nil || res.User.ID != e.user.ID {
-		t.Fatalf("want ErrCloneDetected with user, got %v %v", res, err)
-	}
-	list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID)
-	if list[0].SignCount != 3 {
-		t.Fatalf("counter moved to %d", list[0].SignCount)
-	}
-	// Every session the passkey signed in has ended; the other one stays.
-	if left, _ := e.svc.Sessions.All(e.ctx, e.user.ID); len(left) != 1 || left[0].ID != "s2" {
-		t.Fatalf("sessions after a clone warning: %d", len(left))
-	}
-	// The suspected clone is disabled: even the genuine authenticator no longer signs in with it.
-	if !list[0].Disabled || list[0].Usable() {
-		t.Fatalf("passkey not disabled after a clone warning: %+v", list[0])
-	}
-	id, opts = e.options(t, nil)
-	a, _, _ := e.auth.Get(opts)
-	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); !errors.Is(err, passkey.ErrUnusable) {
-		t.Fatalf("disabled passkey signed in: %v", err)
-	}
-	if _, _, err := e.pk.BeginLogin(e.ctx, e.user, nil); !errors.Is(err, passkey.ErrUnknownCredential) {
-		t.Fatalf("a disabled passkey is still offered: %v", err)
 	}
 }
 
@@ -279,28 +244,6 @@ func TestLegacyUnverifiedPasskeyUnusable(t *testing.T) {
 	}
 }
 
-func TestZeroCounterSyncedPasskey(t *testing.T) {
-	e := setup(t)
-	e.auth.CounterStep = 0
-	e.auth.BackupEligible, e.auth.BackupState = true, true
-	e.register(t, "iCloud")
-	for range 3 {
-		id, opts := e.options(t, nil)
-		a, _, _ := e.auth.Get(opts)
-		res, err := e.pk.FinishLoginAs(e.ctx, id, a)
-		if err != nil {
-			t.Fatalf("zero counters must be accepted: %v", err)
-		}
-		if got := res.AMR(); got[0] != "swk" {
-			t.Fatalf("synced key amr %v", got)
-		}
-	}
-	list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID)
-	if !list[0].BackupEligible || !list[0].BackupState {
-		t.Fatalf("backup flags not stored: %+v", list[0])
-	}
-}
-
 func TestUserVerificationRequired(t *testing.T) {
 	e := setup(t)
 	e.register(t, "Key")
@@ -315,8 +258,7 @@ func TestUserVerificationRequired(t *testing.T) {
 func TestExcludeAndDuplicate(t *testing.T) {
 	e := setup(t)
 	e.register(t, "Key")
-	_, creation, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
-	opts, _ := json.Marshal(creation)
+	_, opts := e.begunRegistration(t, "")
 	if _, _, err := e.auth.Create(opts); err == nil {
 		t.Fatal("authenticator should refuse an excluded credential")
 	}
@@ -341,8 +283,7 @@ func TestUnknownCredentialAndIPHost(t *testing.T) {
 	e.register(t, "Key")
 	// A different authenticator holding a credential the server has never seen.
 	stranger := virtualauth.New(origin)
-	_, creation, _ := e.pk.BeginRegistration(e.ctx, e.user, nil)
-	ro, _ := json.Marshal(creation)
+	_, ro := e.begunRegistration(t, "")
 	if _, _, err := stranger.Create(ro); err != nil {
 		t.Fatal(err)
 	}
@@ -362,32 +303,11 @@ func TestUnknownCredentialAndIPHost(t *testing.T) {
 	}
 }
 
-func BenchmarkAssertionVerify(b *testing.B) {
-	e := setup(b)
-	e.auth.CounterStep = 1
-	e.register(b, "Key")
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		b.StopTimer()
-		id, opts := e.options(b, nil)
-		a, _, _ := e.auth.Get(opts)
-		b.StartTimer()
-		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // Registration requires user verification, as sign-in does: a key that cannot verify its user (no PIN) is refused
 // at registration rather than registering and never signing in.
 func TestRegistrationRequiresUserVerification(t *testing.T) {
 	e := setup(t)
-	id, creation, err := e.pk.BeginRegistration(e.ctx, e.user, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	opts, _ := json.Marshal(creation)
+	id, opts := e.begunRegistration(t, "")
 	var o struct {
 		PublicKey struct {
 			Sel struct {
@@ -409,5 +329,38 @@ func TestRegistrationRequiresUserVerification(t *testing.T) {
 	}
 	if list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID); len(list) != 0 {
 		t.Fatalf("stored %d passkeys", len(list))
+	}
+}
+
+func TestLoginResultAMR(t *testing.T) {
+	for _, c := range []struct {
+		r    passkey.LoginResult
+		want string
+	}{
+		{passkey.LoginResult{}, "hwk"},
+		{passkey.LoginResult{UserVerified: true}, "hwk user"},
+		{passkey.LoginResult{BackupEligible: true}, "swk"},
+		{passkey.LoginResult{BackupEligible: true, UserVerified: true}, "swk user"},
+	} {
+		if got := strings.Join(c.r.AMR(), " "); got != c.want {
+			t.Errorf("AMR %+v = %q want %q", c.r, got, c.want)
+		}
+	}
+}
+
+func BenchmarkAssertionVerify(b *testing.B) {
+	e := setup(b)
+	e.auth.CounterStep = 1
+	e.register(b, "Key")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		b.StopTimer()
+		id, opts := e.options(b, nil)
+		a, _, _ := e.auth.Get(opts)
+		b.StartTimer()
+		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

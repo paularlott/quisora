@@ -1,82 +1,23 @@
 package vlogs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// fakeSelect is a VictoriaLogs query endpoint: it records every LogsQL query it is sent and answers from respond.
-type fakeSelect struct {
-	mu      sync.Mutex
-	queries []string
-	respond func(q string, w http.ResponseWriter)
-	srv     *httptest.Server
-}
-
-func newFakeSelect(t *testing.T, respond func(q string, w http.ResponseWriter)) *fakeSelect {
-	f := &fakeSelect{respond: respond}
-	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/select/logsql/query" {
-			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
-			return
-		}
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		q := r.PostForm.Get("query")
-		f.mu.Lock()
-		f.queries = append(f.queries, q)
-		f.mu.Unlock()
-		f.respond(q, w)
-	}))
-	t.Cleanup(f.srv.Close)
-	return f
-}
-
-func (f *fakeSelect) seen() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.queries...)
-}
-
-const (
-	countSuffix = " | stats count_uniq(id) n"
-	dedup       = " | sort by (_time desc) partition by (id) limit 1"
-)
-
-// answer serves rows to the page query and count to the count query.
-func answer(rows, count string) func(string, http.ResponseWriter) {
-	return func(q string, w http.ResponseWriter) {
-		if strings.HasSuffix(q, countSuffix) {
-			_, _ = w.Write([]byte(count))
-			return
-		}
-		_, _ = w.Write([]byte(rows))
-	}
-}
-
-func newReader(t *testing.T, base string) *Client {
-	t.Helper()
-	c, err := New(base, "n1", logger.NewNullLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
 // A page is two LogsQL queries, the filter with the sort, offset and limit and the filter with a count; the rows come
 // back as audit events with their time, every named field and the detail.* fields, and the count is the total.
+// Delivery is at least once, so the page query keeps one row per id before it cuts the page (dedup).
 func TestReadAuditQueriesAndParsesRows(t *testing.T) {
 	rows := `{"_time":"2026-10-24T10:00:01.5Z","id":"e1","org":"o1","actor":"ada","actor_id":"u1","action":"user.update","target":"bob","ip":"192.0.2.1","outcome":"success","request_id":"r1","user_agent":"curl","session_id":"s1","detail.tags":"x y","detail.reason":"policy"}` + "\n\n" +
 		`{"_time":"2026-10-24T09:59:59Z","id":"e2","org":"o1","actor":"bob","action":"login.failure","outcome":"failure"}` + "\n"
@@ -135,14 +76,14 @@ func TestReadAuditSortOrders(t *testing.T) {
 }
 
 // Every way VictoriaLogs can fail a page is an error: refusing the query (with its message, cut short), an unreadable
-// row, a failing count, and not answering at all. A count that is not one row leaves the total at zero.
+// row, a row longer than the reader takes (not a truncated page), a failing count, and not answering at all. A count
+// that is not one row leaves the total at zero.
 func TestReadAuditErrors(t *testing.T) {
 	ctx := context.Background()
 	t.Run("status", func(t *testing.T) {
-		vl := newFakeSelect(t, func(string, http.ResponseWriter) {}) // set below
-		vl.respond = func(_ string, w http.ResponseWriter) {
+		vl := newFakeSelect(t, func(_ string, w http.ResponseWriter) {
 			http.Error(w, strings.Repeat("x", 600), http.StatusInternalServerError)
-		}
+		})
 		_, err := newReader(t, vl.srv.URL).ReadAudit(ctx, service.AuditQuery{Limit: 1})
 		if err == nil || !strings.Contains(err.Error(), "answered 500") || len(err.Error()) > 600 {
 			t.Fatalf("err %v", err)
@@ -152,6 +93,12 @@ func TestReadAuditErrors(t *testing.T) {
 		vl := newFakeSelect(t, answer("{not json\n", `{"n":"1"}`))
 		if _, err := newReader(t, vl.srv.URL).ReadAudit(ctx, service.AuditQuery{Limit: 1}); err == nil {
 			t.Fatal("malformed row accepted")
+		}
+	})
+	t.Run("line too long", func(t *testing.T) {
+		vl := newFakeSelect(t, answer(string(bytes.Repeat([]byte("a"), 5<<20)), `{"n":"1"}`))
+		if _, err := newReader(t, vl.srv.URL).ReadAudit(ctx, service.AuditQuery{Limit: 1}); err == nil {
+			t.Fatal("a 5 MB line was accepted")
 		}
 	})
 	t.Run("count fails", func(t *testing.T) {
@@ -191,118 +138,44 @@ func TestFromRow(t *testing.T) {
 	}
 }
 
-// The spool size is zero without a spool, and the bytes on disk with one.
-func TestSpoolBytes(t *testing.T) {
-	c := newReader(t, "http://127.0.0.1:1")
-	if c.SpoolBytes() != 0 {
-		t.Fatal("size without a spool")
-	}
-	if err := c.Spool(t.TempDir(), 0); err != nil {
-		t.Fatal(err)
-	}
-	if c.SpoolBytes() != 0 {
-		t.Fatal("size of an empty spool")
-	}
-	line := []byte(`{"id":"a"}` + "\n")
-	if _, err := c.spool.store(line); err != nil {
-		t.Fatal(err)
-	}
-	if got := c.SpoolBytes(); got != int64(len(line)) {
-		t.Fatalf("spool holds %d bytes, want %d", got, len(line))
-	}
-}
-
-// An event the queue has no room for, and one written after Close, go to the structured log in full.
-func TestWriteAuditWithoutRoomOrWriterIsLogged(t *testing.T) {
-	log := newCapture()
-	c, err := New("http://127.0.0.1:1", "n1", log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.queue = make(chan []byte, 1) // no writer running: the second event finds no room
-	c.WriteAudit(event(0))
-	c.WriteAudit(event(1))
-	if ids := log.undeliveredIDs(); ids["ev-00000"] || !ids["ev-00001"] {
-		t.Fatalf("logged %v", ids)
-	}
-	c.mu.Lock()
-	dropped := c.dropped
-	c.mu.Unlock()
-	if dropped != 1 {
-		t.Fatalf("dropped %d", dropped)
-	}
-
-	log2 := newCapture()
-	c2, _ := New("http://127.0.0.1:1", "n1", log2)
-	c2.Start()
-	c2.Close()
-	c2.WriteAudit(event(5))
-	if ids := log2.undeliveredIDs(); !ids["ev-00005"] {
-		t.Fatalf("after close: logged %v", ids)
-	}
-}
-
-// A spool that stops being writable after startup does not lose the batch silently: it is logged in full.
-func TestToSpoolWriteFailureIsLogged(t *testing.T) {
-	log := newCapture()
-	dir := filepath.Join(t.TempDir(), "spool")
-	c, _ := New("http://127.0.0.1:1", "n1", log)
-	if err := c.Spool(dir, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dir, nil, 0o600); err != nil { // a file where the directory was
-		t.Fatal(err)
-	}
-	c.toSpool([]byte(`{"id":"ev-00042"}` + "\n"))
-	if ids := log.undeliveredIDs(); !ids["ev-00042"] {
-		t.Fatalf("logged %v", ids)
-	}
-}
-
-// Only http and https URLs with a host are VictoriaLogs addresses.
-func TestNewRejectsBadURLs(t *testing.T) {
-	for _, bad := range []string{"", "ftp://logs:9428", "http://", "://x", "victorialogs:9428"} {
-		if _, err := New(bad, "n1", logger.NewNullLogger()); err == nil {
-			t.Errorf("%q accepted", bad)
+// VictoriaLogs holds every event twice (at-least-once delivery): paging through the events still shows each distinct
+// event, because the duplicates are removed before the offset and limit apply. The fake answers distinct rows only
+// to a query carrying the de-duplication; TestVictoriaLogsLivePaginationWithDuplicates runs it on VictoriaLogs.
+func TestReadAuditPagesSeeEveryDistinctEventDespiteDuplicates(t *testing.T) {
+	rows := []map[string]string{{"id": "a"}, {"id": "a"}, {"id": "b"}, {"id": "b"}, {"id": "c"}, {"id": "c"}}
+	bounds := regexp.MustCompile(`\| offset (\d+) \| limit (\d+)`)
+	f := newFakeSelect(t, func(q string, w http.ResponseWriter) {
+		if strings.HasSuffix(q, countSuffix) {
+			fmt.Fprintln(w, `{"n":"3"}`)
+			return
+		}
+		selected := rows
+		if strings.Contains(q, dedup) {
+			selected = []map[string]string{rows[0], rows[2], rows[4]}
+		}
+		m := bounds.FindStringSubmatch(q)
+		if m == nil {
+			t.Errorf("missing page bounds in %q", q)
+			return
+		}
+		offset, _ := strconv.Atoi(m[1])
+		limit, _ := strconv.Atoi(m[2])
+		for _, row := range selected[min(offset, len(selected)):min(offset+limit, len(selected))] {
+			_ = json.NewEncoder(w).Encode(row)
+		}
+	})
+	c := newReader(t, f.srv.URL)
+	seen := map[string]bool{}
+	for offset := 0; offset < 3; offset += 2 {
+		page, err := c.ReadAudit(context.Background(), service.AuditQuery{Limit: 2, Offset: offset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range page.Items {
+			seen[e.ID] = true
 		}
 	}
-	if _, err := New("https://user:pw@logs.example:9428/", "n1", logger.NewNullLogger()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A row carries the request id, user agent and session id only when the event has them, and every detail field.
-func TestRowOptionalFields(t *testing.T) {
-	c := newReader(t, "http://127.0.0.1:1")
-	e := event(1)
-	r := c.row(e)
-	for _, k := range []string{"request_id", "user_agent", "session_id"} {
-		if _, ok := r[k]; ok {
-			t.Errorf("%s present on a bare event", k)
-		}
-	}
-	if r["node"] != "n1" || r["app"] != app || r["id"] != "ev-00001" || r["_msg"] != "audit user.update" {
-		t.Fatalf("row %v", r)
-	}
-	e.RequestID, e.UserAgent, e.SessionID, e.Detail = "r", "ua", "s", map[string]string{"k": "v"}
-	r = c.row(e)
-	if r["request_id"] != "r" || r["user_agent"] != "ua" || r["session_id"] != "s" || r["detail.k"] != "v" {
-		t.Fatalf("row %v", r)
-	}
-}
-
-// Every event a process accepts is numbered in turn within its boot, delivered or not, so a gap in VictoriaLogs is an
-// event it does not hold.
-func TestRowSequence(t *testing.T) {
-	c := newReader(t, "http://127.0.0.1:1")
-	a, b := c.row(event(1)), c.row(event(2))
-	if a["boot"] != c.boot || a["boot"] == "" || a["seq"] != uint64(1) || b["seq"] != uint64(2) {
-		t.Fatalf("rows %v %v", a, b)
-	}
-	if d, _ := New("http://127.0.0.1:1", "n1", logger.NewNullLogger()); d.boot == c.boot {
-		t.Fatal("two starts share a boot id")
+	if len(seen) != 3 {
+		t.Fatalf("pagination exposes only %d of 3 distinct audit events: %v", len(seen), seen)
 	}
 }

@@ -1,6 +1,7 @@
 package scim_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -224,5 +225,25 @@ func TestSCIMPutKeepsValidUntil(t *testing.T) {
 	}
 	if u, _ := e.Svc.Users.Get(e.ctx, id); u.ValidUntil != nil {
 		t.Fatalf("stored end date %v", u.ValidUntil)
+	}
+}
+
+// An address added through SCIM is verified, so it is a sign-in address: an administrator's provisioning token
+// cannot add one to a manager or administrator who already signs in (here, with a password), which would let whoever
+// controls the address take the account over through upstream sign-in. Only a super admin resets such a sign-in.
+func TestPatchCannotLinkEmailToEstablishedAdmin(t *testing.T) {
+	e := newEnv(t)
+	target := e.mkUser(e.orgA, "privileged-target", model.RoleAdmin)
+	password := "correct horse battery staple 9"
+	if _, err := e.Svc.UpdateUser(e.ctx, service.System, target.ID, service.UserInput{Password: &password}); err != nil {
+		t.Fatal(err)
+	}
+	address := "attacker@controlled.example"
+	r := e.do("PATCH", "/scim/v2/acme/Users/"+target.ID, e.admA, patchBody(op("add", "emails", []any{map[string]any{"value": address, "type": "other"}})))
+	if r.Status != 400 || r.str("scimType") != "invalidValue" || !strings.Contains(r.str("detail"), "only a super admin") {
+		t.Errorf("adding an address to an established admin: %d %s", r.Status, r.Raw)
+	}
+	if matched, err := e.Svc.UsersByVerifiedEmail(e.ctx, e.orgA.ID, []string{address}); err != nil || len(matched) != 0 {
+		t.Fatalf("the address signs in: %d matches, %v", len(matched), err)
 	}
 }

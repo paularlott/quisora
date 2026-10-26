@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -105,5 +108,23 @@ func auditAPI(t *testing.T, vl string) {
 		if n, _ := a.Store.Count(ctx, model.KindAudit, ""); n != 0 {
 			t.Fatalf("with VictoriaLogs the database keeps %d audit events", n)
 		}
+	}
+}
+
+// cliAudit is a no-op without VictoriaLogs, and with a bad address; with one it queues to it.
+func TestCLIAudit(t *testing.T) {
+	log := logger.NewNullLogger()
+	c := config.Default()
+	cleanup := cliAudit(c, nil, log)
+	cleanup()
+	c.Audit.VictoriaLogs = "://bad url"
+	cliAudit(c, nil, log)()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer srv.Close()
+	c.Audit.VictoriaLogs = srv.URL
+	svc := service.New(c, nil, nil)
+	cliAudit(c, svc, log)()
+	if svc.AuditWriter == nil {
+		t.Fatal("audit writer not set")
 	}
 }

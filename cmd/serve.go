@@ -21,12 +21,8 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 	return &cli.Command{
 		Name:  "serve",
 		Usage: "Run the server",
-		Description: "With cluster.bind a node whose data may be out of date — it has not synced for longer than the " +
-			"tombstone retention allows, or how long is unknown — refuses to start: deletions made meanwhile may be " +
-			"gone from the other nodes, and its copies of those records would come back. Start it with an empty " +
-			"database (it copies everything from the others), or, if it holds the only or the newest copy (after a " +
-			"whole-cluster outage, or the only node with data next to new, empty ones), run \"quisora force-start\" on " +
-			"it first and start the others with empty databases. See docs/REPLICATION.md.",
+		Description: "With cluster.bind the node joins the cluster: it copies what it is missing from the other nodes " +
+			"(everything, if its database is new or was lost) and takes part once it has. See docs/REPLICATION.md.",
 		Flags: flags,
 		Run: func(ctx context.Context, c *cli.Command) error {
 			if err := prepare(ctx, cfg); err != nil {

@@ -13,8 +13,9 @@ import (
 // A configuration reload re-reads every node's configuration file at once (ReloadCluster, behind POST
 // /api/cluster/reload) — the master keys, the cluster keys and the cluster size — so a key rotation or a change of
 // size reaches the whole cluster without a restart. The size changes by one node at a time (see CheckResize): any
-// majority of the old size and any majority of the new one then share a node, so every write a majority confirmed
-// before the change is seen by every majority after it, and the cluster stays writable throughout.
+// majority of the old size and any majority of the new one then share a node. The partition protocol carries the
+// cluster size in every message and ignores a node configured with another, so while the nodes disagree about it (a
+// reload takes a moment on every node) writes pause; they resume as soon as every node has the new size.
 
 // reloadWait is how long a node is given to answer each phase of a cluster-wide reload.
 const reloadWait = 10 * time.Second
@@ -210,10 +211,10 @@ func (n *Node) CheckResize(size int, peers []string) error {
 	return nil
 }
 
-// Resize changes the cluster size and peers list of the running node (CheckResize first): the quorum, readiness,
-// catching up and the leader election follow at once, and the new size is published to the other nodes. Until every
-// node in view has the same size none of them serves (the usual size check), so reload every node at once
-// (ReloadCluster). It reports whether the size changed.
+// Resize changes the cluster size and peers list of the running node (CheckResize first): the majority and readiness
+// follow at once, the partition protocol is restarted with the new size (it stops, handing the
+// partitions this node owns back, and starts again: the data stays), and the new size is published to the other nodes. Until every node in view has the same size none of them serves (the usual size check), so reload every node
+// at once (ReloadCluster). It reports whether the size changed.
 func (n *Node) Resize(size int, peers []string) (bool, error) {
 	if err := n.CheckResize(size, peers); err != nil {
 		return false, err
@@ -229,11 +230,11 @@ func (n *Node) Resize(size int, peers []string) (bool, error) {
 		return false, nil
 	}
 	n.nodes.Store(int64(size))
-	n.le.SetClusterSize(size, size/2+1)
 	n.gc.LocalMetadata().SetInt(metaSize, size)
+	err := n.restartManager()
 	n.rebuild()
 	n.log.Warn("cluster size changed", "from", old, "to", size, "quorum", size/2+1)
-	return true, nil
+	return true, err
 }
 
 func sign(x int) int {

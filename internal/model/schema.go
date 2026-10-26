@@ -162,8 +162,9 @@ var Schemas = map[Kind]Schema{
 	KindSignIn: {KindSignIn, []Field{
 		{Name: "last_login", Type: FieldTime, Sort: true},
 	}},
-	KindLock:   {KindLock, nil},
-	KindReplay: {KindReplay, nil},
+	KindLock:        {KindLock, nil},
+	KindReplay:      {KindReplay, nil},
+	KindReservation: {KindReservation, nil},
 	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
 		{Name: "action", Type: FieldString, Sort: true, SortIndex: true, Index: true}, // action= reads only those events
@@ -177,7 +178,8 @@ var Schemas = map[Kind]Schema{
 
 // unscopedKinds are the kinds whose records have no scope (Index.Scope ""): a query with Scope "" selects the whole
 // kind, which is also the empty scope.
-var unscopedKinds = map[Kind]bool{KindOrg: true, KindKey: true, KindLock: true, KindReplay: true, KindEphemeral: true}
+var unscopedKinds = map[Kind]bool{KindOrg: true, KindKey: true, KindLock: true, KindReplay: true, KindEphemeral: true,
+	KindReservation: true}
 
 // Unscoped reports whether every record of kind k has Scope "".
 func Unscoped(k Kind) bool { return unscopedKinds[k] }
@@ -185,7 +187,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral}
+		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral, KindReservation}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -231,6 +233,8 @@ func NewEntity(k Kind) Entity {
 		return &Replay{}
 	case KindEphemeral:
 		return &Ephemeral{}
+	case KindReservation:
+		return &Reservation{}
 	}
 	return nil
 }

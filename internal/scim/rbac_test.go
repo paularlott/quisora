@@ -188,125 +188,29 @@ func TestSCIMRBAC(t *testing.T) {
 	}
 }
 
-func (e *env) primary() *model.Org { return e.Env.Primary }
-
-func TestOrganizationsResource(t *testing.T) {
+// An administrator role is granted in the admin console after a re-authentication, never with a token (as the
+// management API): not by creating a user, nor by changing one's role. Role changes downwards go through the service
+// guards.
+func TestSuperAdminRoleThroughSCIM(t *testing.T) {
 	e := newEnv(t)
-	// Super admins only.
-	for _, tok := range []string{e.admA, e.mgrA, e.admB} {
-		if r := e.do("GET", "/scim/v2/Organizations", tok, nil); r.Status != 403 {
-			t.Errorf("non-super list: %d", r.Status)
-		}
-		if r := e.do("POST", "/scim/v2/Organizations", tok, map[string]any{"name": "sneaky"}); r.Status != 403 {
-			t.Errorf("non-super create: %d", r.Status)
-		}
-		if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgB.ID, tok, nil); r.Status != 403 {
-			t.Errorf("non-super delete: %d", r.Status)
+	for _, role := range []string{"admin", "super_admin"} {
+		if r := e.createUser("primary", e.super, map[string]any{"userName": "new-" + role, quisoraURN: map[string]any{"role": role}}); r.Status != 403 {
+			t.Errorf("%s through SCIM: %d %s", role, r.Status, r.Raw)
 		}
 	}
-	if r := e.do("GET", "/scim/v2/Organizations", "", nil); r.Status != 401 {
-		t.Errorf("anonymous: %d", r.Status)
+	r := e.createUser("primary", e.super, map[string]any{"userName": "plain"})
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+r.str("id"), e.super, patchBody(op("replace", quisoraURN+":role", "admin"))); p.Status != 403 {
+		t.Errorf("promotion to admin through SCIM: %d %s", p.Status, p.Raw)
 	}
-	// List, filter, sort.
-	r := e.do("GET", "/scim/v2/Organizations?sortBy=name", e.super, nil)
-	if r.Status != 200 || r.total() != 3 || !slicesEqual(r.names("name"), []string{"acme", "globex", "primary"}) {
-		t.Errorf("list: %d %s", r.Status, r.Raw)
+	id := e.mkUser(e.primary(), "sa2", model.RoleSuperAdmin).ID
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.admA, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 404 {
+		t.Errorf("other org's admin patching primary: %d", p.Status)
 	}
-	if r := e.do("GET", "/scim/v2/Organizations?filter="+qs(`name eq "GLOBEX"`), e.super, nil); r.total() != 1 {
-		t.Errorf("filter eq: %s", r.Raw)
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 200 || p.str(quisoraURN, "role") != "user" {
+		t.Errorf("demote: %d %s", p.Status, p.Raw)
 	}
-	if r := e.do("GET", "/scim/v2/Organizations?filter="+qs(`primary eq true`), e.super, nil); r.total() != 1 || r.names("name")[0] != "primary" {
-		t.Errorf("filter primary: %s", r.Raw)
+	// The token's owner cannot disable itself.
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+e.Admin.ID, e.super, patchBody(op("replace", "active", false))); p.Status != 400 {
+		t.Errorf("self-disable: %d %s", p.Status, p.Raw)
 	}
-	if r := e.do("GET", "/scim/v2/Organizations?count=1&startIndex=2&sortBy=name", e.super, nil); r.total() != 3 || r.names("name")[0] != "globex" {
-		t.Errorf("paging: %s", r.Raw)
-	}
-	// Create.
-	c := e.do("POST", "/scim/v2/Organizations", e.super, map[string]any{"schemas": []string{schemaOrgURN}, "name": "initech", "displayName": "Initech",
-		"settings": map[string]any{"requireMfa": true, "sessionTtl": 3600}})
-	if c.Status != 201 || c.str("name") != "initech" || c.str("meta", "resourceType") != "Organization" || c.Header.Get("ETag") == "" ||
-		c.Header.Get("Location") != e.URL+"/scim/v2/Organizations/"+c.str("id") {
-		t.Fatalf("create: %d %v %s", c.Status, c.Header, c.Raw)
-	}
-	st := c.Body["settings"].(map[string]any)
-	if st["requireMfa"] != true || st["sessionTtl"].(float64) != 3600 || st["passwordLogin"] != true {
-		t.Errorf("settings: %v", st)
-	}
-	id := c.str("id")
-	o, err := e.Svc.OrgByName(e.ctx, "initech")
-	if err != nil || o.ID != id || !o.Settings.RequireMFA {
-		t.Errorf("stored org: %v", err)
-	}
-	// Errors.
-	for name, tc := range map[string]struct {
-		body   map[string]any
-		status int
-		typ    string
-	}{
-		"duplicate":  {map[string]any{"name": "acme"}, 409, "uniqueness"},
-		"reserved":   {map[string]any{"name": "admin"}, 400, "invalidValue"},
-		"bad name":   {map[string]any{"name": "Has Space"}, 400, "invalidValue"},
-		"no name":    {map[string]any{"displayName": "x"}, 400, "invalidValue"},
-		"bad ttl":    {map[string]any{"name": "ttl", "settings": map[string]any{"sessionTtl": -5}}, 400, "invalidValue"},
-		"ttl string": {map[string]any{"name": "ttl2", "settings": map[string]any{"sessionTtl": "soon"}}, 400, "invalidValue"},
-	} {
-		if r := e.do("POST", "/scim/v2/Organizations", e.super, tc.body); r.Status != tc.status || r.str("scimType") != tc.typ {
-			t.Errorf("%s: %d %s", name, r.Status, r.Raw)
-		}
-	}
-	// GET, PATCH, PUT.
-	if g := e.do("GET", "/scim/v2/Organizations/"+id, e.super, nil); g.Status != 200 || g.str("displayName") != "Initech" {
-		t.Errorf("get: %s", g.Raw)
-	}
-	if e.do("GET", "/scim/v2/Organizations/nope", e.super, nil).Status != 404 {
-		t.Error("unknown org")
-	}
-	p := e.do("PATCH", "/scim/v2/Organizations/"+id, e.super, patchBody(op("replace", "displayName", "Initech Inc"), op("replace", "settings.passkeyLogin", false),
-		op("replace", "primary", true), op("replace", "settings.sessionIdle", 120)))
-	if p.Status != 200 || p.str("displayName") != "Initech Inc" || p.Body["primary"] != false ||
-		p.Body["settings"].(map[string]any)["passkeyLogin"] != false || p.Body["settings"].(map[string]any)["sessionIdle"].(float64) != 120 {
-		t.Errorf("patch: %d %s", p.Status, p.Raw)
-	}
-	if p := e.do("PATCH", "/scim/v2/Organizations/"+id, e.super, patchBody(op("replace", "name", "admin"))); p.Status != 400 {
-		t.Errorf("patch reserved: %d", p.Status)
-	}
-	if p := e.do("PATCH", "/scim/v2/Organizations/"+id, e.super, patchBody(op("replace", "name", "acme"))); p.Status != 409 {
-		t.Errorf("patch clash: %d", p.Status)
-	}
-	put := e.do("PUT", "/scim/v2/Organizations/"+id, e.super, map[string]any{"name": "initech-2", "displayName": "Initech 2"})
-	if put.Status != 200 || put.str("name") != "initech-2" || put.Body["settings"].(map[string]any)["passkeyLogin"] != false {
-		t.Errorf("put: %d %s", put.Status, put.Raw)
-	}
-	// The renamed org's SCIM endpoint follows the name.
-	if r := e.do("GET", "/scim/v2/initech-2/Users", e.super, nil); r.Status != 200 {
-		t.Errorf("renamed org endpoint: %d", r.Status)
-	}
-	// Deleting an organization takes a super admin's re-authentication in the admin console, as in the management
-	// API: a token cannot, empty or not, cascading or not (deletion itself is tested in the service).
-	for _, q := range []string{"", "?cascade=true"} {
-		if r := e.do("DELETE", "/scim/v2/Organizations/"+e.orgA.ID+q, e.super, nil); r.Status != 403 {
-			t.Errorf("delete%s: %d %s", q, r.Status, r.Raw)
-		}
-	}
-	if r := e.do("DELETE", "/scim/v2/Organizations/"+id, e.super, nil); r.Status != 403 {
-		t.Errorf("delete empty: %d", r.Status)
-	}
-	if _, err := e.Svc.Orgs.Get(e.ctx, e.orgA.ID); err != nil {
-		t.Errorf("organization deleted through SCIM: %v", err)
-	}
-	if r := e.do("PUT", "/scim/v2/Organizations", e.super, nil); r.Status != 405 {
-		t.Errorf("PUT collection: %d", r.Status)
-	}
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

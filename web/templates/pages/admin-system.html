@@ -68,9 +68,9 @@
         <div><dt>Node ID</dt><dd><code class="mono" x-text="here.id"></code></dd></div>
         <div><dt>Ready</dt><dd x-text="here.readyText"></dd></div>
         <div><dt>Accepts changes</dt><dd x-text="here.writableText"></dd></div>
-        <div><dt>Last synced</dt><dd x-text="here.syncText"></dd></div>
-        <div><dt>Writes not confirmed by a majority</dt><dd><span :class="here.unconfirmedClass" x-text="here.unconfirmed"></span></dd></div>
-        <div><dt>Refused (stale, superseded or foreign)</dt><dd x-text="here.refused"></dd></div>
+        <div><dt>Partitions owned</dt><dd x-text="here.partitionsText"></dd></div>
+        <div><dt>Writes whose outcome is not known</dt><dd><span :class="here.unconfirmedClass" x-text="here.unconfirmed"></span></dd></div>
+        <div><dt>Changes an owner refused (stale or in conflict)</dt><dd x-text="here.refused"></dd></div>
         <div><dt>Records from clocks too far ahead</dt><dd x-text="here.skewText"></dd></div>
         <div><dt>Cluster key</dt><dd><code class="mono" x-text="here.keysText"></code></dd></div>
         <div x-show="here.forced"><dt>Forced start</dt><dd x-text="here.forced"></dd></div>

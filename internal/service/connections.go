@@ -258,12 +258,12 @@ func (s *Service) UserWays(ctx context.Context, u *model.User) (*Ways, error) {
 	return c.Ways(u), nil
 }
 
-// UserCreds reads u's credentials. With quorum, every record (passkeys, links, providers) is read from a quorum's
-// copies — u must have been read so too (FreshUser) — so a removal, a disabled key or a provider turned off that a
-// majority confirmed anywhere is seen, even before it reaches this node. (A credential added elsewhere that has not
+// UserCreds reads u's credentials. With fresh, every record (passkeys, links, providers) is read from the owners'
+// copies — u must have been read so too (FreshUser) — so a removal, a disabled key or a provider turned off that was
+// committed anywhere is seen, even before it reaches this node. (A credential added elsewhere that has not
 // reached this node is missed: what counts can only be too little, which refuses a removal rather than allowing a
 // wrong one.)
-func (s *Service) UserCreds(ctx context.Context, u *model.User, quorum bool) (*Creds, error) {
+func (s *Service) UserCreds(ctx context.Context, u *model.User, fresh bool) (*Creds, error) {
 	pks, err := s.Passkeys.All(ctx, u.ID)
 	if err != nil {
 		return nil, mapStore(err)
@@ -272,11 +272,11 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User, quorum bool) (*C
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if quorum {
-		if pks, err = quorumCopies(ctx, s, model.KindPasskey, pks); err != nil {
+	if fresh {
+		if pks, err = freshCopies(ctx, s, model.KindPasskey, pks); err != nil {
 			return nil, err
 		}
-		if links, err = quorumCopies(ctx, s, model.KindIdentity, links); err != nil {
+		if links, err = freshCopies(ctx, s, model.KindIdentity, links); err != nil {
 			return nil, err
 		}
 	}
@@ -293,8 +293,8 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User, quorum bool) (*C
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if quorum {
-		if provs, err = quorumCopies(ctx, s, model.KindProvider, provs); err != nil {
+	if fresh {
+		if provs, err = freshCopies(ctx, s, model.KindProvider, provs); err != nil {
 			return nil, err
 		}
 	}
@@ -306,12 +306,15 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User, quorum bool) (*C
 	return c, nil
 }
 
-// quorumCopies replaces this node's copies es with a quorum's (freshMany), leaving out those a quorum no longer holds.
-func quorumCopies[T any, PT interface {
+// freshCopies replaces this node's copies es with the owners' (freshMany), leaving out those the owners no longer hold.
+func freshCopies[T any, PT interface {
 	*T
 	model.Entity
 }](ctx context.Context, s *Service, kind model.Kind, es []PT) ([]PT, error) {
-	recs, err := s.freshMany(ctx, kind, ids(es))
+	if len(es) == 0 {
+		return es, nil
+	}
+	recs, err := s.freshMany(ctx, kind, es[0].Index().Partition, ids(es)) // (a user's records: one organization)
 	if err != nil {
 		return nil, err
 	}
@@ -421,8 +424,8 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 // stays, and so does your last second factor where one is required; someone else may take them, and send an
 // invitation), and what follows (after: ending sessions, the audit).
 //
-// The removal is one compare-and-swap of the user record, on the copy a quorum holds, decided on the credentials a
-// quorum holds (UserCreds): it lists the passkeys and links taken (model.User.Removed: they stop counting at that
+// The removal is one compare-and-swap of the user record, on the copy the owner holds, decided on the credentials
+// the owners hold (UserCreds): it lists the passkeys and links taken (model.User.Removed: they stop counting at that
 // write), clears the authenticator app, drops the recovery codes with the last second factor and moves the security
 // generation on (what is in flight for the account ends). Two removals at once, on any nodes, however long either
 // stalls, cannot both commit on the copy they decided on: the second is refused (store.ErrStale), decides again on
@@ -482,15 +485,15 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			u.RecoveryCodes, u.RecoveryCreated = nil, nil
 		}
 		u.BumpSecurity()
-		err = s.Users.Update(Durable(ctx), u)
+		err = s.Users.Update(ctx, u)
 		if errors.Is(err, store.ErrStale) && attempt < 7 {
 			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy
 		}
-		if !store.Applied(err) {
+		if err != nil {
 			return mapStore(err)
 		}
 		for _, g := range gone { // tidying: they count for nothing already
-			if err := s.Store.Put(Durable(ctx), store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil && !store.Applied(err) {
+			if err := s.Store.Put(ctx, store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil {
 				s.Log.Warn("a removed credential's record is left to the orphan sweep", "user", u.ID, "id", g.GetMeta().ID, "error", err)
 			}
 		}
@@ -526,7 +529,7 @@ func (s *Service) SetTOTP(ctx context.Context, u *model.User, secret []byte, ste
 	now := time.Now().UTC()
 	u.TOTPSecret, u.MFAEnrolledAt = s.Sealer.SealFor(TOTPBinding(u.ID), secret), &now
 	u.BumpSecurity()
-	if err := s.Users.Update(Durable(ctx), u); !store.Applied(err) {
+	if err := s.Users.Update(ctx, u); err != nil {
 		u.SecurityGen--
 		return err
 	}

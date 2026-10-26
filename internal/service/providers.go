@@ -269,6 +269,7 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 		p.Name = providerDefaultName[p.Type]
 	}
 	if err := s.Providers.Create(ctx, p); err != nil {
+		s.auditUnknown(ctx, err, a, orgID, "provider.create", p.Name, nil)
 		return nil, providerConflict(err)
 	}
 	s.Audit(ctx, a, orgID, "provider.create", p.Name, nil)
@@ -291,6 +292,7 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 		return nil, Invalid("client_secret", "enter the client secret issued by the new provider")
 	}
 	if err := s.Providers.Update(ctx, p); err != nil {
+		s.auditUnknown(ctx, err, a, p.OrgID, "provider.update", p.Name, addChanges(nil, was, p))
 		return nil, providerConflict(err)
 	}
 	detail := addChanges(nil, was, p)
@@ -319,6 +321,7 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 	}
 	// The links to it stand on it: sign-in through a deleted provider is impossible, and the orphan sweep removes them.
 	if err := s.Providers.Delete(ctx, id); err != nil {
+		s.auditUnknown(ctx, err, a, p.OrgID, "provider.delete", p.Name, nil)
 		return mapStore(err)
 	}
 	s.Audit(ctx, a, p.OrgID, "provider.delete", p.Name, nil)
@@ -334,7 +337,7 @@ func (s *Service) purgeIdentities(ctx context.Context, id string) int {
 	}
 	n := 0
 	for _, i := range l {
-		if s.Identities.Delete(Durable(ctx), i.ID) == nil {
+		if s.Identities.Delete(ctx, i.ID) == nil {
 			n++
 		}
 	}

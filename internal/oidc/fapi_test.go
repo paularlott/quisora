@@ -5,7 +5,6 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -16,31 +15,8 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// rsaAssertionKey is an RSA client key published with the given JWK alg ("" for none).
-func rsaAssertionKey(t testing.TB, signAlg, jwkAlg string) assertionKey {
-	t.Helper()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	j, _ := EncodeJWK(priv.Public(), "ck1", jwkAlg)
-	b, _ := json.Marshal(JWKS{Keys: []JWK{j}})
-	return assertionKey{alg: signAlg, priv: priv, jwks: string(b)}
-}
-
-func (h *harness) jwtClient(k assertionKey, edit func(*service.ClientInput)) *model.Client {
-	h.t.Helper()
-	c, _ := h.newClient(func(in *service.ClientInput) {
-		in.AuthMethod = ptr(model.AuthMethodPrivateJWT)
-		in.JWKS = ptr(k.jwks)
-		if edit != nil {
-			edit(in)
-		}
-	})
-	return c
-}
-
-func TestPS256(t *testing.T) {
+func TestPS256ClientKeysAndIDTokens(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	// client assertions: an RSA key declared PS256, and one without alg (either RSA scheme)
 	for name, k := range map[string]assertionKey{"declared": rsaAssertionKey(t, AlgPS256, AlgPS256),
@@ -79,17 +55,10 @@ func TestPS256(t *testing.T) {
 	if !strings.Contains(jwks, `"alg":"PS256"`) {
 		t.Fatalf("jwks: %s", jwks)
 	}
-	var d map[string]any
-	_ = json.Unmarshal([]byte(body(h.get(h.http, "/.well-known/openid-configuration"))), &d)
-	for _, f := range []string{"id_token_signing_alg_values_supported", "token_endpoint_auth_signing_alg_values_supported",
-		"dpop_signing_alg_values_supported"} {
-		if algs, _ := d[f].([]any); len(algs) != 4 || algs[3] != AlgPS256 {
-			t.Errorf("%s: %v", f, d[f])
-		}
-	}
 }
 
 func TestFAPIClientSettings(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	ctx := context.Background()
 	k := newAssertionKeys(t)[0]
@@ -118,6 +87,7 @@ func TestFAPIClientSettings(t *testing.T) {
 }
 
 func TestFAPIAssertionsAndProofs(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	ec := newAssertionKeys(t)[0]
 	c := h.jwtClient(ec, func(in *service.ClientInput) { in.FAPI = ptr(true) })
@@ -180,6 +150,7 @@ func TestFAPIAssertionsAndProofs(t *testing.T) {
 }
 
 func TestFAPICodeFlow(t *testing.T) {
+	t.Parallel()
 	h := setup(t, func(cfg *config.Config) { cfg.Tokens.CodeTTL = 600 })
 	ec := newAssertionKeys(t)[0]
 	c := h.jwtClient(ec, func(in *service.ClientInput) { in.FAPI = ptr(true) })

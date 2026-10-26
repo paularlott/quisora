@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,10 +13,16 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// SignOut is "quisora sign-out": the emergency sign-out of one organization (orgName) or ("") the whole server, from
-// the command line with the master key, for when the console cannot be used. It then sweeps what it ended.
+// SignOut is "quisora sign-out" written into the store itself: the emergency sign-out of one organization (orgName) or
+// ("") the whole server, from the command line with the master key, for when the console cannot be used. It then
+// sweeps what it ended. A gossip node's store is refused: what is written there outside the partition protocol would
+// never reach the other nodes (SignOutVia asks a running node instead).
 func SignOut(ctx context.Context, c *config.Config, log logger.Logger, orgName, reason string, apiTokens bool) (*model.SignOutEvent, service.SignOutSweep, error) {
 	var none service.SignOutSweep
+	if c.Replicate() {
+		return nil, none, errors.New("a gossip cluster's data is changed through a running node: the sign-out is asked " +
+			"of one (quisora sign-out does so, at server.public_url or --server)")
+	}
 	key, err := masterKey(c)
 	if err != nil {
 		return nil, none, err
@@ -39,19 +46,7 @@ func SignOut(ctx context.Context, c *config.Config, log logger.Logger, orgName, 
 	// The system acts, named as the audit log names a command's runner.
 	a := *service.System
 	a.Name = "cli:" + svc.Origin["os_user"] + "@" + svc.Origin["host"]
-	opt := service.SignOutOptions{Reason: reason, APITokens: apiTokens}
-	var ev *model.SignOutEvent
-	orgID := ""
-	if orgName == "" {
-		ev, err = svc.SignOutServer(ctx, &a, opt)
-	} else {
-		org, gerr := svc.OrgByName(ctx, orgName)
-		if gerr != nil {
-			return nil, none, fmt.Errorf("no organization %q", orgName)
-		}
-		orgID = org.ID
-		ev, err = svc.SignOutOrg(ctx, &a, org.ID, opt)
-	}
+	ev, orgID, err := pullSignOut(ctx, svc, &a, orgName, service.SignOutOptions{Reason: reason, APITokens: apiTokens})
 	if err != nil {
 		return nil, none, err
 	}

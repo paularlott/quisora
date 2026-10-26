@@ -81,7 +81,7 @@ func (s *Service) rehashPassword(ctx context.Context, u *model.User, stored, pas
 		}
 		u.PasswordHash = next
 		if err = s.Users.Update(ctx, u); !errors.Is(err, store.ErrStale) {
-			if !store.Applied(err) {
+			if err != nil {
 				s.Log.WithError(err).Warn("could not upgrade a password hash", "user", userID)
 			}
 			return

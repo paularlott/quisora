@@ -1,19 +1,25 @@
 package cluster
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
-// Every node reads the others' clocks from the change feed: in a healthy cluster each knows its offset, and it is
-// small.
-func TestClockReadFromPeers(t *testing.T) {
-	c := newTCluster(t, 3, memBackend)
-	c.startAll()
-	c.waitReady()
+// The peer clock check on one healthy cluster (BadgerDB).
+func TestClockOnOneCluster(t *testing.T) {
+	runOn(t, started(t, badgerBackend()),
+		scenario{"read from peers", testClockReadFromPeers},
+		scenario{"clock off refuses to serve", testClockOffRefusesToServe})
+}
+
+// Every node asks the others for their time: in a healthy cluster each knows its offset, and it is small.
+func testClockReadFromPeers(t *testing.T, c *tcluster) {
 	for i, tn := range c.nodes {
 		waitFor(t, 10*time.Second, "clock read from the peers", func() bool { _, ok := tn.n.clockOffset(); return ok })
 		if off, _ := tn.n.clockOffset(); off > time.Second || off < -time.Second {
@@ -27,10 +33,7 @@ func TestClockReadFromPeers(t *testing.T) {
 
 // A node whose clock is off from the other nodes' refuses to serve until it agrees again; one peer with a bad clock
 // is outvoted by the median and stops nobody.
-func TestClockOffRefusesToServe(t *testing.T) {
-	c := newTCluster(t, 3, memBackend)
-	c.startAll()
-	c.waitReady()
+func testClockOffRefusesToServe(t *testing.T, c *tcluster) {
 	n := c.nodes[0].n
 	// Readings as if from more peers than the real two (which read ~0 every few seconds): the median decides.
 	read := func(peer string, off time.Duration) {
@@ -46,8 +49,8 @@ func TestClockOffRefusesToServe(t *testing.T) {
 	for _, p := range []string{"x1", "x2", "x3"} { // now most peers say this node is a minute behind
 		read(p, time.Minute)
 	}
-	if ok, why := n.Ready(); ok || !strings.Contains(why, "behind") || n.Writable() || n.votes() || n.ServesTokens() {
-		t.Fatalf("a node a minute behind the cluster: ready %v (%s), writable %v, votes %v", ok, why, n.Writable(), n.votes())
+	if ok, why := n.Ready(); ok || !strings.Contains(why, "behind") || n.Writable() || n.ServesTokens() {
+		t.Fatalf("a node a minute behind the cluster: ready %v (%s), writable %v", ok, why, n.Writable())
 	}
 
 	for _, p := range []string{"bad-peer", "x1", "x2", "x3"} { // the clock fixed
@@ -56,48 +59,119 @@ func TestClockOffRefusesToServe(t *testing.T) {
 	waitFor(t, 10*time.Second, "serving again once the clocks agree", func() bool { ok, _ := n.Ready(); return ok })
 }
 
-// A voter that has not voted yet since it started (here: inside its restart pause) takes its start floor from the
-// cluster's time, so a clock stepped back across the restart cannot let it grant a version below one it granted
-// before.
-func TestClockRaisesRestartFloor(t *testing.T) {
-	saved := restartPause
-	t.Cleanup(func() { restartPause = saved }) // after the cluster below has stopped (cleanups run in reverse)
-	restartPause = time.Minute                 // every voter is still in its restart pause throughout
-	c := newTCluster(t, 3, memBackend)
-	c.startAll()
-	n := c.nodes[0].n
-	v := n.voter
-	floor := func() hlc.Timestamp { v.mu.Lock(); defer v.mu.Unlock(); return v.floor }
+func TestClockReadings(t *testing.T) {
+	n, _ := gnode(t)
 	now := time.Now()
-	for _, p := range []string{"x1", "x2", "x3"} { // the other nodes' clocks 3 s ahead of this one's
-		n.clockReading(p, now, now, now.Add(3*time.Second).UnixNano())
+	n.clockReading("p1", now, now, 0) // a reply with no time says nothing
+	if len(n.clocks.last) != 0 {
+		t.Fatal("a reading without a time was kept")
 	}
-	off, ok := n.clockOffset()
-	if !ok || off < time.Second { // three of its peers say 3 s ahead (the real two, if heard from yet, ~0)
-		t.Fatalf("offset %s %v", off, ok)
+	// A peer whose clock is hours behind this one's: this node's is ahead of the cluster's, and it stops serving.
+	n.clockReading("p1", now, now, now.Add(-2*time.Hour).UnixNano())
+	if why := n.clockOff.Load(); why == nil || !strings.Contains(*why, "ahead of") {
+		t.Fatalf("%v", why)
 	}
-	if want := hlc.FromTime(v.started.Add(off + startLead())); floor() < want {
-		t.Fatalf("restart floor %v, want the start floor by the cluster's clock (%v)", floor(), want)
+	n.clockReading("p1", now, now, now.UnixNano())
+	if n.clockOff.Load() != nil {
+		t.Fatal("not serving again once the clocks agree")
+	}
+	n.clockReading("p1", now, now, now.Add(2*time.Hour).UnixNano())
+	if why := n.clockOff.Load(); why == nil || !strings.Contains(*why, "behind") {
+		t.Fatalf("%v", why)
+	}
+	// Three clocks: this node's and a healthy peer's outvote a skewed peer's (the median), which stops nobody.
+	n, _ = gnode(t)
+	n.clockReading("healthy-peer", now, now, now.UnixNano())
+	n.clockReading("skewed-peer", now, now, now.Add(time.Minute).UnixNano())
+	if why := n.clockOff.Load(); why != nil {
+		t.Fatalf("a healthy majority refused to serve: %s", *why)
 	}
 }
 
-// Once a voter votes, readings no longer move its floor (it would answer every write low).
-func TestClockLeavesVotingFloor(t *testing.T) {
-	c := newTCluster(t, 3, memBackend)
+func TestCheckSkewWarnsOncePerOrigin(t *testing.T) {
+	n, _ := hnode(t)
+	rec := newRec(newID(), "")
+	rec.Origin = "far-ahead-node"
+	rec.Version = hlc.FromTime(time.Now().Add(2 * time.Hour))
+	n.checkSkew(rec)
+	n.checkSkew(rec)
+	if n.skewed.Load() != 2 {
+		t.Fatalf("counted %d", n.skewed.Load())
+	}
+	if _, ok := n.skewWarned.Load("far-ahead-node"); !ok {
+		t.Fatal("not noted")
+	}
+}
+
+// A node refuses to start on a clock set before the version clock's epoch; a version far ahead of this node's
+// clock is applied but not followed (counted), so this node's own versions do not inherit the skew.
+func TestClockGuards(t *testing.T) {
+	saved := wallNow
+	wallNow = func() time.Time { return time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC) }
+	if _, err := New(tempConfig(t), memstore.New(), Options{}); !errors.Is(err, ErrClockBeforeEpoch) {
+		t.Fatalf("a clock before the epoch: %v", err)
+	}
+	wallNow = saved
+	n, err := New(tempConfig(t), memstore.New(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	before := store.SkewRefused()
+	far := newRec(newID(), "")
+	far.Version = hlc.FromTime(time.Now().Add(time.Hour))
+	if _, err := n.st.inner.PutReplicated(bg, far); err != nil { // (the backend follows versions: store.Witness)
+		t.Fatal(err)
+	}
+	n.checkSkew(far)
+	if store.SkewRefused() <= before || n.Status().ClockSkewed == 0 || n.Status().SkewRefused == 0 {
+		t.Fatal("the skew was not counted")
+	}
+	if v := store.Clock.Now(); v >= far.Version {
+		t.Fatal("the clock followed a version an hour ahead")
+	}
+}
+
+// A node whose clock is off from the others' leads no partition (partition.Manager.SetEligible): it steps down from
+// what it owns at once, and takes partitions again once its clock agrees again. (What an ineligible node does is
+// gossip/partition's TestIneligibleNodeOnlyFollows.)
+func TestClockOffMakesTheNodeIneligible(t *testing.T) {
+	c := newTCluster(t, 3, badgerBackend())
+	c.opts = func(o *Options) { o.ClockInterval = time.Hour } // (the clock readings below are the only ones)
 	c.startAll()
 	c.waitReady()
-	n := c.nodes[0].n
-	v := n.voter
-	v.mu.Lock()
-	before := v.floor
-	v.mu.Unlock()
-	now := time.Now()
-	for _, p := range []string{"x1", "x2", "x3"} {
-		n.clockReading(p, now, now, now.Add(3*time.Second).UnixNano())
+	c.waitSettled()
+	n0 := c.nodes[0].n
+	read := func(off time.Duration) {
+		now := time.Now()
+		for _, tn := range c.nodes[1:] {
+			n0.clockReading(tn.n.ID(), now, now, now.Add(off).UnixNano())
+		}
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.floor != before {
-		t.Fatal("a reading moved the floor of a voter that votes")
-	}
+	read(10 * time.Second)
+	waitFor(t, 10*time.Second, "node 0 ineligible, owning nothing", func() bool {
+		pm := n0.manager()
+		if pm.Eligible() {
+			return false
+		}
+		for p := range partitions {
+			if pm.IsOwner(p) {
+				return false
+			}
+		}
+		return true
+	})
+	read(0)
+	waitFor(t, 20*time.Second, "node 0 to lead again", func() bool {
+		pm := n0.manager()
+		if !pm.Eligible() {
+			return false
+		}
+		for p := range partitions {
+			if pm.IsOwner(p) {
+				return true
+			}
+		}
+		return false
+	})
 }

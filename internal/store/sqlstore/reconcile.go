@@ -17,6 +17,11 @@ import (
 // Services must therefore tolerate zero values in newly added fields until a record is rewritten.
 func (s *Store) reconcile(ctx context.Context, ex execer) error {
 	d := s.d
+	for _, stmt := range s.partitionDDL() { // the partition state table of a database that predates it
+		if _, err := ex.ExecContext(ctx, stmt); err != nil && !d.ignorableDDL(err) {
+			return fmt.Errorf("reconcile partition state: %w\n%s", err, stmt)
+		}
+	}
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
 		have, err := s.columns(ctx, ex, "qsr_"+string(k))
@@ -31,6 +36,11 @@ func (s *Store) reconcile(ctx context.Context, ex execer) error {
 		}
 		if len(have) > 0 {
 			var add []string
+			for _, c := range partColumns(d) { // a table from before partition replication gains its columns
+				if !have[c.name] {
+					add = append(add, "ALTER TABLE "+t.name+" ADD COLUMN "+c.name+" "+c.def)
+				}
+			}
 			for _, f := range t.fields {
 				if !have[strings.ToLower(f.Name)] {
 					add = append(add, "ALTER TABLE "+t.name+" ADD COLUMN "+d.quote(f.Name)+" "+d.colType(f))

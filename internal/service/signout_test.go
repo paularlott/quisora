@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,59 +12,6 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
-
-// session makes a stamped browser session for u, as the web layer does.
-func (e *env) session(u *model.User) *model.Session {
-	e.t.Helper()
-	st, err := e.svc.SessionStamp(e.ctx, u.OrgID)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	s := &model.Session{UserID: u.ID, OrgID: u.OrgID, Expires: time.Now().Add(time.Hour), LastSeen: time.Now(), Stamp: st}
-	if err := e.svc.Sessions.Create(e.ctx, s); err != nil {
-		e.t.Fatal(err)
-	}
-	return s
-}
-
-// grant makes a stamped refresh grant for u, as the OIDC provider does.
-func (e *env) grant(u *model.User, sessionID string) *model.Grant {
-	e.t.Helper()
-	st, err := e.svc.SessionStamp(e.ctx, u.OrgID)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	g := &model.Grant{UserID: u.ID, OrgID: u.OrgID, ClientID: "c1", SessionID: sessionID, Expires: time.Now().Add(time.Hour), Stamp: st}
-	if err := e.svc.Grants.Create(e.ctx, g); err != nil {
-		e.t.Fatal(err)
-	}
-	return g
-}
-
-// apiToken makes a personal API token for u through the service; it returns the presented form.
-func (e *env) apiToken(u *model.User) string {
-	e.t.Helper()
-	_, plain, err := e.svc.CreateAPIToken(e.ctx, actor(u), service.APITokenInput{Name: e.next("t"), Scopes: []string{service.ScopeAPI}})
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	return plain
-}
-
-func (e *env) sessionLive(s *model.Session) bool {
-	got, err := e.svc.Sessions.Get(e.ctx, s.ID)
-	return err == nil && e.svc.SessionCurrent(e.ctx, got.OrgID, got.Stamp)
-}
-
-func (e *env) grantLive(g *model.Grant) bool {
-	got, err := e.svc.Grants.Get(e.ctx, g.ID)
-	return err == nil && e.svc.SessionCurrent(e.ctx, got.OrgID, got.Stamp)
-}
-
-func (e *env) tokenLive(plain string) bool {
-	_, _, err := e.svc.ValidateAPIToken(e.ctx, plain)
-	return err == nil
-}
 
 // Pulling an organization's lever ends its sessions, refresh grants and (when asked) API tokens at once, keeps the
 // session it was pulled from, and leaves other organizations alone; the sweep then deletes what it ended and tells
@@ -77,19 +26,25 @@ func TestSignOutOrg(t *testing.T) {
 	alanGrant, garyGrant := e.grant(alan, alanSess.ID), e.grant(gary, garySess.ID)
 	alanTok, garyTok := e.apiToken(alan), e.apiToken(gary)
 
-	// who may pull it, and a reason is required
+	// who may pull it, and a reason is required (no longer than MaxSignOutReason)
+	mgr := e.user(acme.ID, "mgr", model.RoleManager)
 	for _, c := range []struct {
-		name string
-		a    *service.Actor
-		opt  service.SignOutOptions
-		want string
+		name   string
+		a      *service.Actor
+		org    string
+		reason string
+		want   string
 	}{
-		{"user", actor(alan), service.SignOutOptions{Reason: "x"}, "forbidden"},
-		{"manager", actor(e.user(acme.ID, "mgr", model.RoleManager)), service.SignOutOptions{Reason: "x"}, "forbidden"},
-		{"other org's admin", actor(e.user(globex.ID, "gadmin", model.RoleAdmin)), service.SignOutOptions{Reason: "x"}, "forbidden"},
-		{"no reason", actor(admin), service.SignOutOptions{Reason: "  "}, "invalid"},
+		{"user", actor(alan), acme.ID, "x", "forbidden"},
+		{"manager", actor(mgr), acme.ID, "x", "forbidden"},
+		{"other org's admin", actor(e.user(globex.ID, "gadmin", model.RoleAdmin)), acme.ID, "x", "forbidden"},
+		{"primary org's admin, on the primary org", actor(e.user(e.primary.ID, "padmin", model.RoleAdmin)), e.primary.ID, "x", "forbidden"},
+		{"blank reason", actor(admin), acme.ID, "  ", "invalid"},
+		{"no reason", actor(admin), acme.ID, "", "invalid"},
+		{"reason too long", actor(admin), acme.ID, strings.Repeat("r", model.MaxSignOutReason+1), "invalid"},
+		{"unknown organization", actor(e.super), "missing", "x", "notfound"},
 	} {
-		if _, err := e.svc.SignOutOrg(e.ctx, c.a, acme.ID, c.opt); outcome(err) != c.want {
+		if _, err := e.svc.SignOutOrg(e.ctx, c.a, c.org, service.SignOutOptions{Reason: c.reason}); outcome(err) != c.want {
 			t.Errorf("%s: %v, want %s", c.name, err, c.want)
 		}
 	}
@@ -118,6 +73,9 @@ func TestSignOutOrg(t *testing.T) {
 	}
 	if o, _ := e.svc.Orgs.Get(e.ctx, acme.ID); o.LastSignOut == nil || o.LastSignOut.Reason != "laptop stolen" {
 		t.Errorf("last sign-out not recorded: %+v", o.LastSignOut)
+	}
+	if n := len(e.audited(acme.ID, "org.signout")); n != 1 {
+		t.Errorf("%d sign-outs audited, want 1", n)
 	}
 
 	// signing in again works at once
@@ -159,7 +117,7 @@ func TestSignOutOrg(t *testing.T) {
 		t.Errorf("sweep: %+v", n)
 	}
 	for _, s := range []*model.Session{alanSess, again} {
-		if _, err := e.svc.Sessions.Get(e.ctx, s.ID); !isErr(err, store.ErrNotFound) {
+		if _, err := e.svc.Sessions.Get(e.ctx, s.ID); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("ended session %s not deleted: %v", s.ID, err)
 		}
 	}
@@ -172,6 +130,13 @@ func TestSignOutOrg(t *testing.T) {
 	if !e.sessionLive(garySess) {
 		t.Error("the sweep touched another organization")
 	}
+	if len(e.audited(acme.ID, "signout.sweep")) != 1 {
+		t.Error("the sweep was not audited")
+	}
+	// a super admin pulls the lever of the primary organization, which holds the super admins
+	if _, err := e.svc.SignOutOrg(e.ctx, actor(e.super), e.primary.ID, service.SignOutOptions{Reason: "test", APITokens: true}); err != nil {
+		t.Fatalf("a super admin could not sign out the primary organization: %v", err)
+	}
 }
 
 // The server's lever ends every organization's sessions (super admins only), and moving the primary organization
@@ -183,8 +148,11 @@ func TestSignOutServer(t *testing.T) {
 	superSess, alanSess, adminSess := e.session(e.super), e.session(alan), e.session(admin)
 	alanTok := e.apiToken(alan)
 
-	if _, err := e.svc.SignOutServer(e.ctx, actor(admin), service.SignOutOptions{Reason: "x"}); outcome(err) != "forbidden" {
-		t.Fatalf("an organization's admin pulled the server's lever: %v", err)
+	for name, u := range map[string]*model.User{"organization admin": admin, "primary organization admin": e.user(e.primary.ID, "padmin", model.RoleAdmin),
+		"manager": e.user(acme.ID, "mgr", model.RoleManager)} {
+		if _, err := e.svc.SignOutServer(e.ctx, actor(u), service.SignOutOptions{Reason: "x"}); outcome(err) != "forbidden" {
+			t.Fatalf("a %s pulled the server's lever: %v", name, err)
+		}
 	}
 	if _, err := e.svc.SignOutServer(e.ctx, actor(e.super), service.SignOutOptions{Reason: "breach", APITokens: true,
 		KeepSession: superSess.ID}); err != nil {
@@ -198,6 +166,9 @@ func TestSignOutServer(t *testing.T) {
 	}
 	if p, _ := e.svc.PrimaryOrg(e.ctx); p.LastServerSignOut == nil || p.LastServerSignOut.Reason != "breach" {
 		t.Errorf("last server sign-out not recorded: %+v", p.LastServerSignOut)
+	}
+	if len(e.audited(e.primary.ID, "server.signout")) != 1 {
+		t.Error("the server sign-out was not audited in the primary organization")
 	}
 
 	// another organization made primary: what the server's lever ended stays ended
@@ -239,5 +210,98 @@ func TestSignOutOtherNode(t *testing.T) {
 	other.InvalidateSignOut() // what the cluster's change notice does
 	if other.SessionCurrent(e.ctx, s.OrgID, s.Stamp) {
 		t.Error("the other node still accepts the session")
+	}
+}
+
+func TestSessionUsableVerdicts(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	u := e.user(org.ID, "alan", model.RoleUser)
+	sess := e.session(u)
+	if ok, err := e.svc.SessionUsable(e.ctx, sess, u); err != nil || !ok {
+		t.Fatalf("fresh: %v %v", ok, err)
+	}
+	other := e.user(org.ID, "bea", model.RoleUser)
+	if ok, _ := e.svc.SessionUsable(e.ctx, sess, other); ok {
+		t.Error("session usable for another user")
+	}
+	exp := *sess
+	exp.Expires = time.Now().Add(-time.Minute)
+	if ok, _ := e.svc.SessionUsable(e.ctx, &exp, u); ok {
+		t.Error("expired session usable")
+	}
+	stale := *sess
+	stale.Epoch = 12345
+	if ok, _ := e.svc.SessionUsable(e.ctx, &stale, u); ok {
+		t.Error("session of another epoch usable")
+	}
+	off := *u
+	off.Active = false
+	if ok, err := e.svc.SessionUsable(e.ctx, sess, &off); ok || err != nil {
+		t.Errorf("disabled user: %v %v", ok, err)
+	}
+	ghost := *u
+	ghost.OrgID = "gone"
+	if ok, err := e.svc.UserUsable(e.ctx, &ghost); ok || err != nil {
+		t.Errorf("user of a missing org: %v %v", ok, err)
+	}
+	// after an emergency sign-out of the org, the old session is ended
+	if _, err := e.svc.SignOutOrg(e.ctx, service.System, org.ID, service.SignOutOptions{Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.svc.SessionUsable(e.ctx, sess, u); ok || err != nil {
+		t.Errorf("after sign-out: %v %v", ok, err)
+	}
+	want, err := e.svc.SessionStamp(e.ctx, org.ID)
+	if err != nil || service.SessionUsableAt(sess, u, want) {
+		t.Errorf("SessionUsableAt after sign-out: %v", err)
+	}
+}
+
+// A sign-out that ends sessions tells the hook who and which sessions, so the connections held open for them can close.
+func TestSessionsEndingHookReceivesTheUserAndSessions(t *testing.T) {
+	e := newEnv(t)
+	var got []string
+	e.svc.OnSessionsEnding = func(_ context.Context, user string, ids []string) { got = append(got, user+":"+strings.Join(ids, ",")) }
+	e.svc.SessionsEnding(e.ctx, "u1", "s1", "s2")
+	if len(got) != 1 || got[0] != "u1:s1,s2" {
+		t.Errorf("hook calls %v", got)
+	}
+}
+
+// Signing out everywhere ends the user's sessions and refresh grants, tells the hook once, and is audited; someone who
+// may not manage the user changes nothing.
+func TestRevokeSessionsEndsSessionsAndGrants(t *testing.T) {
+	c := newCast(t)
+	victim := c.aUser
+	sess := c.session(victim)
+	g := c.grant(victim, sess.ID)
+	for name, u := range map[string]*model.User{"foreign admin": c.bAdmin, "peer": c.e2(c.a.ID)} {
+		if err := c.svc.RevokeSessions(c.ctx, actor(u), victim.ID); err == nil {
+			t.Errorf("%s revoked another user's sessions", name)
+		}
+	}
+	if _, err := c.svc.Sessions.Get(c.ctx, sess.ID); err != nil {
+		t.Fatal("session gone after denied revocations")
+	}
+	if err := c.svc.RevokeSessions(c.ctx, actor(c.aAdmin), "nobody"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("unknown user: %v", err)
+	}
+	var ended []string
+	c.svc.OnSessionsEnding = func(_ context.Context, user string, ids []string) { ended = append(ended, user) }
+	if err := c.svc.RevokeSessions(c.ctx, actor(victim), victim.ID); err != nil { // sign out everywhere, by themselves
+		t.Fatal(err)
+	}
+	if _, err := c.svc.Sessions.Get(c.ctx, sess.ID); err == nil {
+		t.Error("session survived")
+	}
+	if _, err := c.svc.Grants.Get(c.ctx, g.ID); err == nil {
+		t.Error("grant survived")
+	}
+	if len(ended) != 1 || ended[0] != victim.ID {
+		t.Errorf("hook %v", ended)
+	}
+	if len(c.audited(c.a.ID, "user.sessions.revoke")) != 1 {
+		t.Error("revocation not audited")
 	}
 }

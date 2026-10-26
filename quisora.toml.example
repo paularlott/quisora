@@ -52,19 +52,19 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql or
 #  - share one database server (postgres, mysql, mariadb) and leave bind empty: no replication, the database
 #    is the only copy, short-lived sign-in state lives there too; set [cluster.notify] so the nodes tell each other
 #    of changes (caches and live pages follow at once instead of within 5 seconds);
-#  - give every node its own database (any backend) and set bind: the nodes replicate to each other over gossip.
+#  - give every node its own database (any backend) and set bind: the data is split into 64 partitions, each owned
+#    by one node that commits every write on a majority of the nodes before it is visible (docs/REPLICATION.md).
 # node_id = ""                            # UUID; default: generated and kept in the data directory
 # bind = "0.0.0.0:7946"                   # empty = no gossip
 # advertise = "10.0.0.11:7946"
 # peers = ["10.0.0.11:7946", "10.0.0.12:7946", "10.0.0.13:7946"]   # every node lists every other (required with bind)
 # size = 3                                # required with bind: the number of nodes, identical on every node; the
-#                                         # quorum is size/2+1 and never shrinks (scaling: docs/REPLICATION.md)
+#                                         # majority that commits a write is size/2+1 and never shrinks
+#                                         # (changing it: docs/REPLICATION.md)
 # key = ""                                # `quisora genkey`; identical on every node
 # previous_keys = []                      # during a cluster key rotation only (docs/RUNNING.md#rotating-the-cluster-key)
 # minority_grace = 300                    # seconds a node cut off from the majority keeps answering the token,
 #                                         # userinfo and introspection endpoints (requests that need no write)
-# strict_durability = false               # true: a durable write of a kind that is not quorum-committed fails when a
-#                                         # majority does not confirm it; see docs/REPLICATION.md
 
 [cluster.notify]
 # Shared database only (ignored, with a warning, when cluster.bind is set): a gossip network of its own that carries

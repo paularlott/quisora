@@ -45,7 +45,11 @@ share one between nodes or processes.
 | `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
 | `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
 | `logoutqueue/`       | Back-channel logouts an application did not take, waiting to be retried, sealed with the master key.  |
-| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping (`restored-from-backup`, `force-start`, `restore-incomplete`). |
+| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping: whether its database's partition state can be trusted, which data set it holds (its genesis: trusted only for the database it was saved for), whether it has formed in its cluster, a forced start not yet audited (`cluster-state.json`); the one-shot markers `force-start` and `restore-incomplete`; `restore-audit.json` (restores not yet in the audit log). |
+
+Nothing else is written there. In particular a gossip node does not spool what it sends another node that is catching up:
+the stream goes from the database to the other node's database with no file in between (an older build left `export-*.tmp`
+files here after a crash; a node deletes them at start).
 
 Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
 restoring a node without it gives it a new identity, and email or audit events still queued in it are lost.
@@ -88,7 +92,8 @@ quisora serve --data-dir /var/lib/quisora --public-url https://id.example.com
 
 Tokens are signed with ES256 by default (`tokens.signing_alg`; `EdDSA` is a little faster where every relying party
 supports it). A new key is made every `tokens.key_rotation_days` (30 by default; 0 rotates by hand only) by the
-housekeeping leader. It is published in the JWKS at once and signs 15 minutes later, so relying parties already know
+housekeeping leader (in a cluster, the node that owns partition 0: `leader` in `GET /api/cluster`; housekeeping moves with it,
+see [REPLICATION.md](REPLICATION.md), "Housekeeping"). It is published in the JWKS at once and signs 15 minutes later, so relying parties already know
 it; the previous key stays published until the tokens it signed have expired, then it is removed.
 
 Super admins see the keys on the **System overview**: each key's state (signing, next, previous) and when it
@@ -198,7 +203,8 @@ and only then made active. Do each step on every node, one node at a time, befor
 3. Every node: `master_key = "<new>"`, `previous_master_keys = ["<old>"]`; reload or restart. New secrets are sealed
    with the new key. While some nodes still seal with the old one, the status says `waiting_for_nodes` and names
    them, and nothing is re-sealed. Once all do, the housekeeping leader re-seals every stored secret, and the status
-   says `complete`.
+   says `complete`. A live node that has no current report of its keys (it has not reported yet, or its report lapsed)
+   counts as not agreeing: the leader logs it as "no current report" and waits.
 4. Every node: remove `previous_master_keys`; reload or restart.
 
 On a shared database the first node with the new key active also moves the database's key check to it: from then on
@@ -238,9 +244,16 @@ quisora set-primary acme --super-admin alice@acme.example
 - `alice@acme.example` (a user of `acme`) becomes its super admin; the previous primary organization's super admins
   become administrators of that organization. The change is audited in both. The server's emergency sign-out
   counters move with it.
+- **It can be run again.** The change is four writes (the new primary marked, its super admin promoted, the old primary
+  unmarked, the old super admins demoted) in the global partition and two organizations' partitions, with no transaction
+  over them. If it stops part-way (a node lost, the store refusing a write), the state is safe at every step (until the
+  end there are two primary organizations at worst, and every node chooses the same one, logging an error), and running
+  the same command again finishes what is left and audits it. When nothing is left it says the organization is the
+  primary already.
 - On a shared database it works while the servers run; they follow within seconds. On BadgerDB or SQLite stop the
-  server first. In a gossip cluster stop one node, run it there and start the node again: the others receive the
-  change from it.
+  server first. In a gossip cluster run it while the nodes run: it asks a running node (`server.public_url`, or
+  `--server`), signing the request with the master key, and the change is committed like any other (a write made to a
+  stopped node's database would reach no other node).
 
 ## Storage backends
 
@@ -337,9 +350,12 @@ Run `quisora bootstrap` once, against the database, before the first node starts
 
 ### Replicated (gossip)
 
-Every node has its own database (BadgerDB is the usual choice) and the nodes replicate every write.
-A gossip cluster keeps at least two super admins: make a second one before you rely on the cluster (see
-[protecting administrators](sign-in/README.md#protecting-administrators)).
+Every node has its own database (BadgerDB is the usual choice). The data is split into 64 partitions; each partition has one
+owner node that orders its writes and commits each on a majority of the nodes before it is visible, and every node keeps a copy
+of everything and reads from it.
+As in every mode, the last super admin cannot be demoted, disabled, deleted or end-dated (see
+[protecting administrators](sign-in/README.md#protecting-administrators)); make a second one before you rely on the cluster
+anyway, so that losing one account never needs the break-glass procedure.
 
 ```toml
 [server]
@@ -350,31 +366,44 @@ master_key = "…"          # identical on every node
 bind = "0.0.0.0:7946"
 advertise = "10.0.0.11:7946"
 peers = ["10.0.0.11:7946", "10.0.0.12:7946", "10.0.0.13:7946"]   # every node lists every node
-size = 3                  # required, identical on every node; quorum = size/2+1
+size = 3                  # required, identical on every node; a write needs size/2+1 nodes
 key = "…"                 # quisora genkey, identical on every node
 ```
 
 How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator needs from it:
 
-- **Quorum** is `cluster.size`/2+1 and never shrinks: three nodes tolerate one down. Without a quorum a node makes no
-  replicated write, and the token, userinfo and introspection endpoints keep answering for `cluster.minority_grace`
-  (300 s). ([Cluster size and quorum](REPLICATION.md#cluster-size-and-quorum))
-- **A starting node** serves only `/healthz` and `/readyz` until it has caught up. Restart nodes one at a time.
-  ([Node states](REPLICATION.md#node-states))
-- **Keep the data directory with the database**: it holds the node's id (or set `cluster.node_id`), and a node that
-  finds another node's database refuses to serve (it never wipes it).
-- **Clocks** must be in sync (NTP); more than 5 s apart is a broken node, and gossip refuses packets more than two
-  minutes off the receiver's clock. ([Clocks](REPLICATION.md#clocks))
+- **Run three or five nodes.** A write needs a majority of `cluster.size` (it never shrinks): three nodes tolerate one down,
+  five tolerate two. Without a majority a node makes no replicated write, and the token, userinfo and introspection endpoints
+  keep answering for `cluster.minority_grace` (300 s). ([Cluster size](REPLICATION.md#cluster-size))
+- **When a node is lost, its partitions move within a few seconds**: writes to them wait for that (up to 5 s) and then fail with
+  503; reads of what the node already has go on. A node you stop with SIGTERM hands over at once.
+- **A starting node** serves only `/healthz` and `/readyz` until it has caught up and been stable for a few seconds. Restart
+  nodes one at a time; restarting all of them at once needs nothing special. ([Node states](REPLICATION.md#node-states))
+- **A node with a new or restored database copies everything** from a majority of the *other* nodes before it takes part (both
+  others of three). While another node is down as well it waits, resynchronising; `quisora force-start` (see below) is the
+  operator accepting that it copies from whichever nodes answer. (A cluster of two needs only the other node.)
+- **BadgerDB needs `storage.badgerdb.sync_writes = true`** (the default): a node's promises and the writes it acknowledges must
+  survive a power cut, and a gossip node refuses to start with it off.
+- **Keep the data directory with the database**: it holds the node's id (or set `cluster.node_id`) and `cluster-state.json`
+  (whether the database can be trusted), and a node that finds another node's database refuses to serve (it never wipes it).
+- **Clocks** must be in sync (NTP); more than 5 s apart is a broken node, and gossip refuses packets more than two minutes off
+  the receiver's clock. ([Clocks](REPLICATION.md#clocks))
+- **Open the gossip port** (`cluster.bind`, TCP and UDP) between the nodes only: the partition protocol's messages (writes, promises,
+  catch-up streams) use it, encrypted and authenticated by `cluster.key`.
+- **`quisora invite`, `quisora set-primary` and `quisora sign-out` go through a running node** in a gossip cluster (they sign the
+  request with the master key); `quisora bootstrap --new-cluster` and `quisora restore` are for the first node of a new cluster,
+  with an empty database: they alone create a cluster's data set.
 
 New cluster:
 
-1. `quisora bootstrap --new-cluster` on one node, before any node starts.
-2. Start every node. The others start with empty databases and copy from the first.
+1. `quisora bootstrap --new-cluster` on one node, with an empty database.
+2. Start every node. The others start with empty databases, adopt the first node's data set and copy from it (started before it,
+   they wait: "no data set"). Until the data set has formed (a majority holds it), a new node copies from the first node alone;
+   after that, replacements copy from a majority of the others as above.
 
 Replacing a node: start the replacement with an empty database and the same configuration. It copies everything.
 
-Changing the size, recovering from a long outage (a node that has not synced for six days stops and keeps its data;
-after a whole-cluster outage, `quisora force-start` on the node with the newest data), and what each refusal means:
+After a lost disk with another node also down (`quisora force-start`), changing the size, and what each refusal means:
 [REPLICATION.md, Operator procedures](REPLICATION.md#operator-procedures).
 
 ### Rotating the cluster key
@@ -417,14 +446,18 @@ pages read it from one of two places:
 | For                       | Development, home labs, testing                                                               | Production; required for SOC 2                |
 | Kept                      | `audit.retention_days` (7)                                                                    | VictoriaLogs' `-retentionPeriod`              |
 | One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database |
-| Gossip cluster            | Each node keeps its own; a page asks every node and merges, and says if a node did not answer | Every node sends; any node reads              |
+| Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads              |
 
 Admins see their own organization's events. Super admins also see every organization (`/admin/audit`,
 `GET /api/audit?org=<name>`).
 
+In a gossip cluster with the database trail, an event is on the node that recorded it only: a node that is down, or slow to
+answer (3 s), is missing from a page (the page says how many nodes answered), and a node whose disk is lost takes its events
+with it.
+
 **Production, and any deployment that needs SOC 2, must use VictoriaLogs.** The database audit trail keeps events for
-days, not the year or more an audit period needs; in a gossip cluster each node holds only its own slice, so a lost
-node loses its events; and it has no protection against someone with write access to the database. With
+days, not the year or more an audit period needs; it is per node in a gossip cluster; and it has no protection against
+someone with write access to the database. With
 VictoriaLogs:
 
 - set its retention to cover the audit period (`-retentionPeriod=1y` or more);
@@ -464,7 +497,12 @@ Every event has:
   event's number in that start's sequence (1, 2, 3…), so a gap is an event VictoriaLogs does not hold
   ([SOC2.md](SOC2.md#completeness)).
 
-Commands (`bootstrap`, `invite`, `set-primary`, `sign-out`, `restore`) record who ran them: the actor is
+`quisora invite`, `quisora set-primary` and `quisora sign-out` carried out by a running node (a gossip cluster, or a node-local
+store that a server holds) are recorded with the actor `command:invite`, `command:set-primary` or `command:sign-out`, the address the request came from in `ip`, and
+`detail.command` and `detail.authenticated` (a request signed with the master key); the forced start `cluster.force_start` is
+`command:force-start`. The system's own work (housekeeping, key rotation) keeps the actor `system`. Commands that run in
+their own process against a store (`bootstrap`, `restore`, and `invite`, `set-primary` or `sign-out` against a shared database or
+a stopped node that does not replicate) record who ran them: the actor is
 `cli:<os user>@<host>`, with `detail.os_user`, `detail.host`, `detail.pid` and `detail.command`. A restore (offline,
 or `server.restore_from` at start-up) is written to the primary organization's log as `backup.restore` once the
 node can write.
@@ -625,8 +663,11 @@ quisora restore quisora.bak                   # into the configured store, witho
 - A restore that fails part-way leaves `restore-incomplete` in the data directory. Empty the store before trying again.
 - **Clusters always restore into an empty cluster.**
   - Shared database: restore into the empty database, then start the nodes.
-  - Gossip: restore one node and start it, then start the others with empty databases.
-  - A restored node that meets peers holding data refuses.
+  - Gossip: restore into one node with an empty database (a restore never goes over data, nor on a node that already holds a
+    data set) and start it, and start the others with empty databases. The restore writes the records as the first writes of
+    their partitions, of a new data set, which the other nodes adopt and copy.
+  - A restored node that meets a cluster of another data set exchanges nothing with it and refuses to serve ("another data set
+    is in view").
 
 ## Upgrading
 
@@ -660,8 +701,14 @@ Until the first release, formats change in place. From then on:
   - SQL: append to `migrations()` (`internal/store/sqlstore/migrate.go`): statements, and Go code for data.
 - A backup format change: raise `version`, add `upgrades[old]`, and keep `minVersion` at the previous release's
   version (`internal/backup/backup.go`).
-- What nodes send each other changes: raise `compat`; raise `minCompat` only when this build stops understanding the
-  previous release (`internal/cluster/node.go`).
+- What nodes send each other changes (a change or a write's data in `internal/cluster/partition.go`, the record encoding in
+  `wire.go`, an ephemeral operation): raise `compat`; raise `minCompat` only when this build stops understanding the previous
+  release (`internal/cluster/node.go`). A node that does not speak the same version is refused, so a change that the previous
+  release cannot read means every node changes at once.
+- **The partition layout is a data format.** The number of partitions (64), a kind's partition key (`model.Index.Partition`),
+  the partition numbering (`partition.PartitionOf`), the encoding of what `Prepare` and `Commit` exchange and the protocol state
+  kept in the databases move records between partitions or change what a stored write means: a running cluster cannot do that
+  in place. Changing any of them is a migration with the cluster stopped (backup, restore into a new cluster).
 - Never edit or remove a released migration or upgrade: append.
 
 ## Email
@@ -682,8 +729,8 @@ error. Watch `quisora_mail_queued`: growing means SMTP is not taking mail.
 ## Health and monitoring
 
 - `/healthz`: liveness.
-- `/readyz`: readiness, cluster-aware. Route load balancers on it. It reports size, quorum and counts of unconfirmed
-  writes, refusals and clock skew.
+- `/readyz`: readiness, cluster-aware. Route load balancers on it. It reports size, quorum, the partitions this node owns and
+  counts of writes whose outcome is unknown, refusals and clock skew.
 - `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
 - Short-lived sign-in state (flows, codes, pushed requests, challenges) is held in each node's memory up to
@@ -709,13 +756,17 @@ endpoint. Every node serves its own.
 | `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
+| `quisora_partitions_owned` | Partitions this node owns (the 64 are shared by the ready nodes) |
+| `quisora_partition_writes_total`, `_writes_refused_total`, `_writes_unknown_total`, `_writes_unavailable_total` | Changes this node made since it started: committed; refused by an owner (a version had moved, a unique value was in use); outcome not known (an owner lost mid-write); no owner or majority found |
+| `quisora_partition_reads_total`, `_reads_failed_total`, `quisora_partition_takeovers_total` | Fresh reads asked of owners and those that failed; partitions this node became the owner of |
 | `quisora_master_key_rotation` | 1 while previous master keys are configured |
 | `quisora_build_info{version}`, `quisora_uptime_seconds`, `quisora_goroutines`, `quisora_memory_heap_bytes` | The process |
 
 Alerts worth having:
 
 - `quisora_ready == 0` or `quisora_writable == 0` for more than a few minutes; `quisora_cluster_alive_nodes <
-  quisora_cluster_quorum`.
+  quisora_cluster_quorum`; `sum(quisora_partitions_owned) != 64` across the nodes (a partition nobody owns), or a steady
+  `rate(quisora_partition_takeovers_total[10m])` (ownership flapping).
 - `increase(quisora_audit_undelivered_total[5m]) > 0`, or `quisora_audit_spool_bytes` growing: audit events at risk.
 - Bursts of `quisora_audit_events_total{outcome="failure"}`, by action: password guessing (`login.failure`,
   `login.lockout`), floods (`login.limited`, `oauth.client_auth.limited`), stolen tokens (`oauth.refresh.reuse`,
@@ -747,7 +798,7 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
   far outside these (over 256 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
-- Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 7.5 GB on disk);
+- Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 10.3 GB per node on disk);
   lookups and token traffic do not slow down at that size. Memory per node: about 160 MB of Go heap idle and at most
   450 MB under full load (every scenario at 64 concurrent clients), plus the store's own caches (BadgerDB: about
   0.5 GB of block, index and memtable memory), plus `limits.ephemeral_mb` at most for short-lived sign-in state (1 GiB
@@ -757,7 +808,11 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   use indexes (`model.Due`, `model.Field.Index`).
 - At this size send audit events to VictoriaLogs ([Audit log](#audit-log)): the built-in trail's pages read through
   every event they search.
-- A new gossip node catches up at ~86,000 records/s.
+- A new gossip node catches up at ~16,000 records/s.
+- Both of the figures above (10.3 GB per node on disk, ~16,000 records/s for an empty node to catch up) were measured on the
+  build before the partition protocol, and are to be measured again on this one: it keeps more per record (the position of the
+  write that last changed it) and copies a node by partition. (A quick run on one machine, three nodes, 400-byte records and
+  BadgerDB without fsync, copied a node at about 70,000 records/s, SQLite at about 23,000: not comparable with the figures above.)
 - The load test tool reproduces these. It is a development tool, not part of the `quisora` binary: build it with
   `task loadtest` (or `go build -o bin/loadtest ./tools/loadtest`), then use `bin/loadtest seed` and
   `bin/loadtest run`. The seeder needs `QUISORA_LOADTEST=1`, as it writes test data straight into the store.

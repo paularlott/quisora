@@ -2197,7 +2197,8 @@ paths:
       tags: [Cluster]
       summary: This node's cluster status
       description: "This node's cluster status (super admin): size, quorum, every node with its address, state and role,
-        readiness, and the counts of writes a majority did not confirm, refused writes and clock skew"
+        readiness, the partitions it owns (with each one's owner, epoch and committed position), and the counts of writes whose
+        outcome is not known, refused writes and clock skew"
       operationId: get_cluster
       responses:
         "200":
@@ -3429,17 +3430,45 @@ components:
       properties:
         alive:
           type: integer
-        behind:
-          type: boolean
         catching_up:
           type: boolean
+          description: not ready yet because the node is catching up with (or copying everything from) the other nodes
+        resyncing:
+          type: boolean
+          description: the node's data was lost, replaced or restored and it is copying everything from the other nodes
+        partitions_owned:
+          type: integer
+          description: how many of the 64 partitions this node owns (gossip clusters)
+        partitions:
+          type: array
+          description: every partition as this node sees it (gossip clusters)
+          items:
+            type: object
+            properties:
+              partition: {type: integer}
+              owner: {type: string, description: the node this one last heard take the partition}
+              epoch: {type: integer, description: the owner's epoch counter}
+              committed: {type: integer, description: the sequence number of the last write this node applied}
+              promised: {type: integer, description: the highest epoch counter this node has promised}
+              owned: {type: boolean}
+        writes: {type: integer, description: changes this node made that were committed on a majority}
+        writes_unavailable: {type: integer}
+        reads: {type: integer, description: fresh reads this node asked an owner for}
+        reads_failed: {type: integer}
+        takeovers: {type: integer, description: partitions this node became the owner of}
         clock_skewed:
           type: integer
+          description: records received with a version more than 5 seconds ahead of this node's clock
+        clock_offset_ms:
+          type: integer
+          description: how far the other nodes' clocks are ahead of this one's (the median of their latest readings, in milliseconds; negative - behind); absent until a peer has answered
+        cluster_keys:
+          type: array
+          description: the ids of this node's gossip keys, the one that encrypts first (a rotation shows more than one); never the keys
+          items:
+            type: string
         forced_start:
           type: string
-        last_sync:
-          type: string
-          format: date-time
         leader:
           type: boolean
         members:
@@ -3467,12 +3496,19 @@ components:
                 enum: [alive, suspect, dead, leaving]
               version:
                 type: string
+              data_set:
+                type: string
+                description: the data set the member holds, as it publishes it (nodes of different data sets ignore each other)
+        data_set:
+          type: string
+          description: the data set this node holds (gossip clusters; absent while it holds none and waits for one)
         quorum:
           type: integer
         ready:
           type: boolean
         refused:
           type: integer
+          description: changes an owner refused (a version had moved, a unique value was in use)
         replicating:
           type: boolean
         size:
@@ -3481,11 +3517,9 @@ components:
           type: integer
         standalone:
           type: boolean
-        sync_point:
-          type: string
-          format: date-time
         unconfirmed:
           type: integer
+          description: writes whose outcome this node does not know (the owner was lost mid-write)
         writable:
           type: boolean
     ConnectedApp:

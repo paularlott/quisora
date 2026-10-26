@@ -69,7 +69,7 @@ func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (Resea
 		return nil
 	}
 	if err := walk(ctx, s.Users, func(u *model.User) error {
-		save := func() error { return s.Users.Update(Durable(ctx), u) }
+		save := func() error { return s.Users.Update(ctx, u) }
 		if err := reseal(TOTPBinding(u.ID), &u.TOTPSecret, save); err != nil {
 			return err
 		}
@@ -78,12 +78,12 @@ func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (Resea
 		return r, err
 	}
 	if err := walk(ctx, s.Providers, func(p *model.Provider) error {
-		return reseal(ProviderSecretBinding(p.ID), &p.ClientSecret, func() error { return s.Providers.Update(Durable(ctx), p) })
+		return reseal(ProviderSecretBinding(p.ID), &p.ClientSecret, func() error { return s.Providers.Update(ctx, p) })
 	}); err != nil {
 		return r, err
 	}
 	if err := walk(ctx, s.Keys, func(k *model.SigningKey) error {
-		return reseal(SigningKeyBinding(k.ID), &k.PrivateKey, func() error { return s.Keys.Update(Durable(ctx), k) })
+		return reseal(SigningKeyBinding(k.ID), &k.PrivateKey, func() error { return s.Keys.Update(ctx, k) })
 	}); err != nil {
 		return r, err
 	}

@@ -3,6 +3,7 @@ package service_test
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,18 +14,12 @@ import (
 
 func tags(s ...string) *[]string { return &s }
 
+// A tag is validated (model.ValidTag, in the model package's tests) wherever it comes in: an invalid one is refused
+// with the tag named, changes nothing, and tags are stored deduplicated and sorted.
 func TestTagValidation(t *testing.T) {
 	c := newCast(t)
 	adm := actor(c.aAdmin)
-	for _, ok := range []string{"a", "A1", "dept:finance", "marketplace:seller", "a.b_c-d/e:f", strings.Repeat("x", 64), "9"} {
-		if !model.ValidTag(ok) {
-			t.Errorf("%q should be valid", ok)
-		}
-	}
 	for _, bad := range []string{"", "x y", "-a", "a-", ".a", "a.", ":a", "a:", "é", "a,b", "a#", strings.Repeat("x", 65), "a\n"} {
-		if model.ValidTag(bad) {
-			t.Errorf("%q should be invalid", bad)
-		}
 		_, err := c.svc.UpdateUser(c.ctx, adm, c.aUser.ID, service.UserInput{Tags: tags(bad)})
 		if !errors.Is(err, service.ErrInvalid) {
 			t.Errorf("user tag %q: %v", bad, err)
@@ -55,7 +50,7 @@ func TestTagValidation(t *testing.T) {
 	// At most 50.
 	many := make([]string, 0, 51)
 	for i := range 51 {
-		many = append(many, "t"+itoa(i))
+		many = append(many, "t"+strconv.Itoa(i))
 	}
 	if _, err := c.svc.UpdateUser(c.ctx, adm, c.aUser.ID, service.UserInput{Tags: &many}); !errors.Is(err, service.ErrInvalid) {
 		t.Errorf("51 tags: %v", err)
@@ -65,7 +60,7 @@ func TestTagValidation(t *testing.T) {
 	}
 
 	// Create with tags; groups validate the same way.
-	nu, err := c.svc.CreateUser(c.ctx, adm, c.a.ID, service.UserInput{GivenName: gn("T"), Email: ptr("tagged@example.com"), Tags: tags("z", "y")})
+	nu, err := c.svc.CreateUser(c.ctx, adm, c.a.ID, service.UserInput{GivenName: ptr("T"), Email: ptr("tagged@example.com"), Tags: tags("z", "y")})
 	if err != nil || !slices.Equal(nu.Tags, []string{"y", "z"}) {
 		t.Fatalf("create: %v %v", err, nu)
 	}
@@ -108,7 +103,7 @@ func TestTagRBAC(t *testing.T) {
 		t.Errorf("user tags self (self-service): %v", err)
 	}
 	// Creating a user with tags needs the same right as creating the user.
-	if _, err := c.svc.CreateUser(c.ctx, self, c.a.ID, service.UserInput{GivenName: gn("T"), Email: ptr("n@example.com"), Tags: tags("a")}); err == nil {
+	if _, err := c.svc.CreateUser(c.ctx, self, c.a.ID, service.UserInput{GivenName: ptr("T"), Email: ptr("n@example.com"), Tags: tags("a")}); err == nil {
 		t.Error("plain user created a tagged user")
 	}
 	// Groups: org admins only.
@@ -145,7 +140,7 @@ func TestListUsersTagged(t *testing.T) {
 	c := newCast(t)
 	adm := actor(c.aAdmin)
 	for i := range 5 {
-		u := c.user(c.a.ID, "tl"+itoa(i), model.RoleUser)
+		u := c.user(c.a.ID, "tl"+strconv.Itoa(i), model.RoleUser)
 		tg := []string{"all"}
 		if i%2 == 0 {
 			tg = append(tg, "even")

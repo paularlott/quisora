@@ -360,7 +360,7 @@ func (p *Provider) RemoveKey(ctx context.Context, id string) error {
 	case ks.signer(k.alg, now) == k:
 		return service.Invalid("id", "this key signs tokens now: rotate the keys first, then remove it")
 	}
-	if err := p.svc.Keys.Delete(service.Durable(ctx), id); !store.Applied(err) {
+	if err := p.svc.Keys.Delete(ctx, id); err != nil {
 		return err
 	}
 	if ks, err = p.loadKeys(ctx); err == nil {

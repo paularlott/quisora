@@ -7,8 +7,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/paularlott/quisora/internal/secure"
-	"github.com/paularlott/quisora/internal/web"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +16,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/web"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
@@ -192,6 +193,9 @@ func testIntegration(t *testing.T, backend string) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// gn returns a pointer to the first name given to users that tests create.
+func gn(s string) *string { return &s }
 
 // TestBrowserSignInFlow drives the whole OIDC code flow on the assembled server the way a browser and an app do.
 func TestBrowserSignInFlow(t *testing.T) {

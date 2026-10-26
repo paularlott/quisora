@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -35,35 +36,26 @@ func RunBatch(t *testing.T, f Factory) {
 		for i := range 700 { // more than one transaction group
 			recs = append(recs, rec(fmt.Sprintf("g%04d", i), "n1", fmt.Sprintf("o|g%d", i), i))
 		}
-		applied, losers, err := b.PutReplicatedBatch(ctx, recs)
+		applied, err := b.PutReplicatedBatch(ctx, recs)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i := range recs {
-			if !applied[i] || len(losers[i]) != 0 {
-				t.Fatalf("record %d applied=%v losers=%v", i, applied[i], losers[i])
+			if !applied[i] {
+				t.Fatalf("record %d not applied", i)
 			}
 		}
 		if n, _ := s.Count(ctx, model.KindGroup, ""); n != 700 {
 			t.Fatalf("count %d", n)
 		}
-		// Replaying is a no-op, and the change feed holds each record once.
-		applied, _, err = b.PutReplicatedBatch(ctx, recs)
+		// Replaying is a no-op.
+		applied, err = b.PutReplicatedBatch(ctx, recs)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i := range applied {
 			if applied[i] {
 				t.Fatalf("replay applied record %d", i)
-			}
-		}
-		ch, _, _ := s.Changes(ctx, 0, 0)
-		if len(ch) != 700 {
-			t.Fatalf("feed has %d entries", len(ch))
-		}
-		for i := 1; i < len(ch); i++ {
-			if ch[i].Seq <= ch[i-1].Seq {
-				t.Fatal("feed not in seq order")
 			}
 		}
 	})
@@ -73,7 +65,7 @@ func RunBatch(t *testing.T, f Factory) {
 		del := &store.Record{Kind: model.KindGroup, ID: "b", Deleted: true, Origin: "n1", Version: store.Clock.Now()}
 		b1 := rec("b", "n1", "", 1)
 		b1.Version = del.Version - 5
-		applied, _, err := b.PutReplicatedBatch(ctx, []*store.Record{v1, v2, b1, del})
+		applied, err := b.PutReplicatedBatch(ctx, []*store.Record{v1, v2, b1, del})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,24 +80,42 @@ func RunBatch(t *testing.T, f Factory) {
 			t.Fatalf("b should be deleted: %v", err)
 		}
 	})
-	t.Run("Batch/UniqueClashInBatch", func(t *testing.T) {
+	t.Run("Batch/EmptyAndOlderInBatch", func(t *testing.T) {
 		s, b := mk(t)
-		first, second := rec("x1", "n1", "o|same", 1), rec("x2", "n2", "o|same", 2)
-		applied, losers, err := b.PutReplicatedBatch(ctx, []*store.Record{second, first})
+		if applied, err := b.PutReplicatedBatch(ctx, nil); err != nil || len(applied) != 0 {
+			t.Fatalf("empty batch: %v %v", applied, err)
+		}
+		// The same record twice and then an older copy of it: the older copy is not applied over the newer.
+		r1, r1b := rec("a", "n1", "o|dup", 1), rec("a", "n1", "o|dup", 2)
+		older := *r1
+		applied, err := b.PutReplicatedBatch(ctx, []*store.Record{r1, r1b, &older})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !applied[0] || !applied[1] {
+		if !applied[0] || !applied[1] || applied[2] {
 			t.Fatalf("applied %v", applied)
 		}
-		// first has the lower version, so it keeps the value; second loses (reported with whichever record lost).
-		all := append(append([]string{}, losers[0]...), losers[1]...)
-		if len(all) != 1 || all[0] != "x2" {
-			t.Fatalf("losers %v", losers)
+		// A later claimant of the value is refused; the holder keeps it.
+		if _, err := b.PutReplicatedBatch(ctx, []*store.Record{rec("b", "n2", "o|dup", 3)}); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("a second claimant of a unique value: %v", err)
 		}
-		h, err := s.GetByUnique(ctx, model.KindGroup, "o|same")
-		if err != nil || h.ID != "x1" {
-			t.Fatalf("holder %v %v", h, err)
+		if h, err := s.GetByUnique(ctx, model.KindGroup, "o|dup"); err != nil || h.ID != "a" || string(h.Data) != "2" {
+			t.Fatalf("holder: %v %v", h, err)
+		}
+	})
+	t.Run("Batch/UniqueClashInBatch", func(t *testing.T) {
+		s, b := mk(t)
+		first, second := rec("x1", "n1", "o|same", 1), rec("x2", "n2", "o|same", 2)
+		// The clashing record is refused and the batch stops there (what the group it is in had applied may be undone:
+		// the caller gives up on an error).
+		if _, err := b.PutReplicatedBatch(ctx, []*store.Record{first, second}); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("a clash in a batch: %v", err)
+		}
+		if _, err := s.Get(ctx, model.KindGroup, "x2"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("the clashing record was stored: %v", err)
+		}
+		if h, err := s.GetByUnique(ctx, model.KindGroup, "o|same"); err == nil && h.ID != "x1" {
+			t.Fatalf("holder %v", h)
 		}
 	})
 }

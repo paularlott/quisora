@@ -13,21 +13,23 @@ import (
 	"github.com/shamaton/msgpack/v3"
 )
 
-// Message types (application range of the gossip library).
+// Message types (application range of the gossip library). The partition protocol's own messages are the library's
+// (gossip.PartHeartbeatMsg and the others of the partition block); these are Quisora's.
 const (
-	msgRecord  gossip.MessageType = gossip.UserMsg + 1  // broadcast: a replicated record
-	_          gossip.MessageType = gossip.UserMsg + 2  // reserved: not to be reused for a different message
-	msgPush    gossip.MessageType = gossip.UserMsg + 3  // request/response: apply a record and acknowledge (durable writes)
-	msgFeed    gossip.MessageType = gossip.UserMsg + 4  // request/response: a page of the change feed
-	msgEph     gossip.MessageType = gossip.UserMsg + 5  // request/response: an ephemeral operation on the owner
-	msgPrepare gossip.MessageType = gossip.UserMsg + 6  // request/response: quorum compare-and-swap, phase 1
-	msgCommit  gossip.MessageType = gossip.UserMsg + 7  // request/response: quorum compare-and-swap, phase 2
-	msgAbort   gossip.MessageType = gossip.UserMsg + 8  // one-way: release a quorum compare-and-swap's intents
-	msgRead    gossip.MessageType = gossip.UserMsg + 9  // stream: records by id (quorum read), any number of them
-	msgAudit   gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's audit events
-	msgNotice  gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
-	msgReload  gossip.MessageType = gossip.UserMsg + 12 // request/response: re-read the configuration (check, or apply)
-	msgReadFew gossip.MessageType = gossip.UserMsg + 13 // request/response: records by id (quorum read), at most readFew
+	_         gossip.MessageType = gossip.UserMsg + 1  // reserved: the replicated record broadcast of the earlier gossip mode
+	_         gossip.MessageType = gossip.UserMsg + 2  // reserved
+	_         gossip.MessageType = gossip.UserMsg + 3  // reserved: durable push
+	_         gossip.MessageType = gossip.UserMsg + 4  // reserved: change feed page
+	msgEph    gossip.MessageType = gossip.UserMsg + 5  // request/response: an ephemeral operation on the owner
+	_         gossip.MessageType = gossip.UserMsg + 6  // reserved: quorum compare-and-swap, phase 1
+	_         gossip.MessageType = gossip.UserMsg + 7  // reserved: quorum compare-and-swap, phase 2
+	_         gossip.MessageType = gossip.UserMsg + 8  // reserved: release a quorum compare-and-swap's intents
+	_         gossip.MessageType = gossip.UserMsg + 9  // reserved: quorum read stream
+	msgAudit  gossip.MessageType = gossip.UserMsg + 10 // request/response: a page of this node's own audit events
+	msgNotice gossip.MessageType = gossip.UserMsg + 11 // broadcast, notice gossip only (cluster.notify): a record changed
+	msgReload gossip.MessageType = gossip.UserMsg + 12 // request/response: re-read the configuration (check, or apply)
+	_         gossip.MessageType = gossip.UserMsg + 13 // reserved: small quorum read
+	msgClock  gossip.MessageType = gossip.UserMsg + 14 // request/response: this node's clock (the peer clock check)
 )
 
 // writeFrame writes b to a stream as one length-prefixed frame; readFrame reads it back (io.EOF at the end of a
@@ -59,54 +61,6 @@ func readFrame(r io.Reader) ([]byte, error) {
 		return nil, io.ErrUnexpectedEOF
 	}
 	return b, nil
-}
-
-// recordMsg carries one encoded record (see encodeRecord).
-type recordMsg struct {
-	B []byte
-}
-
-type ackMsg struct {
-	OK bool  // the peer holds exactly this version now
-	St uint8 // pushApplied, pushSuperseded or pushRefused
-}
-
-// feedReq asks for changes after Since in the feed identified by FeedID. When FeedID is not the responder's feed the
-// responder serves from 0, and the caller sees the new FeedID in the reply.
-type feedReq struct {
-	FeedID string
-	Since  uint64
-	Limit  int
-	// Fresh: the requester is a new member copying everything (no replication state of its own). A node restored
-	// from a backup offers its data to such nodes only.
-	Fresh bool
-}
-
-type feedResp struct {
-	FeedID string
-	Next   uint64
-	More   bool
-	Stale  bool // the responder refuses to serve (out of date, or misconfigured): nothing to copy
-	// Fresh: the responder is a new node that has not copied the cluster's data yet. It is no source for another new
-	// node (two of them must not make an empty cluster of their own); there is nothing in it for anyone else.
-	Fresh bool
-	// Empty (with Fresh): the new node holds no record at all yet. Then it cannot hold a deletion the asker lacks,
-	// so the asker counts it as pulled for its sync point (a new cluster's first node next to new, empty peers).
-	Empty bool
-	Recs  [][]byte
-	// Synced is the responder's sync point (unix nanos; see Node.syncPoint): its data holds every deletion made
-	// before then that a majority acknowledged. A node whose own sync point is unknown (a first copy made without a
-	// majority in view) ages from it.
-	Synced int64
-	// CatchingUp: the responder has not caught up with the cluster since it started. A node that started empty does
-	// not count it towards its own catching up (caughtUpWith).
-	CatchingUp bool
-	// Origin: the responder holds every write the cluster has confirmed (Node.origin: it has caught up and fewer
-	// than a quorum of nodes are ready). A node that started empty has caught up once it has copied everything from
-	// it: this is how a new cluster forms around its first node.
-	Origin bool
-	// Now is the responder's clock (unix nanos) as it answered: the asker checks its own against it (clock.go).
-	Now int64
 }
 
 // Field type tags.
@@ -141,13 +95,16 @@ type wireRecord struct {
 	Expires int64 // unix nanoseconds, 0 = never
 	Epoch   uint64
 	Created uint64
+	// Partition is the record's partition key (store.Record.Partition); a tombstone carries it too, and its scope
+	// (the change hooks need it: which organization's administrators, which user's pages).
+	Partition string
 }
 
 func encodeRecord(r *store.Record) ([]byte, error) {
 	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted,
-		Epoch: uint64(r.Epoch)} // a tombstone's too: a quorum tombstone's generation (store.Head.Rank)
+		Epoch: uint64(r.Epoch), Scope: r.Scope, Partition: r.Partition}
 	if !r.Deleted {
-		w.Scope, w.Unique, w.Data, w.Created = r.Scope, r.Unique, r.Data, uint64(r.Created)
+		w.Unique, w.Data, w.Created = r.Unique, r.Data, uint64(r.Created)
 		if !r.Expires.IsZero() {
 			w.Expires = r.Expires.UnixNano()
 		}
@@ -190,7 +147,7 @@ func decodeRecord(b []byte) (*store.Record, error) {
 	}
 	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
-		Created: hlc.Timestamp(w.Created)}
+		Created: hlc.Timestamp(w.Created), Partition: w.Partition}
 	if !r.Deleted && (r.Epoch >= r.Version || r.Created > r.Version) || r.Deleted && r.Epoch > r.Version {
 		// a generation cannot start at or after its own version (a tombstone's may be its own version): malformed
 		// or forged

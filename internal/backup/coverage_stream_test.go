@@ -163,15 +163,15 @@ func TestVerifyLongRecordLines(t *testing.T) {
 	}
 }
 
-func TestRestoreRefusesUniqueClashWithoutForce(t *testing.T) {
+// Two records of a backup claiming one unique value cannot both be restored, forced or not: nothing is merged by
+// guessing which keeps it.
+func TestRestoreRefusesUniqueClash(t *testing.T) {
 	s := covSealer(t)
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "same", nil), covGroup(t, "g2", "same", nil)}, nil)
-	if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), false, ""); !errors.Is(err, ErrFormat) ||
-		!strings.Contains(err.Error(), "unique") {
-		t.Fatalf("clash: %v", err)
-	}
-	if st, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), true, ""); err != nil || st.Total() != 2 {
-		t.Fatalf("a forced merge keeps both: %v %v", st, err)
+	for _, force := range []bool{false, true} {
+		if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), force, ""); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("clash (force %v): %v", force, err)
+		}
 	}
 }
 
@@ -196,9 +196,9 @@ func (f failingStore) Count(ctx context.Context, k model.Kind, scope string) (in
 	return f.Store.Count(ctx, k, scope)
 }
 
-func (f failingStore) PutReplicated(ctx context.Context, r *store.Record) (bool, []string, error) {
+func (f failingStore) PutReplicated(ctx context.Context, r *store.Record) (bool, error) {
 	if f.put != nil {
-		return false, nil, f.put
+		return false, f.put
 	}
 	return f.Store.PutReplicated(ctx, r)
 }

@@ -1,10 +1,12 @@
 package service_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -99,5 +101,64 @@ func TestRecoveryCodes(t *testing.T) {
 	}
 	if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, fresh[4]); ok {
 		t.Fatal("a code worked after the credentials were reset")
+	}
+}
+
+// The recovery codes go with the last second factor and do not come back; while another factor remains they stay. A
+// manager's factors are a super admin's to remove, not another administrator's.
+func TestRemovingTheLastSecondFactorDropsRecoveryCodes(t *testing.T) {
+	c := newCast(t)
+	u := c.fresh(c.aUser)
+	if err := c.svc.SetTOTP(c.ctx, u, secure.RandomBytes(20), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.CreateRecoveryCodes(c.ctx, actor(u), c.fresh(c.aUser)); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.audited(c.a.ID, "account.recovery_codes.create")) != 1 {
+		t.Error("creation not audited")
+	}
+	if err := c.svc.DropRecoveryCodes(c.ctx, u.ID); err != nil || len(c.fresh(c.aUser).RecoveryCodes) == 0 {
+		t.Fatalf("dropped while a factor remains: %v", err)
+	}
+	if err := c.svc.RemoveTOTP(c.ctx, actor(c.aAdmin), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.fresh(c.aUser); len(got.RecoveryCodes) != 0 || got.RecoveryCreated != nil {
+		t.Error("recovery codes outlived the last second factor")
+	}
+	if err := c.svc.DropRecoveryCodes(c.ctx, u.ID); err != nil {
+		t.Errorf("dropping none: %v", err)
+	}
+	if err := c.svc.DropRecoveryCodes(c.ctx, "nobody"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("unknown user: %v", err)
+	}
+
+	// With a passkey as the second factor the codes stay while the passkey does.
+	m := c.fresh(c.aManager)
+	if err := c.svc.SetTOTP(c.ctx, m, secure.RandomBytes(20), 1); err != nil {
+		t.Fatal(err)
+	}
+	pk := c.passkey(c.aManager, "k")
+	if _, err := c.svc.CreateRecoveryCodes(c.ctx, actor(m), c.fresh(c.aManager)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.RemoveTOTP(c.ctx, actor(c.aAdmin), c.aManager.ID); !errors.Is(err, service.ErrInvalid) {
+		t.Fatalf("an administrator removed a manager's authenticator app: %v", err)
+	}
+	if _, err := c.svc.RemovePasskey(c.ctx, actor(c.aAdmin), c.aManager.ID, pk.ID, ""); !errors.Is(err, service.ErrInvalid) {
+		t.Fatalf("an administrator removed a manager's passkey: %v", err)
+	}
+	if err := c.svc.RemoveTOTP(c.ctx, actor(c.super), c.aManager.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.fresh(c.aManager).RecoveryCodes) == 0 {
+		t.Error("codes dropped although a passkey remains")
+	}
+	if _, err := c.svc.RemovePasskey(c.ctx, actor(c.super), c.aManager.ID, pk.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.fresh(c.aManager).RecoveryCodes) != 0 {
+		t.Error("codes kept after the last factor went")
 	}
 }

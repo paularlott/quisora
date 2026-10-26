@@ -1,7 +1,6 @@
 package kvstore
 
 import (
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -43,17 +42,29 @@ type wireRecord struct {
 	Expires int64 // unix nanoseconds, 0 = never
 	Epoch   uint64
 	Created uint64
+	// Partition is store.Record.Partition (the partition key). PNum and PSeq stamp a record written by ApplyPartition
+	// or ImportPartition: the partition number and the sequence of the write that last changed it (PSeq 0: no stamp).
+	Partition string
+	PNum      uint32
+	PSeq      uint64
 }
 
-// stored is a decoded record plus the change-feed sequence it was last written under.
-type stored struct {
-	rec *store.Record
+// pstamp is the partition stamp of a stored record (PNum and PSeq of the wire form): zero when there is none.
+type pstamp struct {
+	num uint32
 	seq uint64
 }
 
-func encodeRecord(r *store.Record) ([]byte, error) {
+// stored is a decoded record plus its partition stamp.
+type stored struct {
+	rec *store.Record
+	ps  pstamp
+}
+
+func encodeRecord(r *store.Record, ps pstamp) ([]byte, error) {
 	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted,
-		Scope: r.Scope, Unique: r.Unique, Data: r.Data, Epoch: uint64(r.Epoch), Created: uint64(r.Created)}
+		Scope: r.Scope, Unique: r.Unique, Data: r.Data, Epoch: uint64(r.Epoch), Created: uint64(r.Created),
+		Partition: r.Partition, PNum: ps.num, PSeq: ps.seq}
 	if !r.Expires.IsZero() {
 		w.Expires = r.Expires.UnixNano()
 	}
@@ -85,26 +96,17 @@ func encodeRecord(r *store.Record) ([]byte, error) {
 			w.Fields = append(w.Fields, f)
 		}
 	}
-	b, err := msgpack.MarshalAsArray(&w)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]byte, seqHeader+len(b))
-	copy(out[seqHeader:], b)
-	return out, nil
+	return msgpack.MarshalAsArray(&w)
 }
 
 func decodeRecord(b []byte) (*stored, error) {
-	if len(b) < seqHeader {
-		return nil, fmt.Errorf("kvstore: corrupt record")
-	}
 	var w wireRecord
-	if err := msgpack.UnmarshalAsArray(b[seqHeader:], &w); err != nil {
+	if err := msgpack.UnmarshalAsArray(b, &w); err != nil {
 		return nil, fmt.Errorf("kvstore: decode record: %w", err)
 	}
 	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
-		Created: hlc.Timestamp(w.Created)}
+		Created: hlc.Timestamp(w.Created), Partition: w.Partition}
 	// Reading a version (one replicated from another node's clock) moves this node's clock past it, so its next
 	// write of the record is newer.
 	store.Witness(r.Version)
@@ -128,5 +130,5 @@ func decodeRecord(b []byte) (*stored, error) {
 			}
 		}
 	}
-	return &stored{rec: r, seq: binary.BigEndian.Uint64(b)}, nil
+	return &stored{rec: r, ps: pstamp{w.PNum, w.PSeq}}, nil
 }

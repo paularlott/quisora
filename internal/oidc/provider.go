@@ -19,6 +19,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/evictgen"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
@@ -239,11 +240,12 @@ func (p *Provider) user(ctx context.Context, id string) (*model.User, error) {
 	if u, ok := p.users.get(id); ok {
 		return u, nil
 	}
+	tok := p.users.token(id)
 	u, err := p.svc.Users.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	p.users.put(id, u)
+	p.users.putIf(id, u, tok)
 	return u, nil
 }
 
@@ -251,11 +253,12 @@ func (p *Provider) org(ctx context.Context, id string) (*model.Org, error) {
 	if o, ok := p.orgs.get(id); ok {
 		return o, nil
 	}
+	tok := p.orgs.token(id)
 	o, err := p.svc.Orgs.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	p.orgs.put(id, o)
+	p.orgs.putIf(id, o, tok)
 	return o, nil
 }
 
@@ -264,11 +267,14 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 	if t, ok := p.tenants.get(c.TenantID); ok && t.OrgID == c.OrgID {
 		return t, nil
 	}
+	tok := p.tenants.token(c.TenantID)
 	t, err := p.svc.ClientTenant(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	p.tenants.put(t.ID, t)
+	if t.ID == c.TenantID {
+		p.tenants.putIf(t.ID, t, tok)
+	}
 	return t, nil
 }
 
@@ -278,6 +284,7 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bool, error) {
 	st, ok := p.grants.get(id)
 	if !ok {
+		tok := p.grants.token(id)
 		g, err := p.svc.Grants.Get(ctx, id)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return false, unavailable(err)
@@ -285,7 +292,7 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 		if err == nil && !g.Revoked {
 			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
 		}
-		p.grants.put(id, st)
+		p.grants.putIf(id, st, tok)
 	}
 	if !st.alive || !u.SessionHolds(st.epoch) { // (a grant of an ended session epoch: model.User.SessionEpoch)
 		return false, nil
@@ -324,6 +331,7 @@ type ttlCache[T any] struct {
 	ttl     time.Duration
 	max     int
 	rotated int64 // unix nanos when m was started (mu)
+	gens    evictgen.Gens
 }
 
 func newTTLCache[T any](ttl time.Duration, max int) *ttlCache[T] {
@@ -343,19 +351,37 @@ func (c *ttlCache[T]) get(k string) (v T, ok bool) {
 	return it.v, true
 }
 
-func (c *ttlCache[T]) put(k string, v T) {
-	now := time.Now().UnixNano()
+// token is taken before the store is read for a miss of k; putIf puts the copy read only if k was not deleted (or the
+// cache cleared) since, so a fill that began before an eviction cannot store the copy that eviction was for.
+func (c *ttlCache[T]) token(k string) uint64 { return c.gens.Token(k) }
+
+func (c *ttlCache[T]) putIf(k string, v T, tok uint64) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gens.Valid(k, tok) {
+		c.putLocked(k, v)
+	}
+}
+
+// put stores v whatever happened meanwhile: for a value known to be current (a grant just revoked).
+func (c *ttlCache[T]) put(k string, v T) {
+	c.mu.Lock()
+	c.putLocked(k, v)
+	c.mu.Unlock()
+}
+
+func (c *ttlCache[T]) putLocked(k string, v T) {
+	now := time.Now().UnixNano()
 	if len(c.m) >= c.max || now-c.rotated > int64(c.ttl) {
 		c.old, c.m, c.rotated = c.m, make(map[string]ttlItem[T], len(c.m)), now
 	}
 	delete(c.old, k) // the new value is the only one
 	c.m[k] = ttlItem[T]{v: v, exp: now + int64(c.ttl)}
-	c.mu.Unlock()
 }
 
 func (c *ttlCache[T]) del(k string) {
 	c.mu.Lock()
+	c.gens.Bump(k)
 	delete(c.m, k)
 	delete(c.old, k)
 	c.mu.Unlock()
@@ -363,6 +389,7 @@ func (c *ttlCache[T]) del(k string) {
 
 func (c *ttlCache[T]) clear() {
 	c.mu.Lock()
+	c.gens.BumpAll()
 	clear(c.m)
 	c.old = nil
 	c.mu.Unlock()

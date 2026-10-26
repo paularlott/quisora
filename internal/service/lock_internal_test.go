@@ -6,15 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/paularlott/quisora/internal/config"
-	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
 // A caller waiting for a held lock stops waiting when its context ends, not when the wait runs out.
 func TestLockWaitEndsWithTheContext(t *testing.T) {
-	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
-	s := New(config.Default(), memstore.New(), sealer)
+	s := newInternalService(t, memstore.New())
 	held, err := s.lock(context.Background(), "test/lock", time.Minute, time.Second, "held")
 	if err != nil {
 		t.Fatal(err)

@@ -42,6 +42,9 @@ func served(t *testing.T, cs *certSource) string {
 }
 
 func TestCertificateReloadsWhenRenewed(t *testing.T) {
+	if err := (&Server{}).ReloadCertificate(); err != nil {
+		t.Fatalf("a server without certificate files has nothing to reload: %v", err)
+	}
 	dir := t.TempDir()
 	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
 	makePair(t, "a.example", certFile, keyFile)

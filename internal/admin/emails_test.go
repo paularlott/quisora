@@ -1,9 +1,14 @@
 package admin_test
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/paularlott/quisora/internal/config"
 )
 
 func TestUserLinkedEmailsAPI(t *testing.T) {
@@ -153,4 +158,65 @@ func TestMarkEmailVerifiedAPI(t *testing.T) {
 	want(t, w.as("manager").post(E+"/emails/"+url.PathEscape("pending@x.example")+"/mark-verified", nil), 409)
 	me := AU + "/" + w.users["admin"].ID
 	wantField(t, w.as("admin").post(me+"/emails/"+url.PathEscape(w.users["admin"].Email)+"/mark-verified", nil), 422, "email")
+}
+
+// A mail that cannot go out never blocks the change that asked for it: the address is added, the primary address
+// changes and the invitation is made with its link. Only the resend, whose whole point is the mail, is refused: 503
+// when email is not set up (the default mailer), the error when sending failed.
+func TestMailFailuresDoNotBlockUserChanges(t *testing.T) {
+	w := newWorld(t)
+	w.env.Server.Site.Mail = true
+	ad := w.as("admin")
+	uid := w.users["user"].ID
+	E := AU + "/" + uid + "/emails"
+
+	want(t, ad.post(E, map[string]any{"address": "one@x.example"}), 201)
+	r := ad.post(E+"/"+url.PathEscape("one@x.example")+"/verify", nil)
+	want(t, r, 503)
+	if !strings.Contains(r.str("error"), "not set up") {
+		t.Errorf("message: %s", r.Raw)
+	}
+	want(t, ad.patch(AU+"/"+uid, map[string]any{"email": "alan.three@x.example"}), 200)
+
+	w.mod.Mailer = &fakeMailer{err: errors.New("smtp down")}
+	want(t, ad.post(E, map[string]any{"address": "two@x.example"}), 201)
+	want(t, ad.post(E+"/"+url.PathEscape("two@x.example")+"/verify", nil), 500)
+	want(t, ad.patch(AU+"/"+uid, map[string]any{"email": "alan.four@x.example"}), 200)
+	r = ad.post(AU+"/"+uid+"/invite", map[string]any{"email": true})
+	want(t, r, 200)
+	if r.str("url") == "" || r.JSON["emailed"] != false || !strings.Contains(r.str("email_warning"), "smtp down") {
+		t.Errorf("invite: %s", r.Raw)
+	}
+}
+
+// Without an SMTP server nothing offers to email: the user dialog says a link will be shown, the invitation dialog has
+// no "Send by email", and asking the API to email an invitation still returns the link with a note.
+func TestEmailOffersFollowSMTP(t *testing.T) {
+	page := func(w *world) string {
+		req, _ := http.NewRequest("GET", w.env.URL+"/admin/orgs/acme/users", nil)
+		res, err := w.as("admin").c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return string(b)
+	}
+	off := newWorld(t)
+	b := page(off)
+	if strings.Contains(b, "Email the invitation") || strings.Contains(b, "Send by email") || !strings.Contains(b, `data-mail="0"`) ||
+		!strings.Contains(b, "email is not set up on this server") {
+		t.Error("mail off: the page still offers email")
+	}
+	r := off.as("admin").post(A+"/users/"+off.users["user"].ID+"/invite", map[string]any{"email": true})
+	want(t, r, 200)
+	if r.str("url") == "" || r.JSON["emailed"] != false || !strings.Contains(r.str("email_warning"), "not configured") {
+		t.Errorf("mail off invite: %s", r.Raw)
+	}
+
+	on := newWorldWith(t, func(c *config.Config) { c.Mail.SMTPHost = "mail.example" })
+	b = page(on)
+	if !strings.Contains(b, "Email the invitation") || !strings.Contains(b, "Send by email") || !strings.Contains(b, `data-mail="1"`) {
+		t.Error("mail on: the page does not offer email")
+	}
 }

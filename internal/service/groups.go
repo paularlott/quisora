@@ -119,6 +119,7 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 		g.Pending = []model.GroupChange{*entry}
 	}
 	if err := s.Groups.Create(ctx, g); err != nil {
+		s.auditUnknown(ctx, err, a, orgID, "group.create", g.DisplayName, tagDetail(g, in))
 		return nil, s.groupConflict(ctx, err, g)
 	}
 	s.Audit(ctx, a, orgID, "group.create", g.DisplayName, tagDetail(g, in))
@@ -163,6 +164,7 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 		return err // deleting the group removes every member from it
 	}
 	if err := s.Groups.DeleteIf(ctx, id, g.Version); err != nil {
+		s.auditUnknown(ctx, err, a, g.OrgID, "group.delete", g.DisplayName, nil)
 		return mapStore(err)
 	}
 	s.Audit(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil)
@@ -413,6 +415,7 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		next.Pending = append(slices.Clip(remaining), entry)
 	}
 	if err := s.Groups.Update(ctx, &next); err != nil {
+		s.auditUnknown(ctx, err, a, g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next))
 		return nil, s.groupConflict(ctx, err, &next)
 	}
 	// Committed. Nothing below can fail the change; a client gone away does not stop it being finished.
@@ -530,7 +533,7 @@ func (s *Service) materializeMember(ctx context.Context, g *model.Group, userID 
 			}
 			err = s.Members.Update(ctx, m)
 		}
-		if store.Applied(err) {
+		if err == nil {
 			return nil
 		}
 		if !errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound) {
@@ -585,7 +588,7 @@ func (s *Service) isMember(ctx context.Context, g *model.Group, userID string) (
 // (checkMembership, clientMayAffectMembers): a user who no longer exists is left out, and one who cannot be read
 // refuses the change — a rank that could not be read is never taken as plain. For an actor whose reach depends on
 // the user's rank (anyone but a super admin: an administrator never reaches a super admin, a manager or a
-// provisioning client plain users only) each user is also read from a quorum's copies (freshMany), and the newer copy
+// provisioning client plain users only) each user is also read from the owners' copies (freshMany), and the newer copy
 // judged: a promotion a majority has confirmed counts even before it has reached this node.
 func (s *Service) membersToJudge(ctx context.Context, a *Actor, ids []string) (map[string]*model.User, error) {
 	users := make(map[string]*model.User, len(ids))
@@ -606,7 +609,7 @@ func (s *Service) membersToJudge(ctx context.Context, a *Actor, ids []string) (m
 	for id := range users {
 		known = append(known, id)
 	}
-	recs, err := s.freshMany(ctx, model.KindUser, known)
+	recs, err := s.freshMany(ctx, model.KindUser, users[known[0]].OrgID, known) // (the members of one group: one organization)
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +671,7 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 // group from another moment (a user removed from a group that was given a tag in the same change must not get the
 // tag, nor one re-added after a change that took a tag away keep it). Each group is matched with the user's
 // membership by the group's change numbers (memberAt); the user's memberships and the groups with pending changes
-// are read from this node, and quorum reads settle what they cannot.
+// are read from this node, and fresh reads settle what they cannot.
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
 	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 	if err != nil {
@@ -702,16 +705,16 @@ func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group
 // a membership record carries the number of the change that last wrote it, and a change is materialized (its
 // membership records written and confirmed) before it leaves the group's pending log. So, for each group: its
 // pending log decides the user's membership in the group as read; a membership written by the group's latest change
-// matches it; a membership read from a quorum after the group, written by a change no later than the group's latest,
+// matches it; a membership read through the owners after the group, written by a change no later than the group's latest,
 // is the membership as of that group (a later change of the user's membership would have written a later number);
 // and one written by a later change than the group's means the group read is older, and the group is read again from
-// a quorum. The reads a round needs are made together: one quorum read of the memberships to read again, one of the
+// the owner. The reads a round needs are made together: one fresh read of the memberships to read again, one of the
 // groups.
 func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Group, mine map[string]*model.Member) ([]*model.Group, error) {
 	type pair struct {
 		g     *model.Group
 		m     *model.Member
-		fresh bool // m was read from a quorum after g
+		fresh bool // m was read through the owners after g
 	}
 	open := make([]*pair, 0, len(gs))
 	for _, g := range gs {
@@ -730,7 +733,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 			}
 			key := model.MemberID(p.g.ID, userID)
 			if c, ok := s.members.confirmed(key); ok && c.seq == p.g.Seq {
-				// decided by a quorum read against this very change of the group before: still so
+				// decided by a fresh read against this very change of the group before: still so
 				if c.active {
 					out = append(out, p.g)
 				}
@@ -766,7 +769,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		for i, p := range readM {
 			ids[i] = model.MemberID(p.g.ID, userID)
 		}
-		recs, err := s.freshMany(ctx, model.KindMember, ids)
+		recs, err := s.freshMany(ctx, model.KindMember, gs[0].OrgID, ids)
 		if err != nil {
 			return nil, err
 		}
@@ -784,7 +787,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		for i, p := range readG {
 			ids[i] = p.g.ID
 		}
-		if recs, err = s.freshMany(ctx, model.KindGroup, ids); err != nil {
+		if recs, err = s.freshMany(ctx, model.KindGroup, gs[0].OrgID, ids); err != nil {
 			return nil, err
 		}
 		kept := open[:0]
@@ -807,10 +810,10 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 	return nil, fmt.Errorf("%w: the user's groups keep changing", ErrUnavailable)
 }
 
-// confirmedMembers remembers what quorum reads of memberships decided (membersAt), against the group change they were
+// confirmedMembers remembers what fresh reads of memberships decided (membersAt), against the group change they were
 // decided for (Group.Seq). A group's changes are numbered, and any later change of a user's membership in it is a
 // later number, so while the group is at that change the answer stands: without it, every group change that did not
-// touch a user (a rename, another member) would cost each later token of theirs a quorum read for good. An entry is
+// touch a user (a rename, another member) would cost each later token of theirs a fresh read for good. An entry is
 // used only while its group is at its number; a change makes it obsolete, nothing has to remove it.
 type confirmedMembers struct {
 	mu sync.Mutex

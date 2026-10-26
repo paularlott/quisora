@@ -10,50 +10,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/web"
 )
-
-func (h *harness) tenant(name string, set model.TenantSettings) *model.Tenant {
-	h.t.Helper()
-	tn, err := h.env.Svc.CreateTenant(context.Background(), h.admin, h.env.Primary.ID,
-		service.TenantInput{Name: ptr(name), Settings: &set})
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return tn
-}
-
-func (h *harness) tenantClient(tn *model.Tenant, edit func(*service.ClientInput)) (*model.Client, string) {
-	h.t.Helper()
-	return h.newClient(func(in *service.ClientInput) {
-		in.TenantID = &tn.ID
-		if edit != nil {
-			edit(in)
-		}
-	})
-}
-
-// sessionFor signs the user in with the given amr and upstream provider.
-func (h *harness) sessionFor(amr []string, provider string) *http.Client {
-	h.t.Helper()
-	c := h.sessionWith(h.user, amr, time.Now())
-	pu, _ := url.Parse(h.env.URL)
-	for _, ck := range c.Jar.Cookies(pu) {
-		if ck.Name == web.SessionCookie {
-			id := web.SessionID(ck.Value)
-			s, err := h.env.Svc.Sessions.Get(context.Background(), id)
-			if err != nil {
-				h.t.Fatal(err)
-			}
-			s.Provider = provider
-			if err := h.env.Svc.Sessions.Update(context.Background(), s); err != nil {
-				h.t.Fatal(err)
-			}
-			h.env.Server.Sessions.Evict(id, "")
-		}
-	}
-	return c
-}
 
 func passkeyOnly() model.TenantSettings {
 	return model.TenantSettings{PasskeyLogin: true, AllProviders: false}
@@ -69,6 +26,7 @@ func wantReauth(t *testing.T, u *url.URL, path, tenant string) {
 }
 
 func TestTenantPasskeyOnlyResume(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	tn := h.tenant("kiosk", passkeyOnly())
 	cl, _ := h.tenantClient(tn, nil)
@@ -106,15 +64,8 @@ func TestTenantPasskeyOnlyResume(t *testing.T) {
 	wantReauth(t, h.authorize(pwd, authzQuery(def, ch, nil)), "/login/primary", "default")
 }
 
-func (h *harness) setOrg(s model.OrgSettings) {
-	h.t.Helper()
-	if _, err := h.env.Svc.UpdateOrg(context.Background(), h.admin, h.env.Primary.ID, service.OrgInput{Settings: &s}); err != nil {
-		h.t.Fatal(err)
-	}
-	h.p.InvalidateOrg(h.env.Primary.ID)
-}
-
 func TestTenantProviderRestrictions(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	mk := func(name string) *model.Provider {
 		p, err := h.env.Svc.CreateProvider(context.Background(), service.System, h.env.Primary.ID, service.ProviderInput{
@@ -149,6 +100,7 @@ func TestTenantProviderRestrictions(t *testing.T) {
 }
 
 func TestTenantRequireMFA(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	tn := h.tenant("secure", model.TenantSettings{PasswordLogin: true, PasskeyLogin: true, AllProviders: true, RequireMFA: true})
 	cl, _ := h.tenantClient(tn, nil)
@@ -165,6 +117,7 @@ func TestTenantRequireMFA(t *testing.T) {
 }
 
 func TestTenantClaims(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	tn := h.tenant("kiosk", passkeyOnly())
 	cl, secret := h.tenantClient(tn, nil)
@@ -205,5 +158,42 @@ func TestTenantClaims(t *testing.T) {
 	cc := h.token(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, def, dsecret)
 	if c := claimsOf(t, cc.str("access_token")); c["tenant_name"] != "default" || c["tenant"] == "" {
 		t.Errorf("default tenant claims: %v", c)
+	}
+}
+
+func TestRequireMFA(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, _ := h.newClient(nil)
+	_, ch := pkce()
+	_, err := h.env.Svc.UpdateOrg(context.Background(), h.admin, h.env.Primary.ID, service.OrgInput{
+		Settings: &model.OrgSettings{PasswordLogin: true, PasskeyLogin: true, RequireMFA: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateOrg(h.env.Primary.ID)
+	weak := h.sessionWith(h.user, []string{"pwd"}, time.Now())
+	u := h.authorize(weak, authzQuery(cl, ch, nil))
+	if u.Path != "/login/primary" || u.Query().Get("reauth") != "1" {
+		t.Fatalf("pwd only: %s", u)
+	}
+	// a passkey is two factors only when it verified its user
+	if u := h.authorize(h.sessionWith(h.user, []string{"hwk"}, time.Now()), authzQuery(cl, ch, nil)); u.Query().Get("reauth") != "1" {
+		t.Errorf("passkey without user verification accepted as MFA: %s", u)
+	}
+	for _, amr := range [][]string{{"pwd", "otp"}, {"hwk", "user"}, {"swk", "user"}, {"pwd", "mfa"}} {
+		c := h.sessionWith(h.user, amr, time.Now())
+		if u := h.authorize(c, authzQuery(cl, ch, nil)); u.Query().Get("code") == "" {
+			t.Errorf("amr %v refused: %s", amr, u)
+		}
+	}
+	// the sign-in loop is bounded when the requirement can never be met
+	fu := h.authorize(weak, authzQuery(cl, ch, nil))
+	flowURL := fu.Query().Get("next")
+	for range 10 {
+		body(h.get(weak, flowURL))
+	}
+	if resp := h.get(weak, flowURL); resp.StatusCode != 400 && resp.StatusCode != 403 {
+		t.Fatalf("loop not bounded: %d %s %s", resp.StatusCode, flowURL, body(resp))
 	}
 }

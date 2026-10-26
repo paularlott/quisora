@@ -2,50 +2,12 @@ package login_test
 
 import (
 	"context"
-	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
-
-var mailCodeRe = regexp.MustCompile(`\b(\d{6})\b`)
-
-// emailEnv is a server that sends mail, with an organization whose settings mut sets.
-func emailEnv(t *testing.T, mut func(*model.OrgSettings)) (*env, *model.Org) {
-	e := newEnv(t, func(c *config.Config) { c.Mail.SMTPHost = "smtp.example.com"; c.Audit.Logins = true })
-	return e, e.org(t, "acme", mut)
-}
-
-// verifiedUser creates a user whose address is verified.
-func (e *env) verifiedUser(t *testing.T, org *model.Org, name string, role model.Role) *model.User {
-	t.Helper()
-	u := e.user(t, org, name, role)
-	yes := true
-	u, err := e.Svc.UpdateUser(context.Background(), service.System, u.ID, service.UserInput{Verified: &yes})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u
-}
-
-func codeFrom(t *testing.T, e *env) string {
-	t.Helper()
-	m := e.nextMail(t)
-	if !strings.Contains(m.Subject, "sign-in code") {
-		t.Fatalf("not a code: %q", m.Subject)
-	}
-	g := mailCodeRe.FindStringSubmatch(m.Text)
-	if g == nil {
-		t.Fatalf("no code in %q", m.Text)
-	}
-	if strings.Contains(m.Subject, g[1]) {
-		t.Fatalf("the code is in the subject (shown in notification previews): %q", m.Subject)
-	}
-	return g[1]
-}
 
 // Codes by email are off by default: a user without a second factor is asked to set one up, and the endpoints refuse.
 func TestEmailCodesOffByDefault(t *testing.T) {

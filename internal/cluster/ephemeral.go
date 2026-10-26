@@ -186,7 +186,13 @@ func (n *Node) route(ns, id string) (mb *member, dead bool) {
 	return n.hrw(ns, id), false
 }
 
+// ephWait bounds one ephemeral operation forwarded to its owner: the gossip transport waits longer for a reply (as long
+// as a partition write may take), and a sign-in step must not wait that long for a node that hangs.
+const ephWait = 2 * time.Second
+
 func (e *Ephemeral) call(ctx context.Context, mb *member, req *ephReq) (*ephResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, ephWait)
+	defer cancel()
 	var resp ephResp
 	if err := e.n.gc.SendToWithResponseContext(ctx, mb.node, msgEph, req, &resp); err != nil {
 		return nil, fmt.Errorf("cluster: ephemeral forward to %s: %w", mb.id, err)

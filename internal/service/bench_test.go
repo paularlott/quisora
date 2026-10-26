@@ -19,7 +19,7 @@ func BenchmarkCreateUser(b *testing.B) {
 	for i := 0; b.Loop(); i++ {
 		name := "user" + strconv.Itoa(i)
 		email := name + "@example.com"
-		if _, err := e.svc.CreateUser(e.ctx, a, org.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: &email}); err != nil {
+		if _, err := e.svc.CreateUser(e.ctx, a, org.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: &email}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -31,7 +31,7 @@ func BenchmarkListUsers1000(b *testing.B) {
 	for i := range 1000 {
 		name := "user" + strconv.Itoa(i)
 		email := name + "@example.com"
-		if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: &email}); err != nil {
+		if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: &email}); err != nil {
 			b.Fatal(err)
 		}
 	}

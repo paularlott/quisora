@@ -9,6 +9,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 func newClient(t *testing.T, c *cast, a *service.Actor, orgID string, in service.ClientInput) (*model.Client, string, error) {
@@ -144,12 +145,54 @@ func TestClientSecretLifecycle(t *testing.T) {
 func TestClientValidation(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)
+	foreignTenant, err := c.svc.CreateTenant(c.ctx, service.System, c.b.ID, service.TenantInput{Name: ptr("theirs")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks := `{"keys":[]}`
+	// fapi is a client of the FAPI profile with private-key authentication and ES256, to which mod adds one fault
+	fapi := func(mod func(*service.ClientInput)) service.ClientInput {
+		in := service.ClientInput{Name: ptr("x"), RedirectURIs: ptr([]string{"https://a.example.com/cb"}),
+			AuthMethod: ptr(model.AuthMethodPrivateJWT), FAPI: ptr(true), JWKS: &jwks, SigningAlg: ptr("ES256")}
+		mod(&in)
+		return in
+	}
+	// with adds one fault to an otherwise good client
+	with := func(mod func(*service.ClientInput)) service.ClientInput {
+		in := service.ClientInput{Name: ptr("x"), RedirectURIs: ptr([]string{"https://a.example.com/cb"})}
+		mod(&in)
+		return in
+	}
+	var tooManyResources []string
+	for i := range 21 {
+		tooManyResources = append(tooManyResources, "https://r"+strconv.Itoa(i)+".example.com/")
+	}
 	cases := []struct {
 		name  string
 		in    service.ClientInput
 		field string
 	}{
 		{"no name", service.ClientInput{Name: nil, RedirectURIs: ptr([]string{"https://a.example.com"})}, "name"},
+		{"blank name", with(func(in *service.ClientInput) { in.Name = ptr(" ") }), "name"},
+		{"long name", with(func(in *service.ClientInput) { in.Name = ptr(strings.Repeat("n", 201)) }), "name"},
+		{"foreign tenant", with(func(in *service.ClientInput) { in.TenantID = &foreignTenant.ID }), "tenant_id"},
+		{"unknown tenant", with(func(in *service.ClientInput) { in.TenantID = ptr("nope") }), "tenant_id"},
+		{"post logout uri", with(func(in *service.ClientInput) { in.PostLogoutURIs = ptr([]string{"javascript:alert(1)"}) }), "post_logout_redirect_uris"},
+		{"http backchannel", with(func(in *service.ClientInput) { in.BackchannelURI = ptr("http://a.example.com/bc") }), "backchannel_logout_uri"},
+		{"resource not absolute", with(func(in *service.ClientInput) { in.Resources = ptr([]string{"not absolute"}) }), "resources"},
+		{"too many resources", with(func(in *service.ClientInput) { in.Resources = &tooManyResources }), "resources"},
+		{"public without PKCE", with(func(in *service.ClientInput) {
+			in.AuthMethod, in.RequirePKCE = ptr(model.AuthMethodNone), ptr(false)
+		}), "require_pkce"},
+		{"public token exchange", with(func(in *service.ClientInput) {
+			in.AuthMethod, in.GrantTypes = ptr(model.AuthMethodNone), ptr([]string{service.GrantTokenExchange})
+		}), "grant_types"},
+		{"fapi without private key", with(func(in *service.ClientInput) { in.FAPI = ptr(true) }), "token_endpoint_auth_method"},
+		{"fapi with RS256", fapi(func(in *service.ClientInput) { in.SigningAlg = ptr("RS256") }), "id_token_signed_response_alg"},
+		{"fapi with device code", fapi(func(in *service.ClientInput) {
+			in.GrantTypes = ptr([]string{"authorization_code", service.GrantDeviceCode})
+		}), "grant_types"},
+		{"fapi without PKCE", fapi(func(in *service.ClientInput) { in.RequirePKCE = ptr(false) }), "require_pkce"},
 		{"http redirect", service.ClientInput{Name: ptr("x"), RedirectURIs: ptr([]string{"http://a.example.com/cb"})}, "redirect_uris"},
 		{"fragment", service.ClientInput{Name: ptr("x"), RedirectURIs: ptr([]string{"https://a.example.com/cb#f"})}, "redirect_uris"},
 		{"custom scheme", service.ClientInput{Name: ptr("x"), RedirectURIs: ptr([]string{"app://cb"})}, "redirect_uris"},
@@ -176,38 +219,60 @@ func TestClientValidation(t *testing.T) {
 		GrantTypes: ptr([]string{"client_credentials"}), RedirectURIs: ptr([]string{})}); err != nil {
 		t.Errorf("m2m: %v", err)
 	}
+	// an app scheme is accepted, and a blank redirect entry is dropped
+	if got, _, err := c.svc.CreateClient(c.ctx, a, c.a.ID, service.ClientInput{Name: ptr("app"),
+		RedirectURIs: ptr([]string{"com.example.app:/callback", " "})}); err != nil || len(got.RedirectURIs) != 1 {
+		t.Errorf("app scheme redirect: %v", err)
+	}
+	// the FAPI profile brings its requirements with it: PAR, DPoP and no refresh rotation
+	cl, _, err := c.svc.CreateClient(c.ctx, a, c.a.ID, fapi(func(in *service.ClientInput) { in.Name = ptr("fapi") }))
+	if err != nil || !cl.RequirePAR || !cl.DPoPBound || cl.RotateRefresh {
+		t.Fatalf("fapi client: %v %+v", err, cl)
+	}
+	// a public client always rotates refresh tokens and cannot introspect
+	pub, _, err := c.svc.CreateClient(c.ctx, a, c.a.ID, with(func(in *service.ClientInput) {
+		in.Name = ptr("public")
+		in.AuthMethod, in.IntrospectOrg, in.RotateRefresh = ptr(model.AuthMethodNone), ptr(true), ptr(false)
+	}))
+	if err != nil || !pub.RotateRefresh || pub.IntrospectOrg {
+		t.Errorf("public client: %v %+v", err, pub)
+	}
+	// the refused requests stored nothing
+	if l, _, _ := c.svc.ListClients(c.ctx, a, c.a.ID, store.ListQuery{}); len(l) != 5 {
+		t.Errorf("%d clients stored, want the 5 accepted", len(l))
+	}
 }
 
-func TestProviderValidationAndConflicts(t *testing.T) {
+// Only the organization's admins list, create, change and delete its clients; a manager or a foreign admin is told
+// nothing of an existing one, and a denied caller changes nothing. Resource indicators are absolute, short URIs.
+func TestClientAdministrationIsOrgAdminOnly(t *testing.T) {
 	c := newCast(t)
-	a := actor(c.aAdmin)
-	if _, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, goodProvider("okta")); err != nil {
+	cl, _, err := c.svc.CreateClient(c.ctx, actor(c.aAdmin), c.a.ID, service.ClientInput{Name: ptr("app"), RedirectURIs: ptr([]string{"https://app.example.com/cb"})})
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, goodProvider("OKTA"))
-	var fe *service.FieldError
-	if !errors.As(err, &fe) || fe.Field != "name" || !errors.Is(err, service.ErrConflict) {
-		t.Errorf("duplicate provider: %v", err)
-	}
-	// Same name in another org is fine.
-	if _, err := c.svc.CreateProvider(c.ctx, actor(c.bAdmin), c.b.ID, goodProvider("okta")); err != nil {
-		t.Errorf("provider in other org: %v", err)
-	}
-	bad := []service.ProviderInput{
-		{Name: ptr("a"), Issuer: ptr("http://x.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
-		{Name: ptr("b"), Issuer: ptr("https://x.example.com"), ClientSecret: ptr("s")},
-		{Name: ptr("c"), Issuer: ptr("https://x.example.com"), ClientID: ptr("c")},
-		{Type: ptr("saml"), Name: ptr("d"), ClientID: ptr("c"), ClientSecret: ptr("s")},
-	}
-	for i, in := range bad {
-		if _, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, in); !errors.Is(err, service.ErrInvalid) {
-			t.Errorf("bad provider %d: %v", i, err)
+	for name, u := range map[string]*model.User{"manager": c.aManager, "foreign admin": c.bAdmin} {
+		if _, err := c.svc.GetClient(c.ctx, actor(u), cl.ID); !errors.Is(err, service.ErrNotFound) {
+			t.Errorf("%s get: %v", name, err)
+		}
+		if _, err := c.svc.UpdateClient(c.ctx, actor(u), cl.ID, service.ClientInput{Name: ptr("x")}); err == nil {
+			t.Errorf("%s update allowed", name)
+		}
+		if err := c.svc.DeleteClient(c.ctx, actor(u), cl.ID); err == nil {
+			t.Errorf("%s delete allowed", name)
+		}
+		if _, err := c.svc.RotateClientSecret(c.ctx, actor(u), cl.ID); err == nil {
+			t.Errorf("%s secret rotation allowed", name)
 		}
 	}
-	// The secret is sealed, never stored in clear.
-	p, _ := c.svc.CreateProvider(c.ctx, a, c.a.ID, goodProvider("sealed"))
-	if p.ClientSecret == "csecret" || p.ClientSecret == "" {
-		t.Errorf("secret not sealed: %q", p.ClientSecret)
+	if got, err := c.svc.GetClient(c.ctx, actor(c.super), cl.ID); err != nil || got.Name != "app" {
+		t.Errorf("client changed by denied callers: %v", err)
+	}
+	for v, want := range map[string]bool{"https://api.example.com/": true, "urn:example:api": true, "api.example.com": false, "https://a/#f": false,
+		" https://a.example.com/": false, "https://": false, "https://" + strings.Repeat("a", 520) + ".com/": false} {
+		if service.ValidResource(v) != want {
+			t.Errorf("ValidResource(%q) != %v", v, want)
+		}
 	}
 }
 
@@ -275,8 +340,7 @@ func TestPublicClients(t *testing.T) {
 func TestClientScopeValidation(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)
-	bad := []string{"has space", "quo\"te", "back\\slash", "caf\u00e9", "tab\there", strings.Repeat("x", 101)}
-	for _, sc := range bad {
+	for _, sc := range badScopes {
 		_, _, err := newClient(t, c, a, c.a.ID, service.ClientInput{Scopes: ptr([]string{"openid", sc})})
 		var fe *service.FieldError
 		if !errors.As(err, &fe) || fe.Field != "scopes" {
@@ -302,113 +366,5 @@ func TestClientScopeValidation(t *testing.T) {
 	cl, err = c.svc.UpdateClient(c.ctx, a, cl.ID, service.ClientInput{Scopes: ptr([]string{})})
 	if err != nil || len(cl.Scopes) != 0 {
 		t.Errorf("clear: %v %v", cl, err)
-	}
-}
-
-func TestProviderAllowedDomains(t *testing.T) {
-	c := newCast(t)
-	in := func(d ...string) service.ProviderInput {
-		return service.ProviderInput{Type: ptr(model.ProviderGitHub), Name: ptr("GH " + strings.Join(d, ",")), ClientID: ptr("cid"),
-			ClientSecret: ptr("s"), AllowedDomains: &d}
-	}
-	p, err := c.svc.CreateProvider(c.ctx, actor(c.aAdmin), c.a.ID, in(" Example.COM ", "@corp.example.org", "example.com", ""))
-	if err != nil || !slices.Equal(p.AllowedDomains, []string{"example.com", "corp.example.org"}) {
-		t.Fatalf("normalised: %v %v", err, p)
-	}
-	if p, err := c.svc.CreateProvider(c.ctx, actor(c.aAdmin), c.a.ID, in()); err != nil || len(p.AllowedDomains) != 0 {
-		t.Fatalf("none (any address): %v %v", err, p)
-	}
-	for _, bad := range []string{"not a domain", "localhost", "-x.example", "a..example", "http://example.com"} {
-		_, err := c.svc.CreateProvider(c.ctx, actor(c.aAdmin), c.a.ID, in("ok.example", bad))
-		var fe *service.FieldError
-		if !errors.As(err, &fe) || fe.Field != "allowed_domains" || !strings.HasPrefix(fe.Msg, bad+" ") {
-			t.Errorf("%q: %v", bad, err)
-		}
-	}
-}
-
-func TestProviderTypes(t *testing.T) {
-	c := newCast(t)
-	a := actor(c.aAdmin)
-	mk := func(in service.ProviderInput) (*model.Provider, error) {
-		in.ClientID, in.ClientSecret = ptr("cid"), ptr("sec")
-		return c.svc.CreateProvider(c.ctx, a, c.a.ID, in)
-	}
-	// Presets: issuer and default button label per type.
-	for _, tc := range []struct {
-		typ, issuerIn, issuer, name string
-	}{
-		{model.ProviderGoogle, "", "https://accounts.google.com", "Google"},
-		{model.ProviderGitLab, "", "https://gitlab.com", "GitLab"},
-		{model.ProviderGitLab, "git.example.com/", "https://git.example.com", "GitLab"},
-		{model.ProviderAuth0, "acme.eu.auth0.com", "https://acme.eu.auth0.com/", "Auth0"},
-		{model.ProviderAuth0, "https://login.acme.example/", "https://login.acme.example/", "Auth0"},
-	} {
-		p, err := mk(service.ProviderInput{Type: ptr(tc.typ), Issuer: ptr(tc.issuerIn), Name: ptr("")})
-		if err != nil || p.Issuer != tc.issuer || p.Name != tc.name || !slices.Equal(p.Scopes, []string{"openid", "profile", "email"}) {
-			t.Errorf("%s %q: %v %+v", tc.typ, tc.issuerIn, err, p)
-		}
-		if p != nil {
-			_ = c.svc.DeleteProvider(c.ctx, a, p.ID)
-		}
-	}
-	if _, err := mk(service.ProviderInput{Type: ptr(model.ProviderAuth0)}); !errors.Is(err, service.ErrInvalid) {
-		t.Errorf("auth0 without a domain: %v", err)
-	}
-	if _, err := mk(service.ProviderInput{Type: ptr(model.ProviderGitLab), Issuer: ptr("http://git.example.com")}); !errors.Is(err, service.ErrInvalid) {
-		t.Errorf("gitlab over http: %v", err)
-	}
-
-	// Microsoft: a tenant ID alone, or "organizations" with the allowed tenant IDs.
-	tid := "72f988bf-86f1-41af-91ab-2d7cd011db47"
-	p, err := mk(service.ProviderInput{Type: ptr(model.ProviderMicrosoft), Tenant: ptr(strings.ToUpper(tid)), AllowedTenants: &[]string{tid}})
-	if err != nil || p.Tenant != tid || p.AllowedTenants != nil || p.Issuer != model.MicrosoftAuthority+"/"+tid+"/v2.0" || p.Name != "Microsoft" {
-		t.Fatalf("single tenant: %v %+v", err, p)
-	}
-	_ = c.svc.DeleteProvider(c.ctx, a, p.ID)
-	p, err = mk(service.ProviderInput{Type: ptr(model.ProviderMicrosoft), Tenant: ptr("organizations"), AllowedTenants: &[]string{tid, " " + tid}})
-	if err != nil || !slices.Equal(p.AllowedTenants, []string{tid}) {
-		t.Fatalf("organizations: %v %+v", err, p)
-	}
-	_ = c.svc.DeleteProvider(c.ctx, a, p.ID)
-	for name, in := range map[string]service.ProviderInput{
-		"no tenant":              {Type: ptr(model.ProviderMicrosoft)},
-		"organizations, no list": {Type: ptr(model.ProviderMicrosoft), Tenant: ptr("organizations")},
-		"common (personal)":      {Type: ptr(model.ProviderMicrosoft), Tenant: ptr("common")},
-		"bad allowed tenant":     {Type: ptr(model.ProviderMicrosoft), Tenant: ptr("organizations"), AllowedTenants: &[]string{"contoso"}},
-		"unknown type":           {Type: ptr("saml")},
-	} {
-		if _, err := mk(in); !errors.Is(err, service.ErrInvalid) {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	// Tenant fields belong to Microsoft only.
-	p, err = mk(service.ProviderInput{Type: ptr(model.ProviderGoogle), Tenant: ptr(tid), AllowedTenants: &[]string{tid}})
-	if err != nil || p.Tenant != "" || p.AllowedTenants != nil {
-		t.Errorf("tenant on google: %v %+v", err, p)
-	}
-}
-
-// A provider's scopes follow the client rule (RFC 6749 scope tokens): each goes into the upstream authorization
-// request, so one with a space or a quote is refused rather than stored; blanks and repeats are dropped.
-func TestProviderScopes(t *testing.T) {
-	c := newCast(t)
-	a := actor(c.aAdmin)
-	in := goodProvider("scopes")
-	in.Scopes = &[]string{"openid", " email ", "openid", "", "api://app/access_as_user"}
-	p, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(p.Scopes, " ") != "openid email api://app/access_as_user" {
-		t.Errorf("scopes %q", p.Scopes)
-	}
-	for _, bad := range []string{"two words", `say"what`, `back\slash`, strings.Repeat("s", 101)} {
-		in := goodProvider("bad-" + strconv.Itoa(len(bad)))
-		in.Scopes = &[]string{"openid", bad}
-		var fe *service.FieldError
-		if _, err := c.svc.CreateProvider(c.ctx, a, c.a.ID, in); !errors.As(err, &fe) || fe.Field != "scopes" {
-			t.Errorf("scope %q: %v", bad, err)
-		}
 	}
 }

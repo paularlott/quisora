@@ -26,7 +26,7 @@ func OpenStore(ctx context.Context, c *config.Config) (store.Store, error) {
 		return kvstore.OpenBadger(ctx, c.DataPath(config.DirBadgerDB), kvstore.BadgerOptions{
 			NoSync: !st.BadgerDB.SyncWrites, EncryptionKey: key})
 	case "sqlite":
-		return sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: c.DataPath(config.FileSQLite), Feed: c.Replicate()})
+		return sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: c.DataPath(config.FileSQLite)})
 	case "postgres", "mysql", "mariadb":
 		db := map[string]config.SQLDSN{"postgres": st.Postgres, "mysql": st.MySQL, "mariadb": st.MariaDB}[st.Backend]
 		pool, err := caPool(db.CAFile, "storage."+st.Backend+".ca_file")
@@ -34,7 +34,7 @@ func OpenStore(ctx context.Context, c *config.Config) (store.Store, error) {
 			return nil, err
 		}
 		return sqlstore.Open(ctx, sqlstore.Config{Driver: st.Backend, DSN: db.DSN, RootCAs: pool,
-			MaxOpenConns: db.MaxOpenConns, MaxIdleConns: db.MaxIdleConns, Feed: c.Replicate()})
+			MaxOpenConns: db.MaxOpenConns, MaxIdleConns: db.MaxIdleConns})
 	}
 	return nil, fmt.Errorf("unknown storage backend %q", st.Backend)
 }

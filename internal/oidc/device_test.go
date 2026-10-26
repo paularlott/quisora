@@ -3,16 +3,19 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 var userCodeRe = regexp.MustCompile(`^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`)
@@ -63,41 +66,18 @@ func (h *harness) consentDevice(b *http.Client, csrf, userCode string, approve b
 	if !strings.Contains(page, "Signing in a device") || !strings.Contains(page, `class="mono">`+formatUserCode(normUserCode(userCode))+`<`) {
 		h.t.Fatalf("consent page has no device warning: %s", page)
 	}
-	bb, _ := json.Marshal(map[string]any{"flow": u.Query().Get("flow"), "approve": approve})
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+"/api-internal/oauth/consent", strings.NewReader(string(bb)))
-	req.Header.Set("X-CSRF-Token", csrf)
-	req.Header.Set("Content-Type", "application/json")
-	r, err := b.Do(req)
-	if err != nil {
-		h.t.Fatal(err)
+	st, redirect := h.decideConsent(b, csrf, u.Query().Get("flow"), approve)
+	if st != 200 {
+		h.t.Fatalf("consent: %d", st)
 	}
-	var out map[string]string
-	_ = json.Unmarshal([]byte(body(r)), &out)
-	if r.StatusCode != 200 {
-		h.t.Fatalf("consent: %d", r.StatusCode)
-	}
-	resp = h.get(b, out["redirect"])
+	resp = h.get(b, redirect)
 	return resp.StatusCode, body(resp)
-}
-
-func (h *harness) auditActions(action string) []*model.Audit {
-	h.t.Helper()
-	l, _, err := h.env.Svc.Audits.List(context.Background(), store.ListQuery{})
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	var out []*model.Audit
-	for _, a := range l {
-		if a.Action == action {
-			out = append(out, a)
-		}
-	}
-	return out
 }
 
 // The device polls while the user signs in elsewhere, approves on the consent screen (always shown, with a warning
 // and the code), and the device then gets its tokens once.
 func TestDeviceGrant(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl := h.deviceClient(nil)
 	dc, uc := h.startDevice(cl, "openid profile offline_access")
@@ -141,11 +121,11 @@ func TestDeviceGrant(t *testing.T) {
 	if pg := body(resp); resp.StatusCode != 400 || !strings.Contains(pg, "That code is not valid") {
 		t.Fatalf("used code: %d", resp.StatusCode)
 	}
-	if len(h.auditActions("oauth.device.approve")) != 1 {
+	if len(h.auditEvents("oauth.device.approve")) != 1 {
 		t.Fatal("approval not audited")
 	}
 	found := false
-	for _, a := range h.auditActions("oauth.grant") {
+	for _, a := range h.auditEvents("oauth.grant") {
 		found = found || a.Detail["grant_type"] == "device_code"
 	}
 	if !found {
@@ -155,6 +135,7 @@ func TestDeviceGrant(t *testing.T) {
 
 // Deny on the consent screen tells the device: access_denied.
 func TestDeviceGrantDenied(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	cl := h.deviceClient(nil)
 	dc, uc := h.startDevice(cl, "openid")
@@ -169,11 +150,16 @@ func TestDeviceGrantDenied(t *testing.T) {
 	if r := h.pollDevice(cl, dc); r.str("error") != "expired_token" {
 		t.Fatalf("poll after the answer: %v", r.m)
 	}
+	// the code is spent: the page refuses it
+	if resp := h.get(b, "/device?user_code="+url.QueryEscape(uc)); body(resp) == "" || resp.StatusCode != 400 {
+		t.Fatalf("page after the decision: %d", resp.StatusCode)
+	}
 }
 
 // Only clients with the grant may start a device sign-in; a FAPI 2.0 client may not have it; another client cannot
 // redeem a device code; unknown device codes have expired.
 func TestDeviceGrantClients(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	plain := h.publicClient(nil)
 	if r := h.post("/oauth/device_authorization", url.Values{"client_id": {plain.ID}}, "", ""); r.str("error") != "unauthorized_client" {
@@ -200,37 +186,16 @@ func TestDeviceGrantClients(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "device") {
 		t.Fatalf("FAPI client with the device grant: %v", err)
 	}
-	var disc map[string]any
-	_ = json.Unmarshal([]byte(body(h.get(h.anon(), "/.well-known/openid-configuration"))), &disc)
-	if disc["device_authorization_endpoint"] != h.env.Cfg.Issuer()+"/oauth/device_authorization" ||
-		!strings.Contains(strings.Join(toStrings(disc["grant_types_supported"]), " "), service.GrantDeviceCode) {
-		t.Fatalf("discovery: %v %v", disc["device_authorization_endpoint"], disc["grant_types_supported"])
-	}
-}
-
-func toStrings(v any) []string {
-	var out []string
-	l, _ := v.([]any)
-	for _, x := range l {
-		s, _ := x.(string)
-		out = append(out, s)
-	}
-	return out
 }
 
 // Managers and above approve device sign-ins only where the client allows it.
 func TestDeviceGrantPrivileged(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
-	c, csrf := h.env.SessionAMR(h.env.Admin, []string{"pwd", "otp", "mfa"})
-	pu, _ := url.Parse(h.env.URL)
-	jar, _ := cookiejar.New(nil)
-	jar.SetCookies(pu, c.Jar.Cookies(pu))
-	admin := *c
-	admin.Jar = jar
-
+	admin, csrf := h.adminBrowser()
 	cl := h.deviceClient(nil)
 	dc, uc := h.startDevice(cl, "openid")
-	resp := h.get(&admin, "/device?user_code="+url.QueryEscape(uc))
+	resp := h.get(admin, "/device?user_code="+url.QueryEscape(uc))
 	if pg := body(resp); resp.StatusCode != http.StatusForbidden || !strings.Contains(pg, "Managers and administrators cannot sign in on devices") {
 		t.Fatalf("administrator: %d %s", resp.StatusCode, pg)
 	}
@@ -240,7 +205,7 @@ func TestDeviceGrantPrivileged(t *testing.T) {
 
 	allowed := h.deviceClient(func(in *service.ClientInput) { in.DevicePrivileged = ptr(true) })
 	dc, uc = h.startDevice(allowed, "openid")
-	if status, page := h.consentDevice(&admin, csrf, uc, true); status != 200 || !strings.Contains(page, "Your device is signed in") {
+	if status, page := h.consentDevice(admin, csrf, uc, true); status != 200 || !strings.Contains(page, "Your device is signed in") {
 		t.Fatalf("allowed administrator: %d %s", status, page)
 	}
 	if r := h.pollDevice(allowed, dc); r.status != 200 {
@@ -250,6 +215,7 @@ func TestDeviceGrantPrivileged(t *testing.T) {
 
 // Wrong codes are limited per address; a malformed one says what a code looks like.
 func TestDeviceCodeGuessing(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	b := h.anon()
 	resp := h.get(b, "/device?user_code=12")
@@ -272,13 +238,262 @@ func TestDeviceCodeGuessing(t *testing.T) {
 }
 
 func TestUserCodes(t *testing.T) {
-	for in, want := range map[string]string{"wdjb-mjht": "WDJBMJHT", " WDJB MJHT ": "WDJBMJHT", "WDJBMJH": "", "WDJA-MJHT": "", "WDJB-MJHT-X": ""} {
+	t.Parallel()
+	for in, want := range map[string]string{"wdjb-mjht": "WDJBMJHT", " WDJB MJHT ": "WDJBMJHT", "WDJBMJH": "", "WDJA-MJHT": "", "WDJB-MJHT-X": "",
+		strings.Repeat("B", 33): ""} {
 		if got := normUserCode(in); got != want {
 			t.Errorf("normUserCode(%q) = %q, want %q", in, got, want)
 		}
+	}
+	if formatUserCode("ABC") != "ABC" || formatUserCode("WDJBMJHT") != "WDJB-MJHT" {
+		t.Error("formatUserCode")
 	}
 	c, err := newUserCode()
 	if err != nil || !userCodeRe.MatchString(formatUserCode(c)) {
 		t.Fatalf("newUserCode: %q %v", c, err)
 	}
+}
+
+func TestDeviceAuthorizationRefusals(t *testing.T) {
+	t.Parallel()
+	h := setup(t, func(c *config.Config) { c.Audit.Tokens = true })
+	cl := h.deviceClient(nil)
+	post := func(f url.Values) tokResp { return h.post("/oauth/device_authorization", f, "", "") }
+
+	tokenErr(t, post(url.Values{"client_id": {cl.ID, cl.ID}}), 400, "invalid_request")
+	if r := post(url.Values{"client_id": {"nosuchclient"}}); r.status != 401 || r.str("error") != "invalid_client" {
+		t.Fatalf("%d %v", r.status, r.m)
+	}
+	tokenErr(t, post(url.Values{"client_id": {cl.ID}, "resource": {"https://other.example"}}), 400, "invalid_target")
+	tokenErr(t, post(url.Values{"client_id": {cl.ID}, "resource": {"nope"}}), 400, "invalid_target")
+
+	h.startDevice(cl, "openid")
+	if len(h.auditEvents("oauth.device.start")) != 1 {
+		t.Fatal("start not audited")
+	}
+
+	// the start of a device sign-in is limited per address
+	limited := false
+	for range deviceStartsPerIP + 1 {
+		if r := post(url.Values{"client_id": {cl.ID}}); r.status == http.StatusTooManyRequests {
+			limited = r.str("error") == "slow_down"
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("device starts were not limited")
+	}
+}
+
+func TestDeviceFailsClosedOnStoreFailures(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	start := func() tokResp {
+		return h.post("/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid"}}, "", "")
+	}
+	boom := errors.New("ephemeral down")
+	good := h.env.Server.Eph
+
+	h.useEph(func(op, ns string) error {
+		if op == "new" && ns == nsDevice {
+			return boom
+		}
+		return nil
+	})
+	if r := start(); r.status != 500 || r.str("error") != "server_error" {
+		t.Fatalf("new: %d %v", r.status, r.m)
+	}
+	h.useEph(func(op, ns string) error {
+		if op == "set" && ns == nsDeviceUser {
+			return boom
+		}
+		return nil
+	})
+	if r := start(); r.status != 500 {
+		t.Fatalf("set: %d %v", r.status, r.m)
+	}
+	// every user code looks taken
+	h.useEphFaults(faultEph{answer: func(ns, id string) []byte {
+		if ns == nsDeviceUser {
+			return []byte("x")
+		}
+		return nil
+	}})
+	if r := start(); r.status != 500 {
+		t.Fatalf("no free code: %d %v", r.status, r.m)
+	}
+	h.env.Server.Eph = good
+
+	dc, uc := h.startDevice(cl, "openid")
+	// polling: the sign-in cannot be read; no device code at all, or an absurd one
+	h.useEph(func(op, ns string) error {
+		if op == "get" && ns == nsDevice {
+			return boom
+		}
+		return nil
+	})
+	if r := h.pollDevice(cl, dc); r.status != 500 {
+		t.Fatalf("poll: %d %v", r.status, r.m)
+	}
+	h.env.Server.Eph = good
+	tokenErr(t, h.pollDevice(cl, ""), 400, "invalid_request")
+	tokenErr(t, h.pollDevice(cl, strings.Repeat("d", 201)), 400, "invalid_request")
+
+	// the verification page cannot start its flow
+	h.useEph(func(op, ns string) error {
+		if op == "new" && ns == nsFlow {
+			return boom
+		}
+		return nil
+	})
+	b, _ := h.session(h.user)
+	resp := h.get(b, "/device?user_code="+url.QueryEscape(uc))
+	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Something went wrong") {
+		t.Fatalf("page: %d %s", resp.StatusCode, pg)
+	}
+}
+
+func TestDevicePageRefusesStaleCodes(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	b, _ := h.session(h.user)
+	page := func(uc string) (int, string) {
+		resp := h.get(b, "/device?user_code="+url.QueryEscape(uc))
+		return resp.StatusCode, body(resp)
+	}
+	// a sign-in whose device code vanished
+	dc, uc := h.startDevice(cl, "openid")
+	_ = h.env.Server.Eph.Delete(context.Background(), nsDevice, dc)
+	if st, _ := page(uc); st != 400 {
+		t.Fatalf("expired: %d", st)
+	}
+	// a client disabled since
+	_, uc = h.startDevice(cl, "openid")
+	if _, err := h.env.Svc.UpdateClient(context.Background(), h.admin, cl.ID, service.ClientInput{Enabled: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID)
+	if st, _ := page(uc); st != 400 {
+		t.Fatalf("disabled client: %d", st)
+	}
+}
+
+// Two browsers hold the same code; the first decision wins and the second finds the sign-in decided.
+func TestDeviceSecondApprovalRefused(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	dc, uc := h.startDevice(cl, "openid")
+	b1, csrf1 := h.session(h.user)
+	b2, csrf2 := h.session(h.user)
+	flowOf := func(b *http.Client) string {
+		resp := h.get(b, "/device?user_code="+url.QueryEscape(uc))
+		u := loc(t, resp)
+		if u.Path != "/oauth/consent" {
+			t.Fatalf("expected consent: %s", u)
+		}
+		return u.Query().Get("flow")
+	}
+	f1, f2 := flowOf(b1), flowOf(b2)
+	decide := func(b *http.Client, csrf, flow string) (int, string) {
+		st, redirect := h.decideConsent(b, csrf, flow, true)
+		if st == 200 {
+			resp := h.get(b, redirect) // the decision is taken where the flow resumes
+			return resp.StatusCode, body(resp)
+		}
+		return st, ""
+	}
+	if st, bd := decide(b1, csrf1, f1); st != 200 {
+		t.Fatalf("first: %d %s", st, bd)
+	}
+	if st, bd := decide(b2, csrf2, f2); st != http.StatusBadRequest || !strings.Contains(bd, "This code can no longer be used") {
+		t.Fatalf("second: %d %s", st, bd)
+	}
+	if r := h.pollDevice(cl, dc); r.status != 200 {
+		t.Fatalf("the first decision stands: %d %v", r.status, r.m)
+	}
+}
+
+func TestDevicePrivilegedRevokedBeforePoll(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	admin, csrf := h.adminBrowser()
+	cl := h.deviceClient(func(in *service.ClientInput) { in.DevicePrivileged = ptr(true) })
+	dc, uc := h.startDevice(cl, "openid")
+	if st, pg := h.consentDevice(admin, csrf, uc, true); st != 200 {
+		t.Fatalf("approve: %d %s", st, pg)
+	}
+	// the client stops accepting managers' approvals before the device collects its tokens
+	if _, err := h.env.Svc.UpdateClient(context.Background(), h.admin, cl.ID, service.ClientInput{DevicePrivileged: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID)
+	tokenErr(t, h.pollDevice(cl, dc), 400, "access_denied")
+}
+
+func TestDevicePollDuringApprovalStaysPending(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	local := ephemeral.NewLocal("device-poll")
+	defer local.Close()
+	// the approval pauses just before it records the decision: the window in which a poll must not see the sign-in gone
+	g := newGate(t)
+	p := &Provider{s: &web.Server{Eph: faultEph{Store: local, before: func(op, ns string) error {
+		if op == "set" && ns == nsDevice {
+			g.hold()
+		}
+		return nil
+	}}}}
+	raw, _ := json.Marshal(deviceGrant{ClientID: "client", UserCode: "BCDFGHJK", Expires: time.Now().Add(time.Minute).Unix()})
+	id, _ := local.New(ctx, nsDevice, raw, time.Minute)
+	_ = local.Set(ctx, nsDeviceTurn, id, []byte{1}, time.Minute)
+	done := make(chan bool, 1)
+	go func() {
+		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{})
+	}()
+	g.waitHeld(t)
+	_, oe := p.deviceToken(ctx, &model.Client{Meta: model.Meta{ID: "client"}}, id, "")
+	g.open()
+	if !<-done {
+		t.Fatal("approval failed")
+	}
+	if oe == nil || oe.code != "authorization_pending" {
+		t.Fatalf("live device grant returned terminal expiry during approval: %v", oe)
+	}
+}
+
+// An approved device sign-in whose tokens cannot be made on our side (503) stays approved: the next poll gets them,
+// and the user does not have to approve again.
+func TestDeviceApprovalKeptWhenIssueFails(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	deviceCode, userCode := h.startDevice(cl, "openid")
+	b, csrf := h.session(h.user)
+	if status, _ := h.consentDevice(b, csrf, userCode, true); status != 200 {
+		t.Fatalf("approve: %d", status)
+	}
+	users := h.env.Svc.Users.S
+	h.env.Svc.Users.S = failReads(users, model.KindUser)
+	h.p.users.clear()
+	if r := h.pollDevice(cl, deviceCode); r.status != 503 {
+		t.Fatalf("with the user unreadable: %d %v", r.status, r.m)
+	}
+	h.env.Svc.Users.S = users
+	h.p.users.clear()
+	if r := h.pollDevice(cl, deviceCode); r.status != 200 || r.str("access_token") == "" {
+		t.Fatalf("the next poll: %d %v", r.status, r.m)
+	}
+}
+
+// adminBrowser is a browser of its own signed in as the administrator with a second factor, with its CSRF token.
+func (h *harness) adminBrowser() (*http.Client, string) {
+	h.t.Helper()
+	c, csrf := h.env.SessionAMR(h.env.Admin, []string{"pwd", "otp", "mfa"})
+	pu, _ := url.Parse(h.env.URL)
+	browser := h.anon()
+	browser.Jar.SetCookies(pu, c.Jar.Cookies(pu))
+	return browser, csrf
 }

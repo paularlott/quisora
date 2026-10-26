@@ -80,6 +80,9 @@ func (s *Server) Stopping() <-chan struct{} { return s.stopping }
 // probeSeen is how recent a /readyz probe must be for Stop to drain first: something is routing traffic by it.
 const probeSeen = 2 * time.Minute
 
+// drainUnit is the unit of server.shutdown_drain (tests shorten it).
+var drainUnit = time.Second
+
 // TLS12CipherSuites are the only cipher suites offered over TLS 1.2: forward-secret AEAD suites, the ones RFC 9325
 // §4.2 recommends (as FAPI 2.0 §5.2.2 requires; Go implements no DHE). TLS 1.3 suites are not configurable and are
 // all acceptable.
@@ -147,7 +150,7 @@ func tokenPath(p string) bool {
 // bypasses the load balancer (admin and management API reads, SCIM, the authorization pages, discovery, JWKS). The
 // token, userinfo and introspection endpoints keep answering on a node that was serving and got cut off, for the
 // grace of cluster.minority_grace (ServesTokens): only what needs no write succeeds there (a write is refused
-// without a quorum).
+// without a majority).
 func (s *Server) serveGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
@@ -462,7 +465,7 @@ func (s *Server) Stop() {
 			return
 		}
 		s.draining.Store(true)
-		drain := time.Duration(s.Cfg.Server.ShutdownDrain) * time.Second
+		drain := time.Duration(s.Cfg.Server.ShutdownDrain) * drainUnit
 		if drain > 0 && time.Since(time.Unix(0, s.lastProbe.Load())) < probeSeen {
 			s.Log.Info("draining before shutdown: /readyz answers 503", "for", drain)
 			time.Sleep(drain)

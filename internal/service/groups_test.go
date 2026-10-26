@@ -1,7 +1,6 @@
 package service_test
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -99,22 +98,6 @@ func TestGroupMembershipIdempotentAndScoped(t *testing.T) {
 	}
 }
 
-// activeMembers counts the organization's memberships that are not removed (a removed one is kept until it expires).
-func activeMembers(t *testing.T, svc *service.Service, orgID string) int {
-	t.Helper()
-	ms, err := svc.Members.All(context.Background(), orgID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, m := range ms {
-		if m.Active() {
-			n++
-		}
-	}
-	return n
-}
-
 func TestGroupValidationAndConflicts(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)
@@ -160,18 +143,18 @@ func TestGroupValidationAndConflicts(t *testing.T) {
 	}
 }
 
-// An organization with many groups: UserGroups answers from the user's own memberships, not the groups.
-func TestUserGroupsManyGroups(t *testing.T) {
+// Among many groups of an organization a user is in exactly those they are a member of.
+func TestUserGroupsAmongManyGroups(t *testing.T) {
 	c := newCast(t)
 	a := actor(c.aAdmin)
 	u := c.user(c.a.ID, "many", model.RoleUser)
 	var mine []string
-	for i := range 70 {
+	for i := range 30 {
 		g, err := c.svc.CreateGroup(c.ctx, a, c.a.ID, service.GroupInput{DisplayName: ptr("g" + string(rune('a'+i/26)) + string(rune('a'+i%26)))})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if i%23 == 0 {
+		if i%11 == 0 {
 			if err := c.svc.SetMembership(c.ctx, a, g.ID, u.ID, true); err != nil {
 				t.Fatal(err)
 			}

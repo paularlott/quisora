@@ -1,0 +1,184 @@
+package upstream_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/upstream"
+)
+
+// signedInThrough signs a user in with p and gives them a live session signed in through it.
+func (e *env) signedInThrough(t *testing.T, p *model.Provider, sub, email string) (*upstream.Result, *model.Session) {
+	t.Helper()
+	res, err := e.signIn(p, std(sub, email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &model.Session{UserID: res.User.ID, OrgID: e.org.ID, Provider: p.ID, AuthTime: time.Now(), LastSeen: time.Now(),
+		Expires: time.Now().Add(24 * time.Hour)}
+	if err := e.svc.Sessions.Create(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	return res, s
+}
+
+func (e *env) refreshCalls() int {
+	e.oidc.Mu.Lock()
+	defer e.oidc.Mu.Unlock()
+	return e.oidc.RefreshCalls
+}
+
+func TestCheckSessionsLifecycle(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh, e.oidc.RotateRefresh = true, true
+	p := e.oidcProvider(t, nil)
+	_, sess := e.signedInThrough(t, p, "lee", "lee@corp.example")
+	ident, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(p.ID, "lee"))
+	if err != nil || ident.Refresh == "" {
+		t.Fatalf("refresh token not kept: %+v %v", ident, err)
+	}
+
+	// Not due yet: checked just now.
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Checked != 0 {
+		t.Fatalf("within interval: %+v %v", r, err)
+	}
+	e.advance(2 * time.Hour)
+	// Due, accepted and rotated.
+	before := e.oidc.LiveRefresh()
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Checked != 1 || r.Ended != 0 || r.Failed != 0 {
+		t.Fatalf("due check: %+v %v", r, err)
+	}
+	if after := e.oidc.LiveRefresh(); len(after) != 1 || after[0] == before[0] {
+		t.Fatalf("rotation: %v -> %v", before, after)
+	}
+	// The check was recorded, so it is not due again.
+	if r, _ := e.up.CheckSessions(e.ctx, time.Hour); r.Checked != 0 {
+		t.Fatalf("checked twice: %+v", r)
+	}
+
+	// A provider that fails is left alone, and its sessions stay.
+	e.advance(2 * time.Hour)
+	e.oidc.Mu.Lock()
+	e.oidc.RefreshFail = 503
+	e.oidc.Mu.Unlock()
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Failed != 1 || r.Ended != 0 {
+		t.Fatalf("failure: %+v %v", r, err)
+	}
+	if _, err := e.svc.Sessions.Get(e.ctx, sess.ID); err != nil {
+		t.Fatal("a transient failure ended the session")
+	}
+	e.oidc.Mu.Lock()
+	e.oidc.RefreshFail = 0
+	e.oidc.Mu.Unlock()
+
+	// Refused with invalid_grant: sessions end, the token is forgotten, an audit record says why.
+	e.oidc.RevokeRefresh()
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Ended != 1 {
+		t.Fatalf("leaver: %+v %v", r, err)
+	}
+	if _, err := e.svc.Sessions.Get(e.ctx, sess.ID); err == nil {
+		t.Fatal("the leaver's session survived")
+	}
+	if id, _ := e.svc.Identities.Get(e.ctx, ident.ID); id == nil || id.Refresh != "" {
+		t.Fatalf("refused token kept: %+v", id)
+	}
+	if !e.audited(t, "identity.refresh.refused") {
+		t.Fatal("refusal not audited")
+	}
+	// Nothing left to check.
+	calls := e.refreshCalls()
+	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 0 || e.refreshCalls() != calls {
+		t.Fatalf("replayed without a token: %+v", r)
+	}
+}
+
+// Only users with a live session through the provider are checked.
+func TestCheckSessionsNeedsLiveProviderSession(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, nil)
+	res, err := e.signIn(p, std("pat", "pat@corp.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(provider string, expires time.Duration) {
+		s := &model.Session{UserID: res.User.ID, OrgID: e.org.ID, Provider: provider, AuthTime: time.Now(), LastSeen: time.Now(),
+			Expires: time.Now().Add(expires)}
+		if err := e.svc.Sessions.Create(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No session at all, an expired one, and a live one not signed in through the provider: nothing is replayed.
+	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 0 {
+		t.Fatalf("no session: %+v %v", r, err)
+	}
+	mk(p.ID, -time.Minute)
+	mk("", time.Hour)
+	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 0 || e.refreshCalls() != 0 {
+		t.Fatalf("checked without a live provider session: %+v", r)
+	}
+	// A live session through the provider: checked and accepted; no rotation, so the token stays valid.
+	mk(p.ID, time.Hour)
+	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("live session: %+v", r)
+	}
+	if len(e.oidc.LiveRefresh()) != 1 {
+		t.Fatal("token lost")
+	}
+}
+
+// A provider that is off, or a canceled run, is not replayed against.
+func TestCheckSessionsProviderOffAndCancel(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, nil)
+	e.signedInThrough(t, p, "sam", "sam@corp.example")
+
+	if _, err := e.svc.UpdateProvider(e.ctx, service.System, p.ID, service.ProviderInput{Enabled: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 0 {
+		t.Fatalf("disabled provider replayed: %+v %v", r, err)
+	}
+	ctx, cancel := context.WithCancel(e.ctx)
+	cancel()
+	if _, err := e.up.CheckSessions(ctx, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled run: %v", err)
+	}
+}
+
+func TestCheckSessionsBasicAuthProvider(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh, e.oidc.BasicOnly = true, true
+	p := e.oidcProvider(t, nil)
+	e.signedInThrough(t, p, "bas", "bas@corp.example")
+	e.oidc.Mu.Lock()
+	e.oidc.GotBasic = false
+	e.oidc.Mu.Unlock()
+	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if !e.oidc.GotBasic {
+		t.Fatal("refresh did not use client_secret_basic")
+	}
+}
+
+// Other providers' identities wait for the next run once one provider failed in this one.
+func TestCheckSessionsUnreachableProvider(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, nil)
+	e.signedInThrough(t, p, "a1", "a1@corp.example")
+	e.signedInThrough(t, p, "a2", "a2@corp.example")
+	e.oidc.Mu.Lock()
+	e.oidc.RefreshFail = 500
+	e.oidc.Mu.Unlock()
+	r, err := e.up.CheckSessions(e.ctx, 0)
+	if err != nil || r.Failed != 1 || r.Checked != 1 || e.refreshCalls() != 1 {
+		t.Fatalf("one failure must park the provider: %+v %v calls=%d", r, err, e.refreshCalls())
+	}
+}

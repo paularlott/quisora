@@ -48,6 +48,13 @@ func TestBootstrapOnce(t *testing.T) {
 	if len(orgs) != 1 || len(supers) != 1 || links != 1 {
 		t.Fatalf("orgs %d, super admins %d, invitation links %d; want 1 each", len(orgs), len(supers), links)
 	}
+	// the first super admin has no password (an invitation is how they set one), and the primary organization requires MFA
+	if supers[0].PasswordHash != "" {
+		t.Fatal("the first admin has a password")
+	}
+	if !orgs[0].Settings.RequireMFA {
+		t.Fatal("the primary org must require MFA")
+	}
 	// renamed: still the primary organization, nothing new
 	o := orgs[0]
 	o.Name = "headquarters"

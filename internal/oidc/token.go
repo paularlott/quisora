@@ -373,8 +373,8 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 // store, and the retry must find it there to end it, not answer 200 to a cached "nothing to revoke".
 func (p *Provider) revokeGrant(ctx context.Context, id string) error {
 	p.grants.put(id, grantState{})
-	err := p.svc.Grants.Delete(service.Durable(context.WithoutCancel(ctx)), id)
-	if err != nil && !store.Applied(err) {
+	err := p.svc.Grants.Delete(context.WithoutCancel(ctx), id)
+	if err != nil {
 		p.grants.del(id)
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
 		return unavailable(err)
@@ -597,6 +597,13 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			fresh, ferr := p.svc.Grants.Get(ctx, g.ID)
 			if ferr != nil || fresh.Revoked {
 				return nil, invalid
+			}
+			// This node's copy was a message behind: the token was rotated moments ago, on another node. A retry is judged
+			// on the grant as it is now, as the first case above does (the store waited until this node has the write
+			// that made the rotation stale): the client gets the token it missed, and nothing rotates again.
+			if pr.counter+1 == fresh.Counter && time.Since(fresh.Rotated) < refreshRetryGrace && (!c.Public() || fresh.DPoPJKT != "") {
+				g = fresh
+				break
 			}
 			if fresh.Counter > pr.counter {
 				rerr := p.revokeGrant(ctx, g.ID)

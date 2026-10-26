@@ -66,7 +66,7 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	}
 	if purpose != LinkInvite {
 		l.ID = l.TokenHash
-		if err := s.Links.Create(Durable(ctx), l); err != nil {
+		if err := s.Links.Create(ctx, l); err != nil {
 			return "", nil, mapStore(err)
 		}
 		return token, l, nil
@@ -77,7 +77,7 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			l.Version = 0
-			err = s.Links.Create(Durable(ctx), l)
+			err = s.Links.Create(ctx, l)
 		case err == nil:
 			if replace != nil {
 				if rerr := replace(cur); rerr != nil {
@@ -85,9 +85,9 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 				}
 			}
 			l.Version, l.Created = cur.Version, time.Time{}
-			err = s.Links.Update(Durable(ctx), l)
+			err = s.Links.Update(ctx, l)
 		}
-		if store.Applied(err) {
+		if err == nil {
 			return token, l, nil
 		}
 		if !errors.Is(err, store.ErrStale) {
@@ -154,7 +154,7 @@ func (s *Service) RedeemLink(ctx context.Context, token string) (*model.LinkToke
 		return nil, nil, err
 	}
 	l.Used = true
-	if err := s.Links.Update(Durable(ctx), l); err != nil {
+	if err := s.Links.Update(ctx, l); err != nil {
 		return nil, nil, ErrLink
 	}
 	return l, u, nil
@@ -219,11 +219,11 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 			noteStatus(u, System, "break-glass invitation used")
 		}
 		u.BumpSecurity()
-		err = s.Users.Update(Durable(ctx), u)
+		err = s.Users.Update(ctx, u)
 		if errors.Is(err, store.ErrStale) {
 			continue // changed meanwhile: read again (the link may no longer be good)
 		}
-		if !store.Applied(err) {
+		if err != nil {
 			return nil, nil, mapStore(err)
 		}
 		// Tidying, of what this write replaced and nothing later: the old epochs' records.
@@ -250,7 +250,7 @@ func (s *Service) MarkLinkSent(ctx context.Context, link, email string) error {
 		return mapStore(err)
 	}
 	l.Email = email
-	return mapStore(s.Links.Update(Durable(ctx), l))
+	return mapStore(s.Links.Update(ctx, l))
 }
 
 // LinkURL is the absolute URL of a link page for token ("/invite", "/reset", "/verify-email").
@@ -333,8 +333,9 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 	now := time.Now().UTC()
 	u.PasswordHash, u.PasswordChangedAt = "", &now
 	u.BumpSecurity()
-	err = s.Users.Update(Durable(ctx), u)
-	if !store.Applied(err) {
+	err = s.Users.Update(ctx, u)
+	if err != nil {
+		s.auditUnknown(ctx, err, a, u.OrgID, "user.password.remove", u.Username, nil)
 		return mapStore(err)
 	}
 	// Applied here even if a peer has not confirmed it yet: the sessions end and the audit records it regardless.

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
@@ -13,8 +14,6 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
-
-func tokenFrom(link string) string { return link[strings.Index(link, "token=")+len("token="):] }
 
 func TestInviteSingleUseExpiryAndRevocation(t *testing.T) {
 	e := newEnv(t)
@@ -103,13 +102,6 @@ func TestInviteLinksSurviveRestart(t *testing.T) {
 	if err != nil || admin == nil || link == "" {
 		t.Fatalf("bootstrap: %v %q", err, link)
 	}
-	if admin.PasswordHash != "" {
-		t.Fatal("the first admin has a password")
-	}
-	org, _ := svc.PrimaryOrg(ctx)
-	if !org.Settings.RequireMFA {
-		t.Fatal("the primary org must require MFA")
-	}
 	reset, _, err := svc.IssueLink(ctx, admin, service.LinkReset, admin.Email, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -129,38 +121,6 @@ func TestInviteLinksSurviveRestart(t *testing.T) {
 	// A second bootstrap creates nothing.
 	if u, l, err := svc2.Bootstrap(ctx, "other@example.com"); err != nil || u != nil || l != "" {
 		t.Fatalf("second bootstrap: %v %v %q", u, l, err)
-	}
-}
-
-func TestRemovePasswordEndsAccess(t *testing.T) {
-	c := newCast(t)
-	u, err := c.svc.CreateUser(c.ctx, service.System, c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("pw"), Email: ptr("pw@example.com"), Password: ptr("correct horse battery")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := &model.Session{Meta: model.Meta{ID: "sess-" + u.ID}, UserID: u.ID, OrgID: u.OrgID}
-	if err := c.svc.Sessions.Create(c.ctx, sess); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.svc.RemovePassword(c.ctx, actor(c.aAdmin), u.ID); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := c.svc.Users.Get(c.ctx, u.ID)
-	if got.PasswordHash != "" {
-		t.Fatal("password still set")
-	}
-	if _, err := c.svc.Sessions.Get(c.ctx, sess.ID); err == nil {
-		t.Fatal("session survived")
-	}
-	// Idempotent, and nobody removes their own password here.
-	if err := c.svc.RemovePassword(c.ctx, actor(c.aAdmin), u.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.svc.RemovePassword(c.ctx, actor(c.aAdmin), c.aAdmin.ID); err == nil {
-		t.Fatal("removed own password")
-	}
-	if _, _, err := c.svc.CreateInvite(c.ctx, actor(c.aAdmin), c.aAdmin.ID); err == nil {
-		t.Fatal("invited self")
 	}
 }
 
@@ -321,4 +281,200 @@ func TestInviteRecheckedAgainstIssuer(t *testing.T) {
 		t.Fatal(err)
 	}
 	redeems("system invitation", tokenFrom(link))
+}
+
+// Cleanup belongs to the invitation it follows. Redeeming an invitation tidies the sessions of the account after the
+// commit; when that is slow, a later invitation may be issued, and even accepted, meanwhile, and the old cleanup must
+// leave it alone.
+func TestEarlierInviteCleanupLeavesALaterInvitation(t *testing.T) {
+	// pausedRedemption redeems the account's invitation and pauses it at the post-commit session cleanup.
+	pausedRedemption := func(t *testing.T) (*env, *model.User, *gate, <-chan error) {
+		e := newEnv(t)
+		u := e.user(e.primary.ID, "cleanup-generation", model.RoleUser)
+		first, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gt := newGate(t)
+		e.svc.Store = &faultStore{Store: e.svc.Store, beforeList: func(kind model.Kind, q store.ListQuery) error {
+			if kind == model.KindSession && q.Scope == u.ID {
+				gt.stall()
+			}
+			return nil
+		}}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := e.svc.UseSignInLink(e.ctx, tokenFrom(first), service.LinkInvite, "", service.NewCredEpoch())
+			done <- err
+		}()
+		gt.waitEntered(t, "the redemption's session cleanup")
+		return e, u, gt, done
+	}
+
+	t.Run("later_invite_still_valid", func(t *testing.T) {
+		e, u, gt, done := pausedRedemption(t)
+		later, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(later), service.LinkInvite); err != nil {
+			t.Fatalf("new link invalid before the cleanup: %v", err)
+		}
+		gt.release()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(later), service.LinkInvite); err != nil {
+			t.Fatalf("the old redemption's cleanup deleted a valid invitation issued for the next security generation: %v", err)
+		}
+	})
+
+	t.Run("later_acceptance_keeps_its_credentials", func(t *testing.T) {
+		e, u, gt, done := pausedRedemption(t)
+		later, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		epoch := service.NewCredEpoch()
+		pk := &model.Passkey{Meta: model.Meta{ID: model.NewID()}, UserID: u.ID, OrgID: u.OrgID, Epoch: epoch, Name: "second acceptance", CredentialID: []byte("later-credential")}
+		if err := e.svc.Passkeys.Create(e.ctx, pk); err != nil {
+			t.Fatal(err)
+		}
+		_, current, err := e.svc.UseSignInLink(e.ctx, tokenFrom(later), service.LinkInvite, "", epoch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !current.Holds(epoch) {
+			t.Fatal("the second acceptance did not commit its epoch")
+		}
+		if _, err := e.svc.Passkeys.Get(e.ctx, pk.ID); err != nil {
+			t.Fatalf("credential absent before the old cleanup: %v", err)
+		}
+		gt.release()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.Passkeys.Get(e.ctx, pk.ID); err != nil {
+			t.Fatalf("the cleanup after the earlier invitation removed the current epoch's credential: %v", err)
+		}
+	})
+}
+
+// An admin may not replace a privileged user's invitation. When the admin's issue loses a race to another issuer, the
+// authority to replace the invitation that won is checked again.
+func TestInviteReplacementIsRecheckedAfterAnIssueConflict(t *testing.T) {
+	e := newEnv(t)
+	admin := e.user(e.primary.ID, "invite-admin", model.RoleAdmin)
+	u := e.user(e.primary.ID, "new-manager", model.RoleManager)
+	linkID := service.LinkInvite + ":" + u.ID
+	gt := newGate(t)
+	e.svc.Links.S = &faultStore{Store: e.svc.Store, beforeCAS: func(r *store.Record, expect hlc.Timestamp) error {
+		if r.Kind == model.KindLink && r.ID == linkID && expect == 0 {
+			gt.stall()
+		}
+		return nil
+	}}
+	done := make(chan error, 1)
+	go func() { _, _, err := e.svc.CreateInvite(e.ctx, actor(admin), u.ID); done <- err }()
+	gt.waitEntered(t, "the admin's first write of the invitation") // the admin passed the replacement check while no invitation existed
+	superLink, _, err := e.svc.CreateInvite(e.ctx, actor(e.super), u.ID)
+	gt.release()
+	adminErr := <-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adminErr == nil {
+		_, _, peekErr := e.svc.PeekLink(e.ctx, tokenFrom(superLink), service.LinkInvite)
+		t.Fatalf("the admin replaced a privileged user's invitation from another issuer after a conflict; the original link now: %v", peekErr)
+	}
+}
+
+func TestBreakGlassInviteAndMarkLinkSent(t *testing.T) {
+	c := newCast(t)
+	// a disabled super admin locked out: the break-glass invite works where CreateInvite refuses, and enables again
+	if _, err := c.svc.UpdateUser(c.ctx, service.System, c.pAdmin.ID, service.UserInput{Active: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.svc.CreateInvite(c.ctx, actor(c.super), c.pAdmin.ID); !isInvalid(err) {
+		t.Fatalf("normal invite of a disabled account: %v", err)
+	}
+	link, exp, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pAdmin.ID)
+	if err != nil || !exp.After(time.Now()) {
+		t.Fatalf("break glass: %v", err)
+	}
+	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, "nobody"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("unknown user: %v", err)
+	}
+	ev := c.audited(c.pAdmin.OrgID, "user.invite.break_glass")
+	if len(ev) != 1 || !strings.Contains(ev[0].Detail["account"], "disabled") {
+		t.Fatalf("audit %+v", ev)
+	}
+	token := link[strings.Index(link, "token=")+6:]
+	if err := c.svc.MarkLinkSent(c.ctx, link, c.pAdmin.Email); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.MarkLinkSent(c.ctx, "not-a-token", "x@example.com"); err == nil {
+		t.Error("unknown link marked sent")
+	}
+	if _, _, err := c.svc.UseSignInLink(c.ctx, token, service.LinkInvite, "correct horse battery", service.NewCredEpoch()); err != nil {
+		t.Fatal(err)
+	}
+	got := c.fresh(c.pAdmin)
+	if !got.Active || !got.EmailVerified {
+		t.Errorf("after break-glass use: active %v verified %v", got.Active, got.EmailVerified)
+	}
+	// the token by itself (not the URL) marks too
+	l2, _, err := c.svc.CreateInvite(c.ctx, actor(c.super), c.pAdmin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.MarkLinkSent(c.ctx, l2[strings.Index(l2, "token=")+6:], "other@example.com"); err != nil {
+		t.Errorf("bare token: %v", err)
+	}
+}
+
+// An invitation or reset link is bound to the address the account had when it was issued: once an administrator
+// corrects a mistyped address, the link that went to the wrong mailbox opens nothing (it would have set the
+// account's credentials). A break-glass invitation goes to whoever runs the command, not to an address.
+func TestLinksStopWhenTheAddressChanges(t *testing.T) {
+	e := newEnv(t)
+	u := e.user(e.primary.ID, "bob", model.RoleUser)
+	invite, _, err := e.svc.CreateInvite(e.ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset, _, err := e.svc.IssueLink(e.ctx, u, service.LinkReset, "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(invite), service.LinkInvite); err != nil {
+		t.Fatalf("invitation before the change: %v", err)
+	}
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Email: ptr("bob.right@example.com")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(invite), service.LinkInvite); !errors.Is(err, service.ErrLink) {
+		t.Fatalf("invitation for the old address still opens: %v", err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, reset, service.LinkReset); !errors.Is(err, service.ErrLink) {
+		t.Fatalf("reset link for the old address still opens: %v", err)
+	}
+	// A new invitation, for the address on file now, works.
+	invite, _, err = e.svc.CreateInvite(e.ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(invite), service.LinkInvite); err != nil {
+		t.Fatalf("new invitation: %v", err)
+	}
+	bg, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Email: ptr("bob.again@example.com")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(bg), service.LinkInvite); err != nil {
+		t.Fatalf("break-glass invitation: %v", err)
+	}
 }

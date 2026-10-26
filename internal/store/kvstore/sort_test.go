@@ -19,11 +19,7 @@ import (
 // values included. Counters and sort members follow updates and deletions.
 func TestSortedPagesAreBounded(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenBadger(ctx, t.TempDir(), BadgerOptions{InMemory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openBadger(t, BadgerOptions{InMemory: true})
 	const n = 400
 	hidden := 0
 	recs := make([]*store.Record, 0, n)
@@ -52,7 +48,7 @@ func TestSortedPagesAreBounded(t *testing.T) {
 		recs = append(recs, r)
 		us = append(us, u)
 	}
-	if _, _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+	if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
 		t.Fatal(err)
 	}
 	counting := &countingReads{engine: s.eng}
@@ -168,11 +164,7 @@ func TestSortedPagesAreBounded(t *testing.T) {
 // them, leaving out the expired; the counters follow the purge of the expired members.
 func TestExpiringRangesCountExactly(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenBadger(ctx, t.TempDir(), BadgerOptions{InMemory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openBadger(t, BadgerOptions{InMemory: true})
 	grants := store.NewTable[model.Grant](s)
 	for i := range 20 {
 		g := &model.Grant{UserID: "u1", OrgID: "org", ClientID: "app", Expires: time.Now().Add(time.Hour)}
@@ -235,63 +227,5 @@ func TestSortKeyOrder(t *testing.T) {
 	m := sortMember("org/1", str, "x\x00y", "id-1")
 	if sortMemberID(m) != "id-1" || !strings.HasPrefix(m, "org%2F1/") {
 		t.Errorf("member %q: id %q", m, sortMemberID(m))
-	}
-}
-
-// A sorted page of a large organization costs its page, not the organization (the console's default user listing).
-func BenchmarkSortedUserPage(b *testing.B) {
-	for _, n := range []int{1000, 10000, 100000} {
-		b.Run(fmt.Sprint(n), func(b *testing.B) {
-			ctx := context.Background()
-			s, err := OpenBadger(ctx, b.TempDir(), BadgerOptions{InMemory: true})
-			if err != nil {
-				b.Fatal(err)
-			}
-			defer s.Close()
-			recs := make([]*store.Record, 0, 1000)
-			for i := range n {
-				name := fmt.Sprintf("user-%06d", i)
-				u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: "org", Username: name, Email: name + "@example.test", GivenName: name, Role: model.RoleUser, Active: true}
-				if i%500 == 7 {
-					u.Role = model.RoleSuperAdmin
-				}
-				rec, err := store.Encode(u)
-				if err != nil {
-					b.Fatal(err)
-				}
-				recs = append(recs, rec)
-				if len(recs) == cap(recs) || i == n-1 {
-					if _, _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
-						b.Fatal(err)
-					}
-					recs = recs[:0]
-				}
-			}
-			visibility := []store.Filter{{Field: "super_admin", Value: false}}
-			for _, bc := range []struct {
-				name string
-				q    store.ListQuery
-			}{
-				{"username-asc", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: visibility}},
-				{"username-desc-offset", store.ListQuery{Scope: "org", Sort: "username", Desc: true, Offset: 200, Limit: 25, Filters: visibility}},
-				{"active-desc-ties", store.ListQuery{Scope: "org", Sort: "active", Desc: true, Offset: 200, Limit: 25, Filters: visibility}},
-				{"plain", store.ListQuery{Scope: "org", Limit: 25}},
-				{"search-username", store.ListQuery{Scope: "org", Sort: "username", Search: "user-0000", Limit: 25, Filters: visibility}},
-			} {
-				b.Run(bc.name, func(b *testing.B) {
-					counting := &countingReads{engine: s.eng}
-					s.eng = counting
-					defer func() { s.eng = counting.engine }()
-					b.ReportAllocs()
-					for b.Loop() {
-						page, err := s.List(ctx, model.KindUser, bc.q)
-						if err != nil || len(page.Records) == 0 {
-							b.Fatalf("page: %+v %v", page, err)
-						}
-					}
-					b.ReportMetric(float64(counting.records)/float64(b.N), "records-read/op")
-				})
-			}
-		})
 	}
 }

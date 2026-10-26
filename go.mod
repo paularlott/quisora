@@ -65,3 +65,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+// The gossip library is used from the local checkout (its partition package, not tagged yet): the replace goes when it is.
+replace github.com/paularlott/gossip => ../gossip

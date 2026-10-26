@@ -77,8 +77,8 @@ func EncodeAsIs(e model.Entity) (*Record, error) {
 	m := e.GetMeta()
 	ix := e.Index()
 	return &Record{
-		Kind: e.Kind(), ID: m.ID, Version: m.Version, Origin: Origin(), Scope: ix.Scope, Unique: ix.Unique, Fields: ix.Fields,
-		Data: data, Expires: ix.Expires,
+		Kind: e.Kind(), ID: m.ID, Version: m.Version, Origin: Origin(), Scope: ix.Scope, Partition: ix.Partition, Unique: ix.Unique,
+		Fields: ix.Fields, Data: data, Expires: ix.Expires,
 	}, nil
 }
 
@@ -158,14 +158,14 @@ func (t *Table[T, PT]) GetByUnique(ctx context.Context, value string) (PT, error
 }
 
 // Put creates or replaces the entity, stamping a new version (and ID/Created when unset). The entity's version is
-// the stored one afterwards (a quorum write stamps its own).
+// the stored one afterwards (the owner of a partition stamps its own).
 func (t *Table[T, PT]) Put(ctx context.Context, e PT) error {
 	r, err := Encode(e)
 	if err != nil {
 		return err
 	}
 	err = t.S.Put(ctx, r)
-	if Applied(err) {
+	if err == nil {
 		e.GetMeta().Version = r.Version
 	}
 	return err
@@ -179,7 +179,7 @@ func (t *Table[T, PT]) Create(ctx context.Context, e PT) error {
 		return err
 	}
 	err = t.S.CompareAndPut(ctx, r, 0)
-	if Applied(err) {
+	if err == nil {
 		e.GetMeta().Version = r.Version
 	}
 	return err
@@ -194,7 +194,7 @@ func (t *Table[T, PT]) Update(ctx context.Context, e PT) error {
 		return err
 	}
 	err = t.S.CompareAndPut(ctx, r, expect)
-	if !Applied(err) {
+	if err != nil {
 		e.GetMeta().Version = expect
 		return err
 	}

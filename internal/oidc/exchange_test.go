@@ -29,6 +29,7 @@ func withExchange(in *service.ClientInput) {
 }
 
 func TestTokenExchangeByResourceServer(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	app, asecret := h.newClient(nil)
 	r, _ := h.login(app, asecret, url.Values{"scope": {"openid profile email api offline_access"}})
@@ -87,6 +88,7 @@ func TestTokenExchangeByResourceServer(t *testing.T) {
 }
 
 func TestTokenExchangeRules(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	app, asecret := h.newClient(withExchange)
 	r, _ := h.login(app, asecret, url.Values{"scope": {"openid profile email api offline_access"}})
@@ -165,6 +167,7 @@ func TestTokenExchangeRules(t *testing.T) {
 }
 
 func TestActDepthLimit(t *testing.T) {
+	t.Parallel()
 	c := &model.Client{Meta: model.Meta{ID: "c"}}
 	act := ""
 	for i := range maxActDepth {

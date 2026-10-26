@@ -25,18 +25,8 @@ import (
 // Factory returns a new, empty store.
 type Factory func(t testing.TB) store.Store
 
-// Options relax the suite for stores configured without a change feed.
-type Options struct {
-	// NoFeed skips the tests that read the change feed (Changes, ChangesIncludeReplicated, ConcurrentChangesOrder).
-	// Everything else, including the feed-free parts of Purge, still runs.
-	NoFeed bool
-}
-
 // Run runs every conformance test.
-func Run(t *testing.T, f Factory) { RunWithOptions(t, f, Options{}) }
-
-// RunWithOptions runs the conformance tests with the given relaxations.
-func RunWithOptions(t *testing.T, f Factory, opt Options) {
+func Run(t *testing.T, f Factory) {
 	tests := []struct {
 		name string
 		fn   func(*testing.T, store.Store)
@@ -52,6 +42,7 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"Expiry", testExpiry},
 		{"ListScopeAndTotal", testListScope},
 		{"ListSearch", testListSearch},
+		{"ListFoldsUnicodeAndTags", testListFolding},
 		{"ListFilters", testListFilters},
 		{"ListFilterOperators", testListFilterOps},
 		{"ListIndexedFilters", testListIndexed},
@@ -60,35 +51,25 @@ func RunWithOptions(t *testing.T, f Factory, opt Options) {
 		{"ListSort", testListSort},
 		{"ListPaging", testListPaging},
 		{"ListPlainScanLarge", testPlainScanLarge},
+		{"ListPlainScanSkipsExpired", testPlainScanSkipsExpired},
 		{"ListAfter", testListAfter},
 		{"WriteAfterFasterClock", testWriteAfterFasterClock},
 		{"EphemeralShared", testEphemeralShared},
 		{"ListBadQuery", testBadQuery},
 		{"Count", testCount},
-		{"ReplicatedLWW", testReplicatedLWW},
-		{"ReplicatedTombstoneWinsTie", testReplicatedTombstoneTie},
-		{"ReplicatedTombstoneDominates", testReplicatedTombstoneDominates},
-		{"QuorumTombstoneRanksByVersion", testQuorumTombstoneRanksByVersion},
+		{"PutReplicated", testPutReplicated},
+		{"PutReplicatedUnique", testPutReplicatedUnique},
 		{"LocalWriteOverTombstone", testLocalWriteOverTombstone},
-		{"ReplicatedOriginTie", testReplicatedOriginTie},
-		{"ReplicatedUniqueClash", testReplicatedUniqueClash},
-		{"Changes", testChanges},
-		{"ChangesIncludeReplicated", testChangesReplicated},
 		{"FeedID", testFeedID},
 		{"Purge", testPurge},
 		{"ConcurrentCompareAndPut", testConcurrentCAS},
-		{"ConcurrentChangesOrder", testConcurrentChanges},
 		{"ConcurrentUniqueClaim", testConcurrentUniqueClaim},
-		{"ConcurrentRewritesFeed", testConcurrentRewritesFeed},
 		{"KindsIsolated", testKindsIsolated},
+		{"Wipe", testWipe},
+		{"Snapshot", testSnapshot},
 	}
-	feedTests := map[string]bool{"Changes": true, "ChangesIncludeReplicated": true, "ConcurrentChangesOrder": true,
-		"ConcurrentRewritesFeed": true}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if opt.NoFeed && feedTests[tc.name] {
-				t.Skip("change feed disabled")
-			}
 			s := f(t)
 			defer s.Close()
 			tc.fn(t, s)
@@ -188,8 +169,8 @@ func testUnique(t *testing.T, s store.Store) {
 	if err := tb.Put(ctx, dup); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("want ErrConflict, got %v", err)
 	}
-	if _, err := tb.Get(ctx, dup.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatal("conflicting record must not be written")
+	if _, err := s.Lookup(ctx, model.KindUser, dup.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("conflicting record must not be written: %v", err)
 	}
 	// Same name in another org is fine.
 	must(t, tb.Put(ctx, newUser("org2", "dave")))
@@ -281,6 +262,22 @@ func testCompareAndPut(t *testing.T, s store.Store) {
 	if err := s.CompareAndPut(ctx, r, 12345); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
+	// An expectation ahead of the stored version is stale, and so is a version not above the expected one.
+	cur, err := s.Get(ctx, model.KindUser, u.ID)
+	must(t, err)
+	c := *got
+	next, _ := store.Encode(&c)
+	if err := s.CompareAndPut(ctx, next, cur.Version+1); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("expectation ahead of the stored version: want ErrStale, got %v", err)
+	}
+	same, _ := store.EncodeAsIs(got)
+	same.Version = cur.Version
+	if err := s.CompareAndPut(ctx, same, cur.Version); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("a version not above the expected one: want ErrStale, got %v", err)
+	}
+	if now, _ := s.Get(ctx, model.KindUser, u.ID); now.Version != cur.Version {
+		t.Fatalf("a refused CompareAndPut changed the record: version %d, was %d", now.Version, cur.Version)
+	}
 	// Unique clash on update.
 	other := newUser("org1", "ivy")
 	must(t, tb.Put(ctx, other))
@@ -309,9 +306,16 @@ func testExpiry(t *testing.T, s store.Store) {
 	if n != 1 {
 		t.Fatalf("count includes expired: %d", n)
 	}
-	// An expired record does not hold unique values.
-	tok := &model.Passkey{UserID: "u1", OrgID: "o1", CredentialID: []byte("cred"), Name: "a"}
-	must(t, store.NewTable[model.Passkey](s).Put(ctx, tok))
+	// An expired record does not hold its unique values: another record may claim them.
+	link := func(id string, expires time.Time) *store.Record {
+		return &store.Record{Kind: model.KindLink, ID: id, Version: store.Clock.Now(), Origin: "n", Scope: "u1",
+			Unique: []string{"exp/token"}, Data: []byte("x"), Expires: expires}
+	}
+	must(t, s.Put(ctx, link("old", time.Now().Add(-time.Second))))
+	must(t, s.Put(ctx, link("new", time.Time{})))
+	if h, err := s.GetByUnique(ctx, model.KindLink, "exp/token"); err != nil || h.ID != "new" {
+		t.Fatalf("holder of an expired record's unique value: %v %v", h, err)
+	}
 }
 
 func seedUsers(t testing.TB, s store.Store, org string, n int) []*model.User {
@@ -359,6 +363,34 @@ func testListSearch(t *testing.T, s store.Store) {
 		must(t, err)
 		if total != want {
 			t.Errorf("search %q: got %d want %d", q, total, want)
+		}
+	}
+}
+
+// testListFolding: searches, prefix filters and sorts fold case beyond ASCII ("É" as "é"), and a word of a word-list
+// field matches whatever its case and wherever it is in the list, as the shared query evaluation does.
+func testListFolding(t *testing.T, s store.Store) {
+	for _, name := range []string{"Zoé", "Émile", "ella"} {
+		u := newUser("org1", name)
+		u.GivenName = name
+		must(t, users(s).Put(ctx, u))
+	}
+	for i, tags := range [][]string{{"Staff"}, {"Staff", "other"}, {"other", "Staff"}, {"other"}} {
+		u := newUser("org1", fmt.Sprintf("tagged%d", i))
+		u.Tags = tags
+		must(t, users(s).Put(ctx, u))
+	}
+	for _, q := range []store.ListQuery{
+		{Scope: "org1", Search: "é"},
+		{Scope: "org1", Search: "ÉMI"},
+		{Scope: "org1", Filters: []store.Filter{{Field: "username", Op: store.OpPrefix, Value: "émi"}}},
+		{Scope: "org1", Sort: "username"},
+		{Scope: "org1", Sort: "name", Desc: true},
+		{Scope: "org1", Filters: []store.Filter{{Field: "tags", Value: "staff"}}},
+	} {
+		got := CheckAgainstApplyQuery(t, s, model.KindUser, q)
+		if got.Total == 0 {
+			t.Errorf("%+v matched nothing", q)
 		}
 	}
 }
@@ -572,6 +604,48 @@ func testPlainScanLarge(t *testing.T, s store.Store) {
 	}
 }
 
+// testPlainScanSkipsExpired: expired records still stored are left out of offsets, limits and totals in both directions
+// (in a scope with LIKE wildcards, which are literal), and Purge removes them without changing the count.
+func testPlainScanSkipsExpired(t *testing.T, s store.Store) {
+	tb := store.NewTable[model.Session](s)
+	var live []string
+	for i := range 8 {
+		ss := &model.Session{UserID: "u/1%", OrgID: "o", Expires: time.Now().Add(time.Hour)}
+		if i == 1 || i == 4 || i == 5 {
+			ss.Expires = time.Now().Add(-time.Minute)
+		}
+		must(t, tb.Put(ctx, ss))
+		if ss.Expires.After(time.Now()) {
+			live = append(live, ss.ID)
+		}
+	}
+	must(t, tb.Put(ctx, &model.Session{UserID: "u/10", OrgID: "o", Expires: time.Now().Add(time.Hour)})) // matched by the wildcard
+	for _, desc := range []bool{false, true} {
+		list, total, err := tb.List(ctx, store.ListQuery{Scope: "u/1%", Desc: desc, Offset: 1, Limit: 3})
+		must(t, err)
+		want := live[1:4]
+		if desc {
+			want = []string{live[3], live[2], live[1]}
+		}
+		got := make([]string, len(list))
+		for i, ss := range list {
+			got[i] = ss.ID
+		}
+		if total != 5 || !slices.Equal(got, want) {
+			t.Fatalf("desc=%v: %v (total %d), want %v (total 5)", desc, got, total, want)
+		}
+	}
+	if n, err := s.Count(ctx, model.KindSession, ""); err != nil || n != 6 {
+		t.Fatalf("count all %d %v", n, err)
+	}
+	if n, err := s.Purge(ctx, time.Now(), time.Now()); err != nil || n != 3 {
+		t.Fatalf("purge %d %v", n, err)
+	}
+	if n, err := s.Count(ctx, model.KindSession, "u/1%"); err != nil || n != 5 {
+		t.Fatalf("count after purge %d %v", n, err)
+	}
+}
+
 // testListAfter pages by key through a scope that changes between pages: records deleted behind the cursor do not
 // make the scan skip any, expired records are left out without ending a page early, and every record that existed
 // throughout is seen exactly once, in ID order.
@@ -694,16 +768,16 @@ func testEphemeralShared(t *testing.T, s store.Store) {
 		t.Fatalf("counter after 20 increments on two nodes: %d %v", n, err)
 	}
 	// expiry and delete
-	short, err := a.New(ctx, "flow", []byte("x"), 50*time.Millisecond)
+	short, err := a.New(ctx, "flow", []byte("x"), 20*time.Millisecond)
 	must(t, err)
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 	if _, err := b.Get(ctx, "flow", short); !errors.Is(err, ephemeral.ErrNotFound) {
 		t.Fatalf("expired value: %v", err)
 	}
-	if n, err := a.Incr(ctx, "rate", "window", 5, 50*time.Millisecond); err != nil || n != 5 {
+	if n, err := a.Incr(ctx, "rate", "window", 5, 20*time.Millisecond); err != nil || n != 5 {
 		t.Fatal(n, err)
 	}
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 	if n, err := a.Incr(ctx, "rate", "window", 1, time.Minute); err != nil || n != 1 {
 		t.Fatalf("counter did not restart after its window: %d %v", n, err)
 	}
@@ -797,24 +871,9 @@ func testListIndexed(t *testing.T, s store.Store) {
 			GroupID: fmt.Sprintf("g%d", i%3), UserID: fmt.Sprintf("u%d", i%4), OrgID: "org1"}
 		must(t, members.Put(ctx, m))
 	}
-	ids := func(recs []*store.Record) []string {
-		out := make([]string, len(recs))
-		for i, r := range recs {
-			out[i] = r.ID
-		}
-		return out
-	}
 	check := func(kind model.Kind, q store.ListQuery) {
 		t.Helper()
-		all, err := s.List(ctx, kind, store.ListQuery{})
-		must(t, err)
-		want, err := store.ApplyQuery(kind, all.Records, q)
-		must(t, err)
-		got, err := s.List(ctx, kind, q)
-		must(t, err)
-		if !slices.Equal(ids(got.Records), ids(want.Records)) || got.Total != want.Total {
-			t.Errorf("%s %+v:\n got %d %v\nwant %d %v", kind, q, got.Total, ids(got.Records), want.Total, ids(want.Records))
-		}
+		CheckAgainstApplyQuery(t, s, kind, q)
 	}
 	f := func(field string, v any) store.Filter { return store.Filter{Field: field, Value: v} }
 	org1, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org1"})
@@ -871,24 +930,9 @@ func testListIndexed(t *testing.T, s store.Store) {
 // sort first), case folding, a kind without scopes (organizations), time fields, and after the records move in the
 // order (updates) or leave it (deletions).
 func testListSortIndexes(t *testing.T, s store.Store) {
-	ids := func(recs []*store.Record) []string {
-		out := make([]string, len(recs))
-		for i, r := range recs {
-			out[i] = r.ID
-		}
-		return out
-	}
 	check := func(kind model.Kind, q store.ListQuery) {
 		t.Helper()
-		all, err := s.List(ctx, kind, store.ListQuery{})
-		must(t, err)
-		want, err := store.ApplyQuery(kind, all.Records, q)
-		must(t, err)
-		got, err := s.List(ctx, kind, q)
-		must(t, err)
-		if !slices.Equal(ids(got.Records), ids(want.Records)) || got.Total != want.Total {
-			t.Errorf("%s %+v:\n got %d %v\nwant %d %v", kind, q, got.Total, ids(got.Records), want.Total, ids(want.Records))
-		}
+		CheckAgainstApplyQuery(t, s, kind, q)
 	}
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	us := make([]*model.User, 0, 40)
@@ -965,206 +1009,101 @@ func replica(u *model.User, version hlc.Timestamp, origin string) *store.Record 
 	return r
 }
 
-func testReplicatedLWW(t *testing.T, s store.Store) {
+func testPutReplicated(t *testing.T, s store.Store) {
 	u := newUser("org1", "jack")
 	u.ID = model.NewID()
-	v := store.Clock.Now()
+	v := store.Clock.Now() + 1000
 	u.GivenName = "v2"
-	ok, _, err := s.PutReplicated(ctx, replica(u, v+10, "n1"))
+	r := replica(u, v+10, "n1")
+	r.Epoch = v - 3 // a generation: kept as sent
+	ok, err := s.PutReplicated(ctx, r)
 	must(t, err)
 	if !ok {
-		t.Fatal("first apply rejected")
+		t.Fatalf("first apply: %v", ok)
 	}
+	got, err := s.Get(ctx, model.KindUser, u.ID)
+	must(t, err)
+	if got.Version != v+10 || got.Origin != "n1" || got.Epoch != v-3 || got.Created != v+10 || got.Partition != "org1" {
+		t.Fatalf("stored as sent: %+v", got)
+	}
+	// The same or an older version is not applied; a newer one is.
 	u.GivenName = "v1"
-	ok, _, _ = s.PutReplicated(ctx, replica(u, v+5, "n1"))
-	if ok {
-		t.Fatal("older version applied")
+	if ok, err := s.PutReplicated(ctx, replica(u, v+5, "n1")); err != nil || ok {
+		t.Fatalf("older version: %v %v", ok, err)
 	}
-	ok, _, _ = s.PutReplicated(ctx, replica(u, v+10, "n1"))
-	if ok {
-		t.Fatal("identical replay applied")
+	if ok, err := s.PutReplicated(ctx, replica(u, v+10, "n2")); err != nil || ok {
+		t.Fatalf("the same version: %v %v", ok, err)
 	}
-	got, _ := users(s).Get(ctx, u.ID)
-	if got.GivenName != "v2" {
-		t.Fatal("LWW violated")
+	if g, _ := users(s).Get(ctx, u.ID); g.GivenName != "v2" {
+		t.Fatalf("an older record replaced a newer one: %q", g.GivenName)
 	}
-	// The local clock witnessed the remote version: the next local write dominates.
-	if store.Clock.Now() <= v+10 {
+	u.GivenName = "v3"
+	if ok, err := s.PutReplicated(ctx, replica(u, v+20, "n1")); err != nil || !ok {
+		t.Fatalf("newer version: %v %v", ok, err)
+	}
+	// The local clock witnessed the version: the next local write is above it.
+	if store.Clock.Now() <= v+20 {
 		t.Fatal("clock did not witness")
 	}
-}
-
-func testReplicatedTombstoneTie(t *testing.T, s store.Store) {
-	u := newUser("org1", "kim")
-	u.ID = model.NewID()
-	v := store.Clock.Now() + 100
-	_, _, err := s.PutReplicated(ctx, replica(u, v, "n1"))
-	must(t, err)
-	ok, _, _ := s.PutReplicated(ctx, &store.Record{Kind: model.KindUser, ID: u.ID, Version: v, Origin: "n0", Deleted: true})
-	if !ok {
-		t.Fatal("tombstone at equal version must win")
+	// A newer tombstone replaces it, and then an older record is not applied over it (tombstones count).
+	del := &store.Record{Kind: model.KindUser, ID: u.ID, Version: v + 30, Origin: "n2", Deleted: true}
+	if ok, err := s.PutReplicated(ctx, del); err != nil || !ok {
+		t.Fatalf("tombstone: %v %v", ok, err)
 	}
-	ok, _, _ = s.PutReplicated(ctx, replica(u, v, "n9"))
-	if ok {
-		t.Fatal("value must not beat tombstone at equal version")
+	if ok, err := s.PutReplicated(ctx, replica(u, v+25, "n1")); err != nil || ok {
+		t.Fatalf("a record older than the tombstone: %v %v", ok, err)
 	}
 	if _, err := users(s).Get(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("record resurrected")
 	}
-}
-
-func testReplicatedOriginTie(t *testing.T, s store.Store) {
-	u := newUser("org1", "lee")
-	u.ID = model.NewID()
-	v := store.Clock.Now() + 100
-	u.GivenName = "from-b"
-	_, _, _ = s.PutReplicated(ctx, replica(u, v, "b"))
-	u.GivenName = "from-a"
-	if ok, _, _ := s.PutReplicated(ctx, replica(u, v, "a")); ok {
-		t.Fatal("lower origin must lose a tie")
+	if ok, err := s.PutReplicated(ctx, replica(u, v+40, "n1")); err != nil || !ok {
+		t.Fatalf("a record newer than the tombstone: %v %v", ok, err)
 	}
-	u.GivenName = "from-c"
-	if ok, _, _ := s.PutReplicated(ctx, replica(u, v, "c")); !ok {
-		t.Fatal("higher origin must win a tie")
-	}
-	got, _ := users(s).Get(ctx, u.ID)
-	if got.GivenName != "from-c" {
-		t.Fatal(got.GivenName)
+	if _, err := users(s).Get(ctx, u.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func testReplicatedUniqueClash(t *testing.T, s store.Store) {
-	// Local record created first keeps the email; a record created later elsewhere loses it (and is kept).
+// A unique value another live record holds is refused (ErrConflict) and nothing of the record is stored; a deleted
+// record, or one that no longer lists the value, holds nothing.
+func testPutReplicatedUnique(t *testing.T, s store.Store) {
 	tb := users(s)
 	first := newUser("org1", "mia")
 	must(t, tb.Put(ctx, first))
 	second := newUser("org1", "mia2")
 	second.Email = first.Email
 	second.ID = model.NewID()
-	ok, losers, err := s.PutReplicated(ctx, replica(second, store.Clock.Now(), "zz"))
-	must(t, err)
-	if !ok || len(losers) != 1 || losers[0] != second.ID {
-		t.Fatalf("newer clashing record must be stored and reported as loser: ok=%v losers=%v", ok, losers)
+	ok, err := s.PutReplicated(ctx, replica(second, store.Clock.Now(), "zz"))
+	if !errors.Is(err, store.ErrConflict) || ok {
+		t.Fatalf("a clashing record: ok=%v err=%v", ok, err)
 	}
-	got, _ := tb.GetByUnique(ctx, model.UserEmailKey("org1", first.Email))
-	if got == nil || got.ID != first.ID {
-		t.Fatal("first writer must keep the unique value")
+	if _, err := tb.Get(ctx, second.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("a refused record was stored")
 	}
-	if _, err := tb.Get(ctx, second.ID); err != nil {
-		t.Fatal("loser must still be stored")
+	if got, _ := tb.GetByUnique(ctx, model.UserEmailKey("org1", first.Email)); got == nil || got.ID != first.ID {
+		t.Fatal("the holder lost its value")
 	}
-	// Its other unique values are still indexed.
-	if g, _ := tb.GetByUnique(ctx, model.UserUsernameKey("org1", "mia2")); g == nil || g.ID != second.ID {
-		t.Fatal("loser's non-clashing unique values must be indexed")
+	if _, err := tb.GetByUnique(ctx, model.UserUsernameKey("org1", "mia2")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("a refused record's other unique values were indexed")
 	}
-
-	// A record created earlier elsewhere takes the value from one created later here.
-	third := newUser("org1", "noah")
-	must(t, tb.Put(ctx, third))
-	older := newUser("org1", "noah-old")
-	older.Email = third.Email
-	older.ID = model.NewID()
-	ok, losers, err = s.PutReplicated(ctx, replica(older, third.Version-1, "aa"))
-	must(t, err)
-	if !ok || len(losers) != 1 || losers[0] != third.ID {
-		t.Fatalf("older record must win the value: ok=%v losers=%v", ok, losers)
+	// Once the holder is deleted the value is free.
+	must(t, tb.Delete(ctx, first.ID))
+	if ok, err := s.PutReplicated(ctx, replica(second, store.Clock.Now(), "zz")); err != nil || !ok {
+		t.Fatalf("a value its holder released: %v %v", ok, err)
 	}
-	got, _ = tb.GetByUnique(ctx, model.UserEmailKey("org1", third.Email))
-	if got == nil || got.ID != older.ID {
-		t.Fatal("unique value must move to the older record")
+	if got, _ := tb.GetByUnique(ctx, model.UserEmailKey("org1", first.Email)); got == nil || got.ID != second.ID {
+		t.Fatal("the value did not move to the new holder")
 	}
-	// A long-standing record updated now (newer version, created long ago) keeps its value against a record created
-	// meanwhile: the first claim wins, not the last write.
-	fourth := newUser("org1", "olive")
-	must(t, tb.Put(ctx, fourth))
-	fourth.GivenName = "signed in"
-	must(t, tb.Update(ctx, fourth))
-	scim := newUser("org1", "olive-scim")
-	scim.Email = fourth.Email
-	scim.ID = model.NewID()
-	created := store.Clock.Now()
-	rs := replica(scim, created, "zz")
-	ok, losers, err = s.PutReplicated(ctx, rs)
-	must(t, err)
-	if !ok || len(losers) != 1 || losers[0] != scim.ID {
-		t.Fatalf("a record created later must lose the value: ok=%v losers=%v", ok, losers)
-	}
-	fourth.GivenName = "updated again"
-	must(t, tb.Update(ctx, fourth)) // newer than the clashing record: still keeps it
-	if got, _ := tb.GetByUnique(ctx, model.UserEmailKey("org1", fourth.Email)); got == nil || got.ID != fourth.ID {
-		t.Fatal("the long-standing record lost its unique value")
-	}
-	if _, err := tb.Get(ctx, scim.ID); err != nil {
-		t.Fatal("the record that lost the value must be kept")
-	}
-	// The loser releasing the value later (tombstone) must not disturb the winner.
-	must(t, tb.Delete(ctx, third.ID))
-	got, _ = tb.GetByUnique(ctx, model.UserEmailKey("org1", third.Email))
-	if got == nil || got.ID != older.ID {
-		t.Fatal("tombstoning the loser removed the winner's unique value")
-	}
-}
-
-func testChanges(t *testing.T, s store.Store) {
-	tb := users(s)
-	a := newUser("org1", "olga")
-	b := newUser("org1", "pete")
-	must(t, tb.Put(ctx, a))
-	must(t, tb.Put(ctx, b))
-	a.GivenName = "changed"
-	must(t, tb.Put(ctx, a))
-	must(t, tb.Delete(ctx, b.ID))
-
-	ch, next, err := s.Changes(ctx, 0, 0)
-	must(t, err)
-	if len(ch) != 2 {
-		t.Fatalf("latest change per record only: got %d", len(ch))
-	}
-	if ch[0].Record.ID != a.ID || ch[1].Record.ID != b.ID || !ch[1].Record.Deleted {
-		t.Fatal("changes not in seq order or tombstone missing")
-	}
-	if ch[0].Seq >= ch[1].Seq || next != ch[1].Seq {
-		t.Fatal("seq not increasing / next wrong")
-	}
-	if len(ch[0].Record.Data) == 0 || ch[0].Record.Version != a.Version || ch[0].Record.Origin == "" {
-		t.Fatal("change record incomplete")
-	}
-	ch, next2, _ := s.Changes(ctx, next, 0)
-	if len(ch) != 0 || next2 != next {
-		t.Fatal("no new changes expected")
-	}
-	c := newUser("org1", "quin")
-	must(t, tb.Put(ctx, c))
-	ch, _, _ = s.Changes(ctx, next, 0)
-	if len(ch) != 1 || ch[0].Record.ID != c.ID {
-		t.Fatal("incremental change missing")
-	}
-	// Limit.
-	seedUsers(t, s, "org2", 10)
-	ch, n1, _ := s.Changes(ctx, 0, 4)
-	if len(ch) != 4 {
-		t.Fatalf("limit: %d", len(ch))
-	}
-	ch2, _, _ := s.Changes(ctx, n1, 4)
-	if len(ch2) != 4 || ch2[0].Seq <= n1 {
-		t.Fatal("paging changes")
-	}
-}
-
-func testChangesReplicated(t *testing.T, s store.Store) {
-	u := newUser("org1", "rita")
-	u.ID = model.NewID()
-	_, _, err := s.PutReplicated(ctx, replica(u, store.Clock.Now(), "n7"))
-	must(t, err)
-	ch, _, _ := s.Changes(ctx, 0, 0)
-	if len(ch) != 1 || ch[0].Record.Origin != "n7" {
-		t.Fatal("replicated applies must appear in the feed with their origin")
+	// A record keeps its own values when it is applied again at a newer version.
+	second.GivenName = "again"
+	if ok, err := s.PutReplicated(ctx, replica(second, store.Clock.Now(), "zz")); err != nil || !ok {
+		t.Fatalf("a newer version of the holder: %v %v", ok, err)
 	}
 }
 
 func testFeedID(t *testing.T, s store.Store) {
 	if s.FeedID() == "" || s.FeedID() != s.FeedID() {
-		t.Fatal("feed id must be stable and non-empty")
+		t.Fatal("the store's identity must be stable and non-empty")
 	}
 }
 
@@ -1188,12 +1127,6 @@ func testPurge(t *testing.T, s store.Store) {
 	must(t, err)
 	if n != 2 {
 		t.Fatalf("purged %d want 2", n)
-	}
-	ch, _, _ := s.Changes(ctx, 0, 0)
-	for _, c := range ch {
-		if c.Record.ID == a.ID || c.Record.ID == gone.ID {
-			t.Fatal("purged record still in feed")
-		}
 	}
 	// A purged tombstone no longer blocks an older replicated write (the cluster layer guards that case).
 	if _, err := st.Get(ctx, keep.ID); err != nil {
@@ -1223,51 +1156,6 @@ func testConcurrentCAS(t *testing.T, s store.Store) {
 	wg.Wait()
 	if wins.Load() != 1 {
 		t.Fatalf("exactly one concurrent update must win, got %d", wins.Load())
-	}
-}
-
-func testConcurrentChanges(t *testing.T, s store.Store) {
-	var wg sync.WaitGroup
-	for w := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range 25 {
-				if err := users(s).Put(ctx, newUser(fmt.Sprintf("org%d", w), fmt.Sprintf("u%d", i))); err != nil {
-					t.Error(err)
-				}
-			}
-		}()
-	}
-	// Concurrently follow the feed: every record must be seen exactly once, cursor never skipping.
-	seen := map[string]bool{}
-	var cursor uint64
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	follow := func() {
-		for {
-			ch, next, err := s.Changes(ctx, cursor, 7)
-			must(t, err)
-			for _, c := range ch {
-				seen[c.Record.ID] = true
-			}
-			cursor = next
-			if len(ch) == 0 {
-				return
-			}
-		}
-	}
-	for running := true; running; {
-		select {
-		case <-done:
-			running = false
-		default:
-			follow()
-		}
-	}
-	follow()
-	if len(seen) != 200 {
-		t.Fatalf("feed follower saw %d of 200 records", len(seen))
 	}
 }
 
@@ -1313,94 +1201,6 @@ func testConcurrentUniqueClaim(t *testing.T, s store.Store) {
 	for _, o := range others {
 		if _, err := tb.Get(ctx, o.ID); err != nil {
 			t.Fatalf("unrelated write lost: %v", err)
-		}
-	}
-}
-
-// Writers rewrite a few shared records while a follower reads the feed: sequence numbers are strictly increasing
-// within and across pages, and the follower's last view of every record is the stored one (no change is skipped by
-// the cursor).
-func testConcurrentRewritesFeed(t *testing.T, s store.Store) {
-	tb := users(s)
-	shared := make([]*model.User, 6)
-	for i := range shared {
-		shared[i] = newUser("org1", fmt.Sprintf("hot%d", i))
-		must(t, tb.Put(ctx, shared[i]))
-	}
-	var wg sync.WaitGroup
-	for w := range 12 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range 30 {
-				u := *shared[(w+i)%len(shared)]
-				u.GivenName = fmt.Sprintf("w%d-%d", w, i)
-				var err error
-				if i%2 == 0 {
-					err = tb.Put(ctx, &u)
-				} else {
-					cur, gerr := tb.Get(ctx, u.ID)
-					if gerr != nil {
-						t.Error(gerr)
-						return
-					}
-					cur.GivenName = u.GivenName
-					err = tb.Update(ctx, cur)
-				}
-				if err != nil && !errors.Is(err, store.ErrStale) {
-					t.Error(err)
-				}
-			}
-		}()
-	}
-	last := map[string]hlc.Timestamp{}
-	var cursor, prev uint64
-	follow := func() {
-		for {
-			ch, next, err := s.Changes(ctx, cursor, 5)
-			must(t, err)
-			for _, c := range ch {
-				if c.Seq <= prev {
-					t.Fatalf("seq %d after %d", c.Seq, prev)
-				}
-				prev = c.Seq
-				last[c.Record.ID] = c.Record.Version
-			}
-			if next < cursor {
-				t.Fatalf("cursor went back from %d to %d", cursor, next)
-			}
-			cursor = next
-			if len(ch) == 0 {
-				return
-			}
-		}
-	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	for running := true; running; {
-		select {
-		case <-done:
-			running = false
-		default:
-			follow()
-		}
-	}
-	follow()
-	for _, u := range shared {
-		r, err := s.Lookup(ctx, model.KindUser, u.ID)
-		must(t, err)
-		if last[u.ID] != r.Version {
-			t.Fatalf("follower last saw %s at %d, stored %d", u.ID, last[u.ID], r.Version)
-		}
-	}
-	all, _, err := s.Changes(ctx, 0, 0)
-	must(t, err)
-	if len(all) != len(shared) {
-		t.Fatalf("feed holds %d entries, want %d", len(all), len(shared))
-	}
-	for i := 1; i < len(all); i++ {
-		if all[i].Seq <= all[i-1].Seq {
-			t.Fatal("feed not in seq order")
 		}
 	}
 }

@@ -17,25 +17,6 @@ import (
 // exactly one wins. These tests take each flow through "start, change a credential, continue: refused" and the
 // enrolment commits through "two at once: one wins".
 
-// refused is the answer of a step whose ticket, link or confirmation no longer binds to the account.
-func refused(t *testing.T, res *http.Response, body map[string]any) {
-	t.Helper()
-	switch res.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusGone:
-	default:
-		t.Fatalf("status %d, want a refusal: %v", res.StatusCode, body["_raw"])
-	}
-}
-
-func (e *env) securityGen(t *testing.T, id string) uint64 {
-	t.Helper()
-	u, err := e.Svc.Users.Get(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u.SecurityGen
-}
-
 // A ticket at the authenticator-code step dies with a password change: the code is right, the sign-in is not.
 func TestSecondFactorTicketDiesWithPasswordChange(t *testing.T) {
 	e := newEnv(t, nil)
@@ -133,43 +114,68 @@ func TestRecoveryStepDiesWhenCodesAreRemade(t *testing.T) {
 	}
 }
 
-// Enrolment is for an account with no second factor: a ticket issued before the owner set one up (from another
-// browser) cannot begin or finish one, and a ticket at the current generation for an account that has a passkey is
-// refused outright.
+// A sign-in that must enrol a factor cannot replace one the account got meanwhile (its owner set one up elsewhere), with
+// the ticket it already held or with one minted now.
 func TestEnrolmentRefusedOnceAFactorIsEstablished(t *testing.T) {
-	e := newEnv(t, nil)
-	org := e.org(t, "acme", func(s *model.OrgSettings) { s.RequireMFA = true })
-	user := e.user(t, org, "pat", model.RoleUser)
-	pending, owner := e.browser(t), e.browser(t)
-	_, first := pending.login("acme", "pat", userPassword)
-	ticket := str(first, "ticket")
-	_, second := owner.login("acme", "pat", userPassword)
-	res, begin := owner.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": str(second, "ticket")})
-	wantStatus(t, res, begin, 200)
-	opts, _ := json.Marshal(begin["options"])
-	cred, _, err := owner.auth.Create(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, out := owner.post("/api-internal/login/enrol/passkey/finish", map[string]any{"ticket": str(second, "ticket"),
-		"challenge": begin["challenge"], "name": "Laptop", "credential": json.RawMessage(cred)})
-	wantStatus(t, res, out, 200)
-	if !owner.hasSession() {
-		t.Fatal("owner not signed in")
-	}
-	res, out = pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
-	refused(t, res, out)
-	res, out = pending.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": ticket})
-	refused(t, res, out)
-	// a ticket minted now, at the current generation: still not for an account with a factor
-	tid, err := e.Mod.PutEnrolTicket(user.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, out = pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": tid})
-	wantStatus(t, res, out, 409)
-	if n, _ := e.Svc.Passkeys.Count(context.Background(), user.ID); n != 1 {
-		t.Fatalf("passkeys %d, want 1", n)
+	// A factor set up through the sign-in flow moves the account's security generation, which ends the ticket held
+	// (401); one written straight to the account leaves the generation, so it is the factor that refuses (409).
+	for factor, stale := range map[string]int{"passkey": 401, "totp": 409} {
+		t.Run(factor, func(t *testing.T) {
+			e := newEnv(t, nil)
+			org := e.org(t, "acme", func(s *model.OrgSettings) { s.RequireMFA = true })
+			user := e.user(t, org, "pat", model.RoleUser)
+			pending, owner := e.browser(t), e.browser(t)
+			_, first := pending.login("acme", "pat", userPassword)
+			ticket := str(first, "ticket")
+			var secret string
+			if factor == "totp" {
+				e.giveTOTP(t, user)
+				u, _ := e.Svc.Users.Get(context.Background(), user.ID)
+				secret = u.TOTPSecret
+			} else {
+				_, second := owner.login("acme", "pat", userPassword)
+				res, begin := owner.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": str(second, "ticket")})
+				wantStatus(t, res, begin, 200)
+				opts, _ := json.Marshal(begin["options"])
+				cred, _, err := owner.auth.Create(opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, out := owner.post("/api-internal/login/enrol/passkey/finish", map[string]any{"ticket": str(second, "ticket"),
+					"challenge": begin["challenge"], "name": "Laptop", "credential": json.RawMessage(cred)})
+				wantStatus(t, res, out, 200)
+				if !owner.hasSession() {
+					t.Fatal("owner not signed in")
+				}
+			}
+			res, out := pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+			wantStatus(t, res, out, stale)
+			res, out = pending.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": ticket})
+			wantStatus(t, res, out, stale)
+			// a ticket minted now, at the current generation: still not for an account with a factor
+			tk, err := e.Mod.PutEnrolTicket(user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, out = pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": tk})
+			wantStatus(t, res, out, 409)
+			res, out = pending.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": tk})
+			wantStatus(t, res, out, 409)
+			if pending.hasSession() {
+				t.Fatal("session")
+			}
+			now, _ := e.Svc.Users.Get(context.Background(), user.ID)
+			if factor == "totp" && now.TOTPSecret != secret {
+				t.Fatal("the account's authenticator app was replaced")
+			}
+			wantPasskeys := 0
+			if factor == "passkey" {
+				wantPasskeys = 1
+			}
+			if n, _ := e.Svc.Passkeys.Count(context.Background(), user.ID); n != wantPasskeys {
+				t.Fatalf("passkeys %d, want %d", n, wantPasskeys)
+			}
+		})
 	}
 }
 
@@ -454,5 +460,30 @@ func TestSecurityGenerationFollowsAccountChanges(t *testing.T) {
 	_, out = b.api("GET", "/api-internal/account/reauth", nil)
 	if out["valid"] != true {
 		t.Fatal("own changes spent the re-authentication")
+	}
+}
+
+// The ticket of a sign-in that must enrol a factor dies with the password it was obtained with: after a password change it
+// cannot begin or finish an enrolment.
+func TestEnrolmentTicketDiesWithPasswordChange(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", func(s *model.OrgSettings) { s.RequireMFA = true })
+	user := e.user(t, org, "pat", model.RoleUser)
+	pending := e.browser(t)
+	_, first := pending.login("acme", user.Email, userPassword)
+	ticket := str(first, "ticket")
+	if str(first, "step") != "enrol" || ticket == "" {
+		t.Fatalf("setup: %v", first)
+	}
+	newPassword := "fresh forest orbit lantern 7"
+	if _, err := e.Svc.UpdateUser(context.Background(), service.System, user.ID, service.UserInput{Password: &newPassword}); err != nil {
+		t.Fatal(err)
+	}
+	res, body := pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	wantStatus(t, res, body, 401)
+	res, body = pending.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": "123456"})
+	wantStatus(t, res, body, 401)
+	if pending.hasSession() {
+		t.Fatal("a ticket obtained with the old password started a session after the password changed")
 	}
 }

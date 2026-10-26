@@ -43,7 +43,7 @@ func (m commandModule) invite(w http.ResponseWriter, r *http.Request) {
 	if !m.accept(w, r, &in) {
 		return
 	}
-	link, expires, err := InviteUser(r.Context(), m.a.Svc, in.Org, in.Email, in.BreakGlass)
+	link, expires, err := InviteUser(service.WithCommand(r.Context(), "invite", commandAuth), m.a.Svc, in.Org, in.Email, in.BreakGlass)
 	if err != nil {
 		status := http.StatusUnprocessableEntity
 		if errors.Is(err, service.ErrNotFound) {
@@ -82,9 +82,9 @@ func RemoteInvite(ctx context.Context, c *config.Config, server, caFile string, 
 }
 
 // Invite is "quisora invite": through the running server when the store is the node's own (BadgerDB or SQLite, or
-// any database of a gossip cluster: a write that bypassed the node would not be replicated) and a server answers at
-// server (or server.public_url); else into the store directly (a shared database, which every node reads, or the
-// store of a node that is stopped).
+// any database of a gossip cluster) and a server answers at server (or server.public_url); else into the store
+// directly (a shared database, which every node reads, or the store of a stopped node). A gossip cluster's data is
+// changed only through a running node: a write that bypassed the partition protocol would reach no other node.
 func Invite(ctx context.Context, c *config.Config, log logger.Logger, server, caFile string, insecure bool, orgName,
 	email string, breakGlass bool) (link string, expires time.Time, how string, err error) {
 	if server != "" || !c.SharedStorage() || c.Replicate() {
@@ -94,6 +94,10 @@ func Invite(ctx context.Context, c *config.Config, log logger.Logger, server, ca
 		}
 		if server != "" || !errors.Is(err, errServerDown) {
 			return "", time.Time{}, "", err
+		}
+		if c.Replicate() {
+			return "", time.Time{}, "", fmt.Errorf("%w: a gossip cluster's data is changed through a running node (start the "+
+				"nodes, or a majority of them, and run the command again)", err)
 		}
 	}
 	link, expires, err = IssueInvite(ctx, c, log, orgName, email, breakGlass)

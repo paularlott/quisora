@@ -36,25 +36,11 @@ const (
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
 	// every node of a cluster without gossip sees it. Never backed up or replicated.
 	KindEphemeral Kind = "eph"
+	// KindReservation claims a unique value that must be unique across organizations (GlobalUnique) in a cluster that
+	// replicates by partition: ID is the reserved key, the data names the record that holds it (Reservation). Written
+	// only by that cluster layer; shared-database and standalone stores never hold one.
+	KindReservation Kind = "resv"
 )
-
-// QuorumCAS reports whether writes of kind k are security-sensitive: in a replicated cluster each one is a
-// cluster-wide compare-and-swap that a majority of the nodes must confirm before it succeeds (see
-// docs/REPLICATION.md, "Quorum compare-and-swap"), so a concurrent change made on another node from an older copy is
-// refused instead of overwriting it. Refresh grants are among them: rotating a refresh token advances the grant's
-// counter, and a node that had not seen the advance must not accept the old token. Invitation and reset links are
-// redeemed with one: a link is used once, whichever nodes it is presented to at once. Groups and memberships are too: a
-// group's record is the commit point of every change of its members (service.ChangeGroup), and its version is a
-// SCIM ETag that moves with its member list; the membership records are written with a sequence fence that must
-// hold across the cluster.
-func QuorumCAS(k Kind) bool {
-	switch k {
-	case KindUser, KindPasskey, KindAPIToken, KindClient, KindProvider, KindTenant, KindAccess, KindOrg, KindMember,
-		KindGroup, KindSignIn, KindLock, KindGrant, KindReplay, KindLink:
-		return true
-	}
-	return false
-}
 
 // Meta is embedded in every stored entity.
 type Meta struct {
@@ -62,10 +48,6 @@ type Meta struct {
 	Version hlc.Timestamp `msgpack:"v" json:"-"`
 	Created time.Time     `msgpack:"c" json:"created"`
 	Updated time.Time     `msgpack:"u" json:"updated"`
-	// Conflict is set when the cluster replicated this record and another one, created before it, claiming the
-	// same unique value (an email address, a name): the value was removed from this record (ReleaseUnique) and
-	// this says so, for administrators. Cleared by nothing: the audit log has the event too.
-	Conflict string `msgpack:"cf,omitempty" json:"conflict,omitempty"`
 }
 
 // GetMeta returns the entity's metadata; every entity gets it by embedding Meta.
@@ -77,6 +59,23 @@ type Index struct {
 	Unique  []string
 	Fields  map[string]any // values: string, int64, bool or time.Time
 	Expires time.Time
+	// Partition is the record's partition key: the records with one key are replicated, ordered and owned together
+	// (docs/design/partitioned-replication.md). The empty key is the global partition (partition 0); any other key is
+	// hashed to a partition by the cluster layer. A record never changes its key. Per kind:
+	//
+	//   - everything scoped to an organization (an entity with an OrgID: users, groups, memberships, tenants, access,
+	//     clients, providers, passkeys, identities, sessions, grants, API tokens, audit events, link tokens, sign-in
+	//     records): the OrgID, so an organization's records, and every unique value scoped to it, share a partition.
+	//     An entity whose OrgID is empty (a self-registered client, a server-level audit event) is global;
+	//   - KindOrg and KindKey (organizations, signing keys): "". They are read by every organization and by pages that
+	//     have no organization yet, and the organization list is one record set;
+	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
+	//     other, so they spread over the partitions instead of loading partition 0;
+	//   - KindReservation: the reserved key (the record's ID), so the load of claiming global unique values spreads and
+	//     the owner of the key's partition is the one place its claim is decided;
+	//   - KindEphemeral: "". It is node-local (or shared-database) state that is never replicated by partition, so the
+	//     key is never used.
+	Partition string
 }
 
 // Due reports when a housekeeping job must look at a record of kind k with index fields f, and whether it must at
@@ -169,19 +168,3 @@ const (
 // BootstrapVersion is the version of records written by bootstrap (see PrimaryOrgID): the smallest there is (the
 // clock's own epoch, counter 1). Every version any node mints is larger.
 const BootstrapVersion hlc.Timestamp = 1
-
-// IsBootstrapRecord reports whether a record is one bootstrap wrote and nobody has changed since. Peers accept such
-// a record although its version is older than the tombstone retention (it is not a deleted record coming back: its
-// version is the fixed bootstrap one).
-func IsBootstrapRecord(kind Kind, id string, version hlc.Timestamp) bool {
-	return version == BootstrapVersion && IsBootstrapID(kind, id)
-}
-
-// IsBootstrapID reports whether kind and id name one of the records "quisora bootstrap" creates, at any version.
-func IsBootstrapID(kind Kind, id string) bool {
-	switch {
-	case kind == KindOrg && id == PrimaryOrgID, kind == KindUser && id == BootstrapAdminID, kind == KindTenant && id == PrimaryTenantID:
-		return true
-	}
-	return false
-}

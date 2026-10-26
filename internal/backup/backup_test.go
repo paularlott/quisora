@@ -434,3 +434,66 @@ func TestBackupNamesTheKeysItsSecretsNeed(t *testing.T) {
 		t.Fatalf("without the old key: %v", err)
 	}
 }
+
+// The partition key of a record is a property of the entity, rebuilt from it at restore (like the other index values): no
+// backup format change, and every restored record has the key its entity gives, whichever backend restores it.
+func TestRestoreKeepsPartitionKey(t *testing.T) {
+	f := setup(t, 30)
+	ctx := f.ctx
+	res := store.NewTable[model.Reservation](f.src)
+	rv := &model.Reservation{Meta: model.Meta{ID: "res/https://api.example.com"}, HolderKind: model.KindTenant, HolderID: "t-1"}
+	if err := res.Put(ctx, rv); err != nil {
+		t.Fatal(err)
+	}
+	data := f.backup(t)
+	dst, err := sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "p.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	stats, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[model.KindReservation] != 1 {
+		t.Fatalf("the reservation is backed up: %v", stats)
+	}
+	checked := map[model.Kind]int{}
+	for _, k := range model.Kinds() {
+		for after := ""; ; {
+			page, err := f.src.List(ctx, k, store.ListQuery{After: after, Limit: 200})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Records) == 0 {
+				break
+			}
+			after = page.Records[len(page.Records)-1].ID
+			for _, want := range page.Records {
+				got, err := dst.Lookup(ctx, k, want.ID)
+				if err != nil {
+					t.Fatalf("%s %s not restored: %v", k, want.ID, err)
+				}
+				if got.Partition != want.Partition {
+					t.Errorf("%s %s: restored partition key %q, was %q", k, want.ID, got.Partition, want.Partition)
+				}
+				checked[k]++
+			}
+		}
+	}
+	if checked[model.KindUser] < 30 || checked[model.KindOrg] == 0 || checked[model.KindReservation] != 1 {
+		t.Fatalf("records checked: %v", checked)
+	}
+	u, err := dst.Get(ctx, model.KindUser, f.user.ID)
+	if err != nil || u.Partition != f.user.OrgID || u.Partition == "" {
+		t.Fatalf("a user's partition key is its organization: %v %+v", err, u)
+	}
+	o, err := dst.Get(ctx, model.KindOrg, f.user.OrgID)
+	if err != nil || o.Partition != "" {
+		t.Fatalf("an organization is global: %v %+v", err, o)
+	}
+	r, err := dst.Get(ctx, model.KindReservation, rv.ID)
+	if err != nil || r.Partition != rv.ID {
+		t.Fatalf("a reservation's key is the reserved key: %v %+v", err, r)
+	}
+}

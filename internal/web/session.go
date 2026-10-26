@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/paularlott/quisora/internal/evictgen"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -30,10 +30,9 @@ const (
 // cachedSession is never changed once it is in the cache (lookups read it without the lock): a newer copy of the
 // session replaces the whole entry.
 type cachedSession struct {
-	sess     *model.Session
-	user     *model.User
-	fetched  time.Time
-	touching atomic.Bool // one request records LastSeen; concurrent ones for the same entry skip it
+	sess    *model.Session
+	user    *model.User
+	fetched time.Time
 }
 
 // Sessions creates, looks up and ends browser sessions. Lookups are cached per node for a short time; Evict is
@@ -47,6 +46,10 @@ type Sessions struct {
 	cache    map[string]*cachedSession
 	byUser   map[string]map[string]struct{} // user id -> cached session ids, so evicting a user is O(their sessions)
 	swept    time.Time                      // when entries past CacheTTL were last dropped (mu)
+	// gens: a fill that began before an eviction is not stored after it (evictgen). Keys: the session id, and "u:" and
+	// the user id for evictions of a user.
+	gens     evictgen.Gens
+	touching sync.Map // session ids whose last use is being recorded: one write at a time per session
 }
 
 func NewSessions(svc *service.Service) *Sessions {
@@ -58,7 +61,11 @@ func (m *Sessions) Evict(sessionID, userID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if sessionID != "" {
+		m.gens.Bump(sessionID)
 		m.drop(sessionID)
+	}
+	if userID != "" {
+		m.gens.Bump("u:" + userID)
 	}
 	for id := range m.byUser[userID] {
 		m.drop(id)
@@ -179,11 +186,11 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 		s.Expires, s.IdleTTL, s.LastSeen = now.Add(time.Duration(ttl)*time.Second), idle, now
 		s.IP, s.UserAgent, s.CSRF = ClientIP(r), truncate(r.UserAgent(), 300), secure.RandomToken(24)
 		s.CookieHash = secure.HashSecret(secret)
-		err = m.svc.Sessions.Update(service.Durable(ctx), s)
+		err = m.svc.Sessions.Update(ctx, s)
 		if errors.Is(err, store.ErrStale) {
 			continue
 		}
-		if !store.Applied(err) {
+		if err != nil {
 			return nil, err
 		}
 		m.Evict(s.ID, "")
@@ -230,64 +237,91 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		cs = nil
 	}
 	if cs == nil || now.Sub(cs.fetched) > m.CacheTTL {
+		sessTok := m.gens.Token(id)
 		s, err := m.svc.Sessions.Get(ctx, id)
 		if err != nil {
 			m.Evict(id, "")
 			return nil, nil
 		}
+		userTok := m.gens.Token("u:" + s.UserID)
 		u, err := m.svc.Users.Get(ctx, s.UserID)
 		if err != nil {
 			return nil, nil
 		}
 		cs = &cachedSession{sess: s, user: u, fetched: now}
-		m.mu.Lock()
-		if now.Sub(m.swept) > m.CacheTTL {
-			// Entries past CacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
-			// use, not sessionCacheLimit of them.
-			m.swept = now
-			for k, c := range m.cache {
-				if now.Sub(c.fetched) > m.CacheTTL {
-					m.drop(k)
-				}
-			}
-		}
-		if len(m.cache) >= sessionCacheLimit {
-			for k := range m.cache { // drop an arbitrary tenth; cheap and bounded
-				m.drop(k)
-				if len(m.cache) < sessionCacheLimit*9/10 {
-					break
-				}
-			}
-		}
-		m.drop(id)
-		m.cache[id] = cs
-		set := m.byUser[u.ID]
-		if set == nil {
-			set = map[string]struct{}{}
-			m.byUser[u.ID] = set
-		}
-		set[id] = struct{}{}
-		m.mu.Unlock()
+		m.fill(id, cs, sessTok, userTok)
 	}
 	if ok, _ := m.svc.SessionUsable(ctx, cs.sess, cs.user); !ok { // (counters unreadable: not signed in, for now)
 		return nil, nil
 	}
 	if now.Sub(cs.sess.LastSeen) > lastSeenThrottle {
-		m.touch(ctx, cs)
+		m.touchLater(ctx, cs)
 	}
 	return cs.sess, cs.user
 }
 
-// touch records that the session is in use (best effort). A node that may not change replicated data now (catching
-// up, cut off from the majority) skips it: the session record is not changed here at all.
-func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
-	if !m.svc.CanWrite() || !cs.touching.CompareAndSwap(false, true) {
+// fill puts cs, read from the store, in the cache and makes room for it, unless the session or its user was evicted
+// since the tokens were taken (before the reads): what was read may predate the change that evicted it. It is then
+// served to the request that read it, as a read made a moment earlier would have been, and not kept.
+func (m *Sessions) fill(id string, cs *cachedSession, sessTok, userTok uint64) {
+	now, u := cs.fetched, cs.user
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.gens.Valid(id, sessTok) || !m.gens.Valid("u:"+u.ID, userTok) {
 		return
 	}
+	if now.Sub(m.swept) > m.CacheTTL {
+		// Entries past CacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
+		// use, not sessionCacheLimit of them.
+		m.swept = now
+		for k, c := range m.cache {
+			if now.Sub(c.fetched) > m.CacheTTL {
+				m.drop(k)
+			}
+		}
+	}
+	if len(m.cache) >= sessionCacheLimit {
+		for k := range m.cache { // drop an arbitrary tenth; cheap and bounded
+			m.drop(k)
+			if len(m.cache) < sessionCacheLimit*9/10 {
+				break
+			}
+		}
+	}
+	m.drop(id)
+	m.cache[id] = cs
+	set := m.byUser[u.ID]
+	if set == nil {
+		set = map[string]struct{}{}
+		m.byUser[u.ID] = set
+	}
+	set[id] = struct{}{}
+}
+
+// touchLater records that the session is in use, in the background: the request does not wait for a write (in a gossip
+// cluster, a round trip to the partition's owner and a majority) it does not need. One write at a time per session: a
+// request that finds one running (or a node that may not change replicated data now) skips it, and the next one
+// that finds the stamp old tries again.
+func (m *Sessions) touchLater(ctx context.Context, cs *cachedSession) {
+	id := cs.sess.ID
+	if !m.svc.CanWrite() {
+		return
+	}
+	if _, busy := m.touching.LoadOrStore(id, struct{}{}); busy {
+		return
+	}
+	m.svc.Background(ctx, func(ctx context.Context) {
+		defer m.touching.Delete(id)
+		m.touch(ctx, cs)
+	})
+}
+
+// touch writes the session's last use (best effort: a lost race or a failed write only delays it). It replaces the
+// cached entry with the written copy unless that was evicted or replaced meanwhile.
+func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
 	s := *cs.sess
 	s.LastSeen = time.Now().UTC()
-	if err := m.svc.Sessions.Update(context.WithoutCancel(ctx), &s); err != nil {
-		cs.touching.Store(false)
+	if err := m.svc.Sessions.Update(ctx, &s); err != nil {
 		return
 	}
 	m.mu.Lock()
@@ -341,12 +375,12 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 	}
 	for _, g := range grants {
 		if g.SessionID == id {
-			if err := m.svc.Grants.Delete(service.Durable(ctx), g.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			if err := m.svc.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, err))
 			}
 		}
 	}
-	if err := m.svc.Sessions.Delete(service.Durable(ctx), id); !store.Applied(err) && !errors.Is(err, store.ErrStale) &&
+	if err := m.svc.Sessions.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) &&
 		!errors.Is(err, context.Canceled) {
 		errs = append(errs, fmt.Errorf("end session: %w", err))
 	}

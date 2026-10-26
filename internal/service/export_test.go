@@ -21,3 +21,9 @@ func (s *Service) SweepAll(ctx context.Context) (int, error) {
 		}
 	}
 }
+
+// SelfRegRedirect reports whether a self-registered application may use uri as a redirect URI.
+var SelfRegRedirect = selfRegRedirect
+
+// WeakPassword is passwordcheck's test of a password against what it must not contain.
+var WeakPassword = weakPassword

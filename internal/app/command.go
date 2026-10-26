@@ -21,7 +21,7 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// Commands against a running server ("quisora invite"). Nobody may be able to sign in
+// Commands against a running server ("quisora invite", "quisora set-primary", "quisora sign-out"). Nobody may be able to sign in
 // (that is when break-glass is needed), so a command request is not authenticated by a session or a token: it is
 // signed with a key derived from the master key, the secret the offline command needs anyway. A request is good for
 // two minutes and once, and a node takes at most commandRequestsPerMin from one address.
@@ -30,6 +30,9 @@ const (
 	commandWindow         = 2 * time.Minute
 	commandRequestsPerMin = 10
 )
+
+// commandAuth is how the audit log says a command request was authenticated.
+const commandAuth = "request signed with the master key"
 
 // commandSig is the signed part every command request carries: when it was made, a single-use nonce, and the MAC of
 // the request's message (base64url).
@@ -73,6 +76,8 @@ type commandModule struct{ a *App }
 
 func (m commandModule) Register(s *web.Server) {
 	s.Mux.HandleFunc("POST "+commandInvitePath, m.invite)
+	s.Mux.HandleFunc("POST "+commandSetPrimaryPath, m.setPrimary)
+	s.Mux.HandleFunc("POST "+commandSignOutPath, m.signOut)
 }
 
 func commandRefuse(w http.ResponseWriter, status int, msg string) {

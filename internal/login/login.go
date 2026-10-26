@@ -445,6 +445,7 @@ func auditLogin(login string) string {
 type ticket struct {
 	Step    string   `json:"s"` // totp, passkey, email_code, enrol
 	UserID  string   `json:"u"`
+	OrgID   string   `json:"o,omitempty"` // the user's organization: the account is read from its partition's owner
 	Next    string   `json:"n,omitempty"`
 	AMR     []string `json:"a"`
 	Pending string   `json:"p,omitempty"` // sealed TOTP secret being enrolled
@@ -466,7 +467,7 @@ func (m *Module) bind(ctx context.Context, t *ticket, u *model.User) error {
 	if err != nil {
 		return err
 	}
-	t.UserID, t.Gen, t.Stamp = u.ID, u.SecurityGen, st
+	t.UserID, t.OrgID, t.Gen, t.Stamp = u.ID, u.OrgID, u.SecurityGen, st
 	return nil
 }
 
@@ -478,13 +479,13 @@ func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bo
 }
 
 // ticketUser loads the user and organization of a ticket's sign-in, as they are now, if the ticket still binds to
-// them (ticketCurrent). The user is read afresh here, from a quorum's copies (a step that only checks a code writes
+// them (ticketCurrent). The user is read afresh here, from the owners' copies (a step that only checks a code writes
 // nothing to the user, so no compare-and-swap would catch a password change this node has not received yet), so a
 // step that commits a change to it (setting a factor) does
 // so with a compare-and-swap on this very version: a change made between this read and that write — another
 // completion of the same sign-in, the owner setting up a factor — makes the write stale, and the step refuses.
 func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, bool) {
-	u, err := m.s.Svc.FreshUser(ctx, t.UserID)
+	u, err := m.s.Svc.FreshUserIn(ctx, t.OrgID, t.UserID)
 	if err != nil || !m.ticketCurrent(ctx, t, u) {
 		return nil, nil, false
 	}
@@ -595,7 +596,10 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		}
 		noteSession(ctx, sess)
 	}
-	m.s.Svc.TouchLogin(ctx, u)
+	// The last sign-in time is best effort and nothing below needs it: it is recorded in the background, so the sign-in
+	// does not wait for one more write (in a gossip cluster, a round trip to the partition's owner and a majority).
+	touched := *u
+	m.s.Svc.Background(ctx, func(ctx context.Context) { m.s.Svc.TouchLogin(ctx, &touched) })
 	// Only the counter this browser charges (lockKeyFor): the owner signing in from a known browser must not reset
 	// the account-wide one, which only strangers' browsers charge (a reset or an accepted invitation clears both).
 	m.clearLock(ctx, m.lockKeyFor(r, u, u.ID))
@@ -615,6 +619,13 @@ func noteSession(ctx context.Context, sess *model.Session) {
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	m.s.Log.Error(what, "error", err, "path", r.URL.Path)
+	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrNotWritable) ||
+		errors.Is(err, service.ErrOutcomeUnknown) || errors.Is(err, service.ErrUnavailable) {
+		// the cluster could not confirm the change in time: trying again is safe, and the answer says so
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, http.StatusServiceUnavailable, "We could not complete this just now. Please try again in a moment.", "")
+		return
+	}
 	writeErr(w, http.StatusInternalServerError, "Something went wrong. Please try again.", "")
 }
 

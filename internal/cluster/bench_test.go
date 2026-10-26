@@ -1,32 +1,29 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/store"
-	"github.com/paularlott/quisora/internal/store/kvstore"
 )
 
 func benchRec(i int64) *store.Record {
 	r := newRec(newID(), fmt.Sprintf("o|u%d", i))
+	r.Scope, r.Partition = "org1", fmt.Sprintf("org%d", i%40) // 40 organizations over the partitions
 	r.Data = []byte(strings.Repeat("x", 400))
 	return r
 }
 
-// BenchmarkReplicatedPut measures local Put throughput on a 3-node cluster (writes spread over the nodes, each Put
-// broadcast to the peers) and the throughput including the time until every node holds every record.
+// BenchmarkReplicatedPut measures Put throughput on a 3-node cluster: writes spread over the nodes, each committed on
+// a majority by the owner of its partition, and the time until every node holds every record.
 func BenchmarkReplicatedPut(b *testing.B) {
-	for name, mk := range backends {
-		b.Run(name, func(b *testing.B) {
+	for _, mk := range localBackends() {
+		b.Run(mk.name, func(b *testing.B) {
 			c := newTCluster(b, 3, mk)
 			c.startAll()
 			c.waitReady()
@@ -55,14 +52,13 @@ func BenchmarkReplicatedPut(b *testing.B) {
 			b.StopTimer()
 			b.ReportMetric(float64(b.N)/local.Seconds(), "put/s")
 			b.ReportMetric(float64(b.N)/total.Seconds(), "converged/s")
-			b.ReportMetric(float64(total-local)/float64(time.Millisecond), "lag-ms")
 		})
 	}
 }
 
-// BenchmarkEphemeral measures routed ephemeral operations between two live nodes.
+// BenchmarkEphemeral measures routed ephemeral operations between live nodes.
 func BenchmarkEphemeral(b *testing.B) {
-	c := newTCluster(b, 3, memBackend)
+	c := newTCluster(b, 3, badgerBackend())
 	c.startAll()
 	c.waitReady()
 	a, r := c.nodes[0].n.Ephemeral(), c.nodes[1].n.Ephemeral()
@@ -92,32 +88,6 @@ func BenchmarkEphemeral(b *testing.B) {
 			}
 		}
 	})
-	b.Run("RemoteTakeParallel", func(b *testing.B) {
-		ids := make([]string, b.N)
-		for i := range ids {
-			ids[i], _ = a.New(bg, "oauth.code", []byte("v"), time.Minute)
-		}
-		var n atomic.Int64
-		b.ReportAllocs()
-		b.ResetTimer()
-		b.RunParallel(func(pb *testing.PB) {
-			for pb.Next() {
-				if _, err := r.Take(bg, "oauth.code", ids[n.Add(1)-1]); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	})
-	b.Run("RemoteGet", func(b *testing.B) {
-		id, _ := a.New(bg, "oauth.code", []byte("v"), time.Hour)
-		b.ReportAllocs()
-		b.ResetTimer()
-		for range b.N {
-			if _, err := r.Get(bg, "oauth.code", id); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
 	b.Run("IncrRoutedParallel", func(b *testing.B) {
 		var n atomic.Int64
 		b.ReportAllocs()
@@ -134,144 +104,56 @@ func BenchmarkEphemeral(b *testing.B) {
 	var _ ephemeral.Store = a
 }
 
-// BenchmarkAntiEntropyCatchUp times a brand-new node pulling a 100k-record feed from a peer.
-func BenchmarkAntiEntropyCatchUp(b *testing.B) {
+// BenchmarkResync times a node with a new disk copying a 100k-record cluster from the other two nodes: the first node
+// is seeded with the records as "quisora bootstrap" would, the others copy them, and then one is replaced.
+func BenchmarkResync(b *testing.B) {
 	const total = 100_000
-	for name, mk := range backends {
-		b.Run(name, func(b *testing.B) {
-			c := newTCluster(b, 2, mk)
-			c.opts = func(o *Options) { o.JoinWait = 100 * time.Millisecond }
-			src := c.build(0, "", nil)
-			c.nodes = append(c.nodes, src)
-			preload(b, src, total) // a lone node of two has no quorum to write through; its store is filled directly
-			c.start(src)
-			b.Cleanup(c.closeAll)
-			b.ResetTimer()
-			for range b.N {
-				b.StopTimer()
-				dst := c.build(1, "", func(cfg *config.Config) {})
-				c.nodes = append(c.nodes, dst)
-				b.StartTimer()
-				start := time.Now()
-				c.start(dst)
-				waitFor(b, 300*time.Second, "catch-up", func() bool { return countAll(dst.st()) == total })
-				d := time.Since(start)
-				b.StopTimer()
-				b.ReportMetric(float64(total)/d.Seconds(), "records/s")
-				stop(dst)
-				c.nodes = c.nodes[:len(c.nodes)-1]
-				b.StartTimer()
-			}
-		})
-	}
-}
-
-var _ = context.Background
-
-func badgerSyncBackend(t testing.TB, dir string) store.Store {
-	s, err := kvstore.OpenBadger(bg, filepath.Join(dir, "badger"), kvstore.BadgerOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-// BenchmarkCatchUp3Peers reproduces a node joining a 3-node cluster: three converged source nodes (each holds all
-// 100k records), and a fresh receiver that lists all three as peers. The receiver variants differ in fsync.
-func BenchmarkCatchUp3Peers(b *testing.B) {
-	const total = 100_000
-	recv := map[string]backend{"memstore": memBackend, "badger-nosync": badgerBackend, "badger-sync": badgerSyncBackend}
-	for name, rb := range recv {
-		b.Run(name, func(b *testing.B) {
-			c := newTCluster(b, 4, badgerBackend)
-			c.opts = func(o *Options) { o.JoinWait = 300 * time.Millisecond }
-			// A 4-node cluster (size 4, every node listing every other): three sources, the fourth joins.
-			for i := range 3 {
-				c.nodes = append(c.nodes, c.build(i, "", nil))
-			}
-			preload(b, c.nodes[0], total)
-			c.start(c.nodes...)
-			b.Cleanup(c.closeAll)
-			waitFor(b, 300*time.Second, "sources converged", func() bool {
-				return countAll(c.nodes[1].st()) == total && countAll(c.nodes[2].st()) == total
-			})
-			c.mk = rb
-			b.ResetTimer()
-			for range b.N {
-				b.StopTimer()
-				dst := c.build(3, "", nil)
-				c.nodes = append(c.nodes, dst)
-				b.StartTimer()
-				start := time.Now()
-				c.start(dst)
-				waitFor(b, 600*time.Second, "catch-up", func() bool { return countAll(dst.st()) == total })
-				d := time.Since(start)
-				b.StopTimer()
-				b.ReportMetric(float64(total)/d.Seconds(), "records/s")
-				stop(dst)
-				c.nodes = c.nodes[:len(c.nodes)-1]
-				b.StartTimer()
-			}
-		})
-	}
-}
-
-// BenchmarkDurablePut measures a security write that returns once a majority holds it: two peers' acknowledgements
-// on five nodes, one on three. Serial: the latency of one write; Parallel: throughput from 15 goroutines.
-func BenchmarkDurablePut(b *testing.B) {
-	for _, size := range []int{3, 5} {
-		c := newTCluster(b, size, memBackend)
-		c.startAll()
-		c.waitReady()
-		var seq atomic.Int64
-		ctx := store.WithDurable(bg)
-		b.Run(fmt.Sprintf("%dnodes/Serial", size), func(b *testing.B) {
-			b.ReportAllocs()
-			for range b.N {
-				if err := c.nodes[0].st().Put(ctx, benchRec(seq.Add(1))); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-		b.Run(fmt.Sprintf("%dnodes/Parallel", size), func(b *testing.B) {
-			b.ReportAllocs()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					if err := c.nodes[0].st().Put(ctx, benchRec(seq.Add(1))); err != nil {
-						b.Fatal(err)
+	for _, mk := range localBackends() {
+		b.Run(mk.name, func(b *testing.B) {
+			c := newTCluster(b, 3, mk)
+			c.noSeed = true
+			dir0 := b.TempDir()
+			st := mk.open(b, dir0)
+			var wg sync.WaitGroup
+			var next atomic.Int64
+			for range 16 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						i := next.Add(1)
+						if i > total {
+							return
+						}
+						if _, err := st.PutReplicated(bg, benchRec(i)); err != nil {
+							b.Error(err)
+							return
+						}
 					}
-				}
-			})
-		})
-		c.closeAll()
-	}
-}
-
-// preload fills a node's own store (before it starts) with total records, as the cluster's data: written past the
-// cluster layer, which refuses writes without a quorum, and marked as synced so the node starts with it.
-func preload(b *testing.B, tn *tnode, total int64) {
-	b.Helper()
-	inner := tn.n.st.inner
-	var wg sync.WaitGroup
-	var next atomic.Int64
-	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				i := next.Add(1)
-				if i > total {
-					return
-				}
-				if _, _, err := inner.PutReplicated(bg, benchRec(i)); err != nil {
-					b.Error(err)
-					return
-				}
+				}()
 			}
-		}()
-	}
-	wg.Wait()
-	if err := MarkSynced(tn.dir, inner.FeedID()); err != nil {
-		b.Fatal(err)
+			wg.Wait()
+			if err := StartNewCluster(bg, dir0, st); err != nil {
+				b.Fatal(err)
+			}
+			st.Close()
+			c.nodes = []*tnode{c.build(0, dir0, nil), c.build(1, "", nil), c.build(2, "", nil)}
+			b.Cleanup(c.closeAll)
+			c.start(c.nodes...)
+			c.waitReady()
+			waitFor(b, 600*time.Second, "the others to copy", func() bool { return countAll(c.nodes[1].st()) == total && countAll(c.nodes[2].st()) == total })
+			b.ResetTimer()
+			for range b.N {
+				b.StopTimer()
+				stop(c.nodes[2])
+				dst := c.build(2, "", nil)
+				c.nodes[2] = dst
+				b.StartTimer()
+				start := time.Now()
+				c.start(dst)
+				waitFor(b, 600*time.Second, "resync", func() bool { return countAll(dst.st()) == total && !dst.n.Status().Resyncing })
+				b.ReportMetric(float64(total)/time.Since(start).Seconds(), "records/s")
+			}
+		})
 	}
 }

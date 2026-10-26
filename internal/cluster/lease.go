@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/paularlott/gossip/partition"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -15,6 +16,9 @@ import (
 // housekeeping (key rotation, purge, end dates). The holder renews it well before it expires; when the holder stops,
 // another node takes it over once it has expired. A node counts itself leader only while comfortably inside its
 // lease (leaseMargin).
+//
+// In a gossip cluster the owner of partition 0 runs housekeeping instead (Node.IsLeader) and the tenure fenced is its
+// ownership at the epoch the pass started under (Node.fence); the rest of this comment is about the lease.
 //
 // Fencing: every takeover creates the lease record anew, so its creation version (store.Record.Created) is a token
 // unique to that tenure. Housekeeping runs with the token in its context (Node.fence), and every write it makes
@@ -102,25 +106,46 @@ func (l *lease) current(ctx context.Context, token uint64) bool {
 
 type fenceKey struct{}
 
-// fence marks ctx for housekeeping run under the lease this node holds now (nodes sharing a database): writes made
-// with it are refused once the lease has passed to another node (fenced).
+// fence marks ctx for housekeeping run under the tenure this node holds now: the lease (nodes sharing a database) or
+// the ownership of partition 0 at its current epoch (a gossip cluster). Writes made with it are refused once that
+// tenure has passed to another node (fenced). Without either (standalone) nothing is marked.
 func (n *Node) fence(ctx context.Context) context.Context {
-	if n.lease == nil {
+	var held func(context.Context) bool // whether the tenure taken now still stands
+	switch {
+	case n.lease != nil:
+		token := n.lease.token.Load()
+		held = func(ctx context.Context) bool {
+			return token != 0 && n.lease.held() && n.lease.current(ctx, token)
+		}
+	case n.gc != nil:
+		epoch, ok := n.globalEpoch()
+		held = func(context.Context) bool {
+			cur, still := n.globalEpoch()
+			return ok && still && cur == epoch
+		}
+	default:
 		return ctx
 	}
-	return context.WithValue(ctx, fenceKey{}, n.lease.token.Load())
+	return context.WithValue(ctx, fenceKey{}, held)
 }
 
-// fenced refuses a housekeeping write (ctx from fence) when this node no longer holds the lease it started under.
+// globalEpoch is the epoch of the tenure under which this node owns partition 0, and whether it owns it.
+func (n *Node) globalEpoch() (partition.Epoch, bool) {
+	pm := n.manager()
+	if pm == nil || !pm.IsOwner(globalPartition) {
+		return partition.Epoch{}, false
+	}
+	st, err := pm.PartitionStatus(globalPartition)
+	return st.Epoch, err == nil && st.Leading
+}
+
+// fenced refuses a housekeeping write (ctx from fence) when this node no longer holds the tenure it started under.
 func (n *Node) fenced(ctx context.Context) error {
-	token, ok := ctx.Value(fenceKey{}).(uint64)
-	if !ok || n.lease == nil {
+	held, ok := ctx.Value(fenceKey{}).(func(context.Context) bool)
+	if !ok || held(ctx) {
 		return nil
 	}
-	if token == 0 || !n.lease.held() || !n.lease.current(ctx, token) {
-		return fmt.Errorf("%w: the housekeeping lease has passed to another node", store.ErrNotWritable)
-	}
-	return nil
+	return fmt.Errorf("%w: housekeeping has passed to another node", store.ErrNotWritable)
 }
 
 // release gives the lease up on shutdown so another node takes over at once.
@@ -153,9 +178,8 @@ func (n *Node) runLease() {
 	}
 }
 
-// Mixed set-ups are refused: a gossip node sharing its database with nodes that run without gossip would replicate
-// only some of the writes (the others never enter its change feed as its own) and both kinds of node would run
-// housekeeping. Each kind leaves a short-lived record in its database — gossip nodes a marker, nodes without
+// Mixed set-ups are refused: a gossip node sharing its database with nodes that run without gossip would hold records no
+// partition write made (the other nodes write the database directly) and both kinds of node would run housekeeping. Each kind leaves a short-lived record in its database — gossip nodes a marker, nodes without
 // gossip the housekeeping lease — and a node that finds the other kind's record stops serving.
 const gossipMarkerID = "marker/gossip"
 

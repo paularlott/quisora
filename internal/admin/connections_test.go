@@ -105,17 +105,13 @@ func TestUserSessionsAPI(t *testing.T) {
 	if len(auditActions(t, w, "user.session.revoke")) == 0 {
 		t.Error("no audit entry")
 	}
-	// your own: the current session is marked and cannot be ended here
+	// your own: the current session is listed first (ahead of a newer one), marked, and cannot be ended here
 	me := w.as("admin")
+	w.as("admin")
 	r = me.get(AU + "/" + w.users["admin"].ID + "/sessions")
-	var cur string
-	for _, x := range r.items() {
-		if s := x.(map[string]any); s["current"] == true {
-			cur, _ = s["id"].(string)
-		}
-	}
-	if cur == "" {
-		t.Fatalf("no current session: %s", r.Raw)
+	cur, _ := first(r)["id"].(string)
+	if r.total() != 2 || first(r)["current"] != true || r.items()[1].(map[string]any)["current"] != false {
+		t.Fatalf("own sessions: %s", r.Raw)
 	}
 	want(t, me.delete(AU+"/"+w.users["admin"].ID+"/sessions/"+cur), 409)
 }
@@ -174,5 +170,39 @@ func TestUserPasskeysAPI(t *testing.T) {
 	want(t, w.as("admin").delete(AU+"/"+me.ID+"/passkeys/"+other.ID), 409)
 	if _, err := w.env.Svc.Passkeys.Get(ctx, other.ID); err != nil {
 		t.Fatal("own last passkey removed")
+	}
+}
+
+// Administrators can list and revoke another user's personal API tokens; the role limits still apply.
+func TestUserAPITokensAPI(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	alan := w.users["user"]
+	tok, plain, err := w.env.Svc.CreateAPIToken(ctx, service.ActorForUser(alan, ""), service.APITokenInput{Name: "ci", Scopes: []string{"api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ad := w.as("admin")
+	r := ad.get(AU + "/" + alan.ID + "/tokens")
+	want(t, r, 200)
+	if r.total() != 1 || r.items()[0].(map[string]any)["id"] != tok.ID || strings.Contains(string(r.Raw), plain) ||
+		r.items()[0].(map[string]any)["name"] != "ci" {
+		t.Fatalf("token list: %s", r.Raw)
+	}
+	// another user's token id under this user is not found; another org's user is not found
+	want(t, ad.delete(AU+"/"+w.users["manager"].ID+"/tokens/"+tok.ID), 404)
+	want(t, ad.get(G+"/users/"+w.users["other"].ID+"/tokens"), 404)
+	// a manager cannot manage an admin's tokens
+	want(t, w.as("manager").get(AU+"/"+w.users["admin"].ID+"/tokens"), 403)
+
+	want(t, ad.delete(AU+"/"+alan.ID+"/tokens/"+tok.ID), 200)
+	if _, _, err := w.env.Svc.ValidateAPIToken(ctx, plain); err == nil {
+		t.Fatal("revoked token still valid")
+	}
+	if r := ad.get(AU + "/" + alan.ID + "/tokens"); r.total() != 0 {
+		t.Fatalf("after revoke: %s", r.Raw)
+	}
+	if len(auditActions(t, w, "apitoken.delete")) != 1 {
+		t.Fatal("revocation not audited")
 	}
 }

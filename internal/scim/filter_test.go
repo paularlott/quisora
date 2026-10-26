@@ -1,7 +1,6 @@
 package scim
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -88,15 +87,36 @@ func TestFilterPrecedenceAndShape(t *testing.T) {
 	if _, err := parseFilter(`A Eq "x" AND NOT (b PR) OR c Sw "y"`); err != nil {
 		t.Error(err)
 	}
+}
+
+// Malformed filters are refused by the parser (list_test.go:TestInvalidFilters checks the handlers answer them with
+// scimType invalidFilter).
+func TestParseFilterRejectsMalformed(t *testing.T) {
 	for _, bad := range []string{"", " ", "a", "a eq", "a eq 1 and", "(a eq 1", "a eq 1)", `a eq 0x10`, `a eq +1`, `a eq 1_0`, `a eq NaN`, `a eq Inf`,
-		`a eq "x" b eq "y"`, `not a eq 1`, `a eq 1 or or b eq 2`, "a eq \"x\x00", `a lol 1`, `)`, `()`, `a eq (1)`} {
+		`a eq "x" b eq "y"`, `not a eq 1`, `a eq 1 or or b eq 2`, "a eq \"x\x00", `a lol 1`, `)`, `(`, `()`, `a eq (1)`,
+		`userName eq "unterminated`, `and userName eq "a"`, `userName eq "\`, `userName eq "a\u00zz"`, `userName pr "x"`, `userName eq tru`,
+		`userName co 5 5`, `1bad eq "x"`, `urn:x: eq "y"`, `name.givenName.x eq "a"`, `emails[type eq "work"`, `emails]type eq "work"[`,
+		`emails[]`, `emails[type eq "work"][type eq "x"]`, strings.Repeat("a eq 1 and ", 2000) + "a eq 1",
+	} {
 		if _, err := parseFilter(bad); err == nil {
-			t.Errorf("%q should not parse", bad)
+			t.Errorf("%.40q should not parse", bad)
 		}
 	}
-	if _, err := parseFilter(strings.Repeat("a eq 1 and ", 2000) + "a eq 1"); err == nil {
-		t.Error("over-long filter accepted")
+}
+
+// Filters in unusual but valid spellings parse.
+func TestParseFilterAcceptsUnusualSyntax(t *testing.T) {
+	for _, f := range unusualFilters {
+		if _, err := parseFilter(f); err != nil {
+			t.Errorf("%q: %v", f, err)
+		}
 	}
+}
+
+var unusualFilters = []string{
+	`NOT (userName eq "a")`, `userName EQ "a"`, `userName eq "a" AND active eq true`, `userName pr and active pr`,
+	`emails[type eq "work" and primary eq true].value pr`, `userName eq true`, `userName eq false`, `userName eq null`,
+	`userName eq -1.5e3`, `userName eq "a\"b"`, `meta.lastModified ge "2000-01-01T00:00:00.5Z"`,
 }
 
 func doc() map[string]any {
@@ -227,6 +247,75 @@ func TestPatchRulesDirect(t *testing.T) {
 	if res["userName"] != "y" || len(res) != 2 {
 		t.Errorf("canonical key: %v", res)
 	}
+
+	// Multi-valued and complex attributes.
+	emails := func() []any { return res["emails"].([]any) }
+	email := func(value string) map[string]any {
+		for _, e := range emails() {
+			if em := e.(map[string]any); em["value"] == value {
+				return em
+			}
+		}
+		t.Fatalf("no email %s in %v", value, emails())
+		return nil
+	}
+	res = map[string]any{"emails": []any{map[string]any{"value": "a@b.c", "type": "work", "primary": true},
+		map[string]any{"value": "h@b.c", "type": "home"}}}
+	// adding an element that exists updates it
+	apply(patchOp{op: "add", path: p("emails"), value: []any{map[string]any{"value": "h@b.c", "type": "other"}}, hasValue: true})
+	if len(emails()) != 2 || email("h@b.c")["type"] != "other" {
+		t.Errorf("add existing: %v", emails())
+	}
+	// a replacement with several primaries: the last one wins
+	apply(patchOp{op: "replace", path: p("emails"), value: []any{map[string]any{"value": "a1@b.c", "primary": true},
+		map[string]any{"value": "a2@b.c", "primary": "true"}}, hasValue: true})
+	if email("a1@b.c")["primary"] != false || email("a2@b.c")["primary"] != true {
+		t.Errorf("several primaries: %v", emails())
+	}
+	// a filtered sub-attribute is set on the elements matched, and a primary there clears the others
+	apply(patchOp{op: "replace", path: p(`emails[value eq "a1@b.c"].primary`), value: "true", hasValue: true})
+	if email("a1@b.c")["primary"] != true || email("a2@b.c")["primary"] != false {
+		t.Errorf("filtered primary: %v", emails())
+	}
+	// a filter that matches nothing adds the element it describes
+	apply(patchOp{op: "add", path: p(`emails[type eq "home"].value`), value: "home@b.c", hasValue: true})
+	if len(emails()) != 3 || email("home@b.c")["type"] != "home" {
+		t.Errorf("filtered add of a sub-attribute: %v", emails())
+	}
+	apply(patchOp{op: "add", path: p(`emails[type eq "other"]`), value: map[string]any{"value": "o@b.c", "primary": "true"}, hasValue: true})
+	if o := email("o@b.c"); len(emails()) != 4 || o["type"] != "other" || o["primary"] != true || email("a1@b.c")["primary"] != false {
+		t.Errorf("filtered add of an element: %v", emails())
+	}
+	// removing a filtered sub-attribute keeps the element
+	apply(patchOp{op: "remove", path: p(`emails[type eq "home"].type`)})
+	if h := email("home@b.c"); h["type"] != nil || len(emails()) != 4 {
+		t.Errorf("filtered remove of a sub-attribute: %v", emails())
+	}
+	// a sub-attribute of a multi-valued attribute without a filter: set on the first element, removed from all
+	apply(patchOp{op: "replace", path: p("emails.type"), value: "work", hasValue: true})
+	if emails()[0].(map[string]any)["type"] != "work" {
+		t.Errorf("set emails.type: %v", emails())
+	}
+	apply(patchOp{op: "remove", path: p("emails.type")})
+	for _, e := range emails() {
+		if e.(map[string]any)["type"] != nil {
+			t.Errorf("remove emails.type: %v", emails())
+		}
+	}
+	// removing with a value list removes those elements
+	apply(patchOp{op: "remove", path: p("emails"), value: []any{map[string]any{"value": "a2@b.c"}}, hasValue: true})
+	if len(emails()) != 3 || containsElem(emails(), map[string]any{"value": "a2@b.c"}) {
+		t.Errorf("remove listed value: %v", emails())
+	}
+	// add of an absent complex attribute creates it; removing its sub-attribute clears that
+	apply(patchOp{op: "add", path: p("name"), value: map[string]any{"familyName": "Added"}, hasValue: true})
+	if n, _ := res["name"].(map[string]any); n["familyName"] != "Added" {
+		t.Errorf("add name: %v", res["name"])
+	}
+	apply(patchOp{op: "remove", path: p("name.familyName")})
+	if n, _ := res["name"].(map[string]any); n == nil || n["familyName"] != nil {
+		t.Errorf("remove name.familyName: %v", res["name"])
+	}
 }
 
 func FuzzParseFilter(f *testing.F) {
@@ -241,6 +330,9 @@ func FuzzParseFilter(f *testing.F) {
 		`emails[type eq "work"].value ew "x"`, `a eq null`, `a eq 1.5e-3`, `not (a pr)`, `(((a pr)))`, `a eq "é\n\\"`,
 		`members[value eq "x"]`, `a EQ "x" AND b Pr`, "a\teq\n\"x\"",
 	} {
+		f.Add(s)
+	}
+	for _, s := range unusualFilters {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
@@ -275,6 +367,5 @@ func FuzzParsePath(f *testing.F) {
 		}
 		project(doc(), []string{in}, nil, userSchemas)
 		project(doc(), nil, []string{in}, userSchemas)
-		_ = reflect.DeepEqual
 	})
 }

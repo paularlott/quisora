@@ -145,7 +145,7 @@ func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *Le
 		if errors.Is(uerr, store.ErrStale) {
 			continue
 		}
-		if !store.Applied(uerr) && next != "" {
+		if uerr != nil && next != "" {
 			// The provider rotated the token and the new one could not be kept: the next check will be refused and
 			// end the user's sessions (they sign in again). Rare; logged so it can be told apart from a leaver.
 			s.Svc.Log.Error("upstream: could not keep the provider's rotated refresh token", "provider", p.Name,
@@ -177,7 +177,7 @@ func (s *Service) leaver(ctx context.Context, id *model.Identity, p *model.Provi
 	s.Svc.Audit(ctx, actor, p.OrgID, "identity.refresh.refused", target, map[string]string{"provider": p.Name, "result": result})
 	for range 4 {
 		cur.Refresh, cur.RefreshChecked = "", s.Now().UTC()
-		if err := s.Svc.Identities.Update(service.Durable(ctx), cur); !errors.Is(err, store.ErrStale) {
+		if err := s.Svc.Identities.Update(ctx, cur); !errors.Is(err, store.ErrStale) {
 			return
 		}
 		if cur, err = s.Svc.Identities.Get(ctx, id.ID); err != nil || cur.Refresh != id.Refresh {

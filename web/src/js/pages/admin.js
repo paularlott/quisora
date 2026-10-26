@@ -76,9 +76,9 @@ function clusterMixin(Alpine) {
         })
         this.here = { // this node's own figures
           id: st.node_id,
-          readyText: (st.ready ? 'Yes' : 'No') + (st.catching_up ? ' (catching up)' : '') + (st.behind ? ' (out of date: the others purged deletions it never saw)' : ''),
+          readyText: (st.ready ? 'Yes' : 'No') + (st.resyncing ? ' (copying everything from the other nodes)' : st.catching_up ? ' (catching up)' : ''),
           writableText: st.writable ? 'Yes' : 'No',
-          syncText: fmtDateTime(st.last_sync),
+          partitionsText: `${st.partitions_owned || 0} of 64`,
           unconfirmed: st.unconfirmed || 0,
           unconfirmedClass: st.unconfirmed ? 'badge badge-danger' : '',
           refused: st.refused || 0,
@@ -1525,7 +1525,7 @@ export default function (Alpine) {
     'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary', 'org.signout',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',
     'provider.update', 'server.signout', 'signout.sweep', 'tenant.access.add', 'tenant.access.remove',
-    'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update', 'unique.conflict', 'user.app.revoke',
+    'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update', 'user.app.revoke',
     'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove', 'user.email.verify',
     'user.expire', 'user.invite', 'user.invite.break_glass', 'user.locked_out', 'user.passkey.remove',
     'user.password.remove', 'user.provider.disconnect', 'user.provision', 'user.session.revoke', 'user.sessions.revoke',

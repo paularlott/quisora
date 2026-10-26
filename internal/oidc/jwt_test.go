@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -9,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
@@ -48,6 +50,7 @@ func signWith(t testing.TB, k testKey, kid, typ, payload string) string {
 }
 
 func TestSignVerifyAllAlgs(t *testing.T) {
+	t.Parallel()
 	for _, k := range genKeys(t) {
 		t.Run(k.alg, func(t *testing.T) {
 			tok := signWith(t, k, "kid1", "JWT", `{"sub":"u1","n":1}`)
@@ -113,6 +116,7 @@ func decodeIndependently(t *testing.T, tok string, pub crypto.PublicKey) {
 }
 
 func TestCrossCheckWithStdlib(t *testing.T) {
+	t.Parallel()
 	for _, k := range genKeys(t) {
 		for range 20 { // ES256 DER->raw conversion has length edge cases (leading zeros): exercise many
 			tok := signWith(t, k, "k", "at+jwt", `{"a":"b"}`)
@@ -122,6 +126,7 @@ func TestCrossCheckWithStdlib(t *testing.T) {
 }
 
 func TestVerifyRejectsForgeries(t *testing.T) {
+	t.Parallel()
 	keys := genKeys(t)
 	other := genKeys(t)
 	for i, k := range keys {
@@ -145,8 +150,6 @@ func TestVerifyRejectsForgeries(t *testing.T) {
 			t.Errorf("%s: tampered payload verified", k.alg)
 		}
 		// tampered signature (flip one bit)
-		sig, _ := b64.DecodeString(parts[2+0])
-		_ = sig
 		raw, _ := b64.DecodeString(strings.Split(tok, ".")[2])
 		raw[len(raw)/2] ^= 1
 		forged := strings.Join(strings.Split(tok, ".")[:2], ".") + "." + b64.EncodeToString(raw)
@@ -164,29 +167,31 @@ func TestVerifyRejectsForgeries(t *testing.T) {
 }
 
 func TestParseRejectsMalformed(t *testing.T) {
+	t.Parallel()
 	ec := genKeys(t)[0]
 	good := signWith(t, ec, "k", "JWT", `{}`)
 	hdr := func(s string) string { return b64.EncodeToString([]byte(s)) }
 	body := b64.EncodeToString([]byte(`{}`))
 	cases := map[string]string{
-		"empty":            "",
-		"one part":         "abc",
-		"two parts":        "abc.def",
-		"four parts":       good + ".x",
-		"empty header":     "." + body + ".c2ln",
-		"empty signature":  hdr(`{"alg":"ES256"}`) + "." + body + ".",
-		"alg none":         hdr(`{"alg":"none"}`) + "." + body + ".c2ln",
-		"alg None":         hdr(`{"alg":"None"}`) + "." + body + ".c2ln",
-		"alg HS256":        hdr(`{"alg":"HS256"}`) + "." + body + ".c2ln",
-		"alg empty":        hdr(`{"alg":""}`) + "." + body + ".c2ln",
-		"alg missing":      hdr(`{"typ":"JWT"}`) + "." + body + ".c2ln",
-		"alg ES384":        hdr(`{"alg":"ES384"}`) + "." + body + ".c2ln",
-		"alg PS384":        hdr(`{"alg":"PS384"}`) + "." + body + ".c2ln",
-		"crit":             hdr(`{"alg":"ES256","crit":["x"],"x":1}`) + "." + body + ".c2ln",
-		"header not json":  hdr(`not json`) + "." + body + ".c2ln",
-		"padded base64":    hdr(`{"alg":"ES256"}`) + "=." + body + ".c2ln",
-		"std base64 chars": "e+/=." + body + ".c2ln",
-		"huge":             good + strings.Repeat("A", maxJWTSize),
+		"empty":                 "",
+		"one part":              "abc",
+		"two parts":             "abc.def",
+		"four parts":            good + ".x",
+		"empty header":          "." + body + ".c2ln",
+		"empty signature":       hdr(`{"alg":"ES256"}`) + "." + body + ".",
+		"alg none":              hdr(`{"alg":"none"}`) + "." + body + ".c2ln",
+		"alg None":              hdr(`{"alg":"None"}`) + "." + body + ".c2ln",
+		"alg HS256":             hdr(`{"alg":"HS256"}`) + "." + body + ".c2ln",
+		"alg empty":             hdr(`{"alg":""}`) + "." + body + ".c2ln",
+		"alg missing":           hdr(`{"typ":"JWT"}`) + "." + body + ".c2ln",
+		"alg ES384":             hdr(`{"alg":"ES384"}`) + "." + body + ".c2ln",
+		"alg PS384":             hdr(`{"alg":"PS384"}`) + "." + body + ".c2ln",
+		"crit":                  hdr(`{"alg":"ES256","crit":["x"],"x":1}`) + "." + body + ".c2ln",
+		"header not json":       hdr(`not json`) + "." + body + ".c2ln",
+		"padded base64":         hdr(`{"alg":"ES256"}`) + "=." + body + ".c2ln",
+		"std base64 chars":      "e+/=." + body + ".c2ln",
+		"payload not base64url": hdr(`{"alg":"ES256"}`) + ".!!!.AAAA",
+		"huge":                  good + strings.Repeat("A", maxJWTSize),
 	}
 	for name, tok := range cases {
 		if _, err := ParseJWT(tok); err == nil {
@@ -198,6 +203,7 @@ func TestParseRejectsMalformed(t *testing.T) {
 // The classic attack: sign with HMAC using the server's public key as the secret and hope the verifier trusts
 // the header's alg. ParseJWT never accepts HS256 and Verify binds the algorithm to the key type.
 func TestAlgConfusion(t *testing.T) {
+	t.Parallel()
 	keys := genKeys(t)
 	rsaKey := keys[2].priv.(*rsa.PrivateKey)
 	pubJWK, _ := EncodeJWK(&rsaKey.PublicKey, "k", AlgRS256)
@@ -231,7 +237,9 @@ func TestAlgConfusion(t *testing.T) {
 	}
 }
 
-func TestSmallRSAKeyRejected(t *testing.T) {
+// Signatures are refused for keys that are too small, of the wrong type for the algorithm, or for an unknown algorithm.
+func TestVerifyRefusesUnsuitableKeys(t *testing.T) {
+	t.Parallel()
 	small, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -245,9 +253,21 @@ func TestSmallRSAKeyRejected(t *testing.T) {
 	if _, err := j.PublicKey(); err == nil {
 		t.Fatal("1024-bit RSA JWK accepted")
 	}
+	for _, alg := range []string{AlgRS256, AlgPS256} {
+		if verifySig(alg, &small.PublicKey, []byte("x"), []byte("sig")) {
+			t.Errorf("%s: small key accepted", alg)
+		}
+		if verifySig(alg, "not a key", []byte("x"), []byte("sig")) {
+			t.Errorf("%s: wrong key type accepted", alg)
+		}
+	}
+	if verifySig("HS256", []byte("k"), []byte("x"), []byte("sig")) {
+		t.Fatal("unknown algorithm verified")
+	}
 }
 
 func TestJWKRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, k := range genKeys(t) {
 		j, err := EncodeJWK(k.priv.Public(), "kid-"+k.alg, k.alg)
 		if err != nil {
@@ -282,6 +302,7 @@ func TestJWKRoundTrip(t *testing.T) {
 }
 
 func TestJWKRejectsBadPoints(t *testing.T) {
+	t.Parallel()
 	ec := genKeys(t)[0].priv.(*ecdsa.PrivateKey)
 	j, _ := EncodeJWK(&ec.PublicKey, "k", AlgES256)
 	// not on the curve
@@ -304,9 +325,30 @@ func TestJWKRejectsBadPoints(t *testing.T) {
 	if _, err := (JWK{Kty: "oct"}).PublicKey(); err == nil {
 		t.Fatal("oct accepted")
 	}
+	// keys that cannot be published or used
+	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if _, err := EncodeJWK(&p384.PublicKey, "k", ""); err == nil {
+		t.Error("P-384 encoded")
+	}
+	if _, err := EncodeJWK("nope", "k", ""); err == nil {
+		t.Error("unsupported key type encoded")
+	}
+	for name, j := range map[string]JWK{
+		"OKP curve":   {Kty: "OKP", Crv: "X25519"},
+		"OKP size":    {Kty: "OKP", Crv: "Ed25519", X: "AA"},
+		"RSA missing": {Kty: "RSA"},
+	} {
+		if _, err := j.PublicKey(); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if (JWK{Kty: "oct"}).KeyAlg() != "" {
+		t.Error("KeyAlg of an unknown type")
+	}
 }
 
 func TestAppendJSONString(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"", "plain", `quo"te`, `back\slash`, "tab\tnl\ncr\r", "ctl\x00\x01\x1f", "<script>&", "héllo ☃ 😀",
 		"bad\xffutf8", "sep  ", "\b\f"} {
 		out := appendJSONString(nil, s)
@@ -322,20 +364,43 @@ func TestAppendJSONString(t *testing.T) {
 }
 
 func TestDERToRaw(t *testing.T) {
+	t.Parallel()
 	// r or s with leading zero bytes must be left-padded to 32 bytes
 	der := []byte{0x30, 0x08, 0x02, 0x02, 0x00, 0xff, 0x02, 0x02, 0x01, 0x02}
 	raw, err := derToRaw(der, 32)
 	if err != nil || len(raw) != 64 || raw[31] != 0xff || raw[63] != 0x02 || raw[62] != 0x01 || raw[30] != 0 {
 		t.Fatalf("%x %v", raw, err)
 	}
-	for _, bad := range [][]byte{nil, {0x30}, {0x31, 0x00}, {0x30, 0x02, 0x02, 0x00}} {
-		if _, err := derToRaw(bad, 32); err == nil {
-			t.Errorf("%x accepted", bad)
+	// a long-form length
+	long := func(size int) []byte {
+		// SEQUENCE { INTEGER r, INTEGER s } with each integer size bytes
+		in := append([]byte{0x02, byte(size)}, make([]byte, size)...)
+		body := append(append([]byte{}, in...), in...)
+		return append([]byte{0x30, 0x81, byte(len(body))}, body...)
+	}
+	if raw, err := derToRaw(long(66), 64); err != nil || len(raw) != 128 {
+		t.Fatalf("long form: %v", err)
+	}
+	for name, der := range map[string][]byte{
+		"empty":             nil,
+		"no length":         {0x30},
+		"wrong tag":         {0x31, 0x00},
+		"long form 2 byte":  {0x30, 0x82, 0x00, 0x00},
+		"long form short":   {0x30, 0x81},
+		"truncated":         {0x30, 0x05, 0x02, 0x01},
+		"truncated integer": {0x30, 0x02, 0x02, 0x00},
+		"not integers":      {0x30, 0x02, 0x04, 0x00},
+		"only one":          {0x30, 0x03, 0x02, 0x01, 0x01},
+		"too big":           append([]byte{0x30, 0x26, 0x02, 0x21, 0x01}, append(make([]byte, 32), 0x02, 0x01, 0x01)...),
+	} {
+		if _, err := derToRaw(der, 32); err == nil {
+			t.Errorf("%s accepted", name)
 		}
 	}
 }
 
 func TestClaimsParsing(t *testing.T) {
+	t.Parallel()
 	var c Claims
 	if err := json.Unmarshal([]byte(`{"aud":"a","exp":1.5e9,"iat":1700000000,"scope":"openid email"}`), &c); err != nil {
 		t.Fatal(err)
@@ -346,9 +411,22 @@ func TestClaimsParsing(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"aud":["a","b"]}`), &c); err != nil || !c.Aud.Has("b") {
 		t.Fatal(err, c.Aud)
 	}
+	// types that are not what the claim is
+	var n NumericDate
+	if json.Unmarshal([]byte(`"soon"`), &n) == nil {
+		t.Error("NumericDate string")
+	}
+	var a Audience
+	if json.Unmarshal([]byte(`"bad\q"`), &a) == nil {
+		t.Error("Audience bad string")
+	}
+	if json.Unmarshal([]byte(`5`), &a) == nil {
+		t.Error("Audience number")
+	}
 }
 
 func TestMFASatisfied(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		amr  []string
 		want bool
@@ -400,4 +478,29 @@ func BenchmarkJWTVerify(b *testing.B) {
 			})
 		})
 	}
+}
+
+// Keys that cannot sign are refused as signing material: an unsupported algorithm, junk, a key type with no signature.
+func TestSigningKeyInputsRefused(t *testing.T) {
+	t.Parallel()
+	t.Run("unsupported algorithm", func(t *testing.T) {
+		_, ed, _ := ed25519.GenerateKey(rand.Reader)
+		if _, err := signJWT("HS256", ed, "h", []byte("p")); err == nil {
+			t.Fatal("HS256 signed")
+		}
+	})
+
+	t.Run("private key parsing", func(t *testing.T) {
+		if _, _, _, err := parsePrivate([]byte("junk")); err == nil {
+			t.Error("junk parsed")
+		}
+		x, _ := ecdh.X25519().GenerateKey(rand.Reader)
+		der, err := x509.MarshalPKCS8PrivateKey(x)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := parsePrivate(der); err == nil {
+			t.Error("X25519 private key accepted for signing")
+		}
+	})
 }

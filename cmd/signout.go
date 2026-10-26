@@ -27,15 +27,21 @@ func signOutCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"lever (an organization's page, and the system page for the whole server); this command is for when the " +
 			"console cannot be used. It is audited, with --reason.\n\n" +
 			"Uses the same config file / QUISORA_* environment as serve, and needs the master key. With a shared database " +
-			"(postgres, mysql, mariadb) it works while the servers run: they follow within seconds. With a " +
-			"node-local store (BadgerDB, SQLite) stop the server first. In a gossip cluster stop one node, run it there and " +
-			"start the node again: the others receive the change from it.",
+			"(postgres, mysql, mariadb) it writes to the database while the servers run: they follow within seconds. " +
+			"With a node-local store (BadgerDB, SQLite) it asks the running server at server.public_url (or --server), " +
+			"signing the request with the master key; with the server stopped it writes to the store itself. In a gossip " +
+			"cluster (cluster.bind) it always asks a running node, which writes it through the cluster like any change: " +
+			"the nodes, or a majority of them, must be running. Through a server, the ended records are removed in the " +
+			"background.",
 		Flags: append([]cli.Flag{
 			&cli.StringFlag{Name: "org", AssignTo: &org, Usage: "Name of the organization to sign out"},
 			&cli.BoolFlag{Name: "all", AssignTo: &all, Usage: "Sign out every organization"},
 			&cli.StringFlag{Name: "reason", AssignTo: &reason, Required: true, Usage: "Why (recorded in the audit log)"},
 			&cli.BoolFlag{Name: "api-tokens", AssignTo: &apiTokens, Usage: "End personal API tokens too"},
 			&cli.BoolFlag{Name: "yes", AssignTo: &yes, Usage: "Do not ask for confirmation"},
+			&cli.StringFlag{Name: "server", Usage: "Ask this running server (https URL) instead of server.public_url"},
+			&cli.StringFlag{Name: "ca-file", Usage: "PEM file of extra CA certificates trusted for the server"},
+			&cli.BoolFlag{Name: "insecure", Usage: "Do not verify the server's certificate"},
 		}, flags...),
 		Run: func(ctx context.Context, c *cli.Command) error {
 			if (org == "") == !all {
@@ -54,7 +60,13 @@ func signOutCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 				}
 			}
 			log := logslog.New(logslog.Config{Level: "error", Format: cfg.Log.Format})
-			_, n, err := app.SignOut(ctx, cfg, log, org, reason, apiTokens)
+			_, n, remote, err := app.SignOutVia(ctx, cfg, log, c.GetString("server"), c.GetString("ca-file"),
+				c.GetBool("insecure"), org, reason, apiTokens)
+			if remote {
+				fmt.Fprintf(os.Stderr, "Signed out %s through the running server: everything it ended has stopped "+
+					"working, and the server removes it in the background.\n", what)
+				return nil
+			}
 			if n.Sessions+n.Grants+n.APITokens > 0 || err == nil {
 				fmt.Fprintf(os.Stderr, "Signed out %s: removed %d sessions, %d refresh grants and %d API tokens.\n",
 					what, n.Sessions, n.Grants, n.APITokens)

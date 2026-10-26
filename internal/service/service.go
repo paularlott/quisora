@@ -35,11 +35,13 @@ var (
 	ErrLastAdmin  = errors.New("cannot remove the last super admin")
 	ErrNotEmpty   = errors.New("organization still has users")
 	ErrPrimaryOrg = errors.New("the primary organization cannot be deleted")
-	// ErrNotReplicated: the change was made on this server but no other server confirmed it yet (store.Applied).
-	ErrNotReplicated = store.ErrNotReplicated
-	// ErrUnavailable: this server cannot make the change now (it is catching up with its cluster, out of date, or
-	// cannot reach a majority of it; with cluster.strict_durability, a majority did not confirm it). Nothing changed,
-	// or the change was undone; try again shortly or through another server.
+	// ErrOutcomeUnknown: the change was sent, and the node that decides it was lost before it answered: it may or may not
+	// have been made (the next owner settles it, once or never). It is an ErrUnavailable too (try again shortly), but
+	// what is not idempotent is read back first.
+	ErrOutcomeUnknown = errors.New("the outcome of the change is not known")
+	// ErrUnavailable: this server cannot make the change now (it is catching up with its cluster or cannot reach a
+	// majority of it). Nothing changed (unless it is also an ErrOutcomeUnknown); try again shortly or through another
+	// server.
 	ErrUnavailable = errors.New("this server cannot make changes now")
 )
 
@@ -68,7 +70,9 @@ func mapStore(err error) error {
 		return ErrStale
 	case errors.Is(err, store.ErrBadQuery):
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	case errors.Is(err, store.ErrNotWritable), errors.Is(err, store.ErrUnconfirmed):
+	case errors.Is(err, store.ErrUnconfirmed):
+		return fmt.Errorf("%w: %w: %v", ErrOutcomeUnknown, ErrUnavailable, err)
+	case errors.Is(err, store.ErrNotWritable):
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return err
@@ -100,6 +104,19 @@ func CommandOrigin(command string) map[string]string {
 		o["host"] = h
 	}
 	return o
+}
+
+type commandKey struct{}
+
+type commandInfo struct{ name, how string }
+
+// WithCommand marks ctx as serving an operator's command that a running node carries out ("quisora invite" and "quisora
+// set-primary" through the server, authenticated by the master key alone; "quisora force-start", by access to the node's
+// data directory): the audit events the system records in it are attributed to that command (actor "command:<name>",
+// the address a request came from, and the command and how it was authenticated in the detail), so an auditor can tell
+// the operator's command from what the system does by itself.
+func WithCommand(ctx context.Context, name, how string) context.Context {
+	return context.WithValue(ctx, commandKey{}, commandInfo{name, how})
 }
 
 // System is an actor for internal operations (bootstrap, housekeeping).
@@ -155,14 +172,17 @@ type Service struct {
 	Replays    *store.Table[model.Replay, *model.Replay]
 
 	primary *orgCache
-	members confirmedMembers // memberships a quorum read decided (membersAt)
+	members confirmedMembers // memberships a fresh read decided (membersAt)
 
 	// MinSuperAdmins is how many usable super admins must remain after a demotion, disable, deletion or end date (0:
-	// one). The app sets 2 when nodes replicate over gossip: a change one node applied but the majority has not
-	// confirmed yet could otherwise leave none.
+	// one, which is every mode's value: the app leaves it unset). The guard counts them through the owner of the
+	// organization's partition under the admin lock (docs/REPLICATION.md, "The last-administrator guard"), so a
+	// change that only some node has applied can never be what it counts; a larger value is a policy of the
+	// deployment, not a protection the gossip mode needs.
 	MinSuperAdmins int
 	signOut        signOutCache   // emergency sign-out counters (signout.go)
 	bg             sync.WaitGroup // Background work
+	tokenTouching  sync.Map       // ids of API tokens whose last use is being recorded (touchAPIToken)
 
 	// Writable reports whether this node may change replicated data now (cluster.Node.Writable; nil: always). Writes
 	// made in passing while serving reads (a session's or token's last use, a sign-in's last-login stamp) are skipped
@@ -177,6 +197,10 @@ type Service struct {
 	// previous master key (reported with the node's keys, ReportMasterKey: they keep the rotation unfinished), and how
 	// many need one that is not configured (reported as a warning: they hold nothing back).
 	QueuesStale func() (stale, lost int)
+	// LiveNodes, when set, lists the ids of the nodes of the cluster that are up now (this one included). A live node
+	// with no current master key report is not known to seal with the active key (MasterKeyAgreed). Without it (one
+	// node, or nodes sharing a database) only the reports say which nodes are live. Set by the app.
+	LiveNodes func() []string
 
 	// OnAppAccessEnding is called just before a user's grants to one client are removed (RevokeAppAccess), so that
 	// client can be sent back-channel logout tokens and the grants stop working at once. Set by the app.
@@ -260,6 +284,36 @@ func (s *Service) AuditRefused(ctx context.Context, a *Actor, method, path, reas
 
 // Audit records a security event. Failures are not fatal to the operation.
 func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) {
+	e, log, kv := s.auditEvent(ctx, a, orgID, action, target, detail)
+	if s.AuditWriter != nil { // VictoriaLogs: the database keeps none
+		s.AuditWriter.WriteAudit(e)
+		return
+	}
+	if err := s.Audits.Put(context.WithoutCancel(ctx), e); err != nil {
+		log.WithError(err).Error("audit event not stored", kv...)
+	}
+}
+
+// AuditStored records a security event as Audit does and reports whether it was stored: for an event whose record the
+// caller keeps until it is in the audit log (an operator's forced start), which tries again later when it was not.
+// With VictoriaLogs the event is handed to its writer, which never loses it silently (WriteAudit). The database's copy
+// is this node's own (with gossip, every node keeps its own audit events).
+func (s *Service) AuditStored(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) error {
+	e, log, kv := s.auditEvent(ctx, a, orgID, action, target, detail)
+	if s.AuditWriter != nil {
+		s.AuditWriter.WriteAudit(e)
+		return nil
+	}
+	if err := s.Audits.Put(context.WithoutCancel(ctx), e); err != nil {
+		log.WithError(err).Error("audit event not stored", kv...)
+		return err
+	}
+	return nil
+}
+
+// auditEvent makes the audit event of a security event (with its id and time) and writes it to the structured log; it
+// returns the event and the log line's fields.
+func (s *Service) auditEvent(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) (*model.Audit, logger.Logger, []any) {
 	if a == nil {
 		a = System
 	}
@@ -267,6 +321,9 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 	e := &model.Audit{OrgID: orgID, ActorID: a.UserID, Actor: clip(a.Name, 255), Action: clip(action, 255),
 		Target: clip(target, 255), IP: a.IP, Outcome: model.AuditOutcome(action),
 		Detail: detail, Expires: time.Now().Add(time.Duration(s.Cfg.Audit.RetentionDays) * 24 * time.Hour)}
+	if o, _ := ctx.Value(outcomeKey{}).(string); o != "" { // a change whose outcome is not known (auditUnknown)
+		e.Outcome = o
+	}
 	if a.ClientID != "" && e.Actor == "" {
 		e.Actor = "client:" + a.ClientID
 	}
@@ -282,6 +339,13 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 		if e.IP == "" {
 			e.IP = ri.IP
 		}
+	}
+	if cmd, _ := ctx.Value(commandKey{}).(commandInfo); cmd.name != "" && a == System { // an operator's command, not the system's own work
+		e.Actor = "command:" + cmd.name
+		d := make(map[string]string, len(detail)+2)
+		maps.Copy(d, detail)
+		d["command"], d["authenticated"] = cmd.name, cmd.how
+		e.Detail, detail = d, d
 	}
 	if len(s.Origin) > 0 { // a command: who ran it, where, as what
 		if a == System {
@@ -306,19 +370,9 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 	}
 	log := s.Log.WithGroup("audit")
 	log.Info("audit", kv...)
-	if s.AuditWriter != nil { // VictoriaLogs: the database keeps none
-		e.ID, e.Created = model.NewID(), time.Now().UTC()
-		s.AuditWriter.WriteAudit(e)
-		return
-	}
-	if err := s.Audits.Put(context.WithoutCancel(ctx), e); err != nil && !store.Applied(err) {
-		log.WithError(err).Error("audit event not stored", kv...)
-	}
+	e.ID, e.Created = model.NewID(), time.Now().UTC() // (VictoriaLogs takes the event as it is)
+	return e, log, kv
 }
-
-// Durable marks ctx so the write it carries is acknowledged by a peer before returning (security-critical writes in
-// replicated clusters; see cluster package).
-func Durable(ctx context.Context) context.Context { return store.WithDurable(ctx) }
 
 // clip shortens s to at most n bytes without splitting a UTF-8 sequence.
 func clip(s string, n int) string {

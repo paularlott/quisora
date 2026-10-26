@@ -81,11 +81,12 @@ func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.Us
 	for attempt := 0; ; attempt++ {
 		u.RecoveryCodes, u.RecoveryCreated = hashes, &now
 		u.BumpSecurity() // a new set of codes is a new credential: what was in flight under the old one ends
-		err := s.Users.Update(Durable(ctx), u)
+		err := s.Users.Update(ctx, u)
 		if err == nil {
 			break
 		}
 		if !errors.Is(err, store.ErrStale) || attempt == 4 {
+			s.auditUnknown(ctx, err, a, u.OrgID, "account.recovery_codes.create", u.Username, map[string]string{"codes": itoa(RecoveryCodeCount)})
 			return nil, mapStore(err)
 		}
 		if u, err = s.Users.Get(ctx, u.ID); err != nil {
@@ -112,7 +113,7 @@ func (s *Service) DropRecoveryCodes(ctx context.Context, userID string) error {
 		}
 		u.RecoveryCodes, u.RecoveryCreated = nil, nil
 		u.BumpSecurity()
-		err = s.Users.Update(Durable(ctx), u)
+		err = s.Users.Update(ctx, u)
 		if !errors.Is(err, store.ErrStale) || attempt == 4 {
 			return mapStore(err)
 		}

@@ -203,8 +203,11 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 	if len(reason) > model.MaxSignOutReason {
 		return nil, Invalid("reason", "at most "+strconv.Itoa(model.MaxSignOutReason)+" characters")
 	}
-	ctx = Durable(ctx)
-	ev := &model.SignOutEvent{At: time.Now().UTC(), By: a.Name, Reason: reason, APITokens: opt.APITokens}
+	by := a.Name
+	if cmd, _ := ctx.Value(commandKey{}).(commandInfo); cmd.name != "" && a == System { // as the audit log names it
+		by = "command:" + cmd.name
+	}
+	ev := &model.SignOutEvent{At: time.Now().UTC(), By: by, Reason: reason, APITokens: opt.APITokens}
 	var org *model.Org
 	for attempt := 0; ; attempt++ {
 		o, err := s.Orgs.Get(ctx, orgID)
@@ -223,7 +226,7 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 			c.APITokens++
 		}
 		err = s.Orgs.Update(ctx, o)
-		if store.Applied(err) {
+		if err == nil {
 			org = o
 			break
 		}
@@ -236,7 +239,7 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 	if opt.KeepSession != "" {
 		if sess, err := s.Sessions.Get(ctx, opt.KeepSession); err == nil {
 			if sess.Stamp, err = s.SessionStamp(ctx, sess.OrgID); err == nil {
-				if err := s.Sessions.Update(ctx, sess); !store.Applied(err) {
+				if err := s.Sessions.Update(ctx, sess); err != nil {
 					s.Log.WithError(err).Warn("emergency sign-out: could not keep the actor's session", "session", sess.ID)
 				}
 			}
@@ -309,6 +312,14 @@ func (s *Service) SweepSignOut(ctx context.Context, a *Actor, orgID string, apiT
 	return total, err
 }
 
+// signOutSweepGap is the pause after each tombstone a sign-out sweep writes: at most 500 a second, one at a time,
+// across every organization. The sweep is cleanup (everything it ends stopped working when the lever was pulled), and
+// a partition's owner commits one write at a time, so a sweep that wrote as fast as the store answers would keep the
+// partitions of the organizations it walks busy for its whole run and queue every sign-in behind it. A partition write
+// carries one record today, so the sweep cannot write a partition's tombstones in one change (batching needs the
+// cluster layer to carry several records in a change); it is paced instead. A variable for tests.
+var signOutSweepGap = 2 * time.Millisecond
+
 func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (SignOutSweep, error) {
 	var n SignOutSweep
 	sess, err := s.SessionStamp(ctx, orgID)
@@ -321,10 +332,16 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 	}
 	var errs sweepErrs
 	tomb := func(k model.Kind, id string) bool {
-		if err := s.Store.Put(Durable(ctx), store.Tombstone(k, id)); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+		if err := ctx.Err(); err != nil { // cancelled: what is left is found by the next sweep
 			errs.add(err)
 			return false
 		}
+		if err := s.Store.Put(ctx, store.Tombstone(k, id)); err != nil && !errors.Is(err, store.ErrStale) {
+			errs.add(err)
+			pause(ctx, signOutSweepGap)
+			return false
+		}
+		pause(ctx, signOutSweepGap)
 		return true
 	}
 	for after := ""; ; {
@@ -334,6 +351,10 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 			return n, errs.err()
 		}
 		for _, u := range users {
+			if err := ctx.Err(); err != nil { // cancelled (the server is stopping): what is left is found by the next sweep
+				errs.add(err)
+				return n, errs.err()
+			}
 			sessions, err := s.Sessions.All(ctx, u.ID)
 			if err != nil {
 				errs.add(err)

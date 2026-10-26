@@ -49,6 +49,7 @@ func TestInviteThroughRunningServer(t *testing.T) {
 		time.Until(expires) > service.BreakGlassTTL {
 		t.Fatalf("break-glass: %q %v %s %v", link, expires, how, err)
 	}
+	requireCommandActor(t, a, "user.invite.break_glass", "invite")
 	tok := link[strings.Index(link, "token=")+6:]
 	if _, _, err := a.Svc.PeekLink(ctx, tok, service.LinkInvite); err != nil {
 		t.Fatalf("break-glass link does not open for the disabled account: %v", err)

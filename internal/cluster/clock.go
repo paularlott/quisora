@@ -1,24 +1,24 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/paularlott/gossip"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// The peer clock check. Versions come from the nodes' clocks, so a node whose clock is off from the cluster's must
-// not vote or write: a voter restarted with its clock stepped back (a VM restored from a snapshot, a manual
-// correction) could otherwise grant a version below one it granted before the restart. Every change feed reply
-// carries the responder's time (feedResp.Now); the asker reads its offset from each peer as NTP does (the peer's time
+// The peer clock check. Versions come from the owners' clocks (they only ever rise per record), but sessions, grants
+// and every end date expire by each node's own clock, so a node whose clock is off from the cluster's must not serve.
+// Every ClockInterval a node asks each peer for its time (msgClock); it reads the offset as NTP does (the peer's time
 // against the midpoint of the request), keeps each peer's latest reading in memory, and takes the median of its own
 // clock (offset 0) and the fresh readings: the cluster's clock as its majority keeps it, so a minority of bad clocks,
 // this node's or a peer's, is outvoted. It decides only once it has heard from enough peers to make a quorum with
-// itself; until then nothing changes. Off by more than clockLimit, the node refuses
-// to serve (clockOff) until it is back within clockOK. Feeds are pulled from every peer every few seconds, and at
-// start-up during catch-up, before the node votes. Nothing is kept on disk.
+// itself; until then nothing changes. Off by more than clockLimit, the node refuses to serve (clockOff) until it is
+// back within clockOK. Nothing is kept on disk.
 const (
 	clockLimit = store.MaxSkew // further off from the cluster's median: refuse to serve
 	clockOK    = clockLimit / 2
@@ -72,15 +72,10 @@ func (n *Node) clockOffset() (time.Duration, bool) {
 }
 
 // checkClock refuses to serve while this node's clock is off from the cluster's, and serves again once it is close.
-// A voter that has not voted yet (restarting) also takes its start floor from the cluster's time (voter.startFrom):
-// every version granted before the restart is below it, whatever this node's clock says.
 func (n *Node) checkClock() {
 	off, ok := n.clockOffset()
 	if !ok {
 		return
-	}
-	if v := n.voter; v != nil && off > 0 && (!n.votes() || time.Now().Before(v.resumeAt)) {
-		v.startFrom(off)
 	}
 	abs := max(off, -off)
 	switch {
@@ -100,5 +95,60 @@ func (n *Node) checkClock() {
 			n.log.Info("this node's clock agrees with the other nodes' again", "offset", off.Round(time.Millisecond))
 			n.rebuild()
 		}
+	}
+}
+
+type clockReq struct {
+	V int // nothing: a request carries a body
+}
+
+type clockResp struct {
+	Now int64 // the responder's clock, unix nanos
+}
+
+// handleClock answers a peer's clock reading.
+func (n *Node) handleClock(*gossip.Node, *gossip.Packet) (any, error) {
+	return &clockResp{Now: time.Now().UnixNano()}, nil
+}
+
+// watchLoop reads every alive peer's clock every ClockInterval, and refreshes the membership view and this node's
+// published readiness every second at most (the partition protocol becomes ready, or stops being, without a gossip
+// event to say so); a node that holds no data set yet looks for one to join as often (joinDataSet).
+func (n *Node) watchLoop() {
+	defer n.wg.Done()
+	t := time.NewTicker(min(n.opt.ClockInterval, time.Second))
+	defer t.Stop()
+	var last time.Time
+	for {
+		if time.Since(last) >= n.opt.ClockInterval {
+			last = time.Now()
+			n.readClocks()
+		}
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-t.C:
+			n.rebuild()
+			if err := n.joinDataSet(); err != nil {
+				n.log.WithError(err).Error("could not start the partition protocol")
+			}
+		}
+	}
+}
+
+// readClocks asks each alive peer for its time (a peer that does not answer in a few seconds is left out).
+func (n *Node) readClocks() {
+	for _, mb := range n.otherPeers() {
+		n.wg.Add(1)
+		go func(mb *member) {
+			defer n.wg.Done()
+			ctx, cancel := context.WithTimeout(n.ctx, 3*time.Second)
+			defer cancel()
+			sent := time.Now()
+			var resp clockResp
+			if err := n.gc.SendToWithResponseContext(ctx, mb.node, msgClock, &clockReq{}, &resp); err == nil {
+				n.clockReading(mb.id, sent, time.Now(), resp.Now)
+			}
+		}(mb)
 	}
 }

@@ -1,14 +1,14 @@
 // Package sqlstore is a store.Store backed by SQL: SQLite (pure Go, no cgo), PostgreSQL, MySQL and MariaDB.
 //
-// Layout: one table per kind with the columns id, version, origin, deleted, scope, expires, seq, uniq, data plus one
-// typed column per schema field; a (kind, value) -> id table for unique values; and a feed table holding the feed id
-// and the sequence counter. Versions are stored as BIGINT (an HLC timestamp stays below 2^63 for centuries);
-// times are stored as unix microseconds (0 = unset), expiry as nullable unix microseconds.
+// Layout: one table per kind with the columns id, version, origin, deleted, scope, expires, uniq, data plus one
+// typed column per schema field (and part, pnum and pseq: the record's partition key and its partition stamp, see
+// partition.go); a (kind, value) -> id table for unique values; a table of per-partition protocol state; and a table
+// holding the database's identity (FeedID). Versions are stored as BIGINT (an HLC timestamp stays below 2^63
+// for centuries); times are stored as unix microseconds (0 = unset), expiry as nullable unix microseconds.
 //
-// Writes run in one transaction under an in-process mutex, and the sequence counter is a row bumped inside the
-// transaction, so seq follows commit order. Replication runs only against single-process local backends (SQLite);
-// for shared servers several processes may write at once: Put, CompareAndPut and unique values stay correct through
-// row locks and constraints (and retried deadlocks), and the change feed is correct per process.
+// Each write is one transaction, and several processes may write one database (a shared server): Put, CompareAndPut and
+// unique values stay correct through row locks and constraints (and retried deadlocks). Nothing is serialised in the
+// process: concurrent writes, those of different partitions included, run at the database's own concurrency.
 //
 // Limits: on MySQL and MariaDB string fields are VARCHAR(255), ids and scopes VARCHAR(191), unique values
 // VARCHAR(512) (utf8mb4, NO PAD binary collation); longer values are rejected by the server. MySQL needs 8.0.13+
@@ -50,13 +50,7 @@ type Config struct {
 	// RootCAs verifies the server's TLS certificate (a private CA; nil: the system's roots). For MySQL/MariaDB it
 	// also turns TLS on when the DSN does not; for PostgreSQL it applies when the DSN asks for TLS (sslmode).
 	RootCAs *x509.CertPool
-	// Feed enables the change feed (Changes, commit-ordered seq). It costs a serialised write path: an in-process
-	// mutex and a counter row locked until commit. Leave it off unless the data is replicated.
-	Feed bool
 }
-
-// ErrFeedDisabled is returned by Changes when the store was opened without Config.Feed.
-var ErrFeedDisabled = errors.New("sqlstore: change feed disabled")
 
 // Store implements store.Store over SQL.
 type Store struct {
@@ -64,12 +58,10 @@ type Store struct {
 	rdb    *sql.DB // readers (same pool as wdb except on SQLite)
 	wdb    *sql.DB // writes
 	rc, wc *stmtCache
-	mu     sync.Mutex   // serialises write transactions so seq follows commit order
-	feedID atomic.Value // string
-	feed   bool
+	feedID atomic.Value // string: the database's identity (store.Store.FeedID)
 	tables map[model.Kind]*table
 
-	releaseQ, seqQ, seqSelQ string // unique release and feed counter statements
+	releaseQ string // the unique release statement
 }
 
 // Open connects to the database, creates or migrates the schema and returns the store.
@@ -78,19 +70,11 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{d: d, feed: cfg.Feed, tables: map[model.Kind]*table{}}
+	s := &Store{d: d, tables: map[model.Kind]*table{}}
 	for _, k := range model.Kinds() {
 		s.tables[k] = newTable(d, k)
 	}
 	s.releaseQ = d.bind("DELETE FROM " + uniqueTable + " WHERE kind = ? AND value = ? AND id = ?")
-	if !cfg.Feed {
-		// no counter
-	} else if d.isMySQL() {
-		s.seqQ = "UPDATE " + feedTable + " SET seq = LAST_INSERT_ID(seq + 1) WHERE id = 1"
-		s.seqSelQ = "SELECT LAST_INSERT_ID()"
-	} else {
-		s.seqQ = "UPDATE " + feedTable + " SET seq = seq + 1 WHERE id = 1 RETURNING seq"
-	}
 	switch {
 	case d.name == "sqlite":
 		err = s.openSQLite(ctx, cfg)
@@ -146,7 +130,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	var feed string
 	if err := s.wdb.QueryRowContext(ctx, "SELECT feed_id FROM "+feedTable+" WHERE id = 1").Scan(&feed); err != nil {
 		s.Close()
-		return nil, fmt.Errorf("sqlstore: read feed id: %w", err)
+		return nil, fmt.Errorf("sqlstore: read the store id: %w", err)
 	}
 	s.feedID.Store(feed)
 	return s, nil
@@ -225,7 +209,7 @@ func sqliteDSN(dsn string, writer bool) string {
 	return dsn + sep + strings.ReplaceAll(q.Encode(), "+", "%20")
 }
 
-// FeedID identifies this store's change feed.
+// FeedID identifies this database (random, created with it; a wiped one gets another).
 func (s *Store) FeedID() string { return s.feedID.Load().(string) }
 
 // Close closes the connection pools.
@@ -383,6 +367,10 @@ func (r *row) Scan(dest ...any) error {
 }
 
 func (s *Store) reader() runner { return runner{c: s.rc} }
+
+// Readers is the size of the pool reads are served from (on SQLite the readers beside the one writer): the cluster
+// bounds its long reads (catch-up exports, each holding a connection for its whole stream) to a part of it.
+func (s *Store) Readers() int { return s.rdb.Stats().MaxOpenConnections }
 
 // fallbackTLS returns the TLS configurations of a PostgreSQL connection's fallbacks (sslmode=prefer tries TLS, then
 // plain).

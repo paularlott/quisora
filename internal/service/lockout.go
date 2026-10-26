@@ -36,7 +36,7 @@ func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason stri
 	errs = append(errs, lerr)
 	for _, l := range links {
 		if !l.Used {
-			if err := s.Links.Delete(Durable(ctx), l.ID); !store.Applied(err) && !errors.Is(err, store.ErrStale) {
+			if err := s.Links.Delete(ctx, l.ID); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, err)
 			}
 		}

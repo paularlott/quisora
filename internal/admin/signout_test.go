@@ -4,9 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/paularlott/quisora/internal/service"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // An organization's administrator signs everyone in it out: every session stops at once (theirs is kept), other
@@ -105,45 +102,5 @@ func TestLockOutEndpoint(t *testing.T) {
 	}
 	if b := page(ada, w.users["admin"].ID); strings.Contains(b, `id="lockout-open"`) {
 		t.Error("lock-out offered on your own page")
-	}
-}
-
-// Importing users with a bcrypt hash over the API: a super admin's token needs the import scope as well as admin; an
-// organization's admin cannot; an update never takes a hash.
-func TestImportUserAPI(t *testing.T) {
-	w := newWorld(t)
-	bc, err := bcrypt.GenerateFromPassword([]byte("old system password"), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := func(name string) map[string]any {
-		return map[string]any{"email": name + "@x.example", "given_name": "I", "password_hash": string(bc)}
-	}
-	wantField(t, w.withBearer("super", "admin").post(AU, body("i1")), 422, "password_hash")
-	wantField(t, w.as("admin").post(AU, body("i2")), 422, "password_hash")
-	r := w.withBearer("super", "admin", "import").post(AU, body("imported"))
-	want(t, r, 201)
-	if r.JSON["has_password"] != true {
-		t.Errorf("no password: %s", r.Raw)
-	}
-	id, _ := r.JSON["id"].(string)
-	u, err := w.env.Svc.Users.Get(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := w.env.Svc.VerifyPassword(context.Background(), "", u, "old system password"); !ok || err != nil {
-		t.Errorf("the imported password does not verify: %v", err)
-	}
-	// the update body has no such field: the hash the sign-in made (argon2id) stays
-	w.withBearer("super", "admin", "import").patch(AU+"/"+id, map[string]any{"password_hash": string(bc)})
-	again, _ := w.env.Svc.Users.Get(context.Background(), id)
-	inner, _ := w.env.Svc.Sealer.OpenFor(service.PasswordBinding(id), again.PasswordHash)
-	if !strings.HasPrefix(string(inner), "$argon2id$") {
-		t.Errorf("an update changed the hash: %q", inner)
-	}
-	// only super admins can make an import token
-	if _, _, err := w.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(w.users["admin"], ""),
-		service.APITokenInput{Name: "t", Scopes: []string{"admin", "import"}}); err == nil {
-		t.Error("an organization's admin made an import token")
 	}
 }

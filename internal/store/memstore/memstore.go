@@ -18,8 +18,11 @@ type key struct {
 
 type entry struct {
 	rec     *store.Record
-	seq     uint64
 	indexed map[string]bool // unique values this record is indexed under
+	// pnum and pseq stamp a record written by ApplyPartition or ImportPartition: the partition and the sequence number
+	// of the write that last changed it (pseq 0: no stamp).
+	pnum int
+	pseq uint64
 }
 
 // Store is an in-memory store.
@@ -28,13 +31,12 @@ type Store struct {
 	feedID  string
 	records map[key]*entry
 	unique  map[key]string // (kind, unique value) -> id
-	seq     uint64
-	log     map[uint64]key // seq -> record (latest change of each record only)
+	parts   map[int]*partState
 }
 
 // New returns an empty store.
 func New() *Store {
-	return &Store{feedID: model.NewID(), records: map[key]*entry{}, unique: map[key]string{}, log: map[uint64]key{}}
+	return &Store{feedID: model.NewID(), records: map[key]*entry{}, unique: map[key]string{}, parts: map[int]*partState{}}
 }
 
 // clone copies a record handed to a reader; like every backend, a read moves the clock past the record's version.
@@ -85,11 +87,10 @@ func (s *Store) write(rec *store.Record, index []string) {
 				delete(s.unique, key{rec.Kind, u})
 			}
 		}
-		delete(s.log, old.seq)
 	}
 	rec = clone(rec)
 	if rec.Deleted {
-		rec.Data, rec.Fields, rec.Unique, rec.Scope, rec.Expires, rec.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch kept: a quorum tombstone's generation (store.Head.Rank)
+		rec.Data, rec.Fields, rec.Unique, rec.Scope, rec.Expires, rec.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch and Partition kept
 		index = nil
 	}
 	e := &entry{rec: rec, indexed: map[string]bool{}}
@@ -97,10 +98,7 @@ func (s *Store) write(rec *store.Record, index []string) {
 		s.unique[key{rec.Kind, u}] = rec.ID
 		e.indexed[u] = true
 	}
-	s.seq++
-	e.seq = s.seq
 	s.records[k] = e
-	s.log[s.seq] = k
 }
 
 // holder returns the live record (other than id) indexed under the unique value.
@@ -162,60 +160,38 @@ func (s *Store) Lookup(_ context.Context, kind model.Kind, id string) (*store.Re
 	return clone(e.rec), nil
 }
 
-func (s *Store) PutReplicated(_ context.Context, rec *store.Record) (bool, []string, error) {
+func (s *Store) PutReplicated(_ context.Context, rec *store.Record) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	applied, losers := s.putReplicated(rec)
-	return applied, losers, nil
+	return s.putReplicated(rec)
 }
 
-// PutReplicatedBatch applies recs under one lock acquisition (store.BatchReplicator).
-func (s *Store) PutReplicatedBatch(_ context.Context, recs []*store.Record) ([]bool, [][]string, error) {
+// PutReplicatedBatch applies recs under one lock acquisition (store.BatchReplicator); a record refused with an error
+// stops the batch (the ones before it stay applied here; the caller gives up on an error).
+func (s *Store) PutReplicatedBatch(_ context.Context, recs []*store.Record) ([]bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	applied := make([]bool, len(recs))
-	losers := make([][]string, len(recs))
 	for i, rec := range recs {
-		applied[i], losers[i] = s.putReplicated(rec)
+		var err error
+		if applied[i], err = s.putReplicated(rec); err != nil {
+			return nil, err
+		}
 	}
-	return applied, losers, nil
+	return applied, nil
 }
 
 // putReplicated applies rec; the lock must be held.
-func (s *Store) putReplicated(rec *store.Record) (bool, []string) {
-	if old := s.records[key{rec.Kind, rec.ID}]; old != nil && !store.Newer(rec, old.rec) {
+func (s *Store) putReplicated(rec *store.Record) (bool, error) {
+	if old := s.records[key{rec.Kind, rec.ID}]; old != nil && old.rec.Version >= rec.Version {
 		return false, nil
 	}
+	if s.conflict(rec) {
+		return false, store.ErrConflict
+	}
 	store.Witness(rec.Version)
-	var losers []string
-	index := make([]string, 0, len(rec.Unique))
-	if !rec.Deleted {
-		for _, u := range rec.Unique {
-			other := s.holder(rec.Kind, u, rec.ID)
-			switch {
-			case other == nil:
-				index = append(index, u)
-			case store.KeepsUnique(other.rec.Head(), rec.Head(), other.rec.ID, rec.ID):
-				losers = appendOnce(losers, rec.ID)
-			default:
-				delete(s.unique, key{rec.Kind, u})
-				delete(other.indexed, u)
-				losers = appendOnce(losers, other.rec.ID)
-				index = append(index, u)
-			}
-		}
-	}
-	s.write(rec, index)
-	return true, losers
-}
-
-func appendOnce(list []string, id string) []string {
-	for _, v := range list {
-		if v == id {
-			return list
-		}
-	}
-	return append(list, id)
+	s.write(rec, rec.Unique)
+	return true, nil
 }
 
 func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.Timestamp) error {
@@ -276,25 +252,6 @@ func (s *Store) Count(_ context.Context, kind model.Kind, scope string) (int, er
 	return n, nil
 }
 
-func (s *Store) Changes(_ context.Context, since uint64, limit int) ([]store.Change, uint64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := []store.Change{}
-	next := since
-	for seq := since + 1; seq <= s.seq; seq++ {
-		next = seq
-		k, ok := s.log[seq]
-		if !ok {
-			continue
-		}
-		out = append(out, store.Change{Seq: seq, Record: clone(s.records[k].rec)})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out, next, nil
-}
-
 func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -308,7 +265,6 @@ func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Ti
 					delete(s.unique, key{k.kind, u})
 				}
 			}
-			delete(s.log, e.seq)
 			delete(s.records, k)
 			n++
 		}
@@ -318,11 +274,13 @@ func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Ti
 
 func (s *Store) Close() error { return nil }
 
-// Wipe discards everything and starts a new change feed (tests clear a database with it).
+var _ store.PartitionStore = (*Store)(nil)
+
+// Wipe discards everything and gives the store a new identity (FeedID); tests clear a database with it.
 func (s *Store) Wipe(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records, s.unique, s.log = map[key]*entry{}, map[key]string{}, map[uint64]key{}
+	s.records, s.unique, s.parts = map[key]*entry{}, map[key]string{}, map[int]*partState{}
 	s.feedID = model.NewID()
 	return nil
 }

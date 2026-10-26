@@ -233,7 +233,7 @@ func (c *committer) run(ops []*groupOp) {
 		if err = c.runOnce(ops); !errors.Is(err, errConflict) {
 			break
 		}
-		time.Sleep(time.Duration(attempt%8+1) * 100 * time.Microsecond)
+		time.Sleep(conflictBackoff(attempt))
 	}
 	if errors.Is(err, errConflict) {
 		err = fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)

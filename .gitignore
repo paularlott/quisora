@@ -21,6 +21,7 @@ node_modules/
 /conformance/.run/
 /.task/
 *.log
+seed.json
 
 # Local configuration and secrets (quisora.toml.example is the template)
 /quisora.toml

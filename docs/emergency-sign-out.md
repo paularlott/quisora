@@ -43,11 +43,20 @@ quisora sign-out --org acme --reason "Suspected session theft"
 quisora sign-out --all --reason "Suspected session theft" --api-tokens
 ```
 
-It asks you to type the organization's name (or `everyone`) unless given `--yes`, then prints what it removed.
+It asks you to type the organization's name (or `everyone`) unless given `--yes`.
 
-- **Shared database** (PostgreSQL, MySQL, MariaDB): run it while the servers run; they follow within seconds.
-- **BadgerDB or SQLite on one node**: stop the server first, run it, start the server.
-- **Gossip cluster**: stop one node, run it there, start the node again; the others receive the change from it.
+- **Shared database** (PostgreSQL, MySQL, MariaDB): it writes to the database while the servers run; they follow
+  within seconds. It prints what it removed.
+- **BadgerDB or SQLite on one node**: it asks the running server at `server.public_url` (or `--server`), signing the
+  request with the master key, as `quisora invite` does; the server removes what it ended in the background. With the
+  server stopped, it writes to the store itself and prints what it removed.
+- **Gossip cluster**: it always asks a running node (`server.public_url` or `--server`), which writes the sign-out
+  through the cluster like any other change, so the nodes, or a majority of them, must be running. Run it from any
+  node's configuration. It never writes to a stopped node's database: a change made there would reach no other node.
+
+A request through a server is good for two minutes and once, a server takes at most 10 a minute from one address, and
+the audit log records it as the command (`command:sign-out`, from the address it came from). `--ca-file` adds
+certificates to trust for the server, and `--insecure` skips the check.
 
 ### What ends, and what does not
 
@@ -78,6 +87,19 @@ stamped with the counters when it is made. Pulling the lever increments a counte
 confirms like any other; from then on everything stamped before it is refused. So it does not depend on the nodes'
 clocks, and it cannot be half done. The counters are part of backups and move with the primary organization
 (`quisora set-primary`), so nothing a sign-out ended comes back with a restore.
+
+### In a gossip cluster
+
+- **It needs a majority of the cluster.** The counter is a write like any other (to the organization's record, in the
+  global partition), committed only when a majority of `cluster.size` has stored it. With fewer than a majority of the
+  nodes up the lever is refused, nothing ends and nothing is half done: get a majority running and pull it again.
+- **A node cut off from the majority is bound by `cluster.minority_grace`** (300 seconds by default, `[cluster]
+  minority_grace`). It cannot learn of a sign-out the others made. Its pages and APIs stop answering at once (it is not
+  ready: 503), but its token, userinfo and introspection endpoints keep answering for up to `minority_grace` after it
+  lost the majority, from the counters it last had, and so can honour for that long a session, grant or API token that the
+  lever ended elsewhere. Past it they stop too, and when the node meets the others again it learns the counters and refuses
+  what they ended. Lower `minority_grace` if that window matters more to you than a cut-off node serving its
+  applications through an outage ([Cluster size](REPLICATION.md#cluster-size)); `0` stops it at once.
 
 ## Locking out one person
 

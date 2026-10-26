@@ -15,7 +15,8 @@ import (
 )
 
 // setupAudit picks where audit events go and where the audit pages read them: VictoriaLogs when configured (from
-// any node); otherwise the database — with gossip each node keeps its own events and a page asks every node.
+// any node); otherwise the database — with gossip each node keeps its own events (they are never replicated) and a
+// page asks every node of the cluster and merges their answers (cluster.Node.AuditQuery).
 func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger) error {
 	if c.Audit.VictoriaLogs != "" {
 		vl, err := vlogs.New(c.Audit.VictoriaLogs, node.ID(), log)
@@ -37,8 +38,8 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 	// the development one unnoticed.
 	log.Warn("audit events are kept in the database only, for audit.retention_days: not an audit trail for "+
 		"production or SOC 2; set audit.victorialogs_url (docs/SOC2.md)", "retention_days", c.Audit.RetentionDays)
-	if node.Replicating() {
-		a.Svc.AuditReader = clusterAudit{node: node, svc: a.Svc}
+	if !node.Standalone() {
+		a.Svc.AuditReader = clusterAudit{node: node}
 	}
 	return nil
 }
@@ -62,7 +63,6 @@ func cliAudit(c *config.Config, svc *service.Service, log logger.Logger) func() 
 // clusterAudit reads the audit pages from every node of a gossip cluster (cluster.Node.AuditQuery).
 type clusterAudit struct {
 	node *cluster.Node
-	svc  *service.Service
 }
 
 func (r clusterAudit) ReadAudit(ctx context.Context, q service.AuditQuery) (service.AuditPage, error) {

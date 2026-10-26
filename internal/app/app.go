@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,9 @@ type App struct {
 	// logoutQueue holds the back-channel logouts to retry (nil without the OIDC provider).
 	// Opened after the background work starts (it needs the OIDC provider), so read atomically.
 	logoutQueue atomic.Pointer[queue.Queue[oidc.LogoutRetry]]
+
+	// passes counts the housekeeping passes this node has run as the leader (tests wait for them).
+	passes atomic.Int64
 
 	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
 	// cancels their context and waits for them before it closes anything they use.
@@ -133,9 +137,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.Svc = service.New(c, a.Store, sealer)
 	a.Svc.Log = log
 	a.Svc.Writable = node.Writable
-	if node.Replicating() {
-		a.Svc.MinSuperAdmins = 2 // see service.Service.MinSuperAdmins
-	}
 	a.closers = append(a.closers, a.Svc.WaitBackground) // closed before the store (closers run in reverse)
 	if err := a.setupAudit(c, node, log); err != nil {
 		a.Close()
@@ -143,7 +144,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	}
 	// Serving never creates the primary organization ("quisora bootstrap" does): a node that starts without one waits
 	// to receive it (a new member of a gossip cluster) or reports that it has not been set up.
-	if _, err := a.Svc.PrimaryOrg(ctx); errors.Is(err, service.ErrNotFound) && !node.Replicating() {
+	if _, err := a.Svc.PrimaryOrg(ctx); errors.Is(err, service.ErrNotFound) && !!node.Standalone() {
 		log.Warn("this server has not been set up: run \"quisora bootstrap\" to create the primary organization and its first administrator")
 	}
 
@@ -160,11 +161,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	srv.Status = func() any { return readyzStatus(node.Status()) }
 	srv.Site.Clustered = !node.Status().Standalone
 	a.registerMetrics()
-	// A record that lost a unique value to another created before it (two nodes accepted the same email address,
-	// name...) is kept: the value is removed from it, it is flagged and the change audited (nothing is deleted).
-	node.OnConflict(func(loser *store.Record) {
-		a.Svc.Background(ctx, func(ctx context.Context) { a.Svc.ResolveUniqueClash(ctx, loser.Kind, loser.ID) })
-	})
 	if node.SharedDatabase() {
 		// No gossip, so no eviction messages from the other nodes: cached sessions are trusted for 5 seconds.
 		srv.Sessions.CacheTTL = 5 * time.Second
@@ -182,6 +178,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.closers = append(a.closers, func() { stop(); a.bg.Wait() })
 	// Every master key report says how many queued items still need a previous key (re-sealing them first).
 	a.Svc.QueuesStale = a.resealQueues
+	a.Svc.LiveNodes = node.LiveNodes
 	srv.Use(modules(bg, a)...)
 	// Replication is already applying records (node.Start): the hook goes in once what it calls (the modules'
 	// caches and their onChange hooks) is built. Until the server starts nothing is cached, so nothing is missed.
@@ -214,23 +211,38 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 
 // auditForcedStart writes a start forced with "quisora force-start" (logged when it happened) to the audit log of the
 // primary organization once this node may write: the operator's override is on record in the cluster, not only in
-// one node's log. It stays pending in the node's cluster state until then, across restarts.
+// one node's log. It stays pending in the node's cluster state until the event is stored, across restarts.
 func (a *App) auditForcedStart(ctx context.Context) {
-	at, reason, ok := a.Node.PendingForceStart()
+	auditForcedStart(ctx, a.Node, a.Svc, time.Second)
+}
+
+// forceStartNode is what auditForcedStart needs of the node (cluster.Node).
+type forceStartNode interface {
+	ID() string
+	Writable() bool
+	PendingForceStart() (at time.Time, reason string, ok bool)
+	ForceStartAudited()
+}
+
+func auditForcedStart(ctx context.Context, node forceStartNode, svc *service.Service, poll time.Duration) {
+	at, reason, ok := node.PendingForceStart()
 	if !ok {
 		return
 	}
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(poll)
 	defer t.Stop()
 	for {
-		if a.Node.Writable() {
+		if node.Writable() {
 			org := model.PrimaryOrgID
-			if o, err := a.Svc.PrimaryOrg(ctx); err == nil {
+			if o, err := svc.PrimaryOrg(ctx); err == nil {
 				org = o.ID
 			}
-			a.Svc.Audit(ctx, service.System, org, "cluster.force_start", a.Node.ID(), map[string]string{
-				"reason": reason, "at": at.UTC().Format(time.RFC3339)})
-			a.Node.ForceStartAudited()
+			err := svc.AuditStored(service.WithCommand(ctx, "force-start", "access to this node's data directory"),
+				service.System, org, "cluster.force_start", node.ID(),
+				map[string]string{"reason": reason, "at": at.UTC().Format(time.RFC3339)})
+			if err == nil {
+				node.ForceStartAudited() // only now: until the event is stored, the record stays (the next start tries again)
+			}
 			return
 		}
 		select {
@@ -321,17 +333,23 @@ type readyzCluster struct {
 	Size        int   `json:"size,omitempty"`
 	Quorum      int   `json:"quorum,omitempty"`
 	Alive       int   `json:"alive"`
+	Partitions  int   `json:"partitions_owned"`
 	Unconfirmed int64 `json:"unconfirmed"`
 	Refused     int64 `json:"refused"`
 	ClockSkewed int64 `json:"clock_skewed"`
 	SkewRefused int64 `json:"skew_refused"`
 	// ClockOffsetMs: the other nodes' clocks against this one's (cluster.Status.ClockOffsetMs).
 	ClockOffsetMs *int64 `json:"clock_offset_ms,omitempty"`
+	// Unreadable and Diverged count the partitions this node cannot serve from its copy, and those of them that
+	// diverged here (cluster.Status.PartitionsUnreadable, PartitionsDiverged): which ones, and why, is in GET /api/cluster.
+	Unreadable int `json:"partitions_unreadable"`
+	Diverged   int `json:"partitions_diverged"`
 }
 
 func readyzStatus(st cluster.Status) readyzCluster {
-	return readyzCluster{Size: st.Size, Quorum: st.Quorum, Alive: st.Alive, Unconfirmed: st.Unconfirmed,
-		Refused: st.Refused, ClockSkewed: st.ClockSkewed, SkewRefused: st.SkewRefused, ClockOffsetMs: st.ClockOffsetMs}
+	return readyzCluster{Size: st.Size, Quorum: st.Quorum, Alive: st.Alive, Partitions: st.PartitionsOwned, Unconfirmed: st.Unconfirmed,
+		Refused: st.Refused, ClockSkewed: st.ClockSkewed, SkewRefused: st.SkewRefused, ClockOffsetMs: st.ClockOffsetMs,
+		Unreadable: st.PartitionsUnreadable, Diverged: st.PartitionsDiverged}
 }
 
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the
@@ -388,6 +406,46 @@ func (a *App) registerMetrics() {
 		st(func(s cluster.Status) float64 { return float64(max(s.Alive, 1)) }))
 	m.Gauge("quisora_cluster_size", "cluster.size (0 standalone).", nil, st(func(s cluster.Status) float64 { return float64(s.Size) }))
 	m.Gauge("quisora_cluster_quorum", "Nodes needed for a write (0 standalone).", nil, st(func(s cluster.Status) float64 { return float64(s.Quorum) }))
+	m.Gauge("quisora_partitions_owned", "Partitions this node owns: it orders their writes and commits each on a majority (0 standalone).", nil,
+		st(func(s cluster.Status) float64 { return float64(s.PartitionsOwned) }))
+	// Counters since this node started (a gauge each: the figures come from the node, not from a counter this registry owns).
+	for _, c := range []struct {
+		name, help string
+		v          func(cluster.Status) int64
+	}{
+		{"quisora_partition_writes_total", "Changes this node made that were committed on a majority.", func(s cluster.Status) int64 { return s.Writes }},
+		{"quisora_partition_writes_refused_total", "Changes an owner refused: a version had moved, a unique value was in use.", func(s cluster.Status) int64 { return s.Refused }},
+		{"quisora_partition_writes_unknown_total", "Changes whose outcome this node does not know (the owner was lost mid-write).", func(s cluster.Status) int64 { return s.Unconfirmed }},
+		{"quisora_partition_writes_unavailable_total", "Changes that found no owner or no majority.", func(s cluster.Status) int64 { return s.WritesUnavailable }},
+		{"quisora_partition_reads_total", "Fresh reads this node asked the owner of a partition for.", func(s cluster.Status) int64 { return s.Reads }},
+		{"quisora_partition_reads_failed_total", "Of those, reads that failed.", func(s cluster.Status) int64 { return s.ReadsFailed }},
+		{"quisora_partition_takeovers_total", "Partitions this node became the owner of.", func(s cluster.Status) int64 { return s.Takeovers }},
+	} {
+		m.Gauge(c.name, c.help, nil, st(func(s cluster.Status) float64 { return float64(c.v(s)) }))
+	}
+	m.Gauge("quisora_partitions_unreadable", "Partitions this node cannot serve from its copy now (no owner heard, trailing it, diverged).", nil,
+		st(func(s cluster.Status) float64 { return float64(s.PartitionsUnreadable) }))
+	m.Gauge("quisora_partitions_diverged", "Partitions whose copy on this node holds writes their owner does not have (resync the node).", nil,
+		st(func(s cluster.Status) float64 { return float64(s.PartitionsDiverged) }))
+	m.Gauge("quisora_partition_divergences_total", "Divergences found on this node since its partition protocol started.", nil,
+		st(func(s cluster.Status) float64 { return float64(s.Divergences) }))
+	// Per partition (gossip clusters only): how far behind its owner this node is, whether it is catching up, diverged.
+	perPartition := func(f func(cluster.PartitionStatus) float64) func() []metrics.Sample {
+		return func() []metrics.Sample {
+			ps := a.Node.Status().Partitions
+			out := make([]metrics.Sample, len(ps))
+			for i, p := range ps {
+				out[i] = metrics.Sample{Labels: []string{strconv.Itoa(p.Partition)}, Value: f(p)}
+			}
+			return out
+		}
+	}
+	m.Gauge("quisora_partition_lag_seconds", "How long this node has been behind a position the partition's owner reported committed (0: not behind).",
+		[]string{"partition"}, perPartition(func(p cluster.PartitionStatus) float64 { return float64(p.LagMs) / 1000 }))
+	m.Gauge("quisora_partition_catching_up", "1 while this node is catching the partition up.", []string{"partition"},
+		perPartition(func(p cluster.PartitionStatus) float64 { return metrics.Bool(p.CatchingUp) }))
+	m.Gauge("quisora_partition_diverged", "1 when the partition diverged on this node.", []string{"partition"},
+		perPartition(func(p cluster.PartitionStatus) float64 { return metrics.Bool(p.Diverged) }))
 	m.Gauge("quisora_master_key_rotation", "1 while previous master keys are configured (a rotation in progress).", nil,
 		metrics.Value(func() float64 { return metrics.Bool(a.Svc.Sealer.Previous()) }))
 }

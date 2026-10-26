@@ -26,7 +26,7 @@ type engine interface {
 	Range(ctx context.Context, bucket, from, to string, limit int) ([]string, error)
 	// Update runs fn in a transaction. Errors returned by fn abort the transaction and are returned as is.
 	Update(ctx context.Context, fn func(tx txn) error) error
-	// wipe removes every key of the store, restarts the sequence and stores newFeedID.
+	// wipe removes every key of the store and stores newFeedID, its new identity.
 	wipe(ctx context.Context, newFeedID string) error
 	Close() error
 }
@@ -65,20 +65,10 @@ type txn interface {
 	// key (so concurrent transactions adding to one counter conflict and one retries). A counter is not read in the
 	// transaction that adds to it. counterOf decodes one.
 	Add(key string, delta int64)
-	// Feed writes the record at recKey and registers it in the change feed under a fresh sequence number assigned
-	// in commit order: body must start with seqHeader reserved bytes, which are overwritten with the sequence
-	// number (big endian). The feed entry of the record's previous sequence (oldSeq, 0 if none) is removed. A nil
-	// body deletes the record and its feed entry instead and consumes no sequence number.
-	// A key written with Feed is not also written with Set or Delete in the same transaction. Badger: a later read of
-	// recKey in the transaction returns body with a placeholder sequence, resolved at commit when passed as oldSeq.
-	Feed(recKey string, body []byte, entry string, oldSeq uint64)
 }
 
 const (
-	seqHeader = 8
-	feedBkt   = "seq"
-	metaSeq   = "meta/seq"
-	metaFeed  = "meta/feed_id"
+	metaFeed = "meta/feed_id" // the store's identity (store.Store.FeedID)
 	// maxRetries bounds optimistic transaction retries.
 	maxRetries = 100
 )

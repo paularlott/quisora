@@ -320,6 +320,11 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ce, err := p.appClient(r.Context(), r, q.Get("client_id"))
+	if err != nil && !gone(err) { // the application or its organization cannot be read now: not an unknown one
+		p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
+			"This request cannot be completed at the moment. Try again in a moment.")
+		return
+	}
 	if err != nil || !ce.c.Enabled {
 		p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
 			"The link you followed is not valid. Return to the application and try again.")

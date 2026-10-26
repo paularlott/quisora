@@ -1,28 +1,14 @@
 package scim_test
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
 )
-
-func (e *env) mk(name string, extra map[string]any) string {
-	body := map[string]any{"userName": name, "emails": []any{map[string]any{"value": name + "@acme.test", "type": "work", "primary": true}}}
-	for k, v := range extra {
-		body[k] = v
-	}
-	r := e.createUser("acme", e.admA, body)
-	if r.Status != 201 {
-		e.t.Fatalf("create %s: %d %s", name, r.Status, r.Raw)
-	}
-	return r.str("id")
-}
-
-func (e *env) patch(id string, ops ...map[string]any) resp {
-	return e.do("PATCH", "/scim/v2/acme/Users/"+id, e.admA, patchBody(ops...))
-}
 
 func TestPatchEntraUser(t *testing.T) {
 	e := newEnv(t)
@@ -205,39 +191,6 @@ func TestPatchSemantics(t *testing.T) {
 	if r := e.patch(id, op("replace", "userName", "renamed-pat")); r.Status != 200 || r.str("userName") != "renamed-pat" {
 		t.Errorf("rename: %d %s", r.Status, r.Raw)
 	}
-	// An error rolls the whole request back.
-	before := e.do("GET", "/scim/v2/acme/Users/"+id, e.admA, nil)
-	if r := e.patch(id, op("replace", "displayName", "will not stick"), op("replace", "active", "perhaps")); r.Status != 400 {
-		t.Errorf("bad bool: %d %s", r.Status, r.Raw)
-	}
-	if after := e.do("GET", "/scim/v2/acme/Users/"+id, e.admA, nil); after.Header.Get("ETag") != before.Header.Get("ETag") {
-		t.Error("partial patch applied")
-	}
-
-	// Malformed requests.
-	bad := []struct {
-		name string
-		body any
-		typ  string
-	}{
-		{"no Operations", map[string]any{"schemas": []string{"x"}}, "invalidSyntax"},
-		{"empty Operations", patchBody(), "invalidSyntax"},
-		{"unknown op", patchBody(op("move", "displayName", "x")), "invalidSyntax"},
-		{"op not object", map[string]any{"Operations": []any{"x"}}, "invalidSyntax"},
-		{"missing value", map[string]any{"Operations": []any{map[string]any{"op": "replace", "path": "displayName"}}}, "invalidSyntax"},
-		{"remove without path", patchBody(op("remove", "", nil)), "noTarget"},
-		{"bad path", patchBody(op("replace", "emails[", "x")), "invalidPath"},
-		{"bad path 2", patchBody(op("replace", "a b", "x")), "invalidPath"},
-		{"unknown schema in path", patchBody(op("replace", "urn:example:nope:2.0:User:thing", "x")), "invalidPath"},
-		{"pathless non-object", patchBody(op("add", "", "x")), "invalidValue"},
-		{"not json", "nope", "invalidSyntax"},
-	}
-	for _, tc := range bad {
-		r := e.do("PATCH", "/scim/v2/acme/Users/"+id, e.admA, tc.body)
-		if r.Status != 400 || r.str("scimType") != tc.typ {
-			t.Errorf("%s: %d %s", tc.name, r.Status, r.Raw)
-		}
-	}
 	if r := e.do("PATCH", "/scim/v2/acme/Users/nope", e.admA, patchBody(op("replace", "displayName", "x"))); r.Status != 404 {
 		t.Errorf("patch unknown: %d", r.Status)
 	}
@@ -288,26 +241,38 @@ func TestETagAndIfMatch(t *testing.T) {
 	if r := e.do("PUT", url, e.admA, body, "If-Match", tag2); r.Status != 412 {
 		t.Errorf("old tag: %d", r.Status)
 	}
-	// Delete with the current tag.
+	// Delete with the current tag, and with *.
 	cur = e.do("GET", url, e.admA, nil).Header.Get("ETag")
 	if r := e.do("DELETE", url, e.admA, nil, "If-Match", cur); r.Status != 204 {
 		t.Errorf("DELETE match: %d", r.Status)
 	}
-	// Groups and organizations carry ETags too.
-	gr := e.do("POST", "/scim/v2/acme/Groups", e.admA, map[string]any{"displayName": "etag-group"})
-	if gr.Header.Get("ETag") == "" {
-		t.Error("group etag")
+	if r := e.do("DELETE", "/scim/v2/acme/Users/"+e.mk("etag2", nil), e.admA, nil, "If-Match", "*"); r.Status != 204 {
+		t.Errorf("DELETE *: %d", r.Status)
 	}
-	if r := e.do("PUT", "/scim/v2/acme/Groups/"+gr.str("id"), e.admA, map[string]any{"displayName": "x"}, "If-Match", stale); r.Status != 412 {
-		t.Errorf("group stale: %d", r.Status)
-	}
-	org := e.do("GET", "/scim/v2/Organizations/"+e.orgA.ID, e.super, nil)
-	if r := e.do("PATCH", "/scim/v2/Organizations/"+e.orgA.ID, e.super, patchBody(op("replace", "displayName", "X")), "If-Match", stale); r.Status != 412 {
-		t.Errorf("org stale: %d", r.Status)
-	}
-	if r := e.do("PATCH", "/scim/v2/Organizations/"+e.orgA.ID, e.super, patchBody(op("replace", "displayName", "X")), "If-Match", org.Header.Get("ETag")); r.Status != 200 {
-		t.Errorf("org match: %d", r.Status)
-	}
+	// Groups and organizations carry ETags and honour the same preconditions.
+	t.Run("group", func(t *testing.T) {
+		gr := e.do("POST", "/scim/v2/acme/Groups", e.admA, map[string]any{"displayName": "etag-group"})
+		url := "/scim/v2/acme/Groups/" + gr.str("id")
+		tag := gr.Header.Get("ETag")
+		if tag == "" {
+			t.Fatal("group etag")
+		}
+		wantStatus(t, "PUT stale", e.do("PUT", url, e.admA, map[string]any{"displayName": "x"}, "If-Match", stale), 412)
+		wantStatus(t, "PATCH stale", e.do("PATCH", url, e.admA, patchBody(op("replace", "displayName", "x")), "If-Match", stale), 412)
+		wantStatus(t, "DELETE stale", e.do("DELETE", url, e.admA, nil, "If-Match", stale), 412)
+		wantStatus(t, "If-None-Match", e.do("GET", url, e.admA, nil, "If-None-Match", tag), 304)
+		wantStatus(t, "PUT match", e.do("PUT", url, e.admA, map[string]any{"displayName": "etag-group 2"}, "If-Match", tag), 200)
+		wantStatus(t, "DELETE *", e.do("DELETE", url, e.admA, nil, "If-Match", "*"), 204)
+	})
+	t.Run("organization", func(t *testing.T) {
+		org := e.do("GET", "/scim/v2/Organizations/"+e.orgA.ID, e.super, nil)
+		if r := e.do("PATCH", "/scim/v2/Organizations/"+e.orgA.ID, e.super, patchBody(op("replace", "displayName", "X")), "If-Match", stale); r.Status != 412 {
+			t.Errorf("org stale: %d", r.Status)
+		}
+		if r := e.do("PATCH", "/scim/v2/Organizations/"+e.orgA.ID, e.super, patchBody(op("replace", "displayName", "X")), "If-Match", org.Header.Get("ETag")); r.Status != 200 {
+			t.Errorf("org match: %d", r.Status)
+		}
+	})
 }
 
 func TestConcurrentPatches(t *testing.T) {
@@ -357,5 +322,162 @@ func TestConcurrentPatches(t *testing.T) {
 	if wins != 1 {
 		t.Errorf("%d concurrent writers won with the same If-Match", wins)
 	}
-	_ = model.RoleUser
+}
+
+// Malformed or refused PATCH requests: each is a 400 with the scimType saying why, and none changes the user, not
+// even the operations before the refused one.
+func TestPatchRefusals(t *testing.T) {
+	e := newEnv(t)
+	id := e.mk("refused", map[string]any{"title": "Dev"})
+	url := "/scim/v2/acme/Users/" + id
+	before := e.do("GET", url, e.admA, nil)
+	core := "urn:ietf:params:scim:schemas:core:2.0:User"
+	for _, tc := range []struct {
+		name string
+		body any
+		typ  string
+	}{
+		{"not json", "nope", "invalidSyntax"},
+		{"not an object", `[]`, "invalidSyntax"},
+		{"no Operations", map[string]any{"schemas": []string{"x"}}, "invalidSyntax"},
+		{"empty Operations", patchBody(), "invalidSyntax"},
+		{"Operations not a list", map[string]any{"Operations": "x"}, "invalidSyntax"},
+		{"operation not an object", map[string]any{"Operations": []any{"x"}}, "invalidSyntax"},
+		{"unknown op", patchBody(op("move", "displayName", "x")), "invalidSyntax"},
+		{"missing op", map[string]any{"Operations": []any{map[string]any{"path": "title", "value": "x"}}}, "invalidSyntax"},
+		{"missing value", map[string]any{"Operations": []any{map[string]any{"op": "replace", "path": "displayName"}}}, "invalidSyntax"},
+		{"remove without path", patchBody(op("remove", "", nil)), "noTarget"},
+		{"bad path", patchBody(op("replace", "emails[", "x")), "invalidPath"},
+		{"path with a space", patchBody(op("replace", "a b", "x")), "invalidPath"},
+		{"bad filter in path", patchBody(op("replace", `emails[type eq`, "x")), "invalidPath"},
+		{"unknown schema in path", patchBody(op("replace", "urn:example:nope:2.0:User:thing", "x")), "invalidPath"},
+		{"pathless non-object", patchBody(op("add", "", "x")), "invalidValue"},
+		{"extension not an object", patchBody(op("add", entURN, "x")), "invalidValue"},
+		{"core schema value not an object", patchBody(op("replace", "", map[string]any{core: "x"})), "invalidValue"},
+		{"extension value not an object", patchBody(op("replace", "", map[string]any{entURN: "x"})), "invalidValue"},
+		{"bad key in a pathless value", patchBody(op("replace", "", map[string]any{"title[": "x"})), "invalidPath"},
+		{"bad extension sub key", patchBody(op("replace", "", map[string]any{entURN: map[string]any{"a[": "x"}})), "invalidPath"},
+		{"bad core sub key", patchBody(op("replace", "", map[string]any{core: map[string]any{"a[": "x"}})), "invalidPath"},
+		{"filtered path with a scalar", patchBody(op("add", `emails[type eq "work"]`, "x")), "invalidValue"},
+		{"active not a bool", patchBody(op("replace", "active", "maybe")), "invalidValue"},
+		{"invalid role", patchBody(op("replace", quisoraURN+":role", "emperor")), "invalidValue"},
+		{"name not an object", patchBody(op("replace", "name", "x")), "invalidValue"},
+		{"userName not a string", patchBody(op("replace", "userName", []any{})), "invalidValue"},
+		{"a later operation fails", patchBody(op("replace", "title", "will not stick"), op("replace", "active", "perhaps")), "invalidValue"},
+	} {
+		r := e.do("PATCH", url, e.admA, tc.body)
+		if r.Status != 400 || r.str("scimType") != tc.typ {
+			t.Errorf("%s: %d %s", tc.name, r.Status, r.Raw)
+		}
+	}
+	if after := e.do("GET", url, e.admA, nil); after.Header.Get("ETag") != before.Header.Get("ETag") || after.str("title") != "Dev" {
+		t.Errorf("a refused patch changed the user: %s", after.Raw)
+	}
+}
+
+// Whole extensions are added, replaced and removed; URN-prefixed core paths and values work; read-only attributes
+// are ignored.
+func TestPatchExtensionsAndReadOnly(t *testing.T) {
+	e := newEnv(t)
+	id := e.mk("ext", nil)
+	r := e.patch(id, op("add", entURN, map[string]any{"department": "Ops"}))
+	if r.Status != 200 || r.str(entURN, "department") != "Ops" {
+		t.Fatalf("add ext: %d %s", r.Status, r.Raw)
+	}
+	r = e.patch(id, op("add", entURN, map[string]any{"division": "EMEA"}))
+	if r.str(entURN, "department") != "Ops" || r.str(entURN, "division") != "EMEA" {
+		t.Errorf("add ext again: %s", r.Raw)
+	}
+	r = e.patch(id, op("replace", entURN, map[string]any{"costCenter": "C9"}))
+	if r.Status != 200 || r.str(entURN, "costCenter") != "C9" || r.str(entURN, "department") != "" {
+		t.Errorf("replace ext: %d %s", r.Status, r.Raw)
+	}
+	r = e.patch(id, op("remove", entURN, nil))
+	if r.Status != 200 || r.Body[entURN] != nil {
+		t.Errorf("remove ext: %d %s", r.Status, r.Raw)
+	}
+	// Removing from an extension that is absent is a no-op; so is removing an absent attribute.
+	wantStatus(t, "remove absent ext attr", e.patch(id, op("remove", entURN+":department", nil)), 200)
+	wantStatus(t, "remove absent attr", e.patch(id, op("remove", "title", nil)), 200)
+	wantStatus(t, "remove absent filtered", e.patch(id, op("remove", `emails[type eq "other"]`, nil)), 200)
+	// Core URN-prefixed paths and values.
+	core := "urn:ietf:params:scim:schemas:core:2.0:User"
+	r = e.patch(id, op("replace", core+":title", "Core"))
+	if r.Status != 200 || r.str("title") != "Core" {
+		t.Errorf("core urn path: %d %s", r.Status, r.Raw)
+	}
+	r = e.patch(id, op("replace", "", map[string]any{core: map[string]any{"title": "Core2"}, "active": false}))
+	if r.Status != 200 || r.str("title") != "Core2" || r.Body["active"] != false {
+		t.Errorf("core object value: %d %s", r.Status, r.Raw)
+	}
+	r = e.patch(id, op("add", "", map[string]any{entURN: map[string]any{"department": "X"}}))
+	if r.Status != 200 || r.str(entURN, "department") != "X" {
+		t.Errorf("ext object value: %d %s", r.Status, r.Raw)
+	}
+	// Read-only attributes are left alone.
+	created := r.str("meta", "created")
+	for _, p := range []string{"id", "meta", "groups", "schemas"} {
+		r := e.patch(id, op("replace", p, "x"))
+		if r.Status != 200 || r.str("id") != id || created == "" || r.str("meta", "created") != created || len(r.list("schemas")) == 0 {
+			t.Errorf("read-only %s: %d %s", p, r.Status, r.Raw)
+		}
+	}
+	r = e.patch(id, op("replace", quisoraURN+":validUntil", "2099-01-01T00:00:00Z"))
+	if r.Status != 200 || r.str(quisoraURN, "validUntil") != "2099-01-01T00:00:00Z" {
+		t.Errorf("validUntil: %d %s", r.Status, r.Raw)
+	}
+}
+
+// countingUserReads counts the reads of one user's record and runs interleave on the second: the first is the
+// handler's (its If-Match check), the second and third the service's update.
+type countingUserReads struct {
+	store.Store
+	userID     string
+	gets       int
+	interleave func()
+}
+
+func (s *countingUserReads) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindUser && id == s.userID {
+		s.gets++
+		if s.gets == 2 {
+			s.interleave()
+		}
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// A write that lands between a PATCH's If-Match check and its own write makes the PATCH a 412: the condition holds
+// for the write, not only for the check.
+func TestIfMatchHoldsAgainstConcurrentWriteDuringPatch(t *testing.T) {
+	e := newEnv(t)
+	id := e.mk("conditional", nil)
+	path := "/scim/v2/acme/Users/" + id
+	tag := e.do("GET", path, e.admA, nil).Header.Get("ETag")
+	rawUsers := store.NewTable[model.User](e.Store)
+	hook := &countingUserReads{Store: e.Store, userID: id}
+	hook.interleave = func() {
+		u, err := rawUsers.Get(e.ctx, id)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		u.GivenName = "Concurrent winner"
+		if err := rawUsers.Update(e.ctx, u); err != nil {
+			t.Error(err)
+		}
+	}
+	e.Svc.Users.S = hook
+	r := e.do("PATCH", path, e.admA, patchBody(op("replace", "name.givenName", "Stale request")), "If-Match", tag)
+	// The interleave is placed by counting reads: if a PATCH comes to read the user a different number of times,
+	// check the second read still falls after the If-Match check before changing this count.
+	if hook.gets != 3 {
+		t.Fatalf("the PATCH read the user %d times, the interleave assumes 3", hook.gets)
+	}
+	if r.Status != 412 {
+		t.Fatalf("stale conditional PATCH overwrote concurrent edit: status=%d body=%s", r.Status, r.Raw)
+	}
+	if g := e.do("GET", path, e.admA, nil); g.str("name", "givenName") != "Concurrent winner" {
+		t.Fatalf("the concurrent write was lost: %s", g.Raw)
+	}
 }

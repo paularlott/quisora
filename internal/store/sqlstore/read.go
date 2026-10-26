@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,7 +21,7 @@ func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	rec, _, err := t.scan(s.reader().queryRow(ctx, t.get, id, time.Now().UnixMicro()))
+	rec, err := t.scan(s.reader().queryRow(ctx, t.get, id, time.Now().UnixMicro()))
 	return rec, notFound(err)
 }
 
@@ -52,7 +51,7 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 			return nil, err
 		}
 		for rows.Next() {
-			rec, _, err := t.scan(rows)
+			rec, err := t.scan(rows)
 			if err != nil {
 				rows.Close()
 				return nil, err
@@ -80,7 +79,7 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	rec, _, err := t.scan(s.reader().queryRow(ctx, t.lookup, id))
+	rec, err := t.scan(s.reader().queryRow(ctx, t.lookup, id))
 	return rec, notFound(err)
 }
 
@@ -91,7 +90,7 @@ func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) 
 	}
 	q := s.d.bind("SELECT " + qualify(t.cols, "k") + " FROM " + uniqueTable + " u JOIN " + t.name +
 		" k ON k.id = u.id WHERE u.kind = ? AND u.value = ? AND k.deleted = FALSE AND (k.expires IS NULL OR k.expires > ?)")
-	rec, _, err := t.scan(s.reader().queryRow(ctx, q, string(kind), value, time.Now().UnixMicro()))
+	rec, err := t.scan(s.reader().queryRow(ctx, q, string(kind), value, time.Now().UnixMicro()))
 	return rec, notFound(err)
 }
 
@@ -216,7 +215,7 @@ func (s *Store) list(ctx context.Context, rd runner, kind model.Kind, q store.Li
 	defer rows.Close()
 	res := &store.ListResult{Records: []*store.Record{}}
 	for rows.Next() {
-		rec, _, err := t.scan(rows)
+		rec, err := t.scan(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -288,69 +287,16 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.d.name == "sqlite" {
-		// Fix the snapshot now: a SQLite read transaction takes it at its first read.
-		var n int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+feedTable).Scan(&n); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
+	// Fix the snapshot now: every dialect takes it at the transaction's first read, not when it begins.
+	var n int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+feedTable).Scan(&n); err != nil {
+		_ = tx.Rollback()
+		return nil, err
 	}
 	return &snapshot{s: s, tx: tx}, nil
 }
 
-func (s *Store) Changes(ctx context.Context, since uint64, limit int) ([]store.Change, uint64, error) {
-	if !s.feed {
-		return nil, 0, ErrFeedDisabled
-	}
-	// Every seq <= head is committed (the counter row is locked until commit), so the window (since, head] is
-	// complete and a reader never skips a seq.
-	var head int64
-	if err := s.reader().queryRow(ctx, "SELECT seq FROM "+feedTable+" WHERE id = 1").Scan(&head); err != nil {
-		return nil, 0, err
-	}
-	out := []store.Change{}
-	if uint64(head) <= since {
-		return out, since, nil
-	}
-	n := int64(math.MaxInt64)
-	if limit > 0 {
-		n = int64(limit)
-	}
-	for _, k := range model.Kinds() {
-		t := s.tables[k]
-		q := s.d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?")
-		rows, err := s.reader().query(ctx, q, int64(since), head, n)
-		if err != nil {
-			return nil, 0, err
-		}
-		for rows.Next() {
-			rec, seq, err := t.scan(rows)
-			if err != nil {
-				rows.Close()
-				return nil, 0, err
-			}
-			out = append(out, store.Change{Seq: uint64(seq), Record: rec})
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
-	if limit > 0 && len(out) >= limit {
-		out = out[:limit]
-		return out, out[limit-1].Seq, nil
-	}
-	return out, uint64(head), nil
-}
-
 func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
-	if s.feed {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-	}
 	var tombVersion int64
 	if tb := tombstonesBefore.Add(999 * time.Nanosecond); tb.UnixMicro() > 1735689600000000 {
 		tombVersion = int64(hlc.FromTime(tb))
@@ -416,7 +362,12 @@ func (s *Store) purgeExpiredUnique(ctx context.Context, t *table, exp int64) (in
 			rows.Close()
 			return 0, err
 		}
-		items = append(items, item{id, decodeUnique(u)})
+		uniq, err := decodeUnique(u)
+		if err != nil {
+			rows.Close()
+			return 0, err
+		}
+		items = append(items, item{id, uniq})
 	}
 	err = rows.Err()
 	rows.Close()

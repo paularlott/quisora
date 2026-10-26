@@ -93,7 +93,7 @@ func (s *Service) createBootstrap(ctx context.Context, e model.Entity, id string
 	if _, err := s.Store.Get(ctx, rec.Kind, id); err == nil {
 		return errExists
 	}
-	if err := s.Store.CompareAndPut(Durable(ctx), rec, 0); err != nil {
+	if err := s.Store.CompareAndPut(ctx, rec, 0); err != nil {
 		if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrConflict) {
 			return errExists
 		}

@@ -129,3 +129,15 @@ func TestBlockedSpecialPurposeRanges(t *testing.T) {
 		t.Error("a public address next to the benchmarking range blocked")
 	}
 }
+
+// A refused destination says why: a private address can be allowed by configuration, a link-local one never.
+func TestDestinationErrorMessages(t *testing.T) {
+	e := &DestinationError{Addr: netip.MustParseAddr("10.0.0.1"), Private: true}
+	if !strings.Contains(e.Error(), "allow_private_networks") {
+		t.Fatal(e.Error())
+	}
+	e.Private = false
+	if !strings.Contains(e.Error(), "link-local") || !errors.Is(e, ErrDestination) {
+		t.Fatal(e.Error())
+	}
+}

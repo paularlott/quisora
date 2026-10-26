@@ -2,7 +2,8 @@
 
 This maps the SOC 2 Trust Services Criteria an identity provider is examined against to what Quisora does, what you
 must run around it, and where the evidence comes from. It assumes audit events go to VictoriaLogs
-([RUNNING.md](RUNNING.md#audit-log)): the database audit trail is not meant for an audit.
+([RUNNING.md](RUNNING.md#audit-log)): the database audit trail is not meant for an audit (it is kept for days, and in a
+gossip cluster each node keeps only the events it recorded itself, so a lost node's events are lost with it).
 
 A Type 2 report examines whether the controls **operated throughout the audit period** (usually 6–12 months). No code
 supplies that: it needs your records of reviews, changes, incidents and tests made during the period. The sections
@@ -15,9 +16,9 @@ below say which records, and the queries that produce most of them.
 | Audit trail (CC7.2, CC7.3) | Every security-relevant action recorded with who, what, when, where from and outcome ([what is recorded](RUNNING.md#what-is-recorded)); written to disk on each node before it is sent; numbered per node so a missing event shows | Run VictoriaLogs as below; keep it for the period; review it |
 | Logical access (CC6.1–CC6.3) | Roles; MFA always on for managers and above; per-organization MFA policy; per-application access lists; end dates; session limits; emergency sign-out | Decide who gets which role; review access regularly |
 | Authentication (CC6.1) | Passkeys, TOTP, recovery codes, offline checks against common and guessable passwords (NIST SP 800-63B), lockouts, rate limits | Set the organization policies |
-| Change management (CC8.1) | Every configuration change in the console or API audited field by field; cluster reloads and key rotations audited | Approve changes before they are made; keep the approval |
+| Change management (CC8.1) | Every configuration change in the console or API audited field by field; cluster reloads, key rotations, a change of the primary organization (`org.primary`) and a forced start (`cluster.force_start`) audited; an operator's command against a running node (a break-glass invitation, `set-primary`, an emergency `sign-out`, `force-start`) recorded as `command:<name>`, not as the system | Approve changes before they are made; keep the approval |
 | Encryption (CC6.1, CC6.7) | Secrets sealed with the master key; TLS for every connection it makes; key rotation without downtime | Keep the master key in a secret store; rotate it on schedule |
-| Availability (A1.2) | Clustering, quorum writes, backups verified before restore | Run backups; test a restore each period |
+| Availability (A1.2) | Clustering (every write committed on a majority of the nodes, partitions that move to another node when one is lost), backups verified before restore | Run backups; test a restore each period |
 | Monitoring (CC7.2) | Prometheus metrics for readiness, audit delivery, queues, failures | Alert on them; keep the alert history |
 | Time (CC7.2) | Refuses to start with a clock before 2025; in a cluster, checks every node's clock against the others' and refuses to serve when it is off | Run NTP on every node (a single node has only its own clock: monitor its NTP sync) |
 
@@ -143,7 +144,8 @@ read through the `auditor` vmauth user with LogsQL.
 | Joiners and leavers (CC6.2) | Accounts created, invited, disabled, locked out, ended and deleted, matched to HR records | `action:user.create OR action:user.provision OR action:user.invite OR action:user.update OR action:user.password OR action:user.locked_out OR action:user.expire OR action:user.delete` |
 | Privileged changes (CC6.3) | Role changes (an update that also sets a password is recorded as `user.password`) | `detail.changed.role:*` |
 | Authentication policy (CC6.1) | MFA required where the policy says | `action:org.update AND detail.changed.settings.require_mfa:*`; the organization settings pages |
-| Change management (CC8.1) | Configuration changes, each matched to an approved change request | `action:org.update OR action:tenant.* OR action:client.* OR action:provider.* OR action:cluster.reload OR action:keys.*`; your change tickets |
+| Change management (CC8.1) | Configuration changes, each matched to an approved change request | `action:org.update OR action:org.primary OR action:tenant.* OR action:client.* OR action:provider.* OR action:cluster.reload OR action:cluster.force_start OR action:keys.*`; your change tickets |
+| Operator commands (CC6.1, CC8.1) | Each command an operator ran against a running node: which one, from which address, authenticated how (a request signed with the master key; for a forced start, access to the node's data directory), matched to an approved change or break-glass ticket | `actor:command:* OR action:user.invite.break_glass OR action:org.primary OR action:server.signout OR action:org.signout OR action:cluster.force_start` (`detail.command`, `detail.authenticated`, `ip`); commands run against a stopped node's store show as `cli:<os user>@<host>` |
 | Security events (CC7.2, CC7.3) | Alerts raised and how each was handled | Alerts on `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `passkey.clone`, `apitoken.refused`, `api.request.refused` ([alerts](RUNNING.md#metrics)); your incident tickets |
 | Incident response (CC7.4) | Emergency sign-outs and what followed | `action:org.signout OR action:server.signout OR action:signout.sweep`; [emergency-sign-out.md](emergency-sign-out.md) |
 | Audit log completeness (CC7.2) | The sequence check above, each month, with the boots and last numbers from the structured log; no `audit.undelivered` lines, or each one explained | The queries above; your log pipeline |

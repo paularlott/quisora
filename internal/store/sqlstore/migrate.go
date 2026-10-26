@@ -38,12 +38,13 @@ func (s *Store) initialSchema() []string {
 	for _, k := range model.Kinds() {
 		out = append(out, s.tables[k].ddl(d)...)
 	}
+	out = append(out, s.partitionDDL()...)
 	out = append(out,
 		"CREATE TABLE IF NOT EXISTS "+uniqueTable+" (\n  kind "+d.keyType(64)+" NOT NULL,\n  value "+d.keyType(512)+
 			" NOT NULL,\n  id "+d.keyType(191)+" NOT NULL,\n  PRIMARY KEY (kind, value)\n)"+uniqueSuffix(d),
 		"CREATE TABLE IF NOT EXISTS "+feedTable+" (\n  id INT NOT NULL PRIMARY KEY,\n  feed_id "+d.keyType(64)+
-			" NOT NULL,\n  seq BIGINT NOT NULL\n)"+tableSuffix(d),
-		d.insertIgnore(feedTable, "id, feed_id, seq", "1, '"+model.NewID()+"', 0"),
+			" NOT NULL\n)"+tableSuffix(d),
+		d.insertIgnore(feedTable, "id, feed_id", "1, '"+model.NewID()+"'"),
 	)
 	return out
 }

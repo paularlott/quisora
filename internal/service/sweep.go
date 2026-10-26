@@ -46,6 +46,17 @@ type ownerRef struct {
 	id   string
 }
 
+// partOf is the partition key of the record o names, given the entity e it owns: every owner but an organization and
+// a self-registered client is of e's organization (and so in e's partition); an organization's own record is global
+// ("": its partition is known from its kind), and so is a self-registered application's (it belongs to no organization,
+// whoever's grant names it).
+func (o ownerRef) partOf(e model.Entity) string {
+	if o.kind == model.KindOrg || o.kind == model.KindClient && model.SelfRegisteredClientID(o.id) {
+		return ""
+	}
+	return e.Index().Partition
+}
+
 // owners returns what r belongs to: it is an orphan once any of them is gone.
 func owners(e model.Entity) []ownerRef {
 	switch v := e.(type) {
@@ -109,7 +120,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			continue
 		}
 		if l, ok := e.(*model.Lock); ok { // judged by its lease alone
-			if now.Sub(l.Until) > lockRetention && store.Applied(s.Locks.DeleteIf(ctx, l.ID, l.Version)) {
+			if now.Sub(l.Until) > lockRetention && s.Locks.DeleteIf(ctx, l.ID, l.Version) == nil {
 				removed++
 			}
 			continue
@@ -135,7 +146,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			if known[o] {
 				continue
 			}
-			gone, err := s.ownerGone(ctx, o)
+			gone, err := s.ownerGone(ctx, o, o.partOf(e))
 			if err != nil {
 				return removed, err
 			}
@@ -156,7 +167,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 
 // passedEpochs returns the ids of the credentials, sessions and refresh grants among ents made in an epoch their
 // account has moved past (model.User.Counts: its sign-in was reset, its password reset, or an invitation acceptance
-// that lost stored it). This node's copies of the accounts (one read) say which look passed; a quorum's copies of
+// that lost stored it). This node's copies of the accounts (one read) say which look passed; the owners' copies of
 // those accounts confirm them, a chunk at a time, keeping only their epochs, so an epoch this node has not received
 // yet never removes a record that counts, and a batch of 20,000 never holds 20,000 accounts. An account gone here is
 // left to the owner check.
@@ -179,27 +190,32 @@ func (s *Service) passedEpochs(ctx context.Context, ents []model.Entity) (map[st
 	for _, u := range local {
 		here[u.ID] = u
 	}
-	suspect := map[string]bool{} // accounts with a credential that looks passed here
+	suspect := map[string]map[string]bool{} // by organization: accounts with a credential that looks passed here
 	for _, e := range ents {
 		if c, ok := e.(model.Credential); ok {
 			if u := here[c.Owner()]; u != nil && !u.Counts(c) {
-				suspect[u.ID] = true
+				if suspect[u.OrgID] == nil {
+					suspect[u.OrgID] = map[string]bool{}
+				}
+				suspect[u.OrgID][u.ID] = true
 			}
 		}
 	}
 	here = nil
-	fresh := make(map[string]*model.User, len(suspect)) // the epochs only
-	for chunk := range slices.Chunk(slices.Collect(maps.Keys(suspect)), 500) {
-		recs, err := s.freshMany(ctx, model.KindUser, chunk)
-		if err != nil {
-			return nil, err
-		}
-		for id, r := range recs {
-			u := &model.User{}
-			if err := store.Decode(r, u); err != nil {
+	fresh := map[string]*model.User{} // the epochs only
+	for org, ids := range suspect {
+		for chunk := range slices.Chunk(slices.Collect(maps.Keys(ids)), 500) {
+			recs, err := s.freshMany(ctx, model.KindUser, org, chunk)
+			if err != nil {
 				return nil, err
 			}
-			fresh[id] = &model.User{CredEpoch: u.CredEpoch, SessionEpoch: u.SessionEpoch}
+			for id, r := range recs {
+				u := &model.User{}
+				if err := store.Decode(r, u); err != nil {
+					return nil, err
+				}
+				fresh[id] = &model.User{CredEpoch: u.CredEpoch, SessionEpoch: u.SessionEpoch}
+			}
 		}
 	}
 	for _, e := range ents {
@@ -212,9 +228,9 @@ func (s *Service) passedEpochs(ctx context.Context, ents []model.Entity) (map[st
 	return out, nil
 }
 
-// ownerGone reports whether o no longer exists: missing here, and missing or deleted in a quorum's copies (a record
+// ownerGone reports whether o no longer exists: missing here, and missing or deleted in the owners' copies (a record
 // a majority has is never taken for gone because this node has not received it).
-func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
+func (s *Service) ownerGone(ctx context.Context, o ownerRef, part string) (bool, error) {
 	if o.id == "" {
 		return false, nil
 	}
@@ -225,7 +241,7 @@ func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
 	if !errors.Is(err, store.ErrNotFound) {
 		return false, mapStore(err)
 	}
-	recs, err := s.freshMany(ctx, o.kind, []string{o.id})
+	recs, err := s.freshMany(ctx, o.kind, part, []string{o.id})
 	if err != nil {
 		return false, err
 	}
@@ -239,13 +255,13 @@ func (s *Service) removeOrphan(ctx context.Context, e model.Entity) error {
 	if m, ok := e.(*model.Member); ok {
 		m.Removed, m.Seq = time.Now().UTC(), math.MaxUint64
 		err := s.Members.Update(ctx, m)
-		if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) || store.Applied(err) {
+		if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) || err == nil {
 			return nil // changed meanwhile: the next pass looks again
 		}
 		return mapStore(err)
 	}
 	err := s.Store.Put(ctx, store.Tombstone(e.Kind(), e.GetMeta().ID))
-	if errors.Is(err, store.ErrStale) || store.Applied(err) {
+	if errors.Is(err, store.ErrStale) || err == nil {
 		return nil
 	}
 	return mapStore(err)
@@ -272,10 +288,10 @@ func (s *Service) ReleaseUnique(ctx context.Context, kind model.Kind, value stri
 	if dead, err := s.dead(ctx, e); err != nil || !dead {
 		return false, err
 	}
-	return true, s.removeOrphan(Durable(ctx), e)
+	return true, s.removeOrphan(ctx, e)
 }
 
-// dead says whether e counts for nothing, from a quorum's copies of its owners: an owner is gone, an owning user's
+// dead says whether e counts for nothing, from the owners' copies of its owners: an owner is gone, an owning user's
 // organization is gone, or e is a credential of an epoch its account has moved past (model.User.Counts; judged, as
 // the sweep judges it, only once e is sweepMinAge old: one stored for an invitation still in flight is of an epoch
 // the account has not committed yet).
@@ -284,7 +300,7 @@ func (s *Service) dead(ctx context.Context, e model.Entity) (bool, error) {
 		if o.id == "" {
 			continue
 		}
-		recs, err := s.freshMany(ctx, o.kind, []string{o.id})
+		recs, err := s.freshMany(ctx, o.kind, o.partOf(e), []string{o.id})
 		if err != nil {
 			return false, err
 		}
@@ -302,7 +318,7 @@ func (s *Service) dead(ctx context.Context, e model.Entity) (bool, error) {
 		if c, ok := e.(model.Credential); ok && !u.Counts(c) && time.Since(e.GetMeta().Updated) >= sweepMinAge {
 			return true, nil
 		}
-		if gone, err := s.ownerGone(ctx, ownerRef{model.KindOrg, u.OrgID}); err != nil || gone {
+		if gone, err := s.ownerGone(ctx, ownerRef{model.KindOrg, u.OrgID}, ""); err != nil || gone {
 			return gone, err
 		}
 	}

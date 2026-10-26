@@ -3,11 +3,10 @@
 //
 // Key layout:
 //
-//	rec/<kind>/<id>                    -> [8-byte feed seq][msgpack wireRecord]
+//	rec/<kind>/<id>                    -> msgpack wireRecord
 //	uq/<kind>/<value>                  -> id
 //	sc/<kind>/<scope>/<id>             -> ordered scope index (scope escaped so it never contains '/')
 //	al/<kind>/<id>                     -> ordered "all" index of a kind (unscoped listing)
-//	seq/<20-digit seq>/<kind>/<id>     -> change feed (the record stores its current seq; the old entry is removed)
 //	exp/<unix-ms 15 digits>/<kind>/<id> -> expiry index, range-deleted by Purge
 //	tomb/<version 20 digits>/<kind>/<id> -> tombstone index, range-deleted by Purge
 //	fx/<kind>/<field>/<value>/<scope>/<id> -> field index (model.Field.Index): the records with that value, by scope
@@ -17,10 +16,16 @@
 //	n/<range>, nx/<range>                -> counters: the members of an index range (al/<kind>, sc/<kind>/<scope>,
 //	                                      fx/<kind>/<field>/<value>/<scope>), and those of them carrying an expiry
 //	due/<unix-ms 15 digits>/<kind>/<id>  -> due index (model.Due), range-scanned by ListDue
-//	meta/feed_id, meta/seq
+//	ps/<partition>/<20-digit pseq>/<kind>/<id> -> partition sequence index: the records ApplyPartition and
+//	                                      ImportPartition wrote, by the sequence of the write that last changed them,
+//	                                      range-scanned by ExportPartition (tombstones included)
+//	pt/<partition>/<20-digit pseq>/<kind>/<id> -> the tombstones among the ps members, scanned by PartitionTombstones
+//	                                      and PurgePartition
+//	pstate/<partition>                   -> the partition's protocol state (promised, committed, pending, purge point)
+//	meta/feed_id, meta/format            -> the store's identity, and its format
 //
-// Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix. Housekeeping (Purge, Changes) only ever range-scans the exp, tomb and
-// seq indexes, never the records.
+// Ordered indexes are engine "ordered sets" (bucket + member): plain keys under a prefix. Housekeeping (Purge) only
+// ever range-scans the exp, tomb and pt indexes, never the records.
 //
 // Listing: plain ID-ordered scans page through the scope index without loading the scope. An equality filter on an
 // indexed field reads that field's index: the records with the value (in the scope: a contiguous range of the
@@ -50,10 +55,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -66,6 +73,9 @@ type Store struct {
 	eng    engine
 	mu     sync.RWMutex
 	feedID string
+	// plocks serialises the transactions that rewrite a partition's state (one *sync.Mutex per partition): they all
+	// read and write its one state key, so run side by side on a busy partition they conflict until retries run out.
+	plocks sync.Map
 }
 
 var (
@@ -89,12 +99,13 @@ func (s *Store) FeedID() string {
 // recorded as it completes (an interrupted upgrade resumes where it stopped), under a lock. A store written by a newer build, or by a pre-release build older than
 // formatBase, is refused. Never edit or remove a released migration: append one. Format 1 is the first release's;
 // until that release the layout changes in place, and stores from earlier development builds are wiped, not
-// migrated. A migration that rewrites records uses rewriteRecords (TestMigrationScale runs one over five million
-// users).
+// migrated (format 2: the partition key and stamp in every record, the ps index and the partition state; format 3: no
+// change-feed header in the records and no feed index, the tombstone index of each partition). A migration that
+// rewrites records uses rewriteRecords (TestMigrationScale runs one over five million users).
 const (
 	metaFormat  = "meta/format"
 	metaMigrate = "meta/migrating" // the lock held while migrating: "<holder> <expiry unix ms>"
-	formatBase  = 1
+	formatBase  = 3
 )
 
 // formatMigration brings a store from one format to the next. It may run again after an interruption: make it
@@ -109,20 +120,12 @@ var formatMigrations []formatMigration
 
 func currentFormat() int { return formatBase + len(formatMigrations) }
 
-// checkFormat marks a new store, migrates an older one, and refuses one it cannot read.
+// checkFormat migrates an older store and refuses one it cannot read. (A new store was marked when the engine made it:
+// badgerEngine.init.)
 func (s *Store) checkFormat(ctx context.Context) error {
 	b, err := s.eng.Get(ctx, metaFormat)
 	if err != nil {
 		return err
-	}
-	if b == nil {
-		seq, err := s.eng.Get(ctx, metaSeq)
-		if err != nil {
-			return err
-		}
-		if seqOf(seq) == 0 { // nothing written yet: a new store
-			return s.markFormat(ctx, currentFormat())
-		}
 	}
 	have, err := strconv.Atoi(string(b))
 	switch {
@@ -173,7 +176,7 @@ const rewriteBatch = 1000
 
 // rewriteRecords is for format migrations: it passes every live or expired record of kind to fn, a batch at a time
 // in id order, and stores those fn changed in place, in one write transaction per batch: the same version and change
-// feed position (nothing is replicated: every node migrates its own store), with the stored index fields and the
+// partition stamp (nothing is replicated: every node migrates its own store), with the stored index fields and the
 // index entries rebuilt from the new data. fn may change the data, not the id or the unique values, and must be
 // idempotent (an interrupted migration runs again from the start). Tombstones hold no data and are left alone. It
 // returns how many records it changed.
@@ -206,13 +209,12 @@ func (s *Store) rewriteRecords(ctx context.Context, kind model.Kind, fn func(r *
 				if rec.Fields, err = store.IndexFields(&rec); err != nil {
 					return err
 				}
-				body, err := encodeRecord(&rec)
+				body, err := encodeRecord(&rec, old.ps) // the same partition stamp too
 				if err != nil {
 					return err
 				}
-				copy(body[:seqHeader], b[:seqHeader]) // the same feed position
 				tx.Set(k, body)
-				reindex(tx, indexEntries(old.rec), indexEntries(&rec))
+				reindex(tx, indexEntries(old.rec, old.ps), indexEntries(&rec, old.ps))
 				n++
 			}
 			return nil
@@ -271,20 +273,12 @@ func (s *Store) lockMigration(ctx context.Context) (release func(), err error) {
 	}
 }
 
-// seqOf reads the stored feed counter: 8 bytes big endian (absent: 0).
-func seqOf(b []byte) uint64 {
-	if len(b) != 8 {
-		return 0
-	}
-	return binary.BigEndian.Uint64(b)
-}
-
 func (s *Store) markFormat(ctx context.Context, v int) error {
 	return s.eng.Update(ctx, func(tx txn) error { tx.Set(metaFormat, []byte(strconv.Itoa(v))); return nil })
 }
 
-// Wipe deletes every record and index of this store, restarts the
-// sequence and assigns a new FeedID so peers restart their cursors. Callers must not write concurrently.
+// Wipe deletes every record and index of this store and gives it a new identity (FeedID). Callers must not write
+// concurrently.
 func (s *Store) Wipe(ctx context.Context) error {
 	id := model.NewID()
 	if err := s.eng.wipe(ctx, id); err != nil {
@@ -330,11 +324,6 @@ func listBucket(kind model.Kind, scope string) string {
 	return scopeBucket(kind, scope)
 }
 
-func seqMember(seq uint64, entry string) string {
-	b := make([]byte, 0, 21+len(entry))
-	return string(append(append(appendPadded(b, seq, 20), '/'), entry...))
-}
-
 // appendPadded appends v in decimal, zero-padded to width digits (fmt's %0*d without the allocations).
 func appendPadded(b []byte, v uint64, width int) []byte {
 	var d [20]byte
@@ -353,8 +342,6 @@ func indexMember(n uint64, width int, kind model.Kind, id string) string {
 	return string(b)
 }
 
-func entryOf(kind model.Kind, id string) string { return string(kind) + "/" + id }
-
 // expMs rounds an expiry up to whole milliseconds so an index entry never reads as expired early.
 func expMs(t time.Time) int64 {
 	if t.IsZero() {
@@ -372,14 +359,31 @@ type indexEntry struct {
 	count          string
 }
 
-// indexEntries lists every ordered-set membership of rec other than the change feed.
-func indexEntries(r *store.Record) []indexEntry {
+// psBucket is the partition sequence index of partition p.
+func psBucket(p uint32) string { return "ps/" + strconv.FormatUint(uint64(p), 10) }
+
+// ptBucket is the tombstone index of partition p: the members of its sequence index that are tombstones, so the
+// housekeeping scan for what to purge and the purge itself read tombstones only.
+func ptBucket(p uint32) string { return "pt/" + strconv.FormatUint(uint64(p), 10) }
+
+// indexEntries lists every ordered-set membership of rec. ps is the record's partition
+// stamp (zero: none), which puts it in the partition sequence index, a tombstone too.
+func indexEntries(r *store.Record, ps pstamp) []indexEntry {
+	var out []indexEntry
 	if r.Deleted {
-		return []indexEntry{{"tomb", indexMember(uint64(r.Version), 20, r.Kind, r.ID), 0, ""}}
+		out = append(out, indexEntry{"tomb", indexMember(uint64(r.Version), 20, r.Kind, r.ID), 0, ""})
+		if ps.seq > 0 {
+			m := indexMember(ps.seq, 20, r.Kind, r.ID)
+			out = append(out, indexEntry{psBucket(ps.num), m, 0, ""}, indexEntry{ptBucket(ps.num), m, 0, ""})
+		}
+		return out
 	}
 	exp := expMs(r.Expires)
-	out := make([]indexEntry, 1, 4)
+	out = make([]indexEntry, 1, 5)
 	out[0] = indexEntry{allBucket(r.Kind), r.ID, exp, allBucket(r.Kind)}
+	if ps.seq > 0 {
+		out = append(out, indexEntry{psBucket(ps.num), indexMember(ps.seq, 20, r.Kind, r.ID), 0, ""})
+	}
 	if r.Scope != "" {
 		out = append(out, indexEntry{scopeBucket(r.Kind, r.Scope), r.ID, exp, scopeBucket(r.Kind, r.Scope)})
 	}
@@ -751,18 +755,16 @@ func conflicts(tx txn, rec *store.Record) (bool, []string, error) {
 }
 
 // apply writes rec over old (which may be nil), indexing it under the unique values in index, whose index keys are
-// keys (built here when nil).
-func apply(tx txn, old *stored, rec *store.Record, index, keys []string) error {
+// keys (built here when nil). ps is the record's partition stamp (zero for every write but a partition's).
+func apply(tx txn, old *stored, rec *store.Record, index, keys []string, ps pstamp) error {
 	r := *rec
 	if r.Deleted {
-		r.Data, r.Fields, r.Unique, r.Scope, r.Expires, r.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch kept: a quorum tombstone's generation (store.Head.Rank)
+		r.Data, r.Fields, r.Unique, r.Scope, r.Expires, r.Created = nil, nil, nil, "", time.Time{}, 0 // Epoch and Partition kept
 		index = nil
 	}
-	var oldSeq uint64
 	var oldEntries []indexEntry
 	if old != nil {
-		oldSeq = old.seq
-		oldEntries = indexEntries(old.rec)
+		oldEntries = indexEntries(old.rec, old.ps)
 		for _, u := range old.rec.Unique {
 			if slices.Contains(index, u) {
 				continue
@@ -788,12 +790,12 @@ func apply(tx txn, old *stored, rec *store.Record, index, keys []string) error {
 			tx.Set(k, []byte(r.ID))
 		}
 	}
-	reindex(tx, oldEntries, indexEntries(&r))
-	body, err := encodeRecord(&r)
+	reindex(tx, oldEntries, indexEntries(&r, ps))
+	body, err := encodeRecord(&r, ps)
 	if err != nil {
 		return err
 	}
-	tx.Feed(recKey(r.Kind, r.ID), body, entryOf(r.Kind, r.ID), oldSeq)
+	tx.Set(recKey(r.Kind, r.ID), body)
 	return nil
 }
 
@@ -817,8 +819,8 @@ func remove(tx txn, old *stored) error {
 			tx.Delete(k)
 		}
 	}
-	reindex(tx, indexEntries(r), nil)
-	tx.Feed(recKey(r.Kind, r.ID), nil, entryOf(r.Kind, r.ID), old.seq)
+	reindex(tx, indexEntries(r, old.ps), nil)
+	tx.Delete(recKey(r.Kind, r.ID))
 	return nil
 }
 
@@ -901,7 +903,7 @@ func (s *Store) Put(ctx context.Context, rec *store.Record) error {
 		} else if c {
 			return store.ErrConflict
 		}
-		return apply(tx, old, rec, rec.Unique, keys)
+		return apply(tx, old, rec, rec.Unique, keys, pstamp{})
 	})
 }
 
@@ -932,59 +934,44 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 		} else if c {
 			return store.ErrConflict
 		}
-		return apply(tx, old, rec, rec.Unique, keys)
+		return apply(tx, old, rec, rec.Unique, keys, pstamp{})
 	})
 }
 
-func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, []string, error) {
+func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
 	var applied bool
-	var losers []string
 	store.Witness(rec.Version)
 	err := s.write(ctx, rec.Kind, rec.ID, func(tx txn) (err error) {
-		applied, losers, err = replicateOne(tx, rec)
+		applied, err = replicateOne(tx, rec)
 		return err
 	})
 	if err != nil {
-		return false, nil, err
+		return false, err
 	}
-	return applied, losers, nil
+	return applied, nil
 }
 
-// replicateOne applies rec inside tx with the PutReplicated semantics.
-func replicateOne(tx txn, rec *store.Record) (bool, []string, error) {
+// replicateOne applies rec inside tx with the PutReplicated semantics: not when a record of that id is stored at the
+// same or a higher version, and not over a unique value another live record holds (ErrConflict).
+func replicateOne(tx txn, rec *store.Record) (bool, error) {
 	old, err := loadRec(tx, rec.Kind, rec.ID)
 	if err != nil {
-		return false, nil, err
+		return false, err
 	}
-	if old != nil && !store.Newer(rec, old.rec) {
-		return false, nil, nil
+	if old != nil && old.rec.Version >= rec.Version {
+		return false, nil
 	}
-	var losers []string
-	index := make([]string, 0, len(rec.Unique))
-	keys := make([]string, 0, len(rec.Unique))
-	if !rec.Deleted {
-		for _, u := range rec.Unique {
-			k := uqKey(rec.Kind, u)
-			other, err := holder(tx, rec.Kind, k, rec.ID)
-			if err != nil {
-				return false, nil, err
-			}
-			switch {
-			case other == nil:
-				index, keys = append(index, u), append(keys, k)
-			case store.KeepsUnique(other.rec.Head(), rec.Head(), other.rec.ID, rec.ID):
-				losers = appendOnce(losers, rec.ID)
-			default:
-				// The value moves to rec; apply overwrites the index, the other record keeps its data.
-				losers = appendOnce(losers, other.rec.ID)
-				index, keys = append(index, u), append(keys, k)
-			}
-		}
+	clash, keys, err := conflicts(tx, rec)
+	if err != nil {
+		return false, err
 	}
-	if err := apply(tx, old, rec, index, keys); err != nil {
-		return false, nil, err
+	if clash {
+		return false, store.ErrConflict
 	}
-	return true, losers, nil
+	if err := apply(tx, old, rec, rec.Unique, keys, pstamp{}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // batchGroup is the most records applied in one transaction.
@@ -993,17 +980,16 @@ const batchGroup = 256
 // PutReplicatedBatch applies recs with the PutReplicated semantics, many per write transaction on Badger (one
 // fsync per group instead of one per record). It implements store.BatchReplicator. Engines without cheap
 // multi-record transactions fall back to one transaction per record.
-func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([]bool, [][]string, error) {
+func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([]bool, error) {
 	applied := make([]bool, len(recs))
-	losers := make([][]string, len(recs))
 	if _, ok := s.eng.(*badgerEngine); !ok {
 		for i, r := range recs {
 			var err error
-			if applied[i], losers[i], err = s.PutReplicated(ctx, r); err != nil {
-				return nil, nil, err
+			if applied[i], err = s.PutReplicated(ctx, r); err != nil {
+				return nil, err
 			}
 		}
-		return applied, losers, nil
+		return applied, nil
 	}
 	for _, r := range recs {
 		store.Witness(r.Version)
@@ -1016,11 +1002,11 @@ func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([
 			j := min(i+size, len(recs))
 			err := s.eng.Update(ctx, func(tx txn) error {
 				for k := i; k < j; k++ {
-					a, l, err := replicateOne(tx, recs[k])
+					a, err := replicateOne(tx, recs[k])
 					if err != nil {
 						return err
 					}
-					applied[k], losers[k] = a, l
+					applied[k] = a
 				}
 				return nil
 			})
@@ -1032,19 +1018,10 @@ func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([
 				size /= 2
 				continue
 			}
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	return applied, losers, nil
-}
-
-func appendOnce(list []string, id string) []string {
-	for _, v := range list {
-		if v == id {
-			return list
-		}
-	}
-	return append(list, id)
+	return applied, nil
 }
 
 // ---- listing ----
@@ -1606,59 +1583,6 @@ func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, 
 	return n, nil
 }
 
-// ---- change feed ----
-
-func (s *Store) Changes(ctx context.Context, since uint64, limit int) ([]store.Change, uint64, error) {
-	out := []store.Change{}
-	next := since
-	from := fmt.Sprintf("%020d", since+1)
-	batch := 512
-	if limit > 0 && limit < batch {
-		batch = limit
-	}
-	for {
-		members, err := s.eng.Range(ctx, feedBkt, from, "", batch)
-		if err != nil {
-			return nil, since, err
-		}
-		if len(members) == 0 {
-			return out, next, nil
-		}
-		keys := make([]string, len(members))
-		seqs := make([]uint64, len(members))
-		for i, m := range members {
-			seqStr, entry, ok := strings.Cut(m, "/")
-			n, err := strconv.ParseUint(seqStr, 10, 64)
-			if !ok || err != nil {
-				return nil, since, fmt.Errorf("kvstore: corrupt feed entry %q", m)
-			}
-			seqs[i], keys[i] = n, "rec/"+entry
-		}
-		vals, err := s.eng.MGet(ctx, keys)
-		if err != nil {
-			return nil, since, err
-		}
-		for i, v := range vals {
-			next = seqs[i]
-			if v == nil {
-				continue
-			}
-			st, err := decodeRecord(v)
-			if err != nil {
-				return nil, since, err
-			}
-			if st.seq != seqs[i] { // rewritten since: its newer entry comes later
-				continue
-			}
-			out = append(out, store.Change{Seq: seqs[i], Record: st.rec})
-			if limit > 0 && len(out) >= limit {
-				return out, next, nil
-			}
-		}
-		from = fmt.Sprintf("%020d", seqs[len(seqs)-1]+1)
-	}
-}
-
 // ---- purge ----
 
 const purgeBatch = 100
@@ -1723,6 +1647,9 @@ func (s *Store) purgeIndex(ctx context.Context, bucket, to string, due func(*sto
 	}
 }
 
+// retryConflicts counts the transactions retried after a conflict (tests).
+var retryConflicts atomic.Int64
+
 // retry runs fn until it stops reporting a conflict; used by engines.
 func retry(ctx context.Context, attempt func() error) error {
 	var err error
@@ -1730,10 +1657,18 @@ func retry(ctx context.Context, attempt func() error) error {
 		if err = attempt(); !errors.Is(err, errConflict) {
 			return err
 		}
+		retryConflicts.Add(1)
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		time.Sleep(time.Duration(i%8+1) * 100 * time.Microsecond)
+		time.Sleep(conflictBackoff(i))
 	}
 	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
+}
+
+// conflictBackoff is the wait before retry i of a conflicting transaction: exponential, up to about 6 ms, and random
+// within that, so transactions that conflicted (on a counter every new record of a kind moves, say) do not retry in
+// step and conflict again.
+func conflictBackoff(i int) time.Duration {
+	return time.Duration(rand.Int64N(int64(100*time.Microsecond)<<min(i, 6)) + 1)
 }

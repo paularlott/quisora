@@ -30,17 +30,19 @@ const (
 	ctxActor
 )
 
-// trustedProxies are the networks whose X-Forwarded-For is honoured (set once at start-up).
-var trustedProxies []netip.Prefix
+// trustedProxies are the networks whose X-Forwarded-For is honoured (set at start-up; atomic because every server
+// created in one process sets it, as tests do side by side).
+var trustedProxies atomic.Pointer[[]netip.Prefix]
 
 // SetTrustedProxies configures which peers may set X-Forwarded-For (CIDRs or single IPs).
 func SetTrustedProxies(list []string) {
-	trustedProxies = nil
+	var proxies []netip.Prefix
 	for _, s := range list {
 		if p, err := config.ParseProxy(s); err == nil { // config.Validate reports the bad ones
-			trustedProxies = append(trustedProxies, p)
+			proxies = append(proxies, p)
 		}
 	}
+	trustedProxies.Store(&proxies)
 }
 
 // ClientIP returns the caller's address, honouring X-Forwarded-For only from trusted proxies.
@@ -86,7 +88,11 @@ func ClientIP(r *http.Request) string {
 
 func trusted(a netip.Addr) bool {
 	a = a.Unmap()
-	for _, p := range trustedProxies {
+	proxies := trustedProxies.Load()
+	if proxies == nil {
+		return false
+	}
+	for _, p := range *proxies {
 		if p.Contains(a) {
 			return true
 		}

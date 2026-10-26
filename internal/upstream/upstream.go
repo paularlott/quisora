@@ -312,7 +312,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	if err == nil && ident.Authority != model.ProviderAuthority(p) {
 		// Linked when the provider pointed at another type, issuer or directory: the subject now names someone
 		// else (GitHub and GitLab ids are public numbers). The link goes; the sign-in carries on as unlinked.
-		_ = s.Svc.Identities.Delete(service.Durable(ctx), ident.ID)
+		_ = s.Svc.Identities.Delete(ctx, ident.ID)
 		actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
 		s.Svc.Audit(ctx, actor, org.ID, "identity.unlink", ident.UserID, map[string]string{"provider": p.Name, "reason": "provider changed"})
 		err = store.ErrNotFound
@@ -333,7 +333,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 			return nil, false, uerr
 		}
 		// The user was deleted, or linked this before the account's sign-in was reset (model.User.CredEpoch): the
-		// link counts for nothing and goes, and the sign-in carries on as unlinked. A link a quorum still counts
+		// link counts for nothing and goes, and the sign-in carries on as unlinked. A link the owners still count
 		// (this node is behind) is refused for now.
 		if freed, err := s.Svc.ReleaseUnique(ctx, model.KindIdentity, model.IdentityKey(p.ID, c.Subject)); err != nil {
 			return nil, false, err

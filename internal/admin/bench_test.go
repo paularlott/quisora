@@ -23,7 +23,7 @@ func benchEnv(b *testing.B, users int) (*webtest.Env, *http.Client, string) {
 		b.Fatal(err)
 	}
 	for i := 0; i < users; i++ {
-		_, err := env.Svc.CreateUser(ctx, service.System, org.ID, service.UserInput{GivenName: gn("T"), Username: ptr(fmt.Sprintf("user%05d", i)),
+		_, err := env.Svc.CreateUser(ctx, service.System, org.ID, service.UserInput{GivenName: ptr("T"), Username: ptr(fmt.Sprintf("user%05d", i)),
 			Email: ptr(fmt.Sprintf("user%05d@x.example", i)), Role: ptr(model.RoleUser)})
 		if err != nil {
 			b.Fatal(err)

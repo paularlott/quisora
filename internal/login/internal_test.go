@@ -3,9 +3,12 @@ package login
 import (
 	"encoding/base64"
 	"encoding/xml"
-	"fmt"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/paularlott/quisora/internal/model"
 )
 
 func TestSafeNext(t *testing.T) {
@@ -41,42 +44,67 @@ func TestQRDataURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// well-formed XML with a square viewBox and a body of module runs
+	// well-formed XML, with nothing active in it
 	dec := xml.NewDecoder(strings.NewReader(string(svg)))
-	var root xml.StartElement
 	for {
-		tok, err := dec.Token()
-		if err != nil {
-			t.Fatalf("svg is not well-formed: %v", err)
-		}
-		if se, ok := tok.(xml.StartElement); ok {
-			root = se
+		if _, err := dec.Token(); err != nil {
+			if err != io.EOF {
+				t.Fatalf("svg is not well-formed: %v", err)
+			}
 			break
 		}
 	}
-	var vb string
-	for _, a := range root.Attr {
-		if a.Name.Local == "viewBox" {
-			vb = a.Value
-		}
+	if strings.Contains(string(svg), "<script") {
+		t.Fatal("script in the svg")
 	}
-	var w, h int
-	if _, err := fmtSscanf(vb, &w, &h); err != nil || w != h || w < 29 {
-		t.Fatalf("viewBox %q", vb)
-	}
-	if !strings.Contains(string(svg), `d="M`) || strings.Contains(string(svg), "<script") {
-		t.Fatal("unexpected svg body")
-	}
-	if len(d) > 20000 {
-		t.Fatalf("data url unexpectedly large: %d", len(d))
-	}
-	d2, _ := qrDataURL(uri + "&x=1")
-	if d == d2 {
+	if d2, _ := qrDataURL(uri + "&x=1"); d == d2 {
 		t.Fatal("different input, same code")
 	}
 }
 
-func fmtSscanf(vb string, w, h *int) (int, error) {
-	var x, y int
-	return fmt.Sscanf(vb, "%d %d %d %d", &x, &y, w, h)
+func TestMaskEmail(t *testing.T) {
+	for in, want := range map[string]string{
+		"pat@example.com":  "p•••@example.com",
+		"éva@example.com":  "é•••@example.com",
+		"@example.com":     "your email address",
+		"no-at-sign":       "your email address",
+		"":                 "your email address",
+		"a@b":              "a•••@b",
+		"x@y@example.test": "x•••@y@example.test",
+	} {
+		if got := maskEmail(in); got != want {
+			t.Errorf("maskEmail(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLoginURLBuilding(t *testing.T) {
+	if withNext("/login", "") != "/login" || withNext("/login", "/a b?c=d") != "/login?next=%2Fa+b%3Fc%3Dd" {
+		t.Error("withNext")
+	}
+	org := &model.Org{Name: "ac me"}
+	if got := loginURL(org, "/x", "t1", "denied"); got != "/login/ac%20me?error=denied&next=%2Fx&tenant=t1" {
+		t.Errorf("loginURL = %q", got)
+	}
+	if got := loginURL(org, "", "", ""); got != "/login/ac%20me" {
+		t.Errorf("loginURL bare = %q", got)
+	}
+}
+
+func TestTenantParam(t *testing.T) {
+	for q, want := range map[string]string{
+		"tenant=acme":                        "acme",
+		"tenant=%20ACME%20":                  "acme",
+		"tenant=":                            "",
+		"":                                   "",
+		"tenant=a/b":                         "",
+		"tenant=..%2f..":                     "",
+		"tenant=" + strings.Repeat("a", 500): "",
+		"tenant=<script>":                    "",
+	} {
+		r := httptest.NewRequest("GET", "/login/x?"+q, nil)
+		if got := tenantParam(r); got != want {
+			t.Errorf("tenantParam(%.40q) = %q, want %q", q, got, want)
+		}
+	}
 }

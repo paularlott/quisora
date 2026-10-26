@@ -370,10 +370,10 @@ func (p *publishing) CompareAndPut(ctx context.Context, rec *store.Record, expec
 	return err
 }
 
-func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool, []string, error) {
-	applied, losers, err := p.Store.PutReplicated(ctx, rec)
+func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	applied, err := p.Store.PutReplicated(ctx, rec)
 	if applied {
 		p.publish(rec)
 	}
-	return applied, losers, err
+	return applied, err
 }

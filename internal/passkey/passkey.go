@@ -146,7 +146,10 @@ type ceremony struct {
 	Kind    string               `json:"k"` // "reg" or "login"
 	Session webauthn.SessionData `json:"s"`
 	UserID  string               `json:"u,omitempty"`
-	Extra   map[string]string    `json:"x,omitempty"`
+	// OrgID is the user's organization when the ceremony is for a known user (the account is read fresh from its
+	// partition's owner: "" for a ceremony begun before it was kept, which asks every owner).
+	OrgID string            `json:"o,omitempty"`
+	Extra map[string]string `json:"x,omitempty"`
 	// Gen is the user's security generation (model.User.SecurityGen) when a ceremony for a known user began: the
 	// finish refuses the ceremony once the account's has moved on (a credential set, changed or removed meanwhile),
 	// so a response to a challenge issued against the account as it was does not register or sign in against the
@@ -286,7 +289,7 @@ func (s *Service) StoreRegistration(ctx context.Context, u *model.User, reg *Reg
 		return nil, ErrChallenge
 	}
 	u.BumpSecurity()
-	if err := s.svc.Users.Update(service.Durable(ctx), u); !store.Applied(err) {
+	if err := s.svc.Users.Update(ctx, u); err != nil {
 		u.SecurityGen--
 		return nil, err
 	}
@@ -362,7 +365,7 @@ func (s *Service) BeginLogin(ctx context.Context, u *model.User, extra map[strin
 	}
 	c := &ceremony{Kind: "login", Session: *sd, UserID: uid, Extra: extra}
 	if u != nil {
-		c.Gen = u.SecurityGen
+		c.Gen, c.OrgID = u.SecurityGen, u.OrgID
 	}
 	id, err := s.save(ctx, c)
 	return id, assertion, err
@@ -412,10 +415,10 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		pks  []*model.Passkey
 		cred *webauthn.Credential
 	)
-	// The account is read as a quorum holds it (FreshUser), as the code-based sign-in steps read it: in a cluster a
+	// The account is read as its owner holds it (FreshUser), as the code-based sign-in steps read it: in a cluster a
 	// password reset, a lock-out or a disabled account on another node must not be missed for the replication lag.
 	if c.UserID != "" {
-		user, err = s.svc.FreshUser(ctx, c.UserID)
+		user, err = s.svc.FreshUserIn(ctx, c.OrgID, c.UserID)
 		if errors.Is(err, service.ErrNotFound) {
 			return nil, ErrUnknownCredential
 		}
@@ -440,7 +443,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			if perr != nil {
 				return nil, ErrUnknownCredential
 			}
-			u, uerr := s.svc.FreshUser(ctx, pk.UserID)
+			u, uerr := s.svc.FreshUserIn(ctx, pk.OrgID, pk.UserID)
 			if uerr != nil && !errors.Is(uerr, service.ErrNotFound) {
 				return nil, uerr
 			}
@@ -486,17 +489,17 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 	if !pk.Usable() {
 		return &LoginResult{User: user, Passkey: pk}, ErrUnusable
 	}
-	if cred.Authenticator.CloneWarning {
-		// The counter went backwards: another copy of this key may exist. It stops signing in until the user
+	if cred.Authenticator.CloneWarning || s.touch(ctx, pk, cred) {
+		// The counter did not go up: another copy of this key may exist. It stops signing in until the user
 		// deletes it and adds their authenticator again (the account page says why), and every session it signed in
-		// ends — the copy's holder may be one of them.
+		// ends — the copy's holder may be one of them. (The library compares with the copy of the passkey this node
+		// holds, which may lag; touch compares with the owner's when another sign-in wrote first.)
 		s.disable(ctx, pk)
 		if _, err := s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID, ""); err != nil {
 			s.svc.Log.WithError(err).Error("passkey clone detected; not every session it signed in could be ended", "user", pk.UserID, "passkey", pk.ID)
 		}
 		return &LoginResult{User: user, Passkey: pk}, ErrCloneDetected
 	}
-	s.touch(ctx, pk, cred)
 	flags := parsed.Response.AuthenticatorData.Flags
 	return &LoginResult{User: user, Passkey: pk, Extra: c.Extra, UserVerified: flags.HasUserVerified(),
 		BackupEligible: flags.HasBackupEligible()}, nil
@@ -505,7 +508,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 // disable marks a passkey disabled (durably; retried on a concurrent update) and moves the account's security
 // generation on: a passkey that no longer signs in is a factor removed, so whatever is in flight for the account ends.
 func (s *Service) disable(ctx context.Context, pk *model.Passkey) {
-	ctx = service.Durable(context.WithoutCancel(ctx))
+	ctx = context.WithoutCancel(ctx)
 	defer func() { _, _ = s.svc.AdvanceSecurity(ctx, pk.UserID) }()
 	for range 3 {
 		pk.Disabled = true
@@ -520,27 +523,33 @@ func (s *Service) disable(ctx context.Context, pk *model.Passkey) {
 	}
 }
 
-// touch stores the new sign count and backup state; LastUsed is refreshed at most once a minute.
-func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.Credential) {
+// touch stores the new sign count and backup state; LastUsed is refreshed at most once a minute. It reports a clone:
+// the write was refused as stale (another sign-in with this credential stored first) and the passkey as its owner has
+// it now holds a counter the presented one does not exceed. The counter of an authenticator rises with every use
+// (WebAuthn 7.2 step 21), so a second sign-in at or below what is stored is a copy at work; two sign-ins of one
+// authenticator cannot be told from that by their order. A passkey with no counter (a synced one: both zero) has no
+// clone signal.
+func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.Credential) (cloned bool) {
 	now := time.Now().UTC()
 	if pk.SignCount == cred.Authenticator.SignCount && pk.BackupState == cred.Flags.BackupState &&
 		now.Sub(pk.LastUsed) < time.Minute || !s.svc.CanWrite() {
-		return
+		return false
 	}
 	for range 3 {
 		pk.SignCount, pk.BackupState, pk.LastUsed = cred.Authenticator.SignCount, cred.Flags.BackupState, now
 		err := s.svc.Passkeys.Update(ctx, pk)
 		if !errors.Is(err, store.ErrStale) {
-			return
+			return false
 		}
-		fresh, gerr := s.svc.Passkeys.Get(ctx, pk.ID)
+		fresh, gerr := s.svc.FreshPasskeyIn(ctx, pk.OrgID, pk.ID)
 		if gerr != nil {
-			return
+			return false
 		}
-		// Never move the counter backwards when another login on this credential won the race.
-		if fresh.SignCount > cred.Authenticator.SignCount {
-			return
+		if (cred.Authenticator.SignCount != 0 || fresh.SignCount != 0) && fresh.SignCount >= cred.Authenticator.SignCount {
+			*pk = *fresh
+			return true
 		}
 		*pk = *fresh
 	}
+	return false
 }

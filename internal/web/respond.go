@@ -49,8 +49,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrLastAdmin), errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: capitalise(err.Error()) + "."})
-	case errors.Is(err, service.ErrNotReplicated):
-		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "The change was saved on this server, but no other server has confirmed it yet. It will reach them shortly; check again in a moment."})
+	case errors.Is(err, service.ErrOutcomeUnknown):
+		w.Header().Set("Retry-After", "5")
+		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server lost contact with the part of the cluster that decides this change before it answered, so the change may or may not have been made. Check, then try again."})
 	case errors.Is(err, service.ErrUnavailable):
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot make changes right now (it cannot reach enough of its cluster). Nothing was changed; please try again shortly."})

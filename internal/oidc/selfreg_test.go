@@ -1,9 +1,7 @@
 package oidc
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -19,50 +17,19 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-const mcpResource = "https://mcp.example.com/mcp"
-
-// postJSON posts a JSON body and returns the status and decoded object.
-func (h *harness) postJSON(path string, body any) tokResp {
-	h.t.Helper()
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+path, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.http.Do(req)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	m := map[string]any{}
-	_ = json.NewDecoder(resp.Body).Decode(&m)
-	resp.Body.Close()
-	return tokResp{resp.StatusCode, m, resp.Header}
-}
-
-// register registers an application by RFC 7591 and returns it as a client (id and redirect URIs).
-func (h *harness) register(redirect string) *model.Client {
-	h.t.Helper()
-	r := h.postJSON("/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{redirect}})
-	if r.status != http.StatusCreated || !strings.HasPrefix(r.str("client_id"), "dyn-") {
-		h.t.Fatalf("register: %d %v", r.status, r.m)
-	}
-	return &model.Client{Meta: model.Meta{ID: r.str("client_id")}, RedirectURIs: []string{redirect}}
-}
-
-// mcpTenant is a tenant owning mcpResource, allowing self-registered applications when allow.
-func (h *harness) mcpTenant(name string, allow bool) *model.Tenant {
-	h.t.Helper()
-	set := model.DefaultTenantSettings()
-	set.SelfRegistration, set.RequireMFA = allow, false // the test sessions have no second factor
-	tn, err := h.env.Svc.CreateTenant(context.Background(), h.admin, h.env.Primary.ID,
-		service.TenantInput{Name: ptr(name), Settings: &set, Resources: &[]string{mcpResource}})
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return tn
-}
-
 // Dynamic client registration accepts public clients only, with https, loopback or private-use scheme redirect URIs
 // (selfRegRedirect), answers in RFC 7591 form, and is limited per address.
+// A registration body that is not a JSON object is refused.
+func TestRegistrationBodyMustBeAnObject(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	if r := h.postJSON("/oauth/register", "not an object"); r.status != 400 || r.str("error") != "invalid_client_metadata" {
+		t.Fatalf("%d %v", r.status, r.m)
+	}
+}
+
 func TestDynamicRegistration(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	r := h.postJSON("/oauth/register", map[string]any{"client_name": "Claude Code", "redirect_uris": []string{"http://127.0.0.1:33418/callback", "http://localhost:33418/callback", "com.example.claude:/callback"},
 		"grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"},
@@ -75,30 +42,24 @@ func TestDynamicRegistration(t *testing.T) {
 	if err != nil || !c.SelfRegistered || c.OrgID != "" || !c.Public() || !c.RequirePKCE() || len(c.RedirectURIs) != 3 {
 		t.Fatalf("stored %+v %v", c, err)
 	}
-	for name, body := range map[string]map[string]any{
-		"confidential":       {"redirect_uris": []string{"https://app.example/cb"}, "token_endpoint_auth_method": "client_secret_basic"},
-		"client credentials": {"redirect_uris": []string{"https://app.example/cb"}, "grant_types": []string{"client_credentials"}},
-		"plain http":         {"redirect_uris": []string{"http://app.example/cb"}},
-		"scheme without dot": {"redirect_uris": []string{"myapp:/cb"}},
-		"fragment":           {"redirect_uris": []string{"https://app.example/cb#x"}},
-		"no redirect":        {"client_name": "x"},
-		"opaque scheme":      {"redirect_uris": []string{"com.example.app:cb"}},
-		"implicit":           {"redirect_uris": []string{"https://app.example/cb"}, "response_types": []string{"token"}},
-		"too many redirects": {"redirect_uris": []string{"https://a/1", "https://a/2", "https://a/3", "https://a/4", "https://a/5", "https://a/6", "https://a/7", "https://a/8", "https://a/9", "https://a/10", "https://a/11"}},
+	metadata, redirect := "invalid_client_metadata", "invalid_redirect_uri"
+	for name, tc := range map[string]struct {
+		body any
+		code string
+	}{
+		"confidential":       {map[string]any{"redirect_uris": []string{"https://app.example/cb"}, "token_endpoint_auth_method": "client_secret_basic"}, metadata},
+		"client credentials": {map[string]any{"redirect_uris": []string{"https://app.example/cb"}, "grant_types": []string{"client_credentials"}}, metadata},
+		"implicit":           {map[string]any{"redirect_uris": []string{"https://app.example/cb"}, "response_types": []string{"token"}}, metadata},
+		"plain http":         {map[string]any{"redirect_uris": []string{"http://app.example/cb"}}, redirect},
+		"scheme without dot": {map[string]any{"redirect_uris": []string{"myapp:/cb"}}, redirect},
+		"fragment":           {map[string]any{"redirect_uris": []string{"https://app.example/cb#x"}}, redirect},
+		"no redirect":        {map[string]any{"client_name": "x"}, redirect},
+		"opaque scheme":      {map[string]any{"redirect_uris": []string{"com.example.app:cb"}}, redirect},
+		"too many redirects": {map[string]any{"redirect_uris": []string{"https://a/1", "https://a/2", "https://a/3", "https://a/4", "https://a/5", "https://a/6", "https://a/7", "https://a/8", "https://a/9", "https://a/10", "https://a/11"}}, redirect},
 	} {
-		if r := h.postJSON("/oauth/register", body); r.status != 400 || (r.str("error") != "invalid_client_metadata" && r.str("error") != "invalid_redirect_uri") {
-			t.Errorf("%s: %d %v", name, r.status, r.m)
+		if r := h.postJSON("/oauth/register", tc.body); r.status != 400 || r.str("error") != tc.code {
+			t.Errorf("%s: %d %v, want 400 %s", name, r.status, r.m, tc.code)
 		}
-	}
-	// the discovery document names the endpoint and metadata-document client ids
-	d := h.post("/.well-known/openid-configuration", nil, "", "")
-	_ = d
-	resp := h.get(h.http, "/.well-known/openid-configuration")
-	var disc map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&disc)
-	resp.Body.Close()
-	if disc["registration_endpoint"] != h.env.URL+"/oauth/register" || disc["client_id_metadata_document_supported"] != true {
-		t.Errorf("discovery: %v %v", disc["registration_endpoint"], disc["client_id_metadata_document_supported"])
 	}
 	// per address
 	limited := false
@@ -113,20 +74,11 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 }
 
-// consentPage authorizes with the browser and returns the consent page's HTML and flow id.
-func (h *harness) consentPage(c *http.Client, cl *model.Client, ch string, extra url.Values) (string, string) {
-	h.t.Helper()
-	u := h.authorize(c, authzQuery(cl, ch, extra))
-	if u.Path != "/oauth/consent" {
-		h.t.Fatalf("no consent page: %s", u)
-	}
-	return body(h.get(c, u.String())), u.Query().Get("flow")
-}
-
 // A self-registered application signs in only for a resource whose tenant allows self-registered applications; it
 // is then that tenant's client: consent warns that it is not verified, tokens are for the resource, and turning the
 // tenant's switch off (or revoking the app) ends its refresh tokens.
 func TestSelfRegisteredSignIn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := setup(t, nil)
 	tn := h.mcpTenant("mcp", false)
@@ -226,6 +178,7 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 
 // In a members-only tenant a self-registered application, like any of its clients, serves only users with access.
 func TestSelfRegisteredMembersOnly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := setup(t, nil)
 	tn := h.mcpTenant("mcp", true)
@@ -249,6 +202,7 @@ func TestSelfRegisteredMembersOnly(t *testing.T) {
 
 // A resource belongs to one tenant: another claiming it is refused.
 func TestTenantResourcesUnique(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	h.mcpTenant("one", true)
 	set := model.DefaultTenantSettings()
@@ -267,6 +221,7 @@ func TestTenantResourcesUnique(t *testing.T) {
 // A client_id that is the https URL of a Client ID Metadata Document is read on first use and signs in like a
 // registered one; a document that does not name itself, or a URL that cannot be read, is not an application.
 func TestMetadataDocumentClient(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	h.mcpTenant("mcp", true)
 	docs := map[string]string{}
@@ -299,8 +254,13 @@ func TestMetadataDocumentClient(t *testing.T) {
 	_, ch := pkce()
 	bad := ts.URL + "/oauth/other.json"
 	docs["/oauth/other.json"] = `{"client_id":"https://elsewhere.example/c.json","redirect_uris":["` + redirect + `"]}`
-	for name, cid := range map[string]string{"names another url": bad, "not found": ts.URL + "/oauth/missing.json"} {
-		q := authzQuery(&model.Client{Meta: model.Meta{ID: cid}, RedirectURIs: []string{redirect}}, ch, url.Values{"resource": {mcpResource}})
+	for name, tc := range map[string]struct{ id, resource string }{
+		"names another url":       {bad, mcpResource},
+		"not found":               {ts.URL + "/oauth/missing.json", mcpResource},
+		"no resource":             {id, ""},
+		"resource no tenant owns": {id, "https://nobody.example"},
+	} {
+		q := authzQuery(&model.Client{Meta: model.Meta{ID: tc.id}, RedirectURIs: []string{redirect}}, ch, url.Values{"resource": {tc.resource}})
 		resp := h.get(c, "/oauth/authorize?"+q.Encode())
 		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body(resp), "not recognised") {
 			t.Errorf("%s: %d", name, resp.StatusCode)
@@ -310,6 +270,7 @@ func TestMetadataDocumentClient(t *testing.T) {
 
 // Registrations never used to sign anyone in go after a day; used ones stay.
 func TestPurgeSelfRegistered(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := setup(t, nil)
 	h.mcpTenant("mcp", true)
@@ -336,6 +297,7 @@ func TestPurgeSelfRegistered(t *testing.T) {
 // refused without reading the document; one for an accepting resource reads it but stores no client before consent;
 // and new documents read per address are limited.
 func TestMetadataDocumentsUnstoredUntilConsent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := setup(t, nil)
 	h.mcpTenant("mcp", true)
@@ -382,6 +344,7 @@ func TestMetadataDocumentsUnstoredUntilConsent(t *testing.T) {
 // Tenants claim resources by their canonical form: a variant (letter case, trailing slash, default port) of
 // another tenant's resource is refused, as is plain http (except loopback), a query, or a duplicate.
 func TestTenantResourceVariants(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	h.mcpTenant("one", true)
 	set := model.DefaultTenantSettings()
@@ -413,6 +376,7 @@ func TestTenantResourceVariants(t *testing.T) {
 
 // A desktop app on a private-use scheme: consent names the scheme as where the result goes.
 func TestSelfRegisteredPrivateScheme(t *testing.T) {
+	t.Parallel()
 	h := setup(t, nil)
 	h.mcpTenant("mcp", true)
 	cl := h.register("com.example.claude:/callback")

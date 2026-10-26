@@ -178,6 +178,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 		return nil, "", mapStore(err)
 	}
 	if err := s.APITokens.Create(ctx, t); err != nil {
+		s.auditUnknown(ctx, err, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")})
 		return nil, "", mapStore(err)
 	}
 	s.Audit(ctx, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")})
@@ -191,25 +192,33 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 	if a.UserID == "" || a.Scoped() {
 		return nil, "", ErrForbidden // tokens cannot mint tokens
 	}
-	t, err := s.ownLiveToken(ctx, a, id)
-	if err != nil {
-		return nil, "", err
-	}
-	// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
-	for _, sc := range t.Scopes {
-		if (sc == ScopeSCIM || sc == ScopeAdmin) && !a.Role.Privileged() ||
-			SuperOnlyScope(sc) && !a.IsSuper() {
-			return nil, "", Invalid("scopes", "your role can no longer use the "+sc+" scope: revoke this token instead")
+	// A use of the token records its last use in the background (touchAPIToken) and may land between the read and the
+	// write: the change is made again on the record as it is now.
+	for attempt := 0; ; attempt++ {
+		t, err := s.ownLiveToken(ctx, a, id)
+		if err != nil {
+			return nil, "", err
 		}
+		// The owner's role may have changed since the token was made: a new secret only for scopes they may still use.
+		for _, sc := range t.Scopes {
+			if (sc == ScopeSCIM || sc == ScopeAdmin) && !a.Role.Privileged() ||
+				SuperOnlyScope(sc) && !a.IsSuper() {
+				return nil, "", Invalid("scopes", "your role can no longer use the "+sc+" scope: revoke this token instead")
+			}
+		}
+		secret := secure.RandomToken(32)
+		t.SecretHash = secure.HashSecret(secret)
+		t.LastUsed = time.Time{} // the new secret has not been used
+		if err := s.APITokens.Update(ctx, t); err != nil {
+			if errors.Is(err, store.ErrStale) && attempt < 3 {
+				continue
+			}
+			s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
+			return nil, "", mapStore(err)
+		}
+		s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
+		return t, apiTokenPrefix + t.ID + "_" + secret, nil
 	}
-	secret := secure.RandomToken(32)
-	t.SecretHash = secure.HashSecret(secret)
-	t.LastUsed = time.Time{} // the new secret has not been used
-	if err := s.APITokens.Update(Durable(ctx), t); err != nil {
-		return nil, "", mapStore(err)
-	}
-	s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
-	return t, apiTokenPrefix + t.ID + "_" + secret, nil
 }
 
 // ownLiveToken returns a's own token id for a change (a new secret, a new name or audience): not one that stopped
@@ -344,7 +353,8 @@ func (s *Service) UpdateAPIToken(ctx context.Context, a *Actor, id string, in AP
 	if t.AppScopes, err = s.tokenAppScopes(ctx, a, t.Scopes, t.Audience, appScopes); err != nil {
 		return nil, err
 	}
-	if err := s.APITokens.Update(Durable(ctx), t); err != nil {
+	if err := s.APITokens.Update(ctx, t); err != nil {
+		s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.update", t.Name, nil)
 		return nil, mapStore(err)
 	}
 	s.Audit(ctx, a, t.OrgID, "apitoken.update", t.Name, nil)
@@ -386,12 +396,13 @@ func (s *Service) DeleteAPIToken(ctx context.Context, a *Actor, id string) error
 			return ErrNotFound
 		}
 	}
-	if err := s.APITokens.Delete(Durable(ctx), id); err != nil {
-		return mapStore(err)
-	}
 	var detail map[string]string
 	if t.UserID != a.UserID {
 		detail = map[string]string{"owner": t.UserID}
+	}
+	if err := s.APITokens.Delete(ctx, id); err != nil {
+		s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.delete", t.Name, detail)
+		return mapStore(err)
 	}
 	s.Audit(ctx, a, t.OrgID, "apitoken.delete", t.Name, detail)
 	return nil
@@ -468,17 +479,24 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 // interval, not one per request.
 const apiTokenTouch = 5 * time.Minute
 
-// touchAPIToken records that t was used (best effort: a lost race or a failed write only delays it).
+// touchAPIToken records that t was used, in the background (best effort: a lost race or a failed write only delays
+// it): the request does not wait for a write, in a gossip cluster a round trip to the partition's owner and a
+// majority, that it does not need. One write at a time per token; a request that finds one running skips it, and the
+// next that finds the stamp old tries again. t itself is not changed.
 func (s *Service) touchAPIToken(ctx context.Context, t *model.APIToken) {
 	now := time.Now().UTC()
 	if now.Sub(t.LastUsed) < apiTokenTouch || !s.CanWrite() {
 		return
 	}
 	cp := *t
-	cp.LastUsed = now
-	if err := s.APITokens.Update(context.WithoutCancel(ctx), &cp); err == nil {
-		t.LastUsed, t.Version = cp.LastUsed, cp.Version
+	if _, busy := s.tokenTouching.LoadOrStore(cp.ID, struct{}{}); busy {
+		return
 	}
+	s.Background(ctx, func(ctx context.Context) {
+		defer s.tokenTouching.Delete(cp.ID)
+		cp.LastUsed = now
+		_ = s.APITokens.Update(ctx, &cp)
+	})
 }
 
 // ActorForToken builds the actor for a request authenticated with an API token.

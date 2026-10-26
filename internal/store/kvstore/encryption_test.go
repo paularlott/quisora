@@ -5,13 +5,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// An encrypted store opens again with its key only; its files do not hold the data in the clear.
+// An encrypted store opens again with its key only (without one, the error names the setting); its files do not hold
+// the data in the clear.
 func TestBadgerEncryption(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -33,9 +35,11 @@ func TestBadgerEncryption(t *testing.T) {
 			t.Fatalf("%s holds the data in the clear", filepath.Base(f))
 		}
 	}
-	if s, err := OpenBadger(ctx, dir, BadgerOptions{}); err == nil {
-		s.Close()
-		t.Fatal("opened without its key")
+	if s, err := OpenBadger(ctx, dir, BadgerOptions{}); err == nil || !strings.Contains(err.Error(), "encryption_key") {
+		if err == nil {
+			s.Close()
+		}
+		t.Fatalf("opened without its key, or the error does not name the setting: %v", err)
 	}
 	if s, err := OpenBadger(ctx, dir, BadgerOptions{EncryptionKey: bytes.Repeat([]byte{8}, 32)}); err == nil {
 		s.Close()

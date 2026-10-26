@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/paularlott/cli"
@@ -83,5 +85,53 @@ func TestFlagSourceOnCommandLine(t *testing.T) {
 	c := parsed(t, config.Default(), "serve", "--master-key=x", "--data-dir", "d")
 	if c.FlagSource("master-key") != cli.SourceCommandLine || c.FlagSource("previous-master-keys") == cli.SourceCommandLine {
 		t.Fatal("master-key source")
+	}
+}
+
+func TestGenkey(t *testing.T) {
+	e := newEnv(t, "")
+	out, _, err := e.run(t, "", "genkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	if err != nil || len(k) != 32 {
+		t.Fatalf("genkey %q: %v", out, err)
+	}
+}
+
+func TestRootHelpAndUnknown(t *testing.T) {
+	e := newEnv(t, "")
+	if out, _, err := e.run(t, "", "--version"); err != nil || !strings.Contains(out, "quisora") {
+		t.Fatalf("version: %v %q", err, out)
+	}
+	if _, _, err := e.run(t, "", "bogus"); err == nil {
+		t.Fatal("unknown command accepted")
+	}
+	if c := Root(); c == nil || c.Name != "quisora" {
+		t.Fatal("Root")
+	}
+}
+
+// Flags of one command must not leak into another: the commands add their own flags to one shared server-flag slice.
+func TestCommandFlagsDoNotClobberEachOther(t *testing.T) {
+	e := newEnv(t, "")
+	// one command with a flag of its own that works through
+	if _, errOut, err := e.run(t, "", "bootstrap", "--bootstrap-admin", "boss@example.com"); err != nil || !strings.Contains(errOut, "boss@example.com") {
+		t.Fatalf("bootstrap with its own flag: %v %q", err, errOut)
+	}
+	for _, args := range [][]string{{"invite", "--break-glass", "primary", "a@example.com"}, {"backup", "--plain", "--server", "x", "-"},
+		{"restore", "--force", "-"}, {"healthcheck", "--ready"}} {
+		if _, _, err := e.run(t, "", args...); err != nil && strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+}
+
+func TestPrepareRejectsInvalidConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Cluster.Size = 3 // size without bind
+	if err := prepare(context.Background(), cfg); err == nil {
+		t.Fatal("invalid configuration prepared")
 	}
 }

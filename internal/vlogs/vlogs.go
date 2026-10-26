@@ -38,9 +38,15 @@ import (
 const (
 	app        = "quisora"
 	batchSize  = 500
-	flushEvery = time.Second
 	queueSize  = 20000
 	maxRetries = 5
+)
+
+// flushEvery is how often the writer sends its batch and the deliverer replays the spool; firstRetryWait is the wait
+// before a batch without a spool is tried again (doubling with each try). Variables so tests can shorten them.
+var (
+	flushEvery     = time.Second
+	firstRetryWait = 500 * time.Millisecond
 )
 
 // Client writes to and reads from one VictoriaLogs server.
@@ -311,7 +317,7 @@ func (c *Client) send(batch [][]byte) {
 		}
 		return
 	}
-	wait := 500 * time.Millisecond
+	wait := firstRetryWait
 	for try := 1; ; try++ {
 		err := c.post(c.insertURL(), body)
 		if err == nil {

@@ -4,49 +4,18 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// countingReads counts the records an engine loads (the record keys of its MGet calls; the two counter keys a total
-// reads are not records) and the scope-wide ranges it is asked to count (Page calls without NoTotal over a whole
-// bucket or scope range, whose From is empty or a scope prefix: a count of a run of equal sort values, bounded by
-// the offset, is not one): what a listing costs beyond its index reads.
-type countingReads struct {
-	engine
-	records int
-	counted int
-}
-
-func (e *countingReads) MGet(ctx context.Context, keys []string) ([][]byte, error) {
-	for _, k := range keys {
-		if strings.HasPrefix(k, "rec/") {
-			e.records++
-		}
-	}
-	return e.engine.MGet(ctx, keys)
-}
-
-func (e *countingReads) Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
-	if !p.NoTotal && (p.From == "" || strings.HasSuffix(p.From, "/")) {
-		e.counted++
-	}
-	return e.engine.Page(ctx, bucket, p, nowMs)
-}
-
 // A user listing that leaves the super admins out (every listing of an ordinary administrator) loads only the
 // records of its page, whatever the organization's size and the page's position: the super admins are never in it
 // and the total counts everyone else. Likewise a page of one indexed filter's records (a group's members).
 func TestIndexedPagesLoadOnlyThePage(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenBadger(ctx, t.TempDir(), BadgerOptions{InMemory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	s := openBadger(t, BadgerOptions{InMemory: true})
 	const n, group = 400, "g1"
 	var visible, hidden []string
 	recs := make([]*store.Record, 0, n+n/2)
@@ -73,7 +42,7 @@ func TestIndexedPagesLoadOnlyThePage(t *testing.T) {
 			recs = append(recs, r)
 		}
 	}
-	if _, _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+	if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(visible)

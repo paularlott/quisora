@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,14 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
+)
+
+// The schema URNs the tests address: the enterprise extension and Quisora's own User, Group and Organization schemas.
+const (
+	entURN       = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+	quisoraURN   = "urn:paularlott:quisora:scim:schemas:2.0:User"
+	groupURN     = "urn:paularlott:quisora:scim:schemas:2.0:Group"
+	schemaOrgURN = "urn:paularlott:quisora:scim:schemas:2.0:Organization"
 )
 
 type env struct {
@@ -64,7 +73,7 @@ func (e *env) org(name string) *model.Org {
 }
 
 func (e *env) mkUser(o *model.Org, name string, role model.Role) *model.User {
-	u, err := e.Svc.CreateUser(e.ctx, service.System, o.ID, service.UserInput{GivenName: gn("T"), Username: &name, Role: &role,
+	u, err := e.Svc.CreateUser(e.ctx, service.System, o.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Role: &role,
 		Email: ptr(name + "@example.com")})
 	if err != nil {
 		e.t.Fatal(err)
@@ -72,6 +81,8 @@ func (e *env) mkUser(o *model.Org, name string, role model.Role) *model.User {
 	e.users[name] = u
 	return u
 }
+
+func (e *env) primary() *model.Org { return e.Env.Primary }
 
 func (e *env) token(u *model.User, scopes ...string) string {
 	_, plain, err := e.Svc.CreateAPIToken(e.ctx, service.ActorForUser(u, ""), service.APITokenInput{Name: "t", Scopes: scopes})
@@ -183,4 +194,128 @@ func patchBody(ops ...map[string]any) map[string]any {
 func readAll(res *http.Response) ([]byte, error) {
 	defer res.Body.Close()
 	return io.ReadAll(res.Body)
+}
+
+func wantStatus(t *testing.T, what string, r resp, status int) {
+	t.Helper()
+	if r.Status != status {
+		t.Errorf("%s: status %d, want %d: %s", what, r.Status, status, r.Raw)
+	}
+}
+
+// mail is an emails attribute with one primary address.
+func mail(addr string) []any {
+	return []any{map[string]any{"value": addr, "type": "work", "primary": true}}
+}
+
+// createUser POSTs a user. Most fixtures only care about userName, so an address (<userName>@acme.test) is added when
+// the body has none; tests of the missing-email rules post with e.do instead.
+func (e *env) createUser(org, token string, body map[string]any) resp {
+	if un, ok := body["userName"].(string); ok && body["emails"] == nil {
+		body["emails"] = mail(un + "@acme.test")
+	}
+	if body["schemas"] == nil {
+		body["schemas"] = []string{"urn:ietf:params:scim:schemas:core:2.0:User"}
+	}
+	return e.do("POST", "/scim/v2/"+org+"/Users", token, body)
+}
+
+// mk creates a user in org A through SCIM, with extra attributes, and returns its id.
+func (e *env) mk(name string, extra map[string]any) string {
+	body := map[string]any{"userName": name, "emails": []any{map[string]any{"value": name + "@acme.test", "type": "work", "primary": true}}}
+	for k, v := range extra {
+		body[k] = v
+	}
+	r := e.createUser("acme", e.admA, body)
+	if r.Status != 201 {
+		e.t.Fatalf("create %s: %d %s", name, r.Status, r.Raw)
+	}
+	return r.str("id")
+}
+
+// patch PATCHes a user of org A with org A's admin token.
+func (e *env) patch(id string, ops ...map[string]any) resp {
+	return e.do("PATCH", "/scim/v2/acme/Users/"+id, e.admA, patchBody(ops...))
+}
+
+// group creates a group in org A with the given member ids and returns its id.
+func (e *env) group(name string, members ...string) string {
+	body := map[string]any{"displayName": name}
+	if len(members) > 0 {
+		ms := make([]any, len(members))
+		for i, m := range members {
+			ms[i] = map[string]any{"value": m}
+		}
+		body["members"] = ms
+	}
+	r := e.do("POST", "/scim/v2/acme/Groups", e.admA, body)
+	if r.Status != 201 {
+		e.t.Fatalf("group %s: %d %s", name, r.Status, r.Raw)
+	}
+	return r.str("id")
+}
+
+func memberValues(r resp) []string {
+	var out []string
+	for _, m := range r.list("members") {
+		out = append(out, m.(map[string]any)["value"].(string))
+	}
+	slices.Sort(out)
+	return out
+}
+
+func sorted(s ...string) []string { slices.Sort(s); return s }
+
+type seed struct {
+	name, given, family, email, title, dept, ext string
+	role                                         model.Role
+	inactive                                     bool
+}
+
+// seedOrg creates a small set of distinct users in org A, and a group Engineering of alice and bob.
+func seedOrg(e *env) {
+	t := e.t
+	people := []seed{
+		{"alice", "Alice", "Anderson", "alice@acme.test", "Engineer", "Tech", "ext-A", model.RoleUser, false},
+		{"bob", "Bob", "Brown", "bob@acme.test", "Designer", "Design", "ext-b", model.RoleUser, false},
+		{"carol", "Carol", "Clark", "carol@other.test", "", "Tech", "", model.RoleUser, true},
+		{"dave", "Dave", "Davis", "dave@acme.test", "Manager", "Ops", "", model.RoleManager, false},
+		{"erin", "Erin", "Evans", "erin@acme.test", "Engineer", "", "", model.RoleUser, false},
+	}
+	for _, p := range people {
+		in := service.UserInput{Username: &p.name, GivenName: &p.given, FamilyName: &p.family, Role: &p.role,
+			Work: &service.WorkInput{Title: &p.title, Department: &p.dept}}
+		if p.email != "" {
+			in.Email = &p.email
+		}
+		if p.ext != "" {
+			in.ExternalID = &p.ext
+		}
+		if p.inactive {
+			in.Active = ptr(false)
+		}
+		if _, err := e.Svc.CreateUser(e.ctx, service.System, e.orgA.ID, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g1, err := e.Svc.CreateGroup(e.ctx, service.System, e.orgA.ID, service.GroupInput{DisplayName: ptr("Engineering")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"alice", "bob"} {
+		u, _ := e.Svc.FindUserByEmail(e.ctx, e.orgA.ID, n+"@acme.test")
+		if err := e.Svc.SetMembership(e.ctx, service.System, g1.ID, u.ID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// usernames lists org A's users matching filter, sorted by userName.
+func (e *env) usernames(filter string, extra ...string) ([]string, resp) {
+	path := "/scim/v2/acme/Users?count=1000&sortBy=userName&filter=" + qs(filter)
+	for _, x := range extra {
+		path += "&" + x
+	}
+	r := e.do("GET", path, e.admA, nil)
+	return r.names("userName"), r
 }

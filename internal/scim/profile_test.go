@@ -33,8 +33,17 @@ func TestProfileAndEnterprise(t *testing.T) {
 			t.Errorf("filter %s: %d %s", f, r.Status, r.Raw)
 		}
 	}
+	// The manager may be given as a bare id too; one of another organization is left unset rather than refused.
+	r := e.createUser("acme", e.admA, map[string]any{"userName": "bare-boss", entURN: map[string]any{"manager": e.users["mgr-a"].ID}})
+	if r.Status != 201 || r.str(entURN, "manager", "value") != e.users["mgr-a"].ID {
+		t.Errorf("manager as a bare id: %d %s", r.Status, r.Raw)
+	}
+	r = e.createUser("acme", e.admA, map[string]any{"userName": "foreign-boss", entURN: map[string]any{"manager": e.users["adm-b"].ID}})
+	if r.Status != 201 || strings.Contains(string(r.Raw), e.users["adm-b"].ID) {
+		t.Errorf("manager of another organization: %d %s", r.Status, r.Raw)
+	}
 	// removing the manager and the end date
-	r := e.patch(id, op("Remove", entURN+":manager", nil), op("Remove", quisoraURN+":validUntil", nil))
+	r = e.patch(id, op("Remove", entURN+":manager", nil), op("Remove", quisoraURN+":validUntil", nil))
 	if r.Status != 200 || strings.Contains(string(r.Raw), "manager") || strings.Contains(string(r.Raw), "validUntil") {
 		t.Errorf("remove: %d %s", r.Status, r.Raw)
 	}
@@ -57,5 +66,15 @@ func TestPhoneNumbers(t *testing.T) {
 	}
 	if r := e.patch(id, op("Remove", "phoneNumbers", nil)); r.Status != 200 || strings.Contains(string(r.Raw), "phoneNumbers") {
 		t.Fatalf("removed: %d %s", r.Status, r.Raw)
+	}
+	// A number added by sub-attribute or filtered path is kept the same way; addresses are accepted and ignored.
+	ph := map[string]any{"value": "+441632960961", "type": "work"}
+	for _, o := range []map[string]any{op("add", "phoneNumbers.value", "+441632960961"), op("add", `phoneNumbers[type eq "work"]`, ph)} {
+		if r := e.patch(id, o); r.Status != 200 || !strings.Contains(string(r.Raw), "+441632960961") {
+			t.Errorf("%v: %d %s", o, r.Status, r.Raw)
+		}
+	}
+	if r := e.patch(id, op("add", "addresses", []any{ph})); r.Status != 200 || r.Body["addresses"] != nil {
+		t.Errorf("addresses: %d %s", r.Status, r.Raw)
 	}
 }

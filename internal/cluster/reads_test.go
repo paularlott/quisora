@@ -1,0 +1,377 @@
+package cluster
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/paularlott/gossip"
+	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
+)
+
+// Fresh reads on one healthy cluster (BadgerDB).
+func TestReadsOnOneCluster(t *testing.T) {
+	runOn(t, started(t, badgerBackend()),
+		scenario{"fresh reads see what this node lacks", testFreshReadsSeeWhatThisNodeLacks},
+		scenario{"fresh read of a large batch", testFreshReadOfALargeBatch},
+		scenario{"fresh read honours the caller's deadline", testFreshReadHonoursTheCallersDeadline})
+}
+
+// A fresh read goes through the owner: a node that has not applied a write yet, or has never heard of the record, still
+// sees it, and sees a deletion.
+func testFreshReadsSeeWhatThisNodeLacks(t *testing.T, c *tcluster) {
+	org, _ := c.orgNotOwnedBy(1)
+	first := newUser(org, "first")
+	if err := users(c.nodes[0]).Create(bg, first); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUser(t, first.ID, func(*model.User) bool { return true })
+
+	c.lagBehind(1, true)
+	defer c.lagBehind(1, false)
+	n1 := c.nodes[1].st()
+	second := newUser(org, "second")
+	if err := users(c.nodes[0]).Create(bg, second); err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := users(c.nodes[0]).Get(bg, first.ID)
+	changed.GivenName = "changed"
+	if err := users(c.nodes[0]).Update(bg, changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n1.Get(bg, model.KindUser, second.ID); err == nil {
+		t.Fatal("test set-up: node 1 must not have the new user")
+	}
+	got, err := n1.Fresh(bg, model.KindUser, []string{first.ID, second.ID, "missing"})
+	if err != nil || len(got) != 2 || got[first.ID].Version != changed.Version || got[second.ID] == nil {
+		t.Fatalf("fresh read on a node that lags: %v %v", got, err)
+	}
+	if err := users(c.nodes[0]).Delete(bg, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = n1.Fresh(bg, model.KindUser, []string{second.ID})
+	if err != nil || got[second.ID] == nil || !got[second.ID].Deleted {
+		t.Fatalf("a deletion is seen as a tombstone: %v %v", got[second.ID], err)
+	}
+	// A kind known to live in one partition is asked of its owner only: organizations are global.
+	if _, err := n1.Fresh(bg, model.KindOrg, []string{"nope"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := n1.Fresh(bg, model.KindUser, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no ids: %v %v", got, err)
+	}
+}
+
+// A fresh read of more records than one reply holds (maxReadReply: a sweep's batch of users, say) is answered whole:
+// the owner refuses a reply that does not fit, and the reader asks for halves until each does.
+func testFreshReadOfALargeBatch(t *testing.T, c *tcluster) {
+	saved := maxReadReply
+	maxReadReply = 64 << 10
+	t.Cleanup(func() { maxReadReply = saved })
+	ids := make([]string, 300)
+	size := 0
+	for i := range ids {
+		u := newUser("org-batch", fmt.Sprintf("user-%03d", i))
+		u.ID = model.NewID()
+		u.Work.Title = strings.Repeat("x", 1000)
+		rec, err := store.Encode(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := encodeRecord(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += len(b)
+		for _, tn := range c.nodes { // (as the owner holds them: a read asks the owner)
+			if _, err := tn.st().inner.PutReplicated(bg, rec); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ids[i] = u.ID
+	}
+	if size < 4*maxReadReply {
+		t.Fatalf("test set-up: the batch (%d bytes) needs fewer than four replies", size)
+	}
+	got, err := c.nodes[0].st().Fresh(bg, model.KindUser, ids)
+	if err != nil || len(got) != len(ids) {
+		t.Fatalf("a batch larger than a reply: %d of %d records, %v", len(got), len(ids), err)
+	}
+}
+
+// A fresh read that is not answered in time gives up with its caller's deadline instead of waiting for the write
+// timeout.
+func testFreshReadHonoursTheCallersDeadline(t *testing.T, c *tcluster) {
+	org, _ := c.orgNotOwnedBy(2)
+	u := newUser(org, "slow-read")
+	if err := users(c.nodes[0]).Create(bg, u); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUser(t, u.ID, func(*model.User) bool { return true })
+	c.partition([]int{0, 1}, []int{2})
+	ctx, cancel := context.WithTimeout(bg, 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := c.nodes[2].st().Fresh(ctx, model.KindUser, []string{u.ID})
+	if err == nil || time.Since(start) > 3*time.Second {
+		t.Fatalf("a fresh read cut off from the owner: %v after %s", err, time.Since(start))
+	}
+}
+
+// An id this node does not hold is asked of every partition's owner; told the partition (FreshIn), the caller asks one,
+// and gets the same answer, whether the node holds the record yet or not. A wrong hint never makes a record look
+// absent: an id the hinted partition does not hold, but that this node holds in another, is read from that partition's
+// owner (a caller that finds a record absent may delete what depends on it). (The read counts are exact: this test
+// has a cluster of its own.)
+func TestFreshInAsksOnlyThePartitionOwner(t *testing.T) {
+	c := started(t, badgerBackend())
+	c.waitOwners()
+	reads := func(tn *tnode) int64 { return tn.n.stats.reads.Load() }
+	node := c.nodes[0]
+
+	unknown := newID()
+	before := reads(node)
+	got, err := node.st().Fresh(bg, dataKind, []string{unknown})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("an id nobody holds: %v %v", got, err)
+	}
+	if n := reads(node) - before; n != partitions {
+		t.Fatalf("an unknown id was asked of %d owners, want all %d", n, partitions)
+	}
+	before = reads(node)
+	got, err = node.st().FreshIn(bg, dataKind, "org1", []string{unknown})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("an id nobody holds, in its partition: %v %v", got, err)
+	}
+	if n := reads(node) - before; n != 1 {
+		t.Fatalf("an id with its partition was asked of %d owners, want 1", n)
+	}
+
+	// a record written elsewhere is found through its partition without waiting for it to arrive here
+	rec := newRec(newID(), "")
+	if err := c.nodes[1].st().Put(bg, rec); err != nil {
+		t.Fatal(err)
+	}
+	for i, tn := range c.nodes {
+		got, err := tn.st().FreshIn(bg, dataKind, "org1", []string{rec.ID})
+		if err != nil || got[rec.ID] == nil || got[rec.ID].Version != rec.Version {
+			t.Fatalf("node %d: %v %v", i, got, err)
+		}
+	}
+	// without a key (the caller does not know it) the fan-out is the fallback, and a global kind needs none
+	before = reads(node)
+	if got, err := node.st().FreshIn(bg, dataKind, "", []string{unknown}); err != nil || len(got) != 0 {
+		t.Fatalf("no key: %v %v", got, err)
+	}
+	if n := reads(node) - before; n != partitions {
+		t.Fatalf("without a key %d owners were asked, want %d", n, partitions)
+	}
+
+	// hinted at the wrong partition
+	c.waitHas(rec.ID)
+	wrong := "org-other"
+	for i := 0; partitionNum(wrong) == recPartition(rec); i++ {
+		wrong = "org-other-" + string(rune('a'+i))
+	}
+	for i, tn := range c.nodes {
+		got, err := tn.st().FreshIn(bg, dataKind, wrong, []string{rec.ID})
+		if err != nil || got[rec.ID] == nil || got[rec.ID].Version != rec.Version {
+			t.Fatalf("node %d, hinted at the wrong partition: %v %v", i, got, err)
+		}
+	}
+	// an id nobody holds stays absent, asked of the hinted partition only
+	before = reads(node)
+	if got, err := node.st().FreshIn(bg, dataKind, wrong, []string{unknown}); err != nil || len(got) != 0 {
+		t.Fatalf("an id nobody holds: %v %v", got, err)
+	}
+	if n := reads(node) - before; n != 1 {
+		t.Fatalf("an unknown id with a wrong hint was asked of %d owners, want 1", n)
+	}
+}
+
+// A follower that keeps failing to catch one partition up stops serving that partition's records (sessions here) while
+// it still serves the others and the other nodes serve it; after unreadableGrace it is not ready, saying why; once it
+// catches up it serves and is ready again.
+func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
+	saved := unreadableGrace
+	unreadableGrace = 2 * time.Second
+	t.Cleanup(func() { unreadableGrace = saved })
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.startAll()
+	c.waitReady()
+	org, _ := c.orgNotOwnedBy(1)
+	p := partitionNum(org)
+	elsewhere := ""
+	for k := 0; elsewhere == ""; k++ {
+		if o := fmt.Sprintf("other-%d", k); partitionNum(o) != p && partitionNum(o) != 0 {
+			elsewhere = o
+		}
+	}
+	sess, other := newSession(org), newSession(elsewhere)
+	for _, s := range []*model.Session{sess, other} {
+		if err := sessions(c.nodes[0]).Create(bg, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, 10*time.Second, "the sessions everywhere", func() bool {
+		for _, tn := range c.nodes {
+			for _, s := range []*model.Session{sess, other} {
+				if _, err := sessions(tn).Get(bg, s.ID); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+
+	// node 1 misses the next write of the partition, and every catch-up of it fails
+	fs.of(c.nodes[1]).failImport.Store(int64(p) + 1)
+	for _, j := range []int{0, 2} {
+		c.drop(j, 1, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	}
+	later := newSession(org)
+	if err := sessions(c.nodes[0]).Create(bg, later); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "node 1 to refuse the partition it trails", func() bool {
+		_, err := sessions(c.nodes[1]).Get(bg, sess.ID)
+		return errors.Is(err, store.ErrNotWritable)
+	})
+	if _, err := c.nodes[1].st().Lookup(bg, model.KindSession, sess.ID); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("a lookup on the trailing node: %v", err)
+	}
+	if _, err := sessions(c.nodes[1]).Get(bg, other.ID); err != nil {
+		t.Fatalf("a partition the node follows is refused too: %v", err)
+	}
+	for _, i := range []int{0, 2} {
+		if _, err := sessions(c.nodes[i]).Get(bg, later.ID); err != nil {
+			t.Fatalf("node %d: %v", i, err)
+		}
+	}
+	waitFor(t, 15*time.Second, "node 1 not ready after the grace", func() bool {
+		ok, why := c.nodes[1].n.Ready()
+		return !ok && strings.Contains(why, "unreadable") && strings.Contains(why, fmt.Sprint(p))
+	})
+	st := c.nodes[1].n.Status()
+	if st.PartitionsUnreadable == 0 || st.Partitions[p].Readable || st.Partitions[p].LagMs == 0 || st.Reason == "" {
+		t.Fatalf("status of the trailing node: unreadable %d, partition %+v, reason %q", st.PartitionsUnreadable,
+			st.Partitions[p], st.Reason)
+	}
+	for _, i := range []int{0, 2} {
+		if ok, why := c.nodes[i].n.Ready(); !ok {
+			t.Fatalf("node %d: %s", i, why)
+		}
+	}
+
+	fs.of(c.nodes[1]).failImport.Store(0)
+	for _, j := range []int{0, 2} {
+		c.drop(j, 1, false, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	}
+	c.waitReady()
+	waitFor(t, 10*time.Second, "node 1 to serve the partition again", func() bool {
+		_, err := sessions(c.nodes[1]).Get(bg, later.ID)
+		return err == nil
+	})
+}
+
+// A node cut off from the majority hears no owner, so its partitions are unreadable; for cluster.minority_grace, which
+// it counts from when it saw the cut (after the cut was made), it still serves tokens and the copies it is not known to
+// trail (the token endpoints' grace), and after it, neither.
+func TestCutOffNodeServesOnlyWithinTheMinorityGrace(t *testing.T) {
+	const grace = 3 * time.Second
+	c := newTCluster(t, 3, badgerBackend())
+	for i := range c.addrs {
+		c.nodes = append(c.nodes, c.build(i, "", func(cfg *config.Config) { cfg.Cluster.MinorityGrace = int(grace / time.Second) }))
+	}
+	t.Cleanup(c.closeAll)
+	c.start(c.nodes...)
+	c.waitReady()
+	n0 := c.nodes[0].n
+	if !n0.ServesTokens() {
+		t.Fatal("a healthy node must serve tokens")
+	}
+	sess := newSession("org1")
+	if err := sessions(c.nodes[1]).Create(bg, sess); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "the session on node 0", func() bool { _, err := sessions(c.nodes[0]).Get(bg, sess.ID); return err == nil })
+	cut := time.Now()
+	c.partition([]int{0}, []int{1, 2})
+	waitFor(t, 15*time.Second, "node 0 cut off", func() bool { return !n0.Writable() })
+	// the grace starts when the cut is seen, with no request asking
+	waitFor(t, 2*time.Second, "the cut to be recorded", func() bool { return n0.cutOff.Load() != 0 })
+	waitFor(t, 5*time.Second, "the partition unreadable", func() bool { return !n0.manager().CanRead(partitionNum("org1")) })
+	if d := time.Since(cut); d >= grace {
+		t.Fatalf("test set-up: node 0 took %s to see the cut, longer than the grace", d)
+	}
+	if !n0.ServesTokens() {
+		t.Fatalf("tokens refused %s after the cut, within the grace", time.Since(cut))
+	}
+	if _, err := sessions(c.nodes[0]).Get(bg, sess.ID); err != nil {
+		t.Fatalf("within the grace: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the grace to end", func() bool { return !n0.ServesTokens() })
+	if d := time.Since(cut); d < grace {
+		t.Fatalf("the grace ended %s after the cut, want %s", d, grace)
+	}
+	if _, err := sessions(c.nodes[0]).Get(bg, sess.ID); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("after the grace: %v", err)
+	}
+	c.heal()
+	c.waitReady()
+}
+
+// A partition that diverged on a node (its copy holds a write the owner does not have: a disk restored wrongly) makes
+// the node not ready, saying so; it serves nothing of that partition, and the other nodes are unaffected.
+func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
+	b := sqliteBackend()
+	c := started(t, b)
+	org := c.orgOwnedBy(0)
+	p := partitionNum(org)
+	ids := writeN(t, c.nodes[0], org, 3)
+	c.waitHas(ids[2])
+
+	// node 2's database gets a write of the partition nobody else has
+	dir := c.nodes[2].dir
+	stop(c.nodes[2])
+	st := b.open(t, dir)
+	pst := st.(store.PartitionStore)
+	ps, err := pst.PartitionState(bg, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rogue := newOrgRec(org)
+	if err := pst.ApplyPartition(bg, p, []*store.Record{rogue}, store.PartitionPos{Epoch: ps.Committed.Epoch,
+		Seq: ps.Committed.Seq + 1}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	c.nodes[2] = c.build(2, dir, nil)
+	c.start(c.nodes[2])
+
+	waitFor(t, 30*time.Second, "node 2 to find the partition diverged", func() bool {
+		st := c.nodes[2].n.Status()
+		return st.PartitionsDiverged == 1 && st.Partitions[p].Diverged && st.Divergences >= 1
+	})
+	waitFor(t, 5*time.Second, "node 2 not ready", func() bool {
+		ok, why := c.nodes[2].n.Ready()
+		return !ok && strings.Contains(why, "diverged")
+	})
+	if _, err := c.nodes[2].st().Get(bg, dataKind, ids[0]); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("a record of the diverged partition served: %v", err)
+	}
+	for _, tn := range c.nodes[:2] {
+		if ok, why := tn.n.Ready(); !ok {
+			t.Fatalf("node %d: %s", tn.idx, why)
+		}
+		if _, err := tn.n.st.inner.Get(bg, dataKind, rogue.ID); err == nil {
+			t.Fatalf("node %d holds the diverged write", tn.idx)
+		}
+	}
+}

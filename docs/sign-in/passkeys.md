@@ -61,8 +61,9 @@ at hand.
 
 ## Copied authenticators
 
-An authenticator's signature counter must go up with each use. When a sign-in shows it did not, the passkey may have
-been copied: Quisora disables it at once, ends every session that signed in with it, tells the applications
+An authenticator's signature counter must go up with each use. When a sign-in shows it did not (against the passkey as
+this node has it, or, when two sign-ins with the same authenticator are stored at the same moment, as the cluster has it:
+the second one presents a counter at or below the stored one), the passkey may have been copied: Quisora disables it at once, ends every session that signed in with it, tells the applications
 (back-channel logout), and records `passkey.clone`. The user sees it marked **Disabled** on their account page, with
 the advice to delete it and change their password. (Synced passkeys do not use counters, so this applies to security
 keys and other device-bound ones.)

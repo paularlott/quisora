@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,15 +179,10 @@ func TestGroupConflictIsolation(t *testing.T) {
 	if n, _ := tb.Count(bg, "o"); n != 3 {
 		t.Fatalf("count %d, want 3 (base, x, z)", n)
 	}
-	ch, _, err := s.Changes(bg, 0, 0)
-	if err != nil || len(ch) != 4 {
-		t.Fatalf("feed %d entries, %v", len(ch), err)
-	}
 }
 
 // Writes of one record queued together apply in arrival order: each CompareAndPut expects the version the previous
-// one wrote, a deletion follows them and a create starts the next generation. The feed keeps one entry for the
-// record, under the last sequence number, and no entry of the intermediate writes.
+// one wrote, a deletion follows them and a create starts the next generation.
 func TestGroupSameKeyOrder(t *testing.T) {
 	s := openGated(t, t.TempDir())
 	defer s.Close()
@@ -232,25 +226,17 @@ func TestGroupSameKeyOrder(t *testing.T) {
 	if r.Epoch != tomb.Version || r.Created != again.Version {
 		t.Fatalf("epoch %d created %d, want %d %d", r.Epoch, r.Created, tomb.Version, again.Version)
 	}
-	members, err := s.eng.Range(bg, feedBkt, "", "", 0)
-	if err != nil || len(members) != 1 {
-		t.Fatalf("feed index %v %v", members, err)
+	if r.Version != again.Version {
+		t.Fatalf("stored version %d, want the last write's %d", r.Version, again.Version)
 	}
-	ch, _, _ := s.Changes(bg, 0, 0)
-	if len(ch) != 1 || ch[0].Record.Version != again.Version {
-		t.Fatalf("changes %+v", ch)
-	}
-	if want := seqMember(ch[0].Seq, entryOf(model.KindUser, u.ID)); members[0] != want {
-		t.Fatalf("feed member %s, want %s", members[0], want)
-	}
-	// Eight writes consumed eight sequence numbers (the deletion's tombstone is a write too).
-	if ch[0].Seq != 8 {
-		t.Fatalf("seq %d, want 8", ch[0].Seq)
+	// The scope index holds the record once (every write of the group replaced the earlier one's entries).
+	if n, err := tb.Count(bg, "o"); err != nil || n != 1 {
+		t.Fatalf("count %d %v", n, err)
 	}
 }
 
 // Replicated writes are grouped too and keep PutReplicated semantics: a stale copy is not applied, a unique clash
-// is resolved by creation order.
+// is refused.
 func TestGroupReplicated(t *testing.T) {
 	s := openGated(t, t.TempDir())
 	defer s.Close()
@@ -258,24 +244,22 @@ func TestGroupReplicated(t *testing.T) {
 		return &store.Record{Kind: model.KindGroup, ID: id, Origin: "n2", Scope: "o", Version: store.Clock.Now(),
 			Unique: []string{uniq}, Data: []byte(id), Fields: map[string]any{"display_name": id, "created": time.Now().UTC()}}
 	}
-	older, newer := mk("g1", "o|same"), mk("g2", "o|same")
-	older.Created, newer.Created = older.Version, newer.Version
-	stale := *older
-	stale.Version, stale.Data = older.Version-1, []byte("stale")
+	first, clash := mk("g1", "o|same"), mk("g2", "o|same")
+	stale := *first
+	stale.Version, stale.Data = first.Version-1, []byte("stale")
 
 	g := hold(t, s)
 	type res struct {
 		applied bool
-		losers  []string
 		err     error
 	}
 	out := make([]res, 3)
 	var chans []<-chan error
-	for i, r := range []*store.Record{newer, older, &stale} {
+	for i, r := range []*store.Record{first, clash, &stale} {
 		chans = append(chans, g.submit(func() error {
-			a, l, err := s.PutReplicated(bg, r)
-			out[i] = res{a, l, err}
-			return err
+			a, err := s.PutReplicated(bg, r)
+			out[i] = res{a, err}
+			return nil
 		}))
 	}
 	g.open()
@@ -284,110 +268,20 @@ func TestGroupReplicated(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !out[0].applied || !out[1].applied || out[2].applied {
-		t.Fatalf("applied %+v", out)
-	}
-	if len(out[1].losers) != 1 || out[1].losers[0] != "g2" {
-		t.Fatalf("losers %+v", out[1].losers)
+	if !out[0].applied || out[0].err != nil || out[1].applied || !errors.Is(out[1].err, store.ErrConflict) || out[2].applied || out[2].err != nil {
+		t.Fatalf("results %+v", out)
 	}
 	h, err := s.GetByUnique(bg, model.KindGroup, "o|same")
 	if err != nil || h.ID != "g1" || string(h.Data) != "g1" {
 		t.Fatalf("holder %+v %v", h, err)
 	}
-}
-
-// Many writers on overlapping records: sequence numbers are strictly increasing in commit order, every committed
-// write is reflected (the last write of each record is what is stored), and the stored counter is the highest seq.
-func TestGroupFeedMonotonicUnderConcurrency(t *testing.T) {
-	s := openGated(t, t.TempDir())
-	defer s.Close()
-	tb := store.NewTable[model.User](s)
-	ids := make([]*model.User, 20)
-	for i := range ids {
-		ids[i] = &model.User{OrgID: "o", Username: fmt.Sprintf("u%d", i), Email: fmt.Sprintf("u%d@x", i), Role: model.RoleUser}
-		if err := tb.Put(bg, ids[i]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var wg sync.WaitGroup
-	var ok atomic.Int64
-	stop := make(chan struct{})
-	var followErr error
-	var followed sync.WaitGroup
-	followed.Add(1)
-	go func() { // follow the feed while writes commit: seqs never go back, the cursor never skips
-		defer followed.Done()
-		var cursor, prev uint64
-		for {
-			ch, next, err := s.Changes(bg, cursor, 16)
-			if err != nil {
-				followErr = err
-				return
-			}
-			for _, c := range ch {
-				if c.Seq <= prev {
-					followErr = fmt.Errorf("seq %d after %d", c.Seq, prev)
-					return
-				}
-				prev = c.Seq
-			}
-			cursor = next
-			select {
-			case <-stop:
-				if len(ch) == 0 {
-					return
-				}
-			default:
-			}
-		}
-	}()
-	for w := range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range 60 {
-				u := *ids[(w*7+i)%len(ids)]
-				u.GivenName = fmt.Sprintf("%d-%d", w, i)
-				if err := tb.Put(bg, &u); err == nil {
-					ok.Add(1)
-				} else if !errors.Is(err, store.ErrStale) {
-					t.Error(err)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	close(stop)
-	followed.Wait()
-	if followErr != nil {
-		t.Fatal(followErr)
-	}
-	ch, _, err := s.Changes(bg, 0, 0)
-	if err != nil || len(ch) != len(ids) {
-		t.Fatalf("feed %d %v", len(ch), err)
-	}
-	var maxSeq uint64
-	for i, c := range ch {
-		if i > 0 && c.Seq <= ch[i-1].Seq {
-			t.Fatal("feed out of order")
-		}
-		maxSeq = max(maxSeq, c.Seq)
-		r, _ := s.Lookup(bg, model.KindUser, c.Record.ID)
-		if r.Version != c.Record.Version {
-			t.Fatalf("feed holds %d, store %d", c.Record.Version, r.Version)
-		}
-	}
-	stored, _ := s.eng.Get(bg, metaSeq)
-	if seqOf(stored) != maxSeq || maxSeq != uint64(len(ids))+uint64(ok.Load()) {
-		t.Fatalf("counter %d, max seq %d, writes %d", seqOf(stored), maxSeq, uint64(len(ids))+uint64(ok.Load()))
-	}
-	if commits(s) >= uint64(ok.Load()) {
-		t.Logf("no batching observed: %d commits for %d writes", commits(s), ok.Load())
+	if _, err := s.Get(bg, model.KindGroup, "g2"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a refused record was stored: %v", err)
 	}
 }
 
 // Concurrent writes are durable once acknowledged: after a clean close and reopen every acknowledged write is
-// there, and the feed counter continues from where it stopped.
+// there.
 func TestGroupDurableReopen(t *testing.T) {
 	dir := t.TempDir()
 	s := openGated(t, dir)
@@ -412,7 +306,6 @@ func TestGroupDurableReopen(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	_, last, _ := s.Changes(bg, 0, 0)
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -432,9 +325,8 @@ func TestGroupDurableReopen(t *testing.T) {
 	if err := tb.Put(bg, u); err != nil {
 		t.Fatal(err)
 	}
-	ch, _, _ := s.Changes(bg, last, 0)
-	if len(ch) != 1 || ch[0].Seq != last+1 {
-		t.Fatalf("after reopen: %+v (last %d)", ch, last)
+	if _, err := tb.Get(bg, u.ID); err != nil {
+		t.Fatalf("a write after the reopen: %v", err)
 	}
 }
 
@@ -553,13 +445,66 @@ func TestGroupSplitsTooBig(t *testing.T) {
 	if n := commits(s) - before; n < 2 {
 		t.Fatalf("expected the batch to be split, got %d commits", n)
 	}
-	ch, _, _ := s.Changes(bg, 0, 0)
-	if len(ch) != 40 {
-		t.Fatalf("feed %d", len(ch))
-	}
-	for i := range ch {
-		if want := fmt.Sprintf("big%02d", i); ch[i].Record.ID != want {
-			t.Fatalf("feed position %d holds %s, want %s (arrival order)", i, ch[i].Record.ID, want)
+	for i := range 40 {
+		if _, err := s.Get(bg, model.KindGroup, fmt.Sprintf("big%02d", i)); err != nil {
+			t.Fatalf("write %d lost: %v", i, err)
 		}
+	}
+}
+
+// An aborted transaction writes nothing; retry retries conflicts up to maxRetries, stops at a canceled context and passes
+// other errors through.
+func TestUpdateRetriesConflictsThenGivesUp(t *testing.T) {
+	ctx := context.Background()
+	s := openBadger(t, BadgerOptions{Group: GroupOptions{Disabled: true}})
+	// An error from the transaction body is returned unchanged and nothing is written.
+	boom := errors.New("boom")
+	err := s.eng.Update(ctx, func(tx txn) error { tx.Set("k", []byte("v")); return boom })
+	if !errors.Is(err, boom) {
+		t.Fatalf("Update: %v", err)
+	}
+	if b, _ := s.eng.Get(ctx, "k"); b != nil {
+		t.Fatal("an aborted transaction wrote")
+	}
+	// retry gives up after maxRetries conflicts, reports a canceled context, and passes other errors through.
+	calls := 0
+	err = retry(ctx, func() error { calls++; return errConflict })
+	if !errors.Is(err, store.ErrStale) || calls != maxRetries {
+		t.Fatalf("retry exhaustion: %v after %d calls", err, calls)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	calls = 0
+	if err := retry(cctx, func() error { calls++; return errConflict }); !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("retry canceled: %v after %d calls", err, calls)
+	}
+	if err := retry(ctx, func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatal("retry swallowed an error")
+	}
+	n := 0
+	if err := retry(ctx, func() error {
+		if n++; n < 3 {
+			return errConflict
+		}
+		return nil
+	}); err != nil || n != 3 {
+		t.Fatalf("retry success: %v %d", err, n)
+	}
+}
+
+// With group commit disabled, Group runs the transaction on its own, returning its error.
+func TestGroupRunsInlineWhenGroupCommitDisabled(t *testing.T) {
+	ctx := context.Background()
+	s := openBadger(t, BadgerOptions{Group: GroupOptions{Disabled: true}})
+	e := s.eng.(*badgerEngine)
+	boom := errors.New("boom")
+	if err := e.Group(ctx, "k", "i", func(tx txn) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("ungrouped Group: %v", err)
+	}
+	if err := e.Group(ctx, "k", "i", func(tx txn) error { tx.Set("x", []byte("1")); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := e.Get(ctx, "x"); string(b) != "1" {
+		t.Fatal("write lost")
 	}
 }

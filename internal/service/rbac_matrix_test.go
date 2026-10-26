@@ -9,57 +9,6 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// cast is a fixed set of actors used by the RBAC matrix: one of each role in the primary org and in org A, and an
-// admin of org B.
-type cast struct {
-	*env
-	a, b                           *model.Org
-	super, pAdmin, pManager, pUser *model.User
-	aAdmin, aManager, aUser        *model.User
-	bAdmin                         *model.User
-}
-
-func newCast(t testing.TB) *cast {
-	e := newEnv(t)
-	c := &cast{env: e, a: e.org("org-a"), b: e.org("org-b")}
-	c.super = e.super
-	c.pAdmin = e.user(e.primary.ID, "padmin", model.RoleAdmin)
-	c.pManager = e.user(e.primary.ID, "pmanager", model.RoleManager)
-	c.pUser = e.user(e.primary.ID, "puser", model.RoleUser)
-	c.aAdmin = e.user(c.a.ID, "aadmin", model.RoleAdmin)
-	c.aManager = e.user(c.a.ID, "amanager", model.RoleManager)
-	c.aUser = e.user(c.a.ID, "auser", model.RoleUser)
-	c.bAdmin = e.user(c.b.ID, "badmin", model.RoleAdmin)
-	return c
-}
-
-type actorCase struct {
-	name string
-	u    *model.User
-}
-
-func (c *cast) actors() []actorCase {
-	return []actorCase{
-		{"super", c.super}, {"primary-admin", c.pAdmin}, {"primary-manager", c.pManager}, {"primary-user", c.pUser},
-		{"a-admin", c.aAdmin}, {"a-manager", c.aManager}, {"a-user", c.aUser}, {"b-admin", c.bAdmin},
-	}
-}
-
-// match compares an outcome with an expectation; "denied" accepts forbidden or notfound.
-func match(got, want string) bool {
-	if want == "denied" {
-		return got == "forbidden" || got == "notfound"
-	}
-	return got == want
-}
-
-func (c *cast) check(t *testing.T, name string, err error, want string) {
-	t.Helper()
-	if got := outcome(err); !match(got, want) {
-		t.Errorf("%s: got %s (%v), want %s", name, got, err, want)
-	}
-}
-
 func TestMatrixCreateUser(t *testing.T) {
 	c := newCast(t)
 	roles := []model.Role{model.RoleUser, model.RoleManager, model.RoleAdmin, model.RoleSuperAdmin}
@@ -77,37 +26,29 @@ func TestMatrixCreateUser(t *testing.T) {
 	for _, ac := range c.actors() {
 		for _, r := range roles {
 			name := c.next("n")
-			_, err := c.svc.CreateUser(c.ctx, actor(ac.u), c.a.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: ptr(name + "@example.com"), Role: ptr(r)})
+			_, err := c.svc.CreateUser(c.ctx, actor(ac.u), c.a.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: ptr(name + "@example.com"), Role: ptr(r)})
 			c.check(t, "create "+string(r)+" in org-a as "+ac.name, err, want[ac.name][r])
 		}
 	}
-}
-
-func TestMatrixCreateSuperAdminInPrimary(t *testing.T) {
-	c := newCast(t)
+	// In the primary organization only a super admin creates a super admin; its admins and managers create plain users
+	// there, and those of other organizations do not.
 	for _, ac := range c.actors() {
 		name := c.next("s")
-		_, err := c.svc.CreateUser(c.ctx, actor(ac.u), c.primary.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: ptr(name + "@example.com"), Role: ptr(model.RoleSuperAdmin)})
-		want := "forbidden"
+		_, err := c.svc.CreateUser(c.ctx, actor(ac.u), c.primary.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: ptr(name + "@example.com"), Role: ptr(model.RoleSuperAdmin)})
+		wantSuper := "forbidden"
 		if ac.name == "super" {
-			want = "ok"
+			wantSuper = "ok"
 		}
-		c.check(t, "create super_admin in primary as "+ac.name, err, want)
-	}
-}
+		c.check(t, "create super_admin in primary as "+ac.name, err, wantSuper)
 
-func TestMatrixCreatePlainUserInPrimary(t *testing.T) {
-	c := newCast(t)
-	// Admins/managers of other orgs and of the primary org: primary org members manage the primary org only.
-	for _, ac := range c.actors() {
-		name := c.next("p")
-		_, err := c.svc.CreateUser(c.ctx, actor(ac.u), c.primary.ID, service.UserInput{GivenName: gn("T"), Username: &name, Email: ptr(name + "@example.com")})
-		want := "forbidden"
+		name = c.next("p")
+		_, err = c.svc.CreateUser(c.ctx, actor(ac.u), c.primary.ID, service.UserInput{GivenName: ptr("T"), Username: &name, Email: ptr(name + "@example.com")})
+		wantPlain := "forbidden"
 		switch ac.name {
 		case "super", "primary-admin", "primary-manager":
-			want = "ok"
+			wantPlain = "ok"
 		}
-		c.check(t, "create user in primary as "+ac.name, err, want)
+		c.check(t, "create user in primary as "+ac.name, err, wantPlain)
 	}
 }
 
@@ -216,7 +157,7 @@ func TestMatrixPrimaryOrgSuperAdminProtection(t *testing.T) {
 	_, err := c.svc.UpdateUser(c.ctx, actor(c.super), u.ID, service.UserInput{Role: ptr(model.RoleSuperAdmin)})
 	c.check(t, "promote in non-primary org", err, "forbidden")
 	// ... even for the system actor.
-	_, err = c.svc.CreateUser(c.ctx, service.System, c.a.ID, service.UserInput{GivenName: gn("T"), Username: ptr("sa-in-a"), Email: ptr("sa-in-a@example.com"), Role: ptr(model.RoleSuperAdmin)})
+	_, err = c.svc.CreateUser(c.ctx, service.System, c.a.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("sa-in-a"), Email: ptr("sa-in-a@example.com"), Role: ptr(model.RoleSuperAdmin)})
 	c.check(t, "create super in non-primary org as system", err, "forbidden")
 	// Promotion of a primary-org admin to super admin by a super admin is allowed.
 	pa := c.user(c.primary.ID, "promo", model.RoleAdmin)
@@ -229,13 +170,12 @@ func TestMatrixOrgs(t *testing.T) {
 	c := newCast(t)
 	for _, ac := range c.actors() {
 		name := strings.ToLower(c.next("o") + "-x")
-		o, err := c.svc.CreateOrg(c.ctx, actor(ac.u), service.OrgInput{Name: &name})
+		_, err := c.svc.CreateOrg(c.ctx, actor(ac.u), service.OrgInput{Name: &name})
 		want := "forbidden"
 		if ac.name == "super" {
 			want = "ok"
 		}
 		c.check(t, "create org as "+ac.name, err, want)
-		_ = o
 		victim := c.org(strings.ToLower(c.next("v") + "-v"))
 		err = c.svc.DeleteOrg(c.ctx, actor(ac.u), victim.ID, false)
 		c.check(t, "delete org as "+ac.name, err, want)
@@ -361,24 +301,8 @@ func TestMatrixGroupsClientsProviders(t *testing.T) {
 	}
 }
 
-func goodProvider(name string) service.ProviderInput {
-	return service.ProviderInput{Name: &name, Issuer: ptr("https://login.example.com"), ClientID: ptr("cid"),
-		ClientSecret: ptr("csecret")}
-}
-
-func TestMatrixAuditAndRevoke(t *testing.T) {
-	c := newCast(t)
-	for _, ac := range c.actors() {
-		_, err := c.svc.ListAudit(c.ctx, actor(ac.u), c.a.ID, service.AuditQuery{})
-		want := "forbidden"
-		if ac.name == "super" || ac.name == "a-admin" {
-			want = "ok"
-		}
-		c.check(t, "audit as "+ac.name, err, want)
-	}
-}
-
-func TestGetListUserVisibility(t *testing.T) {
+// Who reads a user, lists an organization's users and reads its audit log.
+func TestMatrixReadAccess(t *testing.T) {
 	c := newCast(t)
 	for _, ac := range c.actors() {
 		// Reading a user of org A.
@@ -402,5 +326,14 @@ func TestGetListUserVisibility(t *testing.T) {
 		if _, err := c.svc.GetUser(c.ctx, actor(ac.u), ac.u.ID); err != nil {
 			t.Errorf("%s cannot read self: %v", ac.name, err)
 		}
+	}
+	// The audit log is for the organization's admins and super admins.
+	for _, ac := range c.actors() {
+		_, err := c.svc.ListAudit(c.ctx, actor(ac.u), c.a.ID, service.AuditQuery{})
+		want := "forbidden"
+		if ac.name == "super" || ac.name == "a-admin" {
+			want = "ok"
+		}
+		c.check(t, "audit as "+ac.name, err, want)
 	}
 }

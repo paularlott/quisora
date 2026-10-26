@@ -113,18 +113,18 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		m.internalError(w, r, "identity", err)
 		return
 	} else if err == nil {
-		_ = m.s.Svc.Identities.Delete(service.Durable(ctx), id.ID) // a stale link from before the provider changed
+		_ = m.s.Svc.Identities.Delete(ctx, id.ID) // a stale link from before the provider changed
 	}
 	// one identity per provider and user: a new one replaces the old
 	if ids, err := m.s.Svc.Identities.All(ctx, u.ID); err == nil {
 		for _, id := range ids {
 			if id.ProviderID == res.Provider.ID {
-				_ = m.s.Svc.Identities.Delete(service.Durable(ctx), id.ID)
+				_ = m.s.Svc.Identities.Delete(ctx, id.ID)
 			}
 		}
 	}
 	id := model.NewIdentity(u, res.Provider, res.Claims.Subject, res.Claims.Email, "connect")
-	if err := m.s.Svc.Identities.Create(service.Durable(ctx), id); err != nil {
+	if err := m.s.Svc.Identities.Create(ctx, id); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			back("taken")
 			return

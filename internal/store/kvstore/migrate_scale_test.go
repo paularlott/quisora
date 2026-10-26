@@ -37,7 +37,7 @@ func TestMigrationScale(t *testing.T) {
 	start := time.Now()
 	batch := make([]*store.Record, 0, 1000)
 	flush := func() {
-		if _, _, err := s.PutReplicatedBatch(ctx, batch); err != nil {
+		if _, err := s.PutReplicatedBatch(ctx, batch); err != nil {
 			t.Fatal(err)
 		}
 		batch = batch[:0]

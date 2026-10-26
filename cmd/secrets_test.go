@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -107,5 +108,58 @@ ca_file = "`+ca+`"
 	mu.Unlock()
 	if r := reload(ctx, true, 0); r.Error == "" || !slices.Equal(ids(), before) {
 		t.Fatalf("vault down: %+v %v", r, ids())
+	}
+}
+
+func TestWarnLooseFiles(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("posix permissions")
+	}
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "token")
+	_ = os.WriteFile(tok, []byte("t"), 0o644)
+	conf := filepath.Join(dir, "q.toml")
+	_ = os.WriteFile(conf, []byte("[server]\nmaster_key = \"abc\"\n"), 0o644)
+	cfg := config.Default()
+	cfg.Secrets.Vault.TokenFile = tok
+	c := parsed(t, cfg, "--config", conf, "serve")
+	cfg.Secrets.Vault.TokenFile = tok
+	var b strings.Builder
+	warnLooseFiles(&b, cfg, c)
+	if !strings.Contains(b.String(), tok) {
+		t.Fatalf("token file not warned about: %q", b.String())
+	}
+	if !secretInFile(cfg, c) {
+		t.Fatal("a master key in the file is a secret in the file")
+	}
+	if !strings.Contains(b.String(), conf) {
+		t.Fatalf("config file with a secret not warned about: %q", b.String())
+	}
+	_ = os.Chmod(tok, 0o600)
+	_ = os.Chmod(conf, 0o600)
+	b.Reset()
+	warnLooseFiles(&b, cfg, c)
+	if b.Len() != 0 {
+		t.Fatalf("0600 files warned about: %q", b.String())
+	}
+}
+
+// Secrets given as flags are warned about (named with the environment variable and config key to use instead);
+// other flags, and a VictoriaLogs URL without credentials, are not.
+func TestWarnSecretFlags(t *testing.T) {
+	cfg := config.Default()
+	var b strings.Builder
+	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--master-key=x", "--smtp-password", "y", "--data-dir", "d",
+		"--audit-victorialogs-url", "http://vl:9428"))
+	out := b.String()
+	if !strings.Contains(out, "--master-key") || !strings.Contains(out, "QUISORA_MASTER_KEY") ||
+		!strings.Contains(out, "--smtp-password") || strings.Contains(out, "data-dir") || strings.Contains(out, "victorialogs") {
+		t.Fatalf("warnings:\n%s", out)
+	}
+	cfg.Audit.VictoriaLogs = "http://user:pw@vl:9428"
+	b.Reset()
+	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs))
+	if !strings.Contains(b.String(), "--audit-victorialogs-url") {
+		t.Fatal("a VictoriaLogs URL with credentials was not warned about")
 	}
 }

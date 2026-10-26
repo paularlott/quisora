@@ -158,8 +158,10 @@ func (s *Service) RegisterClient(ctx context.Context, in RegistrationInput) (*mo
 	} else if n >= MaxSelfRegistered {
 		return nil, ErrLimit
 	}
-	c.ID = "dyn-" + secure.RandomToken(16)
-	if err := s.Clients.Create(Durable(ctx), c); err != nil {
+	c.ID = model.DynamicClientPrefix + secure.RandomToken(16)
+	if err := s.Clients.Create(ctx, c); err != nil {
+		s.auditUnknown(ctx, err, System, "", "client.self_register", c.Name, map[string]string{"client_id": c.ID,
+			"redirect_uris": strings.Join(c.RedirectURIs, " ")})
 		return nil, mapStore(err)
 	}
 	s.Audit(ctx, System, "", "client.self_register", c.Name, map[string]string{"client_id": c.ID,
@@ -222,7 +224,7 @@ func (s *Service) NoteSelfRegisteredUse(ctx context.Context, app *model.Client, 
 		nc := *app
 		nc.OrgID, nc.TenantID, nc.Resources = "", "", nil
 		nc.UsedIn, nc.LastUsed = []string{t.ID}, time.Now().UTC()
-		if err := s.Clients.Create(Durable(ctx), &nc); err == nil {
+		if err := s.Clients.Create(ctx, &nc); err == nil {
 			s.Audit(ctx, System, t.OrgID, "client.self_register", nc.Name, map[string]string{"client_id": nc.ID,
 				"metadata": "document", "tenant": t.Name})
 		}
@@ -333,7 +335,9 @@ func (s *Service) RevokeSelfRegisteredApp(ctx context.Context, a *Actor, tenantI
 		}
 	}
 	c.UsedIn = slices.DeleteFunc(c.UsedIn, func(id string) bool { return id == t.ID })
-	if err := s.Clients.Update(Durable(ctx), c); err != nil {
+	if err := s.Clients.Update(ctx, c); err != nil {
+		s.auditUnknown(ctx, err, a, t.OrgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ID,
+			"tenant": t.Name, "users": itoa(len(users))})
 		return mapStore(err)
 	}
 	s.Audit(ctx, a, t.OrgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ID,

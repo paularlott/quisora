@@ -186,13 +186,13 @@ func restoreCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 		Description: "Loads a backup made by \"quisora backup\" from <file> (\"-\" for standard input) into the configured " +
 			"store, keeping every record's id and version. The store must be empty; --force merges into a store " +
 			"that is not: records from the backup replace older versions of themselves, and where two different " +
-			"records claim the same unique value (an organization name, an email address) the one created first " +
-			"keeps it and the other is kept without it, as in cluster replication. An encrypted backup is detected; " +
+			"records claim the same unique value (an organization name, an email address) the restore fails. " +
+			"An encrypted backup is detected; " +
 			"its password is read from --password-file, else from standard input when it is a pipe (and the backup " +
 			"is a file), else asked for on the terminal. The master key must be the one of the server the backup came " +
 			"from (or one of server.previous_master_keys).\n\n" +
-			"In a cluster with node-local stores, restore one node and start it alone, then start the others with " +
-			"empty data directories so they copy from it.\n\n" + storeNote,
+			"In a gossip cluster, restore into one node with an empty database and start it, then start the others with " +
+			"empty databases so they copy from it (a restore never goes over data in a cluster).\n\n" + storeNote,
 		Flags: append(flags, &cli.BoolFlag{Name: "force", Usage: "Restore into a store that is not empty"},
 			&cli.StringFlag{Name: "password-file", Usage: "File holding the encrypted backup's password (its first line)"}),
 		Arguments: []cli.Argument{

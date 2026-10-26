@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-const (
-	extUser  = "urn:paularlott:quisora:scim:schemas:2.0:User"
-	extGroup = "urn:paularlott:quisora:scim:schemas:2.0:Group"
-)
-
 func tagsOf(r resp, urn string) []string {
 	ext, _ := r.Body[urn].(map[string]any)
 	l, ok := ext["tags"].([]any)
@@ -27,50 +22,50 @@ func tagsOf(r resp, urn string) []string {
 func TestUserTagsSCIM(t *testing.T) {
 	e := newEnv(t)
 	r := e.createUser("acme", e.admA, map[string]any{"userName": "tagged",
-		"schemas": []string{"urn:ietf:params:scim:schemas:core:2.0:User", extUser},
-		extUser:   map[string]any{"tags": []string{"dept:finance", "vip", "vip"}}})
-	if r.Status != 201 || !slices.Equal(tagsOf(r, extUser), []string{"dept:finance", "vip"}) {
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:User", quisoraURN},
+		quisoraURN: map[string]any{"tags": []string{"dept:finance", "vip", "vip"}}})
+	if r.Status != 201 || !slices.Equal(tagsOf(r, quisoraURN), []string{"dept:finance", "vip"}) {
 		t.Fatalf("create: %d %s", r.Status, r.Raw)
 	}
 	id := r.str("id")
 	url := "/scim/v2/acme/Users/" + id
 	// a user without tags renders an empty list
 	plain := e.mk("plain", nil)
-	if g := e.do("GET", "/scim/v2/acme/Users/"+plain, e.admA, nil); g.Status != 200 || tagsOf(g, extUser) == nil || len(tagsOf(g, extUser)) != 0 {
+	if g := e.do("GET", "/scim/v2/acme/Users/"+plain, e.admA, nil); g.Status != 200 || tagsOf(g, quisoraURN) == nil || len(tagsOf(g, quisoraURN)) != 0 {
 		t.Fatalf("empty tags: %s", g.Raw)
 	}
 	patch := func(ops ...map[string]any) resp { return e.do("PATCH", url, e.admA, patchBody(ops...)) }
 
 	// add (with the full URN path), replace, remove one value, remove all
-	if r := patch(op("add", extUser+":tags", []any{"team:blue", "vip"})); r.Status != 200 ||
-		!slices.Equal(tagsOf(r, extUser), []string{"dept:finance", "team:blue", "vip"}) {
+	if r := patch(op("add", quisoraURN+":tags", []any{"team:blue", "vip"})); r.Status != 200 ||
+		!slices.Equal(tagsOf(r, quisoraURN), []string{"dept:finance", "team:blue", "vip"}) {
 		t.Fatalf("add: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("remove", extUser+":tags", []any{"vip"})); r.Status != 200 ||
-		!slices.Equal(tagsOf(r, extUser), []string{"dept:finance", "team:blue"}) {
+	if r := patch(op("remove", quisoraURN+":tags", []any{"vip"})); r.Status != 200 ||
+		!slices.Equal(tagsOf(r, quisoraURN), []string{"dept:finance", "team:blue"}) {
 		t.Fatalf("remove value: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("replace", extUser+":tags", []any{"b", "a"})); r.Status != 200 ||
-		!slices.Equal(tagsOf(r, extUser), []string{"a", "b"}) {
+	if r := patch(op("replace", quisoraURN+":tags", []any{"b", "a"})); r.Status != 200 ||
+		!slices.Equal(tagsOf(r, quisoraURN), []string{"a", "b"}) {
 		t.Fatalf("replace: %d %s", r.Status, r.Raw)
 	}
 	// pathless add with the extension object
-	if r := patch(op("add", "", map[string]any{extUser: map[string]any{"tags": []any{"c"}}})); r.Status != 200 ||
-		!slices.Equal(tagsOf(r, extUser), []string{"a", "b", "c"}) {
+	if r := patch(op("add", "", map[string]any{quisoraURN: map[string]any{"tags": []any{"c"}}})); r.Status != 200 ||
+		!slices.Equal(tagsOf(r, quisoraURN), []string{"a", "b", "c"}) {
 		t.Fatalf("pathless add: %d %s", r.Status, r.Raw)
 	}
 	// other attributes keep the tags
-	if r := patch(op("replace", "displayName", "Boss")); r.Status != 200 || len(tagsOf(r, extUser)) != 3 {
+	if r := patch(op("replace", "displayName", "Boss")); r.Status != 200 || len(tagsOf(r, quisoraURN)) != 3 {
 		t.Fatalf("unrelated patch: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("remove", extUser+":tags", nil)); r.Status != 200 || len(tagsOf(r, extUser)) != 0 {
+	if r := patch(op("remove", quisoraURN+":tags", nil)); r.Status != 200 || len(tagsOf(r, quisoraURN)) != 0 {
 		t.Fatalf("remove all: %d %s", r.Status, r.Raw)
 	}
 	// invalid values are rejected
-	if r := patch(op("add", extUser+":tags", []any{"not valid"})); r.Status != 400 && r.Status != 422 {
+	if r := patch(op("add", quisoraURN+":tags", []any{"not valid"})); r.Status != 400 || r.str("scimType") != "invalidValue" {
 		t.Fatalf("invalid tag: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("add", extUser+":tags", []any{1})); r.Status != 400 {
+	if r := patch(op("add", quisoraURN+":tags", []any{1})); r.Status != 400 {
 		t.Fatalf("non-string tag: %d %s", r.Status, r.Raw)
 	}
 	// PUT: tags given are applied, tags not mentioned are kept
@@ -78,17 +73,17 @@ func TestUserTagsSCIM(t *testing.T) {
 		body["userName"], body["emails"] = "tagged", mail("tagged@acme.test")
 		return e.do("PUT", url, e.admA, body)
 	}
-	if r := put(map[string]any{extUser: map[string]any{"tags": []string{"p"}}}); r.Status != 200 || !slices.Equal(tagsOf(r, extUser), []string{"p"}) {
+	if r := put(map[string]any{quisoraURN: map[string]any{"tags": []string{"p"}}}); r.Status != 200 || !slices.Equal(tagsOf(r, quisoraURN), []string{"p"}) {
 		t.Fatalf("put with tags: %d %s", r.Status, r.Raw)
 	}
-	if r := put(map[string]any{}); r.Status != 200 || !slices.Equal(tagsOf(r, extUser), []string{"p"}) {
+	if r := put(map[string]any{}); r.Status != 200 || !slices.Equal(tagsOf(r, quisoraURN), []string{"p"}) {
 		t.Fatalf("put without tags: %d %s", r.Status, r.Raw)
 	}
-	if r := put(map[string]any{extUser: map[string]any{"tags": []string{}}}); r.Status != 200 || len(tagsOf(r, extUser)) != 0 {
+	if r := put(map[string]any{quisoraURN: map[string]any{"tags": []string{}}}); r.Status != 200 || len(tagsOf(r, quisoraURN)) != 0 {
 		t.Fatalf("put empty tags: %d %s", r.Status, r.Raw)
 	}
 	// a manager may tag plain users; filtering by tag works in memory
-	if r := e.do("PATCH", url, e.mgrA, patchBody(op("add", extUser+":tags", []any{"mgr"}))); r.Status != 200 {
+	if r := e.do("PATCH", url, e.mgrA, patchBody(op("add", quisoraURN+":tags", []any{"mgr"}))); r.Status != 200 {
 		t.Fatalf("manager: %d %s", r.Status, r.Raw)
 	}
 	f := e.do("GET", "/scim/v2/acme/Users?filter="+qs(`urn:paularlott:quisora:scim:schemas:2.0:User:tags eq "mgr"`), e.admA, nil)
@@ -100,37 +95,37 @@ func TestUserTagsSCIM(t *testing.T) {
 func TestGroupTagsSCIM(t *testing.T) {
 	e := newEnv(t)
 	r := e.do("POST", "/scim/v2/acme/Groups", e.admA, map[string]any{"displayName": "Tagged",
-		"schemas": []string{"urn:ietf:params:scim:schemas:core:2.0:Group", extGroup},
-		extGroup:  map[string]any{"tags": []string{"team:b", "team:a"}}})
-	if r.Status != 201 || !slices.Equal(tagsOf(r, extGroup), []string{"team:a", "team:b"}) {
+		"schemas": []string{"urn:ietf:params:scim:schemas:core:2.0:Group", groupURN},
+		groupURN:  map[string]any{"tags": []string{"team:b", "team:a"}}})
+	if r.Status != 201 || !slices.Equal(tagsOf(r, groupURN), []string{"team:a", "team:b"}) {
 		t.Fatalf("create: %d %s", r.Status, r.Raw)
 	}
 	url := "/scim/v2/acme/Groups/" + r.str("id")
 	patch := func(ops ...map[string]any) resp { return e.do("PATCH", url, e.admA, patchBody(ops...)) }
-	if r := patch(op("add", extGroup+":tags", []any{"x"})); r.Status != 200 || !slices.Equal(tagsOf(r, extGroup), []string{"team:a", "team:b", "x"}) {
+	if r := patch(op("add", groupURN+":tags", []any{"x"})); r.Status != 200 || !slices.Equal(tagsOf(r, groupURN), []string{"team:a", "team:b", "x"}) {
 		t.Fatalf("add: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("remove", extGroup+":tags", []any{"team:a"})); r.Status != 200 || !slices.Equal(tagsOf(r, extGroup), []string{"team:b", "x"}) {
+	if r := patch(op("remove", groupURN+":tags", []any{"team:a"})); r.Status != 200 || !slices.Equal(tagsOf(r, groupURN), []string{"team:b", "x"}) {
 		t.Fatalf("remove value: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("replace", extGroup+":tags", []any{"only"})); r.Status != 200 || !slices.Equal(tagsOf(r, extGroup), []string{"only"}) {
+	if r := patch(op("replace", groupURN+":tags", []any{"only"})); r.Status != 200 || !slices.Equal(tagsOf(r, groupURN), []string{"only"}) {
 		t.Fatalf("replace: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("replace", "displayName", "Renamed")); r.Status != 200 || r.str("displayName") != "Renamed" || len(tagsOf(r, extGroup)) != 1 {
+	if r := patch(op("replace", "displayName", "Renamed")); r.Status != 200 || r.str("displayName") != "Renamed" || len(tagsOf(r, groupURN)) != 1 {
 		t.Fatalf("rename keeps tags: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("add", extGroup+":tags", []any{"bad tag"})); r.Status != 400 && r.Status != 422 {
+	if r := patch(op("add", groupURN+":tags", []any{"bad tag"})); r.Status != 400 || r.str("scimType") != "invalidValue" {
 		t.Fatalf("invalid: %d %s", r.Status, r.Raw)
 	}
-	if r := patch(op("remove", extGroup+":tags", nil)); r.Status != 200 || len(tagsOf(r, extGroup)) != 0 {
+	if r := patch(op("remove", groupURN+":tags", nil)); r.Status != 200 || len(tagsOf(r, groupURN)) != 0 {
 		t.Fatalf("remove all: %d %s", r.Status, r.Raw)
 	}
 	// PUT without tags keeps them, with tags sets them
 	put := func(body map[string]any) resp { body["displayName"] = "Renamed"; return e.do("PUT", url, e.admA, body) }
-	if r := put(map[string]any{extGroup: map[string]any{"tags": []string{"q"}}}); r.Status != 200 || !slices.Equal(tagsOf(r, extGroup), []string{"q"}) {
+	if r := put(map[string]any{groupURN: map[string]any{"tags": []string{"q"}}}); r.Status != 200 || !slices.Equal(tagsOf(r, groupURN), []string{"q"}) {
 		t.Fatalf("put: %d %s", r.Status, r.Raw)
 	}
-	if r := put(map[string]any{}); r.Status != 200 || !slices.Equal(tagsOf(r, extGroup), []string{"q"}) {
+	if r := put(map[string]any{}); r.Status != 200 || !slices.Equal(tagsOf(r, groupURN), []string{"q"}) {
 		t.Fatalf("put without: %d %s", r.Status, r.Raw)
 	}
 }
@@ -138,7 +133,7 @@ func TestGroupTagsSCIM(t *testing.T) {
 func TestTagsDiscovery(t *testing.T) {
 	e := newEnv(t)
 	for _, base := range []string{"/scim/v2", "/scim/v2/acme"} {
-		for _, urn := range []string{extUser, extGroup} {
+		for _, urn := range []string{quisoraURN, groupURN} {
 			r := e.do("GET", base+"/Schemas/"+urn, "", nil)
 			attrs, _ := r.Body["attributes"].([]any)
 			found := false
@@ -162,7 +157,7 @@ func TestTagsDiscovery(t *testing.T) {
 		}
 		g := e.do("GET", base+"/ResourceTypes/Group", "", nil)
 		exts, _ := g.Body["schemaExtensions"].([]any)
-		if g.Status != 200 || len(exts) != 1 || exts[0].(map[string]any)["schema"] != extGroup {
+		if g.Status != 200 || len(exts) != 1 || exts[0].(map[string]any)["schema"] != groupURN {
 			t.Errorf("%s Group resource type: %s", base, g.Raw)
 		}
 	}
