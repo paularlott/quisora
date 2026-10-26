@@ -46,8 +46,6 @@ func TestPurgeLost(t *testing.T) {
 func TestPurgeLostOlderThan(t *testing.T) {
 	dir := t.TempDir()
 	lost, key := sealer(t, secure.RandomBytes(32)), sealer(t, secure.RandomBytes(32))
-	q := open(t, dir, key, &sink{}, time.Hour)
-	defer q.Close()
 	put := func(name string) string {
 		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte(lost.SealFor("", []byte("x"))), 0o600); err != nil {
@@ -59,6 +57,9 @@ func TestPurgeLostOlderThan(t *testing.T) {
 	old := put(stamp(time.Now().Add(-10 * 24 * time.Hour)))
 	young := put(stamp(time.Now().Add(-time.Hour)))
 	odd := put("not-a-time" + ext)
+	// The items are on disk before the queue starts: its worker never reads one half written (and drops it).
+	q := open(t, dir, key, &sink{}, time.Hour)
+	defer q.Close()
 	if n, err := q.PurgeLost(time.Now().Add(-8 * 24 * time.Hour)); err != nil || n != 1 {
 		t.Fatalf("purged %d: %v", n, err)
 	}

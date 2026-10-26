@@ -666,15 +666,24 @@ func (s *Service) updateUser(ctx context.Context, a *Actor, id string, in UserIn
 	}
 	noteSecurity(secWas, u)
 	err = s.Users.Update(ctx, u)
+	// The commit boundary of a change the admin lock guarded (lease.fence): a write that landed after the lease lapsed
+	// is judged again on the copy the guard judged, and undone if it would be refused now. So is one whose outcome is
+	// unknown (it may have landed): the check reads the owners' copies, which settle it first.
+	fence := func() error {
+		return al.fence(ctx, func(ctx context.Context) error { return s.guardAdminChange(ctx, prev, in) },
+			func(ctx context.Context) error { return s.restoreUser(ctx, prev, u) })
+	}
 	if err != nil {
 		s.auditUnknown(ctx, err, a, u.OrgID, "user.update", u.Username, addChanges(nil, was, u))
+		if al != nil && outcomeUnknown(err) {
+			if ferr := fence(); ferr != nil {
+				return nil, ferr
+			}
+		}
 		return nil, s.userConflict(ctx, err, u)
 	}
 	if al != nil {
-		// The commit boundary of a change the admin lock guarded (lease.fence): a write that landed after the lease
-		// lapsed is judged again on the copy the guard judged, and undone if it would be refused now.
-		if err := al.fence(ctx, func(ctx context.Context) error { return s.guardAdminChange(ctx, prev, in) },
-			func(ctx context.Context) error { return s.restoreUser(ctx, prev, u) }); err != nil {
+		if err := fence(); err != nil {
 			return nil, err
 		}
 	}
@@ -838,7 +847,13 @@ func (s *Service) restoreUser(ctx context.Context, prev, u *model.User) error {
 // recreateUser undoes a guarded deletion of a user (lease.fence): u, as read before the deletion, is created again (a
 // new generation of the record over its tombstone).
 func (s *Service) recreateUser(ctx context.Context, u *model.User) error {
-	return mapStore(s.Users.Create(ctx, u))
+	err := s.Users.Create(ctx, u)
+	if err != nil {
+		if _, gerr := s.Users.Get(ctx, u.ID); gerr == nil {
+			return nil // still there: a deletion whose outcome was unknown did not land
+		}
+	}
+	return mapStore(err)
 }
 
 // guardLastAdmin refuses to demote, disable, delete or end-date a super admin when fewer than MinSuperAdmins usable
@@ -940,16 +955,24 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
 	// read on a node that has not seen the user's promotion to administrator yet, so neither the admin lock nor the
 	// last-admin check applied) is refused, instead of deleting an administrator unchecked.
+	// The commit boundary of a deletion the admin lock guarded (lease.fence): one that landed after the lease lapsed,
+	// or whose outcome is unknown, is judged again, and the user created again if it would be refused now.
+	fence := func() error {
+		return al.fence(ctx, func(ctx context.Context) error { return s.guardLastAdmin(ctx, u) },
+			func(ctx context.Context) error { return s.recreateUser(ctx, u) })
+	}
 	if err := s.Users.DeleteIf(ctx, u.ID, u.Version); err != nil {
 		// Refused (a newer copy), or not confirmed by a majority: the user may still exist; a retry decides.
 		s.auditUnknown(ctx, err, a, u.OrgID, "user.delete", u.Username, nil)
+		if al != nil && outcomeUnknown(err) {
+			if ferr := fence(); ferr != nil {
+				return ferr
+			}
+		}
 		return mapStore(err)
 	}
 	if al != nil {
-		// The commit boundary of a deletion the admin lock guarded (lease.fence): one that landed after the lease
-		// lapsed is judged again, and the user created again if it would be refused now.
-		if err := al.fence(ctx, func(ctx context.Context) error { return s.guardLastAdmin(ctx, u) },
-			func(ctx context.Context) error { return s.recreateUser(ctx, u) }); err != nil {
+		if err := fence(); err != nil {
 			return err
 		}
 	}

@@ -107,16 +107,18 @@ func (q *Queue[T]) Queued() int { return int(q.queued.Load()) }
 // Add queues it, to be delivered once after (now: at once) having failed attempts deliveries already, and returns
 // once it is on disk.
 func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
-	if q.queued.Load() >= int64(q.o.Max) {
+	// The place is taken before the write (given back if it fails), so adds at once never pass Max between them.
+	if q.queued.Add(1) > int64(q.o.Max) {
+		q.queued.Add(-1)
 		return ErrFull
 	}
 	var r [6]byte
 	_, _ = rand.Read(r[:])
 	name := fmt.Sprintf("%020d-%s%s", time.Now().UnixNano(), hex.EncodeToString(r[:]), ext) // oldest first when listed
 	if err := q.write(name, &item[T]{Item: it, Attempt: attempts, Next: time.Now().Add(after)}); err != nil {
+		q.queued.Add(-1)
 		return err
 	}
-	q.queued.Add(1)
 	select {
 	case q.kick <- struct{}{}:
 	default:

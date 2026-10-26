@@ -18,7 +18,12 @@ type outcomeKey struct{}
 // "unknown": a change that did take effect is never missing from the audit log. Any other error records nothing (nothing
 // was changed).
 func (s *Service) auditUnknown(ctx context.Context, err error, a *Actor, orgID, action, target string, detail map[string]string) {
-	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, ErrOutcomeUnknown) {
+	if outcomeUnknown(err) {
 		s.Audit(context.WithValue(ctx, outcomeKey{}, OutcomeUnknown), a, orgID, action, target, detail)
 	}
+}
+
+// outcomeUnknown reports whether err leaves a write's outcome unknown: it may have landed, or land yet.
+func outcomeUnknown(err error) bool {
+	return errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, ErrOutcomeUnknown)
 }

@@ -328,12 +328,26 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	if !store.ExportAllowed(st.Purged, afterSeq) {
 		return store.ErrPartitionPurged
 	}
+	// A row above the committed position is an import that did not finish: the rows below may lack what it overwrote.
+	for _, k := range model.Kinds() {
+		rows, err := r.query(ctx, s.tables[k].aboveSQL, p, int64(st.Committed.Seq))
+		if err != nil {
+			return err
+		}
+		above := rows.Next()
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if above {
+			return store.ErrImportUnfinished
+		}
+	}
 	if err := start(st.Committed); err != nil {
 		return err
 	}
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
-		// Up to the committed position: a row above it was brought by an import that did not finish.
 		rows, err := r.query(ctx, t.exportSQL, p, int64(afterSeq), int64(st.Committed.Seq))
 		if err != nil {
 			return err

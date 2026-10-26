@@ -40,6 +40,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ImportFull", testPartImportFull},
 		{"ExportStartsWithThePosition", testPartExportStart},
 		{"ImportInBatches", testPartImportBatches},
+		{"ExportRefusedWhileAnImportIsUnfinished", testPartExportUnfinished},
 		{"ImportFullInBatches", testPartImportFullBatches},
 		{"ImportFullRestartedAtTheSamePosition", testPartImportFullSamePosition},
 		{"Purge", testPartPurge},
@@ -1045,8 +1046,8 @@ func testPartImportBatches(t *testing.T, f Factory) {
 	if n, _ := dst.Count(ctx, model.KindUser, ""); n != 20 {
 		t.Fatalf("%d records stored after two batches, want 20", n)
 	}
-	if got, pos0 := exported(t, dp, 82, 0); len(got) != 0 || pos0 != (store.PartitionPos{}) {
-		t.Fatalf("an export shows records above the committed position: %v %+v", keysOf(got), pos0)
+	if _, err := exportAfter(dp, 82, 0, func(store.PartitionRecord) error { return nil }); !errors.Is(err, store.ErrImportUnfinished) {
+		t.Fatalf("an export with records above the committed position: %v", err)
 	}
 	// the import repeated from the start (what the next catch-up does) completes it
 	for i, b := range bs {
@@ -1307,5 +1308,43 @@ func testPartTombstones(t *testing.T, f Factory) {
 	must(t, ps.ImportPartition(ctx, 82, []store.PartitionRecord{{Record: only, Seq: 1}, {Record: trec(only), Seq: 2}}, pos(1, 2), whole))
 	if got := tombstones(t, ps, 82, 0, 2); len(got) != 1 || got[0].seq != 2 {
 		t.Fatalf("after a full import: %v", got)
+	}
+}
+
+// unfinishedImport leaves partition p as a crash in the middle of an import does: r committed at 1, then a new version of
+// it brought by a batch that is not the final one, so stored at 2 with the position still at 1. It returns the new version
+// and the step that would finish the import.
+func unfinishedImport(t testing.TB, ps store.PartitionStore, p int, org string) (*store.Record, store.ImportStep) {
+	t.Helper()
+	r := urec(t, org, "unf-a")
+	must(t, ps.ApplyPartition(ctx, p, []*store.Record{r}, pos(1, 1)))
+	r2 := *r
+	r2.Version++
+	must(t, ps.ImportPartition(ctx, p, []store.PartitionRecord{{Record: &r2, Seq: 2}}, pos(1, 2), store.ImportStep{First: true}))
+	return &r2, store.ImportStep{Final: true}
+}
+
+// An export never shows a partition whose import has not finished: the record the import overwrote is above the committed
+// position, so the export would miss it while advertising the position below it. start is not called.
+func testPartExportUnfinished(t *testing.T, f Factory) {
+	s := f(t)
+	defer s.Close()
+	ps := pstore(t, s)
+	r2, finish := unfinishedImport(t, ps, 83, "ou")
+	called := false
+	err := ps.ExportPartition(ctx, 83, 0, func(store.PartitionPos) error { called = true; return nil }, func(store.PartitionRecord) error { return nil })
+	if !errors.Is(err, store.ErrImportUnfinished) || called {
+		t.Fatalf("an export during an unfinished import: %v (start called: %v)", err, called)
+	}
+	// another partition is not affected
+	must(t, ps.ApplyPartition(ctx, 84, []*store.Record{urec(t, "ou", "unf-b")}, pos(1, 1)))
+	if got, _ := exported(t, ps, 84, 0); len(got) != 1 {
+		t.Fatalf("another partition exports %d records", len(got))
+	}
+	// the import finished (the same batch again, as the next catch-up does)
+	must(t, ps.ImportPartition(ctx, 83, []store.PartitionRecord{{Record: r2, Seq: 2}}, pos(1, 2), finish))
+	got, at := exported(t, ps, 83, 0)
+	if at != pos(1, 2) || len(got) != 1 || got[rkey(r2)].Seq != 2 || got[rkey(r2)].Version != r2.Version {
+		t.Fatalf("export after the import: %+v %v", at, got)
 	}
 }

@@ -263,3 +263,33 @@ func TestPrimaryOrgChoosesDeterministicallyWhenTwoAreMarked(t *testing.T) {
 		}
 	}
 }
+
+// While two organizations are marked primary (an interrupted set-primary), every server chooses the same one, the one
+// with the lowest id, whatever it chose before: a server running since the earlier primary and one just started agree.
+func TestTwoPrimariesChooseTheSameOnEveryServer(t *testing.T) {
+	e := newEnv(t)
+	first := e.primary
+	acme := e.org("acme") // created after the primary: a higher id
+	boss := e.user(acme.ID, "boss", model.RoleAdmin)
+	if _, _, err := e.svc.SetPrimaryOrg(e.ctx, acme.ID, boss.ID); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := e.svc.PrimaryOrg(e.ctx); err != nil || p.ID != acme.ID {
+		t.Fatalf("after set-primary: %+v %v", p, err)
+	}
+	// set-primary back to the first organization, interrupted after its first write: both are marked primary
+	o, err := e.svc.Orgs.Get(e.ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Primary = true
+	if err := e.svc.Orgs.Update(e.ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	fresh := service.New(e.svc.Cfg, e.svc.Store, e.svc.Sealer)
+	for name, svc := range map[string]*service.Service{"running": e.svc, "just started": fresh} {
+		if p, err := svc.PrimaryOrg(e.ctx); err != nil || p.ID != min(first.ID, acme.ID) {
+			t.Errorf("%s server: %v %v, want the lowest id %s", name, p.ID, err, min(first.ID, acme.ID))
+		}
+	}
+}

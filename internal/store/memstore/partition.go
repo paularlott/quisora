@@ -125,7 +125,11 @@ func (s *Store) ExportPartition(_ context.Context, p int, afterSeq uint64, start
 		}
 	}
 	for _, e := range s.records {
-		if e.pseq > afterSeq && e.pseq <= pos.Seq && e.pnum == p { // (a record above the position: an import not finished)
+		if e.pnum == p && e.pseq > pos.Seq { // an import not finished: see store.ErrImportUnfinished
+			s.mu.RUnlock()
+			return store.ErrImportUnfinished
+		}
+		if e.pseq > afterSeq && e.pseq <= pos.Seq && e.pnum == p {
 			out = append(out, store.PartitionRecord{Record: clone(e.rec), Seq: e.pseq})
 		}
 	}

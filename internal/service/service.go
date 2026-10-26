@@ -171,7 +171,6 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
-	primary *orgCache
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 
 	// MinSuperAdmins is how many usable super admins must remain after a demotion, disable, deletion or end date (0:
@@ -245,7 +244,6 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		SignIns:    store.NewTable[model.SignIn](s),
 		Locks:      store.NewTable[model.Lock](s),
 		Replays:    store.NewTable[model.Replay](s),
-		primary:    &orgCache{},
 	}
 }
 

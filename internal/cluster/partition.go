@@ -182,9 +182,6 @@ type pstore struct {
 	// exports bounds the exports running at once (exportSlots): each holds a snapshot, and on SQLite a reader
 	// connection, for as long as its stream lasts.
 	exports chan struct{}
-	// importing marks a partition whose import has begun here and not finished (Import): its records may be above the
-	// committed position, so an export would miss the ones the import replaced (Export refuses until it finishes).
-	importing [partitions]atomic.Bool
 }
 
 // readerPool is implemented by a backend whose reads are served from a pool of connections (sqlstore): Readers is its
@@ -676,10 +673,6 @@ func (s *pstore) Export(p int, after uint64) (partition.Pos, io.ReadCloser, erro
 		bw := bufio.NewWriterSize(pw, exportBuffer)
 		started := false
 		err := s.pst.ExportPartition(ctx, p, after, func(pos store.PartitionPos) error {
-			// The snapshot is taken: an import that began before it may be in it, half done.
-			if s.importing[p].Load() {
-				return errImportUnfinished
-			}
 			started = true
 			first <- begun{pos: pos}
 			return nil
@@ -720,6 +713,9 @@ func (s *pstore) Export(p int, after uint64) (partition.Pos, io.ReadCloser, erro
 		if errors.Is(b.err, store.ErrPartitionPurged) {
 			return partition.Pos{}, nil, partition.ErrPurged
 		}
+		if errors.Is(b.err, store.ErrImportUnfinished) { // (a mark the data itself carries, across restarts)
+			return partition.Pos{}, nil, errImportUnfinished
+		}
 		return partition.Pos{}, nil, b.err
 	}
 	return toPos(b.pos), &exportReader{PipeReader: pr, cancel: cancel}, nil
@@ -756,17 +752,14 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 	}
 	apply := func(final bool) error {
 		step := store.ImportStep{Full: full, First: first, Final: final, Removed: removed}
-		// Until an import completes, the partition's exports are refused (Export): marked before its first batch is
-		// applied, cleared by its final one only, so an import that fails part way leaves the mark until another
-		// completes (the partition is behind, so one does).
-		s.importing[p].Store(true)
+		// Until an import completes, the partition's exports are refused by the backend (store.ErrImportUnfinished): its
+		// records above the committed position are the mark.
 		if err := s.pst.ImportPartition(s.n.ctx, p, batch, fromPos(upTo), step); err != nil {
 			return err
 		}
 		first = false
 		if final {
 			s.committed(p, upTo)
-			s.importing[p].Store(false)
 		}
 		recs := make([]*store.Record, len(batch))
 		for i, b := range batch {

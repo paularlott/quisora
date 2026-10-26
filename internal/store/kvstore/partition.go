@@ -232,11 +232,18 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	if !store.ExportAllowed(st.Purged, afterSeq) {
 		return store.ErrPartitionPurged
 	}
+	bucket := psBucket(uint32(p))
+	// A record above the committed position (the index is in sequence order, so the first member from there tells) is an
+	// import that did not finish: the records below may lack what it overwrote.
+	if above, err := eng.Range(ctx, bucket, psFrom(st.Committed.Seq), "\xff", 1); err != nil {
+		return err
+	} else if len(above) > 0 {
+		return store.ErrImportUnfinished
+	}
 	if err := start(st.Committed); err != nil {
 		return err
 	}
-	bucket := psBucket(uint32(p))
-	// Up to the committed position: a record above it was brought by an import that did not finish.
+	// Up to the committed position (nothing is above it: see above).
 	to := string(appendPadded(nil, st.Committed.Seq, 20)) + "/\xff"
 	for from := psFrom(afterSeq); ; {
 		members, err := eng.Range(ctx, bucket, from, to, 512)

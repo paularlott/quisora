@@ -125,7 +125,7 @@ func TestWarnLooseFiles(t *testing.T) {
 	c := parsed(t, cfg, "--config", conf, "serve")
 	cfg.Secrets.Vault.TokenFile = tok
 	var b strings.Builder
-	warnLooseFiles(&b, cfg, c)
+	b.WriteString(strings.Join(looseFileWarnings(cfg, c), "\n"))
 	if !strings.Contains(b.String(), tok) {
 		t.Fatalf("token file not warned about: %q", b.String())
 	}
@@ -138,7 +138,7 @@ func TestWarnLooseFiles(t *testing.T) {
 	_ = os.Chmod(tok, 0o600)
 	_ = os.Chmod(conf, 0o600)
 	b.Reset()
-	warnLooseFiles(&b, cfg, c)
+	b.WriteString(strings.Join(looseFileWarnings(cfg, c), "\n"))
 	if b.Len() != 0 {
 		t.Fatalf("0600 files warned about: %q", b.String())
 	}
@@ -149,8 +149,8 @@ func TestWarnLooseFiles(t *testing.T) {
 func TestWarnSecretFlags(t *testing.T) {
 	cfg := config.Default()
 	var b strings.Builder
-	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--master-key=x", "--smtp-password", "y", "--data-dir", "d",
-		"--audit-victorialogs-url", "http://vl:9428"))
+	b.WriteString(strings.Join(secretFlagWarnings(cfg, parsed(t, cfg, "serve", "--master-key=x", "--smtp-password", "y",
+		"--data-dir", "d", "--audit-victorialogs-url", "http://vl:9428")), "\n"))
 	out := b.String()
 	if !strings.Contains(out, "--master-key") || !strings.Contains(out, "QUISORA_MASTER_KEY") ||
 		!strings.Contains(out, "--smtp-password") || strings.Contains(out, "data-dir") || strings.Contains(out, "victorialogs") {
@@ -158,7 +158,7 @@ func TestWarnSecretFlags(t *testing.T) {
 	}
 	cfg.Audit.VictoriaLogs = "http://user:pw@vl:9428"
 	b.Reset()
-	warnSecretFlags(&b, cfg, parsed(t, cfg, "serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs))
+	b.WriteString(strings.Join(secretFlagWarnings(cfg, parsed(t, cfg, "serve", "--audit-victorialogs-url", cfg.Audit.VictoriaLogs)), "\n"))
 	if !strings.Contains(b.String(), "--audit-victorialogs-url") {
 		t.Fatal("a VictoriaLogs URL with credentials was not warned about")
 	}

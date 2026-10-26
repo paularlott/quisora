@@ -33,6 +33,7 @@ func RunPartitionDurable(t *testing.T, f DurableFactory) {
 		{"StateSurvivesReopen", testDurState},
 		{"AppliedDataSurvivesReopen", testDurApplied},
 		{"ImportAndPurgeSurviveReopen", testDurImportPurge},
+		{"UnfinishedImportRefusesExportAfterReopen", testDurUnfinishedImport},
 		{"AppliedThenSyncedStateSurvivesCrash", testDurCrash},
 	}
 	for _, tc := range tests {
@@ -147,5 +148,22 @@ func testDurCrash(t *testing.T, d *Durable) {
 	sameRecord(t, "crash image", got, a)
 	if exp, at := exported(t, cp, 13, 0); len(exp) != 2 || at != pos(1, 2) {
 		t.Fatalf("export of the crash image: %v %+v", keysOf(exp), at)
+	}
+}
+
+// An import that stopped before its final batch still refuses exports after a restart: the data is the mark.
+func testDurUnfinishedImport(t *testing.T, d *Durable) {
+	r2, finish := unfinishedImport(t, pstore(t, d.Store), 14, "og")
+	s := d.Reopen()
+	defer s.Close()
+	ps := pstore(t, s)
+	called := false
+	err := ps.ExportPartition(ctx, 14, 0, func(store.PartitionPos) error { called = true; return nil }, func(store.PartitionRecord) error { return nil })
+	if !errors.Is(err, store.ErrImportUnfinished) || called {
+		t.Fatalf("an export after a restart in the middle of an import: %v (start called: %v)", err, called)
+	}
+	must(t, ps.ImportPartition(ctx, 14, []store.PartitionRecord{{Record: r2, Seq: 2}}, pos(1, 2), finish))
+	if got, at := exported(t, ps, 14, 0); at != pos(1, 2) || len(got) != 1 || got[rkey(r2)].Seq != 2 {
+		t.Fatalf("export after the import: %+v %v", at, got)
 	}
 }

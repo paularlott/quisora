@@ -56,7 +56,10 @@ type PartitionStore interface {
 	// it is not committed data yet), in no particular order across kinds. It never holds more than a page of records in
 	// memory. It returns ErrPartitionPurged, without calling start, if afterSeq is not 0 and is below the partition's
 	// purge point (PartitionState.Purged): tombstones the caller needs may be gone, so it must ask again for everything.
-	// An error from start or fn stops the export and is returned.
+	// It returns ErrImportUnfinished, without calling start, if the snapshot holds a record of p above the committed
+	// position: commits write records and position together, so only an import that has not finished leaves one, and the
+	// snapshot may lack records the committed position promises (one the import overwrote). An error from start or fn
+	// stops the export and is returned.
 	ExportPartition(ctx context.Context, p int, afterSeq uint64, start func(PartitionPos) error, fn func(PartitionRecord) error) error
 
 	// ImportPartition applies what ExportPartition returned, one batch of it per call, so that a partition of any size
@@ -93,6 +96,10 @@ type PartitionStore interface {
 // ErrPartitionPurged is returned by ExportPartition when the tombstones the caller would need have been purged
 // (PurgePartition): it must copy the partition whole (ExportPartition with afterSeq 0).
 var ErrPartitionPurged = errors.New("store: partition history purged")
+
+// ErrImportUnfinished is returned by ExportPartition while an import into the partition has not finished (here or before
+// a restart): what the partition holds is not yet a copy of any committed position. The caller asks another node, or later.
+var ErrImportUnfinished = errors.New("store: partition import not finished")
 
 // ErrPartitionBehind is returned by ApplyPartition and ImportPartition when the position they would set is not above the
 // partition's committed one: committed positions only move forward.

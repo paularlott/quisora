@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 	"slices"
@@ -40,8 +39,12 @@ func newRoot(cfg *config.Config) *cli.Command {
 		Suggestions: true,
 		Flags:       append([]cli.Flag{configFlag}, flags.Global...),
 		PreRun: func(ctx context.Context, c *cli.Command) (context.Context, error) {
-			warnSecretFlags(os.Stderr, cfg, c)
-			warnLooseFiles(os.Stderr, cfg, c)
+			if warnings := append(secretFlagWarnings(cfg, c), looseFileWarnings(cfg, c)...); len(warnings) > 0 {
+				log := logger(cfg) // the configured format and level, like every other warning of the process
+				for _, w := range warnings {
+					log.Warn(w)
+				}
+			}
 			return ctx, nil
 		},
 		Commands: []*cli.Command{serveCmd(cfg, server), bootstrapCmd(cfg, flags.For("bootstrap")), forceStartCmd(cfg, server), setPrimaryCmd(cfg, server), signOutCmd(cfg, server), inviteCmd(cfg, server), backupCmd(cfg, server), restoreCmd(cfg, server),
@@ -49,26 +52,28 @@ func newRoot(cfg *config.Config) *cli.Command {
 	}
 }
 
-// warnLooseFiles warns about files holding secrets that other users on the machine can read: the config file, and
+// looseFileWarnings warns about files holding secrets that other users on the machine can read: the config file, and
 // the files the secret stores' credentials are in. Keep them 0600 (or 0400), owned by the user Quisora runs as.
-func warnLooseFiles(w io.Writer, cfg *config.Config, c *cli.Command) {
+func looseFileWarnings(cfg *config.Config, c *cli.Command) []string {
 	if runtime.GOOS == "windows" {
-		return
+		return nil
 	}
 	files := []string{cfg.Secrets.Vault.TokenFile, cfg.Secrets.Vault.SecretIDFile,
 		cfg.Secrets.OnePassword.ConnectTokenFile, cfg.Secrets.OnePassword.ServiceAccountTokenFile}
 	if c.ConfigFile != nil && c.ConfigFile.FileUsed() != "" && secretInFile(cfg, c) {
 		files = append(files, c.ConfigFile.FileUsed())
 	}
+	var out []string
 	for _, f := range files {
 		if f == "" {
 			continue
 		}
 		if st, err := os.Stat(f); err == nil && st.Mode().Perm()&0o077 != 0 {
-			fmt.Fprintf(w, "warning: %s can be read by other users (mode %04o): it holds secrets; chmod 600 it\n",
-				f, st.Mode().Perm())
+			out = append(out, fmt.Sprintf("%s can be read by other users (mode %04o): it holds secrets; chmod 600 it",
+				f, st.Mode().Perm()))
 		}
 	}
+	return out
 }
 
 // secretInFile reports whether the config file holds a secret itself (not a reference to a secret store).
@@ -110,10 +115,11 @@ func genkeyCmd() *cli.Command {
 	}
 }
 
-// warnSecretFlags warns about secrets given as command-line flags: anyone on the machine sees them in the process
+// secretFlagWarnings warns about secrets given as command-line flags: anyone on the machine sees them in the process
 // list (ps), and orchestration often logs them. They are accepted (development tasks pass them that way); the config
 // file and the environment are the places for them.
-func warnSecretFlags(w io.Writer, cfg *config.Config, c *cli.Command) {
+func secretFlagWarnings(cfg *config.Config, c *cli.Command) []string {
+	var out []string
 	for _, s := range config.Settings(cfg) {
 		if !s.Secret || c.FlagSource(s.Flag) != cli.SourceCommandLine {
 			continue
@@ -121,7 +127,8 @@ func warnSecretFlags(w io.Writer, cfg *config.Config, c *cli.Command) {
 		if s.Path == "audit.victorialogs_url" && !strings.Contains(cfg.Audit.VictoriaLogs, "@") {
 			continue // a secret only when it carries basic-auth credentials
 		}
-		fmt.Fprintf(w, "warning: --%s is a secret on the command line, visible to anyone on this machine (ps); "+
-			"set %s or %s in the config file instead\n", s.Flag, s.Env, s.Path)
+		out = append(out, fmt.Sprintf("--%s is a secret on the command line, visible to anyone on this machine (ps); "+
+			"set %s or %s in the config file instead", s.Flag, s.Env, s.Path))
 	}
+	return out
 }

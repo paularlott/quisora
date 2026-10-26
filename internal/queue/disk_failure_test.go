@@ -3,6 +3,8 @@ package queue
 import (
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/paularlott/logger"
@@ -82,4 +84,33 @@ func TestAddFailures(t *testing.T) {
 			t.Fatal("a write whose directory sync failed was reported durable")
 		}
 	})
+}
+
+// Adds at once never take the queue past Max between them, and an add that fails gives its place back.
+func TestAddKeepsWithinMax(t *testing.T) {
+	s := sealer(t, secure.RandomBytes(32))
+	q := idle(t.TempDir(), Options[string]{Sealer: s, Max: 1})
+	var ok atomic.Int32
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if q.Add("x", 0, 0) == nil {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if names, err := q.files(); err != nil || ok.Load() != 1 || q.Queued() != 1 || len(names) != 1 {
+		t.Fatalf("32 adds at once with Max 1: %d accepted, %d queued, %d on disk (%v)", ok.Load(), q.Queued(), len(names), err)
+	}
+
+	fq := idle(t.TempDir(), Options[func()]{Sealer: s, Max: 1})
+	if err := fq.Add(func() {}, 0, 0); err == nil {
+		t.Fatal("an item JSON cannot hold was queued")
+	}
+	if fq.Queued() != 0 {
+		t.Fatalf("a failed add kept its place: %d queued", fq.Queued())
+	}
 }

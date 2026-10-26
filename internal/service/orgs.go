@@ -5,18 +5,11 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
-
-// orgCache remembers the primary org id (until another organization is made primary).
-type orgCache struct {
-	mu        sync.Mutex
-	primaryID string
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Permission predicates
@@ -111,15 +104,8 @@ func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
 // between its writes: running it again finishes it) every node chooses the same, the one with the lowest id, and logs
 // at error level every time; the choice is not remembered while it is in doubt.
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
-	s.primary.mu.Lock()
-	id := s.primary.primaryID
-	s.primary.mu.Unlock()
-	if id != "" {
-		// Still primary? ("quisora set-primary" may have moved it, from another process or node.)
-		if o, err := s.Orgs.Get(ctx, id); err == nil && o.Primary {
-			return o, nil
-		}
-	}
+	// Read every time (an indexed lookup of one or two records), not remembered: a node that remembered one primary
+	// would keep it while another, choosing afresh, picks the other of two.
 	orgs, err := s.primaryOrgs(ctx)
 	if err != nil {
 		return nil, err
@@ -137,9 +123,6 @@ func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
 			"organizations", strings.Join(names, " "))
 		return orgs[0], nil
 	}
-	s.primary.mu.Lock()
-	s.primary.primaryID = orgs[0].ID
-	s.primary.mu.Unlock()
 	return orgs[0], nil
 }
 
@@ -290,9 +273,6 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 			demoted = append(demoted, got)
 		}
 	}
-	s.primary.mu.Lock()
-	s.primary.primaryID = target.ID
-	s.primary.mu.Unlock()
 	s.InvalidateSignOut()
 	names := make([]string, len(demoted))
 	for i, u := range demoted {

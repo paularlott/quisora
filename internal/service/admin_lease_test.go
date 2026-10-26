@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -128,6 +129,97 @@ func TestAdminLeaseLapsedBeforeTheWriteLands(t *testing.T) {
 		}
 		if e.fresh(a).Active {
 			t.Fatal("the disable was undone although a super admin remained")
+		}
+	})
+}
+
+// lostAck stalls the compare-and-swaps lose picks, then reports them ErrUnconfirmed: landed (lands is true) or not.
+type lostAck struct {
+	store.Store
+	lose  func(r *store.Record) bool
+	stall func()
+	lands bool
+}
+
+func (l lostAck) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if !l.lose(r) {
+		return l.Store.CompareAndPut(ctx, r, expect)
+	}
+	l.stall()
+	if l.lands {
+		if err := l.Store.CompareAndPut(ctx, r, expect); err != nil {
+			return err
+		}
+	}
+	return store.ErrUnconfirmed
+}
+
+// A guarded change whose outcome is unknown (the acknowledgement was lost) is judged at the commit boundary like a
+// confirmed one: landed after its lease lapsed, it is undone; not landed, nothing is undone.
+func TestAdminLeaseLapsedWriteWithUnknownOutcome(t *testing.T) {
+	off := false
+	setup := func(t *testing.T, deleted, lands bool) (e *env, a, b *model.User, gt *gate) {
+		e = newEnv(t)
+		a = e.super
+		b = e.user(e.primary.ID, "second-super", model.RoleSuperAdmin)
+		gt = newGate(t)
+		guarded := func(r *store.Record) bool {
+			if r.Kind != model.KindUser || r.ID != a.ID || r.Deleted != deleted {
+				return false
+			}
+			var u model.User
+			return deleted || store.Decode(r, &u) == nil && !u.Active
+		}
+		e.svc.Users.S = lostAck{Store: e.svc.Store, lose: guarded, stall: gt.stall, lands: lands}
+		return e, a, b, gt
+	}
+	run := func(t *testing.T, e *env, gt *gate, change func() error, other func() error) error {
+		done := make(chan error, 1)
+		go func() { done <- change() }()
+		gt.waitEntered(t, "the guarded write")
+		lapseAdminLease(t, e)
+		if err := other(); err != nil {
+			t.Fatalf("the replacement holder's change (judged while a was usable): %v", err)
+		}
+		gt.release()
+		return <-done
+	}
+	t.Run("disable_landed_is_undone", func(t *testing.T) {
+		e, a, b, gt := setup(t, false, true)
+		err := run(t, e, gt, func() error {
+			_, err := e.svc.UpdateUser(e.ctx, service.System, a.ID, service.UserInput{Active: &off})
+			return err
+		}, func() error {
+			_, err := e.svc.UpdateUser(e.ctx, service.System, b.ID, service.UserInput{Active: &off})
+			return err
+		})
+		if !errors.Is(err, service.ErrLastAdmin) {
+			t.Fatalf("err %v, want ErrLastAdmin", err)
+		}
+		if got := e.fresh(a); !got.Active || got.Role != model.RoleSuperAdmin {
+			t.Fatalf("a not put back: active=%v role=%s", got.Active, got.Role)
+		}
+	})
+	t.Run("delete_landed_is_undone", func(t *testing.T) {
+		e, a, b, gt := setup(t, true, true)
+		err := run(t, e, gt, func() error { return e.svc.DeleteUser(e.ctx, service.System, a.ID) },
+			func() error { return e.svc.DeleteUser(e.ctx, service.System, b.ID) })
+		if !errors.Is(err, service.ErrLastAdmin) {
+			t.Fatalf("err %v, want ErrLastAdmin", err)
+		}
+		if got, err := e.svc.Users.Get(e.ctx, a.ID); err != nil || !got.Active {
+			t.Fatalf("a not created again: %+v %v", got, err)
+		}
+	})
+	t.Run("delete_not_landed_leaves_the_user", func(t *testing.T) {
+		e, a, b, gt := setup(t, true, false)
+		err := run(t, e, gt, func() error { return e.svc.DeleteUser(e.ctx, service.System, a.ID) },
+			func() error { return e.svc.DeleteUser(e.ctx, service.System, b.ID) })
+		if !errors.Is(err, service.ErrLastAdmin) {
+			t.Fatalf("err %v, want ErrLastAdmin", err)
+		}
+		if got, err := e.svc.Users.Get(e.ctx, a.ID); err != nil || !got.Active {
+			t.Fatalf("a should still be there: %+v %v", got, err)
 		}
 	})
 }
