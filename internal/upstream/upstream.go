@@ -379,7 +379,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 		}
 	}
 	verified := true
-	in := service.UserInput{Email: &email, Verified: &verified, GivenName: &given}
+	in := service.UserInput{Email: &email, Verified: &verified, GivenName: &given, ProvisionedBy: p.ID}
 	if family != "" {
 		in.FamilyName = &family
 	}
@@ -387,21 +387,29 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
 	began := time.Now().Add(-time.Second)
 	u, err := s.Svc.CreateUser(ctx, actor, org.ID, in)
-	if err != nil {
-		if errors.Is(err, service.ErrConflict) {
+	switch {
+	case errors.Is(err, service.ErrConflict):
+		// The address is taken. By an account this provider made at an earlier first sign-in that never got its
+		// link (below), it is that account's: it is linked now, as that sign-in would have.
+		made, serr := s.stranded(ctx, org, p, email)
+		if serr != nil {
+			return nil, false, serr
+		}
+		if made == nil {
 			return nil, false, ErrExists
 		}
-		if !errors.Is(err, service.ErrOutcomeUnknown) {
-			return nil, false, err
-		}
+		u = made
+	case errors.Is(err, service.ErrOutcomeUnknown):
 		// The creation may have landed (its node was lost before it answered). If it did the account is here and made
-		// during this call, and is linked now: a retry would meet it as a clash with an address it cannot resolve.
-		// One that is not there, or cannot be read, is the error.
+		// during this call, and is linked now. One that is not there, or cannot be read, is the error (the retry
+		// meets it as a clash, above).
 		made, rerr := s.Svc.Users.GetByUnique(ctx, model.UserEmailKey(org.ID, email))
 		if rerr != nil || made.Created.Before(began) {
 			return nil, false, err
 		}
 		u = made
+	case err != nil:
+		return nil, false, err
 	}
 	id := model.NewIdentity(u, p, c.Subject, email, "provision")
 	if err := s.Svc.Identities.Create(ctx, id); err != nil {
@@ -415,6 +423,34 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	}
 	s.Svc.Audit(ctx, actor, org.ID, "user.provision", u.Username, map[string]string{"provider": p.Name})
 	return u, true, nil
+}
+
+// stranded returns the account p made for email at an earlier first sign-in that never got its link (the creation's
+// outcome was unknown and could not be read, or the link failed and so did removing the account): it has no way in
+// and was never signed in to, so nobody else uses it. Nil when the address is anyone else's, or the account was
+// changed since (an administrator gave it a role, a password or a link, or disabled it).
+func (s *Service) stranded(ctx context.Context, org *model.Org, p *model.Provider, email string) (*model.User, error) {
+	u, err := s.Svc.Users.GetByUnique(ctx, model.UserEmailKey(org.ID, email))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if u.ProvisionedBy != p.ID || u.Role != model.RoleUser || u.PasswordHash != "" || !u.Enabled(time.Now()) {
+		return nil, nil
+	}
+	c, err := s.Svc.UserCreds(ctx, u, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Passkeys) > 0 || len(c.Links) > 0 {
+		return nil, nil
+	}
+	if _, err := s.Svc.SignIns.Get(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
+		return nil, err // signed in to (nil), or not known
+	}
+	return u, nil
 }
 
 // linkByEmail binds the (provider, subject) identity to the one user whose verified address the provider also

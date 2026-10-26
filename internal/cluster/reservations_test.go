@@ -66,15 +66,16 @@ func TestGlobalUniqueValuesAreReserved(t *testing.T) {
 		}
 		res := "https://api.example.com/mcp"
 		a := newTenant(orgA, "one", res)
-		if err := tenants(c.nodes[0]).Create(bg, a); err != nil {
+		// Every one-off call is asked again while its node refuses it for now (asked).
+		if err := asked(func() error { return tenants(c.nodes[0]).Create(bg, a) }); err != nil {
 			t.Fatal(err)
 		}
 		// the same resource, written differently: its canonical form is what is unique
 		b2 := newTenant(orgB, "two", "https://API.example.com/mcp/")
-		if err := tenants(c.nodes[1]).Create(bg, b2); !errors.Is(err, store.ErrConflict) {
+		if err := asked(func() error { return tenants(c.nodes[1]).Create(bg, b2) }); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("a resource held by a tenant of another organization: %v", err)
 		}
-		if _, err := tenants(c.nodes[1]).Get(bg, b2.ID); !errors.Is(err, store.ErrNotFound) {
+		if err := asked(func() error { _, err := tenants(c.nodes[1]).Get(bg, b2.ID); return err }); !errors.Is(err, store.ErrNotFound) {
 			t.Fatal("the refused tenant was stored")
 		}
 		key := model.TenantResourceKey(res)
@@ -93,36 +94,47 @@ func TestGlobalUniqueValuesAreReserved(t *testing.T) {
 			}
 			return true
 		})
-		if _, err := c.nodes[2].st().GetByUnique(bg, model.KindTenant, model.TenantResourceKey("https://other.example.com")); !errors.Is(err, store.ErrNotFound) {
+		if err := asked(func() error {
+			_, err := c.nodes[2].st().GetByUnique(bg, model.KindTenant, model.TenantResourceKey("https://other.example.com"))
+			return err
+		}); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a value nobody holds: %v", err)
 		}
 
 		// A tenant that holds its value can be updated, and can take another one.
-		a2, _ := tenants(c.nodes[2]).Get(bg, a.ID)
+		var a2 *model.Tenant
+		if err := asked(func() (err error) { a2, err = tenants(c.nodes[2]).Get(bg, a.ID); return err }); err != nil {
+			t.Fatal(err)
+		}
 		a2.Description = "changed"
 		a2.Resources = []string{res, "https://second.example.com"}
-		if err := tenants(c.nodes[2]).Update(bg, a2); err != nil {
+		if err := asked(func() error { return tenants(c.nodes[2]).Update(bg, a2) }); err != nil {
 			t.Fatalf("an update that keeps its value and adds one: %v", err)
 		}
 		c2 := newTenant(orgB, "three", "https://second.example.com")
-		if err := tenants(c.nodes[1]).Create(bg, c2); !errors.Is(err, store.ErrConflict) {
+		if err := asked(func() error { return tenants(c.nodes[1]).Create(bg, c2) }); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("the value it took: %v", err)
 		}
 		// Dropping a value frees it, afterwards; the other tenants' values are not touched.
 		c.waitVersion(t, model.KindTenant, a.ID, a2.Version)
-		a3, _ := tenants(c.nodes[0]).Get(bg, a.ID)
-		a3.Resources = []string{"https://second.example.com"}
-		if err := tenants(c.nodes[0]).Update(bg, a3); err != nil {
+		var a3 *model.Tenant
+		if err := asked(func() (err error) { a3, err = tenants(c.nodes[0]).Get(bg, a.ID); return err }); err != nil {
 			t.Fatal(err)
 		}
-		if err := tenants(c.nodes[1]).Create(bg, newTenant(orgB, "four", res)); err != nil {
+		a3.Resources = []string{"https://second.example.com"}
+		if err := asked(func() error { return tenants(c.nodes[0]).Update(bg, a3) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := asked(func() error { return tenants(c.nodes[1]).Create(bg, newTenant(orgB, "four", res)) }); err != nil {
 			t.Fatalf("the value the other tenant dropped: %v", err)
 		}
 		// Deleting the holder frees its values.
-		if err := tenants(c.nodes[1]).Delete(bg, a.ID); err != nil {
+		if err := asked(func() error { return tenants(c.nodes[1]).Delete(bg, a.ID) }); err != nil {
 			t.Fatal(err)
 		}
-		if err := tenants(c.nodes[2]).Create(bg, newTenant(orgA, "five", "https://second.example.com")); err != nil {
+		if err := asked(func() error {
+			return tenants(c.nodes[2]).Create(bg, newTenant(orgA, "five", "https://second.example.com"))
+		}); err != nil {
 			t.Fatalf("the value of a deleted tenant: %v", err)
 		}
 		for _, tn := range c.nodes { // nothing is left reserved for the deleted tenant
@@ -135,11 +147,11 @@ func TestGlobalUniqueValuesAreReserved(t *testing.T) {
 		// Passkeys' credential ids, likewise (a discoverable sign-in looks one up with no organization).
 		cred := []byte("credential-id-1")
 		p1 := &model.Passkey{OrgID: orgA, UserID: "u1", CredentialID: cred, Name: "key"}
-		if err := passkeys(c.nodes[0]).Create(bg, p1); err != nil {
+		if err := asked(func() error { return passkeys(c.nodes[0]).Create(bg, p1) }); err != nil {
 			t.Fatal(err)
 		}
 		p2 := &model.Passkey{OrgID: orgB, UserID: "u2", CredentialID: cred, Name: "copy"}
-		if err := passkeys(c.nodes[1]).Create(bg, p2); !errors.Is(err, store.ErrConflict) {
+		if err := asked(func() error { return passkeys(c.nodes[1]).Create(bg, p2) }); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("the same credential id in another organization: %v", err)
 		}
 		waitFor(t, 10*time.Second, "the lookup by credential id on every node", func() bool {
@@ -151,10 +163,10 @@ func TestGlobalUniqueValuesAreReserved(t *testing.T) {
 			}
 			return true
 		})
-		if err := passkeys(c.nodes[2]).Delete(bg, p1.ID); err != nil {
+		if err := asked(func() error { return passkeys(c.nodes[2]).Delete(bg, p1.ID) }); err != nil {
 			t.Fatal(err)
 		}
-		if err := passkeys(c.nodes[1]).Create(bg, p2); err != nil {
+		if err := asked(func() error { return passkeys(c.nodes[1]).Create(bg, p2) }); err != nil {
 			t.Fatalf("the credential id of a deleted passkey: %v", err)
 		}
 	})

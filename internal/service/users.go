@@ -63,6 +63,8 @@ type UserInput struct {
 	// never by users themselves: see setLinked); the user's own unverified addresses are kept as they are. Nil leaves
 	// them unchanged.
 	LinkedEmails *[]string `json:"-"`
+	// ProvisionedBy is the sign-in provider making the account at a first sign-in (creation only).
+	ProvisionedBy string `json:"-"`
 	// IfVersion, when set, applies the update only to the user as read at that version (a read-modify-write, a SCIM
 	// If-Match): a user changed since is ErrStale, and nothing is written.
 	IfVersion hlc.Timestamp `json:"-"`
@@ -428,7 +430,7 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if in.Password != nil && a != System {
 		return nil, Invalid("password", "passwords are set by the user through their invitation link")
 	}
-	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true}
+	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true, ProvisionedBy: in.ProvisionedBy}
 	if in.Email == nil || strings.TrimSpace(*in.Email) == "" {
 		return nil, Invalid("email", "is required")
 	}

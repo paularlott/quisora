@@ -582,6 +582,21 @@ func waitFor(t testing.TB, d time.Duration, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// asked runs op, again while the node refuses it for not being able to vouch for its copy now (store.ErrNotWritable),
+// as a client told to retry (503) would: a node starved of CPU (a loaded test run) can go longer than the test timings'
+// StaleAfter (300 ms) without hearing a partition's owner, and refuses until it does. Any other answer, or the refusal
+// after 10 s, is op's.
+func asked(op func() error) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := op()
+		if !errors.Is(err, store.ErrNotWritable) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 // consistently fails the test unless cond holds at every look over d: for a check that something does not happen,
 // where a single look after a sleep would pass whether or not the thing could have happened yet.
 func consistently(t testing.TB, d time.Duration, what string, cond func() bool) {
