@@ -1136,6 +1136,7 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 		if st, _ := ps.PartitionState(ctx, 83); st.Committed != pos(1, 1) || st.Purged != 0 {
 			t.Fatalf("the position moved before the last batch: %+v", st)
 		}
+		wantImporting(t, ps, 83, true) // from the First call, whatever position it still shows
 		if i == 0 {
 			// the reset of this import removed what the earlier one left
 			slices.Sort(removed)
@@ -1155,6 +1156,7 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 	if len(removed) != 0 {
 		t.Fatalf("records removed by the last batch: %v", removed)
 	}
+	wantImporting(t, ps, 83, false)
 	got, at := exported(t, ps, 83, 0)
 	var wantKeys []string
 	for _, r := range recs {
@@ -1226,6 +1228,14 @@ func testPartImportFullSamePosition(t *testing.T, f Factory) {
 	}
 	if got, at := exported(t, ps, 85, 0); at != pos(1, 4) || len(got) != 1 || got[rkey(kept)].Seq != 1 {
 		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+}
+
+// wantImporting checks PartitionState(p).Importing: set between a full import's First and Final calls, not otherwise.
+func wantImporting(t testing.TB, ps store.PartitionStore, p int, want bool) {
+	t.Helper()
+	if st, err := ps.PartitionState(ctx, p); err != nil || st.Importing != want {
+		t.Fatalf("partition %d state after a full import's step: importing %v (%v), want %v", p, st.Importing, err, want)
 	}
 }
 

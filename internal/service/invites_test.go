@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -496,9 +497,20 @@ func TestBreakGlassInviteMakesASuperAdmin(t *testing.T) {
 	if got := c.fresh(c.aAdmin); got.Role != model.RoleAdmin {
 		t.Fatalf("the refused user is now %s", got.Role)
 	}
+	// an identity linked by a mere email match, and one the user connected: the promotion drops the first, as any
+	// promotion to a privileged role does
+	for _, via := range []string{"email", "connect"} {
+		if err := c.svc.Identities.Create(c.ctx, &model.Identity{UserID: c.pUser.ID, OrgID: c.primary.ID,
+			ProviderID: "prov-" + via, Subject: "sub-" + via, Via: via}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	link, _, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pUser.ID, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ids, err := c.svc.Identities.All(c.ctx, c.pUser.ID); err != nil || len(ids) != 1 || ids[0].Via != "connect" {
+		t.Fatalf("identities after the promotion: %+v %v", ids, err)
 	}
 	got := c.fresh(c.pUser)
 	if got.Role != model.RoleSuperAdmin || !got.Active || got.ValidUntil != nil {
@@ -519,5 +531,38 @@ func TestBreakGlassInviteMakesASuperAdmin(t *testing.T) {
 	}
 	if got := c.fresh(c.pManager); got.Role != model.RoleManager {
 		t.Fatalf("plain break-glass changed the role to %s", got.Role)
+	}
+}
+
+// unconfirmedUsers lets every compare-and-swap of a user land, then reports it unconfirmed.
+type unconfirmedUsers struct{ store.Store }
+
+func (s unconfirmedUsers) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if err := s.Store.CompareAndPut(ctx, r, expect); err != nil || r.Kind != model.KindUser {
+		return err
+	}
+	return store.ErrUnconfirmed
+}
+
+// A break-glass promotion whose outcome is unknown (it may have landed) is audited as such before the error returns.
+func TestBreakGlassPromotionWithUnknownOutcomeIsAudited(t *testing.T) {
+	c := newCast(t)
+	good := c.svc.Users.S
+	c.svc.Users.S = unconfirmedUsers{good}
+	if _, _, err := c.svc.CreateBreakGlassInvite(c.ctx, c.pUser.ID, true); err == nil {
+		t.Fatal("an unconfirmed promotion reported success")
+	}
+	c.svc.Users.S = good
+	if got := c.fresh(c.pUser); got.Role != model.RoleSuperAdmin {
+		t.Fatalf("setup: the promotion did not land (%s)", got.Role)
+	}
+	var unknown bool
+	for _, ev := range c.audited(c.primary.ID, "user.update") {
+		if ev.Target == c.pUser.Username && ev.Outcome == "unknown" {
+			unknown = true
+		}
+	}
+	if !unknown {
+		t.Fatal("the promotion that landed was not audited")
 	}
 }

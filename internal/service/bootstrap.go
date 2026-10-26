@@ -66,7 +66,9 @@ func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User
 	if err := s.apply(ctx, u, UserInput{Email: &adminEmail, GivenName: &first}); err != nil {
 		return nil, "", err
 	}
-	if err := s.createBootstrap(ctx, u, model.BootstrapAdminID, now); err != nil {
+	if err := s.audited(ctx, System, org.ID, "bootstrap", u.Username, nil, func() error {
+		return s.createBootstrap(ctx, u, model.BootstrapAdminID, now)
+	}); err != nil {
 		if errors.Is(err, errExists) {
 			return nil, "", nil // made elsewhere at the same moment
 		}
@@ -76,7 +78,6 @@ func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User
 	if err != nil {
 		return nil, "", err
 	}
-	s.Audit(ctx, System, org.ID, "bootstrap", u.Username, nil)
 	return u, link, nil
 }
 

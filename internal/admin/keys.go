@@ -81,11 +81,11 @@ func (m *Module) rotateKeys(w http.ResponseWriter, r *http.Request) {
 	if !m.stepUp(w, r) {
 		return
 	}
-	if err := m.RotateKeys(r.Context()); err != nil {
+	if err := m.s.Svc.Audited(r.Context(), a, a.OrgID, "keys.rotate", "signing keys", nil,
+		func() error { return m.RotateKeys(r.Context()) }); err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	m.s.Svc.Audit(r.Context(), a, a.OrgID, "keys.rotate", "signing keys", nil)
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"rotated": true})
 }
 
@@ -105,11 +105,11 @@ func (m *Module) removeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := m.RemoveKey(r.Context(), id); err != nil {
+	if err := m.s.Svc.Audited(r.Context(), a, a.OrgID, "keys.remove", id, nil,
+		func() error { return m.RemoveKey(r.Context(), id) }); err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	m.s.Svc.Audit(r.Context(), a, a.OrgID, "keys.remove", id, nil)
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

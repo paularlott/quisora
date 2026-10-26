@@ -61,7 +61,7 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, r *store.
 	case err != nil:
 		return r, err
 	}
-	if gerr := s.n.readable(p); gerr != nil {
+	if gerr := s.n.readable(ctx, p); gerr != nil {
 		return nil, gerr
 	}
 	return r, err
@@ -117,11 +117,11 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if err != nil || s.n.gc == nil || localOnly(kind) {
 		return recs, err
 	}
-	if err := s.n.readable(-1); err != nil {
+	if err := s.n.readable(ctx, -1); err != nil {
 		return nil, err
 	}
 	for _, r := range recs {
-		if err := s.n.readable(recPartition(r)); err != nil {
+		if err := s.n.readable(ctx, recPartition(r)); err != nil {
 			return nil, err
 		}
 	}
@@ -168,17 +168,39 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 	// Listings are not gated, except of the kinds held only in the global partition: a node that cannot vouch for it
 	// must not answer with organizations or signing keys the majority has changed (a key it revoked, in the JWKS).
 	if s.n.gc != nil && globalOnly(kind) {
-		if err := s.n.readable(globalPartition); err != nil {
+		if err := s.n.readable(ctx, globalPartition); err != nil {
 			return nil, err
 		}
 	}
+	if err := s.gatedScope(ctx, kind, q.Scope); err != nil {
+		return nil, err
+	}
 	return s.inner.List(ctx, kind, q)
+}
+
+// gatedScope passes a listing or count of the records of kind in scope through the staleness gate when the scope is an
+// organization (users, groups, memberships, tenants, access entries, applications and providers are scoped by their
+// organization, which is their partition): a node that trails that partition must not answer "none" or a short list
+// to a caller that decides on it (deleting a non-empty organization). Other scopes (a user's credentials) and
+// unscoped listings are not gated: their partition is not known from the scope.
+func (s *Store) gatedScope(ctx context.Context, kind model.Kind, scope string) error {
+	if s.n.gc == nil || scope == "" {
+		return nil
+	}
+	switch kind {
+	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindClient, model.KindProvider:
+		return s.n.readable(ctx, partitionNum(scope))
+	}
+	return nil
 }
 
 // globalOnly reports whether every record of kind is in the global partition (model: an empty partition key).
 func globalOnly(kind model.Kind) bool { return kind == model.KindOrg || kind == model.KindKey }
 
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
+	if err := s.gatedScope(ctx, kind, scope); err != nil {
+		return 0, err
+	}
 	return s.inner.Count(ctx, kind, scope)
 }
 

@@ -164,11 +164,9 @@ func (s *Service) CreateTenant(ctx context.Context, a *Actor, orgID string, in T
 	if err := s.applyTenant(ctx, t, in); err != nil {
 		return nil, err
 	}
-	if err := s.Tenants.Create(ctx, t); err != nil {
-		s.auditUnknown(ctx, err, a, orgID, "tenant.create", t.Name, nil)
+	if err := s.audited(ctx, a, orgID, "tenant.create", t.Name, nil, func() error { return s.Tenants.Create(ctx, t) }); err != nil {
 		return nil, tenantConflict(err)
 	}
-	s.Audit(ctx, a, orgID, "tenant.create", t.Name, nil)
 	return t, nil
 }
 
@@ -182,11 +180,9 @@ func (s *Service) UpdateTenant(ctx context.Context, a *Actor, id string, in Tena
 	if err := s.applyTenant(ctx, t, in); err != nil {
 		return nil, err
 	}
-	if err := s.Tenants.Update(ctx, t); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.update", t.Name, addChanges(nil, was, t))
+	if err := s.audited(ctx, a, t.OrgID, "tenant.update", t.Name, addChanges(nil, was, t), func() error { return s.Tenants.Update(ctx, t) }); err != nil {
 		return nil, tenantConflict(err)
 	}
-	s.Audit(ctx, a, t.OrgID, "tenant.update", t.Name, addChanges(nil, was, t))
 	return t, nil
 }
 
@@ -206,12 +202,7 @@ func (s *Service) DeleteTenant(ctx context.Context, a *Actor, id string) error {
 	}
 	// Its access entries stand on it: a deleted tenant has no clients (ErrTenantInUse above), so nothing decides access
 	// from them, and the orphan sweep removes them.
-	if err := s.Tenants.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.delete", t.Name, nil)
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, t.OrgID, "tenant.delete", t.Name, nil)
-	return nil
+	return mapStore(s.audited(ctx, a, t.OrgID, "tenant.delete", t.Name, nil, func() error { return s.Tenants.Delete(ctx, id) }))
 }
 
 // DefaultTenant returns the org's "default" tenant, creating it if missing (an org whose default tenant was renamed

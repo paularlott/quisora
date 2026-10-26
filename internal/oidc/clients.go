@@ -65,6 +65,13 @@ func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) 
 		return nil, store.ErrNotFound
 	}
 	e, ok := p.clients.get(id)
+	if ok {
+		// Not served from the cache while this node cannot vouch for the partition the client lives in (it trails its
+		// owner: a disabled client or a rotated secret may not have reached it): the store is asked, and refuses.
+		if f := p.svc.Readable; f != nil && !f(e.c.OrgID) {
+			ok = false
+		}
+	}
 	if !ok {
 		tok := p.clients.token(id)
 		c, err := p.svc.Clients.Get(ctx, id)
@@ -132,7 +139,7 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="quisora", charset="UTF-8"`)
 	}
 	if e.retry {
-		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
 	}
 	if e.nonce != "" {
 		w.Header().Set("DPoP-Nonce", e.nonce)
@@ -293,6 +300,9 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		return p.authAssertion(ctx, form.Get("client_id"), assertion, p.issuer+r.URL.Path)
 	}
 	e, err := p.client(ctx, id)
+	if err != nil && !gone(err) { // the client could not be read (this node cannot vouch for it, the store failed): not "invalid"
+		return nil, serverError(unavailable(err))
+	}
 	if err != nil || !e.c.Enabled {
 		return nil, errInvalidClient("unknown client or wrong credentials")
 	}
@@ -319,6 +329,9 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, e
 		return nil, bad
 	}
 	e, err := p.client(ctx, cl.Iss)
+	if err != nil && !gone(err) {
+		return nil, serverError(unavailable(err))
+	}
 	if err != nil || !e.c.Enabled || e.c.AuthMethod != model.AuthMethodPrivateJWT {
 		return nil, bad
 	}

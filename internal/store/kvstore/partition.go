@@ -95,12 +95,19 @@ func saveState(tx txn, p int, st *store.PartitionState) error {
 }
 
 func (s *Store) PartitionState(ctx context.Context, p int) (store.PartitionState, error) {
+	// The marker first: an import that ends in between shows as still importing (the safe side), never the reverse.
+	active, err := s.eng.Get(ctx, importActiveKey(p))
+	if err != nil {
+		return store.PartitionState{}, err
+	}
 	b, err := s.eng.Get(ctx, pstateKey(p))
 	if err != nil {
 		return store.PartitionState{}, err
 	}
 	st, err := decodeState(b)
-	return view(st), err
+	out := view(st)
+	out.Importing = active != nil
+	return out, err
 }
 
 // partitionLock returns partition p's lock (Store.plocks) read-locked, and lockPartition holds it exclusively until the

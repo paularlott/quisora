@@ -245,17 +245,16 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	if _, err := s.Access.Get(ctx, acc.ID); err == nil {
 		return nil, alreadyThere
 	}
-	if err := s.Access.Create(ctx, acc); err != nil {
+	if err := s.audited(ctx, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name},
+		func() error { return s.Access.Create(ctx, acc) }); err != nil {
 		if errors.Is(err, store.ErrStale) {
 			return nil, alreadyThere // added concurrently
 		}
 		if errors.Is(err, store.ErrDeleted) {
 			return nil, ErrStale
 		}
-		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name})
 		return nil, mapStore(err)
 	}
-	s.Audit(ctx, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name})
 	return &AccessEntry{TenantAccess: acc, Name: name, Detail: detail, Expired: !acc.Live(time.Now())}, nil
 }
 
@@ -272,12 +271,11 @@ func (s *Service) UpdateAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if err := s.applyAccess(ctx, t, e.TenantAccess, in); err != nil {
 		return nil, err
 	}
-	if err := s.Access.Update(ctx, e.TenantAccess); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "tenant.access.update", t.Name, map[string]string{e.SubjectType: e.Name})
+	if err := s.audited(ctx, a, t.OrgID, "tenant.access.update", t.Name, map[string]string{e.SubjectType: e.Name},
+		func() error { return s.Access.Update(ctx, e.TenantAccess) }); err != nil {
 		return nil, mapStore(err)
 	}
 	e.Expired = !e.Live(time.Now())
-	s.Audit(ctx, a, t.OrgID, "tenant.access.update", t.Name, map[string]string{e.SubjectType: e.Name})
 	return e, nil
 }
 
@@ -287,17 +285,12 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if err != nil {
 		return err
 	}
-	if err := s.Access.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, e.OrgID, "tenant.access.remove", e.TenantID, map[string]string{e.SubjectType: e.Name})
-		return mapStore(err)
-	}
-	t, _ := s.Tenants.Get(ctx, e.TenantID)
 	name := e.TenantID
-	if t != nil {
+	if t, _ := s.Tenants.Get(ctx, e.TenantID); t != nil {
 		name = t.Name
 	}
-	s.Audit(ctx, a, e.OrgID, "tenant.access.remove", name, map[string]string{e.SubjectType: e.Name})
-	return nil
+	return mapStore(s.audited(ctx, a, e.OrgID, "tenant.access.remove", name, map[string]string{e.SubjectType: e.Name},
+		func() error { return s.Access.Delete(ctx, id) }))
 }
 
 // AppAccess is what a user gets for one application: whether they may sign in to it, and the roles and tags that

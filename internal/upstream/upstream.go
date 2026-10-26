@@ -385,16 +385,32 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	}
 	// The least privileged actor that may create plain users in the org.
 	actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
+	began := time.Now().Add(-time.Second)
 	u, err := s.Svc.CreateUser(ctx, actor, org.ID, in)
 	if err != nil {
 		if errors.Is(err, service.ErrConflict) {
 			return nil, false, ErrExists
 		}
-		return nil, false, err
+		if !errors.Is(err, service.ErrOutcomeUnknown) {
+			return nil, false, err
+		}
+		// The creation may have landed (its node was lost before it answered). If it did the account is here and made
+		// during this call, and is linked now: a retry would meet it as a clash with an address it cannot resolve.
+		// One that is not there, or cannot be read, is the error.
+		made, rerr := s.Svc.Users.GetByUnique(ctx, model.UserEmailKey(org.ID, email))
+		if rerr != nil || made.Created.Before(began) {
+			return nil, false, err
+		}
+		u = made
 	}
 	id := model.NewIdentity(u, p, c.Subject, email, "provision")
 	if err := s.Svc.Identities.Create(ctx, id); err != nil {
-		_ = s.Svc.Users.Delete(ctx, u.ID)
+		// The account has no way in and would block this address for good: removed, again if the first try fails.
+		for range 3 {
+			if derr := s.Svc.Users.Delete(ctx, u.ID); derr == nil || errors.Is(derr, store.ErrNotFound) {
+				break
+			}
+		}
 		return nil, false, err
 	}
 	s.Svc.Audit(ctx, actor, org.ID, "user.provision", u.Username, map[string]string{"provider": p.Name})

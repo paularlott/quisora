@@ -56,13 +56,13 @@ type Queue[T any] struct {
 	// waiting is when the items this worker has read (or retried) are next due, by file, with the file's modification
 	// time then (under fileMu): an item that is not due is not read and opened again on every pass (which would make
 	// each Add cost the whole backlog) unless its file changed since.
-	waiting  map[string]waitingItem
-	queued   atomic.Int64
-	inflight atomic.Int64 // adds that have taken their place and not yet written their file (PurgeLost)
-	kick     chan struct{}
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	once     sync.Once
+	waiting map[string]waitingItem
+	queued  atomic.Int64
+	addMu   sync.RWMutex // adds hold it shared from taking their place to writing their file; PurgeLost exclusively
+	kick    chan struct{}
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	once    sync.Once
 }
 
 // item is a queued item as its file holds it (sealed).
@@ -109,12 +109,12 @@ func (q *Queue[T]) Queued() int { return int(q.queued.Load()) }
 // once it is on disk.
 func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 	// The place is taken before the write (given back if it fails), so adds at once never pass Max between them.
+	q.addMu.RLock()
+	defer q.addMu.RUnlock()
 	if q.queued.Add(1) > int64(q.o.Max) {
 		q.queued.Add(-1)
 		return ErrFull
 	}
-	q.inflight.Add(1)
-	defer q.inflight.Add(-1)
 	var r [6]byte
 	_, _ = rand.Read(r[:])
 	name := fmt.Sprintf("%020d-%s%s", time.Now().UnixNano(), hex.EncodeToString(r[:]), ext) // oldest first when listed
@@ -248,11 +248,13 @@ func (q *Queue[T]) removeTemp() {
 func (q *Queue[T]) PurgeLost(before time.Time) (int, error) {
 	q.fileMu.Lock()
 	defer q.fileMu.Unlock()
+	// Counted again from disk with no add in flight (each holds addMu from taking its place to writing its file), so
+	// every place taken has its file.
+	q.addMu.Lock()
+	defer q.addMu.Unlock()
 	n, err := PurgeLost(q.dir, q.o.Sealer, before)
-	// Counted again: what is on disk, and the places adds in flight hold before their files show (an add finishing
-	// meanwhile may count twice until the next sweep: too many only refuses an add early, never lets one too many in).
 	if names, ferr := q.files(); ferr == nil {
-		q.queued.Store(int64(len(names)) + q.inflight.Load())
+		q.queued.Store(int64(len(names)))
 	}
 	return n, err
 }

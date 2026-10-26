@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -278,5 +279,29 @@ func TestInvalidateTenantEvictsItsEntry(t *testing.T) {
 	h.p.InvalidateTenant("t1")
 	if _, ok := h.p.tenants.get("t1"); ok {
 		t.Fatal("the tenant stayed cached")
+	}
+}
+
+// A node that cannot vouch for the partition a client lives in does not serve the client from its cache: the store is
+// asked (and here refuses), so the request is answered unavailable, never as if the client were fine or invalid.
+func TestClientCacheNotServedWhileTrailing(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	form := url.Values{"grant_type": {"client_credentials"}}
+	if r := h.token(form, cl, secret); r.status != 200 {
+		t.Fatalf("control: %d %v", r.status, r.m)
+	}
+	good, goodReadable := h.env.Svc.Clients.S, h.env.Svc.Readable
+	t.Cleanup(func() { h.env.Svc.Clients.S, h.env.Svc.Readable = good, goodReadable })
+	h.env.Svc.Clients.S = &faultStore{Store: good, getKind: model.KindClient}
+	if r := h.token(form, cl, secret); r.status != 200 {
+		t.Fatalf("control: the cached client should serve while the node vouches: %d %v", r.status, r.m)
+	}
+	var asked atomic.Value
+	h.env.Svc.Readable = func(key string) bool { asked.Store(key); return false }
+	expectUnavailable(t, "cached client on a node trailing its partition", h.token(form, cl, secret))
+	if asked.Load() != cl.OrgID {
+		t.Fatalf("asked about partition %v, the client's organization is %q", asked.Load(), cl.OrgID)
 	}
 }

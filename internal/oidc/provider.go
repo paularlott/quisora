@@ -62,6 +62,8 @@ type Provider struct {
 
 	keySet        atomic.Pointer[keySet]
 	keyMu         sync.Mutex
+	genMu         sync.Mutex // guards keyGen with keySet: a load that began before an Invalidate never installs its result
+	keyGen        uint64     // bumped by Invalidate
 	lastKIDReload atomic.Int64
 	jwksCache     atomic.Pointer[jwksSnapshot]
 	shortKeys     atomic.Bool // ShortCaches: re-read signing keys every few seconds

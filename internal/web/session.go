@@ -236,6 +236,11 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 	if cs != nil && now.Sub(cs.fetched) <= m.CacheTTL && !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
 		cs = nil
 	}
+	// A node that cannot vouch for the partition the session and its user live in (it trails their owner: a revocation
+	// may not have reached it) serves nothing cached: the store is asked, and refuses as it does for any read.
+	if f := m.svc.Readable; cs != nil && f != nil && !(f(cs.sess.OrgID) && f(cs.user.OrgID)) {
+		cs = nil
+	}
 	if cs == nil || now.Sub(cs.fetched) > m.CacheTTL {
 		sessTok := m.gens.Token(id)
 		s, err := m.svc.Sessions.Get(ctx, id)

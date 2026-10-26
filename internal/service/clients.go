@@ -370,11 +370,10 @@ func (s *Service) CreateClient(ctx context.Context, a *Actor, orgID string, in C
 		secret = "qsrs_" + secure.RandomToken(32)
 		c.SecretHash = string(secure.HashSecret(secret))
 	}
-	if err := s.Clients.Create(ctx, c); err != nil {
-		s.auditUnknown(ctx, err, a, orgID, "client.create", c.Name, map[string]string{"client_id": c.ID})
+	if err := s.audited(ctx, a, orgID, "client.create", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.Create(ctx, c) }); err != nil {
 		return nil, "", mapStore(err)
 	}
-	s.Audit(ctx, a, orgID, "client.create", c.Name, map[string]string{"client_id": c.ID})
 	return c, secret, nil
 }
 
@@ -390,11 +389,10 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
 	}
-	if err := s.Clients.Update(ctx, c); err != nil {
-		s.auditUnknown(ctx, err, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c))
+	if err := s.audited(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c),
+		func() error { return s.Clients.Update(ctx, c) }); err != nil {
 		return nil, mapStore(err)
 	}
-	s.Audit(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c))
 	return c, nil
 }
 
@@ -416,11 +414,10 @@ func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (
 	}
 	secret := "qsrs_" + secure.RandomToken(32)
 	c.SecretHash = string(secure.HashSecret(secret))
-	if err := s.Clients.Update(ctx, c); err != nil {
-		s.auditUnknown(ctx, err, a, c.OrgID, "client.secret.rotate", c.Name, map[string]string{"client_id": c.ID})
+	if err := s.audited(ctx, a, c.OrgID, "client.secret.rotate", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.Update(ctx, c) }); err != nil {
 		return "", mapStore(err)
 	}
-	s.Audit(ctx, a, c.OrgID, "client.secret.rotate", c.Name, map[string]string{"client_id": c.ID})
 	return secret, nil
 }
 
@@ -432,12 +429,8 @@ func (s *Service) DeleteClient(ctx context.Context, a *Actor, id string) error {
 	if superOnly(c) && !a.IsSuper() {
 		return ErrForbidden
 	}
-	if err := s.Clients.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, c.OrgID, "client.delete", c.Name, map[string]string{"client_id": c.ID})
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, c.OrgID, "client.delete", c.Name, map[string]string{"client_id": c.ID})
-	return nil
+	return mapStore(s.audited(ctx, a, c.OrgID, "client.delete", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.Delete(ctx, id) }))
 }
 
 // VerifyClientSecret checks a presented secret against the client (constant time). Public clients have none.

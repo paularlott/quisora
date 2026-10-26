@@ -179,6 +179,12 @@ type pstore struct {
 	inner  store.Store
 	pst    store.PartitionStore
 	states [partitions]atomic.Pointer[partition.State]
+	// importing[p] is set from the start of a full import of p until its Final batch is stored (and from start-up, if the
+	// backend's durable marker says one was cut short): the partition then holds only part of what the import brings
+	// into the emptied partition, whatever position states[p] still carries. State reports it empty (the library then
+	// catches it up from nothing, and neither takes it over nor acknowledges a write on top of what it lacks), reads of
+	// it are refused (readable), and the next import of it, whatever the library asks, is a full one.
+	importing [partitions]atomic.Bool
 	// exports bounds the exports running at once (exportSlots): each holds a snapshot, and on SQLite a reader
 	// connection, for as long as its stream lasts.
 	exports chan struct{}
@@ -222,6 +228,7 @@ func newPStore(n *Node, inner store.Store) (*pstore, error) {
 			return nil, fmt.Errorf("cluster: partition %d state: %w", p, err)
 		}
 		s.states[p].Store(&st)
+		s.importing[p].Store(ps.Importing)
 	}
 	return s, nil
 }
@@ -278,8 +285,17 @@ func (s *pstore) State(p int) (partition.State, error) {
 	if p < 0 || p >= partitions {
 		return partition.State{}, fmt.Errorf("cluster: partition %d out of range", p)
 	}
-	return *s.states[p].Load(), nil
+	st := *s.states[p].Load()
+	if s.importing[p].Load() {
+		// A full import of the partition has begun and not finished: it holds nothing this node can vouch for, so the
+		// protocol sees a partition that is empty (the promise stays: that is a fact about what was answered).
+		st.Committed, st.Pending = partition.Pos{}, nil
+	}
+	return st, nil
 }
+
+// isImporting reports whether a full import of p has begun here and not finished.
+func (s *pstore) isImporting(p int) bool { return s.importing[p].Load() }
 
 func (s *pstore) SetPromised(p int, e partition.Epoch) error {
 	if err := s.pst.SetPartitionPromised(s.n.ctx, p, fromEpoch(e)); err != nil {
@@ -290,6 +306,9 @@ func (s *pstore) SetPromised(p int, e partition.Epoch) error {
 }
 
 func (s *pstore) SetPending(p int, w *partition.Write) error {
+	if w != nil && s.importing[p].Load() {
+		return fmt.Errorf("cluster: partition %d: %w", p, errImportUnfinished) // nothing is stored on top of the hole
+	}
 	if w == nil {
 		if err := s.pst.SetPartitionPending(s.n.ctx, p, 0, nil); err != nil {
 			return err
@@ -323,6 +342,9 @@ func (s *pstore) committed(p int, pos partition.Pos) {
 // transaction (the purge goes first: a crash between the two leaves the write pending, and applying it again purges
 // again, which changes nothing). Every node does exactly the same.
 func (s *pstore) Commit(w *partition.Write) error {
+	if s.importing[w.Partition].Load() {
+		return fmt.Errorf("cluster: partition %d: %w", w.Partition, errImportUnfinished) // nothing is applied on top of the hole
+	}
 	var d writeData
 	if err := decodeMsg(w.Data, &d); err != nil {
 		return fmt.Errorf("cluster: commit of partition %d at %s: %w", w.Partition, w.Pos, err)
@@ -637,6 +659,14 @@ type exportRec struct {
 	Rec []byte
 }
 
+// exportEnd follows the end marker of a catch-up stream: the purge point of the source's copy, read after the records
+// (so never below the snapshot's). A purge is a write, but a catch-up carries records, not writes: a node that missed
+// the purge write and imports incrementally would keep the tombstones the others removed, so it purges to this point
+// itself (Import). A stream from a node of an earlier release ends at the marker: no purge is applied then.
+type exportEnd struct {
+	Purged uint64
+}
+
 // exportBuffer is how much of a catch-up stream is gathered before it is handed to the reader (and so the most an
 // export holds in memory, besides one page of the backend's).
 const exportBuffer = 64 << 10
@@ -703,6 +733,15 @@ func (s *pstore) Export(p int, after uint64) (partition.Pos, io.ReadCloser, erro
 			err = writeFrame(bw, nil) // the end marker
 		}
 		if err == nil {
+			var st store.PartitionState
+			if st, err = s.pst.PartitionState(ctx, p); err == nil {
+				var tb []byte
+				if tb, err = encodeMsg(&exportEnd{Purged: st.Purged}); err == nil {
+					err = writeFrame(bw, tb)
+				}
+			}
+		}
+		if err == nil {
 			err = bw.Flush()
 		}
 		_ = pw.CloseWithError(err) // nil: the reader sees the end of the stream
@@ -745,6 +784,10 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 	if p < 0 || p >= partitions {
 		return fmt.Errorf("cluster: partition %d out of range", p)
 	}
+	// An import that began and did not finish left the partition holding some of a source's records and none of the rest
+	// (a full one reset it first): whatever is asked now, it is replaced whole, by reset, then the stream (State reported
+	// the partition empty, so the stream is from position 0 and carries every live record: the result is exact).
+	full = full || s.importing[p].Load()
 	br := bufio.NewReaderSize(r, exportBuffer)
 	batch := make([]store.PartitionRecord, 0, importBatch)
 	first := true
@@ -753,14 +796,22 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 	}
 	apply := func(final bool) error {
 		step := store.ImportStep{Full: full, First: first, Final: final, Removed: removed}
+		was := s.importing[p].Load()
+		if full && first {
+			s.importing[p].Store(true) // before the backend resets anything: see importing
+		}
 		// Until an import completes, the partition's exports are refused by the backend (store.ErrImportUnfinished): its
 		// records above the committed position, or its full-import marker, say so.
 		if err := s.pst.ImportPartition(s.n.ctx, p, batch, fromPos(upTo), step); err != nil {
+			if full && first && errors.Is(err, store.ErrPartitionBehind) {
+				s.importing[p].Store(was) // refused before it reset anything
+			}
 			return err
 		}
 		first = false
 		if final {
 			s.committed(p, upTo)
+			s.importing[p].Store(false)
 		}
 		recs := make([]*store.Record, len(batch))
 		for i, b := range batch {
@@ -770,13 +821,46 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 		s.n.applied(recs)
 		return nil
 	}
+	// finish ends the import. An incremental one first purges to the source's purge point, if it is above this node's: the
+	// source's purge writes are not in the stream, and a node that missed one would keep the tombstones the others
+	// removed. (A full copy raised the purge point itself.) The purge comes before the final step: a crash between the two
+	// repeats the catch-up, which finds the purge done; after it, nothing would remind the node.
+	finish := func() error {
+		tb, err := readFrame(br)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("cluster: catch-up stream of partition %d ended early: %w", p, err)
+		}
+		var end exportEnd
+		if err == nil {
+			if err := decodeMsg(tb, &end); err != nil {
+				return err
+			}
+		}
+		if !full && end.Purged > 0 {
+			ps, err := s.pst.PartitionState(s.n.ctx, p)
+			if err != nil {
+				return err
+			}
+			if end.Purged > ps.Purged {
+				if len(batch) > 0 {
+					if err := apply(false); err != nil {
+						return err
+					}
+				}
+				if _, err := s.pst.PurgePartition(s.n.ctx, p, end.Purged+1); err != nil {
+					return err
+				}
+			}
+		}
+		return apply(true)
+	}
 	for {
 		fb, err := readFrame(br)
 		if err != nil {
 			return fmt.Errorf("cluster: catch-up stream of partition %d ended early: %w", p, err)
 		}
 		if len(fb) == 0 {
-			return apply(true) // the end marker
+			return finish() // the end marker
 		}
 		var e exportRec
 		if err := decodeMsg(fb, &e); err != nil {

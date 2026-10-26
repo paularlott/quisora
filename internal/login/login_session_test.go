@@ -328,3 +328,46 @@ func TestSignInWithUnconfirmedSessionAsksToRetry(t *testing.T) {
 		t.Fatalf("sign-in once the cluster answers: %d %v", res.StatusCode, out)
 	}
 }
+
+// orgsRefused refuses every organization read as a node that cannot vouch for the global partition does.
+type orgsRefused struct{ store.Store }
+
+func (s orgsRefused) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
+	if kind == model.KindOrg {
+		return nil, store.ErrNotWritable
+	}
+	return s.Store.GetByUnique(ctx, kind, value)
+}
+
+func (s orgsRefused) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindOrg {
+		return nil, store.ErrNotWritable
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+func (s orgsRefused) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if kind == model.KindOrg {
+		return nil, store.ErrNotWritable
+	}
+	return s.Store.List(ctx, kind, q)
+}
+
+// A sign-in whose organization cannot be read now is answered "try again" (503), never "the email address or password
+// is incorrect": the organization exists, this node just cannot vouch for it at the moment.
+func TestSignInWhenTheOrganizationCannotBeReadAsksToRetry(t *testing.T) {
+	e := newEnv(t, nil)
+	e.member(t)
+	b := e.browser(t)
+	good := e.Svc.Orgs.S
+	e.Svc.Orgs.S = orgsRefused{good}
+	body := map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword}
+	res, out := b.do("POST", "/api-internal/login/password", body, nil)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("sign-in with the organization unreadable: %d %v, want 503", res.StatusCode, out)
+	}
+	e.Svc.Orgs.S = good
+	if res, out := b.do("POST", "/api-internal/login/password", body, nil); res.StatusCode != 200 {
+		t.Fatalf("once it can be read: %d %v", res.StatusCode, out)
+	}
+}

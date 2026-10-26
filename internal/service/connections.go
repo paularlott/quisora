@@ -137,31 +137,33 @@ func (s *Service) RemoveUserApp(ctx context.Context, a *Actor, userID, clientID 
 		return 0, err
 	}
 	n, err := s.RevokeAppAccess(ctx, userID, clientID)
-	if err != nil || n == 0 {
-		return n, err
+	if n == 0 && !outcomeUnknown(err) {
+		return 0, err // nothing was revoked, and nothing may have been
 	}
 	name := clientID
 	if c, err := s.Clients.Get(ctx, clientID); err == nil {
 		name = c.Name
 	}
-	s.Audit(ctx, a, u.OrgID, "user.app.revoke", u.Username, map[string]string{"client": name, "client_id": clientID})
-	return n, nil
+	rec := err
+	if n > 0 {
+		rec = nil // some grants did go (the error is the rest that did not): recorded as done
+	}
+	s.auditOutcome(ctx, a, rec, change{u.OrgID, "user.app.revoke", u.Username, map[string]string{"client": name, "client_id": clientID}})
+	return n, err
 }
 
 // DisconnectProvider unlinks every identity the user has at one provider (removeWay). It returns how many links it
 // removed.
 func (s *Service) DisconnectProvider(ctx context.Context, a *Actor, userID, providerID string) (int, error) {
 	n := 0
-	err := s.removeWay(ctx, a, userID, way{provider: providerID}, func(u *model.User, gone []model.Credential) error {
+	err := s.removeWay(ctx, a, userID, way{provider: providerID}, func(u *model.User, gone []model.Credential) (string, map[string]string) {
 		n = len(gone)
 		name := providerID
 		if p, err := s.Providers.Get(ctx, providerID); err == nil {
 			name = p.Name
 		}
-		s.Audit(ctx, a, u.OrgID, selfOr(a, u, "account.provider.disconnect", "user.provider.disconnect"), u.Username,
-			map[string]string{"provider": name})
-		return nil
-	})
+		return selfOr(a, u, "account.provider.disconnect", "user.provider.disconnect"), map[string]string{"provider": name}
+	}, nil)
 	return n, err
 }
 
@@ -188,18 +190,18 @@ func (s *Service) UserPasskeys(ctx context.Context, a *Actor, userID string) ([]
 // error with a count is a passkey removed whose sessions did not all end.
 func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID, keepSession string) (int, error) {
 	ended := 0
-	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, gone []model.Credential) error {
-		p := gone[0].(*model.Passkey)
+	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, gone []model.Credential) (string, map[string]string) {
+		return selfOr(a, u, "account.passkey.delete", "user.passkey.remove"), map[string]string{"name": gone[0].(*model.Passkey).Name}
+	}, func(u *model.User, gone []model.Credential, detail map[string]string) error {
 		// The passkey is gone; the sessions it signed in end after it, best effort, and a failure there is recorded
 		// with the removal (and returned: the caller says the sign-outs did not all happen), not hidden by it.
 		var serr error
-		ended, serr = s.EndPasskeySessions(ctx, u.ID, p.ID, keepSession)
-		detail := map[string]string{"name": p.Name, "sessions_ended": strconv.Itoa(ended)}
+		ended, serr = s.EndPasskeySessions(ctx, u.ID, gone[0].GetMeta().ID, keepSession)
+		detail["sessions_ended"] = strconv.Itoa(ended)
 		if serr != nil {
 			detail["sessions_result"] = "incomplete"
 			detail["error"] = serr.Error()
 		}
-		s.Audit(ctx, a, u.OrgID, selfOr(a, u, "account.passkey.delete", "user.passkey.remove"), u.Username, detail)
 		return serr
 	})
 	return ended, err
@@ -208,10 +210,9 @@ func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID
 // RemoveTOTP removes the user's authenticator app (removeWay: done to yourself, not your last second factor where
 // one is required).
 func (s *Service) RemoveTOTP(ctx context.Context, a *Actor, userID string) error {
-	return s.removeWay(ctx, a, userID, way{totp: true}, func(u *model.User, _ []model.Credential) error {
-		s.Audit(ctx, a, u.OrgID, selfOr(a, u, "account.totp.disable", "user.totp.remove"), u.Username, nil)
-		return nil
-	})
+	return s.removeWay(ctx, a, userID, way{totp: true}, func(u *model.User, _ []model.Credential) (string, map[string]string) {
+		return selfOr(a, u, "account.totp.disable", "user.totp.remove"), nil
+	}, nil)
 }
 
 // Creds is what an account holds, read once: its passkeys and provider links that count (model.User.Counts; links
@@ -431,7 +432,13 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 // stalls, cannot both commit on the copy they decided on: the second is refused (store.ErrStale), decides again on
 // the account as the first left it, and so never takes the last way in. The records are deleted after the commit, as
 // tidying (the orphan sweep removes any left).
-func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way, after func(u *model.User, gone []model.Credential) error) error {
+//
+// The removal is audited (audited) as the event says (what it is called, and its detail, from the account and the
+// credentials taken); after, when given, follows the commit and tidying with what the removal sets going (ending the
+// sessions of a passkey), may add to that detail what it found, and its error is returned once the event is recorded.
+func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
+	event func(u *model.User, gone []model.Credential) (action string, detail map[string]string),
+	after func(u *model.User, gone []model.Credential, detail map[string]string) error) error {
 	for attempt := 0; ; attempt++ {
 		u, err := s.FreshUser(ctx, userID)
 		if err != nil {
@@ -485,19 +492,32 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			u.RecoveryCodes, u.RecoveryCreated = nil, nil
 		}
 		u.BumpSecurity()
-		err = s.Users.Update(ctx, u)
+		action, detail := event(u, gone)
+		if detail == nil {
+			detail = map[string]string{}
+		}
+		var afterErr error
+		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
+			if err := s.Users.Update(ctx, u); err != nil {
+				return err
+			}
+			for _, g := range gone { // tidying: they count for nothing already
+				if err := s.Store.Put(ctx, store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil {
+					s.Log.Warn("a removed credential's record is left to the orphan sweep", "user", u.ID, "id", g.GetMeta().ID, "error", err)
+				}
+			}
+			if after != nil {
+				afterErr = after(u, gone, detail)
+			}
+			return nil
+		})
 		if errors.Is(err, store.ErrStale) && attempt < 7 {
 			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy
 		}
 		if err != nil {
 			return mapStore(err)
 		}
-		for _, g := range gone { // tidying: they count for nothing already
-			if err := s.Store.Put(ctx, store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil {
-				s.Log.Warn("a removed credential's record is left to the orphan sweep", "user", u.ID, "id", g.GetMeta().ID, "error", err)
-			}
-		}
-		return after(u, gone)
+		return afterErr
 	}
 }
 

@@ -158,6 +158,12 @@ type PartitionState struct {
 	// (PurgePartition, or an import that copied the partition whole), so changes can be exported only after a sequence
 	// of at least Purged. 0: none purged.
 	Purged uint64
+	// Importing is set while a full import of the partition has begun and not finished (the durable marker its First call
+	// sets and its Final call clears; it survives a restart). The partition then holds only what the import's batches
+	// brought into the emptied partition, whatever Committed says: the caller must not read it, take part in the
+	// partition's protocol on the strength of it, or export it, and must repeat the import from its First call (a Full
+	// one) however the next copy of the partition comes.
+	Importing bool
 }
 
 // ImportStep says where one ImportPartition call lies in an import (see ImportPartition).

@@ -53,7 +53,11 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		extra[passkey.PurposeKey] = purposeSecondFactor
 	} else {
 		orgName := strings.ToLower(strings.TrimSpace(in.Org))
-		org, orgKey := m.resolveOrg(ctx, orgName)
+		org, orgKey, err := m.resolveOrg(ctx, orgName)
+		if err != nil {
+			m.internalError(w, r, "organization", err)
+			return
+		}
 		if orgName == "" {
 			orgKey = "" // discoverable sign-in without an org
 		}

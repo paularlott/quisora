@@ -613,7 +613,12 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 			m.internalError(w, r, "open totp secret", err)
 			return false
 		}
-		if !m.consumeTOTP(ctx, u, string(secret), in.Code) {
+		good, err := m.consumeTOTP(ctx, u, string(secret), in.Code)
+		if err != nil { // not recorded (or perhaps recorded): try again, not a wrong code, no failure counted
+			m.internalError(w, r, "record totp step", err)
+			return false
+		}
+		if !good {
 			wrong = true
 			if m.tripped(n) {
 				org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)

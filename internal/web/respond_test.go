@@ -10,6 +10,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Service errors become a status and a message fit to show; the text of an unexpected error never reaches the caller.
@@ -44,6 +45,8 @@ func TestWriteErrorMapsServiceErrors(t *testing.T) {
 		"stale":            {service.ErrStale, 409, "Someone else changed this. Reload and try again.", ""},
 		"not empty":        {service.ErrNotEmpty, 409, "Organization still has users.", ""},
 		"outcome unknown":  {service.ErrOutcomeUnknown, 503, "This server lost contact", ""},
+		"raw unconfirmed":  {wrap(store.ErrUnconfirmed), 503, "This server lost contact", ""},
+		"raw not writable": {wrap(store.ErrNotWritable), 503, "This server cannot make changes right now", ""},
 		"unavailable":      {service.ErrUnavailable, 503, "This server cannot make changes right now", ""},
 		"unknown error":    {errors.New("secret detail: db password is hunter2"), 500, "Something went wrong. Please try again.", ""},
 		"too large":        {service.ErrTooLarge, 413, "A change may add or remove at most", ""},

@@ -64,7 +64,11 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	org, orgKey := m.resolveOrg(ctx, in.Org)
+	org, orgKey, err := m.resolveOrg(ctx, in.Org)
+	if err != nil {
+		m.internalError(w, r, "organization", err)
+		return
+	}
 	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
 		return
 	}
@@ -287,7 +291,12 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		m.internalError(w, r, "open totp secret", err)
 		return
 	}
-	if !m.consumeTOTP(ctx, u, string(secret), in.Code) {
+	good, err := m.consumeTOTP(ctx, u, string(secret), in.Code)
+	if err != nil { // the step could not be recorded (or may have been): try again, not a wrong code, no failure counted
+		m.internalError(w, r, "record totp step", err)
+		return
+	}
+	if !good {
 		wrong = true
 		m.failed(w, r, n, org, u, u.Username, "totp")
 		return
@@ -339,7 +348,11 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
-	used, left := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.Code)
+	used, left, err := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.Code)
+	if err != nil { // the use could not be recorded (or may have been): try again, not a wrong code, no failure counted
+		m.internalError(w, r, "record recovery code", err)
+		return
+	}
 	if !used {
 		wrong = true
 		m.failed(w, r, n, org, u, u.Username, "recovery_code")
@@ -367,7 +380,7 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 
 // consumeTOTP verifies code and records the matched step so the same code cannot be used again, on any node
 // (service.ConsumeTOTP: a cluster-wide compare-and-swap on the user's sign-in record).
-func (m *Module) consumeTOTP(ctx context.Context, u *model.User, secret, code string) bool {
+func (m *Module) consumeTOTP(ctx context.Context, u *model.User, secret, code string) (bool, error) {
 	return m.s.Svc.ConsumeTOTP(ctx, u, secret, code)
 }
 
@@ -390,7 +403,11 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	org, orgKey := m.resolveOrg(ctx, in.Org)
+	org, orgKey, err := m.resolveOrg(ctx, in.Org)
+	if err != nil {
+		m.internalError(w, r, "organization", err)
+		return
+	}
 	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
 		return
 	}
@@ -422,6 +439,10 @@ type resetReq struct {
 	Token    string `json:"token"`
 	Password string `json:"password"`
 }
+
+// msgResetUnknown answers a reset the cluster did not confirm: it may have been made.
+const msgResetUnknown = "The server lost contact with its cluster before it answered, so your password may have been changed. " +
+	"Try signing in with the new password; if that does not work, ask for a new reset link."
 
 const msgBadLink = "This link is invalid or has expired."
 
@@ -462,9 +483,13 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	// policy refuses, or a failure, leaves the link usable. Every session and refresh grant of the account ends.
 	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password, 0)
 	if err != nil {
-		if errors.Is(err, service.ErrLink) {
+		switch {
+		case errors.Is(err, service.ErrLink):
 			writeErr(w, http.StatusGone, msgBadLink, "")
-		} else {
+		case errors.Is(err, service.ErrOutcomeUnknown):
+			// The link is used up if the reset was made, and trying it again would only say it is invalid.
+			writeErr(w, http.StatusServiceUnavailable, msgResetUnknown, "")
+		default:
 			web.WriteError(w, err)
 		}
 		return

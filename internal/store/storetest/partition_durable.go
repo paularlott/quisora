@@ -201,13 +201,14 @@ func testDurResetImport(t *testing.T, d *Durable) {
 		}()
 		_ = imp()
 	}()
-	if st, _ := ps.PartitionState(ctx, 15); st.Committed != pos(1, 2) {
-		t.Fatalf("the position moved: %+v", st.Committed)
+	if st, _ := ps.PartitionState(ctx, 15); st.Committed != pos(1, 2) || !st.Importing {
+		t.Fatalf("the position moved, or the import is not shown: %+v", st)
 	}
 	s := d.Reopen()
 	defer s.Close()
 	refusesExport(t, s, 15)
 	ps = pstore(t, s)
+	wantImporting(t, ps, 15, true) // the marker is durable
 	// the import repeated (the next catch-up) completes it
 	must(t, ps.ImportPartition(ctx, 15, []store.PartitionRecord{{Record: a, Seq: 1}}, pos(2, 5), whole))
 	if got, at := exported(t, ps, 15, 0); at != pos(2, 5) || len(got) != 1 || got[rkey(a)].Seq != 1 {
@@ -239,14 +240,15 @@ func testDurFullImportRepeated(t *testing.T, d *Durable) {
 	s := d.Reopen()
 	defer s.Close()
 	refusesExport(t, s, 16)
-	if st, _ := pstore(t, s).PartitionState(ctx, 16); st.Committed != pos(1, 1) {
-		t.Fatalf("the position moved: %+v", st.Committed)
+	if st, _ := pstore(t, s).PartitionState(ctx, 16); st.Committed != pos(1, 1) || !st.Importing {
+		t.Fatalf("the position moved, or the import is not shown after the restart: %+v", st)
 	}
 	ps = pstore(t, s)
 	// the source has x and y: the import again, from the start, in two calls
 	must(t, ps.ImportPartition(ctx, 16, []store.PartitionRecord{{Record: x, Seq: 1}}, pos(2, 3), store.ImportStep{Full: true, First: true}))
 	refusesExport(t, s, 16)
 	must(t, ps.ImportPartition(ctx, 16, []store.PartitionRecord{{Record: y, Seq: 3}}, pos(2, 3), store.ImportStep{Full: true, Final: true}))
+	wantImporting(t, ps, 16, false)
 	got, at := exported(t, ps, 16, 0)
 	if at != pos(2, 3) || len(got) != 2 || got[rkey(x)].Seq != 1 || got[rkey(y)].Seq != 3 {
 		t.Fatalf("export after the import: %+v %v", at, keysOf(got))

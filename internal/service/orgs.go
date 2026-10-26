@@ -223,6 +223,19 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 	if err != nil {
 		return nil, nil, mapStore(err)
 	}
+	// The listing above is of every organization, which the staleness gate cannot vouch for; the marked old primaries'
+	// own are listed by organization, through it, so a node trailing one of them refuses instead of missing a super admin.
+	for _, o := range others {
+		own, _, err := s.Users.List(ctx, store.ListQuery{Scope: o.ID, Filters: []store.Filter{{Field: "super_admin", Value: true}}})
+		if err != nil {
+			return nil, nil, mapStore(err)
+		}
+		for _, u := range own {
+			if !slices.ContainsFunc(supers, func(x *model.User) bool { return x.ID == u.ID }) {
+				supers = append(supers, u)
+			}
+		}
+	}
 	supers = slices.DeleteFunc(supers, func(u *model.User) bool { return u.OrgID == target.ID })
 	switch {
 	case len(others) > 0:
@@ -237,9 +250,40 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 		return nil, nil, ErrNotFound // there is no primary to replace
 	}
 
+	// The audit event of the change: what it did when it ended, or its outcome unknown, so far as it got.
+	detail := map[string]string{"super_admin": admin.Username}
+	if old != nil {
+		detail["previous"] = old.Name
+	}
+	err = s.setPrimary(ctx, target, admin, others, supers, &demoted)
+	s.primary.mu.Lock()
+	s.primary.id = "" // chosen afresh at the next read
+	s.primary.mu.Unlock()
+	s.InvalidateSignOut()
+	names := make([]string, len(demoted))
+	for i, u := range demoted {
+		names[i] = u.Username
+	}
+	detail["demoted"] = strings.Join(names, " ")
+	events := []change{{target.ID, "org.primary", target.Name, detail}}
+	if old != nil && old.ID != target.ID {
+		events = append(events, change{old.ID, "org.primary", target.Name, detail})
+	}
+	s.auditOutcome(ctx, System, err, events...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return old, demoted, nil
+}
+
+// setPrimary writes the changes of SetPrimaryOrg (see there for their order), each made again on a fresh copy when it
+// is refused as stale; demoted collects the super admins that became administrators. The promotion and the
+// demotions are changes of a user's role: they go through applyRole, as every other.
+func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *model.User, others []*model.Org, supers []*model.User,
+	demoted *[]*model.User) error {
 	// The new primary first. The server's emergency sign-out counters move with the role: starting again from the
 	// new primary's would bring back everything a server-wide sign-out ended.
-	target, err = updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
+	target, err := updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
 		write := !t.Primary
 		t.Primary = true
 		for _, o := range others {
@@ -256,18 +300,20 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 		return write, nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	admin, err = updateFresh(ctx, s, s.Users, target.ID, admin, func(u *model.User) (bool, error) {
+	promoted := func(context.Context, *Actor, error) {}
+	_, err = updateFresh(ctx, s, s.Users, target.ID, admin, func(u *model.User) (bool, error) {
 		if !u.Enabled(time.Now()) {
 			return false, Invalid("super_admin", "the account is disabled")
 		}
 		write := u.Role != model.RoleSuperAdmin
-		u.Role = model.RoleSuperAdmin
+		promoted = s.applyRole(u, model.RoleSuperAdmin)
 		return write, nil
 	})
+	promoted(ctx, System, err) // a promotion is finished as any other (links made by email address go)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	for _, o := range others {
 		if _, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
@@ -275,42 +321,28 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 			o.Primary = false
 			return write, nil
 		}); err != nil {
-			return nil, nil, err
+			return err
 		}
 	}
 	for _, u := range supers {
 		changed := false
+		demotion := func(context.Context, *Actor, error) {}
 		got, err := updateFresh(ctx, s, s.Users, u.OrgID, u, func(u *model.User) (bool, error) {
 			changed = u.Role == model.RoleSuperAdmin
 			if changed {
-				u.Role = model.RoleAdmin
+				demotion = s.applyRole(u, model.RoleAdmin)
 			}
 			return changed, nil
 		})
+		demotion(ctx, System, err)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		if changed {
-			demoted = append(demoted, got)
+			*demoted = append(*demoted, got)
 		}
 	}
-	s.primary.mu.Lock()
-	s.primary.id = "" // chosen afresh at the next read
-	s.primary.mu.Unlock()
-	s.InvalidateSignOut()
-	names := make([]string, len(demoted))
-	for i, u := range demoted {
-		names[i] = u.Username
-	}
-	detail := map[string]string{"super_admin": admin.Username, "demoted": strings.Join(names, " ")}
-	if old != nil {
-		detail["previous"] = old.Name
-	}
-	s.Audit(ctx, System, target.ID, "org.primary", target.Name, detail)
-	if old != nil && old.ID != target.ID {
-		s.Audit(ctx, System, old.ID, "org.primary", target.Name, detail)
-	}
-	return old, demoted, nil
+	return nil
 }
 
 // GetOrg returns an org the actor may see (its own, or any for super admins). a == nil skips the check (internal).
@@ -364,14 +396,12 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 		}
 		o.Settings = *in.Settings
 	}
-	if err := s.Orgs.Create(ctx, o); err != nil {
-		s.auditUnknown(ctx, err, a, o.ID, "org.create", o.Name, nil)
+	if err := s.audited(ctx, a, o.ID, "org.create", o.Name, nil, func() error { return s.Orgs.Create(ctx, o) }); err != nil {
 		return nil, orgConflict(err)
 	}
 	if _, err := s.DefaultTenant(ctx, o.ID); err != nil {
 		return nil, err
 	}
-	s.Audit(ctx, a, o.ID, "org.create", o.Name, nil)
 	return o, nil
 }
 
@@ -404,11 +434,9 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 		}
 		o.Settings = *in.Settings
 	}
-	if err := s.Orgs.Update(ctx, o); err != nil {
-		s.auditUnknown(ctx, err, a, o.ID, "org.update", o.Name, addChanges(nil, was, o))
+	if err := s.audited(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o), func() error { return s.Orgs.Update(ctx, o) }); err != nil {
 		return nil, orgConflict(err)
 	}
-	s.Audit(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o))
 	return o, nil
 }
 
@@ -426,9 +454,9 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if o.Primary {
 		return ErrPrimaryOrg
 	}
-	n, err := s.Users.Count(ctx, id)
+	n, err := s.Users.Count(ctx, id) // gated by the organization's partition: a node trailing it refuses
 	if err != nil {
-		return err
+		return mapStore(err)
 	}
 	if n > 0 && !cascade {
 		return ErrNotEmpty
@@ -438,12 +466,7 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	// is unknown), and the orphan sweep removes their records (sweep.go). No back-channel logout is sent: a user signs
 	// in only to applications of their own organization, and those are deleted with it (their tokens stop working at
 	// once). So the deletion is one write, whatever the organization's size.
-	if err := s.Orgs.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)})
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)})
-	return nil
+	return mapStore(s.audited(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)}, func() error { return s.Orgs.Delete(ctx, id) }))
 }
 
 // validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the

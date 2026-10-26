@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip"
+	"github.com/paularlott/gossip/partition"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -328,11 +329,15 @@ func TestTrailingNodeRefusesToListSigningKeys(t *testing.T) {
 	c := newTCluster(t, 3, fs.over(badgerBackend()))
 	c.startAll()
 	c.waitReady()
+	c.waitSettled()
+	owner := c.ownerOf(globalPartition)
+	trail := (owner + 1) % 3 // a follower of the global partition
+	other := 3 - owner - trail
 	keys := func(tn *tnode) *store.Table[model.SigningKey, *model.SigningKey] {
 		return store.NewTable[model.SigningKey](tn.st())
 	}
 	k1 := &model.SigningKey{Meta: model.Meta{ID: "k1"}, Alg: "ES256"}
-	if err := keys(c.nodes[0]).Create(bg, k1); err != nil {
+	if err := keys(c.nodes[owner]).Create(bg, k1); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, "the key listed everywhere", func() bool {
@@ -343,19 +348,109 @@ func TestTrailingNodeRefusesToListSigningKeys(t *testing.T) {
 		}
 		return true
 	})
-	// node 1 misses the key's removal, and every catch-up of the global partition fails
-	fs.of(c.nodes[1]).failImport.Store(int64(globalPartition) + 1)
+	// the follower misses the key's removal, and every catch-up of the global partition fails
+	fs.of(c.nodes[trail]).failImport.Store(int64(globalPartition) + 1)
+	for _, j := range []int{owner, other} {
+		c.drop(j, trail, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	}
+	if err := keys(c.nodes[owner]).Delete(bg, k1.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "the trailing node to refuse listing the keys", func() bool {
+		_, _, err := keys(c.nodes[trail]).List(bg, store.ListQuery{})
+		return errors.Is(err, store.ErrNotWritable)
+	})
+	if c.nodes[trail].n.VouchesForGlobal() || !c.nodes[owner].n.VouchesForGlobal() {
+		t.Fatal("VouchesForGlobal does not follow the global partition's readability")
+	}
+	if ks, _, err := keys(c.nodes[owner]).List(bg, store.ListQuery{}); err != nil || len(ks) != 0 {
+		t.Fatalf("the majority's listing: %d keys, %v", len(ks), err)
+	}
+}
+
+// A full import that is cut short after its reset has emptied the partition must not leave a node that serves the
+// emptied partition, or takes it over, from the old committed position it still holds: until an import completes the
+// node refuses to read the partition, reports it empty to the protocol (so it catches up from nothing, and a retry is a
+// full import whatever the library asked), and never acknowledges a write on top of what it lost. The acknowledged
+// records must all be on every node afterwards, the node that was cut short included, as an owner too.
+func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.startAll()
+	c.waitReady()
+	org := c.orgOwnedBy(0)
+	p := partitionNum(org)
+	first := writeN(t, c.nodes[0], org, 5)
+	c.waitHas(first[4])
+
+	// node 1 misses the next writes and cannot catch up
+	victim, f := c.nodes[1], fs.of(c.nodes[1])
+	f.failImport.Store(int64(p) + 1)
 	for _, j := range []int{0, 2} {
 		c.drop(j, 1, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
 	}
-	if err := keys(c.nodes[0]).Delete(bg, k1.ID); err != nil {
+	later := writeN(t, c.nodes[0], org, 3)
+	c.waitHas(later[2], c.nodes[2])
+	all := append(append([]string{}, first...), later...)
+
+	// a full copy of the partition starts on node 1 and is cut short after the reset
+	upTo, rc, err := c.nodes[0].n.pst.Export(p, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 10*time.Second, "node 1 to refuse listing the keys", func() bool {
-		_, _, err := keys(c.nodes[1]).List(bg, store.ListQuery{})
-		return errors.Is(err, store.ErrNotWritable)
-	})
-	if ks, _, err := keys(c.nodes[0]).List(bg, store.ListQuery{}); err != nil || len(ks) != 0 {
-		t.Fatalf("the majority's listing: %d keys, %v", len(ks), err)
+	f.cutAfterReset.Store(int64(p) + 1)
+	err = victim.n.pst.Import(p, rc, upTo, true)
+	f.cutAfterReset.Store(0)
+	rc.Close()
+	if !errors.Is(err, errTestImport) {
+		t.Fatalf("the cut import: %v", err)
 	}
+	if ps, err := f.PartitionState(bg, p); err != nil || !ps.Importing || ps.Committed.Seq == 0 {
+		t.Fatalf("the backend after the cut import: %+v %v", ps, err)
+	}
+	if has(victim.st(), first[0]) {
+		t.Fatal("the reset left a record behind: the scenario is not what it should be")
+	}
+	if st, err := victim.n.pst.State(p); err != nil || st.Committed.Seq != 0 || st.Pending != nil {
+		t.Fatalf("the library is told the partition holds %+v (%v), want nothing", st, err)
+	}
+	if err := victim.n.readable(bg, p); !errors.Is(err, store.ErrNotWritable) || !strings.Contains(err.Error(), "importing") {
+		t.Fatalf("a read of the partition while its import is unfinished: %v", err)
+	}
+	if _, err := victim.st().Get(bg, dataKind, first[0]); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("a read in the emptied partition: %v", err)
+	}
+	if err := victim.n.pst.Commit(&partition.Write{Partition: p, Pos: partition.Pos{Seq: upTo.Seq + 1}}); err == nil {
+		t.Fatal("a write was applied on top of the hole")
+	}
+
+	// the owner goes away, the cut node can catch up again: whoever owns the partition then holds every record
+	stop(c.nodes[0])
+	f.failImport.Store(0)
+	c.drop(2, 1, false, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	waitFor(t, 30*time.Second, "node 1 to hold every record of the partition again", func() bool {
+		ps, err := f.PartitionState(bg, p)
+		return err == nil && !ps.Importing && allHold([]*tnode{victim}, all)
+	})
+	extra := newOrgRec(org)
+	putRetrying(t, c.nodes[2], extra)
+	all = append(all, extra.ID)
+	waitFor(t, 20*time.Second, "every record readable on both nodes", func() bool {
+		for _, tn := range c.nodes[1:] {
+			for _, id := range all {
+				if r, err := tn.st().Get(bg, dataKind, id); err != nil || r == nil || r.Deleted {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	if _, rc, err := victim.n.pst.Export(p, 0); err != nil {
+		t.Fatalf("the completed import still blocks exports: %v", err)
+	} else {
+		rc.Close()
+	}
+	c.restart(0)
+	c.waitReady()
+	c.waitHas(extra.ID)
 }

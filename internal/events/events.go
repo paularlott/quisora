@@ -53,8 +53,13 @@ const (
 )
 
 // recheckEvery is how often an open stream checks again that its viewer may still have it (session still valid,
-// account still enabled, role still allowed, token not revoked). A variable so tests can shorten it.
-var recheckEvery = time.Minute
+// account still enabled, role still allowed, token not revoked), and eventRecheck how soon before an event is sent
+// (so a revoked viewer is not sent what changed after the revocation, however quiet the stream was). Variables so
+// tests can change them.
+var (
+	recheckEvery = 5 * time.Second
+	eventRecheck = time.Second
+)
 
 type subscriber struct {
 	ch     chan Event
@@ -271,7 +276,7 @@ func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
 	m.serve(w, r, sub, func() bool { return m.stillAllowed(r, orgID, sub.super) })
 }
 
-// serve streams sub's events until the client goes, or allowed (checked every recheckEvery) says the viewer may no
+// serve streams sub's events until the client goes, or allowed (checked every recheckEvery, and before an event) says the viewer may no
 // longer have the stream.
 func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, allowed func() bool) {
 	ctx := r.Context()
@@ -302,6 +307,15 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, 
 	defer tick.Stop()
 	recheck := time.NewTicker(recheckEvery)
 	defer recheck.Stop()
+	checked := time.Now()
+	stillAllowed := func() bool {
+		checked = time.Now()
+		if allowed() {
+			return true
+		}
+		_ = write("event: ended\ndata: {}\n\n") // the client reloads, and signs in again if it must
+		return false
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -309,8 +323,7 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, 
 		case <-m.s.Stopping(): // the server is shutting down: the client reconnects (retry), elsewhere or later
 			return
 		case <-recheck.C:
-			if !allowed() {
-				_ = write("event: ended\ndata: {}\n\n") // the client reloads, and signs in again if it must
+			if !stillAllowed() {
 				return
 			}
 		case <-tick.C:
@@ -318,6 +331,9 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request, sub *subscriber, 
 				return
 			}
 		case ev := <-sub.ch:
+			if time.Since(checked) >= eventRecheck && !stillAllowed() {
+				return
+			}
 			if m.lagged(sub) {
 				if !write("event: resync\ndata: {}\n\n") {
 					return

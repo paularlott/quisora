@@ -157,3 +157,31 @@ func TestSessionDeleteReportsGrantDeletionFailure(t *testing.T) {
 		t.Fatalf("control: the grant should still exist: %v", err)
 	}
 }
+
+// A cached session is not served while the node cannot vouch for the partition the session lives in (it trails its
+// owner: the session may have been revoked): the store is asked instead.
+func TestSessionCacheNotServedWhileTrailing(t *testing.T) {
+	ctx := context.Background()
+	svc, u, s := sessionFixture(t, memstore.New(), time.Now().UTC())
+	if err := svc.Sessions.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	m := NewSessions(svc)
+	if got, _ := m.Lookup(ctx, s.ID); got == nil {
+		t.Fatal("control: the session should be found")
+	}
+	if err := svc.Sessions.Delete(ctx, s.ID); err != nil { // revoked elsewhere: no eviction reached this node
+		t.Fatal(err)
+	}
+	if got, _ := m.Lookup(ctx, s.ID); got == nil {
+		t.Fatal("control: the cache should serve the session while the node vouches for it")
+	}
+	asked := ""
+	svc.Readable = func(key string) bool { asked = key; return false }
+	if got, _ := m.Lookup(ctx, s.ID); got != nil {
+		t.Fatal("a cached session was served by a node that cannot vouch for its partition")
+	}
+	if asked != u.OrgID {
+		t.Fatalf("asked about %q, the session's organization is %q", asked, u.OrgID)
+	}
+}

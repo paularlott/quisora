@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -548,4 +550,93 @@ func TestGrantMaintenanceDoesNotReopenRefreshGrace(t *testing.T) {
 			}
 		})
 	}
+}
+
+// landThenUnknown lets the compare-and-puts of live records of one kind through and then answers store.ErrUnconfirmed
+// while armed: the write landed, but the node that decided it was lost before it answered.
+type landThenUnknown struct {
+	store.Store
+	kind  model.Kind
+	armed atomic.Bool
+}
+
+func (s *landThenUnknown) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	err := s.Store.CompareAndPut(ctx, r, expect)
+	if err == nil && r.Kind == s.kind && !r.Deleted && s.armed.Load() {
+		return store.ErrUnconfirmed
+	}
+	return err
+}
+
+// A rotation that landed but was not confirmed answers 503 with a Retry-After that fits inside refreshRetryGrace: the
+// client's retry with the same token is then a retry of the last rotation (it gets the new token), not an old token
+// presented again (reuse: the grant revoked and a false alarm audited). The unknown rotation is audited as such.
+func TestRefreshRotationUnknownOutcomeRetry(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
+	r, _ := h.login(cl, secret, nil)
+	rt := r.str("refresh_token")
+	gid := strings.SplitN(rt, ".", 2)[0]
+	good := h.env.Svc.Grants.S
+	flaky := &landThenUnknown{Store: good, kind: model.KindGrant}
+	h.env.Svc.Grants.S = flaky
+	t.Cleanup(func() { h.env.Svc.Grants.S = good })
+	flaky.armed.Store(true)
+	lost := h.refreshWith(cl, secret, rt)
+	expectUnavailable(t, "rotation of unknown outcome", lost)
+	after, err := strconv.Atoi(lost.hdr.Get("Retry-After"))
+	if err != nil || time.Duration(after)*time.Second >= refreshRetryGrace {
+		t.Fatalf("Retry-After %q must fit inside the %v retry grace", lost.hdr.Get("Retry-After"), refreshRetryGrace)
+	}
+	flaky.armed.Store(false)
+	retry := h.refreshWith(cl, secret, rt)
+	if retry.status != 200 || retry.str("refresh_token") == "" {
+		t.Fatalf("the retry of a rotation that landed: %d %v", retry.status, retry.m)
+	}
+	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Revoked || g.Counter != 1 {
+		t.Fatalf("after the retry: %+v %v", g, err)
+	}
+	if n := len(h.auditEvents("oauth.refresh.reuse")); n != 0 {
+		t.Fatalf("the retry was audited as reuse (%d events)", n)
+	}
+	ev := h.auditEvents("oauth.refresh")
+	if len(ev) != 1 || ev[0].Outcome != service.OutcomeUnknown {
+		t.Fatalf("the unknown rotation should be audited once with outcome unknown: %+v", ev)
+	}
+}
+
+// A revocation whose deletion has an unknown outcome answers 503 and is audited as unknown (not as done, not silently),
+// as are the reuse alarms that end a grant: grant_revoked says "unknown", not "false".
+func TestRevokeUnknownOutcomeIsAudited(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	tokens, _ := h.login(cl, secret, nil)
+	rt := tokens.str("refresh_token")
+	good := h.env.Svc.Grants.S
+	h.env.Svc.Grants.S = &deleteUnknown{Store: good}
+	t.Cleanup(func() { h.env.Svc.Grants.S = good })
+	expectUnavailable(t, "revoke", h.post("/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""))
+	ev := h.auditEvents("oauth.revoke")
+	if len(ev) != 1 || ev[0].Outcome != service.OutcomeUnknown {
+		t.Fatalf("revocation of unknown outcome: %+v", ev)
+	}
+	if got := revokedText(store.ErrUnconfirmed); got != service.OutcomeUnknown {
+		t.Fatalf("revokedText(unknown) = %q", got)
+	}
+	if revokedText(nil) != "true" || revokedText(errFault) != "false" {
+		t.Fatal("revokedText")
+	}
+}
+
+// deleteUnknown applies a deletion (tombstone Put) and answers that its outcome is unknown.
+type deleteUnknown struct{ store.Store }
+
+func (s *deleteUnknown) Put(ctx context.Context, r *store.Record) error {
+	err := s.Store.Put(ctx, r)
+	if err == nil && r.Deleted {
+		return store.ErrUnconfirmed
+	}
+	return err
 }

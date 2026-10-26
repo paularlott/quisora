@@ -131,6 +131,17 @@ func (s *Service) modifyUser(ctx context.Context, id string, f func(u *model.Use
 	return nil, ErrStale
 }
 
+// modifyUserAudited is modifyUser for a change that is audited as action on u (the user as the caller read them): see
+// audited. f may add to detail what only it knows.
+func (s *Service) modifyUserAudited(ctx context.Context, a *Actor, u *model.User, action string, detail map[string]string,
+	f func(u *model.User) error) (out *model.User, err error) {
+	err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() (err error) {
+		out, err = s.modifyUser(ctx, u.ID, f)
+		return err
+	})
+	return out, err
+}
+
 // AddLinkedEmail links address to the user (provisioning sets linked addresses through SCIM instead). An address on
 // an account reserves it in the organization and is offered to sign-in providers, so who may claim one is a
 // manager's call: managers and up add them for the users they manage, and for themselves (the admin user page,
@@ -160,7 +171,7 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 	if err != nil {
 		return nil, err
 	}
-	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+	u, err = s.modifyUserAudited(ctx, a, u, "user.email.add", map[string]string{"email": addr, "verified": boolStr(verified)}, func(u *model.User) error {
 		if strings.EqualFold(u.Email, addr) {
 			return &conflictErr{Invalid("email", "is already the primary email address")}
 		}
@@ -176,7 +187,6 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 	if err != nil {
 		return nil, err
 	}
-	s.Audit(ctx, a, u.OrgID, "user.email.add", u.Username, map[string]string{"email": addr, "verified": boolStr(verified)})
 	return u, nil
 }
 
@@ -196,7 +206,7 @@ func (s *Service) RemoveLinkedEmail(ctx context.Context, a *Actor, userID, addre
 	if strings.EqualFold(u.Email, address) {
 		return nil, Invalid("email", "is the primary address; make another address primary before removing it")
 	}
-	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+	u, err = s.modifyUserAudited(ctx, a, u, "user.email.remove", map[string]string{"email": address}, func(u *model.User) error {
 		for i, l := range u.LinkedEmails {
 			if strings.EqualFold(l.Address, address) {
 				u.LinkedEmails = append(u.LinkedEmails[:i:i], u.LinkedEmails[i+1:]...)
@@ -208,7 +218,6 @@ func (s *Service) RemoveLinkedEmail(ctx context.Context, a *Actor, userID, addre
 	if err != nil {
 		return nil, err
 	}
-	s.Audit(ctx, a, u.OrgID, "user.email.remove", u.Username, map[string]string{"email": address})
 	return u, nil
 }
 
@@ -230,8 +239,8 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 		}
 	}
 	address = strings.TrimSpace(address)
-	var old string
-	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+	detail := map[string]string{}
+	u, err = s.modifyUserAudited(ctx, a, u, "user.email.primary", detail, func(u *model.User) error {
 		l, ok := u.LinkedEmail(address)
 		if !ok {
 			return ErrNotFound
@@ -239,7 +248,7 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 		if !l.Verified {
 			return Invalid("email", "must be verified before it can be made primary")
 		}
-		old = u.Email
+		detail["previous"] = u.Email
 		out := make([]model.LinkedEmail, 0, len(u.LinkedEmails))
 		for _, x := range u.LinkedEmails {
 			if !strings.EqualFold(x.Address, address) {
@@ -248,12 +257,12 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 		}
 		out = append(out, model.LinkedEmail{Address: u.Email, Verified: u.EmailVerified, Added: time.Now().UTC()})
 		u.Email, u.EmailVerified, u.LinkedEmails = l.Address, true, out
+		detail["email"] = u.Email
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.Audit(ctx, a, u.OrgID, "user.email.primary", u.Username, map[string]string{"email": u.Email, "previous": old})
 	return u, nil
 }
 
@@ -292,7 +301,7 @@ func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, addre
 		return nil, err
 	}
 	address = strings.TrimSpace(address)
-	u, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+	u, err = s.modifyUserAudited(ctx, a, u, "user.email.verify", map[string]string{"email": address, "method": "manual"}, func(u *model.User) error {
 		if strings.EqualFold(u.Email, address) {
 			if u.EmailVerified {
 				return &conflictErr{Invalid("email", "is already verified")}
@@ -314,7 +323,6 @@ func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, addre
 	if err != nil {
 		return nil, err
 	}
-	s.Audit(ctx, a, u.OrgID, "user.email.verify", u.Username, map[string]string{"email": address, "method": "manual"})
 	return u, nil
 }
 
@@ -326,8 +334,12 @@ func (s *Service) CanMarkEmailVerified(ctx context.Context, a *Actor, u *model.U
 // VerifyEmailAddress marks one address of the user verified, as proven by a redeemed LinkVerify link. A link whose
 // address is no longer on the account (removed, or replaced by another primary) verifies nothing.
 func (s *Service) VerifyEmailAddress(ctx context.Context, userID, address string) error {
+	cur, err := s.Users.Get(ctx, userID)
+	if err != nil {
+		return mapStore(err)
+	}
 	changed := false
-	u, err := s.modifyUser(ctx, userID, func(u *model.User) error {
+	_, err = s.modifyUser(ctx, userID, func(u *model.User) error {
 		changed = false
 		if strings.EqualFold(u.Email, address) {
 			changed, u.EmailVerified = !u.EmailVerified, true
@@ -341,13 +353,11 @@ func (s *Service) VerifyEmailAddress(ctx context.Context, userID, address string
 		}
 		return ErrNotFound
 	})
-	if err != nil {
-		return err
+	if err == nil && !changed {
+		return nil // nothing to record
 	}
-	if changed {
-		s.Audit(ctx, System, u.OrgID, "user.email.verify", u.Username, map[string]string{"email": address})
-	}
-	return nil
+	s.auditOutcome(ctx, System, err, change{cur.OrgID, "user.email.verify", cur.Username, map[string]string{"email": address}})
+	return err
 }
 
 func boolStr(b bool) string {

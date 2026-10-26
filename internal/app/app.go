@@ -137,6 +137,8 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.Svc = service.New(c, a.Store, sealer)
 	a.Svc.Log = log
 	a.Svc.Writable = node.Writable
+	a.Svc.GlobalReadable = node.VouchesForGlobal
+	a.Svc.Readable = node.VouchesFor
 	a.closers = append(a.closers, a.Svc.WaitBackground) // closed before the store (closers run in reverse)
 	if err := a.setupAudit(c, node, log); err != nil {
 		a.Close()

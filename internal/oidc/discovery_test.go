@@ -154,3 +154,25 @@ func TestJWKSNotServedFromCacheWhenTheNodeCannotVouchForTheKeys(t *testing.T) {
 		t.Fatalf("once it can vouch again: %d", resp.StatusCode)
 	}
 }
+
+// Nothing cached is served while the node cannot vouch for the signing keys, however fresh the cache: the published
+// key set and the keys used to sign are refused until it can again.
+func TestWarmKeyCachesRefusedWhileTheNodeCannotVouch(t *testing.T) {
+	h := setup(t, nil)
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != 200 { // loads and caches
+		t.Fatalf("setup: %d", resp.StatusCode)
+	}
+	vouches := true
+	h.env.Svc.GlobalReadable = func() bool { return vouches }
+	vouches = false
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a warm JWKS cache on a node that cannot vouch: %d, want 503", resp.StatusCode)
+	}
+	if _, err := h.p.keys(context.Background()); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("the warm signing-key cache on a node that cannot vouch: %v", err)
+	}
+	vouches = true
+	if resp := h.get(h.http, "/oauth/jwks"); resp.StatusCode != 200 {
+		t.Fatalf("once it can vouch again: %d", resp.StatusCode)
+	}
+}

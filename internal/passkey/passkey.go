@@ -489,14 +489,31 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 	if !pk.Usable() {
 		return &LoginResult{User: user, Passkey: pk}, ErrUnusable
 	}
-	if cred.Authenticator.CloneWarning || s.touch(ctx, pk, cred) {
+	cloned := cred.Authenticator.CloneWarning
+	if !cloned {
+		var terr error
+		if cloned, terr = s.touch(ctx, pk, cred); terr != nil {
+			// The new counter is not recorded (or the passkey is gone): signing in on would leave the next use of a
+			// copy compared with an old count.
+			if errors.Is(terr, store.ErrNotFound) || errors.Is(terr, service.ErrNotFound) {
+				return nil, ErrUnknownCredential
+			}
+			return nil, terr
+		}
+	}
+	if cloned {
 		// The counter did not go up: another copy of this key may exist. It stops signing in until the user
 		// deletes it and adds their authenticator again (the account page says why), and every session it signed in
 		// ends — the copy's holder may be one of them. (The library compares with the copy of the passkey this node
 		// holds, which may lag; touch compares with the owner's when another sign-in wrote first.)
-		s.disable(ctx, pk)
+		derr := s.disable(ctx, pk)
 		if _, err := s.svc.EndPasskeySessions(context.WithoutCancel(ctx), pk.UserID, pk.ID, ""); err != nil {
 			s.svc.Log.WithError(err).Error("passkey clone detected; not every session it signed in could be ended", "user", pk.UserID, "passkey", pk.ID)
+		}
+		if derr != nil {
+			// Still enabled, perhaps: not "your key is disabled" but try again, which detects the clone again.
+			s.svc.Log.WithError(derr).Error("passkey clone detected; the passkey could not be disabled", "user", pk.UserID, "passkey", pk.ID)
+			return nil, fmt.Errorf("%w: the passkey could not be disabled: %v", service.ErrUnavailable, derr)
 		}
 		return &LoginResult{User: user, Passkey: pk}, ErrCloneDetected
 	}
@@ -507,20 +524,30 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 
 // disable marks a passkey disabled (durably; retried on a concurrent update) and moves the account's security
 // generation on: a passkey that no longer signs in is a factor removed, so whatever is in flight for the account ends.
-func (s *Service) disable(ctx context.Context, pk *model.Passkey) {
+// It returns an error when it cannot say the passkey is disabled (the write failed or its outcome is not known, or
+// the passkey is not there to be read again).
+func (s *Service) disable(ctx context.Context, pk *model.Passkey) error {
 	ctx = context.WithoutCancel(ctx)
 	defer func() { _, _ = s.svc.AdvanceSecurity(ctx, pk.UserID) }()
+	var err error
 	for range 3 {
 		pk.Disabled = true
-		if err := s.svc.Passkeys.Update(ctx, pk); !errors.Is(err, store.ErrStale) {
-			return
+		if err = s.svc.Passkeys.Update(ctx, pk); err == nil {
+			return nil
 		}
-		fresh, err := s.svc.Passkeys.Get(ctx, pk.ID)
-		if err != nil {
-			return
+		if !errors.Is(err, store.ErrStale) {
+			return err
+		}
+		fresh, gerr := s.svc.Passkeys.Get(ctx, pk.ID)
+		if errors.Is(gerr, store.ErrNotFound) {
+			return nil // removed meanwhile: it signs in no more
+		}
+		if gerr != nil {
+			return gerr
 		}
 		*pk = *fresh
 	}
+	return err
 }
 
 // touch stores the new sign count and backup state; LastUsed is refreshed at most once a minute. It reports a clone:
@@ -529,27 +556,39 @@ func (s *Service) disable(ctx context.Context, pk *model.Passkey) {
 // (WebAuthn 7.2 step 21), so a second sign-in at or below what is stored is a copy at work; two sign-ins of one
 // authenticator cannot be told from that by their order. A passkey with no counter (a synced one: both zero) has no
 // clone signal.
-func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.Credential) (cloned bool) {
+func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.Credential) (cloned bool, err error) {
 	now := time.Now().UTC()
 	if pk.SignCount == cred.Authenticator.SignCount && pk.BackupState == cred.Flags.BackupState &&
-		now.Sub(pk.LastUsed) < time.Minute || !s.svc.CanWrite() {
-		return false
+		now.Sub(pk.LastUsed) < time.Minute {
+		return false, nil
+	}
+	if !s.svc.CanWrite() {
+		return false, fmt.Errorf("%w: the sign count cannot be recorded now", service.ErrUnavailable)
 	}
 	for range 3 {
 		pk.SignCount, pk.BackupState, pk.LastUsed = cred.Authenticator.SignCount, cred.Flags.BackupState, now
 		err := s.svc.Passkeys.Update(ctx, pk)
 		if !errors.Is(err, store.ErrStale) {
-			return false
+			return false, unavailable(err)
 		}
 		fresh, gerr := s.svc.FreshPasskeyIn(ctx, pk.OrgID, pk.ID)
 		if gerr != nil {
-			return false
+			return false, gerr
 		}
 		if (cred.Authenticator.SignCount != 0 || fresh.SignCount != 0) && fresh.SignCount >= cred.Authenticator.SignCount {
 			*pk = *fresh
-			return true
+			return true, nil
 		}
 		*pk = *fresh
 	}
-	return false
+	return false, fmt.Errorf("%w: the passkey keeps changing", service.ErrUnavailable)
+}
+
+// unavailable turns a store error that says the write cannot be made now, or may not have been, into service.ErrUnavailable
+// (try again); any other error (and nil) is returned as it is.
+func unavailable(err error) error {
+	if errors.Is(err, store.ErrNotWritable) || errors.Is(err, store.ErrUnconfirmed) {
+		return fmt.Errorf("%w: %v", service.ErrUnavailable, err)
+	}
+	return err
 }

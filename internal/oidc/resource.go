@@ -584,11 +584,12 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {
-			if err := p.revokeGrant(ctx, cl.GID); err != nil {
-				writeOAuthError(w, serverError(err)) // RFC 7009 §2.2.1: the client retries; nothing is audited as done
+			// RFC 7009 §2.2.1: the client retries; nothing is audited as done (a revocation of unknown outcome, as such)
+			if err := p.auditedClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
+				func() error { return p.revokeGrant(ctx, cl.GID) }); err != nil {
+				writeOAuthError(w, serverError(err))
 				return
 			}
-			p.auditClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"})
 		}
 	default:
 		g, ok, err := p.readRefresh(ctx, ce.c, tok)
@@ -597,16 +598,15 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok {
-			if err := p.revokeGrant(ctx, g.ID); err != nil {
-				writeOAuthError(w, serverError(err))
-				return
-			}
 			target := g.UserID
 			if u, err := p.user(ctx, g.UserID); err == nil {
 				target = u.Username
 			}
-			p.auditClient(ctx, ce.c, target, "oauth.revoke", map[string]string{"grant": g.ID, "user_id": g.UserID,
-				"token": "refresh"})
+			if err := p.auditedClient(ctx, ce.c, target, "oauth.revoke", map[string]string{"grant": g.ID, "user_id": g.UserID,
+				"token": "refresh"}, func() error { return p.revokeGrant(ctx, g.ID) }); err != nil {
+				writeOAuthError(w, serverError(err))
+				return
+			}
 		}
 	}
 	// 200 for a token that was revoked here, and for one there was nothing to revoke for (unknown, expired, another

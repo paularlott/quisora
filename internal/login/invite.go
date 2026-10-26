@@ -17,6 +17,10 @@ import (
 // authorised by the link token (purpose "invite"). The link works until the account change commits
 // (service.UseSignInLink): a failure before that leaves it usable for another try; the commit uses it up.
 
+// msgInviteUnknown answers an acceptance the cluster did not confirm: it may have been made.
+const msgInviteUnknown = "The server lost contact with its cluster before it answered, so your invitation may have been accepted. " +
+	"Try signing in with the password or passkey you chose; if that does not work, ask an administrator for a new invitation."
+
 const msgBadInvite = "This invitation is invalid, has already been used or has expired."
 
 // inviteContext loads a live invitation: its user, org and the sign-in methods the org offers.
@@ -155,7 +159,11 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 				_ = m.s.Svc.Passkeys.Delete(ctx, pk.ID)
 			}
 			writeErr(w, http.StatusGone, msgBadInvite, "")
-		} else { // (a commit not known to have failed may be in effect: its passkey stays; the sweep tidies orphans)
+		} else if errors.Is(err, service.ErrOutcomeUnknown) {
+			// (the commit may be in effect: its passkey stays; the sweep tidies orphans.) The invitation is used up if it
+			// is, and trying it again would only say it is invalid: say what to do instead.
+			writeErr(w, http.StatusServiceUnavailable, msgInviteUnknown, "")
+		} else {
 			web.WriteError(w, err)
 		}
 		return

@@ -38,20 +38,20 @@ func TestRecoveryCodes(t *testing.T) {
 	// typed loosely: lower case, no dashes, O for 0 and I or L for 1
 	loose := strings.ToLower(strings.ReplaceAll(codes[0], "-", " "))
 	loose = strings.NewReplacer("0", "o", "1", "l").Replace(loose)
-	if ok, left := e.svc.ConsumeRecoveryCode(e.ctx, u, loose); !ok || left != 9 {
+	if ok, left, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, loose); !ok || left != 9 {
 		t.Fatalf("first use: %v %d", ok, left)
 	}
-	if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, codes[0]); ok {
+	if ok, _, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, codes[0]); ok {
 		t.Fatal("a code worked twice")
 	}
 	for _, bad := range []string{"", "nonsense", codes[1][:18], codes[1] + "X", "AAAA-AAAA-AAAA-AAAA"} {
-		if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, bad); ok {
+		if ok, _, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, bad); ok {
 			t.Errorf("%q accepted", bad)
 		}
 	}
 	other := e.user(acme.ID, "bob", model.RoleUser)
 	other.RecoveryCodes = u.RecoveryCodes // another user's codes (hashes salted with the user id) do not match
-	if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, other, codes[1]); ok {
+	if ok, _, _ := e.svc.ConsumeRecoveryCode(e.ctx, other, codes[1]); ok {
 		t.Fatal("a code worked for another user")
 	}
 
@@ -61,10 +61,10 @@ func TestRecoveryCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ = e.svc.Users.Get(e.ctx, u.ID)
-	if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, codes[1]); ok {
+	if ok, _, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, codes[1]); ok {
 		t.Fatal("an old code worked after a new set")
 	}
-	if ok, left := e.svc.ConsumeRecoveryCode(e.ctx, u, fresh[3]); !ok || left != 9 {
+	if ok, left, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, fresh[3]); !ok || left != 9 {
 		t.Fatalf("new set: %v %d", ok, left)
 	}
 
@@ -99,7 +99,7 @@ func TestRecoveryCodes(t *testing.T) {
 	if left, created := e.svc.RecoveryCodesLeft(e.ctx, u); left != 0 || created != nil {
 		t.Fatalf("after reset: %d %v", left, created)
 	}
-	if ok, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, fresh[4]); ok {
+	if ok, _, _ := e.svc.ConsumeRecoveryCode(e.ctx, u, fresh[4]); ok {
 		t.Fatal("a code worked after the credentials were reset")
 	}
 }

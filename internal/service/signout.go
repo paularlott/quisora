@@ -34,6 +34,9 @@ type signOutCache struct {
 	server  model.SignOutCounters
 	hasSrv  bool
 	fetched time.Time // of server
+	// gen moves on with every InvalidateSignOut: a read made before it, finished after, is not stored (it may hold
+	// counters from before the change that invalidated).
+	gen uint64
 }
 
 type cachedCounters struct {
@@ -46,11 +49,14 @@ func (s *Service) InvalidateSignOut() {
 	s.signOut.mu.Lock()
 	s.signOut.orgs, s.signOut.prev = nil, nil
 	s.signOut.hasSrv = false
+	s.signOut.gen++
 	s.signOut.mu.Unlock()
 }
 
 // signOutCounters returns the organization's and the server's counters, from the cache when fresh. On a read error
-// the last values read are used if there are any: a store hiccup must not sign everyone out.
+// the last values read are used if there are any: a store hiccup must not sign everyone out. Not on a refusal of the
+// staleness gate (store.ErrNotWritable): a node that knows it cannot vouch for its copy must not go on with counters
+// an emergency sign-out may have moved.
 // signOutMaxStale bounds how long counters read before keep serving while they cannot be read again: a short store
 // blip does not fail every token check, but an emergency sign-out made meanwhile is never ignored for longer than
 // this. Past it the check fails (the caller answers 503), as the grant and session reads it goes with do.
@@ -66,6 +72,7 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 	}
 	srv, okSrv := c.server, c.hasSrv
 	srvAt := c.fetched
+	gen := c.gen
 	c.mu.Unlock()
 	if !okOrg || now.Sub(co.fetched) > signOutCacheTTL {
 		o, gerr := s.Orgs.Get(ctx, orgID)
@@ -73,12 +80,14 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 		case gerr == nil:
 			co = cachedCounters{c: o.SignOut, fetched: now}
 			c.mu.Lock()
-			if c.orgs == nil || now.Sub(c.genAt) > signOutMaxStale {
-				c.prev, c.orgs, c.genAt = c.orgs, map[string]cachedCounters{}, now
+			if c.gen == gen {
+				if c.orgs == nil || now.Sub(c.genAt) > signOutMaxStale {
+					c.prev, c.orgs, c.genAt = c.orgs, map[string]cachedCounters{}, now
+				}
+				c.orgs[orgID] = co
 			}
-			c.orgs[orgID] = co
 			c.mu.Unlock()
-		case !okOrg || now.Sub(co.fetched) > signOutMaxStale:
+		case gateRefused(gerr) || !okOrg || now.Sub(co.fetched) > signOutMaxStale:
 			return org, server, gerr
 		}
 	}
@@ -88,13 +97,20 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 		case perr == nil:
 			srv = p.ServerSignOut
 			c.mu.Lock()
-			c.server, c.hasSrv, c.fetched = srv, true, now
+			if c.gen == gen {
+				c.server, c.hasSrv, c.fetched = srv, true, now
+			}
 			c.mu.Unlock()
-		case !okSrv || now.Sub(srvAt) > signOutMaxStale:
+		case gateRefused(perr) || !okSrv || now.Sub(srvAt) > signOutMaxStale:
 			return org, server, perr
 		}
 	}
 	return co.c, srv, nil
+}
+
+// gateRefused reports whether err is the staleness gate refusing a read: the node cannot vouch for its copy.
+func gateRefused(err error) bool {
+	return errors.Is(err, store.ErrNotWritable) || errors.Is(err, ErrUnavailable)
 }
 
 // SessionStamp is the stamp for a session or refresh grant made now in orgID.
@@ -208,7 +224,6 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 		by = "command:" + cmd.name
 	}
 	ev := &model.SignOutEvent{At: time.Now().UTC(), By: by, Reason: reason, APITokens: opt.APITokens}
-	var org *model.Org
 	for attempt := 0; ; attempt++ {
 		o, err := s.Orgs.Get(ctx, orgID)
 		if err != nil {
@@ -226,13 +241,19 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 			c.APITokens++
 		}
 		err = s.Orgs.Update(ctx, o)
-		if err == nil {
-			org = o
-			break
+		if errors.Is(err, store.ErrStale) && attempt < 4 {
+			continue
 		}
-		if !errors.Is(err, store.ErrStale) || attempt == 4 {
+		action, target := "org.signout", o.Name
+		if server {
+			action, target = "server.signout", "every organization"
+		}
+		s.auditOutcome(ctx, a, err, change{o.ID, action, target, map[string]string{"reason": reason,
+			"api_tokens": strconv.FormatBool(opt.APITokens)}})
+		if err != nil {
 			return nil, mapStore(err)
 		}
+		break
 	}
 	s.InvalidateSignOut()
 	// Whoever pulled it keeps the session they did it from.
@@ -245,12 +266,6 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 			}
 		}
 	}
-	action, target, auditOrg := "org.signout", org.Name, org.ID
-	if server {
-		action, target = "server.signout", "every organization"
-	}
-	s.Audit(ctx, a, auditOrg, action, target, map[string]string{"reason": reason,
-		"api_tokens": strconv.FormatBool(opt.APITokens)})
 	return ev, nil
 }
 

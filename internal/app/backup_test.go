@@ -156,6 +156,31 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+// Running `quisora restore` again over a store an interrupted run part-filled is refused (the store is not empty) and
+// keeps the incomplete marker: removing it would make the half-restored store servable.
+func TestRestoreRerunKeepsIncompleteMarker(t *testing.T) {
+	ctx := context.Background()
+	src, data, _ := populatedBackup(t, "")
+	dst := sqliteNode(t, src.Server.MasterKey)
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// the state an interrupted run leaves: records in the store, the marker present
+	marker := filepath.Join(dst.Server.DataDir, restoreIncomplete)
+	if err := os.WriteFile(marker, []byte("quisora restore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrNotEmpty) {
+		t.Fatalf("rerun over a part-filled store: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the rerun removed the marker of the interrupted restore")
+	}
+	if err := checkRestoreIncomplete(dst); err == nil {
+		t.Fatal("a store of an interrupted restore passes the start-up check")
+	}
+}
+
 // restoreAtStart refusals: a missing file, a backup of another key (marker removed), a non-empty store (skipped).
 func TestRestoreAtStartRefusals(t *testing.T) {
 	ctx := context.Background()

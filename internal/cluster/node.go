@@ -1135,6 +1135,19 @@ func (n *Node) Quorum() int {
 // Size returns the number of nodes the cluster is made of: cluster.size at start, then as changed by Resize.
 func (n *Node) Size() int { return int(n.nodes.Load()) }
 
+// VouchesForGlobal reports whether this node may serve its copy of the global partition (organizations, signing keys):
+// always without gossip; in a gossip cluster while the partition is readable here (not trailing its owner).
+func (n *Node) VouchesForGlobal() bool {
+	return n.gc == nil || n.readable(context.Background(), globalPartition) == nil
+}
+
+// VouchesFor reports whether this node may serve its copy of the partition that holds partitionKey's records (an
+// organization's id; "" the global partition): always without gossip; in a gossip cluster while the partition is
+// readable here (not trailing its owner).
+func (n *Node) VouchesFor(partitionKey string) bool {
+	return n.gc == nil || n.readable(context.Background(), partitionNum(partitionKey)) == nil
+}
+
 // Writable reports whether admin writes and new sign-ins are allowed: standalone, or the partition protocol is ready
 // (caught up, not resynchronising), a majority of the cluster is in view and the node is not misconfigured.
 func (n *Node) Writable() bool {
@@ -1272,6 +1285,12 @@ func (n *Node) Ready() (bool, string) {
 	}
 	if m := n.partOff.Load(); m != nil {
 		return false, *m
+	}
+	// The global partition (organizations, signing keys) is needed by nearly every request: a node that cannot vouch
+	// for it (it has not heard its owner yet after starting, or trails it) serves no sign-in or token, so it takes no
+	// traffic. One partition only: another partition's trouble refuses its own records, not the node.
+	if err := n.readableWithin(context.Background(), globalPartition, 0); err != nil {
+		return false, "the global partition cannot be read here yet: " + strings.TrimPrefix(err.Error(), store.ErrNotWritable.Error()+": ")
 	}
 	return true, ""
 }

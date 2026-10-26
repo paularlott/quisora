@@ -126,7 +126,7 @@ func unavailable(err error) error {
 	if err == nil || gone(err) || errors.Is(err, service.ErrUnavailable) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", service.ErrUnavailable, err)
+	return fmt.Errorf("%w: %w", service.ErrUnavailable, err) // the cause stays visible: an unknown outcome is audited as one
 }
 
 // gone reports whether a lookup's error says the record does not exist (as opposed to the read having failed).
@@ -182,7 +182,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 				// The replay is refused either way; whether the grant could be ended is recorded as it happened.
 				rerr := p.revokeGrant(ctx, string(gid))
 				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid), "revoke_error", rerr)
-				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": strconv.FormatBool(rerr == nil)})
+				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": revokedText(rerr)})
 			}
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 		}
@@ -236,7 +236,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		if _, err := p.s.Eph.Get(ctx, nsReplayed, code); err == nil { // presented again while this one ran
 			rerr := p.revokeGrant(ctx, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
-			p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": strconv.FormatBool(rerr == nil)})
+			p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 		}
 	}
@@ -382,6 +382,18 @@ func (p *Provider) revokeGrant(ctx context.Context, id string) error {
 	return nil
 }
 
+// revokedText is how an audit event says whether a revocation (revokeGrant's error) took effect: "unknown" for a
+// deletion that may have landed.
+func revokedText(err error) string {
+	switch {
+	case err == nil:
+		return "true"
+	case errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, service.ErrOutcomeUnknown):
+		return service.OutcomeUnknown
+	}
+	return "false"
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // refresh_token
 
@@ -408,6 +420,11 @@ var errNoGrantKey = errors.New("oidc: the grant has no refresh token key")
 
 // refreshRetryGrace is how long after a rotation the token before it still gets the new one again (refresh).
 const refreshRetryGrace = 30 * time.Second
+
+// retryAfter is the Retry-After of a 503 the client should retry. It fits well inside refreshRetryGrace: a rotation
+// whose outcome was not known (it may have landed) is retried with the same token, and must find it still a retry of
+// the last rotation, not an old token presented again (reuse, which revokes the grant).
+const retryAfter = 10 * time.Second
 
 // isRefreshRetry reports whether a refresh token presented with counter is the token just before the grant g's current
 // one, moments after it was rotated, from a caller that also proved who it is (a confidential client's credentials, or
@@ -523,7 +540,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
 			rerr := p.revokeGrant(ctx, g.ID)
 			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
-			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", rerr == nil)
+			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", revokedText(rerr))
 		}
 		return nil, invalid
 	}
@@ -581,7 +598,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
 				rerr := p.revokeGrant(ctx, g.ID)
 				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
-				p.auditReuse(ctx, c, g, "an old refresh token was presented again", rerr == nil)
+				p.auditReuse(ctx, c, g, "an old refresh token was presented again", revokedText(rerr))
 			}
 			return nil, invalid
 		}
@@ -593,6 +610,12 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				break
 			}
 			if !errors.Is(err, store.ErrStale) {
+				if errors.Is(err, store.ErrUnconfirmed) {
+					// The rotation may have landed: the client retries with the same token, within refreshRetryGrace
+					// (retryAfter), and gets the new one (isRefreshRetry). Recorded as a rotation of unknown outcome.
+					_ = p.auditedClient(ctx, c, u.Username, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID},
+						func() error { return err })
+				}
 				return nil, serverError(err)
 			}
 			// The grant changed since it was read. A higher counter is another presentation of the same token (kept
@@ -613,7 +636,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			if fresh.Counter > pr.counter {
 				rerr := p.revokeGrant(ctx, g.ID)
 				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "revoke_error", rerr)
-				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once", rerr == nil)
+				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once", revokedText(rerr))
 				return nil, invalid
 			}
 			if attempt == 3 {
@@ -698,13 +721,26 @@ func (p *Provider) auditClient(ctx context.Context, c *model.Client, target, act
 	p.svc.Audit(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail)
 }
 
+// auditedClient is auditClient for a change made by client c: the event is written when write succeeds, and (with
+// outcome "unknown") when its outcome is not known; a change known not to have happened is not audited as done.
+func (p *Provider) auditedClient(ctx context.Context, c *model.Client, target, action string, detail map[string]string, write func() error) error {
+	if detail == nil {
+		detail = map[string]string{}
+	}
+	detail["client_id"] = c.ID
+	if target == "" {
+		target = c.Name
+	}
+	return p.svc.Audited(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail, write)
+}
+
 // auditReuse records a refresh token presented after it was replaced: someone kept a copy, and the grant is revoked
 // (revoked says whether that deletion persisted; a failed one is logged, and the token is refused either way).
-func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why string, revoked bool) {
+func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why, revoked string) {
 	target := g.UserID
 	if u, err := p.user(ctx, g.UserID); err == nil {
 		target = u.Username
 	}
 	p.auditClient(ctx, c, target, "oauth.refresh.reuse", map[string]string{"grant": g.ID, "user_id": g.UserID,
-		"grant_revoked": strconv.FormatBool(revoked), "reason": why})
+		"grant_revoked": revoked, "reason": why})
 }

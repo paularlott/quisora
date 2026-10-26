@@ -113,10 +113,22 @@ func (s *Store) saveState(ctx context.Context, r runner, p int, st *store.Partit
 }
 
 func (s *Store) PartitionState(ctx context.Context, p int) (store.PartitionState, error) {
-	st, err := s.readState(ctx, s.reader(), p, false)
+	r := s.reader()
+	// The marker first: an import that ends in between shows as still importing (the safe side), never the reverse.
+	rows, err := r.query(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE part = ? AND kind = ?"), p, importActive)
+	if err != nil {
+		return store.PartitionState{}, err
+	}
+	active := rows.Next()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return store.PartitionState{}, err
+	}
+	st, err := s.readState(ctx, r, p, false)
 	if st.PendingSeq <= st.Committed.Seq { // a pending write the commit has passed is not shown
 		st.Pending, st.PendingSeq = nil, 0
 	}
+	st.Importing = active
 	return st, err
 }
 

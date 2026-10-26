@@ -40,10 +40,11 @@ func (n *Node) SweepReservations(ctx context.Context, sw *ReservationSweep, batc
 	if err != nil {
 		return 0, err
 	}
-	if len(res.Records) < batch {
-		sw.after = "" // the end: the next call starts again
-	} else {
-		sw.after = res.Records[len(res.Records)-1].ID
+	// The position moves on only once the whole batch is judged: an error part-way leaves it, and the next call reads
+	// the batch again instead of skipping what was not reached.
+	next := "" // the end: the next call starts again
+	if len(res.Records) >= batch {
+		next = res.Records[len(res.Records)-1].ID
 	}
 	now := time.Now()
 	type suspect struct {
@@ -91,5 +92,6 @@ func (n *Node) SweepReservations(ctx context.Context, sw *ReservationSweep, batc
 			}
 		}
 	}
+	sw.after = next
 	return released, nil
 }

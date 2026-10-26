@@ -226,3 +226,36 @@ func TestAccountStreamReceivesOwnChanges(t *testing.T) {
 	}
 	t.Fatal("own change not delivered")
 }
+
+// A stream checks its viewer before it sends a change, not only on its timer: once the session has ended, the next change
+// ends the stream instead of being sent to it.
+func TestStreamEndsAtTheNextChangeAfterRevocation(t *testing.T) {
+	oldEvery, oldEvent := recheckEvery, eventRecheck
+	recheckEvery, eventRecheck = time.Hour, 0
+	t.Cleanup(func() { recheckEvery, eventRecheck = oldEvery, oldEvent })
+	hub := NewHub()
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
+	c, _ := env.ConsoleSession(env.Admin)
+	_, sc := openStream(t, c, env.URL+web.EventsPath+"?org=primary")
+	if !waitEvent(sc, "ready") {
+		t.Fatal("no ready")
+	}
+	waitCount(t, hub, 1)
+	sessions, _ := env.Svc.Sessions.All(context.Background(), env.Admin.ID)
+	for _, s := range sessions {
+		if err := env.Server.Sessions.Delete(context.Background(), s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub.Publish(&store.Record{Kind: model.KindUser, ID: "u-changed", Scope: env.Primary.ID})
+	for sc.Scan() {
+		switch line := sc.Text(); {
+		case line == "event: ended":
+			waitCount(t, hub, 0)
+			return
+		case strings.HasPrefix(line, "event: change"):
+			t.Fatal("a change was sent to a viewer whose session had ended")
+		}
+	}
+	t.Fatal("the stream outlived its session")
+}

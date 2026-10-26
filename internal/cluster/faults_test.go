@@ -18,6 +18,12 @@ type faultStore struct {
 	pst          store.PartitionStore
 	pendingDelay atomic.Int64 // nanoseconds every SetPartitionPending sleeps first
 	failImport   atomic.Int64 // partition+1 whose imports fail (0: none)
+	// cutAfterReset is the partition+1 whose next full import is cut short after its reset: the backend does the First
+	// step (the marker, the removal of every record) and the import then fails, as a crash or a failed call would.
+	cutAfterReset atomic.Int64
+	// what the faults did (the chaos soak reports them): full imports started, imports failed by failImport, full imports
+	// cut after their reset
+	fullImports, failedImports, cutImports atomic.Int64
 }
 
 func (f *faultStore) PartitionState(ctx context.Context, p int) (store.PartitionState, error) {
@@ -46,7 +52,20 @@ func (f *faultStore) ExportPartition(ctx context.Context, p int, afterSeq uint64
 
 func (f *faultStore) ImportPartition(ctx context.Context, p int, recs []store.PartitionRecord, upTo store.PartitionPos,
 	step store.ImportStep) error {
+	if step.Full && step.First {
+		f.fullImports.Add(1)
+	}
+	if step.Full && step.First && f.cutAfterReset.Load() == int64(p)+1 {
+		f.cutImports.Add(1)
+		cut := step
+		cut.Final = false
+		if err := f.pst.ImportPartition(ctx, p, nil, upTo, cut); err != nil {
+			return err
+		}
+		return errTestImport
+	}
 	if f.failImport.Load() == int64(p)+1 {
+		f.failedImports.Add(1)
 		return errTestImport
 	}
 	return f.pst.ImportPartition(ctx, p, recs, upTo, step)

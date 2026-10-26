@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 	"github.com/paularlott/quisora/internal/upstream"
 	ut "github.com/paularlott/quisora/internal/upstream/upstreamtest"
@@ -37,14 +38,16 @@ type env struct {
 	mu   sync.Mutex
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupOn(t, memstore.New()) }
+
+func setupOn(t *testing.T, st store.Store) *env {
 	t.Helper()
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.Server.PublicURL = "https://quisora.example.test"
 	cfg.Limits.PasswordWorkers = 2
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
-	svc := service.New(cfg, memstore.New(), sealer)
+	svc := service.New(cfg, st, sealer)
 	if _, _, err := svc.Bootstrap(ctx, "admin@example.com"); err != nil {
 		t.Fatal(err)
 	}

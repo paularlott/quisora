@@ -181,6 +181,14 @@ type Service struct {
 	// when it is false: the store would refuse them, and a node that cannot know its data is current must not
 	// replicate anything it changed on its own.
 	Writable func() bool
+	// GlobalReadable reports whether this node can vouch for its copy of the global data (signing keys,
+	// organizations); nil: always. What is cached from it (the signing keys, the published key set) is not served
+	// while it is false: a key the cluster revoked must not be published or used by a node that trails it.
+	GlobalReadable func() bool
+	// Readable reports whether this node can vouch for its copy of a partition's records (an organization's id; "" the
+	// global one); nil: always. A cached session or client is not served while it is false (a revoked session or a
+	// rotated secret must not be honoured by a node that stopped following the owner of its partition).
+	Readable func(partitionKey string) bool
 
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.

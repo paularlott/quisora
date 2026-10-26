@@ -65,24 +65,33 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool,
 	}
 	marker := filepath.Join(c.Server.DataDir, restoreIncomplete)
 	_ = os.MkdirAll(c.Server.DataDir, 0o700)
+	// A marker an earlier, interrupted run left stays until a restore completes: a run refused before it writes
+	// anything (the store is not empty, being what that run filled) must not make the half-restored store servable.
+	_, statErr := os.Stat(marker)
+	earlier := statErr == nil
+	refused := func() {
+		if !earlier {
+			_ = os.Remove(marker)
+		}
+	}
 	if err := os.WriteFile(marker, []byte("quisora restore\n"), 0o600); err != nil {
 		return nil, err
 	}
 	if force && c.Cluster.Bind != "" {
-		_ = os.Remove(marker)
+		refused()
 		return nil, errors.New("a gossip node's backup is restored into an empty database (the first node of a new cluster), " +
 			"never over data: its records would be written outside the partitions the others copy")
 	}
 	if c.Cluster.Bind != "" { // a node that already holds a data set is refused before anything is written
 		if err := cluster.CheckNewCluster(c.Server.DataDir, st); err != nil {
-			_ = os.Remove(marker)
+			refused()
 			return nil, err
 		}
 	}
 	stats, err := backup.Restore(ctx, st, sealer, r, force, password)
 	if err != nil {
 		if stats.Total() == 0 {
-			_ = os.Remove(marker) // refused before writing anything
+			refused() // refused before writing anything
 		}
 		return stats, err
 	}

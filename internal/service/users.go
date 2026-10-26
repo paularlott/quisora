@@ -460,11 +460,9 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if imported != "" {
 		detail["password"] = "imported " + imported
 	}
-	if err := s.Users.Create(ctx, u); err != nil {
-		s.auditUnknown(ctx, err, a, orgID, "user.create", u.Username, detail)
+	if err := s.audited(ctx, a, orgID, "user.create", u.Username, detail, func() error { return s.Users.Create(ctx, u) }); err != nil {
 		return nil, s.userConflict(ctx, err, u)
 	}
-	s.Audit(ctx, a, orgID, "user.create", u.Username, detail)
 	return u, nil
 }
 
@@ -587,7 +585,6 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if err := s.mayChange(ctx, a, u, in, self); err != nil {
 		return nil, err
 	}
-	before := u.Role
 	was := snapshot(u)
 	secWas := stateOf(u) // the security generation moves on below if the change touches what signs the account in
 	if in.Role != nil && *in.Role != u.Role {
@@ -608,8 +605,9 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if a == System && u.Role == model.RoleSuperAdmin && CurbsAdmin(u, in) {
 		return nil, errSparesSuperAdmins
 	}
+	roleDone := func(context.Context, *Actor, error) {}
 	if in.Role != nil {
-		u.Role = *in.Role
+		roleDone = s.applyRole(u, *in.Role)
 	}
 	statusChange := in.Active != nil && *in.Active != u.Active
 	reason := ""
@@ -626,20 +624,6 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		noteStatus(u, a, reason)
 	}
 	noteSecurity(secWas, u)
-	if err := s.Users.Update(ctx, u); err != nil {
-		s.auditUnknown(ctx, err, a, u.OrgID, "user.update", u.Username, addChanges(nil, was, u))
-		return nil, s.userConflict(ctx, err, u)
-	}
-	// From here the change is in effect (perhaps not yet confirmed by a peer): what follows from it happens anyway.
-	var sessErr error
-	if in.Active != nil && !*in.Active || in.Password != nil || in.ValidUntil != nil && !u.Enabled(time.Now()) {
-		// Disabling, an end date that has passed, or a password reset ends existing sessions and refresh grants
-		// (except the actor's own). A failure is logged and noted in the audit entry; the change itself stands.
-		sessErr = s.endUserSessions(ctx, u.ID, a)
-	}
-	if !before.Privileged() && u.Role.Privileged() {
-		s.dropEmailLinks(ctx, a, u)
-	}
 	action := "user.update"
 	if in.Password != nil {
 		action = "user.password"
@@ -654,13 +638,26 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 			detail["reason"] = reason
 		}
 	}
-	if sessErr != nil {
-		detail["sessions"] = "not all ended: " + sessErr.Error()
-	}
-	detail = addChanges(detail, was, u)
-	s.Audit(ctx, a, u.OrgID, action, u.Username, detail)
+	addChanges(detail, was, u)
+	err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
+		err := s.Users.Update(ctx, u)
+		roleDone(ctx, a, err)
+		if !landed(err) {
+			return err
+		}
+		// From here the change is in effect (perhaps not yet confirmed by a peer, or its outcome unknown): what follows
+		// from it happens anyway.
+		if in.Active != nil && !*in.Active || in.Password != nil || in.ValidUntil != nil && !u.Enabled(time.Now()) {
+			// Disabling, an end date that has passed, or a password reset ends existing sessions and refresh grants
+			// (except the actor's own). A failure is logged and noted in the audit entry; the change itself stands.
+			if sessErr := s.endUserSessions(ctx, u.ID, a); sessErr != nil {
+				detail["sessions"] = "not all ended: " + sessErr.Error()
+			}
+		}
+		return err
+	})
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, s.userConflict(ctx, err, u)
 	}
 	return u, nil
 }
@@ -774,19 +771,19 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
 	// read on a node that has not seen the user's promotion to administrator yet, so the rank rules above did not
 	// apply) is refused, instead of deleting an administrator unchecked.
-	if err := s.Users.DeleteIf(ctx, u.ID, u.Version); err != nil {
-		// Refused (a newer copy), or not confirmed by a majority: the user may still exist; a retry decides.
-		s.auditUnknown(ctx, err, a, u.OrgID, "user.delete", u.Username, nil)
+	err = s.audited(ctx, a, u.OrgID, "user.delete", u.Username, nil, func() error { return s.Users.DeleteIf(ctx, u.ID, u.Version) })
+	if !landed(err) {
+		// Refused (a newer copy), or not written: the user still exists; a retry decides.
 		return mapStore(err)
 	}
-	// The user is gone, and with it everything that was theirs: every session, grant, token, passkey or link stands on
-	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The applications are
-	// told (back-channel logout), and the users they managed get no manager. Their memberships stand on them too:
-	// every reader of a group's members leaves out those whose user is gone (memberIDs).
+	// The user is gone (or may be: an unknown outcome is followed through, as a retry of a delete that did land finds
+	// no user and would never do this), and with it everything that was theirs: every session, grant, token, passkey or
+	// link stands on its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The
+	// applications are told (back-channel logout), and the users they managed get no manager. Their memberships stand
+	// on them too: every reader of a group's members leaves out those whose user is gone (memberIDs).
 	s.sessionsEnding(ctx, u.ID, nil)
 	s.clearManagerOf(ctx, u)
-	s.Audit(ctx, a, u.OrgID, "user.delete", u.Username, nil)
-	return nil
+	return mapStore(err)
 }
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap
@@ -1038,10 +1035,8 @@ func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 		if id.Via != "email" && id.Via != "" {
 			continue
 		}
-		if err := s.Identities.Delete(ctx, id.ID); err == nil {
-			s.Audit(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
-				"reason": "promoted to " + string(u.Role)})
-		}
+		_ = s.audited(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
+			"reason": "promoted to " + string(u.Role)}, func() error { return s.Identities.Delete(ctx, id.ID) })
 	}
 }
 
@@ -1139,11 +1134,13 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 				continue
 			}
 			progress = true
-			if _, err := s.UpdateUser(ctx, System, u.ID, UserInput{Active: ptrBool(false), StatusReason: &endReached}); err != nil {
+			if err := s.audited(ctx, System, u.OrgID, "user.expire", u.Username, map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)}, func() error {
+				_, err := s.UpdateUser(ctx, System, u.ID, UserInput{Active: ptrBool(false), StatusReason: &endReached})
+				return err
+			}); err != nil {
 				stuck[u.ID] = true
 				continue
 			}
-			s.Audit(ctx, System, u.OrgID, "user.expire", u.Username, map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)})
 			n++
 		}
 		if len(due) < limit || !progress {

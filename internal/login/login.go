@@ -246,16 +246,19 @@ const unknownOrgKey = "unknown"
 
 // resolveOrg normalises an organization name once (trim + lower case) and looks it up. The returned key is the
 // canonical name for a real org and a single fixed pseudo-key otherwise; use it for rate limiting.
-func (m *Module) resolveOrg(ctx context.Context, raw string) (*model.Org, string) {
+func (m *Module) resolveOrg(ctx context.Context, raw string) (*model.Org, string, error) {
 	name := strings.ToLower(strings.TrimSpace(raw))
 	if name == "" {
-		return nil, unknownOrgKey
+		return nil, unknownOrgKey, nil
 	}
 	org, err := m.s.Svc.OrgByName(ctx, name)
-	if err != nil || org == nil {
-		return nil, unknownOrgKey
+	if err != nil && !errors.Is(err, service.ErrNotFound) && !errors.Is(err, store.ErrNotFound) {
+		return nil, unknownOrgKey, err // not "no such organization": the store cannot answer now
 	}
-	return org, strings.ToLower(org.Name)
+	if err != nil || org == nil {
+		return nil, unknownOrgKey, nil
+	}
+	return org, strings.ToLower(org.Name), nil
 }
 
 // allow counts a sign-in request for org+client IP in a one-minute window and reports whether it is within the

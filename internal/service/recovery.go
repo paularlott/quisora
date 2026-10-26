@@ -78,22 +78,22 @@ func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.Us
 		hashes[i] = recoveryHash(u.ID, normRecoveryCode(codes[i]))
 	}
 	now := time.Now().UTC()
-	for attempt := 0; ; attempt++ {
-		u.RecoveryCodes, u.RecoveryCreated = hashes, &now
-		u.BumpSecurity() // a new set of codes is a new credential: what was in flight under the old one ends
-		err := s.Users.Update(ctx, u)
-		if err == nil {
-			break
+	err = s.audited(ctx, a, u.OrgID, "account.recovery_codes.create", u.Username, map[string]string{"codes": itoa(RecoveryCodeCount)}, func() error {
+		for attempt := 0; ; attempt++ {
+			u.RecoveryCodes, u.RecoveryCreated = hashes, &now
+			u.BumpSecurity() // a new set of codes is a new credential: what was in flight under the old one ends
+			err := s.Users.Update(ctx, u)
+			if !errors.Is(err, store.ErrStale) || attempt == 4 {
+				return err
+			}
+			if u, err = s.Users.Get(ctx, u.ID); err != nil {
+				return err
+			}
 		}
-		if !errors.Is(err, store.ErrStale) || attempt == 4 {
-			s.auditUnknown(ctx, err, a, u.OrgID, "account.recovery_codes.create", u.Username, map[string]string{"codes": itoa(RecoveryCodeCount)})
-			return nil, mapStore(err)
-		}
-		if u, err = s.Users.Get(ctx, u.ID); err != nil {
-			return nil, mapStore(err)
-		}
+	})
+	if err != nil {
+		return nil, mapStore(err)
 	}
-	s.Audit(ctx, a, u.OrgID, "account.recovery_codes.create", u.Username, map[string]string{"codes": itoa(RecoveryCodeCount)})
 	return codes, nil
 }
 
@@ -139,17 +139,19 @@ func (s *Service) RecoveryCodesLeft(ctx context.Context, u *model.User) (int, *t
 }
 
 // ConsumeRecoveryCode uses one of u's recovery codes: true when code is one of them, unused until now. It is then
-// used up on every node (a compare-and-swap on the sign-in record). left is how many remain.
-func (s *Service) ConsumeRecoveryCode(ctx context.Context, u *model.User, code string) (ok bool, left int) {
+// used up on every node (a compare-and-swap on the sign-in record). left is how many remain. When the use cannot be
+// recorded the code is refused with an error (ErrUnavailable; ErrOutcomeUnknown when it may have been recorded: the
+// code is used up then): not a wrong code, which is no error.
+func (s *Service) ConsumeRecoveryCode(ctx context.Context, u *model.User, code string) (ok bool, left int, err error) {
 	norm := normRecoveryCode(code)
 	if norm == "" || len(u.RecoveryCodes) == 0 {
-		return false, 0
+		return false, 0, nil
 	}
 	h := recoveryHash(u.ID, norm)
 	if !slices.Contains(u.RecoveryCodes, h) {
-		return false, 0
+		return false, 0, nil
 	}
-	err := s.updateSignIn(ctx, u, func(si *model.SignIn) bool {
+	err = s.updateSignIn(ctx, u, func(si *model.SignIn) bool {
 		if slices.Contains(si.RecoveryUsed, h) {
 			ok = false
 			return false
@@ -162,7 +164,7 @@ func (s *Service) ConsumeRecoveryCode(ctx context.Context, u *model.User, code s
 	})
 	if err != nil {
 		s.Log.WithError(err).Warn("could not record a recovery code: code refused", "user", u.ID)
-		return false, 0
+		return false, 0, mapStore(err)
 	}
-	return ok, left
+	return ok, left, nil
 }

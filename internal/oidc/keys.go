@@ -79,14 +79,21 @@ type keySet struct {
 	byKID  map[string]*keyEntry
 	list   []*keyEntry // sorted by NotBefore ascending
 	loaded time.Time
+	// unopened counts the keys whose private part this node cannot open (another master key sealed it): they are
+	// published and verify tokens (the public key is stored in clear) but never sign, and while any exists no new key
+	// is made (it would be sealed with this node's master key, and replicated to the nodes that hold the right one).
+	unopened int
 }
+
+// errMasterKey is the answer to making a signing key while stored keys cannot be opened.
+var errMasterKey = errors.New("oidc: stored signing keys cannot be opened with this node's master key (master key mismatch); no signing key is made")
 
 // signer picks the key that should sign now for alg: the most recently activated key that is within its signing
 // window; failing that (housekeeping late) the newest key that has activated at all.
 func (ks *keySet) signer(alg string, now time.Time) *keyEntry {
 	var best, fallback *keyEntry
 	for _, k := range ks.list {
-		if k.alg != alg || k.rec.NotBefore.After(now) {
+		if k.alg != alg || k.priv == nil || k.rec.NotBefore.After(now) {
 			continue
 		}
 		fallback = k
@@ -112,7 +119,17 @@ func (p *Provider) loadKeys(ctx context.Context) (*keySet, error) {
 		}
 		der, err := p.svc.Sealer.OpenFor(service.SigningKeyBinding(r.ID), r.PrivateKey)
 		if err != nil {
-			p.log.Warn("oidc: cannot open signing key", "kid", r.ID, "error", err)
+			// Not ours to sign with, but still published and verified: the public key is stored in clear, and the
+			// nodes that can open it sign with it.
+			e := publicOnly(r)
+			if e == nil { // no public key to publish either: nobody can use the record
+				p.log.Warn("oidc: cannot open signing key", "kid", r.ID, "error", err)
+				continue
+			}
+			p.log.Error("oidc: cannot open signing key: master key mismatch", "kid", r.ID, "error", err)
+			ks.byKID[r.ID] = e
+			ks.list = append(ks.list, e)
+			ks.unopened++
 			continue
 		}
 		priv, pub, alg, err := parsePrivate(der)
@@ -137,8 +154,42 @@ func (p *Provider) loadKeys(ctx context.Context) (*keySet, error) {
 	return ks, nil
 }
 
+// publicOnly is the entry of a key whose private part cannot be opened: it verifies and is published, never signs.
+func publicOnly(r *model.SigningKey) *keyEntry {
+	var j JWK
+	if json.Unmarshal(r.PublicJWK, &j) != nil {
+		return nil
+	}
+	pub, err := j.PublicKey()
+	if err != nil {
+		return nil
+	}
+	return &keyEntry{rec: r, kid: r.ID, alg: r.Alg, pub: pub, jwk: r.PublicJWK}
+}
+
+// canMint reports whether a signing key may be made from ks: not while stored keys exist that this node cannot open.
+func (p *Provider) canMint(ks *keySet) error {
+	if ks.unopened > 0 {
+		p.log.Error("oidc: not making a signing key: stored keys cannot be opened with this node's master key", "unopened", ks.unopened)
+		return errMasterKey
+	}
+	return nil
+}
+
+// vouched refuses (store.ErrNotWritable) while this node cannot vouch for the signing keys (service GlobalReadable):
+// nothing cached is served then, whatever its age.
+func (p *Provider) vouched() error {
+	if f := p.svc.GlobalReadable; f != nil && !f() {
+		return fmt.Errorf("%w: this node trails the cluster's signing keys", store.ErrNotWritable)
+	}
+	return nil
+}
+
 // keys returns the cached key set, reloading it when stale.
 func (p *Provider) keys(ctx context.Context) (*keySet, error) {
+	if err := p.vouched(); err != nil {
+		return nil, err
+	}
 	if ks := p.keySet.Load(); ks != nil && time.Since(ks.loaded) < p.keyMaxAge() {
 		return ks, nil
 	}
@@ -151,22 +202,49 @@ func (p *Provider) reloadKeys(ctx context.Context, force bool) (*keySet, error) 
 	if ks := p.keySet.Load(); ks != nil && !force && time.Since(ks.loaded) < p.keyMaxAge() {
 		return ks, nil
 	}
-	ks, err := p.loadKeys(ctx)
-	if err != nil {
-		// The keys last loaded stand in while the store cannot be read, but not when this node cannot vouch for them
-		// (it trails the cluster: a key may have been revoked since): it answers unavailable rather than publish them.
-		if old := p.keySet.Load(); old != nil && !errors.Is(err, store.ErrNotWritable) {
-			return old, nil
+	for {
+		gen := p.generation()
+		ks, err := p.loadKeys(ctx)
+		if err != nil {
+			// The keys last loaded stand in while the store cannot be read, but not when this node cannot vouch for them
+			// (it trails the cluster: a key may have been revoked since): it answers unavailable rather than publish them.
+			if old := p.keySet.Load(); old != nil && !errors.Is(err, store.ErrNotWritable) {
+				return old, nil
+			}
+			return nil, err
 		}
-		return nil, err
+		if p.install(ks, gen) {
+			return ks, nil
+		}
+		// A key changed while the store was read (Invalidate): what was read may predate the change (a removed key
+		// would be published again), so it is read again.
+	}
+}
+
+// generation is the key set's generation: take it before reading the store, and install the result with it.
+func (p *Provider) generation() uint64 {
+	p.genMu.Lock()
+	defer p.genMu.Unlock()
+	return p.keyGen
+}
+
+// install caches ks, a key set read after generation gen was taken, unless Invalidate ran since: it says whether it did.
+func (p *Provider) install(ks *keySet, gen uint64) bool {
+	p.genMu.Lock()
+	defer p.genMu.Unlock()
+	if p.keyGen != gen {
+		return false
 	}
 	p.keySet.Store(ks)
-	return ks, nil
+	return true
 }
 
 // Invalidate drops the cached signing keys (called by the cluster layer when a key record changes).
 func (p *Provider) Invalidate() {
+	p.genMu.Lock()
+	p.keyGen++
 	p.keySet.Store(nil)
+	p.genMu.Unlock()
 	p.verified.clear()
 }
 
@@ -184,14 +262,17 @@ func (p *Provider) signingKey(ctx context.Context, alg string) (*keyEntry, error
 		return nil, fmt.Errorf("oidc: unsupported signing algorithm %q", alg)
 	}
 	p.keyMu.Lock()
+	gen := p.generation()
 	ks, err = p.loadKeys(ctx) // another node or request may have created it meanwhile
 	if err == nil {
-		p.keySet.Store(ks)
+		p.install(ks, gen)
 		if k := ks.signer(alg, time.Now()); k != nil {
 			p.keyMu.Unlock()
 			return k, nil
 		}
-		_, err = p.createKey(ctx, alg, time.Now())
+		if err = p.canMint(ks); err == nil {
+			_, err = p.createKey(ctx, alg, time.Now())
+		}
 	}
 	p.keyMu.Unlock()
 	if err != nil {
@@ -271,16 +352,16 @@ func (p *Provider) createKey(ctx context.Context, alg string, notBefore time.Tim
 	}
 	k := &model.SigningKey{Meta: model.Meta{ID: id}, Alg: alg, PrivateKey: p.svc.Sealer.SealFor(service.SigningKeyBinding(id), der), PublicJWK: jb,
 		NotBefore: notBefore.UTC(), RetireAt: retire.UTC(), Expires: retire.Add(p.maxTokenTTL() + 5*time.Minute).UTC()}
-	if err := p.svc.Keys.Create(ctx, k); err != nil {
-		return nil, err
-	}
-	p.log.Info("oidc: signing key created", "kid", id, "alg", alg, "not_before", k.NotBefore)
 	org := model.PrimaryOrgID
 	if o, err := p.svc.PrimaryOrg(ctx); err == nil {
 		org = o.ID
 	}
-	p.svc.Audit(ctx, service.System, org, "keys.create", id, map[string]string{"alg": alg,
-		"not_before": k.NotBefore.Format(time.RFC3339), "retire_at": k.RetireAt.Format(time.RFC3339)})
+	if err := p.svc.Audited(ctx, service.System, org, "keys.create", id, map[string]string{"alg": alg,
+		"not_before": k.NotBefore.Format(time.RFC3339), "retire_at": k.RetireAt.Format(time.RFC3339)},
+		func() error { return p.svc.Keys.Create(ctx, k) }); err != nil {
+		return nil, err
+	}
+	p.log.Info("oidc: signing key created", "kid", id, "alg", alg, "not_before", k.NotBefore)
 	return k, nil
 }
 
@@ -300,6 +381,7 @@ func (p *Provider) RotateKeys(ctx context.Context) error { return p.rotate(ctx, 
 func (p *Provider) rotate(ctx context.Context, force bool) error {
 	p.keyMu.Lock()
 	defer p.keyMu.Unlock()
+	gen := p.generation()
 	ks, err := p.loadKeys(ctx)
 	if err != nil {
 		return err
@@ -319,13 +401,17 @@ func (p *Provider) rotate(ctx context.Context, force bool) error {
 				newest = k
 			}
 		}
+		var notBefore time.Time
 		switch {
 		case newest == nil, force:
-			_, err = p.createKey(ctx, alg, now)
+			notBefore = now
 		case p.rotation() > 0 && !now.Before(newest.rec.NotBefore.Add(p.rotation()-keyOverlap)):
-			_, err = p.createKey(ctx, alg, now.Add(keyOverlap))
+			notBefore = now.Add(keyOverlap)
 		default:
 			continue
+		}
+		if err = p.canMint(ks); err == nil {
+			_, err = p.createKey(ctx, alg, notBefore)
 		}
 		if err != nil {
 			return err
@@ -337,7 +423,7 @@ func (p *Provider) rotate(ctx context.Context, force bool) error {
 			return err
 		}
 	}
-	p.keySet.Store(ks)
+	p.install(ks, gen)
 	return nil
 }
 
@@ -365,14 +451,18 @@ func (p *Provider) RemoveKey(ctx context.Context, id string) error {
 	if err := p.svc.Keys.Delete(ctx, id); err != nil {
 		return err
 	}
+	gen := p.generation()
 	if ks, err = p.loadKeys(ctx); err == nil {
-		p.keySet.Store(ks)
+		p.install(ks, gen)
 	}
 	return nil
 }
 
 // jwksJSON returns the published key set: every unexpired key (including ones that have not started signing).
 func (p *Provider) jwksJSON(ctx context.Context) ([]byte, error) {
+	if err := p.vouched(); err != nil {
+		return nil, err
+	}
 	if c := p.jwksCache.Load(); c != nil && time.Since(c.at) < 30*time.Second && c.loaded == p.keySet.Load() {
 		return c.body, nil
 	}

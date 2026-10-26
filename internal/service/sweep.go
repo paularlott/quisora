@@ -106,10 +106,11 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	if err != nil {
 		return 0, mapStore(err)
 	}
-	if len(res.Records) < batch {
-		sw.kind, sw.after = (sw.kind+1)%len(sweepKinds), ""
-	} else {
-		sw.after = res.Records[len(res.Records)-1].ID
+	// The position moves on only once the whole batch is judged: an error part-way leaves it, and the next run reads
+	// the batch again (what was removed is gone from it) instead of skipping what was not reached.
+	nextKind, nextAfter := (sw.kind+1)%len(sweepKinds), ""
+	if len(res.Records) >= batch {
+		nextKind, nextAfter = sw.kind, res.Records[len(res.Records)-1].ID
 	}
 	now := time.Now()
 	removed := 0
@@ -142,6 +143,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			removed++
 			continue
 		}
+		orphan := false
 		for _, o := range owners(e) {
 			if known[o] {
 				continue
@@ -159,10 +161,40 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 			}
 			s.Log.Info("removed a record whose owner is gone", "kind", kind, "id", e.GetMeta().ID, "owner", string(o.kind)+" "+o.id)
 			removed++
+			orphan = true
 			break
 		}
+		if u, ok := e.(*model.User); ok && !orphan {
+			if err := s.clearDanglingManager(ctx, u, known); err != nil {
+				return removed, err
+			}
+		}
 	}
+	sw.kind, sw.after = nextKind, nextAfter
 	return removed, nil
+}
+
+// clearDanglingManager gives u no manager when the manager is gone: the deletion of a user clears the manager of their
+// reports as a follow-up (clearManagerOf) that an interruption can leave undone, and nothing else would.
+func (s *Service) clearDanglingManager(ctx context.Context, u *model.User, known map[ownerRef]bool) error {
+	m := ownerRef{model.KindUser, u.Work.ManagerID}
+	if m.id == "" || known[m] {
+		return nil
+	}
+	gone, err := s.ownerGone(ctx, m, u.Index().Partition)
+	if err != nil {
+		return err
+	}
+	if !gone {
+		known[m] = true
+		return nil
+	}
+	u.Work.ManagerID = ""
+	err = s.Users.Update(ctx, u)
+	if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) {
+		return nil // changed meanwhile: the next pass looks again
+	}
+	return mapStore(err)
 }
 
 // passedEpochs returns the ids of the credentials, sessions and refresh grants among ents made in an epoch their

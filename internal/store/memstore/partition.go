@@ -31,7 +31,7 @@ func (s *Store) part(p int) *partState {
 
 // view is the state as PartitionState reports it: a pending write the commit has passed is not shown.
 func (st *partState) view() store.PartitionState {
-	out := store.PartitionState{Promised: st.promised, Committed: st.committed, Purged: st.purged}
+	out := store.PartitionState{Promised: st.promised, Committed: st.committed, Purged: st.purged, Importing: st.importing}
 	if st.pending != nil && st.pendingSeq > st.committed.Seq {
 		out.Pending, out.PendingSeq = bytes.Clone(st.pending), st.pendingSeq
 	}

@@ -159,13 +159,10 @@ func (s *Service) RegisterClient(ctx context.Context, in RegistrationInput) (*mo
 		return nil, ErrLimit
 	}
 	c.ID = model.DynamicClientPrefix + secure.RandomToken(16)
-	if err := s.Clients.Create(ctx, c); err != nil {
-		s.auditUnknown(ctx, err, System, "", "client.self_register", c.Name, map[string]string{"client_id": c.ID,
-			"redirect_uris": strings.Join(c.RedirectURIs, " ")})
+	if err := s.audited(ctx, System, "", "client.self_register", c.Name, map[string]string{"client_id": c.ID,
+		"redirect_uris": strings.Join(c.RedirectURIs, " ")}, func() error { return s.Clients.Create(ctx, c) }); err != nil {
 		return nil, mapStore(err)
 	}
-	s.Audit(ctx, System, "", "client.self_register", c.Name, map[string]string{"client_id": c.ID,
-		"redirect_uris": strings.Join(c.RedirectURIs, " ")})
 	return c, nil
 }
 
@@ -224,10 +221,8 @@ func (s *Service) NoteSelfRegisteredUse(ctx context.Context, app *model.Client, 
 		nc := *app
 		nc.OrgID, nc.TenantID, nc.Resources = "", "", nil
 		nc.UsedIn, nc.LastUsed = []string{t.ID}, time.Now().UTC()
-		if err := s.Clients.Create(ctx, &nc); err == nil {
-			s.Audit(ctx, System, t.OrgID, "client.self_register", nc.Name, map[string]string{"client_id": nc.ID,
-				"metadata": "document", "tenant": t.Name})
-		}
+		_ = s.audited(ctx, System, t.OrgID, "client.self_register", nc.Name, map[string]string{"client_id": nc.ID,
+			"metadata": "document", "tenant": t.Name}, func() error { return s.Clients.Create(ctx, &nc) })
 		return
 	}
 	if err != nil || !c.SelfRegistered {
@@ -335,12 +330,6 @@ func (s *Service) RevokeSelfRegisteredApp(ctx context.Context, a *Actor, tenantI
 		}
 	}
 	c.UsedIn = slices.DeleteFunc(c.UsedIn, func(id string) bool { return id == t.ID })
-	if err := s.Clients.Update(ctx, c); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ID,
-			"tenant": t.Name, "users": itoa(len(users))})
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, t.OrgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ID,
-		"tenant": t.Name, "users": itoa(len(users))})
-	return nil
+	return mapStore(s.audited(ctx, a, t.OrgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ID,
+		"tenant": t.Name, "users": itoa(len(users))}, func() error { return s.Clients.Update(ctx, c) }))
 }

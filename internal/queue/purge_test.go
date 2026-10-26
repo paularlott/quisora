@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,18 +121,33 @@ func TestPurgeLostKeepsOpenableAndForeignItems(t *testing.T) {
 	}
 }
 
-// The daily sweep subtracts what it removed: a place an add has taken but not yet written to disk stays taken.
+// The daily sweep never undercounts adds in flight: it recounts only once none is between taking its place and
+// writing its file, so every place taken has its file.
 func TestPurgeLostKeepsPlacesOfAddsInFlight(t *testing.T) {
-	q := idle(t.TempDir(), Options[string]{Sealer: sealer(t, secure.RandomBytes(32)), Max: 1})
-	q.queued.Add(1) // an add between taking its place and writing its file
-	q.inflight.Add(1)
-	if _, err := q.PurgeLost(time.Now()); err != nil {
-		t.Fatal(err)
+	q := idle(t.TempDir(), Options[string]{Sealer: sealer(t, secure.RandomBytes(32)), Max: 8})
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() { // the daily sweep, run as often as possible while adds come in
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = q.PurgeLost(time.Now())
+			}
+		}
+	}()
+	var adds sync.WaitGroup
+	for range 64 {
+		adds.Add(1)
+		go func() { defer adds.Done(); _ = q.Add("x", 0, 0) }()
 	}
-	if q.Queued() != 1 {
-		t.Fatalf("queued %d after the sweep, want the add in flight's 1", q.Queued())
-	}
-	if err := q.Add("x", 0, 0); err != ErrFull {
-		t.Fatalf("a second add while the first holds the only place: %v", err)
+	adds.Wait()
+	close(stop)
+	wg.Wait()
+	if names, err := q.files(); err != nil || len(names) > 8 || q.Queued() != len(names) {
+		t.Fatalf("Max 8: %d on disk, %d counted (%v)", len(names), q.Queued(), err)
 	}
 }

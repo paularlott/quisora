@@ -177,11 +177,10 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if t.Stamp, err = s.apiTokenStamp(ctx, a.OrgID); err != nil {
 		return nil, "", mapStore(err)
 	}
-	if err := s.APITokens.Create(ctx, t); err != nil {
-		s.auditUnknown(ctx, err, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")})
+	if err := s.audited(ctx, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")},
+		func() error { return s.APITokens.Create(ctx, t) }); err != nil {
 		return nil, "", mapStore(err)
 	}
-	s.Audit(ctx, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")})
 	return t, plain, nil
 }
 
@@ -209,14 +208,14 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 		secret := secure.RandomToken(32)
 		t.SecretHash = secure.HashSecret(secret)
 		t.LastUsed = time.Time{} // the new secret has not been used
-		if err := s.APITokens.Update(ctx, t); err != nil {
-			if errors.Is(err, store.ErrStale) && attempt < 3 {
-				continue
-			}
-			s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
+		err = s.APITokens.Update(ctx, t)
+		if errors.Is(err, store.ErrStale) && attempt < 3 {
+			continue
+		}
+		s.auditOutcome(ctx, a, err, change{t.OrgID, "apitoken.regenerate", t.Name, nil})
+		if err != nil {
 			return nil, "", mapStore(err)
 		}
-		s.Audit(ctx, a, t.OrgID, "apitoken.regenerate", t.Name, nil)
 		return t, apiTokenPrefix + t.ID + "_" + secret, nil
 	}
 }
@@ -353,11 +352,9 @@ func (s *Service) UpdateAPIToken(ctx context.Context, a *Actor, id string, in AP
 	if t.AppScopes, err = s.tokenAppScopes(ctx, a, t.Scopes, t.Audience, appScopes); err != nil {
 		return nil, err
 	}
-	if err := s.APITokens.Update(ctx, t); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.update", t.Name, nil)
+	if err := s.audited(ctx, a, t.OrgID, "apitoken.update", t.Name, nil, func() error { return s.APITokens.Update(ctx, t) }); err != nil {
 		return nil, mapStore(err)
 	}
-	s.Audit(ctx, a, t.OrgID, "apitoken.update", t.Name, nil)
 	return t, nil
 }
 
@@ -400,12 +397,7 @@ func (s *Service) DeleteAPIToken(ctx context.Context, a *Actor, id string) error
 	if t.UserID != a.UserID {
 		detail = map[string]string{"owner": t.UserID}
 	}
-	if err := s.APITokens.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, t.OrgID, "apitoken.delete", t.Name, detail)
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, t.OrgID, "apitoken.delete", t.Name, detail)
-	return nil
+	return mapStore(s.audited(ctx, a, t.OrgID, "apitoken.delete", t.Name, detail, func() error { return s.APITokens.Delete(ctx, id) }))
 }
 
 // IsAPIToken reports whether a bearer value looks like a personal API token.

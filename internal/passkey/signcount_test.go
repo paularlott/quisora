@@ -10,6 +10,7 @@ import (
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
+	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -163,5 +164,76 @@ func TestSignCountRaceWithoutACloneSignal(t *testing.T) {
 				t.Fatalf("passkey: %+v", list[0])
 			}
 		})
+	}
+}
+
+// failingPasskeyWrites fails every write of a passkey with err while err is set.
+type failingPasskeyWrites struct {
+	store.Store
+	err error
+}
+
+func (f *failingPasskeyWrites) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if rec.Kind == model.KindPasskey && f.err != nil {
+		return f.err
+	}
+	return f.Store.CompareAndPut(ctx, rec, expect)
+}
+
+// A sign-in whose new sign count cannot be stored does not go on (the next use of a copy would be compared with an old
+// count): the user is asked to try again.
+func TestSignInFailsWhenTheCounterCannotBeStored(t *testing.T) {
+	e := setup(t)
+	e.register(t, "Key")
+	f := &failingPasskeyWrites{Store: e.svc.Passkeys.S, err: store.ErrUnconfirmed}
+	e.svc.Passkeys.S = f
+	id, opts := e.options(t, nil)
+	a, _, _ := e.auth.Get(opts)
+	res, err := e.pk.FinishLoginAs(e.ctx, id, a)
+	if !errors.Is(err, service.ErrUnavailable) || res != nil {
+		t.Fatalf("a sign-in whose counter was not stored: %v %v", res, err)
+	}
+	f.err = nil
+	id, opts = e.options(t, nil)
+	a, _, _ = e.auth.Get(opts)
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
+		t.Fatalf("the sign-in once the store answers: %v", err)
+	}
+}
+
+// A detected clone that cannot be disabled is not reported as disabled: the sign-in fails as unavailable (try again,
+// which detects it again) and the passkey is disabled once the write can be made.
+func TestCloneThatCannotBeDisabledIsNotReportedAsDisabled(t *testing.T) {
+	e := setup(t)
+	c := e.register(t, "Key")
+	for range 3 {
+		id, opts := e.options(t, nil)
+		a, _, _ := e.auth.Get(opts)
+		if _, err := e.pk.FinishLoginAs(e.ctx, id, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &failingPasskeyWrites{Store: e.svc.Passkeys.S, err: store.ErrNotWritable}
+	e.svc.Passkeys.S = f
+	id, opts := e.options(t, nil)
+	stale, err := e.auth.GetWith(opts, c, 2, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.pk.FinishLoginAs(e.ctx, id, stale)
+	if !errors.Is(err, service.ErrUnavailable) || errors.Is(err, passkey.ErrCloneDetected) || res != nil {
+		t.Fatalf("a clone that could not be disabled: %v %v", res, err)
+	}
+	f.err = nil
+	if list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID); list[0].Disabled {
+		t.Fatal("the passkey was disabled although its write failed")
+	}
+	id, opts = e.options(t, nil)
+	stale, _ = e.auth.GetWith(opts, c, 2, origin)
+	if _, err := e.pk.FinishLoginAs(e.ctx, id, stale); !errors.Is(err, passkey.ErrCloneDetected) {
+		t.Fatalf("the retry: %v", err)
+	}
+	if list, _ := e.svc.Passkeys.All(e.ctx, e.user.ID); !list[0].Disabled {
+		t.Fatal("the passkey stays enabled")
 	}
 }

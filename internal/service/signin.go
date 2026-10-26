@@ -96,13 +96,14 @@ func (s *Service) TouchLogin(ctx context.Context, u *model.User) {
 // ConsumeTOTP verifies a TOTP code and records its time step on the user's sign-in record with a compare-and-swap
 // — cluster-wide in a gossip cluster, confirmed by a majority — before it says yes: a code is accepted once, on
 // whichever node, and two nodes presented the same code at once accept it at most once. It fails closed: when the
-// step cannot be recorded the code is refused.
-func (s *Service) ConsumeTOTP(ctx context.Context, u *model.User, secret, code string) bool {
+// step cannot be recorded the code is refused, with an error saying so (ErrUnavailable; ErrOutcomeUnknown when the step
+// may have been recorded: the code is used up then): not a wrong code, which is no error.
+func (s *Service) ConsumeTOTP(ctx context.Context, u *model.User, secret, code string) (bool, error) {
 	return s.ConsumeTOTPAt(ctx, u, secret, code, time.Now())
 }
 
 // ConsumeTOTPAt is ConsumeTOTP with the time the code is checked against.
-func (s *Service) ConsumeTOTPAt(ctx context.Context, u *model.User, secret, code string, now time.Time) bool {
+func (s *Service) ConsumeTOTPAt(ctx context.Context, u *model.User, secret, code string, now time.Time) (bool, error) {
 	ok := false
 	err := s.updateSignIn(ctx, u, func(si *model.SignIn) bool {
 		step, good := secure.VerifyTOTP(secret, code, now, si.TOTPLastStep)
@@ -114,9 +115,9 @@ func (s *Service) ConsumeTOTPAt(ctx context.Context, u *model.User, secret, code
 	})
 	if err != nil {
 		s.Log.WithError(err).Warn("could not record a TOTP step: code refused", "user", u.ID)
-		return false
+		return false, mapStore(err)
 	}
-	return ok
+	return ok, nil
 }
 
 // NoteTOTPStep records that the TOTP step was used (setting up an authenticator verifies a code), so the same code

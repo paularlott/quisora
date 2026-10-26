@@ -268,11 +268,9 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 	if p.Name == "" {
 		p.Name = providerDefaultName[p.Type]
 	}
-	if err := s.Providers.Create(ctx, p); err != nil {
-		s.auditUnknown(ctx, err, a, orgID, "provider.create", p.Name, nil)
+	if err := s.audited(ctx, a, orgID, "provider.create", p.Name, nil, func() error { return s.Providers.Create(ctx, p) }); err != nil {
 		return nil, providerConflict(err)
 	}
-	s.Audit(ctx, a, orgID, "provider.create", p.Name, nil)
 	return p, nil
 }
 
@@ -291,26 +289,22 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	if model.ProviderAuthority(p) != before && (in.ClientSecret == nil || *in.ClientSecret == "") {
 		return nil, Invalid("client_secret", "enter the client secret issued by the new provider")
 	}
-	if err := s.Providers.Update(ctx, p); err != nil {
-		s.auditUnknown(ctx, err, a, p.OrgID, "provider.update", p.Name, addChanges(nil, was, p))
-		return nil, providerConflict(err)
-	}
-	detail := addChanges(nil, was, p)
+	detail := addChanges(map[string]string{}, was, p)
 	if in.ClientSecret != nil && *in.ClientSecret != "" {
-		if detail == nil {
-			detail = map[string]string{}
-		}
 		detail["client_secret"] = "replaced" // never the value, sealed or not
 	}
-	if model.ProviderAuthority(p) != before {
-		// Another type, issuer or directory: its subjects name other people now. Every link goes.
-		n := s.purgeIdentities(ctx, p.ID)
-		if detail == nil {
-			detail = map[string]string{}
+	if err := s.audited(ctx, a, p.OrgID, "provider.update", p.Name, detail, func() error {
+		if err := s.Providers.Update(ctx, p); err != nil {
+			return err
 		}
-		detail["identities_unlinked"] = itoa(n)
+		if model.ProviderAuthority(p) != before {
+			// Another type, issuer or directory: its subjects name other people now. Every link goes.
+			detail["identities_unlinked"] = itoa(s.purgeIdentities(ctx, p.ID))
+		}
+		return nil
+	}); err != nil {
+		return nil, providerConflict(err)
 	}
-	s.Audit(ctx, a, p.OrgID, "provider.update", p.Name, detail)
 	return p, nil
 }
 
@@ -320,12 +314,7 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 		return err
 	}
 	// The links to it stand on it: sign-in through a deleted provider is impossible, and the orphan sweep removes them.
-	if err := s.Providers.Delete(ctx, id); err != nil {
-		s.auditUnknown(ctx, err, a, p.OrgID, "provider.delete", p.Name, nil)
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, p.OrgID, "provider.delete", p.Name, nil)
-	return nil
+	return mapStore(s.audited(ctx, a, p.OrgID, "provider.delete", p.Name, nil, func() error { return s.Providers.Delete(ctx, id) }))
 }
 
 // purgeIdentities deletes every link to provider id and reports how many went. Sign-in also ignores links whose

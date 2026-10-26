@@ -118,13 +118,12 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 		entry = &model.GroupChange{Seq: 1, At: time.Now().UTC(), Add: members}
 		g.Pending = []model.GroupChange{*entry}
 	}
-	if err := s.Groups.Create(ctx, g); err != nil {
-		s.auditUnknown(ctx, err, a, orgID, "group.create", g.DisplayName, tagDetail(g, in))
+	err = s.Groups.Create(ctx, g)
+	s.auditOutcome(ctx, a, err, append([]change{{orgID, "group.create", g.DisplayName, tagDetail(g, in)}}, memberChanges(g, entry)...)...)
+	if err != nil {
 		return nil, s.groupConflict(ctx, err, g)
 	}
-	s.Audit(ctx, a, orgID, "group.create", g.DisplayName, tagDetail(g, in))
 	if entry != nil {
-		s.auditMembers(ctx, a, g, entry)
 		g = s.finishGroupChange(ctx, g)
 	}
 	return g, nil
@@ -163,12 +162,7 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	if err := s.clientMayAffectMembers(ctx, a, g); err != nil {
 		return err // deleting the group removes every member from it
 	}
-	if err := s.Groups.DeleteIf(ctx, id, g.Version); err != nil {
-		s.auditUnknown(ctx, err, a, g.OrgID, "group.delete", g.DisplayName, nil)
-		return mapStore(err)
-	}
-	s.Audit(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil)
-	return nil
+	return mapStore(s.audited(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil, func() error { return s.Groups.DeleteIf(ctx, id, g.Version) }))
 }
 
 // GroupMemberCount returns how many of group g's users a may see (no permission check: the caller has read g): its
@@ -414,28 +408,35 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		next.Seq = entry.Seq
 		next.Pending = append(slices.Clip(remaining), entry)
 	}
-	if err := s.Groups.Update(ctx, &next); err != nil {
-		s.auditUnknown(ctx, err, a, g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next))
+	var events []change
+	if fieldsChanged {
+		events = append(events, change{g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next)})
+	}
+	if membersChanged {
+		events = append(events, memberChanges(&next, &entry)...)
+	}
+	err = s.Groups.Update(ctx, &next)
+	s.auditOutcome(ctx, a, err, events...)
+	if err != nil {
 		return nil, s.groupConflict(ctx, err, &next)
 	}
 	// Committed. Nothing below can fail the change; a client gone away does not stop it being finished.
-	if fieldsChanged {
-		s.Audit(ctx, a, g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next))
-	}
-	if membersChanged {
-		s.auditMembers(ctx, a, &next, &entry)
-	}
 	return s.finishGroupChange(context.WithoutCancel(ctx), &next), nil
 }
 
-// auditMembers records a committed change of members.
-func (s *Service) auditMembers(ctx context.Context, a *Actor, g *model.Group, c *model.GroupChange) {
+// memberChanges are the audit events of a change of members (none for a nil change).
+func memberChanges(g *model.Group, c *model.GroupChange) []change {
+	if c == nil {
+		return nil
+	}
+	var out []change
 	for _, uid := range c.Add {
-		s.Audit(ctx, a, g.OrgID, "group.member.add", g.DisplayName, map[string]string{"user": uid})
+		out = append(out, change{g.OrgID, "group.member.add", g.DisplayName, map[string]string{"user": uid}})
 	}
 	for _, uid := range c.Remove {
-		s.Audit(ctx, a, g.OrgID, "group.member.remove", g.DisplayName, map[string]string{"user": uid})
+		out = append(out, change{g.OrgID, "group.member.remove", g.DisplayName, map[string]string{"user": uid}})
 	}
+	return out
 }
 
 // finishGroupChange materializes the pending entries of g (just committed) and removes them from its record,

@@ -10,12 +10,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 func TestKeyLifecycle(t *testing.T) {
@@ -391,4 +396,104 @@ func TestRemoveSigningKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// A node whose master key cannot open the stored signing keys still publishes and verifies with them (the public key is
+// stored in clear; other nodes sign with them), never signs with them, and never makes a key of its own while they
+// exist: a key sealed with the wrong master key would replicate to every node.
+func TestKeysThisNodeCannotOpen(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	ks, err := h.p.keys(ctx)
+	if err != nil || len(ks.list) != 1 {
+		t.Fatalf("keys: %v %d", err, len(ks.list))
+	}
+	kid, pub := ks.list[0].kid, ks.list[0].pub
+	count := func() int {
+		recs, _, err := h.env.Svc.Keys.List(ctx, store.ListQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(recs)
+	}
+	good := h.env.Svc.Sealer
+	wrong, err := secure.NewSealer(randBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.env.Svc.Sealer = wrong
+	t.Cleanup(func() { h.env.Svc.Sealer = good })
+	h.p.Invalidate()
+	h.p.jwksCache.Store(nil)
+
+	jwks, err := h.p.jwksJSON(ctx)
+	if err != nil || !strings.Contains(string(jwks), kid) {
+		t.Fatalf("the key this node cannot open is missing from the JWKS: %v %s", err, jwks)
+	}
+	k := h.p.keyByKID(ctx, kid)
+	if k == nil || k.priv != nil || !reflect.DeepEqual(k.pub, pub) {
+		t.Fatalf("verification key: %+v", k)
+	}
+	if _, err := h.p.signingKey(ctx, AlgES256); !errors.Is(err, errMasterKey) {
+		t.Fatalf("signing with keys this node cannot open: %v", err)
+	}
+	if err := h.p.RotateKeys(ctx); !errors.Is(err, errMasterKey) {
+		t.Fatalf("rotate: %v", err)
+	}
+	if err := h.p.EnsureKeys(ctx); err != nil { // nothing is due: nothing to make, nothing to refuse
+		t.Fatalf("ensure: %v", err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("%d keys stored: a key was made over the ones this node cannot open", n)
+	}
+
+	h.env.Svc.Sealer = good
+	h.p.Invalidate()
+	if _, err := h.p.signingKey(ctx, AlgES256); err != nil {
+		t.Fatalf("with the right master key: %v", err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("%d keys stored", n)
+	}
+}
+
+// afterList runs after the first List of a kind, as the store answers.
+type afterList struct {
+	store.Store
+	kind model.Kind
+	once sync.Once
+	do   func()
+}
+
+func (s *afterList) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	r, err := s.Store.List(ctx, kind, q)
+	if kind == s.kind {
+		s.once.Do(s.do)
+	}
+	return r, err
+}
+
+// A key change applied (Invalidate) while the keys are being read must not be undone by that read: the set read before
+// the change is not installed, it is read again.
+func TestKeyReloadRacingInvalidate(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	good := h.env.Svc.Keys.S
+	t.Cleanup(func() { h.env.Svc.Keys.S = good })
+	h.env.Svc.Keys.S = &afterList{Store: good, kind: model.KindKey, do: func() {
+		// reloadKeys holds keyMu here, as createKey's callers do: a key is created and its change applied
+		if _, err := h.p.createKey(ctx, AlgES256, time.Now()); err != nil {
+			t.Error(err)
+		}
+		h.p.Invalidate()
+	}}
+	ks, err := h.p.reloadKeys(ctx, true)
+	if err != nil || len(ks.list) != 2 {
+		t.Fatalf("the reload returned the set read before the change: %v %d keys", err, len(ks.list))
+	}
+	if cached := h.p.keySet.Load(); cached == nil || len(cached.list) != 2 {
+		t.Fatalf("the cached set predates the change: %+v", cached)
+	}
 }
