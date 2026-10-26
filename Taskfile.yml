@@ -154,6 +154,15 @@ tasks:
       - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - cd web && node audit.mjs  # npm audit, high and above, with the accepted advisories it lists
 
+  upgrade:
+    desc: Upgrade the Go modules and the web dependencies (npm, within the ranges in web/package.json), then audit both
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+      - cd web && npm update --ignore-scripts
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - cd web && node audit.mjs
+
   test-dbs:
     desc: Start the PostgreSQL, MySQL and MariaDB test containers
     cmds:
