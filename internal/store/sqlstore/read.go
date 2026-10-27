@@ -339,12 +339,15 @@ func (s *Store) purge(ctx context.Context, tombstonesBefore, expiredBefore time.
 func (s *Store) purgeKind(ctx context.Context, t *table, tombVersion, exp int64) (int, error) {
 	r := runner{c: s.wc}
 	total := 0
-	res, err := r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE deleted = TRUE AND version < ?"), tombVersion)
+	res, err := r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE deleted = TRUE AND pseq = 0 AND version < ?"), tombVersion)
 	if err != nil {
 		return total, err
 	}
 	n, _ := res.RowsAffected()
 	total += int(n)
+	if model.ExpiryOf(t.kind) == model.NeverExpires { // none carries an expiry, and no index finds the expired ones
+		return total, nil
+	}
 	// Expired records without unique values go in one statement; the rest release their unique values first.
 	res, err = r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE expires IS NOT NULL AND expires < ? AND uniq IS NULL"), exp)
 	if err != nil {

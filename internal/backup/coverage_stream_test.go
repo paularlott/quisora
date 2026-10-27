@@ -244,7 +244,7 @@ func TestWriteSnapshotChoices(t *testing.T) {
 	view := &countingReader{Reader: liveReader{base}}
 	st := snapshottingStore{failingStore{Store: base, snapshot: func() (store.Reader, error) { return view, nil }}}
 	var buf bytes.Buffer
-	if stats, err := Write(ctx, st, s, &buf); err != nil || stats[model.KindGroup] != 3 {
+	if stats, err := WriteWith(ctx, st, s, &buf, Options{}); err != nil || stats[model.KindGroup] != 3 {
 		t.Fatalf("with a snapshot: %v %v", stats, err)
 	}
 	if view.lists == 0 || view.closes != 1 {
@@ -254,14 +254,14 @@ func TestWriteSnapshotChoices(t *testing.T) {
 	// A backend without a snapshot reads the live store.
 	st.snapshot = func() (store.Reader, error) { return nil, store.ErrNoSnapshot }
 	buf.Reset()
-	if stats, err := Write(ctx, st, s, &buf); err != nil || stats[model.KindGroup] != 3 {
+	if stats, err := WriteWith(ctx, st, s, &buf, Options{}); err != nil || stats[model.KindGroup] != 3 {
 		t.Fatalf("no snapshot: %v %v", stats, err)
 	}
 
 	// Any other snapshot failure fails the backup: no silent fall back to a live read.
 	boom := errors.New("snapshot boom")
 	st.snapshot = func() (store.Reader, error) { return nil, boom }
-	if _, err := Write(ctx, st, s, io.Discard); !errors.Is(err, boom) || !strings.Contains(err.Error(), "snapshot") {
+	if _, err := WriteWith(ctx, st, s, io.Discard, Options{}); !errors.Is(err, boom) || !strings.Contains(err.Error(), "snapshot") {
 		t.Fatalf("snapshot failure: %v", err)
 	}
 }
@@ -280,12 +280,12 @@ func TestLiveReaderForwards(t *testing.T) {
 func TestWriteStoreAndContextErrors(t *testing.T) {
 	s := covSealer(t)
 	boom := errors.New("list boom")
-	if _, err := Write(context.Background(), failingStore{Store: memstore.New(), list: boom}, s, io.Discard); !errors.Is(err, boom) {
+	if _, err := WriteWith(context.Background(), failingStore{Store: memstore.New(), list: boom}, s, io.Discard, Options{}); !errors.Is(err, boom) {
 		t.Fatalf("list error: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := Write(ctx, memstore.New(), s, io.Discard); !errors.Is(err, context.Canceled) {
+	if _, err := WriteWith(ctx, memstore.New(), s, io.Discard, Options{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
 	}
 }

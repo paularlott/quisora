@@ -38,7 +38,7 @@ func TestTOTPStep(t *testing.T) {
 	code := totpAt(secret, time.Now())
 	res, out = b.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": code})
 	wantStatus(t, res, out, 200)
-	if str(out, "next") != "/account" || !b.hasSession() {
+	if str(out, "next") != b.base+"/account" || !b.hasSession() {
 		t.Fatalf("totp success: %v", out)
 	}
 	sess, _ := e.Svc.Sessions.All(context.Background(), u.ID)
@@ -260,7 +260,7 @@ func TestRecoveryCodeStep(t *testing.T) {
 	}
 	res, out = b.post("/api-internal/login/recovery", map[string]any{"ticket": tk, "code": strings.ToLower(codes[2])})
 	wantStatus(t, res, out, 200)
-	if str(out, "next") != "/account" || !b.hasSession() {
+	if str(out, "next") != b.base+"/account" || !b.hasSession() {
 		t.Fatalf("recovery sign-in: %v", out)
 	}
 	sess, _ := e.Svc.Sessions.All(context.Background(), u.ID)

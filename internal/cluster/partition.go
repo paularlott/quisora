@@ -3,8 +3,6 @@ package cluster
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -41,11 +39,9 @@ func recPartition(r *store.Record) int { return partitionNum(r.Partition) }
 
 // What a change does (change.Op).
 const (
-	opWrite   uint8 = iota + 1 // put or compare-and-swap one record, a tombstone included
-	opClaim                    // reserve a global unique value for a record (reservations)
-	opRelease                  // free a reserved value its holder no longer holds
-	opPurge                    // purge the tombstones below a sequence number
-	opTx                       // write several records of the partition, all or nothing (store.Store.Tx)
+	opWrite uint8 = iota + 1 // put or compare-and-swap one record, a tombstone included
+	opPurge                  // purge the tombstones below a sequence number
+	opTx                     // write several records of the partition, all or nothing (store.Store.Tx)
 )
 
 // How a record write is checked (change.Mode).
@@ -61,13 +57,11 @@ const (
 	whyConflict = "conflict" // a unique value is held by another record
 	whyDeleted  = "deleted"  // a live write over a tombstone
 	whyNotFound = "not-found"
-	whyHeld     = "held"     // claim: this record already holds the reservation (nothing to write)
-	whyNotHeld  = "not-held" // release: the reservation is not this record's (nothing to write)
-	whyNothing  = "nothing"  // nothing to do (a deletion of what is not there, a purge with nothing to purge)
-	whyDone     = "done"     // the write's request is stored already: a retry of a write that landed (store.Retried)
-	whyBad      = "bad"      // malformed or in the wrong partition: a bug, never expected
-	whyMoved    = "moved"    // a write that would change a record's partition key (store.ErrBadRecord)
-	whyLarge    = "large"    // read: the reply would not fit one message; ask for fewer records
+	whyNothing  = "nothing" // nothing to do (a deletion of what is not there, a purge with nothing to purge)
+	whyDone     = "done"    // the write's request is stored already: a retry of a write that landed (store.Retried)
+	whyBad      = "bad"     // malformed or in the wrong partition: a bug, never expected
+	whyMoved    = "moved"   // a write that would change a record's partition key (store.ErrBadRecord)
+	whyLarge    = "large"   // read: the reply would not fit one message; ask for fewer records
 )
 
 // change is the argument of partition.Manager.Write: what the landing node wants. The owner's Prepare checks it against
@@ -75,15 +69,9 @@ const (
 type change struct {
 	Op     uint8
 	Mode   uint8
-	Expect uint64 // opWrite, modeMatch: the live version the record must have (0: it must not exist); opRelease: that of the reservation (0: any)
+	Expect uint64 // opWrite, modeMatch: the live version the record must have (0: it must not exist)
 	Rec    []byte // opWrite: the encoded record (encodeRecord), not yet stamped
-	Kind   string // opClaim, opRelease: the kind of the holder, and of the value's namespace
-	ID     string // opClaim, opRelease: the holder's id
-	Key    string // opClaim, opRelease: the reserved unique value
 	Before uint64 // opPurge: tombstones with a sequence below this go
-	// opRelease by the sweep (SweepReservations), which knows the reservation and not the value: the reservation's id
-	// instead of Key, and the version it read (Expect), which the reservation must still have.
-	Resv string
 	// Ops are opTx's writes, in order.
 	Ops []txOp
 	// Base (opWrite) is the version of the record, in any state, the writer based the write on (0: none); Replay marks
@@ -131,66 +119,6 @@ type readReq struct {
 // maxReadReply bounds a read's reply (one message, the cluster's packet limit being 4 MB); a reply over it is refused
 // with whyLarge and the caller asks for half the ids (a variable for tests).
 var maxReadReply = 3 << 20
-
-// ---- reservations of global unique values ----
-
-// reservationGrace is how long a reservation is left alone after it was made or last taken over, whatever its holder
-// looks like: the holder is written after the claim (so a crash between the two leaves the value reserved with no
-// record to hold it), and a claimant that finds a young reservation whose holder does not hold the value yet must not
-// take it over under a record that is about to. After it a claim takes the reservation over only when the holder is
-// known not to hold the value (prepareClaim); one whose holder this node does not hold at all is left to the sweep
-// (SweepReservations). A variable for tests.
-var reservationGrace = time.Minute
-
-// maxResvKey is the longest reservation id stored as it is: the SQL backends' id column is 191 characters.
-const maxResvKey = 150
-
-// reservationID is the id of the reservation of a unique value of a kind: the kind and the value, or, when that is too
-// long for an id, the kind and a hash of the value (the same value always gives the same id).
-func reservationID(kind model.Kind, key string) string {
-	id := string(kind) + "/" + key
-	if len(id) <= maxResvKey {
-		return id
-	}
-	h := sha256.Sum256([]byte(key))
-	return string(kind) + "/#" + base64.RawURLEncoding.EncodeToString(h[:])
-}
-
-// globalKind reports whether k has unique values that must hold across organizations (model.GlobalUnique): the kinds
-// whose records are checked for them when written (TestGlobalKindsMatchTheModel keeps it in step with the model).
-func globalKind(k model.Kind) bool { return k == model.KindTenant || k == model.KindPasskey }
-
-// holdsUnique reports whether the entity in r still lists key among its unique values.
-func holdsUnique(r *store.Record, key string) bool {
-	e := model.NewEntity(r.Kind)
-	if e == nil || store.Decode(r, e) != nil {
-		return false
-	}
-	for _, u := range e.Index().Unique {
-		if u == key {
-			return true
-		}
-	}
-	return false
-}
-
-// globalsOf returns the global unique values the entity in r lists (r.Unique has them stripped: they are reserved).
-func globalsOf(r *store.Record) []string {
-	if r == nil || !globalKind(r.Kind) || r.Deleted {
-		return nil
-	}
-	e := model.NewEntity(r.Kind)
-	if e == nil || store.Decode(r, e) != nil {
-		return nil
-	}
-	var out []string
-	for _, u := range e.Index().Unique {
-		if model.GlobalUnique(r.Kind, u) {
-			out = append(out, u)
-		}
-	}
-	return out
-}
 
 // ---- the Store of the partition protocol ----
 
@@ -466,18 +394,6 @@ func (s *pstore) Prepare(p int, b []byte) (data, reply []byte, err error) {
 		if recs, rep.Stamps, err = s.prepareTx(p, &c); err != nil {
 			return nil, nil, err
 		}
-	case opClaim:
-		rec, err := s.prepareClaim(p, &c)
-		if err != nil {
-			return nil, nil, err
-		}
-		recs, rep = []*store.Record{rec}, writeReply{Version: uint64(rec.Version)}
-	case opRelease:
-		rec, err := s.prepareRelease(p, &c)
-		if err != nil {
-			return nil, nil, err
-		}
-		recs, rep = []*store.Record{rec}, writeReply{Version: uint64(rec.Version)}
 	case opPurge:
 		if err := s.preparePurge(p, &c); err != nil {
 			return nil, nil, err
@@ -662,9 +578,6 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 	}
 	if !rec.Deleted {
 		for _, u := range rec.Unique {
-			if model.GlobalUnique(rec.Kind, u) {
-				return refuse(whyBad, "%s %s lists the global value %q (it is reserved, not indexed)", rec.Kind, rec.ID, u)
-			}
 			if tu != nil {
 				if id, ok := tu.claimed[uniqueKey(rec.Kind, u)]; ok && id != rec.ID {
 					return refuse(whyConflict, "%q is in use", u)
@@ -695,96 +608,6 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 		}
 	}
 	return nil
-}
-
-// reservation returns the stored reservation record id (live) and its holder.
-func (s *pstore) reservation(id string) (*store.Record, *model.Reservation, error) {
-	cur, err := s.lookup(model.KindReservation, id)
-	if err != nil || cur == nil || !cur.Live(time.Now()) {
-		return cur, nil, err
-	}
-	r := &model.Reservation{}
-	if err := store.Decode(cur, r); err != nil {
-		return cur, nil, err
-	}
-	return cur, r, nil
-}
-
-// prepareClaim reserves a global unique value for a record. A value held by a record that holds it is refused. One whose
-// reservation is older than reservationGrace is taken over only on positive evidence: the holder, as this node (the
-// reservation's owner) has it, is a tombstone or a live record that does not list the value, and that copy was written
-// after the reservation (its version is later). This node's copy of the holder's partition may lag: a copy from before
-// the reservation (a holder this node does not have at all, or one that predates the update that added the value) is
-// not evidence of anything, so the reservation stays, and the sweep of the housekeeping leader, which reads the holder
-// through its own partition's owner, releases the reservations of holders that really are gone.
-func (s *pstore) prepareClaim(p int, c *change) (*store.Record, error) {
-	kind := model.Kind(c.Kind)
-	id := reservationID(kind, c.Key)
-	if partitionNum(id) != p || !model.GlobalUnique(kind, c.Key) {
-		return nil, refuse(whyBad, "%q is not a global value of %s, or belongs to another partition", c.Key, kind)
-	}
-	cur, r, err := s.reservation(id)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	if r != nil {
-		if r.HolderKind == kind && r.HolderID == c.ID {
-			return nil, refuse(whyHeld, "%q is already reserved for %s %s", c.Key, kind, c.ID)
-		}
-		if now.Sub(r.Updated) < reservationGrace {
-			return nil, refuse(whyConflict, "%q is in use", c.Key)
-		}
-		h, err := s.lookup(r.HolderKind, r.HolderID)
-		if err != nil {
-			return nil, err
-		}
-		if h == nil || h.Version <= cur.Version || (h.Live(now) && holdsUnique(h, c.Key)) {
-			return nil, refuse(whyConflict, "%q is in use", c.Key)
-		}
-	}
-	e := &model.Reservation{Meta: model.Meta{ID: id, Created: now.UTC(), Updated: now.UTC(), Version: nextVersion(cur)},
-		HolderKind: kind, HolderID: c.ID}
-	rec, err := store.EncodeAsIs(e)
-	if err != nil {
-		return nil, err
-	}
-	rec.Origin = s.n.id
-	var head *store.Head
-	if cur != nil {
-		head = cur.Head()
-	}
-	if err := store.StampLocal(rec, head, r == nil); err != nil {
-		return nil, refuse(whyDeleted, "%v", err)
-	}
-	return rec, nil
-}
-
-// prepareRelease frees a reservation its holder no longer holds the value of (after the record changed or was deleted,
-// or the sweep found the holder gone). The sweep names the reservation and the version it read: a reservation that has
-// changed since (taken over, made again) is not released.
-func (s *pstore) prepareRelease(p int, c *change) (*store.Record, error) {
-	kind := model.Kind(c.Kind)
-	id := c.Resv
-	if id == "" {
-		id = reservationID(kind, c.Key)
-	}
-	if partitionNum(id) != p {
-		return nil, refuse(whyBad, "%q belongs to another partition", id)
-	}
-	cur, r, err := s.reservation(id)
-	if err != nil {
-		return nil, err
-	}
-	if r == nil || r.HolderKind != kind || r.HolderID != c.ID {
-		return nil, refuse(whyNotHeld, "%q is not reserved for %s %s", id, kind, c.ID)
-	}
-	if c.Expect != 0 && cur.Version != hlc.Timestamp(c.Expect) {
-		return nil, refuse(whyStale, "%q changed", id)
-	}
-	t := store.Tombstone(model.KindReservation, id)
-	t.Version, t.Origin, t.Partition = nextVersion(cur), s.n.id, id
-	return t, nil
 }
 
 // preparePurge checks a purge point the owner's housekeeping chose (purgeScan): never beyond what is committed, and
@@ -1081,9 +904,6 @@ func (s *pstore) Intact() bool { return s.n.intact.Load() }
 // included): the change hooks run for each, so caches are evicted everywhere.
 func (n *Node) applied(recs []*store.Record) {
 	for _, r := range recs {
-		if r.Kind == model.KindReservation {
-			continue
-		}
 		n.checkSkew(r)
 		n.fire(r, r.Origin == n.id)
 	}

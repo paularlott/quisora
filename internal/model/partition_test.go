@@ -11,32 +11,30 @@ func TestPartitionKeyOfEveryKind(t *testing.T) {
 	const org = "org-1"
 	meta := Meta{ID: "rec-1"}
 	cases := map[Kind]Entity{
-		KindOrg:         &Org{Meta: meta, Name: "acme"},
-		KindUser:        &User{Meta: meta, OrgID: org, Username: "u"},
-		KindGroup:       &Group{Meta: meta, OrgID: org, DisplayName: "g"},
-		KindMember:      &Member{Meta: meta, OrgID: org, GroupID: "g", UserID: "u"},
-		KindTenant:      &Tenant{Meta: meta, OrgID: org, Name: "t"},
-		KindAccess:      &TenantAccess{Meta: meta, OrgID: org},
-		KindClient:      &Client{Meta: meta, OrgID: org},
-		KindProvider:    &Provider{Meta: meta, OrgID: org, Name: "p"},
-		KindPasskey:     &Passkey{Meta: meta, OrgID: org, UserID: "u", CredentialID: []byte{1, 2, 3}},
-		KindIdentity:    &Identity{Meta: meta, OrgID: org, UserID: "u", ProviderID: "p", Subject: "s"},
-		KindSession:     &Session{Meta: meta, OrgID: org, UserID: "u"},
-		KindGrant:       &Grant{Meta: meta, OrgID: org, UserID: "u"},
-		KindAPIToken:    &APIToken{Meta: meta, OrgID: org, UserID: "u"},
-		KindKey:         &SigningKey{Meta: meta},
-		KindAudit:       &Audit{Meta: meta, OrgID: org},
-		KindLink:        &LinkToken{Meta: meta, OrgID: org, UserID: "u", TokenHash: "h"},
-		KindSignIn:      &SignIn{Meta: meta, OrgID: org},
-		KindLock:        &Lock{Meta: meta},
-		KindReplay:      &Replay{Meta: meta},
-		KindEphemeral:   &Ephemeral{Meta: meta},
-		KindReservation: &Reservation{Meta: Meta{ID: "res/https://api.example.com"}, HolderKind: KindTenant, HolderID: "t"},
+		KindOrg:       &Org{Meta: meta, Name: "acme"},
+		KindUser:      &User{Meta: meta, OrgID: org, Username: "u"},
+		KindGroup:     &Group{Meta: meta, OrgID: org, DisplayName: "g"},
+		KindMember:    &Member{Meta: meta, OrgID: org, GroupID: "g", UserID: "u"},
+		KindTenant:    &Tenant{Meta: meta, OrgID: org, Name: "t"},
+		KindAccess:    &TenantAccess{Meta: meta, OrgID: org},
+		KindClient:    &Client{Meta: meta, OrgID: org},
+		KindProvider:  &Provider{Meta: meta, OrgID: org, Name: "p"},
+		KindPasskey:   &Passkey{Meta: meta, OrgID: org, UserID: "u", CredentialID: []byte{1, 2, 3}},
+		KindIdentity:  &Identity{Meta: meta, OrgID: org, UserID: "u", ProviderID: "p", Subject: "s"},
+		KindSession:   &Session{Meta: meta, OrgID: org, UserID: "u"},
+		KindGrant:     &Grant{Meta: meta, OrgID: org, UserID: "u"},
+		KindAPIToken:  &APIToken{Meta: meta, OrgID: org, UserID: "u"},
+		KindKey:       &SigningKey{Meta: meta},
+		KindAudit:     &Audit{Meta: meta, OrgID: org},
+		KindLink:      &LinkToken{Meta: meta, OrgID: org, UserID: "u", TokenHash: "h"},
+		KindSignIn:    &SignIn{Meta: meta, OrgID: org},
+		KindLock:      &Lock{Meta: meta},
+		KindReplay:    &Replay{Meta: meta},
+		KindEphemeral: &Ephemeral{Meta: meta},
 	}
 	want := map[Kind]string{
 		KindOrg: "", KindKey: "", KindEphemeral: "", // global (partition 0); an ephemeral record is never partitioned
 		KindLock: "rec-1", KindReplay: "rec-1", // the record's own ID
-		KindReservation: "res/https://api.example.com", // the reserved key
 	}
 	for _, k := range Kinds() {
 		e, ok := cases[k]
@@ -78,8 +76,8 @@ func TestPartitionKeyRemovedMember(t *testing.T) {
 	}
 }
 
-// Every unique value of a record is either scoped to the record's organization (so it lives in the record's partition) or
-// global (GlobalUnique, reserved); no other unique value may cross partitions.
+// Every unique value of a record is scoped to the record's organization (so it lives in the record's partition): no
+// unique value crosses partitions, so no write needs another organization's.
 func TestUniqueValuesStayInPartition(t *testing.T) {
 	const org = "6f0c2b1e-1111-7000-8000-000000000001"
 	ents := []Entity{
@@ -98,73 +96,14 @@ func TestUniqueValuesStayInPartition(t *testing.T) {
 		for _, u := range ix.Unique {
 			scoped := len(u) >= len(org) && u[:len(org)] == org
 			switch {
-			case GlobalUnique(e.Kind(), u):
 			case ix.Partition == "": // a global record: its values are global by being in partition 0
 			case scoped:
 			case e.Kind() == KindIdentity && len(u) > 4 && u[:4] == "p-1/": // scoped by the provider, which belongs to one organization
+			case e.Kind() == KindPasskey && u == PasskeyCredentialKey("u", []byte{9, 9, 9}): // scoped by the user, who belongs to one organization
 			case e.Kind() == KindLink && len(u) > 2 && u[:2] == "t/": // a random hash
 			default:
-				t.Errorf("%s unique value %q is neither scoped to the organization nor global", e.Kind(), u)
+				t.Errorf("%s unique value %q is not scoped to the organization", e.Kind(), u)
 			}
 		}
-	}
-}
-
-func TestGlobalUnique(t *testing.T) {
-	yes := []struct {
-		k Kind
-		v string
-	}{
-		{KindTenant, TenantResourceKey("https://api.example.com/v1/")},
-		{KindTenant, TenantResourceKey("urn:x")},
-		{KindPasskey, PasskeyCredentialKey([]byte{1, 2, 3, 4})},
-	}
-	for _, c := range yes {
-		if !GlobalUnique(c.k, c.v) {
-			t.Errorf("GlobalUnique(%s, %q) = false", c.k, c.v)
-		}
-	}
-	no := []struct {
-		k Kind
-		v string
-	}{
-		{KindTenant, TenantNameKey("6f0c2b1e-1111-7000-8000-000000000001", "res/x")},
-		{KindUser, UserEmailKey("o", "a@b.c")},
-		{KindUser, UserUsernameKey("o", "res/")},
-		{KindGroup, GroupNameKey("o", "g")},
-		{KindIdentity, IdentityKey("p", "s")},
-		{KindLink, LinkTokenKey("h")},
-		{KindOrg, OrgNameKey("acme")},
-		{KindProvider, "o/n/x"},
-	}
-	for _, c := range no {
-		if GlobalUnique(c.k, c.v) {
-			t.Errorf("GlobalUnique(%s, %q) = true", c.k, c.v)
-		}
-	}
-	// the keys of the entities themselves
-	tn := &Tenant{Meta: Meta{ID: "t"}, OrgID: "6f0c2b1e-1111-7000-8000-000000000001", Name: "T", Resources: []string{"https://a.example.org"}}
-	var global int
-	for _, u := range tn.Index().Unique {
-		if GlobalUnique(KindTenant, u) {
-			global++
-		}
-	}
-	if global != 1 {
-		t.Errorf("a tenant with one resource has %d global unique values, want 1", global)
-	}
-}
-
-func TestReservationEntity(t *testing.T) {
-	e := NewEntity(KindReservation)
-	if e == nil || e.Kind() != KindReservation {
-		t.Fatalf("NewEntity: %T", e)
-	}
-	r := &Reservation{Meta: Meta{ID: "res/https://x"}, HolderKind: KindTenant, HolderID: "t1"}
-	if ix := r.Index(); ix.Partition != "res/https://x" || ix.Scope != "" || len(ix.Unique) != 0 {
-		t.Fatalf("reservation index: %+v", ix)
-	}
-	if !Unscoped(KindReservation) {
-		t.Fatal("reservations are unscoped")
 	}
 }

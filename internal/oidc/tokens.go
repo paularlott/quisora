@@ -78,23 +78,23 @@ func (is *issue) has(scope string) bool { return slices.Contains(is.scopes, scop
 func newJTI() string { return secure.RandomToken(16) }
 
 func (is *issue) audience() []string {
-	return append([]string{is.client.ID}, is.resources...)
+	return append([]string{is.client.ClientID()}, is.resources...)
 }
 
 func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, now time.Time) (string, error) {
 	o := newObj(768)
-	o.str("iss", p.issuer)
+	o.str("iss", p.issuer(is.client.OrgID))
 	if is.user != nil {
 		o.str("sub", is.user.ID)
 	} else {
-		o.str("sub", is.client.ID)
+		o.str("sub", is.client.ClientID())
 	}
 	if aud := is.audience(); len(aud) == 1 {
 		o.str("aud", aud[0])
 	} else {
 		o.strs("aud", aud)
 	}
-	o.str("client_id", is.client.ID)
+	o.str("client_id", is.client.ClientID())
 	o.str("scope", joinScope(is.scopes))
 	o.num("exp", p.accessExpiry(is, now).Unix())
 	o.num("iat", now.Unix())
@@ -249,9 +249,9 @@ func (p *Provider) appAccess(ctx context.Context, c *model.Client, t *model.Tena
 func (p *Provider) idToken(ctx context.Context, key *keyEntry, is *issue, now time.Time, accessToken string) (string, error) {
 	u := is.user
 	o := newObj(768)
-	o.str("iss", p.issuer)
+	o.str("iss", p.issuer(is.client.OrgID))
 	o.str("sub", u.ID)
-	o.str("aud", is.client.ID)
+	o.str("aud", is.client.ClientID())
 	o.num("exp", now.Add(p.cfg.Tokens.IDToken()).Unix())
 	o.num("iat", now.Unix())
 	o.num("auth_time", is.authTime.Unix())

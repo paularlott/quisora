@@ -26,7 +26,7 @@ func TestBackupVersionWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plain bytes.Buffer
-	if _, err := Write(ctx, src, s, &plain); err != nil {
+	if _, err := WriteWith(ctx, src, s, &plain, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	zr, _ := gzip.NewReader(&plain)

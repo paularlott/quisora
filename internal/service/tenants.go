@@ -19,7 +19,7 @@ type TenantInput struct {
 	DisplayName *string               `json:"display_name"`
 	Description *string               `json:"description"`
 	Settings    *model.TenantSettings `json:"settings"`
-	// Resources are the APIs the tenant owns (resource indicators: an MCP server's URL, say), unique server-wide.
+	// Resources are the APIs the tenant owns (resource indicators: an MCP server's URL, say), unique within the organization.
 	Resources *[]string `json:"resources"`
 }
 
@@ -93,8 +93,8 @@ func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInp
 			seen = append(seen, k)
 		}
 		for _, r := range res {
-			if other, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(r)); err == nil && other.ID != t.ID {
-				return &conflictErr{Invalid("resources", r+" belongs to another tenant (each resource has one)")}
+			if other, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(t.OrgID, r)); err == nil && other.ID != t.ID {
+				return &conflictErr{Invalid("resources", r+" belongs to another tenant of the organization (each resource has one)")}
 			}
 		}
 		t.Resources = res
@@ -105,14 +105,15 @@ func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInp
 	return nil
 }
 
-// TenantForResources returns the tenant that owns the resources (all of them one tenant's), for a self-registered
-// application: ErrNotFound when none is named, one is no tenant's, they span tenants, or the tenant does not allow
-// self-registered applications. A read that fails is returned as such (not ErrNotFound): whether a resource still
-// accepts an application is an authorization decision, and its callers must not take "could not read" for "no".
-func (s *Service) TenantForResources(ctx context.Context, resources []string) (*model.Tenant, error) {
+// TenantForResources returns the tenant of organization orgID that owns the resources (all of them one tenant's), for a
+// self-registered application: ErrNotFound when none is named, one is no tenant's of the organization (another
+// organization's does not count), they span tenants, or the tenant does not allow self-registered applications. A read
+// that fails is returned as such (not ErrNotFound): whether a resource still accepts an application is an
+// authorization decision, and its callers must not take "could not read" for "no".
+func (s *Service) TenantForResources(ctx context.Context, orgID string, resources []string) (*model.Tenant, error) {
 	var t *model.Tenant
 	for _, r := range resources {
-		got, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(r))
+		got, err := s.Tenants.GetByUnique(ctx, model.TenantResourceKey(orgID, r))
 		if err != nil {
 			return nil, mapStore(err)
 		}

@@ -28,7 +28,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 	res, out := b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
 	wantStatus(t, res, out, 403)
 	authURL := u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, b, p, authURL, claims("ada-sub", "ada@elsewhere.example")); loc != "/account?provider=connected#providers" {
+	if loc := u.connectCallback(t, b, p, authURL, claims("ada-sub", "ada@elsewhere.example")); loc != u.at("/account?provider=connected#providers") {
 		t.Fatalf("connect callback: %q", loc)
 	}
 	res, out = b.api("GET", "/api-internal/account/providers", nil)
@@ -48,7 +48,7 @@ func TestConnectProviderToAccount(t *testing.T) {
 	bob := u.user(t, u.org, "bob", model.RoleUser)
 	bb := u.signedIn(t, bob)
 	authURL = u.connectURL(t, bb, p)
-	if loc := u.connectCallback(t, bb, p, authURL, claims("ada-sub", "bob@corp.example")); loc != "/account?provider=taken#providers" {
+	if loc := u.connectCallback(t, bb, p, authURL, claims("ada-sub", "bob@corp.example")); loc != u.at("/account?provider=taken#providers") {
 		t.Fatalf("taken identity: %q", loc)
 	}
 
@@ -93,7 +93,7 @@ func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
 	u.giveTOTP(t, kim)
 	b2 := u.browser(t)
 	res = b2.viaTenant(t, u, trusted, "acme", "default", "/x", claims("sub-t", "kim@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/x" || !b2.hasSession() {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/x") || !b2.hasSession() {
 		t.Fatalf("trusted provider: %d %q session=%v", res.StatusCode, res.Header.Get("Location"), b2.hasSession())
 	}
 	ok := false
@@ -211,7 +211,7 @@ func TestReconnectReplacesPassedEpochLink(t *testing.T) {
 	}
 	b := u.signedIn(t, fresh)
 	authURL := u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, b, p, authURL, claims("kim-sub", kim.Email)); loc != "/account?provider=connected#providers" {
+	if loc := u.connectCallback(t, b, p, authURL, claims("kim-sub", kim.Email)); loc != u.at("/account?provider=connected#providers") {
 		t.Fatalf("reconnect callback: %q", loc)
 	}
 	now, err := u.Svc.Users.Get(ctx, kim.ID)
@@ -244,13 +244,13 @@ func TestConnectProviderRefusals(t *testing.T) {
 
 	// finished by a browser that did not start it (no state cookie: anonymous, or signed in as someone else): nothing is linked
 	authURL := u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, u.browser(t), p, authURL, claims("pat-sub", "pat@corp.example")); loc != "/?error=failed" {
+	if loc := u.connectCallback(t, u.browserAt(t, u.org), p, authURL, claims("pat-sub", "pat@corp.example")); loc != u.at("/login?error=failed") {
 		t.Fatalf("anonymous finish: %q", loc)
 	}
 	sam := u.user(t, u.org, "sam", model.RoleUser)
 	sb := u.signedIn(t, sam)
 	authURL = u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, sb, p, authURL, claims("pat-sub", "pat@corp.example")); loc != "/?error=failed" {
+	if loc := u.connectCallback(t, sb, p, authURL, claims("pat-sub", "pat@corp.example")); loc != u.at("/login?error=failed") {
 		t.Fatalf("another user's finish: %q", loc)
 	}
 	if ids, _ := u.Svc.Identities.All(context.Background(), ""); len(ids) != 0 {
@@ -259,7 +259,7 @@ func TestConnectProviderRefusals(t *testing.T) {
 
 	// an address outside the provider's allowed domains
 	authURL = u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@evil.example")); loc != "/account?provider=domain#providers" {
+	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@evil.example")); loc != u.at("/account?provider=domain#providers") {
 		t.Fatalf("domain: %q", loc)
 	}
 	if len(u.audits(t, "account.provider.connect_refused")) != 1 {
@@ -268,11 +268,11 @@ func TestConnectProviderRefusals(t *testing.T) {
 
 	// success, and again with the same identity
 	authURL = u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@corp.example")); loc != "/account?provider=connected#providers" {
+	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@corp.example")); loc != u.at("/account?provider=connected#providers") {
 		t.Fatalf("connect: %q", loc)
 	}
 	authURL = u.connectURL(t, b, p)
-	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@corp.example")); loc != "/account?provider=connected#providers" {
+	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@corp.example")); loc != u.at("/account?provider=connected#providers") {
 		t.Fatalf("connect again: %q", loc)
 	}
 	if ids, _ := u.Svc.Identities.All(context.Background(), pat.ID); len(ids) != 1 {
@@ -280,7 +280,7 @@ func TestConnectProviderRefusals(t *testing.T) {
 	}
 	// sam cannot take pat's identity
 	authURL = u.connectURL(t, sb, p)
-	if loc := u.connectCallback(t, sb, p, authURL, claims("pat-sub", "sam@corp.example")); loc != "/account?provider=taken#providers" {
+	if loc := u.connectCallback(t, sb, p, authURL, claims("pat-sub", "sam@corp.example")); loc != u.at("/account?provider=taken#providers") {
 		t.Fatalf("taken: %q", loc)
 	}
 

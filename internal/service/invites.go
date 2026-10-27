@@ -59,7 +59,12 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	l := &model.LinkToken{UserID: u.ID, OrgID: u.OrgID, Purpose: purpose, Email: email, Expires: time.Now().Add(ttl),
 		UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen, TokenHash: linkID(token)}
 	if purpose == LinkInvite || purpose == LinkReset {
+		// Bound to the address the account has now, and a caller that mails it (email set) mails that one: the mailer
+		// sends to the address the link is bound to (LinkAddress), never to the one on its own, older, copy of the user.
 		l.For = u.Email
+		if l.Email != "" {
+			l.Email = u.Email
+		}
 	}
 	for _, e := range edit {
 		e(l)
@@ -238,24 +243,45 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 	return nil, nil, ErrStale
 }
 
-// MarkLinkSent records that the link with this URL (or token) was emailed to email: using it then proves the
-// address (an invitation an administrator copies and shares some other way proves nothing).
-func (s *Service) MarkLinkSent(ctx context.Context, link, email string) error {
+// linkOf returns the link with this URL (or token).
+func (s *Service) linkOf(ctx context.Context, link string) (*model.LinkToken, error) {
 	token := link
 	if u, err := url.Parse(link); err == nil && u.Query().Get("token") != "" {
 		token = u.Query().Get("token")
 	}
 	l, err := s.Links.GetByUnique(ctx, model.LinkTokenKey(linkID(token)))
+	return l, mapStore(err)
+}
+
+// LinkAddress returns the address the invitation or reset link with this URL (or token) is bound to: the one it opens
+// for (PeekLink), and so the only one it may be mailed to. A caller that read the user earlier may hold an older
+// address than the link was issued for (an address corrected meanwhile), so a mailer asks here, never the user.
+func (s *Service) LinkAddress(ctx context.Context, link string) (string, error) {
+	l, err := s.linkOf(ctx, link)
+	switch {
+	case err != nil:
+		return "", err
+	case l.For == "":
+		return "", Invalid("link", "is not bound to an address")
+	}
+	return l.For, nil
+}
+
+// MarkLinkSent records that the link with this URL (or token) was emailed to email: using it then proves the
+// address (an invitation an administrator copies and shares some other way proves nothing).
+func (s *Service) MarkLinkSent(ctx context.Context, link, email string) error {
+	l, err := s.linkOf(ctx, link)
 	if err != nil {
-		return mapStore(err)
+		return err
 	}
 	l.Email = email
 	return mapStore(s.Links.Update(ctx, l))
 }
 
-// LinkURL is the absolute URL of a link page for token ("/invite", "/reset", "/verify-email").
-func (s *Service) LinkURL(path, token string) string {
-	return s.Cfg.Server.PublicURL + path + "?token=" + url.QueryEscape(token)
+// LinkURL is the absolute URL of an organization's link page for token (page "/invite", "/reset", "/verify-email"):
+// within the organization's own address space (/o/<id>, web.OrgPath), where the link is valid.
+func (s *Service) LinkURL(orgID, page, token string) string {
+	return s.Cfg.Server.PublicURL + "/o/" + orgID + page + "?token=" + url.QueryEscape(token)
 }
 
 // CreateBreakGlassInvite issues the invitation of "quisora invite --break-glass", for getting back into a server
@@ -325,7 +351,7 @@ func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string, sup
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	return s.LinkURL("/invite", token), l.Expires, nil
+	return s.LinkURL(u.OrgID, "/invite", token), l.Expires, nil
 }
 
 // CreateInvite issues a new invitation for a user (new or existing): the link lets them set a password (if their
@@ -360,7 +386,7 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	return s.LinkURL("/invite", token), l.Expires, nil
+	return s.LinkURL(u.OrgID, "/invite", token), l.Expires, nil
 }
 
 // RemovePassword deletes a user's password: they can no longer sign in with email and password until they set a

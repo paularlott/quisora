@@ -1,0 +1,17 @@
+{{/* The organization's addresses an application, an API or MCP server, or a SCIM client is configured with, each to
+     copy (admin.View.Connection). */}}
+{{define "connection"}}
+<section class="glass-card" aria-labelledby="connection-h">
+  <h2 class="section-title mb-1" id="connection-h">Connection details</h2>
+  <p class="muted mb-4">The addresses applications and APIs of this organization are configured with. Most applications need only
+    the issuer: they discover the rest from it.</p>
+  <dl class="kv">
+    {{range $i, $a := .}}
+    <div><dt id="conn-l-{{$i}}">{{$a.Label}}</dt>
+      <dd class="copy-id"><code class="mono" id="conn-{{$i}}">{{$a.Value}}</code><button type="button" class="btn btn-ghost btn-icon btn-sm"
+          x-data="copyFrom" data-source="conn-{{$i}}" data-what="{{$a.Label}}" aria-label="Copy {{$a.Label}}" @click="copy"><span
+            x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button></dd></div>
+    {{end}}
+  </dl>
+</section>
+{{end}}

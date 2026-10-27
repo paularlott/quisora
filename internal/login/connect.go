@@ -23,7 +23,7 @@ type providerItem struct {
 	Email     string `json:"email,omitempty"` // the address the provider gave when it was connected
 }
 
-// listProviders handles GET /api-internal/account/providers: the organization's enabled providers and which are connected.
+// listProviders handles GET /o/{org}/api-internal/account/providers: the organization's enabled providers and which are connected.
 func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	ps, err := m.s.Svc.EnabledProviders(ctx, a.u.OrgID)
@@ -45,24 +45,20 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-// connectProvider handles POST /api-internal/account/providers/{id}/connect: answers {url}, the provider's address to send
+// connectProvider handles POST /o/{org}/api-internal/account/providers/{id}/connect: answers {url}, the provider's address to send
 // the browser to; the callback attaches the identity (connectFinish).
 func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return
 	}
 	ctx := r.Context()
-	org, err := m.s.Svc.Orgs.Get(ctx, a.u.OrgID)
-	if err != nil {
-		m.internalError(w, r, "org", err)
-		return
-	}
+	org := web.Org(r)
 	p, err := m.s.Svc.Providers.Get(ctx, r.PathValue("id"))
 	if err != nil || p.OrgID != org.ID || !p.Enabled {
 		writeErr(w, http.StatusNotFound, "Not found.", "")
 		return
 	}
-	authURL, state, err := m.Upstream.BeginConnect(ctx, org, p, a.u, "/account#providers")
+	authURL, state, err := m.Upstream.BeginConnect(ctx, org, p, a.u, web.OrgPath(org.ID, "/account#providers"))
 	if err != nil {
 		m.s.Log.Warn("upstream connect", "provider", p.Name, "error", err)
 		writeErr(w, http.StatusBadGateway, "The provider could not be reached. Try again later.", "")
@@ -78,7 +74,7 @@ func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct)
 func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upstream.Result) {
 	ctx := r.Context()
 	back := func(result string) {
-		http.Redirect(w, r, "/account?provider="+result+"#providers", http.StatusSeeOther)
+		http.Redirect(w, r, web.OrgPath(res.Org.ID, "/account?provider="+result+"#providers"), http.StatusSeeOther)
 	}
 	sess, u := m.s.Sessions.Current(r)
 	if u == nil || u.ID != res.Connect || u.OrgID != res.Org.ID {
@@ -142,7 +138,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	back("connected")
 }
 
-// disconnectProvider handles DELETE /api-internal/account/providers/{id}, as the service disconnects any
+// disconnectProvider handles DELETE /o/{org}/api-internal/account/providers/{id}, as the service disconnects any
 // (service.DisconnectProvider): it refuses to remove the last way to sign in.
 func (m *Module) disconnectProvider(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {

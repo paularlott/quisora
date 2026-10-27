@@ -19,7 +19,7 @@ export async function totp(secret) {
 
 test('authenticator set-up dialog: paste fills the boxes, the 6th digit submits, errors and retry work', async ({ page }) => {
   await signIn(page, 'otp') // its own demo user: this test turns the Authenticator App on
-  await page.goto('/account')
+  await page.goto('/o/acme/account')
   await page.getByRole('button', { name: /Set up… Authenticator App/ }).click()
   const code = page.getByLabel('Code from the app')
   await expect(code).toBeFocused()
@@ -55,7 +55,7 @@ test('authenticator set-up dialog: paste fills the boxes, the 6th digit submits,
 test('Authenticator App on: "Set up again…" (add or change phones) asks to re-confirm, explains, and switches over', async ({ page }) => {
   const { accountStub } = await import('./pages.mjs')
   await signIn(page, 'user')
-  await page.goto('/account')
+  await page.goto('/o/acme/account')
   await accountStub({ totp: true })(page)
   // the server asks for a re-authentication first; the stubbed reauth then lets the begin through
   let begins = 0

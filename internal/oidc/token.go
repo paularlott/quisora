@@ -63,7 +63,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, e)
 		return
 	}
-	p.corsRestrict(w, r, ce.c.ID)
+	p.corsRestrict(w, r, ce.c.ClientID())
 	gt := r.PostForm.Get("grant_type")
 	switch gt {
 	case "authorization_code", "refresh_token", "client_credentials", service.GrantTokenExchange, service.GrantDeviceCode:
@@ -556,7 +556,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		}
 		return nil, serverError(unavailable(err)) // not known to be revoked: the client keeps the token and retries
 	}
-	if g.ClientID != c.ID || g.Revoked || time.Now().After(g.Expires) || !p.authentic(pr, g) {
+	if g.ClientID != c.ID || time.Now().After(g.Expires) || !p.authentic(pr, g) {
 		return nil, invalid
 	}
 	u, live, err := p.grantLive(ctx, g)
@@ -661,7 +661,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			// by someone else): the family ends. The same counter is another change (a re-seal during a master key
 			// rotation, say): the refresh goes ahead on the new copy.
 			fresh, ferr := p.svc.Grants.Get(ctx, g.ID)
-			if ferr != nil || fresh.Revoked {
+			if ferr != nil {
 				return nil, invalid
 			}
 			// The token was rotated moments ago elsewhere: a store that answers stale answers reads with the copy that
@@ -752,7 +752,7 @@ func (p *Provider) auditClient(ctx context.Context, c *model.Client, target, act
 	if detail == nil {
 		detail = map[string]string{}
 	}
-	detail["client_id"] = c.ID
+	detail["client_id"] = c.ClientID()
 	if target == "" {
 		target = c.Name
 	}
@@ -765,7 +765,7 @@ func (p *Provider) auditedClient(ctx context.Context, c *model.Client, target, a
 	if detail == nil {
 		detail = map[string]string{}
 	}
-	detail["client_id"] = c.ID
+	detail["client_id"] = c.ClientID()
 	if target == "" {
 		target = c.Name
 	}

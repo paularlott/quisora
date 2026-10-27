@@ -56,7 +56,10 @@ only way to sign in at all.
 - **To confirm it is them** before a sensitive change: **Use a passkey instead** in the "Confirm it is you" dialog. An
   account whose second factor is a passkey must confirm with it, not with the password alone.
 
-A passkey of another organization is refused. [Recovery codes](recovery-codes.md) stand in for a passkey that is not
+A passkey belongs to one organization's account: used at another organization's sign-in page it is refused. The same
+authenticator can be registered in several organizations, one passkey each (credential ids are unique per user, not
+across the server), and the browser's passkey picker names the organization after the account, for example
+"alice@example.com · Testing". [Recovery codes](recovery-codes.md) stand in for a passkey that is not
 at hand.
 
 ## Copied authenticators

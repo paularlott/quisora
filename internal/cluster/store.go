@@ -106,33 +106,14 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 	return r, err
 }
 
-// GetByUnique returns the live record of kind holding the unique value. A value that must hold across organizations
-// (model.GlobalUnique) is reserved, not indexed, in a gossip cluster: the reservation names the record that holds it.
-// Both reads pass the staleness gate (Get).
+// GetByUnique returns the live record of kind holding the unique value, through the staleness gate (Get). A unique
+// value is unique within its kind and organization (model.Index.Unique), so it is indexed in the partition of the
+// record that holds it.
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	if s.n.gc == nil || !model.GlobalUnique(kind, value) {
-		return s.gated(ctx, kind, "", func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
-	}
-	rid := reservationID(kind, value)
-	cur, err := s.Get(ctx, model.KindReservation, rid)
-	if err != nil {
-		return nil, err
-	}
-	var r model.Reservation
-	if err := store.Decode(cur, &r); err != nil {
-		return nil, err
-	}
-	h, err := s.Get(ctx, r.HolderKind, r.HolderID)
-	if err != nil {
-		return nil, err
-	}
-	if h.Kind != kind || !holdsUnique(h, value) {
-		return nil, store.ErrNotFound // a stale reservation: its record no longer holds the value
-	}
-	return h, nil
+	return s.gated(ctx, kind, "", func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
 }
 
 // Put writes rec (stamping this node as its Origin), replacing the record: in a gossip cluster the owner of its
@@ -363,15 +344,8 @@ func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect
 		return err
 	}
 	// Before the first attempt: every retry of the write carries the same request id, and a failed write leaves the
-	// caller's record as it was passed (store.EnsureReq). One that succeeded keeps its unique values as passed: the
-	// global ones are reserved, not stored with it (writePartitioned).
+	// caller's record as it was passed (store.EnsureReq).
 	defer store.EnsureReq(rec, &err)()
-	unique := rec.Unique
-	defer func() {
-		if err == nil {
-			rec.Unique = unique
-		}
-	}()
 	if s.n.gc == nil || localOnly(rec.Kind) {
 		return s.writeLocal(ctx, rec, mode, expect)
 	}
@@ -410,9 +384,7 @@ func (s *Store) writeLocal(ctx context.Context, rec *store.Record, mode uint8, e
 // nodes a message after the commit): the write is committed whether or not it is seen here yet.
 const applyWait = 5 * time.Second
 
-// writePartitioned makes a change of rec on the owner of its partition. A record with global unique values reserves
-// them first (each reservation is a write of its own partition) and the record is written without them; what the
-// record held before and no longer holds is released afterwards.
+// writePartitioned makes a change of rec on the owner of its partition (an organization's, or the global one).
 func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode uint8, expect uint64) error {
 	n := s.n
 	if err := n.allowWrite(ctx, rec); err != nil {
@@ -447,32 +419,6 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		// (the owner refuses it too, when its copy holds the record; this node holds the writes it made itself)
 		return err
 	}
-	var globals, claimed []string
-	if !rec.Deleted && globalKind(rec.Kind) {
-		var rest []string
-		for _, u := range rec.Unique {
-			if model.GlobalUnique(rec.Kind, u) {
-				globals = append(globals, u)
-			} else {
-				rest = append(rest, u)
-			}
-		}
-		rec.Unique = rest
-		slices.Sort(globals)
-		for _, g := range globals {
-			if mode == modeMatch && s.holdsAlready(ctx, old, expect, rec, g) {
-				continue
-			}
-			created, err := s.claim(ctx, rec, g)
-			if err != nil {
-				s.releaseAll(ctx, rec, claimed)
-				return err
-			}
-			if created {
-				claimed = append(claimed, g)
-			}
-		}
-	}
 	provisional(rec)
 	b, err := encodeRecord(rec)
 	if err != nil {
@@ -490,11 +436,7 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		if errors.As(err, &re) && re.Code == whyNothing {
 			return nil // deleted already
 		}
-		behind := s.awaitRefused(ctx, p, err)
-		if !errors.Is(err, errUnsettled) { // (a write not settled may have taken effect: keep its claims)
-			s.releaseAll(ctx, rec, claimed)
-		}
-		if behind != nil {
+		if behind := s.awaitRefused(ctx, p, err); behind != nil {
 			return behind
 		}
 		return storeErr(err)
@@ -505,11 +447,6 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		}
 		rec.Version, rec.Epoch, rec.Created = hlc.Timestamp(rep.Version), hlc.Timestamp(rep.Epoch), hlc.Timestamp(rep.Created)
 		s.waitWritten(ctx, p, res.Pos)
-	}
-	for _, g := range globalsOf(old) {
-		if !slices.Contains(globals, g) {
-			s.release(ctx, rec.Kind, rec.ID, g)
-		}
 	}
 	return nil
 }
@@ -602,61 +539,6 @@ func (s *Store) awaitRefused(ctx context.Context, p int, err error) error {
 	return nil
 }
 
-// holdsAlready reports whether the claim of the global value g for rec can be skipped, saving a write to the
-// reservation's partition (every passkey sign-in counts in its record, every tenant update): the write is a
-// compare-and-swap on the version of the record this node holds, that version lists g, and this node's committed
-// reservation of g names the record. If the owner's compare-and-swap then succeeds, the record still lists g when the
-// write commits, and its reservation is still its own: a release or a takeover needs a later version of the record
-// without g, or no record, which the compare-and-swap rules out. Anything else is claimed as before.
-func (s *Store) holdsAlready(ctx context.Context, old *store.Record, expect uint64, rec *store.Record, g string) bool {
-	if old == nil || old.Deleted || expect == 0 || uint64(old.Version) != expect || !slices.Contains(globalsOf(old), g) {
-		return false
-	}
-	cur, err := s.inner.Get(ctx, model.KindReservation, reservationID(rec.Kind, g))
-	if err != nil {
-		return false
-	}
-	var r model.Reservation
-	return store.Decode(cur, &r) == nil && r.HolderKind == rec.Kind && r.HolderID == rec.ID
-}
-
-// claim reserves the global unique value g for rec. created is false when rec held it already.
-func (s *Store) claim(ctx context.Context, rec *store.Record, g string) (created bool, err error) {
-	p := partitionNum(reservationID(rec.Kind, g))
-	res, err := s.submit(ctx, p, &change{Op: opClaim, Kind: string(rec.Kind), ID: rec.ID, Key: g})
-	var re *partition.RefusedError
-	switch {
-	case err == nil:
-		s.waitWritten(ctx, p, res.Pos)
-		return true, nil
-	case errors.As(err, &re) && re.Code == whyHeld:
-		return false, nil
-	}
-	if behind := s.awaitRefused(ctx, p, err); behind != nil {
-		return false, behind
-	}
-	return false, storeErr(err)
-}
-
-// release frees the reservation of g if rec holds it (best effort: a reservation whose record does not hold the
-// value is taken over by the next claim anyway).
-func (s *Store) release(ctx context.Context, kind model.Kind, id, g string) {
-	ctx = context.WithoutCancel(ctx)
-	p := partitionNum(reservationID(kind, g))
-	_, err := s.submit(ctx, p, &change{Op: opRelease, Kind: string(kind), ID: id, Key: g})
-	var re *partition.RefusedError
-	if err != nil && !(errors.As(err, &re) && re.Code == whyNotHeld) {
-		s.n.log.WithError(err).Warn("could not release a reserved value (the next claim takes it over)", "kind", string(kind),
-			"id", id)
-	}
-}
-
-func (s *Store) releaseAll(ctx context.Context, rec *store.Record, keys []string) {
-	for _, g := range keys {
-		s.release(ctx, rec.Kind, rec.ID, g)
-	}
-}
-
 // storeErr turns what the partition protocol returned into what the store's callers expect.
 func storeErr(err error) error {
 	var re *partition.RefusedError
@@ -693,7 +575,7 @@ func partitionHint(kind model.Kind, id string) (int, bool) {
 	switch kind {
 	case model.KindOrg, model.KindKey:
 		return 0, true
-	case model.KindLock, model.KindReplay, model.KindReservation:
+	case model.KindLock, model.KindReplay:
 		return partitionNum(id), true
 	}
 	return 0, false

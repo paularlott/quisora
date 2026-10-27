@@ -34,7 +34,7 @@ func TestSendVerifyAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := cap.wait(t)
-	if msg.To != "ann@example.com" || !strings.Contains(msg.Text, "https://quisora.example.test/verify-email?token=") {
+	if msg.To != "ann@example.com" || !strings.Contains(msg.Text, "https://quisora.example.test/o/"+org.ID+"/verify-email?token=") {
 		t.Fatalf("%+v", msg)
 	}
 	if !strings.Contains(msg.Text, "24 hours") && !strings.Contains(msg.HTML, "24 hours") {
@@ -68,7 +68,7 @@ func TestSendRecoveryUsed(t *testing.T) {
 	if msg.To != "ann@example.com" || !strings.Contains(msg.Subject, "Acme ID") || !strings.Contains(msg.Text, "7 of them are left") {
 		t.Fatalf("%+v", msg)
 	}
-	if !strings.Contains(msg.Text, "https://quisora.example.test/account") {
+	if !strings.Contains(msg.Text, "https://quisora.example.test/o/"+org.ID+"/account") {
 		t.Fatalf("account link missing: %s", msg.Text)
 	}
 	// Without an organization the message still renders.

@@ -5,7 +5,7 @@
     <h1 class="page-title">Confirm your email address</h1>
     <p class="page-sub">Confirm that this address is yours to finish verifying it.</p>
   </div>
-  <form method="post" action="/verify-email" class="toolbar">
+  <form method="post" action="/o/{{.Org.ID}}/verify-email" class="toolbar">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="token" value="{{.Data.Token}}">
     <button type="submit" class="btn btn-primary" data-autofocus>Confirm my address</button>

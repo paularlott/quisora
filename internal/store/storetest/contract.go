@@ -258,8 +258,8 @@ func testTxUniquePerKind(t *testing.T, s store.Store) {
 }
 
 // A write that fails leaves the caller's record as it was passed (version, unique values, partition, request id), so
-// the same record written again is judged again in full: a tenant whose name or resource (a value unique across
-// organizations) another holds is refused every time it is tried, by Put, CompareAndPut and Tx alike.
+// the same record written again is judged again in full: a tenant whose name or resource another tenant of its
+// organization holds is refused every time it is tried, by Put, CompareAndPut and Tx alike.
 func testFailedWriteLeavesRecord(t *testing.T, s store.Store) {
 	holder, _ := store.Encode(&model.Tenant{OrgID: "org1", Name: "held", Resources: []string{"https://api.example.com/mcp"}})
 	must(t, s.CompareAndPut(ctx, holder, 0))
@@ -271,8 +271,8 @@ func testFailedWriteLeavesRecord(t *testing.T, s store.Store) {
 		{"CompareAndPut", func(r *store.Record) error { return s.CompareAndPut(ctx, r, 0) }},
 	} {
 		for _, te := range []*model.Tenant{
-			{OrgID: "org1", Name: "held"}, // the name (of its organization)
-			{OrgID: "org2", Name: "free", Resources: []string{"https://api.example.com/mcp"}}, // the resource (of every one)
+			{OrgID: "org1", Name: "held"}, // the name
+			{OrgID: "org1", Name: "free", Resources: []string{"https://api.example.com/mcp"}}, // the resource
 		} {
 			rec, _ := store.Encode(te)
 			was := *rec

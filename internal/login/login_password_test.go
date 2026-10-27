@@ -17,7 +17,7 @@ import (
 func TestLoginPagesAreAccessible(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
-	_, body := b.get("/login/primary")
+	_, body := b.get("/o/primary/login")
 	for _, want := range []string{`<label class="label" for="f-email">`, `aria-describedby="e-email"`, `:aria-invalid="invalid.email"`,
 		`role="alert"`, `id="e-password"`, `<h1 class="page-title">`, `<main id="main"`} {
 		if !strings.Contains(body, want) {
@@ -78,8 +78,8 @@ func TestFailedSignInDoesNotRecordAPasswordTypedAsTheLogin(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	e.org(t, "acme", nil)
 	b := e.browser(t)
-	b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "Hunter2-my-secret!", "password": "x"})
-	b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "nobody@example.com", "password": "x"})
+	b.post("/o/acme/api-internal/login/password", map[string]any{"email": "Hunter2-my-secret!", "password": "x"})
+	b.post("/o/acme/api-internal/login/password", map[string]any{"email": "nobody@example.com", "password": "x"})
 	var seen []string
 	for _, a := range e.audits(t, "login.failure") {
 		seen = append(seen, a.Target, a.Actor)
@@ -110,11 +110,11 @@ func TestPasswordFormsStateTheMinimum(t *testing.T) {
 func TestLoginPageCancel(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
-	_, body := b.get("/login/primary?next=" + url.QueryEscape("/oauth/authorize/resume?flow=abc"))
-	if !strings.Contains(body, `href="/oauth/authorize/cancel?flow=abc"`) {
+	_, body := b.get("/o/primary/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize/resume?flow=abc"))
+	if !strings.Contains(body, `href="`+primaryBase+`/oauth/authorize/cancel?flow=abc"`) {
 		t.Fatal("no Cancel link for an authorization request")
 	}
-	for _, path := range []string{"/login/primary", "/login/primary?next=%2Faccount"} {
+	for _, path := range []string{"/o/primary/login", "/o/primary/login?next=" + url.QueryEscape(primaryBase+"/account")} {
 		if _, body := b.get(path); strings.Contains(body, "/oauth/authorize/cancel") {
 			t.Fatalf("%s: Cancel link without an authorization request", path)
 		}
@@ -125,41 +125,41 @@ func TestPagesRender(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
 
-	// A plain visit explains how to sign in (through an application or the organization's link) — no form.
-	res, body := b.get("/")
-	if res.StatusCode != 200 || !strings.Contains(body, "Sign in through your application") ||
-		strings.Contains(body, "/login/your-organization") || strings.Contains(body, `x-data="landing"`) {
-		t.Fatalf("landing: %d %.400s", res.StatusCode, body)
+	// A plain visit goes to the primary organization's sign-in page; there is no organization picker.
+	res, _ := b.getAbs("/")
+	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
+		t.Fatalf("landing: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	// With next too: there is no organization picker; sign-in is at /login/<org> only.
-	res, body = b.get("/?next=/oauth/authorize/resume")
-	if res.StatusCode != 200 || !strings.Contains(body, "Sign in through your application") || strings.Contains(body, `name="org"`) ||
-		strings.Contains(body, "webauthn") {
-		t.Fatalf("landing with next: %d %.400s", res.StatusCode, body)
+	if res, _ = b.getAbs("/?next=/oauth/authorize/resume"); res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
+		t.Fatalf("landing with next: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	res, body = b.get("/login/primary")
-	if res.StatusCode != 200 || !strings.Contains(body, `data-org="primary"`) || !strings.Contains(body, `id="f-email"`) ||
-		!strings.Contains(body, `autocomplete="username webauthn"`) {
-		t.Fatalf("login page: %d %.400s", res.StatusCode, body)
-	}
-	// An unknown organization: the help page, as a 404.
-	res, body = b.get("/login/nope?next=/oauth/authorize%3Fflow%3D1")
-	if res.StatusCode != 404 || !strings.Contains(body, "Sign in through your application") || !strings.Contains(body, "does not exist") {
-		t.Fatalf("unknown org: %d %.300s", res.StatusCode, body)
-	}
-	// There is no /login route of its own: the organization is always in the path.
-	for _, p := range []string{"/login", "/login?org=primary", "/login/"} {
-		if res, body = b.get(p); res.StatusCode != 404 || strings.Contains(body, `id="f-email"`) {
-			t.Fatalf("%s: %d %.300s", p, res.StatusCode, body)
+	// The sign-in page, by the organization's name or its id: the same page, whose links are by id.
+	for _, ref := range []string{"primary", model.PrimaryOrgID} {
+		res, body := b.get("/o/" + ref + "/login")
+		if res.StatusCode != 200 || !strings.Contains(body, `data-org-base="`+primaryBase+`"`) || !strings.Contains(body, `id="f-email"`) ||
+			!strings.Contains(body, `autocomplete="username webauthn"`) {
+			t.Fatalf("login page of %s: %d %.400s", ref, res.StatusCode, body)
 		}
 	}
-	// Pages that need a session.
-	res, _ = b.get("/account")
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/" { // the help page: signing in needs the organization
+	// An unknown organization: not found.
+	res, body := b.get("/o/nope/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize?flow=1"))
+	if res.StatusCode != 404 {
+		t.Fatalf("unknown org: %d %.300s", res.StatusCode, body)
+	}
+	// There are no routes outside an organization's address space.
+	for _, p := range []string{"/login", "/login?org=primary", "/login/", "/login/primary", "/login/callback/x", "/account", "/logout", "/invite",
+		"/reset", "/verify-email", "/api-internal/login/password"} {
+		if res, _ = b.getAbs(p); res.StatusCode != 404 {
+			t.Fatalf("%s: %d", p, res.StatusCode)
+		}
+	}
+	// Pages that need a session go to the organization's sign-in page, back here afterwards.
+	res, _ = b.get(primaryBase + "/account")
+	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login?next="+url.QueryEscape(primaryBase+"/account") {
 		t.Fatalf("account signed out: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	res, _ = b.get("/logout")
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
 		t.Fatalf("logout signed out: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// invalid invite / reset links
@@ -175,26 +175,29 @@ func TestPageMethods(t *testing.T) {
 	e := newEnv(t, nil)
 	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasswordLogin, s.PasskeyLogin = false, false })
 	b := e.browser(t)
-	_, body := b.get("/login/acme")
+	_, body := b.get("/o/acme/login")
 	if !strings.Contains(body, "No sign-in method is enabled") || strings.Contains(body, `id="f-email"`) {
 		t.Fatalf("no methods page: %.600s", body)
 	}
 	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasswordLogin, s.PasskeyLogin = true, false })
-	_, body = b.get("/login/acme")
+	_, body = b.get("/o/acme/login")
 	if !strings.Contains(body, `id="f-email"`) || strings.Contains(body, `data-passkey="1"`) {
 		t.Fatalf("password-only page: %.600s", body)
 	}
-	// password login switched off is enforced by the endpoint too, with the same generic failure as an unknown org
+	// password login switched off is enforced by the endpoint too, with the generic failure
 	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasswordLogin = false })
 	e.user(t, org, "pat", model.RoleUser)
 	res, out := b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 401)
-	res2, out2 := b.login("no-such-org", "pat", userPassword)
-	wantStatus(t, res2, out2, 401)
-	if str(out, "error") != str(out2, "error") || str(out, "field") != str(out2, "field") {
-		t.Fatalf("disabled org %v differs from unknown org %v", out, out2)
+	if str(out, "error") != msgBadLogin {
+		t.Fatalf("disabled password sign-in: %v", out)
 	}
+	// an organization that does not exist has no endpoints at all
+	res2, out2 := b.login("no-such-org", "pat", userPassword)
+	wantStatus(t, res2, out2, 404)
 }
+
+const msgBadLogin = "The email address or password is incorrect."
 
 func TestPasswordLogin(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Audit.Logins = true })
@@ -203,7 +206,7 @@ func TestPasswordLogin(t *testing.T) {
 
 	res, out := b.login("primary", "member", userPassword)
 	wantStatus(t, res, out, 200)
-	if str(out, "next") != "/account" || !b.hasSession() {
+	if str(out, "next") != b.base+"/account" || !b.hasSession() {
 		t.Fatalf("login response %v session=%v", out, b.hasSession())
 	}
 	// Email works as login too, and is case-insensitive.
@@ -216,10 +219,13 @@ func TestPasswordLogin(t *testing.T) {
 	if res.StatusCode != 200 || !strings.Contains(body, "Your account") || !strings.Contains(body, `x-data="accountProfile"`) {
 		t.Fatalf("account: %d %.300s", res.StatusCode, body)
 	}
-	// Signed in: landing and login pages redirect to next (local) or /account.
-	for path, want := range map[string]string{"/": "/account", "/?next=/oauth/authorize%3Fx=1": "/oauth/authorize?x=1",
-		"/login/primary": "/account", "/login/primary?next=/admin": "/admin", "/?next=//evil.example": "/account",
-		"/?next=https://evil.example": "/account"} {
+	// Signed in: the login page redirects to next (a path of the organization or the console) or the account page.
+	for path, want := range map[string]string{"/o/primary/login": primaryBase + "/account",
+		"/o/primary/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize?x=1"): primaryBase + "/oauth/authorize?x=1",
+		"/o/primary/login?next=/admin":               "/admin",
+		"/o/primary/login?next=/account":             primaryBase + "/account",
+		"/o/primary/login?next=//evil.example":       primaryBase + "/account",
+		"/o/primary/login?next=https://evil.example": primaryBase + "/account"} {
 		res, _ = b.get(path)
 		if res.StatusCode != 303 || res.Header.Get("Location") != want {
 			t.Fatalf("%s -> %d %q, want %q", path, res.StatusCode, res.Header.Get("Location"), want)
@@ -263,23 +269,31 @@ func TestSuccessNotAuditedByDefault(t *testing.T) {
 func TestNextParameterIsLocalOnly(t *testing.T) {
 	e := newEnv(t, nil)
 	e.member(t)
+	acct := primaryBase + "/account"
 	cases := map[string]string{
-		"/oauth/authorize?flow=abc": "/oauth/authorize?flow=abc",
-		"/admin":                    "/admin",
-		"//evil.example":            "/account",
-		"https://evil.example":      "/account",
-		"/\\evil.example":           "/account",
-		"\\\\evil.example":          "/account",
-		"javascript:alert(1)":       "/account",
-		"/%0d%0aSet-Cookie:x=1":     "/%0d%0aSet-Cookie:x=1", // percent-encoded stays a path
-		"/a\r\nb":                   "/account",
-		"/a\tb":                     "/account",
-		"":                          "/account",
-		"evil":                      "/account",
+		primaryBase + "/oauth/authorize?flow=abc": primaryBase + "/oauth/authorize?flow=abc",
+		"/admin":                                          "/admin",
+		"/admin/orgs/acme/users":                          "/admin/orgs/acme/users",
+		"//evil.example":                                  acct,
+		"https://evil.example":                            acct,
+		"/\\evil.example":                                 acct,
+		"\\\\evil.example":                                acct,
+		"javascript:alert(1)":                             acct,
+		"/oauth/authorize?flow=abc":                       acct, // not in the organization's space
+		"/%0d%0aSet-Cookie:x=1":                           acct,
+		primaryBase + "/a\r\nb":                           acct,
+		primaryBase + "/a\tb":                             acct,
+		primaryBase + "/%0d%0aSet-Cookie:x=1":             primaryBase + "/%0d%0aSet-Cookie:x=1", // percent-encoded stays a path
+		"/o/other/account":                                acct,                                  // another organization's space
+		"/o/00000000-0000-7000-8000-000000000002/account": acct,
+		"/o/primary/account":                              "/o/primary/account", // by name: the same space
+		primaryBase + "/../00000000-0000-7000-8000-000000000002/account": acct,
+		"":     acct,
+		"evil": acct,
 	}
 	for next, want := range cases {
 		b := e.browser(t)
-		res, out := b.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword, "next": next})
+		res, out := b.post("/o/primary/api-internal/login/password", map[string]any{"email": "member@example.com", "password": userPassword, "next": next})
 		wantStatus(t, res, out, 200)
 		if str(out, "next") != want {
 			t.Errorf("next %q -> %q, want %q", next, str(out, "next"), want)
@@ -287,7 +301,7 @@ func TestNextParameterIsLocalOnly(t *testing.T) {
 	}
 	// And the provider redirect never carries a hostile next around.
 	b := e.browser(t)
-	res, _ := b.get("/login/primary/provider/nope?next=//evil.example")
+	res, _ := b.get("/o/primary/login/provider/nope?next=//evil.example")
 	if res.StatusCode != 302 || strings.Contains(res.Header.Get("Location"), "evil") {
 		t.Fatalf("provider redirect: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -306,7 +320,7 @@ func TestGenericFailures(t *testing.T) {
 	type try struct{ org, login, pw string }
 	var first map[string]any
 	for _, tr := range []try{
-		{"acme", "pat", "wrong password"}, {"acme", "nobody", "wrong password"}, {"nope", "pat", userPassword},
+		{"acme", "pat", "wrong password"}, {"acme", "nobody", "wrong password"},
 		{"acme", "gone", userPassword}, {"primary", "pat", userPassword}, {"acme", "pat@example.com", "x"},
 	} {
 		b := e.browser(t)
@@ -326,12 +340,12 @@ func TestGenericFailures(t *testing.T) {
 	b := e.browser(t)
 	res, out := b.login("acme", "", "")
 	wantStatus(t, res, out, 422)
-	res, out = b.post("/api-internal/login/password", `{"org":"acme","email":"pat@example.com","password":"x","extra":1}`)
+	res, out = b.post("/o/acme/api-internal/login/password", `{"email":"pat@example.com","password":"x","extra":1}`)
 	wantStatus(t, res, out, 400)
 
 	// Failures are audited with a reason, never the password.
 	fails := e.audits(t, "login.failure")
-	if len(fails) != 6 {
+	if len(fails) != 5 {
 		t.Fatalf("failure audits: %d", len(fails))
 	}
 	reasons := map[string]int{}
@@ -343,7 +357,7 @@ func TestGenericFailures(t *testing.T) {
 			}
 		}
 	}
-	if reasons["bad password"] != 2 || reasons["unknown user"] != 2 || reasons["unknown org"] != 1 || reasons["inactive"] != 1 {
+	if reasons["bad password"] != 2 || reasons["unknown user"] != 2 || reasons["inactive"] != 1 {
 		t.Fatalf("reasons %v", reasons)
 	}
 }
@@ -380,7 +394,7 @@ func TestUnknownUserCostsAHash(t *testing.T) {
 func TestCSRF(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
-	body := map[string]any{"org": "primary", "email": "admin@example.com", "password": e.Password}
+	body := map[string]any{"email": "admin@example.com", "password": e.Password}
 
 	cases := map[string]hdrs{
 		"no token":          {"X-CSRF-Token": " "},
@@ -400,7 +414,7 @@ func TestCSRF(t *testing.T) {
 	}
 	// a browser with the right header but without the cookie fails too
 	other := e.client()
-	req, _ := http.NewRequest("POST", e.URL+"/api-internal/login/password", strings.NewReader(`{"org":"primary","email":"admin@example.com","password":"x"}`))
+	req, _ := http.NewRequest("POST", e.URL+primaryBase+"/api-internal/login/password", strings.NewReader(`{"email":"admin@example.com","password":"x"}`))
 	req.Header.Set("X-CSRF-Token", b.csrf)
 	res, err := other.Do(req)
 	if err != nil {
@@ -441,7 +455,7 @@ func TestUsernameCannotSignIn(t *testing.T) {
 	}
 	post := func(who string) (*http.Response, map[string]any, bool) {
 		b := e.browser(t)
-		res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": who, "password": userPassword})
+		res, out := b.post("/o/acme/api-internal/login/password", map[string]any{"email": who, "password": userPassword})
 		return res, out, b.hasSession()
 	}
 	res, unknown, _ := post("nobody-at-all")
@@ -455,7 +469,7 @@ func TestUsernameCannotSignIn(t *testing.T) {
 	}
 	// The old JSON field is gone: "login" is an unknown field.
 	b := e.browser(t)
-	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "login": name, "password": userPassword})
+	res, out := b.post("/o/acme/api-internal/login/password", map[string]any{"login": name, "password": userPassword})
 	wantStatus(t, res, out, 400)
 	// Email addresses are case-insensitive.
 	for _, who := range []string{"Pat.Smith@Example.com", "pat.smith@example.com", "PAT.SMITH@EXAMPLE.COM", "  pat.smith@example.com "} {
@@ -479,7 +493,7 @@ func TestUsernameCannotSignIn(t *testing.T) {
 func TestLoginHintPrefillsEmail(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
-	_, body := b.get("/login/primary?login_hint=ada%40example.com")
+	_, body := b.get("/o/primary/login?login_hint=ada%40example.com")
 	if !strings.Contains(body, `data-hint="ada@example.com"`) {
 		t.Fatalf("hint not carried: %.600s", body)
 	}
@@ -491,14 +505,14 @@ func TestPasswordSignInStepUp(t *testing.T) {
 	e := newEnv(t, nil)
 	e.member(t)
 	b := e.browser(t)
-	res, out := b.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out := b.post("/o/primary/api-internal/login/password", map[string]any{"email": "member@example.com",
 		"password": userPassword, "next": "/step-up"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || b.hasSession() {
 		t.Fatalf("step-up sign-in: %v session=%v", out, b.hasSession())
 	}
 	b2 := e.browser(t)
-	res, out = b2.post("/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out = b2.post("/o/primary/api-internal/login/password", map[string]any{"email": "member@example.com",
 		"password": userPassword, "next": "/x"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "" || !b2.hasSession() {

@@ -45,14 +45,15 @@ const BearerFailuresPerIPMin = 60
 
 const nsBearer = "web.bearer" // failed bearer authentications per IP address
 
-// BearerLimited reports whether r's address has used up its failed bearer authentications for this minute (true
-// also when the counter cannot be read: fail closed).
-func (s *Server) BearerLimited(r *http.Request) bool {
+// BearerLimited reports whether r's address has used up its failed bearer authentications for this minute. A counter
+// that cannot be read is an error, not "limited": the caller refuses the request (fail closed) but answers
+// "unavailable", since no limit was reached.
+func (s *Server) BearerLimited(r *http.Request) (bool, error) {
 	if s.Eph == nil {
-		return false
+		return false, nil
 	}
 	n, err := s.Eph.Incr(r.Context(), nsBearer, RateKeyIP(r), 0, time.Minute)
-	return err != nil || n >= BearerFailuresPerIPMin
+	return n >= BearerFailuresPerIPMin, err
 }
 
 // BearerFailed counts a failed bearer authentication from r's address.
@@ -110,7 +111,13 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "Bearer tokens are not accepted."})
 				return
 			}
-			if s.BearerLimited(r) {
+			limited, err := s.BearerLimited(r)
+			if err != nil {
+				w.Header().Set("Retry-After", "5")
+				WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "The token could not be checked right now; try again shortly."})
+				return
+			}
+			if limited {
 				WriteBearerLimited(w)
 				return
 			}

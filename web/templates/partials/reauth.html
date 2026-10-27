@@ -1,6 +1,6 @@
 {{/* "Confirm it is you": the re-authentication dialog every sensitive change opens (your own account's, and the
      dangerous administrative ones; see withReauth in pages/account.js). Every signed-in page carries it (layouts/base).
-     org: your organization's name (its sign-in page); next: where signing in again returns to. */}}
+     org: your organization's id (its sign-in page); next: where signing in again returns to. */}}
 {{define "reauth-dialog"}}
   <div x-data="accountReauth">
   {{template "dialog-start" (dict "id" "reauth-dialog" "title" "Confirm it is you" "size" "sm")}}
@@ -9,7 +9,7 @@
       <p>This change needs a fresh sign-in check.</p>
       <div class="stack" x-show="mustSignIn" x-cloak>
         <p class="muted">Your account has no password, passkey or Authenticator App to confirm with here. Sign in again, then repeat the change within 5 minutes.</p>
-        <a class="btn btn-primary w-full" href="/login/{{.org}}?reauth=1&amp;next={{.next}}">Sign in again</a>
+        <a class="btn btn-primary w-full" href="/o/{{.org}}/login?reauth=1&amp;next={{.next}}">Sign in again</a>
       </div>
       {{template "field" (dict "name" "ra_password" "label" "Password" "type" "password" "autocomplete" "current-password" "autofocus" true "show" "askPassword")}}
       {{template "otp-field" (dict "name" "ra_code" "label" "Authenticator code" "show" "askCode")}}

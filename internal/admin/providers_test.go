@@ -42,3 +42,44 @@ func TestProviders(t *testing.T) {
 	want(t, ad.delete(A+"/providers/"+id), 200)
 	want(t, ad.delete(A+"/providers/"+id), 404)
 }
+
+// A super admin sets up an organization provider through the console's API: it names the source organization and
+// nothing else, and the application it signs in with appears in that organization (its secret nowhere). An
+// organization's administrator may read it but not create, change or delete one.
+func TestOrganizationProviders(t *testing.T) {
+	w := newWorld(t)
+	su, ad := w.as("super"), w.as("admin")
+	in := map[string]any{"type": "organization", "source_org": "globex"}
+	want(t, ad.post(A+"/providers", in), 403)
+	wantField(t, su.post(A+"/providers", map[string]any{"type": "organization"}), 422, "source_org")
+	wantField(t, su.post(A+"/providers", map[string]any{"type": "organization", "source_org": "acme"}), 422, "source_org")
+	if n := su.get("/api/orgs/globex/clients").total(); n != 0 {
+		t.Fatalf("refused requests made %d clients", n)
+	}
+
+	r := su.post(A+"/providers", in)
+	want(t, r, 201)
+	if r.str("type") != "organization" || r.str("source_org") != w.other.ID || r.str("name") != "Globex" ||
+		r.str("issuer") != w.env.Cfg.OrgIssuer(w.other.ID) || r.JSON["has_secret"] != true || r.str("client_id") == "" ||
+		r.JSON["auto_provision"] != false || r.JSON["trust_mfa"] != false || strings.Contains(string(r.Raw), "client_secret") {
+		t.Fatalf("provider: %s", r.Raw)
+	}
+	id := r.str("id")
+	cl := su.get("/api/orgs/globex/clients")
+	if cl.total() != 1 || !strings.Contains(string(cl.Raw), r.str("client_id")) || !strings.Contains(string(cl.Raw), "Sign-in to Acme") ||
+		!strings.Contains(string(cl.Raw), w.env.Cfg.Server.PublicURL+"/o/"+w.acme.ID+"/login/callback/"+id) {
+		t.Fatalf("clients of the source organization: %s", cl.Raw)
+	}
+
+	if g := ad.get(A + "/providers/" + id); g.Status != 200 || g.str("source_org") != w.other.ID {
+		t.Fatalf("admin reading: %s", g.Raw)
+	}
+	want(t, ad.patch(A+"/providers/"+id, map[string]any{"name": "mine"}), 403)
+	want(t, ad.delete(A+"/providers/"+id), 403)
+	want(t, su.patch(A+"/providers/"+id, map[string]any{"name": "Guests", "auto_provision": true}), 200)
+
+	want(t, su.delete(A+"/providers/"+id), 200)
+	if n := su.get("/api/orgs/globex/clients").total(); n != 0 {
+		t.Fatalf("the client outlived its provider: %d", n)
+	}
+}

@@ -72,7 +72,7 @@ func TestRefreshDefaultMode(t *testing.T) {
 	if m := h.introspect(cl, secret, r.str("access_token")); m["active"] != false {
 		t.Fatal("disabled user's access token active")
 	}
-	resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
+	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
 	if resp.StatusCode != 401 {
 		t.Fatal("userinfo for disabled user", resp.StatusCode)
 	}
@@ -328,7 +328,7 @@ func TestRefreshLostResponseRetry(t *testing.T) {
 	if retry.status != 200 || retry.str("refresh_token") != lost.str("refresh_token") {
 		t.Fatalf("the retry: %d, same token %v", retry.status, retry.str("refresh_token") == lost.str("refresh_token"))
 	}
-	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Revoked || g.Counter != 1 {
+	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Counter != 1 {
 		t.Fatalf("after the retry: %+v %v", g, err)
 	}
 	if next := h.refreshWith(cl, secret, retry.str("refresh_token")); next.status != 200 {
@@ -594,7 +594,7 @@ func TestRefreshRotationUnknownOutcomeRetry(t *testing.T) {
 	if retry.status != 200 || retry.str("refresh_token") == "" {
 		t.Fatalf("the retry of a rotation that landed: %d %v", retry.status, retry.m)
 	}
-	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Revoked || g.Counter != 1 {
+	if g, err := h.env.Svc.Grants.Get(context.Background(), gid); err != nil || g.Counter != 1 {
 		t.Fatalf("after the retry: %+v %v", g, err)
 	}
 	if n := len(h.auditEvents("oauth.refresh.reuse")); n != 0 {
@@ -617,7 +617,7 @@ func TestRevokeUnknownOutcomeIsAudited(t *testing.T) {
 	good := h.env.Svc.Grants.S
 	h.env.Svc.Grants.S = &deleteUnknown{Store: good}
 	t.Cleanup(func() { h.env.Svc.Grants.S = good })
-	expectUnavailable(t, "revoke", h.post("/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""))
+	expectUnavailable(t, "revoke", h.post(orgBase+"/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""))
 	ev := h.auditEvents("oauth.revoke")
 	if len(ev) != 1 || ev[0].Outcome != service.OutcomeUnknown {
 		t.Fatalf("revocation of unknown outcome: %+v", ev)

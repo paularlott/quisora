@@ -2,12 +2,15 @@ package oidc
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Tokens stop at once, wherever they are presented (userinfo, introspection by another client, the resource server's
@@ -47,11 +50,11 @@ func TestTokensStopWhen(t *testing.T) {
 			other, osecret := h.newClient(func(in *service.ClientInput) { in.Name = ptr("other") })
 			r, _ := h.login(cl, secret, nil)
 			at, rt := r.str("access_token"), r.str("refresh_token")
-			if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 200 {
+			if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 200 {
 				t.Fatalf("userinfo before: %d", resp.StatusCode)
 			}
 			tc.stop(h, cl)
-			if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
+			if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
 				t.Errorf("userinfo: %d", resp.StatusCode)
 			}
 			if m := h.introspect(other, osecret, at); m["active"] != false {
@@ -70,7 +73,7 @@ func TestTokensStopWhen(t *testing.T) {
 			}
 			if tc.signInAgain {
 				r, _ = h.login(cl, secret, nil)
-				if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token")); resp.StatusCode != 200 {
+				if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token")); resp.StatusCode != 200 {
 					t.Errorf("userinfo after signing in again: %d", resp.StatusCode)
 				}
 			}
@@ -99,10 +102,16 @@ func TestClientOfDeletedOrgUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.p.InvalidateOrg(org.ID) // as the change feed does
+	h.env.Server.InvalidateOrgs()
 	if _, err := h.env.Svc.Clients.Get(ctx, c.ID); err != nil {
 		t.Fatalf("the record is the sweep's to remove: %v", err)
 	}
-	if r := h.token(form, c, secret); r.status != 401 || r.str("error") != "invalid_client" {
+	// the organization's address space is gone with it
+	if r := h.token(form, c, secret); r.status != http.StatusNotFound {
 		t.Fatalf("after: %d %v", r.status, r.m)
+	}
+	// and the application is unknown where it is looked up without a request
+	if _, err := h.p.client(ctx, org.ID, c.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the client of a deleted organization is known: %v", err)
 	}
 }

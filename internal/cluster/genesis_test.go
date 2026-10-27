@@ -386,8 +386,8 @@ func TestStartNewClusterRefusesAFormedNode(t *testing.T) {
 	}
 }
 
-// "quisora bootstrap" and "quisora restore" on a gossip node seed its partitions: the others copy from it, global values
-// become reservations, and seeding twice changes nothing.
+// "quisora bootstrap" and "quisora restore" on a gossip node seed its partitions: the others copy from it, unique values
+// are found on every node, and seeding twice changes nothing.
 func TestStartNewClusterSeedsThePartitions(t *testing.T) {
 	c := newTCluster(t, 3, badgerBackend())
 	c.noSeed = true
@@ -434,14 +434,17 @@ func TestStartNewClusterSeedsThePartitions(t *testing.T) {
 	for i, tn := range c.nodes {
 		// (a read of a partition whose owner is changing hands is refused for a moment: the staleness gate)
 		waitFor(t, 10*time.Second, fmt.Sprintf("node %d: the seeded resource and credential", i), func() bool {
-			h, err := tn.st().GetByUnique(bg, model.KindTenant, model.TenantResourceKey("https://seeded.example.com"))
-			k, kerr := tn.st().GetByUnique(bg, model.KindPasskey, model.PasskeyCredentialKey([]byte("seed-cred")))
+			h, err := tn.st().GetByUnique(bg, model.KindTenant, model.TenantResourceKey("org-seed", "https://seeded.example.com"))
+			k, kerr := tn.st().GetByUnique(bg, model.KindPasskey, model.PasskeyCredentialKey("x", []byte("seed-cred")))
 			return err == nil && h.ID == tenant.ID && kerr == nil && k.ID == passkey.ID
 		})
 	}
-	// the seeded reservations hold: another organization cannot take the resource
-	if err := tenants(c.nodes[2]).Create(bg, newTenant("org-other", "x", "https://seeded.example.com")); !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("a seeded resource taken: %v", err)
+	// a resource is unique within its organization: the seeded one holds there, and another organization has its own
+	if err := tenants(c.nodes[2]).Create(bg, newTenant("org-seed", "y", "https://seeded.example.com")); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("a seeded resource taken in its organization: %v", err)
+	}
+	if err := tenants(c.nodes[2]).Create(bg, newTenant("org-other", "x", "https://seeded.example.com")); err != nil {
+		t.Fatalf("the same resource in another organization: %v", err)
 	}
 	// and the data can be written from any node
 	u2 := newUser("org-seed", "second")

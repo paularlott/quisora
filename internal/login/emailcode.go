@@ -126,7 +126,7 @@ type emailSendReq struct {
 	Ticket string `json:"ticket"`
 }
 
-// emailSend handles POST /api-internal/login/email/send: {ticket} -> {email}. It sends a code for the sign-in (a new
+// emailSend handles POST /o/{org}/api-internal/login/email/send: {ticket} -> {email}. It sends a code for the sign-in (a new
 // one when asked again).
 func (m *Module) emailSend(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
@@ -160,7 +160,7 @@ type emailVerifyReq struct {
 	Code   string `json:"code"`
 }
 
-// emailVerify handles POST /api-internal/login/email: {ticket, code} -> {next}.
+// emailVerify handles POST /o/{org}/api-internal/login/email: {ticket, code} -> {next}.
 func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -175,7 +175,11 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	n, open := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, key)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return
+	}
 	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -183,7 +187,12 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	wrong := false
 	defer m.settle(ctx, key, &wrong)
-	if !m.attempt(ctx, in.Ticket) {
+	within, err := m.attempt(ctx, in.Ticket)
+	if err != nil { // the counter failed: refused, but not as too many tries
+		unavailableResponse(w)
+		return
+	}
+	if !within {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}

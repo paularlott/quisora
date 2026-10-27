@@ -316,7 +316,7 @@ func TestResetLinkDiesWithPasswordChange(t *testing.T) {
 	e, org := emailEnv(t, nil)
 	user := e.user(t, org, "pat", model.RoleUser)
 	b := e.browser(t)
-	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": user.Email})
+	res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": user.Email})
 	wantStatus(t, res, out, 200)
 	link := linkPath(t, e.nextMail(t))
 	pw := "another fine password 42"

@@ -49,7 +49,7 @@
       {{template "edit-notice"}}
       <div class="field-row">
         {{template "field" (dict "name" "display_name" "label" "Display name" "autofocus" true "autocomplete" "off" "help" "Shown to people on the sign-in page.")}}
-        {{template "field" (dict "name" "name" "label" "URL name" "required" true "autocomplete" "off" "help" "Lowercase letters, digits and hyphens. Used in the sign-in address, e.g. /login/acme. Changing it breaks bookmarked sign-in links.")}}
+        {{template "field" (dict "name" "name" "label" "URL name" "required" true "autocomplete" "off" "help" "Lowercase letters, digits and hyphens. Used in the organization's addresses, e.g. /o/acme/login. Changing it breaks bookmarked sign-in links.")}}
       </div>
 
       <fieldset class="fieldset" aria-describedby="h-org-methods">

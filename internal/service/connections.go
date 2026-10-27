@@ -35,7 +35,7 @@ func (s *Service) ConnectedApps(ctx context.Context, userID string) ([]AppGrant,
 	now := time.Now()
 	by := map[string]*AppGrant{}
 	for _, g := range grants {
-		if g.Revoked || (!g.Expires.IsZero() && now.After(g.Expires)) {
+		if !g.Expires.IsZero() && now.After(g.Expires) {
 			continue
 		}
 		it := by[g.ClientID]
@@ -292,15 +292,6 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User) (*Creds, error) 
 	}
 	c.Links = slices.DeleteFunc(links, func(i *model.Identity) bool { return !exists[i.ProviderID] }) // a deleted provider: the sweep removes the link
 	return c, nil
-}
-
-// ids returns the ids of es.
-func ids[E model.Entity](es []E) []string {
-	out := make([]string, len(es))
-	for i, e := range es {
-		out[i] = e.GetMeta().ID
-	}
-	return out
 }
 
 // CurrentPasskeys returns u's passkeys that count (model.User.Counts), able to sign in or not (a disabled one is

@@ -106,7 +106,6 @@ func TestAccountApps(t *testing.T) {
 	mk(pat, c1, []string{"openid", "email"}, nil)
 	mk(pat, c1, []string{"openid", "profile"}, nil)
 	mk(pat, c2, []string{"openid"}, nil)
-	mk(pat, c2, []string{"admin"}, func(g *model.Grant) { g.Revoked = true })
 	mk(pat, c2, []string{"admin"}, func(g *model.Grant) { g.Expires = time.Now().Add(-time.Hour) })
 	mk(sam, c1, []string{"openid"}, nil)
 

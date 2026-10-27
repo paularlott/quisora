@@ -19,10 +19,10 @@ import (
 )
 
 // The device authorization grant (RFC 8628): sign-in on a device that cannot show a browser (a CLI, a TV, a kiosk).
-// The device posts to /oauth/device_authorization and gets a device_code it keeps and a short user_code it shows;
-// the user opens /device on a phone or computer, types the code, signs in there as for any application and approves
-// on a consent screen that always asks; meanwhile the device polls the token endpoint with the device_code until it
-// gets its tokens (or access_denied, or expired_token).
+// The device posts to /o/<org>/oauth/device_authorization and gets a device_code it keeps and a short user_code it
+// shows; the user opens /o/<org>/device on a phone or computer, types the code, signs in there as for any application
+// and approves on a consent screen that always asks; meanwhile the device polls the token endpoint with the
+// device_code until it gets its tokens (or access_denied, or expired_token).
 //
 // A user code is the one secret that the user carries between the two: 8 letters from an alphabet without vowels (no
 // words, nothing to misread), guessed at most deviceGuessesPerIP times per address in deviceGuessWindow. The grant is
@@ -114,8 +114,9 @@ func normUserCode(s string) string {
 	return b.String()
 }
 
-// handleDeviceAuthorization is POST /oauth/device_authorization (RFC 8628 §3.1): client authentication (or a public
-// client's client_id), scope and resource -> device_code, user_code, verification URIs, lifetime and poll interval.
+// handleDeviceAuthorization is POST /o/<org>/oauth/device_authorization (RFC 8628 §3.1): client authentication (or a
+// public client's client_id), scope and resource -> device_code, user_code, verification URIs, lifetime and poll
+// interval.
 func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
@@ -129,7 +130,12 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ctx := r.Context()
-	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "device-start|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > deviceStartsPerIP {
+	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "device-start|"+web.RateKeyIP(r), 1, time.Minute)
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
+	if n > deviceStartsPerIP {
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down",
 			desc: "too many device sign-ins from this address; try again in a minute", retry: true})
 		return
@@ -197,8 +203,9 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	o := newObj(512)
 	o.str("device_code", deviceCode)
 	o.str("user_code", formatUserCode(userCode))
-	o.str("verification_uri", p.issuer+"/device")
-	o.str("verification_uri_complete", p.issuer+"/device?user_code="+url.QueryEscape(formatUserCode(userCode)))
+	verify := p.cfg.OrgEndpoints(c.OrgID).DeviceVerification
+	o.str("verification_uri", verify)
+	o.str("verification_uri_complete", verify+"?user_code="+url.QueryEscape(formatUserCode(userCode)))
 	o.num("expires_in", int64(deviceTTL/time.Second))
 	o.num("interval", deviceInterval)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -292,7 +299,7 @@ type DeviceData struct {
 	Error string
 }
 
-// handleDevicePage is GET /device: the form for the code shown on the device, and with ?user_code= (typed, or from
+// handleDevicePage is GET /o/<org>/device: the form for the code shown on the device, and with ?user_code= (typed, or from
 // verification_uri_complete) the start of the sign-in that approves it.
 func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	typed, given := r.URL.Query().Get("user_code"), r.URL.Query().Has("user_code")
@@ -305,7 +312,12 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	guessKey := "device-code|" + web.RateKeyIP(r)
-	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 0, deviceGuessWindow); err != nil || n >= deviceGuessesPerIP {
+	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 0, deviceGuessWindow)
+	if err != nil {
+		render(http.StatusServiceUnavailable, "Something went wrong. Try again in a moment.")
+		return
+	}
+	if n >= deviceGuessesPerIP {
 		render(http.StatusTooManyRequests, "Too many codes were tried from here. Wait 15 minutes, then try again.")
 		return
 	}
@@ -314,13 +326,13 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 		render(http.StatusBadRequest, "Enter the 8-letter code your device shows, like WDJB-MJHT.")
 		return
 	}
-	d, deviceCode, c, ok := p.pendingDevice(ctx, code)
+	d, deviceCode, c, ok := p.pendingDevice(ctx, web.Org(r).ID, code)
 	if !ok {
 		_, _ = p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 1, deviceGuessWindow)
 		render(http.StatusBadRequest, "That code is not valid. It may have expired: check the code on your device, or start again there.")
 		return
 	}
-	f := &flow{ClientID: c.ID, Scopes: d.Scopes, Resources: d.Resources, MaxAge: -1, Mode: "query",
+	f := &flow{Org: c.OrgID, ClientID: c.ClientID(), Scopes: d.Scopes, Resources: d.Resources, MaxAge: -1, Mode: "query",
 		Created: time.Now().UnixNano(), Device: deviceCode}
 	secret, bind := newFlowSecret()
 	f.Bind = bind
@@ -334,9 +346,9 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	p.proceed(w, r, id, f, c)
 }
 
-// pendingDevice finds the undecided device sign-in of a normalised user code, and its client (enabled, and still
-// allowed the grant).
-func (p *Provider) pendingDevice(ctx context.Context, code string) (*deviceGrant, string, *model.Client, bool) {
+// pendingDevice finds the undecided device sign-in of a normalised user code in organization orgID, and its client
+// (enabled, still allowed the grant, and the organization's: another's codes are not valid here).
+func (p *Provider) pendingDevice(ctx context.Context, orgID, code string) (*deviceGrant, string, *model.Client, bool) {
 	dc, err := p.s.Eph.Get(ctx, nsDeviceUser, code)
 	if err != nil {
 		return nil, "", nil, false
@@ -349,8 +361,8 @@ func (p *Provider) pendingDevice(ctx context.Context, code string) (*deviceGrant
 	if json.Unmarshal(raw, &d) != nil || d.Decision != "" {
 		return nil, "", nil, false
 	}
-	ce, err := p.client(ctx, d.ClientID)
-	if err != nil || !ce.c.Enabled || !slices.Contains(ce.c.GrantTypes, service.GrantDeviceCode) {
+	ce, err := p.recordClient(ctx, d.ClientID)
+	if err != nil || ce.c.OrgID != orgID || !ce.c.Enabled || !slices.Contains(ce.c.GrantTypes, service.GrantDeviceCode) {
 		return nil, "", nil, false
 	}
 	return &d, string(dc), ce.c, true

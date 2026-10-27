@@ -242,8 +242,7 @@ func (n *Node) setFormed() error {
 // StartNewCluster makes st, the database of a node that has not run yet, the first node of a new cluster ("quisora
 // bootstrap --new-cluster" and "quisora restore" on a gossip node, and the load test's seed): every record in it is
 // written as a write of its partition (a record that was written outside the partition protocol belongs to no write,
-// and would never reach another node), the global unique values it lists become reservations, and the node's state
-// names a new data set (its genesis, the partition protocol's ClusterID) and says that its data is that data set's.
+// and would never reach another node), and the node's state names a new data set (its genesis, the partition protocol's ClusterID) and says that its data is that data set's.
 // The other nodes start with empty databases, adopt the data set and copy everything from it. It refuses a node that
 // already holds a data set (CheckNewCluster). Until the node has run, running it again is harmless: every record is
 // written once more, as a later write of its partition, and the data set keeps its genesis (and a forced start not
@@ -301,10 +300,7 @@ const seedPage = 1000
 
 // seedPartitions writes every record of st as a write of its partition, a page of one kind at a time: the records of a
 // page that belong to one partition are one write, with the partition's next sequence number (so records written after
-// an earlier run, or by a node that has begun to take part, are stamped too). The reservations of the global unique
-// values a record lists are written with it, each in the partition of its own id. A reservation already in st (a
-// backup of a gossip cluster holds them) is seeded as it is, first, so that the one made here for the same value takes
-// its place.
+// an earlier run, or by a node that has begun to take part, are stamped too).
 func seedPartitions(ctx context.Context, st store.Store, pst store.PartitionStore) error {
 	var next [partitions]uint64
 	for p := range partitions {
@@ -314,13 +310,10 @@ func seedPartitions(ctx context.Context, st store.Store, pst store.PartitionStor
 		}
 		next[p] = ps.Committed.Seq
 	}
-	kinds := []model.Kind{model.KindReservation}
-	for _, k := range model.Kinds() {
-		if k != model.KindReservation && !localOnly(k) { // a node's audit events stay its own
-			kinds = append(kinds, k)
+	for _, kind := range model.Kinds() {
+		if localOnly(kind) { // a node's audit events stay its own
+			continue
 		}
-	}
-	for _, kind := range kinds {
 		after := ""
 		for {
 			res, err := st.List(ctx, kind, store.ListQuery{After: after, Limit: seedPage})
@@ -328,20 +321,9 @@ func seedPartitions(ctx context.Context, st store.Store, pst store.PartitionStor
 				return err
 			}
 			byPart := map[int][]*store.Record{}
-			add := func(r *store.Record) { byPart[recPartition(r)] = append(byPart[recPartition(r)], r) }
 			for _, r := range res.Records {
 				after = r.ID
-				if globals := globalsOf(r); len(globals) > 0 {
-					r = withoutGlobals(r)
-					for _, g := range globals {
-						rv, err := seedReservation(r, g)
-						if err != nil {
-							return err
-						}
-						add(rv)
-					}
-				}
-				add(r)
+				byPart[recPartition(r)] = append(byPart[recPartition(r)], r)
 			}
 			for p, recs := range byPart {
 				next[p]++
@@ -355,30 +337,6 @@ func seedPartitions(ctx context.Context, st store.Store, pst store.PartitionStor
 		}
 	}
 	return nil
-}
-
-// withoutGlobals is r without the global unique values it lists (they are reserved, not indexed).
-func withoutGlobals(r *store.Record) *store.Record {
-	cp := *r
-	cp.Unique = nil
-	for _, u := range r.Unique {
-		if !model.GlobalUnique(r.Kind, u) {
-			cp.Unique = append(cp.Unique, u)
-		}
-	}
-	return &cp
-}
-
-// seedReservation is the reservation of the global value g for the record r.
-func seedReservation(r *store.Record, g string) (*store.Record, error) {
-	now := time.Now().UTC()
-	e := &model.Reservation{Meta: model.Meta{ID: reservationID(r.Kind, g), Created: now, Updated: now, Version: store.Clock.Now()},
-		HolderKind: r.Kind, HolderID: r.ID}
-	rec, err := store.EncodeAsIs(e)
-	if err != nil {
-		return nil, err
-	}
-	return rec, store.StampLocal(rec, nil, true)
 }
 
 // ---- the data set: genesis ----

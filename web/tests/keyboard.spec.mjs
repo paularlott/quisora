@@ -339,7 +339,7 @@ test('401 from the API redirects to sign-in', async ({ page, context }) => {
   await gotoRows(page, `${A}/users`)
   await context.clearCookies()
   await page.getByRole('searchbox', { name: 'Search users' }).fill('a')
-  await page.waitForURL(/\/\?next=/)
+  await page.waitForURL(/\/login\?next=/)
 })
 
 for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/providers', '/audit']) {
@@ -399,7 +399,7 @@ test('prefers-contrast: more makes glass opaque; the reduced-transparency rule s
 
 test('account: Create token asks for re-authentication, keeps focus in the dialogs and retries after success', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   // The server demands a re-authentication on the first attempt only; the re-auth call itself is stubbed (the demo
   // user's password is random), the retried token request goes through to the real server for the "after" state.
   let tokenCalls = 0
@@ -579,7 +579,7 @@ import { accountStub } from './pages.mjs'
 
 test('account: Change password opens from the keyboard, traps focus, closes with Esc and returns focus', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   const opener = page.getByRole('button', { name: /Change… password/ })
   await expect(opener).toBeVisible()
   await expect(page.getByRole('button', { name: /Set up… Authenticator App/ })).toBeVisible()
@@ -611,7 +611,7 @@ test('account: Change password opens from the keyboard, traps focus, closes with
 
 test('account: a user without a password in an organization without passwords sees why, and no way to add one', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await accountStub({ has_password: false, passwords_allowed: false })(page)
   await expect(page.getByText('Your organization does not sign people in with passwords.')).toBeVisible()
   await expect(page.getByRole('button', { name: /Change… password/ })).toBeHidden()
@@ -620,7 +620,7 @@ test('account: a user without a password in an organization without passwords se
 
 test('account: a user without a password can set one: the dialog asks for no current password and returns focus', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await accountStub({ has_password: false, passwords_allowed: true })(page)
   await expect(page.getByText('You sign in without a password. You can add one as another way to sign in.')).toBeVisible()
   const opener = page.getByRole('button', { name: 'Set a password…' })
@@ -638,7 +638,7 @@ test('account: a user without a password can set one: the dialog asks for no cur
 
 test('account: Authenticator App set-up dialog opens, shows the key, closes with Esc and returns focus', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   const opener = page.getByRole('button', { name: /Set up… Authenticator App/ })
   await opener.focus()
   await page.keyboard.press('Enter')
@@ -662,7 +662,7 @@ test('account: Authenticator App set-up dialog opens, shows the key, closes with
 
 test('account: Remove Authenticator App asks to confirm; Esc cancels and returns focus', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await accountStub({ totp: true })(page)
   await expect(page.getByText('On', { exact: true }).first()).toBeVisible()
   const opener = page.getByRole('button', { name: /Remove… Authenticator App/ })
@@ -855,7 +855,7 @@ test('admin user page: add and remove an email address from the keyboard', async
 
 test('account: below manager, addresses are set by a manager: read-only, verify, resend and make primary only', async ({ page }) => {
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   const list = page.getByRole('list', { name: 'Email addresses' })
   await list.waitFor()
   await expect(page.locator('#f-email-ro')).toHaveAttribute('readonly', '')
@@ -871,7 +871,7 @@ test('account: below manager, addresses are set by a manager: read-only, verify,
 
 test('account: managers too: the address is read-only and there is no Add email', async ({ page }) => {
   await signIn(page, 'manager')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await page.locator('#f-email-ro').waitFor()
   await expect(page.locator('#f-email-ro')).toHaveAttribute('readonly', '')
   await expect(page.locator('#f-email')).toHaveCount(0)
@@ -991,7 +991,7 @@ test('autocomplete fields', async ({ page }) => {
 test('account page: the time zone list is drawn over the cards below it', async ({ page }) => {
   await page.setViewportSize({ width: 1360, height: 1400 })
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await page.locator('#f-zoneinfo').fill('e')
   await expect(page.getByRole('listbox', { name: 'Time zone' })).toBeVisible()
   const r = await page.evaluate(() => {

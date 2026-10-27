@@ -192,65 +192,63 @@ export const PAGES = [
 
 // Pages owned by the login module (anonymous and account pages).
 PAGES.push(
-  { name: 'landing', path: '/', as: 'none' },
   // the device sign-in page (RFC 8628), and with a code that is not valid
-  { name: 'device', path: '/device', as: 'none' },
-  { name: 'device-error', path: '/device?user_code=BBBB-BBBB', as: 'none' },
+  { name: 'device', path: '/o/acme/device', as: 'none' },
+  { name: 'device-error', path: '/o/acme/device?user_code=BBBB-BBBB', as: 'none' },
   // the consent screen of a device sign-in (the demo's device client), with its warning and the code
-  { name: 'device-consent', path: '/account', as: 'user', steps: [async (p) => {
+  { name: 'device-consent', path: '/o/acme/account', as: 'user', steps: [async (p) => {
     const id = await (await p.request.get('/__demo/device-client')).text()
-    const res = await p.request.post('/oauth/device_authorization', { form: { client_id: id, scope: 'openid profile' } })
+    const res = await p.request.post('/o/acme/oauth/device_authorization', { form: { client_id: id, scope: 'openid profile' } })
     const { user_code: code } = await res.json()
-    await p.goto('/device?user_code=' + encodeURIComponent(code))
+    await p.goto('/o/acme/device?user_code=' + encodeURIComponent(code))
     await p.getByText('Signing in a device').waitFor()
   }] },
-  { name: 'landing-picker', path: '/?next=%2Foauth%2Fauthorize%2Fresume', as: 'none' },
-  { name: 'login-org', path: '/login/acme', as: 'none' },
+  { name: 'login-org', path: '/o/acme/login', as: 'none' },
   // the second-factor step (the password step's answer stubbed): "Try another way", then a recovery code
-  { name: 'login-another-way', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+  { name: 'login-another-way', path: '/o/acme/login', as: 'none', steps: [secondFactorStep, async (p) => {
     await p.getByRole('button', { name: 'Try another way' }).first().click()
     await p.getByRole('heading', { name: 'Try another way' }).waitFor()
   }] },
-  { name: 'login-recovery-code', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+  { name: 'login-recovery-code', path: '/o/acme/login', as: 'none', steps: [secondFactorStep, async (p) => {
     await p.getByRole('button', { name: 'Try another way' }).first().click()
     await p.getByRole('button', { name: 'Use a recovery code' }).click()
     await p.locator('#f-rcode').waitFor()
   }] },
-  { name: 'login-email-code', path: '/login/acme', as: 'none', steps: [secondFactorStep, async (p) => {
+  { name: 'login-email-code', path: '/o/acme/login', as: 'none', steps: [secondFactorStep, async (p) => {
     await p.getByRole('button', { name: 'Try another way' }).first().click()
     await p.getByRole('button', { name: 'Email a code to a•••@acme.example' }).click()
     await p.locator('#f-mcode').waitFor()
   }] },
-  { name: 'account', path: '/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
+  { name: 'account', path: '/o/acme/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
   // The user menu: a floating glass panel over the page, open for the audit (contrast budget of --glass-bg-panel).
-  { name: 'account-usermenu', path: '/account', as: 'user', steps: [async (p) => {
+  { name: 'account-usermenu', path: '/o/acme/account', as: 'user', steps: [async (p) => {
       await p.getByRole('button', { name: /Account menu/ }).click(); await p.locator('#user-menu').waitFor(); await p.waitForTimeout(450)
     }] },
   // An error toast stays until dismissed, so the audit sees it: the toast panel's contrast budget (--glass-bg-toast).
-  { name: 'account-toast', path: '/account', as: 'user', steps: [async (p) => {
+  { name: 'account-toast', path: '/o/acme/account', as: 'user', steps: [async (p) => {
       await p.evaluate(() => window.Alpine.store('toasts').push('Could not save your changes.', 'error'))
       await p.locator('.toast-error').waitFor(); await p.waitForTimeout(450)
     }] },
   // Email addresses: the list (a verified and an unverified linked address), the inline add input, the remove confirmation.
-  { name: 'account-emails', path: '/account', as: 'user', steps: [emailsStep] },
-  { name: 'account-password', path: '/account', as: 'user', dialog: true, steps: [async (p) => {
+  { name: 'account-emails', path: '/o/acme/account', as: 'user', steps: [emailsStep] },
+  { name: 'account-password', path: '/o/acme/account', as: 'user', dialog: true, steps: [async (p) => {
       await p.getByRole('button', { name: /Change… password/ }).click(); await p.getByRole('dialog', { name: 'Change password' }).waitFor(); await p.waitForTimeout(450)
     }] },
-  { name: 'account-zone-open', path: '/account', as: 'user', steps: [async (p) => {
+  { name: 'account-zone-open', path: '/o/acme/account', as: 'user', steps: [async (p) => {
       await p.locator('#f-zoneinfo').fill('lond')
       await p.getByRole('listbox', { name: 'Time zone' }).waitFor(); await p.waitForTimeout(300)
     }] },
-  { name: 'account-totp-setup', path: '/account', as: 'user', dialog: true, steps: [async (p) => {
+  { name: 'account-totp-setup', path: '/o/acme/account', as: 'user', dialog: true, steps: [async (p) => {
       await p.getByRole('button', { name: /Set up… Authenticator App/ }).click(); await p.getByRole('dialog', { name: 'Set up Authenticator App' }).waitFor()
       await p.waitForSelector('#totp-dialog img[src^="data:"]'); await p.waitForTimeout(450)
     }] },
-  { name: 'account-totp-on', path: '/account', as: 'user', steps: [accountStub({ totp: true })] },
-  { name: 'account-no-password', path: '/account', as: 'user', steps: [accountStub({ has_password: false })] },
-  { name: 'account-totp-remove', path: '/account', as: 'user', dialog: true, steps: [accountStub({ totp: true }), async (p) => {
+  { name: 'account-totp-on', path: '/o/acme/account', as: 'user', steps: [accountStub({ totp: true })] },
+  { name: 'account-no-password', path: '/o/acme/account', as: 'user', steps: [accountStub({ has_password: false })] },
+  { name: 'account-totp-remove', path: '/o/acme/account', as: 'user', dialog: true, steps: [accountStub({ totp: true }), async (p) => {
       await p.getByRole('button', { name: /Remove… Authenticator App/ }).click(); await p.getByRole('dialog', { name: 'Remove Authenticator App' }).waitFor(); await p.waitForTimeout(450)
     }] },
-  { name: 'account-admin', path: '/account', as: 'admin', steps: [async (p) => { await p.waitForTimeout(800) }] },
-  { name: 'logout', path: '/logout', as: 'user' },
+  { name: 'account-admin', path: '/o/acme/account', as: 'admin', steps: [async (p) => { await p.waitForTimeout(800) }] },
+  { name: 'logout', path: '/o/acme/logout', as: 'user' },
 )
 
 // Invitation sign-up page states (see pages-invite.mjs).

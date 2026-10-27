@@ -128,15 +128,10 @@ func (s Stats) Total() int {
 	return n
 }
 
-// Options adjust Write.
+// Options adjust WriteWith.
 type Options struct {
 	// Password encrypts the backup with a key derived from it (see crypt.go); "" writes it unencrypted.
 	Password string
-}
-
-// Write streams every live record of st to w (unencrypted).
-func Write(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.Writer) (Stats, error) {
-	return WriteWith(ctx, st, sealer, w, Options{})
 }
 
 // skipped reports whether a kind is left out of backups: short-lived sign-in state, cluster locks and single-use

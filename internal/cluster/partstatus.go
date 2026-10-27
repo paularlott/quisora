@@ -16,7 +16,7 @@ import (
 // not diverged here. Otherwise a revoked session, a disabled user or a rotated secret could be served from a copy that
 // no longer follows the cluster, for as long as it stays behind. The single-record reads of the cluster store refuse,
 // as an unavailable store does (store.ErrUnavailable), in gossip mode only; a node's own audit events and short-lived
-// state are exempt (they are not in a partition), and a reservation is the partition of its own id.
+// state are exempt (they are not in a partition).
 //
 // The node's readiness follows: it is not ready while a partition has diverged here (only an operator can resync it)
 // (the reason says so). A partition that is merely unreadable (an owner that cannot be replaced, a catch-up that keeps

@@ -147,9 +147,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	// Serving never creates the primary organization ("quisora bootstrap" does): a node that starts without one waits
 	// to receive it (a new member of a gossip cluster) or reports that it has not been set up.
 	switch _, err := a.Svc.PrimaryOrg(ctx); {
-	case errors.Is(err, service.ErrTwoPrimaries):
-		a.Close()
-		return nil, err
 	case errors.Is(err, service.ErrNotFound) && !!node.Standalone():
 		log.Warn("this server has not been set up: run \"quisora bootstrap\" to create the primary organization and its first administrator")
 	}
@@ -319,6 +316,7 @@ func (a *App) evict(rec *store.Record) {
 	case model.KindUser:
 		a.Server.Sessions.Evict("", rec.ID)
 	case model.KindOrg:
+		a.Server.InvalidateOrgs()
 		a.Server.Svc.InvalidateSignOut() // its emergency sign-out counters may have moved
 	}
 	for _, fn := range a.onChange {

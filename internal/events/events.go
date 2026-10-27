@@ -234,7 +234,7 @@ type Module struct {
 func (m *Module) Register(s *web.Server) {
 	m.s = s
 	s.Mux.Handle("GET "+web.EventsPath, s.RequireManagement(m.stream))
-	s.Mux.Handle("GET "+web.AccountEventsPath, s.WithSession(http.HandlerFunc(m.accountStream)))
+	s.Mux.Handle("GET /o/{org}"+web.AccountEventsPath, s.InOrg(s.WithSession(http.HandlerFunc(m.accountStream))))
 }
 
 // accountStream is the account page's stream: the signed-in user's own changes (an administrator elsewhere adding

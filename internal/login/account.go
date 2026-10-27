@@ -31,11 +31,13 @@ type acct struct {
 	actor *service.Actor
 }
 
+// registerAccount adds the account API, in the organization's address space like every other route of the module.
 func (m *Module) registerAccount(s *web.Server) {
 	h := func(pattern string, f func(http.ResponseWriter, *http.Request, acct)) {
-		s.Mux.Handle(pattern, s.RequireAPI(func(w http.ResponseWriter, r *http.Request) {
+		method, path, _ := strings.Cut(pattern, " ")
+		s.Mux.Handle(method+" /o/{org}"+path, s.InOrg(s.RequireAPI(func(w http.ResponseWriter, r *http.Request) {
 			f(w, r, acct{u: web.User(r), sess: web.Session(r), actor: web.Actor(r)})
-		}))
+		})))
 	}
 	h("GET /api-internal/account", m.getAccount)
 	h("GET /api-internal/account/profile-options", m.profileOptions)
@@ -79,7 +81,7 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("DELETE /api-internal/account/apps/{client}", m.revokeApp)
 }
 
-// accountPage handles GET /account.
+// accountPage handles GET /o/{org}/account.
 func (m *Module) accountPage(w http.ResponseWriter, r *http.Request) {
 	m.s.Render.Render(w, http.StatusOK, "account", m.s.Page(w, r, "My account", "account", map[string]any{
 		"Passkeys": m.Passkeys != nil, "Mail": m.Mail != nil,
@@ -209,7 +211,7 @@ type profileReq struct {
 	Phone      *string `json:"phone_number"`
 }
 
-// patchAccount handles PATCH /api-internal/account. Only profile fields can be sent; role, username and the like are
+// patchAccount handles PATCH /o/{org}/api-internal/account. Only profile fields can be sent; role, username and the like are
 // rejected by the strict decoder.
 func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 	var in profileReq
@@ -238,7 +240,7 @@ func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"user": toProfile(u)})
 }
 
-// sendVerify handles POST /api-internal/account/email/verify: mails a confirmation link for the address on file.
+// sendVerify handles POST /o/{org}/api-internal/account/email/verify: mails a confirmation link for the address on file.
 func (m *Module) sendVerify(w http.ResponseWriter, r *http.Request, a acct) {
 	ctx := r.Context()
 	u, err := m.fresh(ctx, a)
@@ -254,7 +256,12 @@ func (m *Module) sendVerify(w http.ResponseWriter, r *http.Request, a acct) {
 	case u.EmailVerified:
 		writeErr(w, http.StatusConflict, "Your email address is already verified.", "")
 	default:
-		if n, err := m.s.Eph.Incr(ctx, nsVerify, u.ID, 1, time.Hour); err != nil || n > 5 {
+		n, err := m.s.Eph.Incr(ctx, nsVerify, u.ID, 1, time.Hour)
+		if err != nil { // the counter failed: refused (no mail), but not as a limit reached
+			unavailableResponse(w)
+			return
+		}
+		if n > 5 {
 			w.Header().Set("Retry-After", "3600")
 			writeErr(w, http.StatusTooManyRequests, "Too many verification emails. Try again later.", "")
 			return
@@ -275,7 +282,12 @@ func (m *Module) sendVerify(w http.ResponseWriter, r *http.Request, a acct) {
 // with sendVerify). It writes the error response itself and reports whether the mail went out.
 func (m *Module) mailAddress(w http.ResponseWriter, r *http.Request, u *model.User, address string) bool {
 	ctx := r.Context()
-	if n, err := m.s.Eph.Incr(ctx, nsVerify, u.ID, 1, time.Hour); err != nil || n > 5 {
+	n, err := m.s.Eph.Incr(ctx, nsVerify, u.ID, 1, time.Hour)
+	if err != nil { // the counter failed: refused (no mail), but not as a limit reached
+		unavailableResponse(w)
+		return false
+	}
+	if n > 5 {
 		w.Header().Set("Retry-After", "3600")
 		writeErr(w, http.StatusTooManyRequests, "Too many verification emails. Try again later.", "")
 		return false
@@ -306,7 +318,7 @@ func (m *Module) emailError(w http.ResponseWriter, err error) {
 	web.WriteError(w, err)
 }
 
-// primaryEmail handles POST /api-internal/account/emails/{address}/primary. Needs a recent re-authentication.
+// primaryEmail handles POST /o/{org}/api-internal/account/emails/{address}/primary. Needs a recent re-authentication.
 func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
 		return
@@ -320,7 +332,7 @@ func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"user": toProfile(u)})
 }
 
-// resendEmail handles POST /api-internal/account/emails/{address}/verify: mails the verification link again.
+// resendEmail handles POST /o/{org}/api-internal/account/emails/{address}/verify: mails the verification link again.
 func (m *Module) resendEmail(w http.ResponseWriter, r *http.Request, a acct) {
 	if m.Mail == nil {
 		writeErr(w, http.StatusServiceUnavailable, "Email is not set up on this server.", "")
@@ -348,7 +360,11 @@ type changePasswordReq struct {
 func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model.User, password, field string) bool {
 	ctx := r.Context()
 	key := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
-	n, open := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, key)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return false
+	}
 	if !open {
 		m.lockedResponse(w)
 		return false
@@ -379,7 +395,7 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 	return true
 }
 
-// changePassword handles POST /api-internal/account/password: {current, new}. The current session survives; every other
+// changePassword handles POST /o/{org}/api-internal/account/password: {current, new}. The current session survives; every other
 // session of the user (and its refresh grants) is ended. An account without a password (set up with a passkey, an
 // authenticator app or a sign-in provider) sets its first one here with {new} alone: setFirstPassword.
 func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) {
@@ -482,26 +498,15 @@ func (m *Module) passwordsAllowed(ctx context.Context, u *model.User) bool {
 }
 
 // endOtherSessions ends every session of the user but the current one, with their refresh grants, and reports how
-// many ended and the failures (a session that could not be listed or deleted still works: the caller says so
-// rather than counting only what ended).
+// many ended and the failures (a session that could not be deleted is already ended, but its record is left: the
+// caller says so rather than counting only what was removed). The account's session epoch moves on and the current
+// session is carried over to it (service.RevokeOtherSessions), so a sign-in in flight is ended too, not only the
+// sessions a listing found. The sessions this node holds of the user are dropped from its cache, whatever happened:
+// the session and the account they were cached with are of the epoch just left.
 func (m *Module) endOtherSessions(ctx context.Context, a acct) (int, error) {
-	list, err := m.s.Svc.Sessions.All(ctx, a.u.ID)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	var errs []error
-	for _, s := range list {
-		if s.ID == a.sess.ID {
-			continue
-		}
-		if err := m.s.Sessions.Delete(ctx, s.ID); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		n++
-	}
-	return n, errors.Join(errs...)
+	n, err := m.s.Svc.RevokeOtherSessions(ctx, a.u.ID, a.sess.ID)
+	m.changed(a)
+	return n, err
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -584,7 +589,7 @@ type reauthReq struct {
 	Code     string `json:"code"`
 }
 
-// reauthPassword handles POST /api-internal/account/reauth: {password, code}. Re-authentication asks for what the account
+// reauthPassword handles POST /o/{org}/api-internal/account/reauth: {password, code}. Re-authentication asks for what the account
 // signs in with, second factor included: the password alone only for an account without one; the password and the
 // authenticator code for an account with the app (the code alone when it has no password); an account whose second
 // factor is a passkey confirms with the passkey (reauthPasskeyBegin / Finish).
@@ -601,7 +606,11 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 	}
 	lockKey := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
 	checkCode := func() bool {
-		n, open := m.charge(ctx, lockKey)
+		n, open, err := m.charge(ctx, lockKey)
+		if err != nil { // the counter failed: refused, but not a lockout
+			unavailableResponse(w)
+			return false
+		}
 		if !open {
 			m.lockedResponse(w)
 			return false
@@ -967,7 +976,12 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	ctx := r.Context()
-	if n, err := m.s.Eph.Incr(ctx, nsTry, "totp:"+a.sess.ID, 1, 10*time.Minute); err != nil || n > 10 {
+	n, err := m.s.Eph.Incr(ctx, nsTry, "totp:"+a.sess.ID, 1, 10*time.Minute)
+	if err != nil { // the counter failed: refused, but not as a limit reached
+		unavailableResponse(w)
+		return
+	}
+	if n > 10 {
 		w.Header().Set("Retry-After", "600")
 		writeErr(w, http.StatusTooManyRequests, "Too many attempts. Start again in a few minutes.", "")
 		return
@@ -1019,8 +1033,8 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// totpDisable handles DELETE /api-internal/account/totp; it needs a re-authentication within the last five minutes.
-// createRecoveryCodes handles POST /api-internal/account/recovery-codes: a new set of recovery codes (the old ones
+// totpDisable handles DELETE /o/{org}/api-internal/account/totp; it needs a re-authentication within the last five minutes.
+// createRecoveryCodes handles POST /o/{org}/api-internal/account/recovery-codes: a new set of recovery codes (the old ones
 // stop working), shown this once. After a recent re-authentication.
 func (m *Module) createRecoveryCodes(w http.ResponseWriter, r *http.Request, a acct) {
 	if !m.needReauth(w, r, a) {
@@ -1298,7 +1312,7 @@ func (m *Module) revokeApp(w http.ResponseWriter, r *http.Request, a acct) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// profileOptions handles GET /api-internal/account/profile-options: the languages, time zones and user types the
+// profileOptions handles GET /o/{org}/api-internal/account/profile-options: the languages, time zones and user types the
 // autocompleters offer (the account page and the admin console). The same for everyone, so cacheable.
 func (m *Module) profileOptions(w http.ResponseWriter, r *http.Request, a acct) {
 	w.Header().Set("Cache-Control", "private, max-age=86400")

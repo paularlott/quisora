@@ -9,6 +9,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // Verification mails are limited to five an hour per account, shared by the primary address and linked ones.
@@ -58,12 +59,12 @@ func TestEmailVerification(t *testing.T) {
 	res, out := signed.post("/api-internal/account/email/verify", nil)
 	wantStatus(t, res, out, 200)
 	link := linkPath(t, e.nextMail(t))
-	if !strings.HasPrefix(link, "/verify-email?token=") {
+	if !strings.HasPrefix(link, web.OrgPath(org.ID, "/verify-email?token=")) {
 		t.Fatal(link)
 	}
 	anon := e.browser(t)
 	res, _ = anon.verifyLink(link)
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?email=verified#profile" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=verified#profile" {
 		t.Fatalf("verify: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	fresh, _ := e.Svc.Users.Get(context.Background(), pat.ID)
@@ -71,7 +72,7 @@ func TestEmailVerification(t *testing.T) {
 		t.Fatal("not verified")
 	}
 	res, _ = anon.verifyLink(link)
-	if res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=invalid#profile" {
 		t.Fatalf("reused link: %q", res.Header.Get("Location"))
 	}
 	res, out = signed.post("/api-internal/account/email/verify", nil)
@@ -88,7 +89,7 @@ func TestEmailVerification(t *testing.T) {
 	third := "third@example.com"
 	e.Svc.UpdateUser(context.Background(), service.System, pat.ID, service.UserInput{Email: &third})
 	res, _ = anon.verifyLink(link2)
-	if res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=invalid#profile" {
 		t.Fatalf("stale address verified: %q", res.Header.Get("Location"))
 	}
 }
@@ -110,12 +111,12 @@ func TestVerifyLinkOpenedIsNotUsed(t *testing.T) {
 	if u, _ := e.Svc.Users.Get(t.Context(), pat.ID); u.EmailVerified {
 		t.Fatal("opening the link verified the address")
 	}
-	if res, _ := e.browser(t).verifyLink(link); res.Header.Get("Location") != "/account?email=verified#profile" {
+	if res, _ := e.browser(t).verifyLink(link); res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=verified#profile" {
 		t.Fatalf("confirm: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// A press from another site (no matching CSRF cookie) is refused.
 	form := url.Values{"token": {tokenOf(link)}, "csrf": {"x"}}
-	if res, err := e.browser(t).c.PostForm(e.URL+"/verify-email", form); err != nil || res.StatusCode != http.StatusForbidden {
+	if res, err := e.browser(t).c.PostForm(e.URL+web.OrgPath(pat.OrgID, "/verify-email"), form); err != nil || res.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-site press: %v %v", res, err)
 	}
 }

@@ -13,7 +13,7 @@ API) and must use that one.
 | `none` | Public clients: single-page apps, mobile and desktop apps, CLIs | `client_id` only; PKCE protects the sign-in, refresh tokens always rotate |
 
 ```bash
-export QUISORA=https://id.example.com
+export ISSUER=https://id.example.com/o/<org id>      # the organization's issuer
 ```
 
 ## Client secrets
@@ -23,11 +23,11 @@ hash. Secrets look like `qsrs_…`.
 
 ```bash
 # client_secret_post
-curl -s "$QUISORA/oauth/token" -d grant_type=client_credentials \
+curl -s "$ISSUER/oauth/token" -d grant_type=client_credentials \
   -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET"
 
 # client_secret_basic (curl's -u does the Basic header; IDs and secrets need no escaping, as they use no special characters)
-curl -s -u "$CLIENT_ID:$CLIENT_SECRET" "$QUISORA/oauth/token" -d grant_type=client_credentials
+curl -s -u "$CLIENT_ID:$CLIENT_SECRET" "$ISSUER/oauth/token" -d grant_type=client_credentials
 ```
 
 **Rotating a secret.** **Rotate secret** on the client (or `POST /api/orgs/{org}/clients/{id}/secret`) makes a new
@@ -62,21 +62,21 @@ Through the API, `"token_endpoint_auth_method":"private_key_jwt"` with `"jwks":"
 **Send an assertion** instead of a secret:
 
 ```bash
-curl -s "$QUISORA/oauth/token" -d grant_type=client_credentials \
+curl -s "$ISSUER/oauth/token" -d grant_type=client_credentials \
   -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
-  --data-urlencode "client_assertion=$(client_assertion client.key "$CLIENT_ID" "$QUISORA")"
+  --data-urlencode "client_assertion=$(client_assertion client.key "$CLIENT_ID" "$ISSUER")"
 ```
 
 `client_id` may be sent too; it must then match. The assertion's claims, as `client_assertion` makes them:
 
 ```json
-{"iss": "c_…", "sub": "c_…", "aud": "https://id.example.com", "jti": "5f0c…", "iat": 1792811000, "exp": 1792811060}
+{"iss": "c_…", "sub": "c_…", "aud": "https://id.example.com/o/<org id>", "jti": "5f0c…", "iat": 1792811000, "exp": 1792811060}
 ```
 
 | Claim | Rule |
 | --- | --- |
 | `iss`, `sub` | Both the client ID. |
-| `aud` | The issuer (`https://id.example.com`) or the token endpoint (`https://id.example.com/oauth/token`), at any of the endpoints above. A FAPI 2.0 client must use the issuer alone, as a string. |
+| `aud` | The organization's issuer (`https://id.example.com/o/<org id>`) or its token endpoint (`https://id.example.com/o/<org id>/oauth/token`), at any of the endpoints above. A FAPI 2.0 client must use the issuer alone, as a string. |
 | `exp` | Required, at most 5 minutes ahead. |
 | `iat`, `nbf` | Optional; not in the future. |
 | `jti` | Required, unique: each assertion is accepted once. |

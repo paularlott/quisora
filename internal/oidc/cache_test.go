@@ -50,7 +50,7 @@ func TestProviderCachesDoNotKeepAFillThatRacedAnEviction(t *testing.T) {
 	}{
 		{"user", users, h.p.InvalidateUser, func() error { _, err := h.p.user(ctx, h.user.ID); return err }, h.user.ID},
 		{"organization", orgs, h.p.InvalidateOrg, func() error { _, err := h.p.org(ctx, h.env.Primary.ID); return err }, h.env.Primary.ID},
-		{"client", clients, h.p.InvalidateClient, func() error { _, err := h.p.client(ctx, cl.ID); return err }, cl.ID},
+		{"client", clients, h.p.InvalidateClient, func() error { _, err := h.p.client(ctx, cl.OrgID, cl.ID); return err }, cl.ID},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,7 +77,7 @@ func TestProviderCachesDoNotKeepAFillThatRacedAnEviction(t *testing.T) {
 		})
 	}
 	// invalidating the client with no id clears the whole client cache
-	if _, err := h.p.client(ctx, cl.ID); err != nil {
+	if _, err := h.p.client(ctx, cl.OrgID, cl.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.p.InvalidateClient("")
@@ -135,7 +135,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	gid, _ := claimsOf(t, at2)["gid"].(string)
-	if rv := h.clientPost("/oauth/revoke", url.Values{"token": {r2.str("refresh_token")}}, cl, secret); rv.status != 200 {
+	if rv := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {r2.str("refresh_token")}}, cl, secret); rv.status != 200 {
 		t.Fatalf("revoke: %d", rv.status)
 	}
 	h.p.InvalidateGrant(gid)

@@ -24,7 +24,7 @@ The answer has the client's `id` and its `secret` (shown once).
 ## Getting a token
 
 ```bash
-curl -s "$QUISORA/oauth/token" -d grant_type=client_credentials \
+curl -s "$ISSUER/oauth/token" -d grant_type=client_credentials \
   -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET"
 ```
 
@@ -40,7 +40,7 @@ curl -s "$QUISORA/oauth/token" -d grant_type=client_credentials \
 The token's `sub` and `client_id` are the client, its `org` claims are the client's organization, and there is no
 refresh token: ask for a new access token when the old one is about to expire (`expires_in`, 10 minutes by default).
 An API tells these tokens from users' tokens by `sub` being the client ID. A client credentials token cannot be
-revoked (`/oauth/revoke` answers `unsupported_token_type`): it lasts until it expires, so keep the lifetime short.
+revoked (the organization's `/oauth/revoke` answers `unsupported_token_type`): it lasts until it expires, so keep the lifetime short.
 To cut a client off at once, disable it: a disabled application's tokens stop working immediately.
 
 To bind the tokens to a key the client holds, so a copied token is useless, send a [DPoP](dpop.md) proof with the

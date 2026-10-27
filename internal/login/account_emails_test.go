@@ -8,6 +8,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // The account page shows the addresses someone else linked: the user verifies them from the link mailed to each
@@ -51,14 +52,14 @@ func TestAccountLinkedEmails(t *testing.T) {
 	link := linkPath(t, m)
 	anon := e.browser(t)
 	res, _ = anon.verifyLink(link)
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/account?email=verified#emails" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=verified#emails" {
 		t.Fatalf("verify: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	fresh, _ := e.Svc.Users.Get(ctx, pat.ID)
 	if l, _ := fresh.LinkedEmail("paul@the7thdream.com"); !l.Verified {
 		t.Fatalf("verified state %+v", fresh.LinkedEmails)
 	}
-	if res, _ = anon.verifyLink(link); res.Header.Get("Location") != "/account?email=invalid#emails" && res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res, _ = anon.verifyLink(link); res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=invalid#emails" && res.Header.Get("Location") != web.OrgPath(pat.OrgID, "")+"/account?email=invalid#profile" {
 		t.Fatalf("link reused: %q", res.Header.Get("Location"))
 	}
 

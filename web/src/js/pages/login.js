@@ -1,8 +1,8 @@
-// Sign-in pages: landing, organization sign-in (password, TOTP, passkeys, MFA enrolment, forgotten password),
+// Sign-in pages: organization sign-in (password, TOTP, passkeys, MFA enrolment, forgotten password),
 // invitation / reset, logout. The anonymous sign-in endpoints answer 401 for wrong credentials, so this module has
 // its own fetch wrapper (lib/api.js treats 401 as "session ended" and navigates away). It also hosts the WebAuthn
 // helpers that account.js reuses.
-import { ApiError } from '../lib/api.js'
+import { ApiError, orgBase } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { announce, toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
@@ -12,11 +12,12 @@ const csrf = () => {
   return m ? m.content : ''
 }
 
-// anon POSTs JSON with the anonymous double-submit CSRF header and never redirects on 401.
-export async function anon(url, body) {
+// anon POSTs JSON to a path of the page's organization (/o/<id>/..., see orgBase) with the anonymous double-submit
+// CSRF header and never redirects on 401.
+export async function anon(path, body) {
   let res
   try {
-    res = await fetch(url, {
+    res = await fetch(orgBase() + path, {
       method: 'POST', credentials: 'same-origin',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() },
       body: JSON.stringify(body || {}),
@@ -111,10 +112,10 @@ export async function createCredential(options) {
 // Local path check for redirects after sign-in (the server already sanitises; this is belt and braces).
 const localPath = (p) => typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.includes('\\')
 
-function go(next) { window.location.assign(localPath(next) ? next : '/account') }
+function go(next) { window.location.assign(localPath(next) ? next : orgBase() + '/account') }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Passkey sign-in shared by the landing page and the organization page
+// Passkey sign-in on the organization page
 
 function passkeyMixin() {
   return {
@@ -139,7 +140,7 @@ function passkeyMixin() {
     },
     stopConditional() { if (this.conditional) { this.conditional.abort(); this.conditional = null } },
 
-    // passkeyLogin runs the explicit ceremony. extra carries org/next, or the ticket of a password step.
+    // passkeyLogin runs the explicit ceremony. extra carries next and tenant, or the ticket of a password step.
     async passkeyLogin(extra) {
       this.stopConditional()
       const res = await this.run(async () => {
@@ -306,13 +307,12 @@ function stepsMixin() {
 }
 
 export default function (Alpine) {
-  // ---- landing page ------------------------------------------------------------------------------------------
+  // ---- the organization's sign-in page -----------------------------------------------------------------------
   Alpine.data('loginPage', () => mix(formMixin(), passkeyMixin(), stepsMixin(), {
-    org: '', next: '', tenant: '', forgotSent: false, forgotOpen: false,
+    next: '', tenant: '', forgotSent: false, forgotOpen: false,
 
     init() {
       const d = this.$el.dataset
-      this.org = d.org
       this.tenant = d.tenant || ''
       this.next = d.next || ''
       this.passkeyOn = d.passkey === '1'
@@ -325,7 +325,7 @@ export default function (Alpine) {
           alternatives: (d.alternatives || '').split(' ').filter(Boolean), email: d.email || '' })
         return
       }
-      this.startConditional({ org: this.org, next: this.next, tenant: this.tenant })
+      this.startConditional({ next: this.next, tenant: this.tenant })
     },
 
     // step getters (the CSP build wants plain property paths in templates)
@@ -366,7 +366,7 @@ export default function (Alpine) {
       this.clearErrors()
       this.step = 'email'
       this.$nextTick(() => { const el = document.getElementById('f-email'); if (el) el.focus() })
-      this.startConditional({ org: this.org, next: this.next, tenant: this.tenant })
+      this.startConditional({ next: this.next, tenant: this.tenant })
     },
 
     async submitPassword() {
@@ -375,10 +375,10 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Enter your password.', field: 'password' }))
         return
       }
-      const res = await this.call('', () => anon('/api-internal/login/password', { org: this.org, email: f.email.trim(), password: f.password, next: this.next, tenant: this.tenant }))
+      const res = await this.call('', () => anon('/api-internal/login/password', { email: f.email.trim(), password: f.password, next: this.next, tenant: this.tenant }))
       if (res) { this.form.password = ''; this.handle(res) }
     },
-    signInWithPasskey() { return this.passkeyLogin({ org: this.org, next: this.next, tenant: this.tenant }) },
+    signInWithPasskey() { return this.passkeyLogin({ next: this.next, tenant: this.tenant }) },
 
     // ---- forgotten password
     openForgot() {
@@ -395,14 +395,14 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Enter your email address.', field: 'fg_email' }))
         return
       }
-      const res = await this.call('fg_', () => anon('/api-internal/password/forgot', { org: this.org, tenant: this.tenant, email: this.form.fg_email.trim() }))
+      const res = await this.call('fg_', () => anon('/api-internal/password/forgot', { tenant: this.tenant, email: this.form.fg_email.trim() }))
       if (res) { this.forgotSent = true; announce('If an account matches, a reset link is on its way.') }
     },
   }))
 
   // ---- /reset ------------------------------------------------------------------------------------------------
   Alpine.data('passwordSetup', () => mix(formMixin(), {
-    token: '', action: '', done: false, nextUrl: '/',
+    token: '', action: '', done: false, nextUrl: '',
     init() { // the root's data attributes: elsewhere this.$el is the element being evaluated, not the root
       this.token = this.$el.dataset.token
       this.action = this.$el.dataset.action || 'Set password'
@@ -418,7 +418,7 @@ export default function (Alpine) {
       }
       const res = await this.run(() => anon('/api-internal/password/reset', { token: this.token, password: f.password }))
       if (!res) return
-      this.nextUrl = localPath(res.next) ? res.next : '/'
+      this.nextUrl = localPath(res.next) ? res.next : orgBase() + '/login'
       this.done = true
       this.form.password = this.form.confirm = ''
       announce('Your password has been saved. You can sign in now.')
@@ -484,14 +484,14 @@ export default function (Alpine) {
     async submit() {
       const next = this.next
       const res = await this.run(async () => {
-        const r = await fetch('/logout' + (next ? '?next=' + encodeURIComponent(next) : ''), {
+        const r = await fetch(orgBase() + '/logout' + (next ? '?next=' + encodeURIComponent(next) : ''), {
           method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json', 'X-CSRF-Token': csrf() } })
         let data = null
         try { data = await r.json() } catch { data = null }
         if (!r.ok) throw new ApiError(r.status, data)
         return data
       })
-      if (res) window.location.assign(localPath(res.next) ? res.next : '/')
+      if (res) window.location.assign(localPath(res.next) ? res.next : orgBase() + '/login')
     },
     get submitLabel() { return this.busy ? 'Signing out…' : 'Sign out' },
   }))

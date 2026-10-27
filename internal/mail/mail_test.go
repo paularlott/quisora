@@ -85,9 +85,9 @@ func TestTemplatesAndLinks(t *testing.T) {
 		subject string
 		path    string
 	}{
-		{service.LinkInvite, func() error { return m.SendInvite(ctx, u, org) }, "invited to Acme ID", "/invite?token="},
-		{service.LinkReset, func() error { return m.SendReset(ctx, u, org) }, "Reset your Acme ID password", "/reset?token="},
-		{service.LinkVerify, func() error { return m.SendVerify(ctx, u, org) }, "Confirm your email", "/verify-email?token="},
+		{service.LinkInvite, func() error { return m.SendInvite(ctx, u, org) }, "invited to Acme ID", "/o/" + org.ID + "/invite?token="},
+		{service.LinkReset, func() error { return m.SendReset(ctx, u, org) }, "Reset your Acme ID password", "/o/" + org.ID + "/reset?token="},
+		{service.LinkVerify, func() error { return m.SendVerify(ctx, u, org) }, "Confirm your email", "/o/" + org.ID + "/verify-email?token="},
 	} {
 		if err := tc.send(); err != nil {
 			t.Fatal(err)
@@ -182,7 +182,7 @@ func TestSendInviteLinkAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	cap.wait(t)
-	tok := strings.TrimPrefix(link, "https://quisora.example.test/invite?token=")
+	tok := link[strings.Index(link, "token=")+len("token="):]
 	if _, _, err := m.Svc.PeekLink(ctx, tok, service.LinkInvite); err == nil {
 		t.Fatal("older invitation still valid")
 	}
@@ -218,5 +218,56 @@ func TestBuildMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg.Header.Get("Subject"), "=?utf-8?q?") {
 		t.Fatalf("subject not encoded: %q", msg.Header.Get("Subject"))
+	}
+}
+
+// An invitation or reset link is mailed to the address it is bound to (the account's when it was issued), never to the
+// address on the caller's older copy of the user: an address corrected after the caller read the user (the admin page
+// holds the user across the invitation) must not mail the link to the old, mistyped address, which it no longer opens
+// the account for.
+func TestLinksGoToTheAddressTheyAreBoundTo(t *testing.T) {
+	cap := newCapture()
+	m := newMailer(t, nil, cap)
+	ctx := context.Background()
+	org, err := m.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: ptr("acme")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := m.Svc.CreateUser(ctx, service.System, org.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("typo"), Email: ptr("typo@example.com")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := *u // the caller's copy, read before the correction
+	if _, err := m.Svc.UpdateUser(ctx, service.System, u.ID, service.UserInput{Email: ptr("right@example.com")}); err != nil {
+		t.Fatal(err)
+	}
+
+	link, exp, err := m.Svc.CreateInvite(ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SendInviteLink(ctx, &stale, org, link, exp); err != nil {
+		t.Fatal(err)
+	}
+	if to := cap.wait(t).To; to != "right@example.com" {
+		t.Fatalf("the invitation was mailed to %q, want the address it is bound to", to)
+	}
+	if err := m.SendReset(ctx, &stale, org); err != nil {
+		t.Fatal(err)
+	}
+	if to := cap.wait(t).To; to != "right@example.com" {
+		t.Fatalf("the reset link was mailed to %q, want the address it is bound to", to)
+	}
+	// the invitation, mailed to the address it is bound to, proves that address when it is used
+	tok := link[strings.Index(link, "token=")+len("token="):]
+	if l, _, err := m.Svc.PeekLink(ctx, tok, service.LinkInvite); err != nil || l.Email != "right@example.com" {
+		t.Fatalf("the invitation: %v %+v", err, l)
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	for _, msg := range cap.msgs {
+		if msg.To == "typo@example.com" {
+			t.Fatalf("a link was mailed to the old address: %q", msg.Subject)
+		}
 	}
 }

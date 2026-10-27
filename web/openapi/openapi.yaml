@@ -14,7 +14,7 @@ info:
 
     SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).
 
-    Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /api-internal/account (the signed-in user, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).
+    Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /o/{org}/api-internal/account (the signed-in user of that organization, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).
 servers:
   - url: /
     description: this server
@@ -1386,21 +1386,15 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/orgs/{org}/tenants/{id}/self-registered:
+  /api/orgs/{org}/self-registered:
     parameters:
       - {$ref: "#/components/parameters/Org"}
-      - name: id
-        in: path
-        required: true
-        description: tenant id or name
-        schema:
-          type: string
       - {$ref: "#/components/parameters/ApiVersion"}
     get:
       tags: [Tenants]
-      summary: The self-registered applications users of this tenant have authorized
-      description: The self-registered applications users of this tenant have authorized, with how many users they hold access for
-      operationId: get_orgs_org_tenants_id_self-registered
+      summary: The self-registered applications of the organization
+      description: The self-registered applications of the organization, with how many users they hold access for
+      operationId: get_orgs_org_self-registered
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -1421,19 +1415,13 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/orgs/{org}/tenants/{id}/self-registered/{client}:
+  /api/orgs/{org}/self-registered/{client}:
     parameters:
       - {$ref: "#/components/parameters/Org"}
-      - name: id
-        in: path
-        required: true
-        description: tenant id or name
-        schema:
-          type: string
       - name: client
         in: path
         required: true
-        description: id
+        description: the client_id the application uses (its metadata document's URL, or the id it registered with), escaped
         schema:
           type: string
       - {$ref: "#/components/parameters/ApiVersion"}
@@ -1442,7 +1430,7 @@ paths:
       summary: End a self-registered application's access in the organization
       description: "End a self-registered application's access in the organization: every user's grants to it go; it can come
         back only by asking users again"
-      operationId: delete_orgs_org_tenants_id_self-registered_client
+      operationId: delete_orgs_org_self-registered_client
       responses:
         "200":
           description: Success
@@ -3957,13 +3945,19 @@ components:
           type: array
           items:
             type: string
+        source_org:
+          type: string
+          description: "organization: the id of the organization whose users sign in"
+        source_org_name:
+          type: string
+          description: "organization: that organization's display name"
         tenant:
           type: string
         trust_mfa:
           type: boolean
         type:
           type: string
-          enum: [oidc, google, microsoft, github, gitlab, auth0]
+          enum: [oidc, google, microsoft, github, gitlab, auth0, organization]
         created:
           type: string
           format: date-time
@@ -3990,15 +3984,17 @@ components:
           type: boolean
         client_id:
           type: string
+          description: ignored for organization, whose client is made with the provider
         client_secret:
           type: string
           writeOnly: true
+          description: ignored for organization, whose client is made with the provider
         enabled:
           type: boolean
         issuer:
           type: string
           description: "oidc: the https issuer; gitlab: the server address (empty: gitlab.com); auth0: the domain; ignored for
-            google, github and microsoft"
+            google, github, microsoft and organization"
         link_by_email:
           type: boolean
         name:
@@ -4006,8 +4002,14 @@ components:
           description: button label; on create, empty means the type's name (Google, Microsoft…)
         scopes:
           type: array
+          description: ignored for organization (openid, profile and email)
           items:
             type: string
+        source_org:
+          type: string
+          description: "organization (super admins only, which also create, change and delete such a provider): the id or name
+            of the other organization whose users sign in as guests. An application is made for the provider in that
+            organization, and removed with it"
         tenant:
           type: string
           description: "microsoft: a tenant ID, or organizations (then allowed_tenants is required)"
@@ -4015,7 +4017,7 @@ components:
           type: boolean
         type:
           type: string
-          enum: [oidc, google, microsoft, github, gitlab, auth0]
+          enum: [oidc, google, microsoft, github, gitlab, auth0, organization]
     ProviderList:
       type: object
       required: [items, total]

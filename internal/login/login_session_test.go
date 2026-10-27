@@ -64,26 +64,30 @@ func TestLogoutReportsFailureWhenSessionCannotBeEnded(t *testing.T) {
 	}
 }
 
-// "Sign out everywhere else" that could not end every other session says so (503 with how many did end), rather
-// than a count that reads as all of them.
+// "Sign out everywhere else" ends the other sessions at once (the account's session epoch moves on, so they stop
+// counting whatever happens to their records), and says so when it could not remove their records (503 with how many
+// ended) rather than a clean answer. The session it was asked from goes on working.
 func TestRevokeOtherSessionsReportsPartialFailure(t *testing.T) {
 	e := newEnv(t, nil)
 	u := e.member(t)
 	b := e.signedIn(t, u)
 	other := e.signedIn(t, u)
 	otherID := other.sessionID()
-	good := e.Svc.Sessions.S
-	e.Svc.Sessions.S = failSessionDeletes{good}
+	good := e.Svc.Store
+	e.Svc.Store = failSessionDeletes{good}
 	res, out := b.api("DELETE", "/api-internal/account/sessions", nil)
-	if res.StatusCode != http.StatusServiceUnavailable || out["revoked"] != float64(0) || out["error"] == "" {
+	if res.StatusCode != http.StatusServiceUnavailable || out["revoked"] != float64(1) || out["error"] == "" {
 		t.Fatalf("revoke others with failing deletion: %d %v", res.StatusCode, out)
 	}
+	e.Svc.Store = good
 	if _, err := e.Svc.Sessions.Get(context.Background(), otherID); err != nil {
-		t.Fatalf("control: the other session should still exist: %v", err)
+		t.Fatalf("control: the other session's record should still exist: %v", err)
 	}
-	e.Svc.Sessions.S = good
-	if res, out := b.api("DELETE", "/api-internal/account/sessions", nil); res.StatusCode != 200 || out["revoked"] != float64(1) {
-		t.Fatalf("revoke others once the store answers again: %d %v", res.StatusCode, out)
+	if res, _ := other.api("GET", "/api-internal/account/sessions", nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the other session still works though it was signed out: %d", res.StatusCode)
+	}
+	if res, _ := b.api("GET", "/api-internal/account/sessions", nil); res.StatusCode != 200 {
+		t.Fatalf("the session that signed the others out stopped working: %d", res.StatusCode)
 	}
 }
 
@@ -108,7 +112,7 @@ func TestLogout(t *testing.T) {
 	csrf := metaRe.FindStringSubmatch(body)[1]
 
 	// POST without the CSRF token is refused and the session survives.
-	req, _ := http.NewRequest("POST", e.URL+"/logout", nil)
+	req, _ := http.NewRequest("POST", e.URL+primaryBase+"/logout", nil)
 	req.Header.Set("Accept", "application/json")
 	res2, err := b.c.Do(req)
 	if err != nil {
@@ -122,7 +126,7 @@ func TestLogout(t *testing.T) {
 		t.Fatal("unauthenticated POST /logout ended the session")
 	}
 	// Cross-site POST refused.
-	req, _ = http.NewRequest("POST", e.URL+"/logout", nil)
+	req, _ = http.NewRequest("POST", e.URL+primaryBase+"/logout", nil)
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Origin", "https://evil.example")
 	res2, _ = b.c.Do(req)
@@ -132,7 +136,7 @@ func TestLogout(t *testing.T) {
 	}
 
 	// fetch-style POST ends the session and answers JSON; hostile or missing next falls back to the org's sign-in page.
-	for next, want := range map[string]string{"/bye": "/bye", "//evil.example": "/login/primary", "": "/login/primary"} {
+	for next, want := range map[string]string{primaryBase + "/bye": primaryBase + "/bye", "/bye": primaryBase + "/login", "//evil.example": primaryBase + "/login", "": primaryBase + "/login"} {
 		b2 := e.browser(t)
 		b2.login("primary", "member", userPassword)
 		page, body := b2.get("/logout")
@@ -157,13 +161,13 @@ func TestLogout(t *testing.T) {
 	b3.login("primary", "member", userPassword)
 	_, body = b3.get("/logout")
 	tok := metaRe.FindStringSubmatch(body)[1]
-	res3, err := b3.c.PostForm(e.URL+"/logout", url.Values{"csrf": {tok}, "next": {"/farewell"}})
+	res3, err := b3.c.PostForm(e.URL+primaryBase+"/logout", url.Values{"csrf": {tok}, "next": {primaryBase + "/farewell"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	io.Copy(io.Discard, res3.Body)
 	res3.Body.Close()
-	if res3.StatusCode != 303 || res3.Header.Get("Location") != "/farewell" {
+	if res3.StatusCode != 303 || res3.Header.Get("Location") != primaryBase+"/farewell" {
 		t.Fatalf("form logout: %d %q", res3.StatusCode, res3.Header.Get("Location"))
 	}
 	if res, _ := b3.get("/account"); res.StatusCode != 303 {
@@ -172,7 +176,7 @@ func TestLogout(t *testing.T) {
 	// form post with a bad token fails
 	b4 := e.browser(t)
 	b4.login("primary", "member", userPassword)
-	res4, _ := b4.c.PostForm(e.URL+"/logout", url.Values{"csrf": {"nope"}})
+	res4, _ := b4.c.PostForm(e.URL+primaryBase+"/logout", url.Values{"csrf": {"nope"}})
 	res4.Body.Close()
 	if res4.StatusCode != 403 {
 		t.Fatalf("form logout with bad token: %d", res4.StatusCode)
@@ -195,7 +199,7 @@ func TestReauthShowsLoginAndReplacesSession(t *testing.T) {
 	wantStatus(t, res, out, 200)
 	oldSession := b.sessionID()
 
-	res, body := b.get("/login/primary?reauth=1&next=/admin")
+	res, body := b.get("/o/primary/login?reauth=1&next=/admin")
 	if res.StatusCode != 200 || !strings.Contains(body, "sign in again") {
 		t.Fatalf("reauth page: %d", res.StatusCode)
 	}
@@ -218,7 +222,7 @@ func TestReauthShowsLoginAndReplacesSession(t *testing.T) {
 		t.Fatalf("account after reauth: %d", res.StatusCode)
 	}
 	// the page shows who is signed in, whatever address a link suggests
-	res, body = b.get("/login/acme?reauth=1&login_hint=someone@example.com")
+	res, body = b.get("/o/acme/login?reauth=1&login_hint=someone@example.com")
 	if res.StatusCode != 200 || !strings.Contains(body, "pat@example.com") {
 		t.Fatalf("reauth page with a hint: %d", res.StatusCode)
 	}
@@ -244,7 +248,7 @@ func TestSameUserSignInUpgradesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, out = b.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "member@example.com",
+	res, out = b.do("POST", "/o/primary/api-internal/login/password", map[string]any{"email": "member@example.com",
 		"password": userPassword, "next": "/account"}, nil)
 	wantStatus(t, res, out, 200)
 	if b.sessionID() != sid {
@@ -272,7 +276,7 @@ func TestSameUserSignInUpgradesSession(t *testing.T) {
 
 	// Another user signing in on this browser: the old session and its grants end.
 	e.user(t, e.Primary, "someone", model.RoleUser)
-	res, out = b.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "someone@example.com",
+	res, out = b.do("POST", "/o/primary/api-internal/login/password", map[string]any{"email": "someone@example.com",
 		"password": userPassword, "next": "/account"}, nil)
 	wantStatus(t, res, out, 200)
 	if b.sessionID() == sid {
@@ -289,7 +293,7 @@ func TestSameUserSignInUpgradesSession(t *testing.T) {
 func (b *browser) cookie() string {
 	u, _ := url.Parse(b.e.URL)
 	for _, c := range b.c.Jar.Cookies(u) {
-		if c.Name == web.SessionCookie {
+		if strings.HasPrefix(c.Name, web.SessionCookieFor("")) {
 			return c.Value
 		}
 	}
@@ -298,7 +302,7 @@ func (b *browser) cookie() string {
 
 func (b *browser) setCookie(v string) {
 	u, _ := url.Parse(b.e.URL)
-	b.c.Jar.SetCookies(u, []*http.Cookie{{Name: web.SessionCookie, Value: v, Path: "/", Secure: true}})
+	b.c.Jar.SetCookies(u, []*http.Cookie{{Name: web.SessionCookieFor(model.PrimaryOrgID), Value: v, Path: "/", Secure: true}})
 }
 
 type failSessionCreates struct{ store.Store }
@@ -325,7 +329,7 @@ func TestSignInWithUnconfirmedSessionAsksToRetry(t *testing.T) {
 	b := e.browser(t)
 	good := e.Svc.Sessions.S
 	e.Svc.Sessions.S = failSessionCreates{good}
-	body := map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword}
+	body := map[string]any{"email": "member@example.com", "password": userPassword}
 	res, out := b.do("POST", "/api-internal/login/password", body, nil)
 	if res.StatusCode != http.StatusServiceUnavailable || res.Header.Get("Retry-After") == "" {
 		t.Fatalf("sign-in with an unconfirmed session write: %d %q %v", res.StatusCode, res.Header.Get("Retry-After"), out)
@@ -368,7 +372,7 @@ func TestSignInWhenTheOrganizationCannotBeReadAsksToRetry(t *testing.T) {
 	b := e.browser(t)
 	good := e.Svc.Orgs.S
 	e.Svc.Orgs.S = orgsRefused{good}
-	body := map[string]any{"org": "primary", "email": "member@example.com", "password": userPassword}
+	body := map[string]any{"email": "member@example.com", "password": userPassword}
 	res, out := b.do("POST", "/api-internal/login/password", body, nil)
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("sign-in with the organization unreadable: %d %v, want 503", res.StatusCode, out)

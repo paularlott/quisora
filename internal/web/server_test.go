@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
@@ -22,7 +23,7 @@ func (m *routes) Register(s *web.Server) {
 	s.Mux.Handle("GET /t/page", s.RequirePage(func(w http.ResponseWriter, r *http.Request) {
 		p := s.Page(w, r, "Title", "nav", nil)
 		web.WriteJSON(w, 200, map[string]any{"user": p.User.Username, "csrf": p.CSRF, "super": p.IsSuper, "admin": p.IsAdmin,
-			"mgr": p.IsMgr, "home": p.HomeOrg, "path": p.Path, "title": p.Title})
+			"mgr": p.IsMgr, "home": p.Org.Name, "path": p.Path, "title": p.Title})
 	}))
 	s.Mux.Handle("GET /admin/orgs/{org}/page", s.RequirePage(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	s.Mux.Handle("GET /t/anon", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,11 +79,11 @@ func TestPagesRedirectWhenSignedOutAndCarryRoleFlags(t *testing.T) {
 	// Signed out: pages redirect to the sign-in page (the organization's for its admin pages).
 	anon := env.Client()
 	resp, _ := get(t, anon, env.URL+"/t/page")
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/o/"+model.PrimaryOrgID+"/login?next=%2Ft%2Fpage" {
 		t.Fatalf("signed out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp, _ = get(t, anon, env.URL+"/admin/orgs/acme/page?tab=2")
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login/acme?next=%2Fadmin%2Forgs%2Facme%2Fpage%3Ftab%3D2" {
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/o/acme/login?next=%2Fadmin%2Forgs%2Facme%2Fpage%3Ftab%3D2" {
 		t.Fatalf("admin page signed out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 

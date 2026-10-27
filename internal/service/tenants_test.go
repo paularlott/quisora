@@ -172,7 +172,7 @@ func TestClientTenantReportsReadFailure(t *testing.T) {
 	if _, err := e.svc.ClientTenant(e.ctx, c); err == nil || errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("unreadable tenant: %v, want a read failure", err)
 	}
-	if _, err := e.svc.TenantForResources(e.ctx, []string{"https://api.example"}); err == nil || errors.Is(err, service.ErrNotFound) {
+	if _, err := e.svc.TenantForResources(e.ctx, e.primary.ID, []string{"https://api.example"}); err == nil || errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("unreadable tenant by resource: %v, want a read failure", err)
 	}
 }
@@ -218,8 +218,12 @@ func TestTenantInputValidation(t *testing.T) {
 	if err != nil || ok.Settings.Providers != nil {
 		t.Errorf("all providers: %v %+v", err, ok.Settings)
 	}
-	// A resource belongs to one tenant, server-wide.
-	_, err = c.svc.CreateTenant(c.ctx, sys, c.b.ID, service.TenantInput{Name: ptr("thief"), Resources: &[]string{"https://api.example.com/"}})
+	// A resource belongs to one tenant of an organization; another organization's tenant may own the same one (its
+	// own address space has its own tokens), and a second tenant of the organization may not.
+	if _, err = c.svc.CreateTenant(c.ctx, sys, c.b.ID, service.TenantInput{Name: ptr("same"), Resources: &[]string{"https://api.example.com/"}}); err != nil {
+		t.Errorf("the same resource in another organization: %v", err)
+	}
+	_, err = c.svc.CreateTenant(c.ctx, sys, c.a.ID, service.TenantInput{Name: ptr("thief"), Resources: &[]string{"https://api.example.com/"}})
 	if !errors.Is(err, service.ErrConflict) {
 		t.Errorf("shared resource: %v", err)
 	}
@@ -256,7 +260,7 @@ func TestTenantForResources(t *testing.T) {
 		Settings: &model.TenantSettings{SelfRegistration: true}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.svc.TenantForResources(c.ctx, []string{"https://one.example.com/", "https://two.example.com/"})
+	got, err := c.svc.TenantForResources(c.ctx, c.a.ID, []string{"https://one.example.com/", "https://two.example.com/"})
 	if err != nil || got.ID != open.ID {
 		t.Fatalf("one tenant's resources: %v %v", got, err)
 	}
@@ -266,8 +270,24 @@ func TestTenantForResources(t *testing.T) {
 		"spanning": {"https://one.example.com/", "https://three.example.com/"},
 		"not open": {"https://closed.example.com/"},
 	} {
-		if _, err := c.svc.TenantForResources(c.ctx, res); !errors.Is(err, service.ErrNotFound) {
+		if _, err := c.svc.TenantForResources(c.ctx, c.a.ID, res); !errors.Is(err, service.ErrNotFound) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// the organization's resources are its own: another organization finds no tenant for them, and its own tenant for
+	// the same resource is its own
+	if _, err := c.svc.TenantForResources(c.ctx, c.b.ID, []string{"https://one.example.com/"}); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("another organization's resource: %v", err)
+	}
+	theirs, err := c.svc.CreateTenant(c.ctx, sys, c.b.ID, service.TenantInput{Name: ptr("theirs"), Resources: &[]string{"https://one.example.com/"},
+		Settings: &model.TenantSettings{SelfRegistration: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.svc.TenantForResources(c.ctx, c.b.ID, []string{"https://one.example.com/"}); err != nil || got.ID != theirs.ID {
+		t.Errorf("the same resource in another organization: %v %v", got, err)
+	}
+	if got, err := c.svc.TenantForResources(c.ctx, c.a.ID, []string{"https://one.example.com/"}); err != nil || got.ID != open.ID {
+		t.Errorf("the resource in the first organization: %v %v", got, err)
 	}
 }

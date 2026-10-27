@@ -71,7 +71,7 @@ func TestBackchannelAfterGrantRevoked(t *testing.T) {
 		t.Fatal(r.m)
 	}
 	// the application revokes its refresh token: no grant is left on the session
-	if res := h.clientPost("/oauth/revoke", url.Values{"token": {r.str("refresh_token")}}, cl, secret); res.status != 200 {
+	if res := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {r.str("refresh_token")}}, cl, secret); res.status != 200 {
 		t.Fatalf("revoke: %d", res.status)
 	}
 	if gs, _ := h.env.Svc.Grants.All(context.Background(), h.user.ID); len(gs) != 0 {
@@ -219,7 +219,7 @@ func TestBackchannelFanOutBounded(t *testing.T) {
 	}
 	defer retries.Close()
 	cl, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL) })
-	ce, err := h.p.client(t.Context(), cl.ID)
+	ce, err := h.p.client(t.Context(), cl.OrgID, cl.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestBackchannelRetry(t *testing.T) {
 	}
 	recovers, refuses, disabled, deleted := app("/recovers"), app("/refuses"), app("/disabled"), app("/deleted")
 	entry := func(c *model.Client) *clientEntry {
-		ce, err := h.p.client(ctx, c.ID)
+		ce, err := h.p.client(ctx, c.OrgID, c.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -385,7 +385,7 @@ func TestBackchannelSendFailures(t *testing.T) {
 	h := setup(t, nil)
 	rp, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {})
 	cl, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL) })
-	ce, err := h.p.client(context.Background(), cl.ID)
+	ce, err := h.p.client(context.Background(), cl.OrgID, cl.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

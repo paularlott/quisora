@@ -109,7 +109,7 @@ func (e *env) signIn(p *model.Provider, claims map[string]any) (*upstream.Result
 	} else {
 		code = e.oidc.Authorize(authURL, claims)
 	}
-	return e.up.Finish(e.ctx, p.ID, state, state, code)
+	return e.up.Finish(e.ctx, e.org.ID, p.ID, state, state, code)
 }
 
 func std(sub, email string) map[string]any {
@@ -415,13 +415,17 @@ func TestNewDefaultsAndCallbackURL(t *testing.T) {
 	if s.PublicURL != "https://idp.example" || s.Now == nil || s.HTTP != client || s.GitHubAPIURL == "" || s.MicrosoftAuthority == "" {
 		t.Fatalf("%+v", s)
 	}
-	if got := s.CallbackURL("p"); got != "https://idp.example/login/callback/p" {
+	// Each provider's callback is in its organization's address space: two organizations never share one.
+	if got := s.CallbackURL("o1", "p"); got != "https://idp.example/o/o1/login/callback/p" {
 		t.Fatal(got)
 	}
-	if got := s.CallbackURL("p 1"); got != "https://idp.example/login/callback/p%201" {
+	if got := s.CallbackURL("o1", "p 1"); got != "https://idp.example/o/o1/login/callback/p%201" {
 		t.Fatalf("callback url %q", got)
 	}
-	if upstream.CallbackPath("abc") != "/login/callback/abc" {
+	if s.CallbackURL("o1", "p") == s.CallbackURL("o2", "p") {
+		t.Fatal("two organizations share a callback url")
+	}
+	if upstream.CallbackPath("o1", "abc") != "/o/o1/login/callback/abc" {
 		t.Fatal("callback path")
 	}
 }

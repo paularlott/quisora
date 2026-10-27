@@ -35,6 +35,8 @@ type ProviderInput struct {
 	// Microsoft only: a tenant ID or "organizations", and the tenant IDs allowed to sign in.
 	Tenant         *string   `json:"tenant"`
 	AllowedTenants *[]string `json:"allowed_tenants"`
+	// Organization only: the organization (id or name) whose users sign in. Super admins only.
+	SourceOrg *string `json:"source_org"`
 }
 
 // providerDefaultName is a new provider's button label when none is given.
@@ -88,12 +90,23 @@ func providerIssuer(typ, raw, tenant string) (string, error) {
 	return "", nil
 }
 
-func (s *Service) applyProvider(a *Actor, p *model.Provider, in ProviderInput) error {
+// orgProviderScopes are what an organization provider asks its source organization for, and what the client made for
+// it there may be given: the identity and the email address that links a guest to the account they were added with.
+var orgProviderScopes = []string{"openid", "profile", "email"}
+
+func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider, in ProviderInput) error {
 	if in.Type != nil {
 		if !slices.Contains(model.ProviderTypes, *in.Type) {
 			return Invalid("type", "must be one of "+strings.Join(model.ProviderTypes, ", "))
 		}
 		p.Type = *in.Type
+	}
+	org := p.Type == model.ProviderOrganization
+	if org && !a.IsSuper() {
+		return ErrForbidden // it writes an application into another organization
+	}
+	if !org && p.SourceOrg != "" {
+		p.ClientID, p.ClientSecret = "", "" // no longer an organization provider: those were the made client's, not the new provider's
 	}
 	if in.Name != nil {
 		v := strings.TrimSpace(*in.Name)
@@ -109,13 +122,14 @@ func (s *Service) applyProvider(a *Actor, p *model.Provider, in ProviderInput) e
 	if in.Issuer != nil {
 		issuer = *in.Issuer
 	}
-	if in.ClientID != nil {
+	// An organization provider's client is made for it (issueSignInClient): the credentials are never typed in.
+	if in.ClientID != nil && !org {
 		p.ClientID = strings.TrimSpace(*in.ClientID)
 	}
-	if in.ClientSecret != nil && *in.ClientSecret != "" {
+	if in.ClientSecret != nil && *in.ClientSecret != "" && !org {
 		p.ClientSecret = s.Sealer.SealFor(ProviderSecretBinding(p.ID), []byte(*in.ClientSecret))
 	}
-	if in.Scopes != nil {
+	if in.Scopes != nil && !org {
 		// The same rule as a client's scopes: each one goes into the upstream authorization request, where a space
 		// would split it in two.
 		scopes, err := checkScopes(*in.Scopes)
@@ -190,6 +204,10 @@ func (s *Service) applyProvider(a *Actor, p *model.Provider, in ProviderInput) e
 	} else {
 		p.Tenant, p.AllowedTenants = "", nil
 	}
+	if org {
+		return s.applySourceOrg(ctx, p, in.SourceOrg)
+	}
+	p.SourceOrg = ""
 	if p.OIDC() {
 		iss, err := providerIssuer(p.Type, issuer, p.Tenant)
 		if err != nil {
@@ -206,6 +224,72 @@ func (s *Service) applyProvider(a *Actor, p *model.Provider, in ProviderInput) e
 		return Invalid("client_secret", "required")
 	}
 	return nil
+}
+
+// applySourceOrg settles an organization provider: its source organization must exist and be another one (an
+// organization's own users sign in to it directly), the issuer is that organization's (never typed in), the scopes are
+// fixed, and an unnamed provider is named after the source organization, which the sign-in page offers as "Continue
+// with <name>". Its client credentials come later (issueSignInClient), once everything else is known to be valid.
+func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *string) error {
+	if ref != nil {
+		p.SourceOrg = strings.TrimSpace(*ref)
+	}
+	if p.SourceOrg == "" {
+		return Invalid("source_org", "choose the organization whose users sign in")
+	}
+	src, err := s.OrgByRef(ctx, p.SourceOrg)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return Invalid("source_org", "choose an organization of this server")
+	case err != nil:
+		return err
+	case src.ID == p.OrgID:
+		return Invalid("source_org", "choose another organization: the users of this one sign in to it directly")
+	}
+	p.SourceOrg, p.Issuer, p.Scopes = src.ID, s.Cfg.OrgIssuer(src.ID), slices.Clone(orgProviderScopes)
+	if p.Name == "" {
+		p.Name = src.DisplayName
+	}
+	return nil
+}
+
+// issueSignInClient makes the application of p's source organization that p signs in with: a confidential client of
+// the organization's default tenant, whose only redirect URI is p's callback address, trusted (first party) so its
+// users are not asked for consent, as a super admin set it up. Its secret is sealed into p. It is a write in another
+// organization, apart from the write of p: callers make it first, so a failure leaves at most an unused client, which
+// they remove (removeSignInClient) when they know p was not written, and the orphan sweep removes when they cannot tell.
+func (s *Service) issueSignInClient(ctx context.Context, a *Actor, p *model.Provider) error {
+	dest, err := s.Orgs.Get(ctx, p.OrgID)
+	if err != nil {
+		return mapStore(err)
+	}
+	name := "Sign-in to " + dest.DisplayName
+	desc := "Lets the users of this organization sign in to " + dest.DisplayName + " (provider " + p.Name + "). Made and removed with that provider."
+	firstParty := true
+	in := ClientInput{Name: &name, Description: &desc, FirstParty: &firstParty,
+		RedirectURIs: &[]string{s.Cfg.Server.PublicURL + model.ProviderCallbackPath(p.OrgID, p.ID)},
+		GrantTypes:   &[]string{"authorization_code"}, Scopes: &orgProviderScopes}
+	c, secret, err := s.createClient(ctx, a, p.SourceOrg, in, p.ID)
+	if err != nil {
+		return err
+	}
+	p.ClientID, p.ClientSecret = c.ID, s.Sealer.SealFor(ProviderSecretBinding(p.ID), []byte(secret))
+	return nil
+}
+
+// removeSignInClient deletes the client clientID that served provider providerID in organization orgID, when it still
+// is that client. A failure is only logged: the client is unused, and the orphan sweep removes it once its provider no
+// longer uses it (sweep.go), so a provider's change or deletion never fails for it.
+func (s *Service) removeSignInClient(ctx context.Context, a *Actor, orgID, clientID, providerID string) {
+	c, err := s.Clients.Get(ctx, clientID)
+	if err != nil || c.OrgID != orgID || c.ProviderID != providerID {
+		return
+	}
+	if err := s.audited(ctx, a, c.OrgID, "client.delete", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.Delete(ctx, c.ID) }); err != nil {
+		s.Log.Warn("an unused sign-in client could not be removed; the orphan sweep removes it later",
+			"client", c.ID, "organization", orgID, "provider", providerID, "error", err)
+	}
 }
 
 func providerConflict(err error) error {
@@ -259,7 +343,7 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 	}
 	p := &model.Provider{Meta: model.Meta{ID: id}, OrgID: orgID, Type: model.ProviderOIDC, Enabled: true, LinkByEmail: true,
 		Scopes: []string{"openid", "profile", "email"}}
-	if err := s.applyProvider(a, p, in); err != nil {
+	if err := s.applyProvider(ctx, a, p, in); err != nil {
 		return nil, err
 	}
 	if p.Type == model.ProviderGitHub && in.Scopes == nil {
@@ -268,7 +352,15 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 	if p.Name == "" {
 		p.Name = providerDefaultName[p.Type]
 	}
+	if p.Type == model.ProviderOrganization {
+		if err := s.issueSignInClient(ctx, a, p); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.audited(ctx, a, orgID, "provider.create", p.Name, nil, func() error { return s.Providers.Create(ctx, p) }); err != nil {
+		if p.Type == model.ProviderOrganization && !outcomeUnknown(err) {
+			s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+		}
 		return nil, providerConflict(err)
 	}
 	return p, nil
@@ -279,18 +371,34 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	if err != nil {
 		return nil, err
 	}
+	if p.Type == model.ProviderOrganization && !a.IsSuper() {
+		return nil, ErrForbidden // its client is in another organization
+	}
 	before := model.ProviderAuthority(p)
 	was := snapshot(p)
-	if err := s.applyProvider(a, p, in); err != nil {
+	oldSource, oldClient := p.SourceOrg, p.ClientID
+	if p.Type != model.ProviderOrganization {
+		oldSource, oldClient = "", ""
+	}
+	if err := s.applyProvider(ctx, a, p, in); err != nil {
 		return nil, err
 	}
+	// An organization provider whose source organization changed (or that just became one) signs in with a client of
+	// the new source organization, made before the provider is written, and the old one is removed after.
+	orgNow := p.Type == model.ProviderOrganization
+	newClient := orgNow && (oldClient == "" || p.SourceOrg != oldSource)
+	if newClient {
+		if err := s.issueSignInClient(ctx, a, p); err != nil {
+			return nil, err
+		}
+	}
 	// Pointing the provider at another issuer, type or tenant needs that provider's own secret: the old one is
-	// never sent to the new issuer.
-	if model.ProviderAuthority(p) != before && (in.ClientSecret == nil || *in.ClientSecret == "") {
+	// never sent to the new issuer. (An organization provider's secret is made, not entered.)
+	if !orgNow && model.ProviderAuthority(p) != before && (in.ClientSecret == nil || *in.ClientSecret == "") {
 		return nil, Invalid("client_secret", "enter the client secret issued by the new provider")
 	}
 	detail := addChanges(map[string]string{}, was, p)
-	if in.ClientSecret != nil && *in.ClientSecret != "" {
+	if in.ClientSecret != nil && *in.ClientSecret != "" && !orgNow {
 		detail["client_secret"] = "replaced" // never the value, sealed or not
 	}
 	if err := s.audited(ctx, a, p.OrgID, "provider.update", p.Name, detail, func() error {
@@ -303,7 +411,13 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 		}
 		return nil
 	}); err != nil {
+		if newClient && !outcomeUnknown(err) {
+			s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+		}
 		return nil, providerConflict(err)
+	}
+	if oldClient != "" && (newClient || !orgNow) {
+		s.removeSignInClient(ctx, a, oldSource, oldClient, p.ID)
 	}
 	return p, nil
 }
@@ -313,8 +427,17 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 	if err != nil {
 		return err
 	}
+	if p.Type == model.ProviderOrganization && !a.IsSuper() {
+		return ErrForbidden // its client is in another organization
+	}
 	// The links to it stand on it: sign-in through a deleted provider is impossible, and the orphan sweep removes them.
-	return mapStore(s.audited(ctx, a, p.OrgID, "provider.delete", p.Name, nil, func() error { return s.Providers.Delete(ctx, id) }))
+	if err := s.audited(ctx, a, p.OrgID, "provider.delete", p.Name, nil, func() error { return s.Providers.Delete(ctx, id) }); err != nil {
+		return mapStore(err)
+	}
+	if p.Type == model.ProviderOrganization {
+		s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+	}
+	return nil
 }
 
 // purgeIdentities deletes every link to provider id and reports how many went. Sign-in also ignores links whose

@@ -113,7 +113,7 @@ func TestPartitionSchemaUpgrade(t *testing.T) {
 	ctx := context.Background()
 	s, dsn := openTest(t, "sqlite", "", 0)
 	for _, stmt := range []string{
-		`DROP INDEX "ix_user_part"`, `DROP INDEX "ix_user_parttomb"`, `ALTER TABLE "qsr_user" DROP COLUMN part`, `ALTER TABLE "qsr_user" DROP COLUMN pnum`,
+		`DROP INDEX "ix_user_part"`, `DROP INDEX "ix_user_parttomb"`, `DROP INDEX "ix_user_tomb"`, `ALTER TABLE "qsr_user" DROP COLUMN part`, `ALTER TABLE "qsr_user" DROP COLUMN pnum`,
 		`ALTER TABLE "qsr_user" DROP COLUMN pseq`, `DROP TABLE qsr_partition`,
 	} {
 		if _, err := s.wdb.ExecContext(ctx, stmt); err != nil {

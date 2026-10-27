@@ -155,7 +155,7 @@ text before each screenshot.
 - The ID token named the organization, tenant and Quisora role (`org`, `org_name`, `tenant`, `tenant_name`, `role`)
   whatever the scopes. They now need the `org` scope, as at userinfo; access tokens still always carry them.
 - The sign-out confirmation page needed JavaScript and, outside the session middleware, rendered the anonymous CSRF
-  token, so confirming without the page's script failed. It is now a plain form (`POST /oauth/logout/confirm`) with
+  token, so confirming without the page's script failed. It is now a plain form (`POST /o/<org id>/oauth/logout/confirm`) with
   the session's token.
 - Outbound HTTPS can trust extra CA certificates (`server.extra_ca_file`), so a provider, client JWKS or back-channel
   endpoint on a private CA works without weakening TLS checks (the fake provider uses it).

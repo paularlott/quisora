@@ -140,9 +140,8 @@ func (s *Store) settleDone(ctx context.Context, recs []*store.Record) error {
 	return nil
 }
 
-// Tx applies ops all or nothing (store.Store). In a gossip cluster every write must be of one partition, of a kind that
-// is replicated, and hold no value unique across organizations (a reservation is a write of another partition): the
-// transaction is one partition write, settled like any other. Otherwise (no gossip) it is the wrapped store's.
+// Tx applies ops all or nothing (store.Store). In a gossip cluster every write must be of one partition (an
+// organization's) and of a kind that is replicated: the transaction is one partition write, settled like any other. Otherwise (no gossip) it is the wrapped store's.
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if err := s.open(); err != nil {
 		return err
@@ -182,14 +181,6 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	p := -1
 	c := &change{Op: opTx}
 	var recs []*store.Record
-	// The values unique across organizations that records of the transaction held and no longer hold (a deleted
-	// tenant's, a passkey's): their reservations are released once it is applied, as a write of its own releases them
-	// (writePartitioned).
-	type held struct {
-		rec *store.Record
-		g   string
-	}
-	var release []held
 	for _, op := range ops {
 		rec := op.Rec
 		if localOnly(rec.Kind) {
@@ -216,9 +207,6 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			if !op.Match {
 				mode = modeBlind
 			}
-			for _, g := range globalsOf(fresh) {
-				release = append(release, held{rec, g})
-			}
 		} else {
 			old, err := s.lookup(ctx, rec.Kind, rec.ID)
 			if err != nil {
@@ -228,17 +216,6 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 				return err // (as for a write of its own: writePartitioned)
 			}
 			base = versionOf(old)
-			if globalKind(rec.Kind) {
-				// (it lists no value unique across organizations: store.CheckTx refused that)
-				if old == nil {
-					if old, err = s.lookupOrFresh(ctx, rec.Kind, rec.ID); err != nil {
-						return err
-					}
-				}
-				for _, g := range globalsOf(old) {
-					release = append(release, held{rec, g})
-				}
-			}
 		}
 		switch q := recPartition(rec); {
 		case p < 0:
@@ -260,13 +237,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	res, err := s.submit(ctx, p, c)
 	switch {
 	case isDone(err):
-		if err := s.settleDone(ctx, recs); err != nil {
-			return err
-		}
-		for _, h := range release {
-			s.release(ctx, h.rec.Kind, h.rec.ID, h.g)
-		}
-		return nil
+		return s.settleDone(ctx, recs)
 	case err != nil:
 		var re *partition.RefusedError
 		switch {
@@ -294,9 +265,6 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		recs[i].Version, recs[i].Epoch, recs[i].Created = hlc.Timestamp(st.Version), hlc.Timestamp(st.Epoch), hlc.Timestamp(st.Created)
 	}
 	s.waitWritten(ctx, p, res.Pos)
-	for _, h := range release {
-		s.release(ctx, h.rec.Kind, h.rec.ID, h.g)
-	}
 	return nil
 }
 

@@ -118,12 +118,6 @@ func TestPrepareRefusalCodes(t *testing.T) {
 	if got := prepare(t, n, partitionNum("org-other"), writeChange(t, moved, modeUpsert, 0)); got != whyMoved {
 		t.Errorf("a record that changes partition: %q", got)
 	}
-	// a global value is reserved, never listed by a record
-	tn := &model.Tenant{OrgID: "org1", Name: "t", Resources: []string{"https://x.example.com"}}
-	trec, _ := store.Encode(tn)
-	if got := prepare(t, n, p, writeChange(t, trec, modeMatch, 0)); got != whyBad {
-		t.Errorf("a record listing a global value: %q", got)
-	}
 	// a deletion, then a live write over it
 	commitChange(t, n, p, writeChange(t, tomb("r1"), modeBlind, 0))
 	if got := prepare(t, n, p, writeChange(t, newRec("r1", ""), modeUpsert, 0)); got != whyDeleted {

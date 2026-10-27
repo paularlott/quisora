@@ -46,7 +46,7 @@ func TestAccountEndpointsNeedSessionAndCSRF(t *testing.T) {
 	res, out := signed.do("PATCH", "/api-internal/account", map[string]any{"given_name": "x"}, hdrs{"X-CSRF-Token": anon.csrf})
 	wantStatus(t, res, out, 403)
 	// and the session token is not accepted on anonymous endpoints
-	res, out = anon.do("POST", "/api-internal/login/password", map[string]any{"org": "primary", "email": "pat@example.com", "password": userPassword},
+	res, out = anon.do("POST", "/o/primary/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword},
 		hdrs{"X-CSRF-Token": signed.csrf})
 	wantStatus(t, res, out, 403)
 }

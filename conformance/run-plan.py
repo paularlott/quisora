@@ -42,11 +42,11 @@ def rotate():
         with web.open(urllib.request.Request(NODE + path, data=json.dumps(body).encode(), method="POST", headers=h)) as r:
             return r.status, r.read().decode()
 
-    tok = csrf("/login/primary")
-    _, out = post("/api-internal/login/password", {"org": "primary", "email": login["email"], "password": login["password"]}, tok)
+    tok = csrf("/o/primary/login")
+    _, out = post("/o/primary/api-internal/login/password", {"email": login["email"], "password": login["password"]}, tok)
     ticket = json.loads(out)["ticket"]
-    post("/api-internal/login/totp", {"ticket": ticket, "code": totp(login["totp_secret"])}, tok)
-    status, out = post("/api/keys/rotate", {}, csrf("/account"), {"Api-Version": "2026-10-20"})
+    post("/o/primary/api-internal/login/totp", {"ticket": ticket, "code": totp(login["totp_secret"])}, tok)
+    status, out = post("/api/keys/rotate", {}, csrf("/o/primary/account"), {"Api-Version": "2026-10-20"})
     if status != 200:
         raise SystemExit("key rotation failed: %d %s" % (status, out))
     print("Rotated Quisora's signing key:", out)

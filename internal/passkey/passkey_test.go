@@ -69,9 +69,14 @@ func (e *env) register(t testing.TB, name string) *virtualauth.Credential {
 	return c
 }
 
+// options begins a sign-in: u's, or (u nil) a discoverable one at the test user's organization's sign-in page.
 func (e *env) options(t testing.TB, u *model.User) (string, []byte) {
 	t.Helper()
-	id, assertion, err := e.pk.BeginLogin(e.ctx, u, nil)
+	var extra map[string]string
+	if u == nil {
+		extra = map[string]string{"org": e.user.OrgID}
+	}
+	id, assertion, err := e.pk.BeginLogin(e.ctx, u, extra)
 	if err != nil {
 		t.Fatal(err)
 	}

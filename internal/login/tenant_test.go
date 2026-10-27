@@ -21,35 +21,35 @@ func TestTenantPasswordRefused(t *testing.T) {
 	b := e.browser(t)
 
 	// the page for the tenant offers no password form; the org's own page and an unknown tenant do
-	_, page := b.get("/login/acme?tenant=kiosk")
+	_, page := b.get("/o/acme/login?tenant=kiosk")
 	if strings.Contains(page, passwordForm) || !strings.Contains(page, `data-tenant="kiosk"`) {
 		t.Fatalf("kiosk page: %.1500s", page)
 	}
-	for _, p := range []string{"/login/acme", "/login/acme?tenant=nope", "/login/acme?tenant=" + strings.Repeat("x", 200),
-		"/login/acme?tenant=Kiosk%00"} {
+	for _, p := range []string{"/o/acme/login", "/o/acme/login?tenant=nope", "/o/acme/login?tenant=" + strings.Repeat("x", 200),
+		"/o/acme/login?tenant=Kiosk%00"} {
 		if _, page := b.get(p); !strings.Contains(page, passwordForm) {
 			t.Fatalf("%s: no password form", p)
 		}
 	}
 
 	// calling the API directly is refused with the same failure as a wrong password
-	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk"})
+	res, out := b.post("/o/acme/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword, "tenant": "kiosk"})
 	wantStatus(t, res, out, 401)
 	if str(out, "error") != "The email address or password is incorrect." || b.hasSession() {
 		t.Fatalf("refusal shape: %v session=%v", out, b.hasSession())
 	}
 	// an unknown tenant is ignored (org methods)
-	res, out = b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "nope"})
+	res, out = b.post("/o/acme/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword, "tenant": "nope"})
 	wantStatus(t, res, out, 200)
 	// and the tenant's name resolves case-insensitively
 	b2 := e.browser(t)
-	res, out = b2.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": " KIOSK "})
+	res, out = b2.post("/o/acme/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword, "tenant": " KIOSK "})
 	wantStatus(t, res, out, 401)
 	// tenants of another org do not apply
 	other := e.org(t, "other", nil)
 	e.tenant(t, other, "kiosk2", model.TenantSettings{PasskeyLogin: true, AllProviders: true})
 	b3 := e.browser(t)
-	res, out = b3.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "kiosk2"})
+	res, out = b3.post("/o/acme/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword, "tenant": "kiosk2"})
 	wantStatus(t, res, out, 200)
 }
 
@@ -64,21 +64,16 @@ func TestTenantPasskeyRestricted(t *testing.T) {
 
 	b := e.browser(t)
 	b.auth = signed.auth
-	if _, page := b.get("/login/acme?tenant=pwonly"); strings.Contains(page, `data-passkey="1"`) || strings.Contains(page, "Sign in with a passkey") {
+	if _, page := b.get("/o/acme/login?tenant=pwonly"); strings.Contains(page, `data-passkey="1"`) || strings.Contains(page, "Sign in with a passkey") {
 		t.Fatal("password-only tenant page offers passkeys")
 	}
-	if _, page := b.get("/login/acme?tenant=pkonly"); !strings.Contains(page, `data-passkey="1"`) {
+	if _, page := b.get("/o/acme/login?tenant=pkonly"); !strings.Contains(page, `data-passkey="1"`) {
 		t.Fatal("passkey tenant page lacks passkeys")
 	}
 	// begin with an org refuses
 	status, out := b.passkeyLogin(map[string]any{"org": "acme", "tenant": "pwonly"})
 	if status != 403 || b.hasSession() {
 		t.Fatalf("org begin: %d %v", status, out)
-	}
-	// an org-less (landing page) ceremony is refused at finish, in the user's org
-	status, out = b.passkeyLogin(map[string]any{"tenant": "pwonly"})
-	if status != 403 || b.hasSession() {
-		t.Fatalf("org-less finish: %d %v", status, out)
 	}
 	status, out = b.passkeyLogin(map[string]any{"org": "acme", "tenant": "pkonly"})
 	if status != 200 || !b.hasSession() {
@@ -99,7 +94,7 @@ func TestTenantRequireMFAOnly(t *testing.T) {
 	e.tenant(t, org, "secure", model.TenantSettings{PasswordLogin: true, PasskeyLogin: true, AllProviders: true, RequireMFA: true})
 
 	b := e.browser(t)
-	res, out := b.post("/api-internal/login/password", map[string]any{"org": "acme", "email": "pat@example.com", "password": userPassword, "tenant": "secure"})
+	res, out := b.post("/o/acme/api-internal/login/password", map[string]any{"email": "pat@example.com", "password": userPassword, "tenant": "secure"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || str(out, "ticket") == "" || b.hasSession() {
 		t.Fatalf("tenant MFA: %v", out)
@@ -120,32 +115,32 @@ func TestTenantProviders(t *testing.T) {
 	u.tenant(t, u.org, "sso", model.TenantSettings{AllProviders: false, Providers: []string{good.ID}})
 	b := u.browser(t)
 
-	_, page := b.get("/login/acme?tenant=sso")
+	_, page := b.get("/o/acme/login?tenant=sso")
 	if !strings.Contains(page, "Continue with Corp SSO") || strings.Contains(page, "Continue with Other SSO") ||
 		strings.Contains(page, passwordForm) || !strings.Contains(page, "tenant=sso") {
 		t.Fatalf("sso page: %.2500s", page)
 	}
-	_, page = b.get("/login/acme")
+	_, page = b.get("/o/acme/login")
 	if !strings.Contains(page, "Continue with Other SSO") {
 		t.Fatal("org page lacks the second provider")
 	}
 
 	// a provider the tenant does not allow is refused at start: back to the page with an error, no upstream hop
-	res, _ := b.get("/login/acme/provider/" + bad.ID + "?tenant=sso&next=%2Fx")
+	res, _ := b.get("/o/acme/login/provider/" + bad.ID + "?tenant=sso&next=%2Fx")
 	loc := res.Header.Get("Location")
-	if res.StatusCode != 302 || !strings.HasPrefix(loc, "/login/acme?") || !strings.Contains(loc, "error=disabled") ||
+	if res.StatusCode != 302 || !strings.HasPrefix(loc, u.at("/login?")) || !strings.Contains(loc, "error=disabled") ||
 		!strings.Contains(loc, "tenant=sso") {
 		t.Fatalf("disallowed provider start: %d %q", res.StatusCode, loc)
 	}
 	// without the tenant it is allowed
-	if res, _ = b.get("/login/acme/provider/" + bad.ID); !strings.HasPrefix(res.Header.Get("Location"), u.oidc.Srv.URL) {
+	if res, _ = b.get("/o/acme/login/provider/" + bad.ID); !strings.HasPrefix(res.Header.Get("Location"), u.oidc.Srv.URL) {
 		t.Fatalf("org-level start: %q", res.Header.Get("Location"))
 	}
 
 	// allowed provider: signs in and the session records the provider
 	b2 := u.browser(t)
 	res = b2.viaTenant(t, u, good, "acme", "sso", "/x", claims("sub-9", "kim@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/x" || !b2.hasSession() {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/x") || !b2.hasSession() {
 		t.Fatalf("callback: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	user, err := u.Svc.FindUserByEmail(context.Background(), u.org.ID, "kim@corp.example")
@@ -159,7 +154,7 @@ func TestTenantProviders(t *testing.T) {
 
 	// the tenant changing between start and callback is honoured
 	b3 := u.browser(t)
-	start, _ := b3.get("/login/acme/provider/" + good.ID + "?tenant=sso")
+	start, _ := b3.get("/o/acme/login/provider/" + good.ID + "?tenant=sso")
 	loc = start.Header.Get("Location")
 	lu, _ := url.Parse(loc)
 	code := u.oidc.Authorize(loc, claims("sub-9", "kim@corp.example"))
@@ -184,21 +179,21 @@ func TestTenantPasswordReset(t *testing.T) {
 	b := e.browser(t)
 
 	// the tenant without reset keeps the password form but drops "Forgot your password?"
-	_, page := b.get("/login/acme?tenant=noreset")
+	_, page := b.get("/o/acme/login?tenant=noreset")
 	if !strings.Contains(page, passwordForm) || strings.Contains(page, "Forgot your password?") {
 		t.Fatalf("noreset page: %.1500s", page)
 	}
-	for _, p := range []string{"/login/acme?tenant=withreset", "/login/acme"} {
+	for _, p := range []string{"/o/acme/login?tenant=withreset", "/o/acme/login"} {
 		if _, page := b.get(p); !strings.Contains(page, "Forgot your password?") {
 			t.Fatalf("%s: no forgot link", p)
 		}
 	}
 
 	// asking anyway answers the same, but mails nothing
-	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": "noreset", "email": "pat@example.com"})
+	res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"tenant": "noreset", "email": "pat@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
-	res, out = b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": "withreset", "email": "pat@example.com"})
+	res, out = b.post("/o/acme/api-internal/password/forgot", map[string]any{"tenant": "withreset", "email": "pat@example.com"})
 	wantStatus(t, res, out, 200)
 	select {
 	case <-e.mailCh:
@@ -215,13 +210,13 @@ func TestOrgPasswordResetOff(t *testing.T) {
 	b := e.browser(t)
 
 	// no link on the org's page nor on a tenant's that allows resets: the org's switch wins
-	for _, p := range []string{"/login/acme", "/login/acme?tenant=withreset"} {
+	for _, p := range []string{"/o/acme/login", "/o/acme/login?tenant=withreset"} {
 		if _, page := b.get(p); !strings.Contains(page, passwordForm) || strings.Contains(page, "Forgot your password?") {
 			t.Fatalf("%s: forgot link shown", p)
 		}
 	}
 	for _, tn := range []string{"", "withreset"} {
-		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "tenant": tn, "email": "pat@example.com"})
+		res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"tenant": tn, "email": "pat@example.com"})
 		wantStatus(t, res, out, 200)
 	}
 	e.noMail(t)

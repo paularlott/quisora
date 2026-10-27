@@ -12,7 +12,7 @@
 // true when text was typed that is not a choice (a search field, which only takes chosen values). A component that
 // defines comboChanged(name) hears when a field's value changes: chosen, typed and confirmed with Enter (free
 // fields), or cleared (comboClear, the clear button of the "combo-search" partial, or deleting the text).
-import { get } from './api.js'
+import { accountApi, get } from './api.js'
 
 const DELAY = 200
 const MAX = 60
@@ -20,7 +20,7 @@ const MAX = 60
 let profileOptionsP = null
 // profileOptions loads the languages, time zones and user types the fields offer (cached for the page).
 export function profileOptions() {
-  if (!profileOptionsP) profileOptionsP = get('/api-internal/account/profile-options').catch((e) => { profileOptionsP = null; throw e })
+  if (!profileOptionsP) profileOptionsP = get(accountApi('/profile-options')).catch((e) => { profileOptionsP = null; throw e })
   return profileOptionsP
 }
 

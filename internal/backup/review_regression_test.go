@@ -18,7 +18,7 @@ import (
 func TestDeepVerifyRejectsDamagedGzipFooter(t *testing.T) {
 	f := setup(t, 1)
 	var buf bytes.Buffer
-	if _, err := backup.Write(f.ctx, f.src, f.sealer, &buf); err != nil {
+	if _, err := backup.WriteWith(f.ctx, f.src, f.sealer, &buf, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	data := buf.Bytes()
@@ -46,7 +46,7 @@ func TestDeepBackupTrailerKeyRequirementsAuthenticated(t *testing.T) {
 	ring, _ := secure.NewKeyring(k2, k1)
 	only2, _ := secure.NewSealer(k2)
 	var buf bytes.Buffer
-	if _, err := backup.Write(f.ctx, f.src, ring, &buf); err != nil {
+	if _, err := backup.WriteWith(f.ctx, f.src, ring, &buf, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2, ""); !errors.Is(err, backup.ErrKeyMissing) {

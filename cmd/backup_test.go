@@ -30,7 +30,7 @@ func TestRemoteBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var full bytes.Buffer
-	if _, err := backup.Write(ctx, st, sealer, &full); err != nil {
+	if _, err := backup.WriteWith(ctx, st, sealer, &full, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	zr, _ := gzip.NewReader(bytes.NewReader(full.Bytes()))

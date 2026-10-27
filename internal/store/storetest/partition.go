@@ -439,27 +439,22 @@ func testPartKeyPreserved(t *testing.T, f Factory) {
 	many, err := store.GetMany(ctx, s, model.KindUser, []string{u.ID})
 	must(t, err)
 	check("GetMany", many[0], "org-key")
-	// Global data, a record keyed by its own id, a reservation.
+	// Global data, and a record keyed by its own id.
 	org := &model.Org{Name: "key-org"}
 	or, err := store.Encode(org)
 	must(t, err)
 	lk := &model.Lock{Holder: "me"}
 	lr, err := store.Encode(lk)
 	must(t, err)
-	rv := &model.Reservation{Meta: model.Meta{ID: "res/https://key.example.com"}, HolderKind: model.KindTenant, HolderID: "t1"}
-	rr, err := store.Encode(rv)
-	must(t, err)
 	check("an organization", or, "")
 	check("a lock", lr, lk.ID)
-	check("a reservation", rr, "res/https://key.example.com")
 	must(t, s.Put(ctx, or))
 	must(t, s.Put(ctx, lr))
-	must(t, ps.ApplyPartition(ctx, 20, []*store.Record{rr}, pos(1, 1)))
 	for _, c := range []struct {
 		kind model.Kind
 		id   string
 		want string
-	}{{model.KindOrg, org.ID, ""}, {model.KindLock, lk.ID, lk.ID}, {model.KindReservation, rv.ID, rv.ID}} {
+	}{{model.KindOrg, org.ID, ""}, {model.KindLock, lk.ID, lk.ID}} {
 		got, err := s.Get(ctx, c.kind, c.id)
 		must(t, err)
 		check("Get "+string(c.kind), got, c.want)

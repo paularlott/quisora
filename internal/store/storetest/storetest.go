@@ -57,7 +57,6 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"DeleteNotLive", testDeleteNotLive},
 		{"PutOverExpired", testPutOverExpired},
 		{"RecordNeverMoves", testRecordNeverMoves},
-		{"TxRefusesGlobalUnique", testTxGlobalUnique},
 		{"EndedContext", testEndedContext},
 		{"Closed", testClosed},
 		{"ExpiresToTheMicrosecond", testExpiresPrecision},
@@ -394,18 +393,6 @@ func testRecordNeverMoves(t *testing.T, s store.Store) {
 	}
 }
 
-// A transaction may not write a value unique across organizations (a record holding one is written alone): ErrBadTx,
-// whatever the store.
-func testTxGlobalUnique(t *testing.T, s store.Store) {
-	pk := &model.Passkey{UserID: "u1", OrgID: "org1", Name: "key", CredentialID: []byte("cred-tx")}
-	r, err := store.Encode(pk)
-	must(t, err)
-	if err := s.Tx(ctx, []store.Op{{Rec: r}}); !errors.Is(err, store.ErrBadTx) {
-		t.Fatalf("a transaction writing a passkey: want ErrBadTx, got %v", err)
-	}
-	must(t, s.Put(ctx, r)) // alone, it is written
-}
-
 // A write whose context has ended before it begins is refused with ErrUnavailable and writes nothing, whatever the
 // store; a read may complete, and fails, if it fails, with ErrUnavailable.
 func testEndedContext(t *testing.T, s store.Store) {
@@ -725,7 +712,7 @@ func testListFilters(t *testing.T, s store.Store) {
 		{[]store.Filter{{Field: "role", Value: "manager"}}, 4},
 		{[]store.Filter{{Field: "role", Value: "manager"}, {Field: "active", Value: true}}, 2},
 		{[]store.Filter{{Field: "username", Value: "user003"}}, 1},
-		{[]store.Filter{{Field: "external_id", Value: ""}}, 12},
+		{[]store.Filter{{Field: "manager_id", Value: ""}}, 12},
 	}
 	for i, c := range cases {
 		_, total, err := users(s).List(ctx, store.ListQuery{Scope: "org1", Filters: c.f})
@@ -1114,7 +1101,7 @@ func testBadQuery(t *testing.T, s store.Store) {
 	if _, err := s.List(ctx, model.KindUser, store.ListQuery{Sort: "password_hash"}); !errors.Is(err, store.ErrBadQuery) {
 		t.Fatalf("bad sort: %v", err)
 	}
-	if _, err := s.List(ctx, model.KindUser, store.ListQuery{Sort: "external_id"}); !errors.Is(err, store.ErrBadQuery) {
+	if _, err := s.List(ctx, model.KindUser, store.ListQuery{Sort: "manager_id"}); !errors.Is(err, store.ErrBadQuery) {
 		t.Fatalf("non-sortable: %v", err)
 	}
 	if _, err := s.List(ctx, model.KindUser, store.ListQuery{Filters: []store.Filter{{Field: "x; drop table", Value: 1}}}); !errors.Is(err, store.ErrBadQuery) {
@@ -1214,7 +1201,7 @@ func testListIndexed(t *testing.T, s store.Store) {
 		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: "username", Desc: desc, Limit: 8})
 		// Sorted pages (the sort indexes of the key-value stores): every sort field of the user console and of
 		// SCIM, both directions, at offsets, with the visibility exclusions, with ties (role, active) and without.
-		for _, sort := range []string{"username", "name", "email", "created", "role", "active", "department"} {
+		for _, sort := range []string{"username", "name", "email", "created", "role", "active", "valid_until"} {
 			for _, off := range []int{0, 5, 23, 30} {
 				check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("super_admin", false)}, Sort: sort, Desc: desc, Offset: off, Limit: 7})
 				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 7})
@@ -1228,8 +1215,6 @@ func testListIndexed(t *testing.T, s store.Store) {
 		}
 		check(model.KindUser, store.ListQuery{Scope: "org1", Search: "user0", Desc: desc, Offset: 2, Limit: 5})
 		check(model.KindUser, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("role", "manager")}, Desc: desc, Offset: 1, Limit: 3})
-		check(model.KindGrant, store.ListQuery{Scope: "u1", Sort: "created", Desc: desc, Offset: 1, Limit: 3})
-		check(model.KindMember, store.ListQuery{Scope: "org1", Filters: []store.Filter{f("group_id", "g1")}, Sort: "created", Desc: desc, Limit: 2})
 		check(model.KindUser, store.ListQuery{Scope: "", Filters: []store.Filter{f("admin_rank", true)}, Desc: desc, Limit: 4})
 		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-a")}, Desc: desc, Offset: 1, Limit: 3})
 		check(model.KindGrant, store.ListQuery{Scope: "u1", Filters: []store.Filter{f("client_id", "app-b")}, Desc: desc})
@@ -1264,9 +1249,9 @@ func testListSortIndexes(t *testing.T, s store.Store) {
 			u.Username = strings.ToUpper(u.Username) // folds to the same order as the others
 		}
 		u.GivenName, u.FamilyName = []string{"Ann", "bob", "Ann", ""}[i%4], "" // three runs of equal names; "" names fall back to the username
-		u.Work.Department = ""
 		if i%5 == 0 {
-			u.Work.Department = "Ops" // most departments are empty: a long run of empty values first
+			end := base.Add(time.Duration(i) * time.Hour)
+			u.ValidUntil = &end // most users have no end date: a long run of empty values first
 		}
 		u.Created = base.Add(time.Duration(i%6) * time.Minute).Add(time.Duration(i%3) * time.Nanosecond) // ties at the second, apart by nanoseconds
 		u.Active = i%3 != 0
@@ -1291,7 +1276,7 @@ func testListSortIndexes(t *testing.T, s store.Store) {
 	}
 	visible := []store.Filter{{Field: "super_admin", Value: false}}
 	for _, desc := range []bool{false, true} {
-		for _, sort := range []string{"username", "name", "department", "created", "active", "role", "email"} {
+		for _, sort := range []string{"username", "name", "valid_until", "created", "active", "role", "email"} {
 			for _, off := range []int{0, 3, 11, 38, 45} {
 				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5})
 				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5, Filters: visible})

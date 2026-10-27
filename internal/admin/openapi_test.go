@@ -155,9 +155,10 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 		if !strings.HasPrefix(rt.Path, "/api/") {
 			t.Errorf("route outside /api: %s", rt.Path)
 		}
-		key := rt.Method + " " + rt.Path
+		path := strings.ReplaceAll(rt.Path, "...}", "}") // (a {name...} wildcard is one parameter to OpenAPI)
+		key := rt.Method + " " + path
 		registered[key] = true
-		ops, ok := doc.Paths[rt.Path]
+		ops, ok := doc.Paths[path]
 		if !ok {
 			t.Errorf("route %s is missing from the OpenAPI document", key)
 			continue

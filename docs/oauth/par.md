@@ -6,17 +6,17 @@ parameters cannot be read or changed on the way, never appear in browser history
 the user sees anything. FAPI 2.0 requires it; any confidential client can use it.
 
 ```bash
-export QUISORA=https://id.example.com
+export ISSUER=https://id.example.com/o/<org id>      # the organization's issuer
 ```
 
 ## 1. Push the request
 
-Everything that would go in the authorization URL, posted to `/oauth/par` with the client's authentication
+Everything that would go in the authorization URL, posted to the organization's `/oauth/par` with the client's authentication
 ([client authentication](client-authentication.md)). The PKCE values are made as in [the sign-in
 guide](sign-in.md#1-send-the-browser-to-quisora).
 
 ```bash
-curl -s "$QUISORA/oauth/par" -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
+curl -s "$ISSUER/oauth/par" -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
   -d response_type=code -d redirect_uri="$REDIRECT_URI" -d scope="openid profile" \
   -d state="$STATE" -d nonce="$NONCE" -d code_challenge="$CHALLENGE" -d code_challenge_method=S256
 ```
@@ -31,7 +31,7 @@ The answer is `201 Created`. Anything wrong with the request is answered here, a
 ## 2. Send the browser with the reference
 
 ```bash
-echo "$QUISORA/oauth/authorize?client_id=$CLIENT_ID&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Aa1.mR3x…"
+echo "$ISSUER/oauth/authorize?client_id=$CLIENT_ID&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Aa1.mR3x…"
 ```
 
 Only `client_id` and `request_uri`: any other parameter in the URL is ignored, the pushed ones count. The rest is the
@@ -40,7 +40,7 @@ tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
 
 ## The request_uri
 
-- **60 seconds** to start: the browser must reach `/oauth/authorize` within a minute of the push. Once it has, the
+- **60 seconds** to start: the browser must reach the organization's `/oauth/authorize` within a minute of the push. Once it has, the
   request lasts as long as any sign-in flow, so a user who takes their time signing in is fine.
 - **Once.** It is used up when the request is decided (a code is issued, or the user denies or cancels), not on its
   first visit, so reloading the sign-in page works. Presented again after that, it goes back to the application as

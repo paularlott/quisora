@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -10,21 +11,29 @@ import (
 )
 
 // providerView never carries the client secret; HasSecret says whether one is stored. CallbackURL is the provider's
-// own redirect URI, to register with it.
+// own redirect URI, to register with it. SourceOrgName is the display name of an organization provider's source
+// organization, which the console lists it by (the reader may not be allowed to list organizations).
 type providerView struct {
 	*model.Provider
-	HasSecret   bool   `json:"has_secret"`
-	CallbackURL string `json:"callback_url"`
+	HasSecret     bool   `json:"has_secret"`
+	CallbackURL   string `json:"callback_url"`
+	SourceOrgName string `json:"source_org_name,omitempty"`
 }
 
-func (m *Module) providerViewOf(p *model.Provider) providerView {
-	return providerView{p, p.ClientSecret != "", m.s.Cfg.Server.PublicURL + upstream.CallbackPath(p.ID)}
+func (m *Module) providerViewOf(ctx context.Context, p *model.Provider) providerView {
+	v := providerView{Provider: p, HasSecret: p.ClientSecret != "", CallbackURL: m.s.Cfg.Server.PublicURL + upstream.CallbackPath(p.OrgID, p.ID)}
+	if p.SourceOrg != "" {
+		if o, err := m.s.Svc.Orgs.Get(ctx, p.SourceOrg); err == nil {
+			v.SourceOrgName = o.DisplayName
+		}
+	}
+	return v
 }
 
-func (m *Module) providerViews(ps []*model.Provider) []providerView {
+func (m *Module) providerViews(ctx context.Context, ps []*model.Provider) []providerView {
 	out := make([]providerView, len(ps))
 	for i, p := range ps {
-		out[i] = m.providerViewOf(p)
+		out[i] = m.providerViewOf(ctx, p)
 	}
 	return out
 }
@@ -47,7 +56,7 @@ func (m *Module) getProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p, found := m.providerFor(w, r, org, a); found {
-		web.WriteJSON(w, http.StatusOK, m.providerViewOf(p))
+		web.WriteJSON(w, http.StatusOK, m.providerViewOf(r.Context(), p))
 	}
 }
 
@@ -61,7 +70,7 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	writeList(w, m.providerViews(items), total)
+	writeList(w, m.providerViews(r.Context(), items), total)
 }
 
 func (m *Module) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +87,7 @@ func (m *Module) createProvider(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusCreated, m.providerViewOf(p))
+	web.WriteJSON(w, http.StatusCreated, m.providerViewOf(r.Context(), p))
 }
 
 func (m *Module) updateProvider(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +109,7 @@ func (m *Module) updateProvider(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.providerViewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.providerViewOf(r.Context(), upd))
 }
 
 func (m *Module) deleteProvider(w http.ResponseWriter, r *http.Request) {

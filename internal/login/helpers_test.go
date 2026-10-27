@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -37,6 +38,9 @@ type env struct {
 	*webtest.Env
 	Mod    *login.Module
 	Mailer *mail.Mailer
+	// last is the organization most recently made by env.org: the one a new browser's relative paths are in, as most
+	// tests are about the organization they make (the primary one otherwise).
+	last   *model.Org
 	mu     sync.Mutex
 	mails  []mail.Message
 	mailCh chan mail.Message
@@ -63,6 +67,12 @@ func lockoutAfter(n int) func(*config.Config) {
 
 // newEnvWith can keep webtest's default 127.0.0.1 public URL (keepIP), which cannot be a WebAuthn relying party.
 func newEnvWith(t testing.TB, keepIP bool, mut ...func(*config.Config)) *env {
+	return newEnvModules(t, keepIP, nil, mut...)
+}
+
+// newEnvModules is newEnvWith with more modules registered after the login module (extra may be nil): tests of what
+// the login module does with another module of the server, such as the OAuth endpoints of an organization.
+func newEnvModules(t testing.TB, keepIP bool, extra func(*web.Server) []web.Module, mut ...func(*config.Config)) *env {
 	t.Helper()
 	e := &env{mailCh: make(chan mail.Message, 64)}
 	e.Env = webtest.New(t, webtest.Options{
@@ -91,7 +101,11 @@ func newEnvWith(t testing.TB, keepIP bool, mut ...func(*config.Config)) *env {
 			e.Mailer = m
 			// "/step-up" stands for an authorization request that asked for a second factor (acr_values).
 			e.Mod = login.New(s, login.Options{Mail: e.Mailer, StepUp: func(_ context.Context, next string) bool { return next == "/step-up" }})
-			return []web.Module{e.Mod}
+			mods := []web.Module{e.Mod}
+			if extra != nil {
+				mods = append(mods, extra(s)...)
+			}
+			return mods
 		},
 	})
 	t.Cleanup(e.Mailer.Close)
@@ -148,7 +162,7 @@ func (e *env) noMail(t testing.TB) {
 	}
 }
 
-var linkRe = regexp.MustCompile(`https://localhost:\d+(/[a-z-]+\?token=[A-Za-z0-9._%-]+)`)
+var linkRe = regexp.MustCompile(`https://localhost:\d+(/o/[0-9a-f-]{36}/[a-z-]+\?token=[A-Za-z0-9._%-]+)`)
 
 // linkPath returns the path+query of the link in a message.
 func linkPath(t testing.TB, m mail.Message) string {
@@ -188,6 +202,7 @@ func (e *env) org(t testing.TB, name string, mut func(*model.OrgSettings)) *mode
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.last = o
 	return o
 }
 
@@ -198,6 +213,7 @@ func (e *env) setSettings(t testing.TB, o *model.Org, mut func(*model.OrgSetting
 	if _, err := e.Svc.UpdateOrg(context.Background(), service.System, o.ID, service.OrgInput{Settings: &s}); err != nil {
 		t.Fatal(err)
 	}
+	e.Server.InvalidateOrgs() // as the change feed does
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -209,22 +225,56 @@ type browser struct {
 	c    *http.Client
 	csrf string
 	auth *virtualauth.Authenticator
+	// base is the address space (/o/<org id or name>) the browser's relative paths are in, as the page a person is on
+	// decides where its links lead: "/login" is that organization's sign-in page. A path that starts with /o/ is taken
+	// as it is, and is the new base.
+	base string
+}
+
+// primaryBase is the primary organization's address space.
+var primaryBase = web.OrgPath(model.PrimaryOrgID, "")
+
+// at returns the browser's path for p: p itself when it names an organization (which the browser is then in), else p
+// in the one it is in.
+func (b *browser) at(p string) string {
+	if rest, ok := strings.CutPrefix(p, "/o/"); ok {
+		org, _, _ := strings.Cut(rest, "/")
+		if o, err := b.e.Svc.OrgByRef(context.Background(), org); err == nil {
+			org = o.ID
+		}
+		b.base = "/o/" + org
+		return p
+	}
+	return b.base + p
 }
 
 var metaRe = regexp.MustCompile(`<meta name="csrf-token" content="([^"]*)"`)
 
 // browser returns a fresh browser (own cookie jar) that has loaded the sign-in page, so it holds the anonymous
-// CSRF cookie and token.
+// CSRF cookie and token. Its relative paths are in the organization most recently made (env.org), the primary one
+// before any.
 func (e *env) browser(t testing.TB) *browser {
 	t.Helper()
-	b := &browser{t: t, e: e, c: e.client(), auth: virtualauth.New(e.Cfg.Server.PublicURL)}
+	b := &browser{t: t, e: e, c: e.client(), auth: virtualauth.New(e.Cfg.Server.PublicURL), base: primaryBase}
+	if e.last != nil {
+		b.base = web.OrgPath(e.last.ID, "")
+	}
+	b.refresh()
+	return b
+}
+
+// browserAt is a fresh browser in org's address space.
+func (e *env) browserAt(t testing.TB, org *model.Org) *browser {
+	t.Helper()
+	b := e.browser(t)
+	b.base = web.OrgPath(org.ID, "")
 	b.refresh()
 	return b
 }
 
 func (b *browser) refresh() {
 	b.t.Helper()
-	_, body := b.get("/login/primary")
+	_, body := b.get("/login")
 	m := metaRe.FindStringSubmatch(body)
 	if m == nil {
 		b.t.Fatalf("no csrf meta in page: %.300s", body)
@@ -233,6 +283,17 @@ func (b *browser) refresh() {
 }
 
 func (b *browser) get(path string) (*http.Response, string) {
+	b.t.Helper()
+	return b.getAt(b.at(path))
+}
+
+// getAbs is get of a path as it is, outside any organization's address space.
+func (b *browser) getAbs(path string) (*http.Response, string) {
+	b.t.Helper()
+	return b.getAt(path)
+}
+
+func (b *browser) getAt(path string) (*http.Response, string) {
 	b.t.Helper()
 	res, err := b.c.Get(b.e.URL + path)
 	if err != nil {
@@ -267,7 +328,7 @@ func (b *browser) send(method, path string, body any, h hdrs) (*http.Response, m
 			rd = bytes.NewReader(j)
 		}
 	}
-	req, _ := http.NewRequest(method, b.e.URL+path, rd)
+	req, _ := http.NewRequest(method, b.e.URL+b.at(path), rd)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if _, skip := h["X-CSRF-Token"]; !skip {
@@ -296,13 +357,13 @@ func (b *browser) post(path string, body any) (*http.Response, map[string]any) {
 	return b.do(http.MethodPost, path, body, nil)
 }
 
-// login posts the password form. A bare name stands for the fixture address <name>@example.com (see env.user and the
-// bootstrap admin); anything containing "@" is sent as given.
+// login posts the password form of the organization called org (its name or id). A bare name stands for the fixture
+// address <name>@example.com (see env.user and the bootstrap admin); anything containing "@" is sent as given.
 func (b *browser) login(org, who, password string) (*http.Response, map[string]any) {
 	if who != "" && !strings.Contains(who, "@") {
 		who += "@example.com"
 	}
-	return b.post("/api-internal/login/password", map[string]any{"org": org, "email": who, "password": password})
+	return b.post("/o/"+org+"/api-internal/login/password", map[string]any{"email": who, "password": password})
 }
 
 // signedIn returns a browser holding a session for u (created directly) and its CSRF token.
@@ -310,7 +371,7 @@ func (e *env) signedIn(t testing.TB, u *model.User) *browser {
 	t.Helper()
 	c, csrf := e.Session(u)
 	cp := *c // webtest hands out one shared *http.Client; keep this jar
-	b := &browser{t: t, e: e, c: &cp, csrf: csrf, auth: virtualauth.New(e.Cfg.Server.PublicURL)}
+	b := &browser{t: t, e: e, c: &cp, csrf: csrf, auth: virtualauth.New(e.Cfg.Server.PublicURL), base: web.OrgPath(u.OrgID, "")}
 	b.signedInAt(time.Now().Add(-time.Hour)) // an older sign-in: sensitive changes ask to confirm (b.fresh() undoes it)
 	return b
 }
@@ -320,7 +381,7 @@ func (e *env) signedInMFA(t testing.TB, u *model.User) *browser {
 	t.Helper()
 	c, csrf := e.SessionAMR(u, []string{"pwd", "otp", "mfa"})
 	cp := *c
-	b := &browser{t: t, e: e, c: &cp, csrf: csrf, auth: virtualauth.New(e.Cfg.Server.PublicURL)}
+	b := &browser{t: t, e: e, c: &cp, csrf: csrf, auth: virtualauth.New(e.Cfg.Server.PublicURL), base: web.OrgPath(u.OrgID, "")}
 	b.signedInAt(time.Now().Add(-time.Hour))
 	return b
 }
@@ -352,21 +413,14 @@ func wantStatus(t testing.TB, res *http.Response, body map[string]any, want int)
 	}
 }
 
-// sessionCookie reports whether the browser holds a session cookie.
-func (b *browser) hasSession() bool {
-	u, _ := url.Parse(b.e.URL)
-	for _, c := range b.c.Jar.Cookies(u) {
-		if c.Name == web.SessionCookie {
-			return true
-		}
-	}
-	return false
-}
+// hasSession reports whether the browser holds a session cookie (of any organization).
+func (b *browser) hasSession() bool { return b.sessionID() != "" }
 
+// sessionID is the id of the browser's session (of the first organization it holds one of), "" when it has none.
 func (b *browser) sessionID() string {
 	u, _ := url.Parse(b.e.URL)
 	for _, c := range b.c.Jar.Cookies(u) {
-		if c.Name == web.SessionCookie {
+		if strings.HasPrefix(c.Name, web.SessionCookieFor("")) {
 			return web.SessionID(c.Value) // stored id = hash of the cookie
 		}
 	}
@@ -504,13 +558,15 @@ func (e *env) invitee(t testing.TB, org *model.Org, name string) (*model.User, s
 	return u, e.invite(t, u)
 }
 
+// invite issues an invitation for u and returns its path+query: the page of the user's organization the link opens
+// (the token is the service's; where the page is is the module's, whatever address the service builds).
 func (e *env) invite(t testing.TB, u *model.User) string {
 	t.Helper()
 	link, _, err := e.Svc.CreateInvite(context.Background(), service.System, u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return strings.TrimPrefix(link, e.Cfg.Server.PublicURL)
+	return web.OrgPath(u.OrgID, "/invite?token="+tokenOf(link))
 }
 
 func tokenOf(link string) string { return link[strings.Index(link, "token=")+len("token="):] }
@@ -551,10 +607,17 @@ func (b *browser) registerPasskey(name string) *virtualauth.Credential {
 	return c
 }
 
-// passkeyLogin runs begin+finish on an anonymous browser and returns the finish response.
+// passkeyLogin runs begin+finish on an anonymous browser and returns the finish response. begin's "org" (a name or
+// id) is the organization whose page the ceremony runs on, by default the browser's own.
 func (b *browser) passkeyLogin(begin map[string]any) (int, map[string]any) {
 	b.t.Helper()
-	res, out := b.post("/api-internal/login/passkey/begin", begin)
+	base := b.base
+	if org, ok := begin["org"].(string); ok {
+		base = "/o/" + org
+		begin = maps.Clone(begin)
+		delete(begin, "org")
+	}
+	res, out := b.post(base+"/api-internal/login/passkey/begin", begin)
 	if res.StatusCode != 200 {
 		return res.StatusCode, out
 	}
@@ -563,7 +626,7 @@ func (b *browser) passkeyLogin(begin map[string]any) (int, map[string]any) {
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	res, out2 := b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": out["challenge"], "credential": json.RawMessage(cred)})
+	res, out2 := b.post(base+"/api-internal/login/passkey/finish", map[string]any{"challenge": out["challenge"], "credential": json.RawMessage(cred)})
 	return res.StatusCode, out2
 }
 
@@ -600,7 +663,7 @@ func (b *browser) verifyLink(path string) (*http.Response, string) {
 	for _, m := range formField.FindAllStringSubmatch(page, -1) {
 		form.Set(m[1], strings.ReplaceAll(m[2], "&amp;", "&"))
 	}
-	res, err := b.c.PostForm(b.e.URL+"/verify-email", form)
+	res, err := b.c.PostForm(b.e.URL+b.at("/verify-email"), form)
 	if err != nil {
 		b.t.Fatal(err)
 	}

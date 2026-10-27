@@ -308,8 +308,20 @@ func (t *table) ddl(d *dialect) []string {
 	idx := func(name, keys string) {
 		out = append(out, fmt.Sprintf("CREATE INDEX %s%s ON %s (%s)", ifNotExists(d), d.quote("ix_"+string(t.kind)+"_"+name), t.name, keys))
 	}
-	idx("scope", "scope, id")
-	idx("expires", "expires")
+	if !model.Unscoped(t.kind) { // the records of an unscoped kind all have the empty scope: nothing to find by it
+		idx("scope", "scope, id")
+	}
+	// The purge of the expired (read.go) is the one reader of this index, and a kind that never expires is not purged
+	// of them. Where the database has partial indexes, a kind that only sometimes has an expiry (the members of a
+	// group, mostly kept) indexes just the records that carry one.
+	switch e := model.ExpiryOf(t.kind); {
+	case e == model.NeverExpires:
+	case e == model.MayExpire && !d.isMySQL():
+		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (expires) WHERE expires IS NOT NULL",
+			d.quote("ix_"+string(t.kind)+"_expires"), t.name))
+	default:
+		idx("expires", "expires")
+	}
 	if d.isMySQL() { // the partition sequence index (ExportPartition, a full import, PurgePartition)
 		idx("part", "pnum, pseq")
 	} else { // partial: only the records a partition write stamped
@@ -325,7 +337,8 @@ func (t *table) ddl(d *dialect) []string {
 	if d.isMySQL() {
 		idx("tomb", "deleted, version")
 	} else { // partial: the planner must never pick it for the (far more common) deleted = FALSE queries
-		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (version) WHERE deleted = TRUE",
+		// Nor does a partition's tombstone (stamped: it has the index above) need it: Purge leaves those to their partition.
+		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (version) WHERE deleted = TRUE AND pseq = 0",
 			d.quote("ix_"+string(t.kind)+"_tomb"), t.name))
 	}
 	for _, f := range t.fields {

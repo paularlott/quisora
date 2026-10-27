@@ -8,13 +8,15 @@
 //	sc/<kind>/<scope>/<id>             -> ordered scope index (scope escaped so it never contains '/')
 //	al/<kind>/<id>                     -> ordered "all" index of a kind (unscoped listing)
 //	exp/<unix-ms 15 digits>/<kind>/<id> -> expiry index, range-deleted by Purge
-//	tomb/<version 20 digits>/<kind>/<id> -> tombstone index, range-deleted by Purge
+//	tomb/<version 20 digits>/<kind>/<id> -> tombstone index, range-deleted by Purge (not of a partition's tombstones:
+//	                                      pt, below)
 //	fx/<kind>/<field>/<value>/<scope>/<id> -> field index (model.Field.Index): the records with that value, by scope
 //	                                      (an indexed bool field indexes only the records with true)
 //	sx/<kind>/<field>/<scope>/<sort key>\x00<id> -> sort index (model.Field.SortIndex): the scope's records in the
 //	                                      order a listing sorted on the field returns them (sortKey)
 //	n/<range>, nx/<range>                -> counters: the members of an index range (al/<kind>, sc/<kind>/<scope>,
-//	                                      fx/<kind>/<field>/<value>/<scope>), and those of them carrying an expiry
+//	                                      fx/<kind>/<field>/<value>/<scope>), and those of them carrying an expiry; none
+//	                                      for a kind whose records all expire (counting)
 //	due/<unix-ms 15 digits>/<kind>/<id>  -> due index (model.Due), range-scanned by ListDue
 //	ps/<partition>/<20-digit pseq>/<kind>/<id> -> partition sequence index: the records ApplyPartition and
 //	                                      ImportPartition wrote, by the sequence of the write that last changed them,
@@ -35,8 +37,8 @@
 // descending, with the same exclusions: a page costs its offset plus its length in index keys and loads only its
 // own records, whatever the size of the scope. Totals come from the counters when no member of the range carries
 // an expiry (the counters count members, which stay in the indexes until Purge removes the expired ones), and
-// otherwise from a count of the index that excludes the expired members (key-only iteration), as the index carries
-// each member's expiry.
+// otherwise (and for a kind whose records all expire, which keeps no counters) from a count of the index that
+// excludes the expired members (key-only iteration), as the index carries each member's expiry.
 //
 // A search (a prefix of the Search fields) of a kind whose Search fields all have sort indexes reads, keys only, the
 // range of each index that starts with it: only the matching records are read. A word-list field (tags) is indexed
@@ -369,7 +371,8 @@ func expMs(t time.Time) int64 {
 
 // indexEntry is one ordered-set membership of a record. count names the counted range the member belongs to
 // (counterKey), "" for the members of the uncounted housekeeping indexes and of the sort indexes (whose scope
-// ranges hold the same members as the scope index, and are counted by it).
+// ranges hold the same members as the scope index, and are counted by it), and of every index of a kind that keeps
+// no counters (counting).
 type indexEntry struct {
 	bucket, member string
 	exp            int64
@@ -388,21 +391,30 @@ func ptBucket(p uint32) string { return "pt/" + strconv.FormatUint(uint64(p), 10
 func indexEntries(r *store.Record, ps pstamp) []indexEntry {
 	var out []indexEntry
 	if r.Deleted {
-		out = append(out, indexEntry{"tomb", indexMember(uint64(r.Version), 20, r.Kind, r.ID), 0, ""})
-		if ps.seq > 0 {
+		if ps.seq == 0 {
+			// Purge removes a tombstone by its age. A partition's (stamped) are removed by sequence, as the partition
+			// moves past them (PurgePartition), and a store that has them leaves them to Purge (store.Store.Purge).
+			out = append(out, indexEntry{"tomb", indexMember(uint64(r.Version), 20, r.Kind, r.ID), 0, ""})
+		} else {
 			m := indexMember(ps.seq, 20, r.Kind, r.ID)
 			out = append(out, indexEntry{psBucket(ps.num), m, 0, ""}, indexEntry{ptBucket(ps.num), m, 0, ""})
 		}
 		return out
 	}
 	exp := expMs(r.Expires)
+	counted := func(rng string) string { // the range's counter key, "" when the kind keeps none
+		if counting(r.Kind) {
+			return rng
+		}
+		return ""
+	}
 	out = make([]indexEntry, 1, 5)
-	out[0] = indexEntry{allBucket(r.Kind), r.ID, exp, allBucket(r.Kind)}
+	out[0] = indexEntry{allBucket(r.Kind), r.ID, exp, counted(allBucket(r.Kind))}
 	if ps.seq > 0 {
 		out = append(out, indexEntry{psBucket(ps.num), indexMember(ps.seq, 20, r.Kind, r.ID), 0, ""})
 	}
 	if r.Scope != "" {
-		out = append(out, indexEntry{scopeBucket(r.Kind, r.Scope), r.ID, exp, scopeBucket(r.Kind, r.Scope)})
+		out = append(out, indexEntry{scopeBucket(r.Kind, r.Scope), r.ID, exp, counted(scopeBucket(r.Kind, r.Scope))})
 	}
 	if exp > 0 {
 		out = append(out, indexEntry{"exp", indexMember(uint64(exp), 15, r.Kind, r.ID), 0, ""})
@@ -418,13 +430,13 @@ func indexEntries(r *store.Record, ps pstamp) []indexEntry {
 			for _, w := range slices.Compact(words) {
 				if v, ok := fieldKey(w); ok { // as a filter on the word names its bucket (indexBuckets)
 					b := fieldBucket(r.Kind, f.Name, v)
-					out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, fieldRange(b, r.Scope)})
+					out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, counted(fieldRange(b, r.Scope))})
 				}
 			}
 		} else if f.Index && (f.Type != model.FieldBool || r.Fields[f.Name] == true) { // a bool's false records: never read
 			if v, ok := fieldKey(r.Fields[f.Name]); ok && v != "" { // nor an empty string's (sparse: most users have no manager)
 				b := fieldBucket(r.Kind, f.Name, v)
-				out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, fieldRange(b, r.Scope)})
+				out = append(out, indexEntry{b, fieldMember(r.Scope, r.ID), exp, counted(fieldRange(b, r.Scope))})
 			}
 		}
 		if f.SortIndex {
@@ -554,8 +566,9 @@ func sortIndexed(kind model.Kind, sort string) (model.Field, bool) {
 // of them that carry an expiry. Both are maintained in the transaction that adds or removes a member, so a total
 // that needs no expiry check (nx is 0) is one read instead of a count of the range. Members stay in the indexes
 // until Purge removes the expired ones, so while nx is not 0 the range's live total comes from the engine's count,
-// which excludes them. An expiring kind (sessions, grants) therefore counts the way it did; the kinds that page
-// large scopes (users, groups, organizations, audit events) never expire.
+// which excludes them. A kind whose records all expire (model.AlwaysExpires: audit events, sessions, grants, links)
+// keeps no counters at all, as its ranges would never be answered by one (counting); the kinds that page large
+// scopes and rarely or never expire (users, groups, organizations) keep theirs.
 func counterKey(rng string, expiring bool) string {
 	if expiring {
 		return "nx/" + rng
@@ -570,6 +583,11 @@ func counterOf(b []byte) int64 {
 	}
 	return int64(binary.BigEndian.Uint64(b))
 }
+
+// counting reports whether the ranges of kind keep counters. A kind whose records all expire does not: the counter of
+// a range that holds an expiring member never gives its total, so each would cost two read-modify-write keys per
+// index entry on every write of a record, which conflict between writers, for nothing.
+func counting(kind model.Kind) bool { return model.ExpiryOf(kind) != model.AlwaysExpires }
 
 // fieldRange is the counted range of a field index bucket's members of one scope (fieldMember: the scope's
 // members are contiguous).
@@ -1290,12 +1308,13 @@ func (s *Store) searchIDs(ctx context.Context, kind model.Kind, q store.ListQuer
 	return ids, true, nil
 }
 
-// counted returns the total of the page p selects from the counted range rng (counterKey), or -1 when only a count of
-// the page's members gives it. When no member of the range carries an expiry its counter, less the members p skips
-// (every one a live member of the range), is the total, and p is set to stop at the end of the page. A page without
-// a limit reads the whole range anyway, and counts it as it goes.
-func (s *Store) counted(ctx context.Context, rng string, p *pageQuery) (int, error) {
-	if rng == "" || p.Limit <= 0 {
+// counted returns the total of the page p selects from the counted range rng (counterKey) of kind, or -1 when only a
+// count of the page's members gives it. When no member of the range carries an expiry its counter, less the members
+// p skips (every one a live member of the range), is the total, and p is set to stop at the end of the page. A page
+// without a limit reads the whole range anyway, and counts it as it goes; a kind that keeps no counters has no
+// counted range.
+func (s *Store) counted(ctx context.Context, kind model.Kind, rng string, p *pageQuery) (int, error) {
+	if rng == "" || p.Limit <= 0 || !counting(kind) {
 		return -1, nil
 	}
 	n, expiring, err := s.counts(ctx, rng)
@@ -1313,7 +1332,7 @@ func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p 
 	total := -1
 	if after {
 		p.NoTotal = true
-	} else if t, err := s.counted(ctx, rng, &p); err != nil {
+	} else if t, err := s.counted(ctx, kind, rng, &p); err != nil {
 		return nil, err
 	} else {
 		total = t
@@ -1420,7 +1439,7 @@ func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQue
 	if !q.Desc {
 		return s.listPage(ctx, kind, bucket, p, sortMemberID, rng, false, false)
 	}
-	total, err := s.counted(ctx, rng, &p)
+	total, err := s.counted(ctx, kind, rng, &p)
 	if err != nil {
 		return nil, err
 	}
@@ -1669,10 +1688,13 @@ func (s *Store) listAfter(ctx context.Context, kind model.Kind, bucket, after st
 	return &store.ListResult{Records: out, Total: len(out)}, nil
 }
 
-// Count is the scope's counter when no member of the scope carries an expiry, and otherwise a count of its index
-// that leaves the expired members out.
+// Count is the scope's counter when no member of the scope carries an expiry, and otherwise (and for a kind that keeps
+// no counters) a count of its index that leaves the expired members out.
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
 	rng := listBucket(kind, scope)
+	if !counting(kind) {
+		return s.eng.Count(ctx, rng, nowMs())
+	}
 	n, expiring, err := s.counts(ctx, rng)
 	if err != nil {
 		return 0, err

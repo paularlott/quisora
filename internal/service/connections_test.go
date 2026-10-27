@@ -270,11 +270,6 @@ func TestConnectedAppsAndRemoveUserApp(t *testing.T) {
 	grant(b, b.ID, []string{"openid", "profile"})
 	grant(a, a.ID, []string{"openid"})
 	grant(nil, "removed-client", nil)
-	revoked := grant(nil, "revoked-client", nil)
-	revoked.Revoked = true
-	if err := c.svc.Grants.Update(c.ctx, revoked); err != nil {
-		t.Fatal(err)
-	}
 	apps, err := c.svc.ConnectedApps(c.ctx, c.aUser.ID)
 	if err != nil {
 		t.Fatal(err)

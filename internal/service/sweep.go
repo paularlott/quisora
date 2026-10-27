@@ -44,47 +44,53 @@ type Sweep struct {
 type ownerRef struct {
 	kind model.Kind
 	id   string
+	// uses, for a provider that owns a sign-in client (Client.ProviderID), is that client: the provider must still
+	// use it, or the client is a leftover of a change of the provider's source organization.
+	uses string
 }
 
 // owners returns what r belongs to: it is an orphan once any of them is gone.
 func owners(e model.Entity) []ownerRef {
 	switch v := e.(type) {
 	case *model.User:
-		return []ownerRef{{model.KindOrg, v.OrgID}}
+		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Group:
-		return []ownerRef{{model.KindOrg, v.OrgID}}
+		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Tenant:
-		return []ownerRef{{model.KindOrg, v.OrgID}}
+		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Client:
-		return []ownerRef{{model.KindOrg, v.OrgID}}
+		if v.ProviderID != "" {
+			return []ownerRef{{kind: model.KindOrg, id: v.OrgID}, {kind: model.KindProvider, id: v.ProviderID, uses: v.ID}}
+		}
+		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Provider:
-		return []ownerRef{{model.KindOrg, v.OrgID}}
+		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Member:
 		if !v.Active() {
 			return nil // a removed membership expires on its own
 		}
-		return []ownerRef{{model.KindGroup, v.GroupID}, {model.KindUser, v.UserID}}
+		return []ownerRef{{kind: model.KindGroup, id: v.GroupID}, {kind: model.KindUser, id: v.UserID}}
 	case *model.TenantAccess:
 		subject := model.KindUser
 		if v.SubjectType == model.SubjectGroup {
 			subject = model.KindGroup
 		}
-		return []ownerRef{{model.KindTenant, v.TenantID}, {subject, v.SubjectID}}
+		return []ownerRef{{kind: model.KindTenant, id: v.TenantID}, {kind: subject, id: v.SubjectID}}
 	case *model.Passkey:
-		return []ownerRef{{model.KindUser, v.UserID}}
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.Identity:
-		return []ownerRef{{model.KindUser, v.UserID}, {model.KindProvider, v.ProviderID}}
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindProvider, id: v.ProviderID}}
 	case *model.APIToken:
-		return []ownerRef{{model.KindUser, v.UserID}}
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.SignIn:
-		return []ownerRef{{model.KindUser, v.ID}}
+		return []ownerRef{{kind: model.KindUser, id: v.ID}}
 	case *model.Session:
 		if v.Passkey != "" { // signed in with a passkey: it stands on it (SessionUsable)
-			return []ownerRef{{model.KindUser, v.UserID}, {model.KindPasskey, v.Passkey}}
+			return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindPasskey, id: v.Passkey}}
 		}
-		return []ownerRef{{model.KindUser, v.UserID}}
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.Grant:
-		return []ownerRef{{model.KindUser, v.UserID}, {model.KindClient, v.ClientID}}
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindClient, id: v.ClientID}}
 	}
 	return nil
 }
@@ -169,7 +175,7 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 // clearDanglingManager gives u no manager when the manager is gone: the deletion of a user clears the manager of their
 // reports as a follow-up (clearManagerOf) that an interruption can leave undone, and nothing else would.
 func (s *Service) clearDanglingManager(ctx context.Context, u *model.User, known map[ownerRef]bool) error {
-	m := ownerRef{model.KindUser, u.Work.ManagerID}
+	m := ownerRef{kind: model.KindUser, id: u.Work.ManagerID}
 	if m.id == "" || known[m] {
 		return nil
 	}
@@ -228,11 +234,18 @@ func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
 	if o.id == "" {
 		return false, nil
 	}
-	_, err := s.Store.Get(ctx, o.kind, o.id)
+	r, err := s.Store.Get(ctx, o.kind, o.id)
 	if errors.Is(err, store.ErrNotFound) {
 		return true, nil
 	}
-	return false, mapStore(err)
+	if err != nil || o.uses == "" {
+		return false, mapStore(err)
+	}
+	var p model.Provider
+	if err := store.Decode(r, &p); err != nil {
+		return false, err
+	}
+	return p.ClientID != o.uses, nil
 }
 
 // removeOrphan removes e. A membership is marked removed, not tombstoned, with a sequence no writer can pass, so a
@@ -304,7 +317,7 @@ func (s *Service) dead(ctx context.Context, e model.Entity) (bool, error) {
 		if c, ok := e.(model.Credential); ok && !u.Counts(c) && time.Since(e.GetMeta().Updated) >= sweepMinAge {
 			return true, nil
 		}
-		if gone, err := s.ownerGone(ctx, ownerRef{model.KindOrg, u.OrgID}); err != nil || gone {
+		if gone, err := s.ownerGone(ctx, ownerRef{kind: model.KindOrg, id: u.OrgID}); err != nil || gone {
 			return gone, err
 		}
 	}

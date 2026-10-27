@@ -21,7 +21,7 @@
 <div class="stack">
   <h1 class="page-title">This link has expired</h1>
   <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>The reset link is invalid, has already been used or has expired. Request a new one from the sign-in page.</span></div>
-  <a class="btn btn-secondary" href="/">Go to sign in</a>
+  <a class="btn btn-secondary" href="/o/{{.Org.ID}}/login">Go to sign in</a>
 </div>
 {{end}}
 {{end}}

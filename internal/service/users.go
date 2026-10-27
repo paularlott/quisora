@@ -361,7 +361,7 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 // directorySortable are the sort fields a directory entry keeps: sorting on them orders every row on what it shows.
 var directorySortable = map[string]bool{"name": true, "role": true, "active": true, "created": true}
 
-// listByPresented is ListUsers sorted on a field directory entries blank (username, email, department...) for a
+// listByPresented is ListUsers sorted on a field directory entries blank (username, email...) for a
 // caller who sees some users only as directory entries: the matches are loaded, presented and sorted in memory on the
 // values as shown, as the store would sort them, so a directory entry sorts on "" and its place reveals nothing.
 func (s *Service) listByPresented(ctx context.Context, a *Actor, q store.ListQuery, leaks map[string]bool) ([]*model.User, int, error) {
@@ -653,11 +653,14 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	}
 	var also []store.Op
 	roleDone := func(context.Context, *Actor, error) {}
+	promoted, sessWas := false, u.SessionEpoch // promoted: the account becomes privileged, which ends its sessions (applyRole)
 	if in.Role != nil {
 		var err error
+		wasPrivileged := u.Role.Privileged()
 		if also, roleDone, err = s.applyRole(ctx, u, *in.Role); err != nil {
 			return nil, err
 		}
+		promoted = !wasPrivileged && u.Role.Privileged()
 	}
 	statusChange := in.Active != nil && *in.Active != u.Active
 	reason := ""
@@ -702,6 +705,11 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		roleDone(ctx, a, err)
 		if err == nil && endsSessions {
 			if sessErr := s.endUserSessions(ctx, u.ID, a); sessErr != nil {
+				detail["sessions"] = "not all ended: " + sessErr.Error()
+			}
+		} else if err == nil && promoted {
+			// the promotion moved the session epoch (applyRole): removing what it replaced is tidying
+			if sessErr := s.endSessionsOf(ctx, u.ID, sessWas); sessErr != nil {
 				detail["sessions"] = "not all ended: " + sessErr.Error()
 			}
 		}
@@ -1014,7 +1022,11 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 	return n, errors.Join(errs...)
 }
 
-// RevokeSessions ends every session and refresh grant of a user (admin action or "sign out everywhere").
+// RevokeSessions ends every session and refresh grant of a user (admin action or "sign out everywhere"). They end at
+// one write of the user: a new session epoch (model.User.SessionEpoch), so every session and grant made so far stops
+// counting at the commit, one a sign-in has made since the listing below included. Removing their records is tidying
+// after it (and tells the applications: back-channel logout). Whether a may do it is judged in that write, on the
+// user as it is written.
 func (s *Service) RevokeSessions(ctx context.Context, a *Actor, userID string) error {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
@@ -1023,13 +1035,114 @@ func (s *Service) RevokeSessions(ctx context.Context, a *Actor, userID string) e
 	if a.UserID != userID && !s.canManageUser(a, u) {
 		return s.denied(a, u)
 	}
-	if err := s.endUserSessions(ctx, userID, nil); err != nil {
+	was, _, err := s.moveSessionEpoch(ctx, userID, func(u *model.User) error {
+		if a.UserID != userID && !s.canManageUser(a, u) {
+			return s.denied(a, u)
+		}
+		return nil
+	})
+	if err == nil {
+		err = s.endSessionsOf(ctx, userID, was)
+	}
+	if err != nil {
 		s.Audit(ctx, a, u.OrgID, "user.sessions.revoke", u.Username, map[string]string{"result": "incomplete",
 			"error": err.Error()})
 		return mapStore(err)
 	}
 	s.Audit(ctx, a, u.OrgID, "user.sessions.revoke", u.Username, nil)
 	return nil
+}
+
+// RevokeOtherSessions is RevokeSessions for the user's own "sign out my other sessions": every session and refresh
+// grant but session keep (and its refresh grants) ends, and it reports how many sessions ended. The session epoch
+// moves on, so a session created while it runs is ended too, and keep is re-stamped to the new epoch, with its grants,
+// so it goes on working (as pullSignOut keeps the session of whoever pulls the lever). A session that was not found
+// (it ended meanwhile) is simply not kept.
+func (s *Service) RevokeOtherSessions(ctx context.Context, userID, keep string) (int, error) {
+	was, now, err := s.moveSessionEpoch(ctx, userID, nil)
+	if err != nil {
+		return 0, err
+	}
+	var errs []error
+	if keep != "" {
+		errs = append(errs, s.carryOver(ctx, userID, keep, now))
+	}
+	n := 0
+	if list, err := s.Sessions.All(ctx, userID); err != nil {
+		errs = append(errs, mapStore(err))
+	} else {
+		for _, x := range list {
+			if x.Epoch == was && x.ID != keep {
+				n++
+			}
+		}
+	}
+	errs = append(errs, s.endSessionsOf(ctx, userID, was))
+	return n, errors.Join(errs...)
+}
+
+// moveSessionEpoch gives the user a new session epoch: every session and refresh grant made before it stops counting
+// at the write (SessionUsable, the grants' use). allow, when set, judges the user as the write finds it, on every try.
+// It returns the epoch it replaced (endSessionsOf removes what was made in it) and the new one.
+func (s *Service) moveSessionEpoch(ctx context.Context, userID string, allow func(u *model.User) error) (was, now uint64, err error) {
+	_, err = s.modifyUser(ctx, userID, func(u *model.User) error {
+		if allow != nil {
+			if err := allow(u); err != nil {
+				return err
+			}
+		}
+		was, now = u.SessionEpoch, NewCredEpoch()
+		u.SessionEpoch = now
+		return nil
+	})
+	return was, now, err
+}
+
+// carryOver makes session keep, and the refresh grants it carries on, belong to session epoch now (the account's
+// current one), so a revocation that moved the epoch does not end them. The session first: a grant an exchange
+// makes from an older copy of it is then refused (CreateSessionGrant), so none is made in the epoch just ended.
+func (s *Service) carryOver(ctx context.Context, userID, keep string, now uint64) error {
+	for attempt := 0; ; attempt++ {
+		sess, err := s.Sessions.Get(ctx, keep)
+		if errors.Is(err, store.ErrNotFound) || err == nil && sess.UserID != userID {
+			return nil
+		}
+		if err == nil {
+			sess.Epoch = now
+			err = s.Sessions.Update(ctx, sess)
+		}
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrStale) || attempt == 4 {
+			return fmt.Errorf("keep the current session: %w", mapStore(err))
+		}
+	}
+	grants, err := s.Grants.All(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("keep the current session's refresh grants: %w", mapStore(err))
+	}
+	var errs []error
+	for _, g := range grants {
+		if g.SessionID != keep {
+			continue
+		}
+		for attempt := 0; ; attempt++ {
+			g.Epoch = now
+			err := s.Grants.Update(ctx, g)
+			if err == nil || errors.Is(err, store.ErrNotFound) {
+				break
+			}
+			if !errors.Is(err, store.ErrStale) || attempt == 4 {
+				errs = append(errs, fmt.Errorf("keep refresh grant %s: %w", g.ID, mapStore(err)))
+				break
+			}
+			if g, err = s.Grants.Get(ctx, g.ID); err != nil {
+				break
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // FindUserByEmail finds a user of org by PRIMARY email address, case-insensitively (public sign-in lookup; no

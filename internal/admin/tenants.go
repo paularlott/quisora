@@ -224,13 +224,14 @@ func (m *Module) removeAccess(w http.ResponseWriter, r *http.Request) {
 	ok(w)
 }
 
-// listSelfRegistered handles GET /tenants/{id}/self-registered: the self-registered applications authorized in it.
+// listSelfRegistered handles GET /orgs/{org}/self-registered: the applications that registered themselves in the
+// organization (an AI client of its MCP servers, say), with how many users hold access, for its administrators.
 func (m *Module) listSelfRegistered(w http.ResponseWriter, r *http.Request) {
-	t, a, found := m.accessTenant(w, r)
+	org, a, found := m.orgFor(w, r)
 	if !found {
 		return
 	}
-	items, err := m.s.Svc.SelfRegisteredApps(r.Context(), a, t.ID)
+	items, err := m.s.Svc.SelfRegisteredApps(r.Context(), a, org.ID)
 	if err != nil {
 		web.WriteError(w, err)
 		return
@@ -238,13 +239,14 @@ func (m *Module) listSelfRegistered(w http.ResponseWriter, r *http.Request) {
 	writeList(w, items, len(items))
 }
 
-// revokeSelfRegistered handles DELETE /tenants/{id}/self-registered/{client}.
+// revokeSelfRegistered handles DELETE /orgs/{org}/self-registered/{client...}: {client} is the client_id the
+// application uses, which may be its metadata document's URL (slashes included).
 func (m *Module) revokeSelfRegistered(w http.ResponseWriter, r *http.Request) {
-	t, a, found := m.accessTenant(w, r)
+	org, a, found := m.orgFor(w, r)
 	if !found {
 		return
 	}
-	if err := m.s.Svc.RevokeSelfRegisteredApp(r.Context(), a, t.ID, r.PathValue("client")); err != nil {
+	if err := m.s.Svc.RevokeSelfRegisteredApp(r.Context(), a, org.ID, r.PathValue("client")); err != nil {
 		web.WriteError(w, err)
 		return
 	}

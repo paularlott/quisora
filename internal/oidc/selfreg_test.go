@@ -23,7 +23,7 @@ import (
 func TestRegistrationBodyMustBeAnObject(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	if r := h.postJSON("/oauth/register", "not an object"); r.status != 400 || r.str("error") != "invalid_client_metadata" {
+	if r := h.postJSON(orgBase+"/oauth/register", "not an object"); r.status != 400 || r.str("error") != "invalid_client_metadata" {
 		t.Fatalf("%d %v", r.status, r.m)
 	}
 }
@@ -31,7 +31,7 @@ func TestRegistrationBodyMustBeAnObject(t *testing.T) {
 func TestDynamicRegistration(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	r := h.postJSON("/oauth/register", map[string]any{"client_name": "Claude Code", "redirect_uris": []string{"http://127.0.0.1:33418/callback", "http://localhost:33418/callback", "com.example.claude:/callback"},
+	r := h.postJSON(orgBase+"/oauth/register", map[string]any{"client_name": "Claude Code", "redirect_uris": []string{"http://127.0.0.1:33418/callback", "http://localhost:33418/callback", "com.example.claude:/callback"},
 		"grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"},
 		"token_endpoint_auth_method": "none", "scope": "openid profile admin"})
 	if r.status != 201 || r.str("client_name") != "Claude Code" || r.str("token_endpoint_auth_method") != "none" ||
@@ -39,7 +39,7 @@ func TestDynamicRegistration(t *testing.T) {
 		t.Fatalf("register: %d %v", r.status, r.m)
 	}
 	c, err := h.env.Svc.Clients.Get(context.Background(), r.str("client_id"))
-	if err != nil || !c.SelfRegistered || c.OrgID != "" || !c.Public() || !c.RequirePKCE() || len(c.RedirectURIs) != 3 {
+	if err != nil || !c.SelfRegistered || c.OrgID != h.env.Primary.ID || c.TenantID != "" || !c.Public() || !c.RequirePKCE() || len(c.RedirectURIs) != 3 {
 		t.Fatalf("stored %+v %v", c, err)
 	}
 	metadata, redirect := "invalid_client_metadata", "invalid_redirect_uri"
@@ -57,14 +57,14 @@ func TestDynamicRegistration(t *testing.T) {
 		"opaque scheme":      {map[string]any{"redirect_uris": []string{"com.example.app:cb"}}, redirect},
 		"too many redirects": {map[string]any{"redirect_uris": []string{"https://a/1", "https://a/2", "https://a/3", "https://a/4", "https://a/5", "https://a/6", "https://a/7", "https://a/8", "https://a/9", "https://a/10", "https://a/11"}}, redirect},
 	} {
-		if r := h.postJSON("/oauth/register", tc.body); r.status != 400 || r.str("error") != tc.code {
+		if r := h.postJSON(orgBase+"/oauth/register", tc.body); r.status != 400 || r.str("error") != tc.code {
 			t.Errorf("%s: %d %v, want 400 %s", name, r.status, r.m, tc.code)
 		}
 	}
 	// per address
 	limited := false
 	for range registerPerIPMin + 2 {
-		if r := h.postJSON("/oauth/register", map[string]any{"redirect_uris": []string{"https://app.example/cb"}}); r.status == 429 {
+		if r := h.postJSON(orgBase+"/oauth/register", map[string]any{"redirect_uris": []string{"https://app.example/cb"}}); r.status == 429 {
 			limited = true
 			break
 		}
@@ -121,18 +121,18 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 		t.Errorf("access token %v", at)
 	}
 	stored, _ := h.env.Svc.Clients.Get(ctx, cl.ID)
-	if !slices.Contains(stored.UsedIn, tn.ID) || stored.LastUsed.IsZero() || stored.OrgID != "" {
-		t.Errorf("use not recorded / client bound: %+v", stored)
+	if stored.LastUsed.IsZero() || stored.OrgID != h.env.Primary.ID || stored.TenantID != "" {
+		t.Errorf("use not recorded / client misplaced: %+v", stored)
 	}
 	rt := r.str("refresh_token")
-	r2 := h.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {cl.ID}}, "", "")
+	r2 := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {cl.ID}}, "", "")
 	if r2.status != 200 {
 		t.Fatalf("refresh: %d %v", r2.status, r2.m)
 	}
 	rt = r2.str("refresh_token")
 
-	// the tenant administrators see it, with one user
-	apps, err := h.env.Svc.SelfRegisteredApps(ctx, h.admin, tn.ID)
+	// the organization's administrators see it, with one user
+	apps, err := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID)
 	if err != nil || len(apps) != 1 || apps[0].ClientID != cl.ID || apps[0].Users != 1 || apps[0].Name != "Claude" {
 		t.Fatalf("apps %+v %v", apps, err)
 	}
@@ -153,7 +153,7 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 	if got := h.introspect(rs, rsSecret, r2.str("access_token")); got["active"] != false {
 		t.Errorf("access token still active with the switch off: %v", got)
 	}
-	if r := h.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {cl.ID}}, "", ""); r.status != 400 {
+	if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {cl.ID}}, "", ""); r.status != 400 {
 		t.Errorf("refresh with the switch off: %d %v", r.status, r.m)
 	}
 	if u := h.authorize(c, authzQuery(cl, ch, url.Values{"resource": {mcpResource}})); u.Query().Get("error") != "invalid_target" {
@@ -165,13 +165,13 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	r3, _ := h.publicLogin(cl, url.Values{"resource": {mcpResource}})
-	if err := h.env.Svc.RevokeSelfRegisteredApp(ctx, h.admin, tn.ID, cl.ID); err != nil {
+	if err := h.env.Svc.RevokeSelfRegisteredApp(ctx, h.admin, h.env.Primary.ID, cl.ID); err != nil {
 		t.Fatal(err)
 	}
-	if r := h.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r3.str("refresh_token")}, "client_id": {cl.ID}}, "", ""); r.status != 400 {
+	if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r3.str("refresh_token")}, "client_id": {cl.ID}}, "", ""); r.status != 400 {
 		t.Errorf("refresh after revoke: %d", r.status)
 	}
-	if apps, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, tn.ID); len(apps) != 0 {
+	if apps, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID); len(apps) != 0 {
 		t.Errorf("revoked app still listed: %+v", apps)
 	}
 }
@@ -200,7 +200,7 @@ func TestSelfRegisteredMembersOnly(t *testing.T) {
 	}
 }
 
-// A resource belongs to one tenant: another claiming it is refused.
+// A resource belongs to one tenant of an organization: another claiming it is refused.
 func TestTenantResourcesUnique(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
@@ -236,32 +236,32 @@ func TestMetadataDocumentClient(t *testing.T) {
 	}))
 	defer ts.Close()
 	h.p.HTTP = ts.Client() // trusts the test server's certificate (and reaches loopback, as the guard would not)
-	id := ts.URL + "/oauth/client.json"
+	id := ts.URL + "/clients/desktop.json"
 	redirect := "http://127.0.0.1:44003/callback"
-	docs["/oauth/client.json"] = `{"client_id":"` + id + `","client_name":"Desktop AI","redirect_uris":["` + redirect + `"],
+	docs["/clients/desktop.json"] = `{"client_id":"` + id + `","client_name":"Desktop AI","redirect_uris":["` + redirect + `"],
 		"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`
 	cl := &model.Client{Meta: model.Meta{ID: id}, RedirectURIs: []string{redirect}}
 	r, _ := h.publicLogin(cl, url.Values{"resource": {mcpResource}})
 	if r.status != 200 {
 		t.Fatalf("token: %d %v", r.status, r.m)
 	}
-	stored, err := h.env.Svc.Clients.Get(context.Background(), id)
-	if err != nil || !stored.SelfRegistered || !stored.IsMetadataClient() || stored.Name != "Desktop AI" || stored.MetadataFetched.IsZero() {
+	stored, err := h.env.Svc.Clients.Get(context.Background(), model.ClientRecordID(h.env.Primary.ID, id))
+	if err != nil || !stored.SelfRegistered || !stored.IsMetadataClient() || stored.ClientID() != id || stored.Name != "Desktop AI" || stored.MetadataFetched.IsZero() {
 		t.Fatalf("stored %+v %v", stored, err)
 	}
 
 	c, _ := h.session(h.user)
 	_, ch := pkce()
-	bad := ts.URL + "/oauth/other.json"
-	docs["/oauth/other.json"] = `{"client_id":"https://elsewhere.example/c.json","redirect_uris":["` + redirect + `"]}`
+	bad := ts.URL + "/clients/other.json"
+	docs["/clients/other.json"] = `{"client_id":"https://elsewhere.example/c.json","redirect_uris":["` + redirect + `"]}`
 	for name, tc := range map[string]struct{ id, resource string }{
 		"names another url":       {bad, mcpResource},
-		"not found":               {ts.URL + "/oauth/missing.json", mcpResource},
+		"not found":               {ts.URL + "/clients/missing.json", mcpResource},
 		"no resource":             {id, ""},
 		"resource no tenant owns": {id, "https://nobody.example"},
 	} {
 		q := authzQuery(&model.Client{Meta: model.Meta{ID: tc.id}, RedirectURIs: []string{redirect}}, ch, url.Values{"resource": {tc.resource}})
-		resp := h.get(c, "/oauth/authorize?"+q.Encode())
+		resp := h.get(c, orgBase+"/oauth/authorize?"+q.Encode())
 		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body(resp), "not recognised") {
 			t.Errorf("%s: %d", name, resp.StatusCode)
 		}
@@ -314,7 +314,7 @@ func TestMetadataDocumentsUnstoredUntilConsent(t *testing.T) {
 	req := func(id, resource string) *http.Response {
 		q := authzQuery(&model.Client{Meta: model.Meta{ID: id}, RedirectURIs: []string{"http://127.0.0.1:44010/callback"}}, ch,
 			url.Values{"resource": {resource}})
-		return h.get(c, "/oauth/authorize?"+q.Encode())
+		return h.get(c, orgBase+"/oauth/authorize?"+q.Encode())
 	}
 	// a resource nobody accepts: refused, nothing read
 	if resp := req(ts.URL+"/gen/0", "https://nobody.example/mcp"); resp.StatusCode != http.StatusBadRequest || hits != 0 {
@@ -326,7 +326,7 @@ func TestMetadataDocumentsUnstoredUntilConsent(t *testing.T) {
 	if resp.StatusCode != http.StatusFound || hits != 1 {
 		t.Fatalf("accepted resource: %d, %d documents read", resp.StatusCode, hits)
 	}
-	if _, err := h.env.Svc.Clients.Get(ctx, ts.URL+"/gen/1"); err == nil {
+	if _, err := h.env.Svc.Clients.Get(ctx, model.ClientRecordID(h.env.Primary.ID, ts.URL+"/gen/1")); err == nil {
 		t.Fatal("a metadata-document client was stored before anyone consented")
 	}
 	// many made-up documents from one address: only metadataPerIPMin are read
@@ -369,7 +369,7 @@ func TestTenantResourceVariants(t *testing.T) {
 		t.Errorf("loopback http resource: %v", err)
 	}
 	// registration: no credentials in redirect URIs
-	if r := h.postJSON("/oauth/register", map[string]any{"redirect_uris": []string{"https://u:p@app.example/cb"}}); r.status != 400 {
+	if r := h.postJSON(orgBase+"/oauth/register", map[string]any{"redirect_uris": []string{"https://u:p@app.example/cb"}}); r.status != 400 {
 		t.Errorf("redirect with credentials: %d %v", r.status, r.m)
 	}
 }

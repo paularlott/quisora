@@ -55,10 +55,10 @@ func TestListUsersSortHidesDirectoryValues(t *testing.T) {
 		}
 		return min(lo, hi) < at && at < max(lo, hi)
 	}
-	for _, sort := range []string{"username", "email", "department", "user_type", "valid_until"} {
+	for _, sort := range []string{"username", "email", "valid_until"} {
 		for _, desc := range []bool{false, true} {
 			before := ids(actor(mgr), sort, desc)
-			if sort != "user_type" && sort != "valid_until" && between(before) {
+			if sort != "valid_until" && between(before) {
 				t.Errorf("sort %s (desc %v): the administrator sorts between the probes", sort, desc)
 			}
 			if _, err := e.svc.UpdateUser(e.ctx, service.System, adm.ID, service.UserInput{Username: ptr("zz-" + sort),

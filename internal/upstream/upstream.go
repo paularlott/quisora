@@ -115,7 +115,7 @@ type Service struct {
 }
 
 // New returns a service. publicURL is the server's own origin (each provider's redirect URI is
-// publicURL + "/login/callback/<provider id>"). client makes every request to a provider: provider addresses are
+// publicURL + "/o/<org id>/login/callback/<provider id>"). client makes every request to a provider: provider addresses are
 // entered by organization administrators, so it is the guarded outbound client (secure.OutboundClient), which the
 // caller must give: there is no unguarded default to fall back to.
 func New(svc *service.Service, eph ephemeral.Store, publicURL string, client *http.Client) *Service {
@@ -127,15 +127,18 @@ func New(svc *service.Service, eph ephemeral.Store, publicURL string, client *ht
 	}
 }
 
-// CallbackURL is the redirect URI to register with provider providerID. Each provider has its own, so a response can
-// only arrive at the address of the provider it is for: the callback checks that the state was started for that
-// provider (the recommended defence against IdP mix-up, RFC 9700 §4.4).
-func (s *Service) CallbackURL(providerID string) string {
-	return s.PublicURL + CallbackPath(providerID)
+// CallbackURL is the redirect URI to register with provider providerID of organization orgID. Each provider has its
+// own, in its organization's address space, so a response can only arrive at the address of the provider (and
+// organization) it is for: the callback checks that the state was started for that provider (the recommended defence
+// against IdP mix-up, RFC 9700 §4.4).
+func (s *Service) CallbackURL(orgID, providerID string) string {
+	return s.PublicURL + CallbackPath(orgID, providerID)
 }
 
-// CallbackPath is the path of provider providerID's callback address.
-func CallbackPath(providerID string) string { return "/login/callback/" + url.PathEscape(providerID) }
+// CallbackPath is the path of provider providerID's callback address in organization orgID's address space.
+func CallbackPath(orgID, providerID string) string {
+	return model.ProviderCallbackPath(orgID, providerID)
+}
 
 type state struct {
 	ProviderID string `json:"p"`
@@ -175,7 +178,8 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 	// Discovery first: a provider that cannot be reached leaves no state behind.
 	var d *discovery
 	switch p.Type {
-	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft:
+	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft,
+		model.ProviderOrganization:
 		var err error
 		if d, err = s.discoverFor(ctx, p); err != nil {
 			return "", "", err
@@ -188,12 +192,13 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 		return "", "", err
 	}
 	q := url.Values{
-		"client_id": {p.ClientID}, "redirect_uri": {s.CallbackURL(p.ID)}, "response_type": {"code"}, "state": {id},
+		"client_id": {p.ClientID}, "redirect_uri": {s.CallbackURL(p.OrgID, p.ID)}, "response_type": {"code"}, "state": {id},
 		"code_challenge": {s256(st.Verifier)}, "code_challenge_method": {"S256"},
 	}
 	var base string
 	switch p.Type {
-	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft:
+	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft,
+		model.ProviderOrganization:
 		base = d.AuthorizationEndpoint
 		scopes := p.Scopes
 		if !contains(scopes, "openid") {
@@ -224,20 +229,21 @@ func contains(l []string, v string) bool {
 	return false
 }
 
-// Finish completes a sign-in: providerID is the provider named by the callback address, state the "state" query
-// parameter, browserState the value of the cookie set at Begin, code the authorization code. The state is consumed
-// whatever the outcome; a state started for another provider is refused (ErrState).
+// Finish completes a sign-in: orgID and providerID are the organization and the provider named by the callback
+// address, state the "state" query parameter, browserState the value of the cookie set at Begin, code the
+// authorization code. The state is consumed whatever the outcome; a state started for another provider or
+// organization is refused (ErrState).
 //
 // When the state was valid but the sign-in failed, the returned Result is non-nil with only Org, Provider and Next
 // set, so the caller can send the user back to the right sign-in page; on ErrState it is nil.
-func (s *Service) Finish(ctx context.Context, providerID, stateID, browserState, code string) (*Result, error) {
+func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browserState, code string) (*Result, error) {
 	b, err := s.Eph.Take(ctx, Namespace, stateID)
 	if err != nil {
 		return nil, ErrState
 	}
 	var st state
 	if json.Unmarshal(b, &st) != nil || subtle.ConstantTimeCompare([]byte(stateID), []byte(browserState)) != 1 ||
-		st.ProviderID != providerID {
+		st.ProviderID != providerID || st.OrgID != orgID {
 		return nil, ErrState
 	}
 	org, err := s.Svc.Orgs.Get(ctx, st.OrgID)
@@ -260,7 +266,8 @@ func (s *Service) Finish(ctx context.Context, providerID, stateID, browserState,
 	var claims Claims
 	var refresh string
 	switch p.Type {
-	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft:
+	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft,
+		model.ProviderOrganization:
 		claims, refresh, err = s.oidcSignIn(ctx, p, string(secret), code, st)
 	case model.ProviderGitHub:
 		claims, err = s.githubClaims(ctx, p, string(secret), code, st)
@@ -288,15 +295,15 @@ func (s *Service) Finish(ctx context.Context, providerID, stateID, browserState,
 
 // CancelTenant consumes the state of a sign-in the provider reported as denied or failed (error= on the callback)
 // and returns the org, next path and tenant it was started for, for redirecting back. ok is false for an unknown
-// state or one that does not match the browser's cookie.
-func (s *Service) CancelTenant(ctx context.Context, providerID, stateID, browserState string) (org *model.Org, next, tenant string, ok bool) {
+// state, one that does not match the browser's cookie, or one started for another provider or organization.
+func (s *Service) CancelTenant(ctx context.Context, orgID, providerID, stateID, browserState string) (org *model.Org, next, tenant string, ok bool) {
 	b, err := s.Eph.Take(ctx, Namespace, stateID)
 	if err != nil {
 		return nil, "", "", false
 	}
 	var st state
 	if json.Unmarshal(b, &st) != nil || subtle.ConstantTimeCompare([]byte(stateID), []byte(browserState)) != 1 ||
-		st.ProviderID != providerID {
+		st.ProviderID != providerID || st.OrgID != orgID {
 		return nil, "", "", false
 	}
 	o, err := s.Svc.Orgs.Get(ctx, st.OrgID)
@@ -529,7 +536,7 @@ func (s *Service) githubClaims(ctx context.Context, p *model.Provider, secret, c
 		Error       string `json:"error"`
 	}
 	err := s.postForm(ctx, s.GitHubTokenURL, url.Values{
-		"client_id": {p.ClientID}, "client_secret": {secret}, "code": {code}, "redirect_uri": {s.CallbackURL(p.ID)},
+		"client_id": {p.ClientID}, "client_secret": {secret}, "code": {code}, "redirect_uri": {s.CallbackURL(p.OrgID, p.ID)},
 		"code_verifier": {st.Verifier},
 	}, [2]string{}, &tok)
 	if err != nil {

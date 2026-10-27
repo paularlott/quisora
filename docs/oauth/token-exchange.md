@@ -35,7 +35,7 @@ The orders API received the user's access token (`$USER_TOKEN`) from the applica
 for a token for billing:
 
 ```bash
-curl -s "$QUISORA/oauth/token" -d client_id="$ORDERS_ID" -d client_secret="$ORDERS_SECRET" \
+curl -s "$ISSUER/oauth/token" -d client_id="$ORDERS_ID" -d client_secret="$ORDERS_SECRET" \
   -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
   -d subject_token="$USER_TOKEN" \
   -d subject_token_type=urn:ietf:params:oauth:token-type:access_token \

@@ -1,6 +1,6 @@
 {{template "auth" .}}
 {{define "content"}}
-<div x-data="loginPage" data-org="{{.Data.OrgName}}" data-tenant="{{.Data.Tenant}}" data-next="{{.Data.Next}}" data-hint="{{.Data.Hint}}" data-passkey="{{if .Data.Passkey}}1{{end}}"{{with .Data.Step}} data-step="{{.}}" data-ticket="{{$.Data.Ticket}}" data-methods="{{$.Data.Methods}}" data-alternatives="{{$.Data.Alternatives}}" data-email="{{$.Data.Email}}"{{end}} class="stack">
+<div x-data="loginPage" data-tenant="{{.Data.Tenant}}" data-next="{{.Data.Next}}" data-hint="{{.Data.Hint}}" data-passkey="{{if .Data.Passkey}}1{{end}}"{{with .Data.Step}} data-step="{{.}}" data-ticket="{{$.Data.Ticket}}" data-methods="{{$.Data.Methods}}" data-alternatives="{{$.Data.Alternatives}}" data-email="{{$.Data.Email}}"{{end}} class="stack">
   <div>
     <h1 class="page-title">Sign in</h1>
     <p class="page-sub">to <strong>{{.Data.OrgDisplay}}</strong></p>

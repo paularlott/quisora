@@ -21,7 +21,7 @@ func TestIntrospection(t *testing.T) {
 
 	m := h.introspect(cl, secret, at)
 	if m["active"] != true || m["sub"] != h.user.ID || m["client_id"] != cl.ID || m["username"] != "alice" ||
-		m["token_type"] != "Bearer" || m["scope"] != "openid profile email offline_access" || m["exp"] == nil || m["iss"] != h.env.URL {
+		m["token_type"] != "Bearer" || m["scope"] != "openid profile email offline_access" || m["exp"] == nil || m["iss"] != h.issuer() {
 		t.Fatalf("jwt: %v", m)
 	}
 	m = h.introspect(cl, secret, rt)
@@ -69,13 +69,13 @@ func TestIntrospection(t *testing.T) {
 		t.Fatalf("cc: %v", m)
 	}
 	// unauthenticated and wrong credentials
-	if r := h.post("/oauth/introspect", url.Values{"token": {at}}, "", ""); r.status != 401 {
+	if r := h.post(orgBase+"/oauth/introspect", url.Values{"token": {at}}, "", ""); r.status != 401 {
 		t.Fatal(r.status)
 	}
-	if r := h.clientPost("/oauth/introspect", url.Values{"token": {at}}, cl, "wrong"); r.status != 401 {
+	if r := h.clientPost(orgBase+"/oauth/introspect", url.Values{"token": {at}}, cl, "wrong"); r.status != 401 {
 		t.Fatal(r.status)
 	}
-	if r := h.clientPost("/oauth/introspect", url.Values{}, cl, secret); r.status != 400 {
+	if r := h.clientPost(orgBase+"/oauth/introspect", url.Values{}, cl, secret); r.status != 400 {
 		t.Fatal(r.status)
 	}
 	// an expired token: the real token's claims, back-dated and signed again with the server's key
@@ -132,7 +132,7 @@ func TestIntrospectionRejectsForeignKeyAndAlgConfusion(t *testing.T) {
 		t.Fatal("forged token active")
 	}
 	// HS256 using the public JWK as the secret
-	jw := body(h.get(h.http, "/oauth/jwks"))
+	jw := body(h.get(h.http, orgBase+"/oauth/jwks"))
 	hh := b64.EncodeToString([]byte(`{"alg":"HS256","kid":"` + hd["kid"].(string) + `","typ":"at+jwt"}`))
 	pl := b64.EncodeToString(mustJSON(claimsOf(t, at)))
 	tok := hh + "." + pl + "." + b64.EncodeToString([]byte(jw))
@@ -155,7 +155,7 @@ func TestIntrospectionTenantIsolation(t *testing.T) {
 	}
 	isInactive := func(c *model.Client, s, tok string) {
 		t.Helper()
-		resp := h.clientPost("/oauth/introspect", url.Values{"token": {tok}}, c, s)
+		resp := h.clientPost(orgBase+"/oauth/introspect", url.Values{"token": {tok}}, c, s)
 		if resp.status != 200 || len(resp.m) != 1 || resp.m["active"] != false {
 			t.Fatalf("want exactly {active:false}, got %v", resp.m)
 		}
@@ -172,7 +172,8 @@ func TestIntrospectionTenantIsolation(t *testing.T) {
 		t.Fatal("same-org introspect_org client cannot introspect")
 	}
 
-	// a client of another org gets nothing
+	// a client of another org gets nothing: at our organization's endpoint it is unknown, at its own our tokens (and
+	// the API token of our user) are inactive
 	org2, err := h.env.Svc.CreateOrg(ctx, h.admin, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme")})
 	if err != nil {
 		t.Fatal(err)
@@ -182,8 +183,18 @@ func TestIntrospectionTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	isInactive(foreign, fsecret, at)
-	isInactive(foreign, fsecret, plain)
+	if resp := h.clientPost(orgBase+"/oauth/introspect", url.Values{"token": {at}}, foreign, fsecret); resp.status != 401 {
+		t.Fatalf("a foreign client at our endpoint: %d %v", resp.status, resp.m)
+	}
+	foreignIntrospect := func(tok string) {
+		t.Helper()
+		resp := h.clientPost(h.at(foreign, "/oauth/introspect"), url.Values{"token": {tok}}, foreign, fsecret)
+		if resp.status != 200 || len(resp.m) != 1 || resp.m["active"] != false {
+			t.Fatalf("want exactly {active:false}, got %v", resp.m)
+		}
+	}
+	foreignIntrospect(at)
+	foreignIntrospect(plain)
 
 	// a foreign-org user's token is invisible to our org's client, visible to its own org's client
 	pw := "correct horse battery"
@@ -242,7 +253,7 @@ func TestIntrospectAPITokenScopeAndAudience(t *testing.T) {
 	if m := h.introspect(rs, rsSecret, scoped); m["active"] != true || m["aud"] != rs.ID || m["scope"] != "api" {
 		t.Fatalf("audience client: %v", m)
 	}
-	if m := h.clientPost("/oauth/introspect", url.Values{"token": {scoped}}, other, otherSecret); len(m.m) != 1 || m.m["active"] != false {
+	if m := h.clientPost(orgBase+"/oauth/introspect", url.Values{"token": {scoped}}, other, otherSecret); len(m.m) != 1 || m.m["active"] != false {
 		t.Fatalf("client outside the audience: %v", m.m)
 	}
 	// An audience is for api tokens, and names clients of the owner's organization only.
@@ -341,21 +352,21 @@ func TestRevocation(t *testing.T) {
 	rt, at := r.str("refresh_token"), r.str("access_token")
 
 	// another client's revoke is a no-op but still 200
-	if x := h.clientPost("/oauth/revoke", url.Values{"token": {rt}}, other, osecret); x.status != 200 {
+	if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, other, osecret); x.status != 200 {
 		t.Fatal(x.status)
 	}
 	if h.refreshWith(cl, secret, rt).status != 200 {
 		t.Fatal("foreign revoke worked")
 	}
 	for _, junk := range []string{"garbage", "a.b"} {
-		if x := h.clientPost("/oauth/revoke", url.Values{"token": {junk}}, cl, secret); x.status != 200 {
+		if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {junk}}, cl, secret); x.status != 200 {
 			t.Fatalf("%q: %d", junk, x.status)
 		}
 	}
-	if x := h.post("/oauth/revoke", url.Values{"token": {rt}}, "", ""); x.status != 401 {
+	if x := h.post(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, "", ""); x.status != 401 {
 		t.Fatal("unauthenticated revoke", x.status)
 	}
-	if x := h.clientPost("/oauth/revoke", url.Values{"token": {rt}}, cl, secret); x.status != 200 {
+	if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, cl, secret); x.status != 200 {
 		t.Fatal(x.status)
 	}
 	if h.refreshWith(cl, secret, rt).status != 400 {
@@ -368,7 +379,7 @@ func TestRevocation(t *testing.T) {
 	// API tokens are not revocable here, and the answer says so rather than claiming success (RFC 7009 §2.2.1)
 	_, plain, _ := h.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(h.user, ""), service.APITokenInput{Name: "t", Scopes: []string{"api"}, Expires: 30})
 	for _, tok := range []string{plain, "qsr_a_b"} {
-		if x := h.clientPost("/oauth/revoke", url.Values{"token": {tok}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
+		if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {tok}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
 			t.Fatalf("API token %q: %d %v", tok[:6], x.status, x.m)
 		}
 	}
@@ -377,7 +388,7 @@ func TestRevocation(t *testing.T) {
 	}
 	// revoking an access token ends its grant
 	r, _ = h.login(cl, secret, nil)
-	h.clientPost("/oauth/revoke", url.Values{"token": {r.str("access_token")}}, cl, secret)
+	h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {r.str("access_token")}}, cl, secret)
 	if h.refreshWith(cl, secret, r.str("refresh_token")).status != 400 {
 		t.Fatal("refresh survived access token revocation")
 	}
@@ -390,7 +401,7 @@ func TestRevokeAndIntrospectIgnoreForgedOrStaleRefreshTokens(t *testing.T) {
 	f := func(tok string) url.Values {
 		return url.Values{"token": {tok}, "client_id": {cl.ID}, "client_secret": {secret}}
 	}
-	for _, path := range []string{"/oauth/revoke", "/oauth/introspect"} {
+	for _, path := range []string{orgBase + "/oauth/revoke", orgBase + "/oauth/introspect"} {
 		tokenErr(t, h.post(path, f(""), "", ""), 400, "invalid_request")
 	}
 	r, _ := h.login(cl, secret, nil)
@@ -400,7 +411,7 @@ func TestRevokeAndIntrospectIgnoreForgedOrStaleRefreshTokens(t *testing.T) {
 	forged := parts[0] + ".0." + b64.EncodeToString([]byte("forged-forged-forged-forged-forge"))
 	stale := parts[0] + ".9." + parts[2]
 	for _, tok := range []string{forged, stale} {
-		if x := h.post("/oauth/revoke", f(tok), "", ""); x.status != 200 {
+		if x := h.post(orgBase+"/oauth/revoke", f(tok), "", ""); x.status != 200 {
 			t.Fatalf("revoke %d", x.status)
 		}
 		if h.introspect(cl, secret, tok)["active"] != false {
@@ -429,7 +440,7 @@ func TestRevokeClientCredentialsTokenUnsupported(t *testing.T) {
 	if h.introspect(cl, secret, at)["active"] != true {
 		t.Fatal("fresh token not active")
 	}
-	if x := h.clientPost("/oauth/revoke", url.Values{"token": {at}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
+	if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {at}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
 		t.Fatalf("revoke: %d %v", x.status, x.str("error"))
 	}
 }

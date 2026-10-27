@@ -23,16 +23,13 @@ const msgInviteUnknown = "The server lost contact with its cluster before it ans
 
 const msgBadInvite = "This invitation is invalid, has already been used or has expired."
 
-// inviteContext loads a live invitation: its user, org and the sign-in methods the org offers.
+// inviteContext loads a live invitation of the organization the path names: its user, the org and the sign-in
+// methods the org offers. An invitation of another organization is invalid here.
 func (m *Module) inviteContext(w http.ResponseWriter, r *http.Request, token string) (*model.User, *model.Org, *service.SignInMethods, bool) {
 	ctx := r.Context()
-	_, u, err := m.s.Svc.PeekLink(ctx, token, service.LinkInvite)
-	if err != nil {
-		writeErr(w, http.StatusGone, msgBadInvite, "")
-		return nil, nil, nil, false
-	}
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
+	org := web.Org(r)
+	u, ok := m.peekLink(ctx, org, token, service.LinkInvite)
+	if !ok {
 		writeErr(w, http.StatusGone, msgBadInvite, "")
 		return nil, nil, nil, false
 	}
@@ -48,7 +45,7 @@ type inviteBeginReq struct {
 	Token string `json:"token"`
 }
 
-// inviteBegin handles POST /api-internal/invite/passkey/begin: {token} -> {challenge, options}.
+// inviteBegin handles POST /o/{org}/api-internal/invite/passkey/begin: {token} -> {challenge, options}.
 func (m *Module) inviteBegin(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return
@@ -57,7 +54,7 @@ func (m *Module) inviteBegin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "invite", known{any: true}) {
+	if !m.rateLimit(w, r, web.Org(r).ID+"|invite", known{any: true}) {
 		return
 	}
 	u, _, eff, ok := m.inviteContext(w, r, in.Token)
@@ -84,7 +81,7 @@ type inviteCompleteReq struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// inviteComplete handles POST /api-internal/invite/complete: {token, password?, challenge?, credential?, name?} using the
+// inviteComplete handles POST /o/{org}/api-internal/invite/complete: {token, password?, challenge?, credential?, name?} using the
 // link up. The password is set as the system (every older session ends), the passkey is stored, then the user is
 // signed in: straight away for a passkey, through the usual next step (second factor, MFA enrolment) after a
 // password.
@@ -96,7 +93,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "invite", known{any: true}) {
+	if !m.rateLimit(w, r, web.Org(r).ID+"|invite", known{any: true}) {
 		return
 	}
 	ctx := r.Context()

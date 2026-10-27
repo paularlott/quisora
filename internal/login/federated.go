@@ -14,17 +14,12 @@ import (
 // stateCookie binds an upstream sign-in to the browser that started it (the state alone is not enough: login CSRF).
 const stateCookie = "__Host-quisora_up"
 
-// providerStart handles GET /login/{org}/provider/{id}: redirect the browser to the upstream provider.
+// providerStart handles GET /o/{org}/login/provider/{id}: redirect the browser to the upstream provider.
 func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgName := r.PathValue("org")
-	next := safeNext(r.URL.Query().Get("next"))
+	org := web.Org(r)
+	next := safeNext(org, r.URL.Query().Get("next"))
 	tenantParam := r.URL.Query().Get("tenant")
-	org, err := m.s.Svc.OrgByName(ctx, orgName)
-	if err != nil {
-		m.notFound(w, r)
-		return
-	}
 	eff, tenant, err := m.methods(ctx, org, tenantParam, next)
 	if err != nil {
 		http.Redirect(w, r, loginURL(org, next, "", "failed"), http.StatusFound)
@@ -33,7 +28,7 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	back := func(code string) {
 		http.Redirect(w, r, loginURL(org, next, tenant, code), http.StatusFound)
 	}
-	if !m.rateLimit(w, r, org.Name, known{orgID: org.ID}) {
+	if !m.rateLimit(w, r, org.ID, known{orgID: org.ID}) {
 		return
 	}
 	p, err := m.s.Svc.Providers.Get(ctx, r.PathValue("id"))
@@ -52,30 +47,33 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// providerCallback handles GET /login/callback/{provider}: the provider sends the browser back to its own address.
+// providerCallback handles GET /o/{org}/login/callback/{provider}: the provider sends the browser back to its own
+// address, which is its organization's (upstream.CallbackURL): a sign-in started for another organization than the
+// path's is refused as any unknown state is.
 func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
+	pathOrg := web.Org(r)
 	var browser string
 	if c, err := r.Cookie(stateCookie); err == nil {
 		browser = c.Value
 	}
 	// Rate-limited first: a refused callback leaves the state cookie, so the user's sign-in can still finish.
-	if !m.rateLimit(w, r, "callback", known{any: true}) {
+	if !m.rateLimit(w, r, pathOrg.ID+"|callback", known{any: true}) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	state, provider := q.Get("state"), r.PathValue("provider")
 	if q.Get("error") != "" { // the user declined, or the provider failed
-		if org, next, tenant, ok := m.Upstream.CancelTenant(ctx, provider, state, browser); ok {
+		if org, next, tenant, ok := m.Upstream.CancelTenant(ctx, pathOrg.ID, provider, state, browser); ok {
 			http.Redirect(w, r, loginURL(org, next, tenant, "denied"), http.StatusFound)
 			return
 		}
-		http.Redirect(w, r, "/?error=failed", http.StatusFound)
+		http.Redirect(w, r, loginURL(pathOrg, "", "", "failed"), http.StatusFound)
 		return
 	}
-	res, err := m.Upstream.Finish(ctx, provider, state, browser, q.Get("code"))
+	res, err := m.Upstream.Finish(ctx, pathOrg.ID, provider, state, browser, q.Get("code"))
 	if err != nil {
 		code := upstreamErrorCode(err)
 		var org *model.Org
@@ -88,11 +86,10 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 				detail["provider"] = res.Provider.Name
 			}
 		}
-		m.audit(r, "login.failure", org, u, "", detail)
-		if org == nil {
-			http.Redirect(w, r, "/?error="+code, http.StatusFound)
-			return
+		if org == nil { // the state was not valid: back to the organization's sign-in page, with nothing of the attempt
+			org = pathOrg
 		}
+		m.audit(r, "login.failure", org, u, "", detail)
 		http.Redirect(w, r, loginURL(org, next, tenant, code), http.StatusFound)
 		return
 	}
@@ -177,6 +174,8 @@ var upstreamMessages = map[string]string{
 	"connect":     "Your account manages others, so it is not linked to a provider automatically. Sign in the usual way, then connect this provider on your account page.",
 }
 
+// loginURL is org's sign-in page, with what it needs to carry on (the tenant and next of the sign-in) and the error a
+// failed attempt shows (one of upstreamMessages).
 func loginURL(org *model.Org, next, tenant, errCode string) string {
 	v := url.Values{}
 	if tenant != "" {
@@ -188,7 +187,7 @@ func loginURL(org *model.Org, next, tenant, errCode string) string {
 	if errCode != "" {
 		v.Set("error", errCode)
 	}
-	u := "/login/" + url.PathEscape(org.Name)
+	u := web.OrgPath(org.ID, "/login")
 	if len(v) > 0 {
 		u += "?" + v.Encode()
 	}

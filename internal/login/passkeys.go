@@ -4,16 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
 type passkeyBeginReq struct {
-	Org    string `json:"org"`
 	Ticket string `json:"ticket"` // login ticket of a password step that needs a passkey as second factor
 	Next   string `json:"next"`
 	Tenant string `json:"tenant"`
@@ -24,7 +23,7 @@ type passkeyBeginResp struct {
 	Options   any    `json:"options"`
 }
 
-// passkeyBegin handles POST /api-internal/login/passkey/begin: {org?, ticket?, next?} -> {challenge, options}.
+// passkeyBegin handles POST /o/{org}/api-internal/login/passkey/begin: {ticket?, next?, tenant?} -> {challenge, options}.
 //
 // With a ticket (password already verified, org requires MFA) the ceremony names the user's credentials. Without
 // one it is discoverable: no allowCredentials, so nothing about any account is revealed.
@@ -37,13 +36,14 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	org := web.Org(r)
 	var (
 		user  *model.User
 		extra = map[string]string{}
 	)
 	if in.Ticket != "" {
-		// a passkey in place of the authenticator code, too; the organization's bucket (by name, as every other
-		// step of its sign-ins), and its audit log when limited
+		// a passkey in place of the authenticator code, too; the organization's bucket (as every other step of its
+		// sign-ins), and its audit log when limited
 		_, u, _, ok := m.step(w, r, in.Ticket, "passkey", "totp")
 		if !ok {
 			return
@@ -52,42 +52,21 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		extra["ticket"] = in.Ticket
 		extra[passkey.PurposeKey] = purposeSecondFactor
 	} else {
-		orgName := strings.ToLower(strings.TrimSpace(in.Org))
-		org, orgKey, err := m.resolveOrg(ctx, orgName)
+		if !m.rateLimit(w, r, org.ID, known{orgID: org.ID}) {
+			return
+		}
+		eff, tenant, err := m.methods(ctx, org, in.Tenant, "") // a passkey is two factors already
 		if err != nil {
-			m.internalError(w, r, "organization", err)
+			m.internalError(w, r, "sign-in methods", err)
 			return
 		}
-		if orgName == "" {
-			orgKey = "" // discoverable sign-in without an org
-		}
-		k := known{any: true} // discoverable sign-in without an org
-		if org != nil {
-			k = known{orgID: org.ID}
-		}
-		if !m.rateLimit(w, r, orgKey, k) {
+		if !eff.Passkey {
+			writeErr(w, http.StatusForbidden, msgNoPasskeyLogin, "")
 			return
 		}
-		if orgName != "" {
-			if org == nil {
-				writeErr(w, http.StatusForbidden, msgNoPasskeyLogin, "")
-				return
-			}
-			eff, tenant, err := m.methods(ctx, org, in.Tenant, "") // a passkey is two factors already
-			if err != nil {
-				m.internalError(w, r, "sign-in methods", err)
-				return
-			}
-			if !eff.Passkey {
-				writeErr(w, http.StatusForbidden, msgNoPasskeyLogin, "")
-				return
-			}
-			extra["org"] = org.ID
-			extra["tenant"] = tenant
-		} else if t := strings.ToLower(strings.TrimSpace(in.Tenant)); len(t) <= maxTenantName {
-			extra["tenant"] = t // org-less (landing page) sign-in: resolved in the user's org at finish
-		}
-		extra["next"] = safeNext(in.Next)
+		extra["org"] = org.ID
+		extra["tenant"] = tenant
+		extra["next"] = safeNext(org, in.Next)
 		extra[passkey.PurposeKey] = purposeLogin
 	}
 	id, opts, err := m.Passkeys.BeginLogin(ctx, user, extra)
@@ -111,7 +90,8 @@ const msgNoPasskeyLogin = "Passkey sign-in is not enabled for this organization.
 
 const msgBadPasskey = "That passkey could not be verified."
 
-// passkeyFinish handles POST /api-internal/login/passkey/finish: {challenge, credential} -> {next}.
+// passkeyFinish handles POST /o/{org}/api-internal/login/passkey/finish: {challenge, credential} -> {next}. The
+// passkey must be an account of the organization the path names, whatever page began the ceremony.
 func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return
@@ -121,7 +101,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if !m.rateLimit(w, r, "passkey", known{any: true}) {
+	if !m.rateLimit(w, r, web.Org(r).ID+"|passkey", known{any: true}) {
 		return
 	}
 	res, err := m.Passkeys.FinishLoginAs(ctx, in.Challenge, in.Credential, purposeLogin, purposeSecondFactor)
@@ -140,7 +120,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, passkey.ErrChallenge):
 			writeErr(w, http.StatusUnauthorized, "That sign-in has expired. Try again.", "")
 			return
-		case errors.Is(err, service.ErrUnavailable):
+		case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
 			unavailableResponse(w)
 			return
 		}
@@ -156,7 +136,8 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	u := res.User
 	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
+	if err != nil || org.ID != web.Org(r).ID {
+		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
 		writeErr(w, http.StatusUnauthorized, msgBadPasskey, "")
 		return
 	}
@@ -175,7 +156,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		amr = append(append(append([]string{}, t.AMR...), amr...), "mfa")
 		next, provider = t.Next, t.Provider
 	} else {
-		if orgID := res.Extra["org"]; orgID != "" && orgID != u.OrgID {
+		if res.Extra["org"] != org.ID { // a ceremony begun at another organization's page
 			m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
 			writeErr(w, http.StatusUnauthorized, msgBadPasskey, "")
 			return

@@ -33,7 +33,7 @@ func TestEncryptWriterRoundTrip(t *testing.T) {
 	s := covSealer(t)
 	src := covStoreWithGroups(t, 3)
 	var plain bytes.Buffer
-	if _, err := Write(ctx, src, s, &plain); err != nil {
+	if _, err := WriteWith(ctx, src, s, &plain, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	var enc bytes.Buffer

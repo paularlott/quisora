@@ -1,7 +1,7 @@
 {{template "auth" .}}{{define "content"}}
 {{/* The device authorization grant's verification page (oidc/device.go): the code a device shows, then the usual
      sign-in and a consent screen. A plain form: it works without JavaScript. */}}
-<form class="stack" method="get" action="/device" novalidate>
+<form class="stack" method="get" action="/o/{{.Org.ID}}/device" novalidate>
   <div>
     <h1 class="page-title">Sign in on a device</h1>
     <p class="page-sub">Enter the code your device shows.</p>

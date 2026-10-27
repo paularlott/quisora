@@ -22,7 +22,7 @@ func TestSessionsEnd(t *testing.T) {
 	}
 	var cleared bool
 	for _, ck := range resp.Cookies() {
-		if ck.Name == web.SessionCookie && ck.MaxAge < 0 {
+		if ck.Name == web.SessionCookieFor(env.Admin.OrgID) && ck.MaxAge < 0 {
 			cleared = true
 		}
 	}
@@ -47,7 +47,12 @@ func TestSessionUpgradeRotatesTheCookieAndKillsTheOldOne(t *testing.T) {
 	ctx := context.Background()
 	c, _ := env.Session(env.Admin)
 	u := mustURL(t, env.URL)
-	oldCookie := c.Jar.Cookies(u)[0]
+	var oldCookie *http.Cookie
+	for _, ck := range c.Jar.Cookies(u) {
+		if ck.Name == web.SessionCookieFor(env.Admin.OrgID) {
+			oldCookie = ck
+		}
+	}
 
 	r := httptest.NewRequest("GET", env.URL+"/", nil)
 	r.AddCookie(oldCookie)
@@ -64,9 +69,14 @@ func TestSessionUpgradeRotatesTheCookieAndKillsTheOldOne(t *testing.T) {
 	if up.ID != old.ID || up.Provider != "prov" || len(up.AMR) != 3 || up.CSRF == old.CSRF || len(up.CookieHash) == 0 {
 		t.Fatalf("upgraded session %+v", up)
 	}
-	newCookies := rec.Result().Cookies()
+	var newCookies []*http.Cookie // the session's cookie (the other one set names the organization of the sign-in)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == web.SessionCookieFor(up.OrgID) {
+			newCookies = append(newCookies, c)
+		}
+	}
 	if len(newCookies) != 1 || !strings.HasPrefix(newCookies[0].Value, up.ID+".") {
-		t.Fatalf("new cookie %+v", newCookies)
+		t.Fatalf("new cookie %+v", rec.Result().Cookies())
 	}
 	// The session id is kept but the old cookie value is dead (no fixation), and the new one works.
 	if s, _ := env.Server.Sessions.Current(r); s != nil {

@@ -31,9 +31,9 @@ type logoutReq struct {
 // as their own sessions last). Such a hint is treated as absent: the user is asked to confirm.
 var errHintKeyGone = errors.New("oidc: id_token_hint signed with a retired key")
 
-// verifyIDTokenHint checks an ID token this provider issued. Expiry is not enforced: RP-initiated logout accepts
+// verifyIDTokenHint checks an ID token this provider issued for organization orgID. Expiry is not enforced: RP-initiated logout accepts
 // expired ID tokens as hints. With errHintKeyGone it also returns the hint's unverified claims.
-func (p *Provider) verifyIDTokenHint(ctx context.Context, tok string) (*Claims, error) {
+func (p *Provider) verifyIDTokenHint(ctx context.Context, orgID, tok string) (*Claims, error) {
 	pj, err := ParseJWT(tok)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func (p *Provider) verifyIDTokenHint(ctx context.Context, tok string) (*Claims, 
 	key := p.keyByKID(ctx, pj.Header.Kid)
 	if key == nil && pj.Header.Kid != "" && ValidAlg(pj.Header.Alg) {
 		cl := &Claims{}
-		if json.Unmarshal(pj.Payload, cl) == nil && cl.Iss == p.issuer && len(cl.Aud) > 0 {
+		if json.Unmarshal(pj.Payload, cl) == nil && cl.Iss == p.issuer(orgID) && len(cl.Aud) > 0 {
 			return cl, errHintKeyGone
 		}
 	}
@@ -55,7 +55,7 @@ func (p *Provider) verifyIDTokenHint(ctx context.Context, tok string) (*Claims, 
 		return nil, err
 	}
 	cl := &Claims{}
-	if err := json.Unmarshal(pj.Payload, cl); err != nil || cl.Iss != p.issuer || len(cl.Aud) == 0 || cl.Sub == "" {
+	if err := json.Unmarshal(pj.Payload, cl); err != nil || cl.Iss != p.issuer(orgID) || len(cl.Aud) == 0 || cl.Sub == "" {
 		return nil, badToken("claims")
 	}
 	return cl, nil
@@ -73,8 +73,9 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.Form
 	ctx := r.Context()
+	org := web.Org(r)
 	if r.Method == http.MethodPost {
-		if _, err := r.Cookie(web.SessionCookie); err != nil {
+		if _, err := r.Cookie(web.SessionCookieFor(org.ID)); err != nil {
 			// A relying party's cross-site form POST carries no SameSite=Lax session cookie: as a top-level GET
 			// navigation it does, so continue there (otherwise the user would be "logged out" without their session
 			// ending or back-channel notices going out).
@@ -85,7 +86,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			w.Header().Set("Cache-Control", "no-store")
-			http.Redirect(w, r, "/oauth/logout?"+v.Encode(), http.StatusSeeOther)
+			http.Redirect(w, r, web.OrgPath(org.ID, "/oauth/logout?"+v.Encode()), http.StatusSeeOther)
 			return
 		}
 	}
@@ -93,7 +94,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 	clientID := q.Get("client_id")
 	if h := q.Get("id_token_hint"); h != "" {
 		var err error
-		hint, err = p.verifyIDTokenHint(ctx, h)
+		hint, err = p.verifyIDTokenHint(ctx, org.ID, h)
 		switch {
 		case errors.Is(err, errHintKeyGone):
 			// Not proof of anything: the user confirms (as without a hint). Its audience still names the client
@@ -116,7 +117,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	var client *model.Client
 	if clientID != "" {
-		ce, err := p.client(ctx, clientID)
+		ce, err := p.client(ctx, org.ID, clientID)
 		if err != nil || !ce.c.Enabled {
 			p.logoutInvalid(w, r, "")
 			return
@@ -197,7 +198,7 @@ func (p *Provider) endSession(ctx context.Context, w http.ResponseWriter, r *htt
 	return true
 }
 
-// handleLogoutConfirm handles POST /oauth/logout/confirm, the confirmation page's plain form (it works without
+// handleLogoutConfirm handles POST /o/<org>/oauth/logout/confirm, the confirmation page's plain form (it works without
 // JavaScript): {id, csrf}. It ends the session and sends the browser to the client's post-logout address, or shows
 // the signed-out page.
 func (p *Provider) handleLogoutConfirm(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +255,7 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 			return
 		}
 		seen[k] = true
-		ce, err := p.client(ctx, clientID)
+		ce, err := p.recordClient(ctx, clientID)
 		if err != nil || ce.c.BackchannelURI == "" || !ce.c.Enabled {
 			return
 		}
@@ -381,7 +382,7 @@ func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error
 		Name: "back-channel logout queue", Log: p.log, Sealer: p.svc.Sealer, Binding: "oidc/logout-queue",
 		Backoff: logoutBackoff, Max: logoutQueueMax,
 		Deliver: func(ctx context.Context, r LogoutRetry) error {
-			ce, err := p.client(ctx, r.ClientID)
+			ce, err := p.recordClient(ctx, r.ClientID)
 			if errors.Is(err, store.ErrNotFound) || err == nil && (!ce.c.Enabled || ce.c.BackchannelURI == "") {
 				return nil // nobody to tell any more
 			} else if err != nil {
@@ -468,9 +469,9 @@ func (p *Provider) sendLogoutToken(t bcTarget) error {
 	}
 	now := time.Now()
 	o := newObj(384)
-	o.str("iss", p.issuer)
+	o.str("iss", p.issuer(t.client.OrgID))
 	o.str("sub", t.sub)
-	o.str("aud", t.client.ID)
+	o.str("aud", t.client.ClientID())
 	o.num("iat", now.Unix())
 	o.num("exp", now.Add(2*time.Minute).Unix())
 	o.str("jti", newJTI())

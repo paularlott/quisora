@@ -56,7 +56,8 @@ type Server struct {
 	// Status is the cluster summary /readyz reports (counts only: /readyz is unauthenticated). Nil: none.
 	Status func() any
 
-	skin    *Skin // ui.skin, or nil
+	skin    *Skin    // ui.skin, or nil
+	orgs    orgCache // the organizations InOrg resolved
 	httpSrv *http.Server
 	addr    string
 	certs   *certSource
@@ -153,7 +154,8 @@ func (s *Server) serveGate(next http.Handler) http.Handler {
 		w.Header().Set("Retry-After", "5")
 		w.Header().Set("Cache-Control", "no-store")
 		switch {
-		case strings.HasPrefix(p, "/oauth/") || strings.HasPrefix(p, "/.well-known/"):
+		case strings.HasPrefix(InOrgPath(p), "/oauth/") || strings.HasPrefix(InOrgPath(p), "/.well-known/") ||
+			strings.HasPrefix(p, "/.well-known/"):
 			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable",
 				"error_description": "this server is not ready to serve; try again shortly"})
 		case APIPath(p) || strings.HasPrefix(p, "/scim/"):
@@ -311,7 +313,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.User = u
 		p.CSRF = Session(r).CSRF
 		if org, err := s.Svc.GetOrg(r.Context(), nil, u.OrgID); err == nil {
-			p.Org, p.HomeOrg = org, org.Name
+			p.Org = org
 		}
 		p.Path = r.URL.RequestURI()
 		p.IsSuper = u.Role == model.RoleSuperAdmin
@@ -320,6 +322,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.KeyRotation = p.IsSuper && s.Svc.Sealer.Previous()
 	} else {
 		p.CSRF = s.AnonCSRF(w, r)
+		p.Org = Org(r) // an organization's own pages (sign-in, device, sign-out) name it signed out too
 	}
 	return p
 }

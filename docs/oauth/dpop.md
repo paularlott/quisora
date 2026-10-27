@@ -13,7 +13,7 @@ The examples use the helpers in [jwt.sh](jwt.sh) (bash, OpenSSL 3 and jq) and an
 keys work too (not RS256 with FAPI 2.0). In an application, your OAuth library does all of this.
 
 ```bash
-export QUISORA=https://id.example.com
+export ISSUER=https://id.example.com/o/<org id>      # the organization's issuer
 source docs/oauth/jwt.sh
 new_key dpop.key            # the application's DPoP key: it never leaves the application
 jwk_thumbprint dpop.key     # its thumbprint ("jkt"), which the tokens will name
@@ -28,14 +28,14 @@ its `DPoP-Nonce` header.
 
 ```bash
 # first try: no nonce yet, so the answer is use_dpop_nonce, with the nonce in DPoP-Nonce
-curl -s -D headers.txt "$QUISORA/oauth/token" \
-  -H "DPoP: $(dpop_proof dpop.key POST "$QUISORA/oauth/token")" \
+curl -s -D headers.txt "$ISSUER/oauth/token" \
+  -H "DPoP: $(dpop_proof dpop.key POST "$ISSUER/oauth/token")" \
   -d grant_type=client_credentials -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET"
 NONCE=$(grep -i '^dpop-nonce:' headers.txt | cut -d' ' -f2 | tr -d '\r')
 
 # again, with the nonce
-curl -s -D headers.txt "$QUISORA/oauth/token" \
-  -H "DPoP: $(dpop_proof dpop.key POST "$QUISORA/oauth/token" "$NONCE")" \
+curl -s -D headers.txt "$ISSUER/oauth/token" \
+  -H "DPoP: $(dpop_proof dpop.key POST "$ISSUER/oauth/token" "$NONCE")" \
   -d grant_type=client_credentials -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" | tee tokens.json
 ```
 
@@ -62,8 +62,8 @@ authorization scheme (not `Bearer`) and a new proof for that request, including 
 
 ```bash
 AT=$(jq -r .access_token tokens.json)
-curl -s "$QUISORA/oauth/userinfo" -H "Authorization: DPoP $AT" \
-  -H "DPoP: $(dpop_proof dpop.key GET "$QUISORA/oauth/userinfo" "" "$AT")"
+curl -s "$ISSUER/oauth/userinfo" -H "Authorization: DPoP $AT" \
+  -H "DPoP: $(dpop_proof dpop.key GET "$ISSUER/oauth/userinfo" "" "$AT")"
 ```
 
 The same token without a proof, with a proof from another key, or as `Bearer`, is refused (`invalid_token`). At

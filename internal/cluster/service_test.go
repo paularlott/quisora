@@ -140,7 +140,7 @@ func oidcSites(t *testing.T, c *tcluster) []*oidcSite {
 func (s *oidcSite) refresh(t *testing.T, cl *model.Client, secret, token string) (int, string) {
 	t.Helper()
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token}, "client_id": {cl.ID}, "client_secret": {secret}}
-	req := httptest.NewRequest(http.MethodPost, "https://idp.test/oauth/token", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "https://idp.test/o/"+cl.OrgID+"/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	s.h.ServeHTTP(rec, req)
@@ -253,7 +253,7 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "the grant ended everywhere", func() bool {
 		for _, s := range sites {
-			if x, err := s.svc.Grants.Get(ctx, g.ID); !errors.Is(err, store.ErrNotFound) && (err != nil || !x.Revoked) {
+			if _, err := s.svc.Grants.Get(ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
 				return false
 			}
 		}
@@ -275,7 +275,7 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 	if code, next := presentLagging(lag, token(1)); code != http.StatusOK || next != token(2) {
 		t.Fatalf("a retry within the grace on a node a message behind: %d %q, want the token it missed", code, next)
 	}
-	if x, err := sites[0].svc.Grants.Get(ctx, g.ID); err != nil || x.Revoked || x.Counter != 2 {
+	if x, err := sites[0].svc.Grants.Get(ctx, g.ID); err != nil || x.Counter != 2 {
 		t.Fatalf("the grant after the retry: %+v %v", x, err)
 	}
 }

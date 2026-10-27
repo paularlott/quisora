@@ -26,7 +26,7 @@ import (
 var (
 	ErrForbidden = errors.New("forbidden")
 	ErrNotFound  = errors.New("not found")
-	// ErrLimit: a server-wide cap is reached (self-registered applications); try again later.
+	// ErrLimit: an organization's cap is reached (its self-registered applications nobody has used); try again later.
 	ErrLimit      = errors.New("limit reached")
 	ErrInvalid    = errors.New("invalid")
 	ErrConflict   = errors.New("already exists")
@@ -168,7 +168,6 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
-	primary primaryChoice    // the primary organization PrimaryOrg chose, for primaryChoiceTTL
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 
 	signOut       signOutCache   // emergency sign-out counters (signout.go)

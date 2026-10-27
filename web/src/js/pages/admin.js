@@ -454,9 +454,10 @@ const PROVIDER_TYPES = {
     help: 'Leave empty for gitlab.com. For GitLab self-managed, your server\u2019s address.' },
   auth0: { text: 'Auth0', name: 'Auth0', address: 'Auth0 domain', placeholder: 'acme.eu.auth0.com', required: true,
     help: 'Your Auth0 tenant\u2019s domain, or its custom domain.' },
+  organization: { text: 'Organization', name: 'the organization\u2019s name' },
 }
 const providerTypeText = (t) => (PROVIDER_TYPES[t] || PROVIDER_TYPES.oidc).text
-const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : p.issuer
+const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : p.issuer
 const shapeProvider = (p) => ({ id: p.id, name: p.name, enabled: p.enabled, typeText: providerTypeText(p.type), stateText: p.enabled ? 'enabled' : 'disabled' })
 
 function methodsText(t) {
@@ -1412,12 +1413,26 @@ export default function (Alpine) {
 
   // ---- Providers --------------------------------------------------------------------------------------------------
   Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), {
-    editing: null, apiBase: '', publicUrl: '', newId: '',
-    init() { this.apiBase = this.$el.dataset.base; this.publicUrl = this.$el.dataset.public; this.initTable() },
+    editing: null, apiBase: '', publicUrl: '', orgId: '', newId: '', isSuper: false, orgs: [], orgsLoaded: false,
+    init() {
+      this.apiBase = this.$el.dataset.base; this.publicUrl = this.$el.dataset.public; this.orgId = this.$el.dataset.orgId
+      this.isSuper = !!this.$el.dataset.super
+      this.initTable()
+    },
+    // The organizations a provider may take its users from: the others, by display name (only super admins set one up).
+    async loadOrgs() {
+      if (!this.isSuper || this.orgsLoaded) return
+      try {
+        const r = await get(`/api/orgs${qs({ sort: 'name', limit: 100 })}`)
+        this.orgs = r.items.filter((o) => o.id !== this.orgId).map((o) => ({ id: o.id, label: o.display_name || o.name }))
+        this.orgsLoaded = true
+      } catch (e) { toast(e.message, 'error') }
+    },
     transform(p) {
       const b = activeBadge(p.enabled, 'Enabled', 'Disabled')
       return { ...p, copyCallbackLabel: 'Copy callback URL of ' + p.name, createdText: fmtDate(p.created), statusText: b.text, statusClass: b.cls, typeText: providerTypeText(p.type),
         editLabel: 'Edit ' + p.name, deleteLabel: 'Delete ' + p.name, sub: providerSub(p),
+        readOnly: p.type === 'organization' && !this.isSuper, // an organization provider writes into another organization: super admins only
         domainsText: (p.allowed_domains || []).join(', ') || 'Any', provisionText: (p.auto_provision ? 'Creates accounts' : 'Existing users only') + (p.trust_mfa ? '; counts as a second factor' : '') }
     },
     get isEdit() { return this.editing !== null },
@@ -1429,9 +1444,13 @@ export default function (Alpine) {
     get addressRequired() { return !!this.ptype.required },
     get addressRequiredAttr() { return this.ptype.required ? 'true' : 'false' },
     get isMicrosoft() { return this.form.type === 'microsoft' },
+    get isOrg() { return this.form.type === 'organization' },
     get multiTenant() { return this.isMicrosoft && (this.form.tenant || '').trim().toLowerCase() === 'organizations' },
-    get namePlaceholder() { return this.ptype.name },
-    get nameHelp() { return `Shown on the sign-in page. Leave empty for \u201c${this.ptype.name}\u201d.` },
+    get namePlaceholder() { return this.isOrg ? (this.orgs.find((o) => o.id === this.form.source_org) || {}).label || this.ptype.name : this.ptype.name },
+    get nameHelp() {
+      return this.isOrg ? 'Shown on the sign-in page after \u201cContinue with\u201d. Leave empty for the organization\u2019s own name.'
+        : `Shown on the sign-in page. Leave empty for \u201c${this.ptype.name}\u201d.`
+    },
     get callbackHelp() {
       return { github: 'Register this as the Authorization callback URL of your GitHub OAuth app.',
         microsoft: 'Register this as a Web redirect URI of your app registration in Microsoft Entra ID.',
@@ -1450,28 +1469,32 @@ export default function (Alpine) {
     },
     // Each provider has its own callback address. A new one gets its id now, so the address can be registered with the
     // provider before its client ID and secret are known.
-    get callbackUrl() { return this.editing ? this.editing.callback_url : `${this.publicUrl}/login/callback/${this.newId}` },
+    get callbackUrl() { return this.editing ? this.editing.callback_url : `${this.publicUrl}/o/${this.orgId}/login/callback/${this.newId}` },
     get secretHelp() { return this.editing ? 'Leave blank to keep the current secret. It is never shown.' : 'Stored encrypted. It is never shown again.' },
     get secretRequired() { return !this.editing },
     get dialogTitle() { return this.editing ? 'Edit provider' : 'New sign-in provider' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create provider' },
     toForm(p) {
-      return { type: p.type, name: p.name, issuer: p.issuer || '', client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
+      return { type: p.type, name: p.name, issuer: p.issuer || '', source_org: p.source_org || '', client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
         allowed_domains: listRows(p.allowed_domains, 'Domain', true), tenant: p.tenant || '', allowed_tenants: listRows(p.allowed_tenants, 'Tenant ID', true), auto_provision: !!p.auto_provision, trust_mfa: !!p.trust_mfa, link_by_email: p.link_by_email !== false, enabled: p.enabled !== false }
     },
-    openCreate(ev) {
+    async openCreate(ev) {
+      const opener = ev.currentTarget
+      await this.loadOrgs()
       this.editing = null
       this.newId = crypto.randomUUID()
       this.resetForm(this.toForm({ type: 'oidc', name: '', scopes: ['openid', 'profile', 'email'], enabled: true }))
       this.resetChipText()
-      this.openDlg('provider-dialog', ev.currentTarget)
+      this.openDlg('provider-dialog', opener)
     },
-    edit(ev) {
+    async edit(ev) {
       const p = this.rowFromEvent(ev)
+      const opener = ev.currentTarget
+      await this.loadOrgs()
       this.editing = p
       this.resetForm(this.toForm(p))
       this.resetChipText()
-      this.openDlg('provider-dialog', ev.currentTarget)
+      this.openDlg('provider-dialog', opener)
       this.watchEdit({ kinds: ['provider'], record: p, fetchOne: () => getOrNull(`${this.apiBase}/providers/${enc(p.id)}`) })
     },
     // a server message about one domain goes on its row (it starts with the domain)
@@ -1479,8 +1502,10 @@ export default function (Alpine) {
     async submit() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
-      const body = { type: f.type, name: f.name, client_id: f.client_id, scopes: f.scopes, allowed_domains: listValues(f.allowed_domains),
+      const body = { type: f.type, name: f.name, allowed_domains: listValues(f.allowed_domains),
         auto_provision: f.auto_provision, trust_mfa: f.trust_mfa, link_by_email: f.link_by_email, enabled: f.enabled }
+      if (f.type === 'organization') body.source_org = f.source_org // its client is made with it: no client ID, secret or scopes
+      else { body.client_id = f.client_id; body.scopes = f.scopes }
       if (PROVIDER_TYPES[f.type] && PROVIDER_TYPES[f.type].address) body.issuer = f.issuer
       if (f.type === 'microsoft') { body.tenant = f.tenant; body.allowed_tenants = listValues(f.allowed_tenants) }
       if (f.client_secret) body.client_secret = f.client_secret

@@ -15,7 +15,7 @@ test('API token: make a new secret', async ({ page }) => {
     calls++
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ token: 'qsr_tok-1_newsecret', item: { ...item, last_used: '0001-01-01T00:00:00Z' } }) })
   })
-  await page.goto('/account')
+  await page.goto('/o/acme/account')
   const btn = page.getByRole('button', { name: 'New secret for token Deploy script' })
   await btn.scrollIntoViewIfNeeded()
 

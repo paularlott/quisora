@@ -32,11 +32,11 @@ func TestLogoutWithBackchannel(t *testing.T) {
 	sid := claimsOf(t, idt)["sid"].(string)
 
 	// unregistered post-logout redirect is refused and nothing happens
-	bad := "/oauth/logout?" + url.Values{"id_token_hint": {idt}, "post_logout_redirect_uri": {"https://evil.example/"}}.Encode()
+	bad := orgBase + "/oauth/logout?" + url.Values{"id_token_hint": {idt}, "post_logout_redirect_uri": {"https://evil.example/"}}.Encode()
 	if resp := h.get(c, bad); resp.StatusCode != 400 {
 		t.Fatalf("bad redirect: %d", resp.StatusCode)
 	}
-	if resp := h.get(c, "/oauth/logout?id_token_hint="+idt+"x"); resp.StatusCode != 400 {
+	if resp := h.get(c, orgBase+"/oauth/logout?id_token_hint="+idt+"x"); resp.StatusCode != 400 {
 		t.Fatal("forged hint accepted")
 	}
 	if h.refreshWith(cl, secret, rt).status != 200 {
@@ -44,7 +44,7 @@ func TestLogoutWithBackchannel(t *testing.T) {
 	}
 
 	q := url.Values{"id_token_hint": {idt}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"xyz"}}
-	resp := h.get(c, "/oauth/logout?"+q.Encode())
+	resp := h.get(c, orgBase+"/oauth/logout?"+q.Encode())
 	u := loc(t, resp)
 	if resp.StatusCode != 302 || u.Scheme+"://"+u.Host+u.Path != "https://rp.example/bye" || u.Query().Get("state") != "xyz" {
 		t.Fatalf("logout redirect: %d %s", resp.StatusCode, u)
@@ -62,7 +62,7 @@ func TestLogoutWithBackchannel(t *testing.T) {
 		lc := claimsOf(t, lt)
 		ev, _ := lc["events"].(map[string]any)
 		if _, ok := ev[backchannelEvent]; !ok || lc["sid"] != sid || lc["sub"] != h.user.ID || lc["aud"] != cl.ID ||
-			lc["iss"] != h.env.URL || lc["jti"] == "" || lc["iat"] == nil || lc["exp"] == nil || lc["nonce"] != nil {
+			lc["iss"] != h.issuer() || lc["jti"] == "" || lc["iat"] == nil || lc["exp"] == nil || lc["nonce"] != nil {
 			t.Fatalf("logout claims %v", lc)
 		}
 	case <-time.After(5 * time.Second):
@@ -75,7 +75,7 @@ func TestLogoutWithBackchannel(t *testing.T) {
 	default:
 	}
 	// session and grants are gone
-	if resp := h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()); resp.StatusCode != 302 || loc(t, resp).Path != "/login/primary" {
+	if resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()); resp.StatusCode != 302 || loc(t, resp).Path != orgBase+"/login" {
 		t.Fatal("session survived logout")
 	}
 	if h.refreshWith(cl, secret, rt).status != 400 || h.refreshWith(silent, ssecret, r2.str("refresh_token")).status != 400 {
@@ -89,15 +89,15 @@ func TestLogoutConfirmationWithoutHint(t *testing.T) {
 	cl, _ := h.newClient(func(in *service.ClientInput) { in.PostLogoutURIs = &[]string{"https://rp.example/bye"} })
 	c, csrf := h.session(h.user)
 	// GET without hint must not log out
-	resp := h.get(c, "/oauth/logout?"+url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"s"}}.Encode())
+	resp := h.get(c, orgBase+"/oauth/logout?"+url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"s"}}.Encode())
 	page := body(resp)
-	if resp.StatusCode != 200 || !strings.Contains(page, `action="/oauth/logout/confirm"`) {
+	if resp.StatusCode != 200 || !strings.Contains(page, `action="`+orgBase+`/oauth/logout/confirm"`) {
 		t.Fatalf("expected confirmation page: %d", resp.StatusCode)
 	}
 	// an over-long state is dropped, not a reason to sign the user out without asking
-	resp = h.get(c, "/oauth/logout?"+url.Values{"client_id": {cl.ID}, "state": {strings.Repeat("s", 3000)},
+	resp = h.get(c, orgBase+"/oauth/logout?"+url.Values{"client_id": {cl.ID}, "state": {strings.Repeat("s", 3000)},
 		"post_logout_redirect_uri": {"https://rp.example/bye"}}.Encode())
-	if long := body(resp); resp.StatusCode != 200 || !strings.Contains(long, `action="/oauth/logout/confirm"`) {
+	if long := body(resp); resp.StatusCode != 200 || !strings.Contains(long, `action="`+orgBase+`/oauth/logout/confirm"`) {
 		t.Fatalf("confirmation with a long state: %d", resp.StatusCode)
 	}
 	id, pageCSRF := regexpValue(page, "id"), regexpValue(page, "csrf")
@@ -123,12 +123,12 @@ func TestLogoutConfirmationWithoutHint(t *testing.T) {
 	}
 	// no session at all: straight to the redirect
 	anon := h.anon()
-	resp = h.get(anon, "/oauth/logout?"+url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}}.Encode())
+	resp = h.get(anon, orgBase+"/oauth/logout?"+url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}}.Encode())
 	if resp.StatusCode != 302 {
 		t.Fatalf("anon logout: %d", resp.StatusCode)
 	}
 	// no redirect: plain message
-	resp = h.get(anon, "/oauth/logout")
+	resp = h.get(anon, orgBase+"/oauth/logout")
 	if resp.StatusCode != 200 || !strings.Contains(body(resp), "signed out") {
 		t.Fatal("signed out page")
 	}
@@ -154,13 +154,13 @@ func TestLogoutHintWithRetiredKey(t *testing.T) {
 	}
 	c, _ := h.session(h.user)
 	q := url.Values{"id_token_hint": {old}, "post_logout_redirect_uri": {"https://rp.example/bye"}}
-	resp := h.get(c, "/oauth/logout?"+q.Encode())
-	if page := body(resp); resp.StatusCode != 200 || !strings.Contains(page, `action="/oauth/logout/confirm"`) {
+	resp := h.get(c, orgBase+"/oauth/logout?"+q.Encode())
+	if page := body(resp); resp.StatusCode != 200 || !strings.Contains(page, `action="`+orgBase+`/oauth/logout/confirm"`) {
 		t.Fatalf("retired-key hint: %d", resp.StatusCode)
 	}
 	// an address the client did not register is still refused
 	q.Set("post_logout_redirect_uri", "https://evil.example/")
-	if resp := h.get(c, "/oauth/logout?"+q.Encode()); resp.StatusCode != 400 {
+	if resp := h.get(c, orgBase+"/oauth/logout?"+q.Encode()); resp.StatusCode != 400 {
 		t.Fatalf("unregistered address with a retired-key hint: %d", resp.StatusCode)
 	}
 	// a current key with a broken signature, and an algorithm Quisora never signs with, are refused
@@ -169,7 +169,7 @@ func TestLogoutHintWithRetiredKey(t *testing.T) {
 	tampered := fresh[:len(fresh)-4] + "AAAA"
 	hs := strings.Replace(fresh, strings.Split(fresh, ".")[0], b64.EncodeToString([]byte(`{"alg":"HS256","kid":"gone","typ":"JWT"}`)), 1)
 	for name, tok := range map[string]string{"tampered": tampered, "HS256": hs} {
-		if resp := h.get(c, "/oauth/logout?"+url.Values{"id_token_hint": {tok}}.Encode()); resp.StatusCode != 400 {
+		if resp := h.get(c, orgBase+"/oauth/logout?"+url.Values{"id_token_hint": {tok}}.Encode()); resp.StatusCode != 400 {
 			t.Errorf("%s hint: %d", name, resp.StatusCode)
 		}
 	}
@@ -188,12 +188,12 @@ func TestCrossSitePostLogout(t *testing.T) {
 		"code_verifier": {v}}, cl, secret)
 	form := url.Values{"id_token_hint": {r.str("id_token")}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"s1"}}
 	// without the cookie (as the browser sends it cross-site)
-	resp := h.post("/oauth/logout", form, "", "")
+	resp := h.post(orgBase+"/oauth/logout", form, "", "")
 	if resp.status != http.StatusSeeOther {
 		t.Fatalf("cookieless POST: %d", resp.status)
 	}
 	loc, _ := url.Parse(resp.hdr.Get("Location"))
-	if loc.Path != "/oauth/logout" || loc.Query().Get("id_token_hint") != r.str("id_token") || loc.Query().Get("state") != "s1" {
+	if loc.Path != orgBase+"/oauth/logout" || loc.Query().Get("id_token_hint") != r.str("id_token") || loc.Query().Get("state") != "s1" {
 		t.Fatalf("redirect: %s", loc)
 	}
 	// the GET, with the session cookie, ends the session and returns to the client
@@ -215,7 +215,7 @@ func TestLogoutRequestRefusals(t *testing.T) {
 	idt := r.str("id_token")
 	c, csrf := h.session(h.user)
 	status := func(q url.Values) int {
-		resp := h.get(c, "/oauth/logout?"+q.Encode())
+		resp := h.get(c, orgBase+"/oauth/logout?"+q.Encode())
 		body(resp)
 		return resp.StatusCode
 	}
@@ -223,7 +223,7 @@ func TestLogoutRequestRefusals(t *testing.T) {
 	if st := status(url.Values{"id_token_hint": {r.str("access_token")}}); st != 400 {
 		t.Errorf("access token hint: %d", st)
 	}
-	if st := status(url.Values{"id_token_hint": {h.forge(typLogout, mustJSON(map[string]any{"iss": h.p.issuer, "aud": cl.ID, "sub": "x"}))}}); st != 400 {
+	if st := status(url.Values{"id_token_hint": {h.forge(typLogout, mustJSON(map[string]any{"iss": h.issuer(), "aud": cl.ID, "sub": "x"}))}}); st != 400 {
 		t.Errorf("logout token hint: %d", st)
 	}
 	// an ID token hint of claims that make no sense (signed by us)
@@ -250,7 +250,7 @@ func TestLogoutRequestRefusals(t *testing.T) {
 		t.Errorf("unreadable: %d", resp.StatusCode)
 	}
 	// unreadable logout query
-	resp := h.get(c, "/oauth/logout?%zz")
+	resp := h.get(c, orgBase+"/oauth/logout?%zz")
 	if body(resp); resp.StatusCode != 400 {
 		t.Errorf("unreadable query: %d", resp.StatusCode)
 	}

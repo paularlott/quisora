@@ -2,7 +2,7 @@
 
 Device sign-in (the OAuth device authorization grant, RFC 8628) signs a user in on something that cannot show a
 sign-in page: a command-line tool, a TV, a kiosk, a lab instrument. The device shows a short code; the user opens
-Quisora's `/device` page on their phone or computer, enters the code, signs in there as they always do, and approves.
+the organization's `/device` page on their phone or computer, enters the code, signs in there as they always do, and approves.
 The device, which has been asking Quisora in the background, then gets its tokens.
 
 ```
@@ -15,6 +15,8 @@ Device                                   Quisora                                
   │ POST /oauth/token (device_code) ───▶ │                                              │
   │ ◀──── access, ID and refresh tokens  │                                              │
 ```
+
+Every address here is under the organization's issuer, `https://id.example.com/o/<org id>`.
 
 **The risk to know about.** Someone can start a device sign-in on their own machine and send a victim the code ("enter
 this code to verify your account"). If the victim enters it and approves, the attacker's device is signed in as them.
@@ -51,7 +53,7 @@ The answer's `id` is the client ID the device uses.
 ## The device's side, step by step
 
 ```bash
-export QUISORA=https://id.example.com
+export ISSUER=https://id.example.com/o/<org id>      # the organization's issuer
 export CLIENT_ID=c_…   # the client ID from the console
 ```
 
@@ -60,7 +62,7 @@ endpoint ([client authentication](client-authentication.md)). `scope` is optiona
 is allowed), and so is `resource` ([resource indicators](sign-in.md#tokens-for-an-api-resource-indicators)).
 
 ```bash
-curl -s "$QUISORA/oauth/device_authorization" \
+curl -s "$ISSUER/oauth/device_authorization" \
   -d client_id="$CLIENT_ID" -d scope="openid profile offline_access" | tee device.json
 ```
 
@@ -68,22 +70,22 @@ curl -s "$QUISORA/oauth/device_authorization" \
 {
   "device_code": "a1.clGjx-yXuyn5NlPiCcTvlDX2GCiWbZ1y",
   "user_code": "PRFL-NXBM",
-  "verification_uri": "https://id.example.com/device",
-  "verification_uri_complete": "https://id.example.com/device?user_code=PRFL-NXBM",
+  "verification_uri": "https://id.example.com/o/<org id>/device",
+  "verification_uri_complete": "https://id.example.com/o/<org id>/device?user_code=PRFL-NXBM",
   "expires_in": 600,
   "interval": 5
 }
 ```
 
 **2. Show the user what to do.** Show `verification_uri` and `user_code`, for example *"Open
-https://id.example.com/device and enter PRFL-NXBM"*. A device with a screen can also show `verification_uri_complete`
+https://id.example.com/o/<org id>/device and enter PRFL-NXBM"*. A device with a screen can also show `verification_uri_complete`
 as a QR code: scanning it opens the page with the code already filled in. Keep `device_code` to yourself: it is what
 collects the tokens.
 
 **3. Ask for the tokens every `interval` seconds** until the answer is no longer `authorization_pending`:
 
 ```bash
-curl -s "$QUISORA/oauth/token" \
+curl -s "$ISSUER/oauth/token" \
   -d grant_type=urn:ietf:params:oauth:grant-type:device_code \
   -d client_id="$CLIENT_ID" \
   -d device_code="$(jq -r .device_code device.json)"
@@ -103,7 +105,7 @@ A loop that does all of it:
 interval=$(jq -r .interval device.json)
 while :; do
   sleep "$interval"
-  curl -s "$QUISORA/oauth/token" -d grant_type=urn:ietf:params:oauth:grant-type:device_code \
+  curl -s "$ISSUER/oauth/token" -d grant_type=urn:ietf:params:oauth:grant-type:device_code \
     -d client_id="$CLIENT_ID" -d device_code="$(jq -r .device_code device.json)" > tokens.json
   case $(jq -r '.error // "ok"' tokens.json) in
     authorization_pending) ;;
@@ -119,8 +121,8 @@ minutes by default), an ID token when `openid` was asked for, and a refresh toke
 grant.
 
 ```bash
-curl -s "$QUISORA/oauth/userinfo" -H "Authorization: Bearer $(jq -r .access_token tokens.json)"
-curl -s "$QUISORA/oauth/token" -d grant_type=refresh_token -d client_id="$CLIENT_ID" \
+curl -s "$ISSUER/oauth/userinfo" -H "Authorization: Bearer $(jq -r .access_token tokens.json)"
+curl -s "$ISSUER/oauth/token" -d grant_type=refresh_token -d client_id="$CLIENT_ID" \
   -d refresh_token="$(jq -r .refresh_token tokens.json)"
 ```
 
@@ -133,7 +135,7 @@ request, as at any token request.
 
 ## The user's side
 
-1. They open `https://id.example.com/device` (or scan the QR code) and type the code. Capital letters and the dash do
+1. They open `https://id.example.com/o/<org id>/device` (or scan the QR code) and type the code. Capital letters and the dash do
    not matter: `prfl nxbm` works.
 2. They sign in, as for any application of the client's tenant: its sign-in methods, second factor and access lists
    apply. Someone already signed in in that browser goes straight on.
@@ -170,9 +172,9 @@ If someone approved a code they were sent, see [the incident response](../SECURI
 
 | | |
 | --- | --- |
-| Device endpoint | `POST /oauth/device_authorization` (`device_authorization_endpoint` in discovery) |
+| Device endpoint | `POST /o/<org id>/oauth/device_authorization` (`device_authorization_endpoint` in discovery) |
 | Grant type | `urn:ietf:params:oauth:grant-type:device_code` |
-| Verification page | `/device`, or `/device?user_code=…` |
+| Verification page | `/o/<org id>/device`, or `/o/<org id>/device?user_code=…` |
 | Code lifetime | 600 seconds (`expires_in`) |
 | Poll interval | 5 seconds, plus 5 for every `slow_down` |
 | User code | 8 letters, shown as `XXXX-XXXX` |

@@ -63,7 +63,7 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 	// published at once, signs only after the overlap; the retired key keeps signing until then
 	var set JWKS
-	_ = json.Unmarshal([]byte(body(h.get(h.http, "/oauth/jwks"))), &set)
+	_ = json.Unmarshal([]byte(body(h.get(h.http, orgBase+"/oauth/jwks"))), &set)
 	if len(set.Keys) != 2 {
 		t.Fatalf("jwks has %d keys", len(set.Keys))
 	}
@@ -99,7 +99,7 @@ func TestForcedKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var set JWKS
-	_ = json.Unmarshal([]byte(body(h.get(h.http, "/oauth/jwks"))), &set)
+	_ = json.Unmarshal([]byte(body(h.get(h.http, orgBase+"/oauth/jwks"))), &set)
 	if len(set.Keys) != 2 {
 		t.Fatalf("jwks after rotation has %d keys", len(set.Keys))
 	}
@@ -132,7 +132,7 @@ func TestSigningAlgorithms(t *testing.T) {
 	if headerOf(t, r2.str("id_token"))["alg"] != "RS256" || headerOf(t, r2.str("access_token"))["alg"] != "RS256" {
 		t.Fatal("RS256 client")
 	}
-	jw, _ := ParseJWKS([]byte(body(h.get(h.http, "/oauth/jwks"))))
+	jw, _ := ParseJWKS([]byte(body(h.get(h.http, orgBase+"/oauth/jwks"))))
 	algs := map[string]bool{}
 	for _, j := range jw {
 		algs[j.Alg] = true
@@ -223,7 +223,7 @@ func TestKeysFailClosedWithoutStore(t *testing.T) {
 		t.Fatal("key found without a store")
 	}
 	rec := httptest.NewRecorder()
-	h.p.handleJWKS(rec, httptest.NewRequest(http.MethodGet, "/oauth/jwks", nil))
+	h.p.handleJWKS(rec, httptest.NewRequest(http.MethodGet, orgBase+"/oauth/jwks", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("jwks: %d", rec.Code)
 	}
@@ -343,7 +343,7 @@ func TestRemoveSigningKey(t *testing.T) {
 		if _, err := h.p.VerifyAccessToken(ctx, at); err == nil {
 			t.Error("the removed key's token still verifies")
 		}
-		if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
+		if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
 			t.Errorf("userinfo with the removed key's token: %d", resp.StatusCode)
 		}
 		x := h.refreshWith(cl, secret, rt)
@@ -354,7 +354,7 @@ func TestRemoveSigningKey(t *testing.T) {
 		if npj, err := ParseJWT(nat); err != nil || npj.Header.Kid == old {
 			t.Errorf("the new token: %v %+v", err, npj)
 		}
-		if resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+nat); resp.StatusCode != 200 {
+		if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+nat); resp.StatusCode != 200 {
 			t.Errorf("userinfo with the new token: %d", resp.StatusCode)
 		}
 	})

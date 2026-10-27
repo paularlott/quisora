@@ -34,6 +34,21 @@ import (
 
 const rpCallback = "https://rp.example/cb"
 
+// orgBase is the address space of the primary organization, where the harness's clients and users live.
+const orgBase = "/o/" + model.PrimaryOrgID
+
+// at is the address of an endpoint (like "/oauth/token") of the organization of client c: the primary one for a client
+// with no organization (one an application named, not stored).
+func (h *harness) at(c *model.Client, path string) string {
+	if c.OrgID == "" {
+		return orgBase + path
+	}
+	return web.OrgPath(c.OrgID, path)
+}
+
+// issuer is the primary organization's issuer.
+func (h *harness) issuer() string { return h.env.Cfg.OrgIssuer(h.env.Primary.ID) }
+
 type harness struct {
 	t     testing.TB
 	env   *webtest.Env
@@ -201,8 +216,13 @@ func loc(t testing.TB, resp *http.Response) *url.URL {
 
 // authorize runs the request with the signed-in browser c and returns the redirect target.
 func (h *harness) authorize(c *http.Client, q url.Values) *url.URL {
+	return h.authorizeIn(h.env.Primary.ID, c, q)
+}
+
+// authorizeIn is authorize at the endpoint of organization orgID.
+func (h *harness) authorizeIn(orgID string, c *http.Client, q url.Values) *url.URL {
 	h.t.Helper()
-	resp := h.get(c, "/oauth/authorize?"+q.Encode())
+	resp := h.get(c, web.OrgPath(orgID, "/oauth/authorize?"+q.Encode()))
 	if resp.StatusCode != http.StatusFound {
 		h.t.Fatalf("authorize status %d: %s", resp.StatusCode, body(resp))
 	}
@@ -213,7 +233,7 @@ func (h *harness) getCode(c *http.Client, cl *model.Client, challenge string, ex
 	h.t.Helper()
 	u := h.authorize(c, authzQuery(cl, challenge, extra))
 	if code := u.Query().Get("code"); code != "" {
-		if u.Query().Get("iss") != h.env.Cfg.Issuer() || u.Query().Get("state") != "st1" && extra.Get("state") == "" {
+		if u.Query().Get("iss") != h.issuer() || u.Query().Get("state") != "st1" && extra.Get("state") == "" {
 			h.t.Fatalf("bad response params %s", u)
 		}
 		return code
@@ -260,7 +280,7 @@ func (h *harness) token(form url.Values, c *model.Client, secret string) tokResp
 	if secret != "" {
 		f.Set("client_secret", secret)
 	}
-	return h.post("/oauth/token", f, "", "")
+	return h.post(h.at(c, "/oauth/token"), f, "", "")
 }
 
 // login runs a full code exchange for a first-party confidential client.
@@ -327,7 +347,7 @@ func (h *harness) introspect(c *model.Client, secret, tok string) map[string]any
 		f.Set("client_id", c.ID)
 		f.Set("client_secret", secret)
 	}
-	r := h.post("/oauth/introspect", f, id, sec)
+	r := h.post(h.at(c, "/oauth/introspect"), f, id, sec)
 	if r.status != 200 {
 		h.t.Fatalf("introspect %d %v", r.status, r.m)
 	}
@@ -345,7 +365,7 @@ func (h *harness) sessionWith(u *model.User, amr []string, authTime time.Time) *
 	pu, _ := url.Parse(h.env.URL)
 	var id string
 	for _, ck := range c.Jar.Cookies(pu) {
-		if ck.Name == web.SessionCookie {
+		if ck.Name == web.SessionCookieFor(h.env.Primary.ID) {
 			id = web.SessionID(ck.Value)
 		}
 	}
@@ -364,8 +384,13 @@ func (h *harness) sessionWith(u *model.User, amr []string, authTime time.Time) *
 // decideConsent answers the consent screen of a flow from browser c (signed in, with its CSRF token). It returns the
 // status of the decision and, when accepted, the redirect that resumes the flow.
 func (h *harness) decideConsent(c *http.Client, csrf, flow string, approve bool) (int, string) {
+	return h.decideConsentIn(h.env.Primary.ID, c, csrf, flow, approve)
+}
+
+// decideConsentIn is decideConsent at the endpoint of organization orgID.
+func (h *harness) decideConsentIn(orgID string, c *http.Client, csrf, flow string, approve bool) (int, string) {
 	h.t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+"/api-internal/oauth/consent",
+	req, _ := http.NewRequest(http.MethodPost, h.env.URL+web.OrgPath(orgID, "/api-internal/oauth/consent"),
 		bytes.NewReader(mustJSON(map[string]any{"flow": flow, "approve": approve})))
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Content-Type", "application/json")
@@ -379,19 +404,24 @@ func (h *harness) decideConsent(c *http.Client, csrf, flow string, approve bool)
 }
 
 func (h *harness) publicLogin(cl *model.Client, extra url.Values) (tokResp, string) {
+	return h.publicLoginIn(h.env.Primary, h.user, cl, extra)
+}
+
+// publicLoginIn is publicLogin for user u of organization org, at its endpoints.
+func (h *harness) publicLoginIn(org *model.Org, u *model.User, cl *model.Client, extra url.Values) (tokResp, string) {
 	h.t.Helper()
-	c, csrf := h.session(h.user)
+	c, csrf := h.session(u)
 	v, ch := pkce()
-	u := h.authorize(c, authzQuery(cl, ch, extra))
-	if u.Path != "/oauth/consent" { // public clients always see the consent page
-		h.t.Fatalf("public client skipped consent: %s", u)
+	redirectTo := h.authorizeIn(org.ID, c, authzQuery(cl, ch, extra))
+	if redirectTo.Path != web.OrgPath(org.ID, "/oauth/consent") { // public clients always see the consent page
+		h.t.Fatalf("public client skipped consent: %s", redirectTo)
 	}
-	_, redirect := h.decideConsent(c, csrf, u.Query().Get("flow"), true)
+	_, redirect := h.decideConsentIn(org.ID, c, csrf, redirectTo.Query().Get("flow"), true)
 	code := loc(h.t, h.get(c, redirect)).Query().Get("code")
 	if code == "" {
 		h.t.Fatal("no code")
 	}
-	r := h.post("/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {cl.ID},
+	r := h.post(web.OrgPath(org.ID, "/oauth/token"), url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {cl.ID},
 		"redirect_uri": {cl.RedirectURIs[0]}, "code_verifier": {v}}, "", "")
 	return r, v
 }
@@ -480,7 +510,7 @@ func (h *harness) assertion(k assertionKey, claims map[string]any) string {
 }
 
 func (h *harness) assertionClaims(c *model.Client, edit func(map[string]any)) map[string]any {
-	m := map[string]any{"iss": c.ID, "sub": c.ID, "aud": h.env.URL + "/oauth/token", "jti": b64.EncodeToString(randBytes(12)),
+	m := map[string]any{"iss": c.ID, "sub": c.ID, "aud": h.env.URL + orgBase + "/oauth/token", "jti": b64.EncodeToString(randBytes(12)),
 		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix()}
 	if edit != nil {
 		edit(m)
@@ -489,7 +519,7 @@ func (h *harness) assertionClaims(c *model.Client, edit func(map[string]any)) ma
 }
 
 func (h *harness) ccWithAssertion(c *model.Client, tok string) tokResp {
-	return h.post("/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
+	return h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
 		"client_assertion": {tok}}, "", "")
 }
 
@@ -537,7 +567,7 @@ func (h *harness) grant(tn *model.Tenant, typ, id string, in service.AccessInput
 // tryCode runs authorize for a signed-in browser and reports the code, or the status and body of the refusal.
 func (h *harness) tryCode(c *http.Client, cl *model.Client, challenge string, extra url.Values) (code string, status int, text string) {
 	h.t.Helper()
-	resp := h.get(c, "/oauth/authorize?"+authzQuery(cl, challenge, extra).Encode())
+	resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, challenge, extra).Encode())
 	if resp.StatusCode == http.StatusFound {
 		u := loc(h.t, resp)
 		return u.Query().Get("code"), resp.StatusCode, u.Query().Get("error")
@@ -581,7 +611,7 @@ func (h *harness) sessionFor(amr []string, provider string) *http.Client {
 	c := h.sessionWith(h.user, amr, time.Now())
 	pu, _ := url.Parse(h.env.URL)
 	for _, ck := range c.Jar.Cookies(pu) {
-		if ck.Name == web.SessionCookie {
+		if ck.Name == web.SessionCookieFor(h.env.Primary.ID) {
 			id := web.SessionID(ck.Value)
 			s, err := h.env.Svc.Sessions.Get(context.Background(), id)
 			if err != nil {
@@ -623,7 +653,7 @@ func (h *harness) auditEvents(action string) []*model.Audit {
 
 func (h *harness) userinfo(at string) map[string]any {
 	h.t.Helper()
-	resp := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at)
+	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	if resp.StatusCode != 200 {
 		h.t.Fatalf("userinfo: %d", resp.StatusCode)
 	}
@@ -653,7 +683,7 @@ func (h *harness) postJSON(path string, body any) tokResp {
 // register registers an application by RFC 7591 and returns it as a client (id and redirect URIs).
 func (h *harness) register(redirect string) *model.Client {
 	h.t.Helper()
-	r := h.postJSON("/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{redirect}})
+	r := h.postJSON(orgBase+"/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{redirect}})
 	if r.status != http.StatusCreated || !strings.HasPrefix(r.str("client_id"), "dyn-") {
 		h.t.Fatalf("register: %d %v", r.status, r.m)
 	}
@@ -677,7 +707,7 @@ func (h *harness) mcpTenant(name string, allow bool) *model.Tenant {
 func (h *harness) consentPage(c *http.Client, cl *model.Client, ch string, extra url.Values) (string, string) {
 	h.t.Helper()
 	u := h.authorize(c, authzQuery(cl, ch, extra))
-	if u.Path != "/oauth/consent" {
+	if u.Path != orgBase+"/oauth/consent" {
 		h.t.Fatalf("no consent page: %s", u)
 	}
 	return body(h.get(c, u.String())), u.Query().Get("flow")
@@ -718,7 +748,7 @@ func newTLSServer(t testing.TB, serve http.HandlerFunc) (*httptest.Server, *atom
 // confirmLogout posts a form (as the confirmation page does) to the logout confirmation endpoint.
 func (h *harness) confirmLogout(c *http.Client, form string) *http.Response {
 	h.t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+"/oauth/logout/confirm", strings.NewReader(form))
+	req, _ := http.NewRequest(http.MethodPost, h.env.URL+orgBase+"/oauth/logout/confirm", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.Do(req)
 	if err != nil {

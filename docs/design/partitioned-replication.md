@@ -32,9 +32,8 @@ partition, which fences the old owner and tells the new one about every write th
 
 - **64 partitions, fixed.** Partition 0 is global data. An organization's records go to `1 + hash(orgID) mod 63`.
   The count is a constant of the format: changing it is a data migration.
-- **Global data (partition 0):** organizations and their names, cluster-wide settings, signing keys, master key
-  reports, and any value that must be unique across organizations (two: tenant resource indicators and passkey credential ids,
-  held by reservations; see "Unique values must not cross partitions").
+- **Global data (partition 0):** organizations and their names, cluster-wide settings, signing keys and master key
+  reports. No value is unique across organizations (see "Unique values must not cross partitions").
 - **Org data:** users and their sign-in records, sessions, grants, groups, memberships, clients, tenants, providers,
   and everything else scoped to one organization, including the primary organization's super admins. Database audit
   events are not replicated: each node keeps its own (an audit page asks every node).
@@ -142,8 +141,11 @@ of "which write may have been committed" at a takeover, rest on there being one.
 **Cross-partition changes** (creating an organization writes the organization in partition 0 and its first
 administrator in its own partition) have no transaction across partitions: each is a sequence of single-partition
 writes, ordered so that a crash between them leaves something harmless and repeatable, as today. The inventory is in
-the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization, global unique values (claim, write, release) and deleting an organization (one write;
-the rest is the orphan sweep).
+the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization and deleting an organization (one write;
+the rest is the orphan sweep). Everything else an organization owns is one partition's data, so no write of an
+organization's records needs a second partition, and none needs two organizations' partitions: an organization is one
+partition's data, with one owner that writes it, like a replicated MariaDB primary per organization whose data the other
+nodes replicate.
 
 ## Reads
 
@@ -266,7 +268,7 @@ Built and tested in the gossip library first; Quisora moves to it only if this h
 ## Open items of the draft, and where they were settled
 
 1. *The inventory of global data and of values unique across organizations:* partition 0 holds organizations, signing
-   keys and the like; two values are global (`model.GlobalUnique`) and held by reservations ("Unique values must not
+   keys and the like; every unique value is scoped to one organization, so none is global ("Unique values must not
    cross partitions").
 2. *The inventory of changes that span partitions:* in the build; docs/REPLICATION.md says each one's order and what a
    crash between its writes leaves.
@@ -331,25 +333,14 @@ are untouched. Pre-release: no data migration; a store written by the old gossip
 ### Unique values must not cross partitions
 
 The owner checks unique values in its partition only, and a follower applying a committed write must never hit a
-unique conflict with another partition's record (it would diverge). Every unique value is therefore either prefixed
-by the organization (users, groups, tenant names, providers: already so) or lives in partition 0. Two are global today
-and must change:
-
-- **Global unique values** (two today: tenant resource identifiers, `TenantResourceKey` `res/<uri>`; and passkey
-  credential IDs, `PasskeyCredentialKey`, which must stay global because a discoverable passkey sign-in from the
-  landing page looks the credential up with no organization): handled by one mechanism in the cluster store, so the
-  service does not change. `model` declares which unique keys are global. In gossip mode such a value is claimed
-  through a **reservation record** (a new kind; ID = the unique key; partition = a hash of the key, so the load
-  spreads; data = the kind and ID of the record holding it), created with a compare-and-swap on its owner before the
-  record is written; the record itself is written without that value in its unique list. `GetByUnique` for a global
-  key reads the reservation, then the record it names. A reservation whose record no longer exists or no longer holds
-  the value (a crash between the two writes, or a deleted record) is free: the next claim takes it over when the owner's own
-  copy of the holder is a tombstone or a live record that does not list the value, written after the reservation (a holder
-  the owner does not have, or has only from before the reservation, is no evidence: its copy may lag), and the
-  housekeeping leader's sweep releases the rest after reading the holder through its own partition's owner; deleting or
-  changing the record releases its reservation afterwards.
-- `IdentityKey` (provider ID + subject: the provider belongs to one organization) and `LinkTokenKey` (a random hash)
-  are safe; confirm, and check every other `Unique:` in the model the same way.
+unique conflict with another partition's record (it would diverge). Every unique value is therefore scoped to one
+organization: prefixed by its id (`TenantNameKey`, `TenantResourceKey` `<org id>/res/<uri>`, group and provider names),
+or built from an id of one organization's record (`PasskeyCredentialKey`: user id and credential id, so unique per user;
+`IdentityKey`: provider id and subject; `LinkTokenKey`, a random hash). Nothing is unique across organizations: the same
+tenant resource URI may belong to tenants of two organizations (a token's `iss` says whose it is), and the same
+authenticator may be registered by one person in several organizations. So no unique value is looked up without an
+organization at hand, no mechanism has to claim one across partitions, and every `Unique:` in the model is checked
+against this rule.
 
 ### The cluster store in gossip mode
 

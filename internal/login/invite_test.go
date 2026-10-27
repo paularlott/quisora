@@ -14,6 +14,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 func TestInviteSignUpWithPassword(t *testing.T) {
@@ -23,7 +24,7 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 	if u.PasswordHash != "" {
 		t.Fatal("setup: user has a password")
 	}
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, body := b.get(link)
 	if res.StatusCode != 200 || !strings.Contains(body, "Welcome, newbie") || !strings.Contains(body, "Confirm password") ||
 		!strings.Contains(body, "Create a passkey") {
@@ -39,7 +40,7 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 	tok := tokenOf(link)
 	res2, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res2, out, 410)
-	if res, _ := b.verifyLink(strings.Replace(link, "/invite", "/verify-email", 1)); res.Header.Get("Location") != "/account?email=invalid#profile" {
+	if res, _ := b.verifyLink(strings.Replace(link, "/invite", "/verify-email", 1)); res.Header.Get("Location") != b.base+"/account?email=invalid#profile" {
 		t.Fatalf("invite token verified an address: %q", res.Header.Get("Location"))
 	}
 
@@ -56,7 +57,7 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 
 	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res2, out, 200)
-	if str(out, "next") != "/account" || !b.hasSession() {
+	if str(out, "next") != b.base+"/account" || !b.hasSession() {
 		t.Fatalf("not signed in: %v", out)
 	}
 	if res, body := b.get("/account"); res.StatusCode != 200 || !strings.Contains(body, "Your account") {
@@ -72,12 +73,12 @@ func TestInviteSignUpWithPassword(t *testing.T) {
 	}
 
 	// Single use: the same link is dead, on the page and at the API.
-	if res, _ := e.browser(t).get(link); res.StatusCode != http.StatusGone {
+	if res, _ := e.browserAt(t, org).get(link); res.StatusCode != http.StatusGone {
 		t.Fatalf("used link still valid: %d", res.StatusCode)
 	}
-	res2, out = e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "another password!"})
+	res2, out = e.browserAt(t, org).post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "another password!"})
 	wantStatus(t, res2, out, 410)
-	res2, out = e.browser(t).login("acme", "newbie", "my first password")
+	res2, out = e.browserAt(t, org).login("acme", "newbie", "my first password")
 	wantStatus(t, res2, out, 200)
 	if n := len(e.audits(t, "invite.accept")); n != 1 {
 		t.Fatalf("audit %d", n)
@@ -89,7 +90,7 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 	org := e.org(t, "acme", nil)
 	u, link := e.invitee(t, org, "newbie")
 	tok := tokenOf(link)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 
 	// A foreign ceremony cannot be replayed here: the passkey ceremony is bound to the invitation's user and purpose.
 	body, st, out := b.invitePasskeyBody(tok, nil)
@@ -103,7 +104,7 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 	body, _, _ = b.invitePasskeyBody(tok, nil)
 	res, out = b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 200)
-	if str(out, "next") != "/account" || !b.hasSession() {
+	if str(out, "next") != b.base+"/account" || !b.hasSession() {
 		t.Fatalf("not signed in: %v", out)
 	}
 	list, _ := e.Svc.Passkeys.All(context.Background(), u.ID)
@@ -119,15 +120,15 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 		t.Fatal("a password appeared")
 	}
 	// Single use, and the passkey now signs in at the org page.
-	res, out = e.browser(t).post("/api-internal/invite/passkey/begin", map[string]any{"token": tok})
+	res, out = e.browserAt(t, org).post("/api-internal/invite/passkey/begin", map[string]any{"token": tok})
 	wantStatus(t, res, out, 410)
-	b2 := e.browser(t)
+	b2 := e.browserAt(t, org)
 	b2.auth = b.auth
 	if st, out := b2.passkeyLogin(map[string]any{"org": "acme"}); st != 200 {
 		t.Fatalf("passkey sign-in: %d %v", st, out)
 	}
 	// No password: username+password sign-in fails generically.
-	res, out = e.browser(t).login("acme", "newbie", "whatever password")
+	res, out = e.browserAt(t, org).login("acme", "newbie", "whatever password")
 	wantStatus(t, res, out, 401)
 }
 
@@ -135,7 +136,7 @@ func TestInviteBothPasswordAndPasskey(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	u, link := e.invitee(t, org, "newbie")
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	body, st, out := b.invitePasskeyBody(tokenOf(link), map[string]any{"password": "both ways password"})
 	if st != 200 {
 		t.Fatal(out)
@@ -147,7 +148,7 @@ func TestInviteBothPasswordAndPasskey(t *testing.T) {
 	if fresh.PasswordHash == "" || len(list) != 1 {
 		t.Fatalf("both expected: password %v passkeys %d", fresh.PasswordHash != "", len(list))
 	}
-	res, out = e.browser(t).login("acme", "newbie", "both ways password")
+	res, out = e.browserAt(t, org).login("acme", "newbie", "both ways password")
 	wantStatus(t, res, out, 200)
 }
 
@@ -155,7 +156,7 @@ func TestInviteBadPasswordKeepsPasskeyCeremonyOutOfIt(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	u, link := e.invitee(t, org, "newbie")
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	body, _, _ := b.invitePasskeyBody(tokenOf(link), map[string]any{"password": "short"})
 	res, out := b.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 422)
@@ -171,7 +172,7 @@ func TestInviteOrgWithoutPasswords(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "nopw", func(s *model.OrgSettings) { s.PasswordLogin = false })
 	u, link := e.invitee(t, org, "sam")
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, body := b.get(link)
 	if res.StatusCode != 200 || strings.Contains(body, "Confirm password") || strings.Contains(body, "f-password") ||
 		!strings.Contains(body, "Create a passkey") {
@@ -190,7 +191,7 @@ func TestInviteOrgWithoutPasswords(t *testing.T) {
 	_, link2 := e.invitee(t, org2, "sue")
 	res, body = b.get(link2)
 	if res.StatusCode != 200 || strings.Contains(body, "Confirm password") || strings.Contains(body, "Create a passkey") ||
-		!strings.Contains(body, `href="/login/sso"`) || !strings.Contains(body, "sign-in providers") {
+		!strings.Contains(body, `href="`+web.OrgPath(org2.ID, "/login")+`"`) || !strings.Contains(body, "sign-in providers") {
 		t.Fatalf("providers-only page %d: %.800s", res.StatusCode, body)
 	}
 	res2, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link2), "password": "a long enough password"})
@@ -203,7 +204,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "mfa", func(s *model.OrgSettings) { s.RequireMFA = true })
 	u, link := e.invitee(t, org, "newbie")
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 	wantStatus(t, res, out, 200)
 	ticket := str(out, "ticket")
@@ -218,7 +219,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 	secret := str(out, "secret")
 	res, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res, out, 200)
-	if !b.hasSession() || str(out, "next") != "/account" {
+	if !b.hasSession() || str(out, "next") != b.base+"/account" {
 		t.Fatalf("no session after enrolment: %v", out)
 	}
 	sess, _ := e.Svc.Sessions.All(context.Background(), u.ID)
@@ -232,7 +233,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 
 	// A passkey counts as the whole sign-in (it is a second factor on its own): no enrolment step.
 	_, link2 := e.invitee(t, org, "keyuser")
-	b2 := e.browser(t)
+	b2 := e.browserAt(t, org)
 	body, _, _ := b2.invitePasskeyBody(tokenOf(link2), nil)
 	res, out = b2.post("/api-internal/invite/complete", body)
 	wantStatus(t, res, out, 200)
@@ -256,7 +257,7 @@ func TestInviteResetsTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := e.invite(t, pat)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
 	if !b.hasSession() || str(out, "step") != "" {
@@ -276,7 +277,7 @@ func TestInviteResetsTheAccount(t *testing.T) {
 		t.Error("an API token survived")
 	}
 	// the new password works, the old one does not
-	if res, out := e.browser(t).login("acme", pat.Email, "a brand new password"); res.StatusCode != 200 {
+	if res, out := e.browserAt(t, org).login("acme", pat.Email, "a brand new password"); res.StatusCode != 200 {
 		t.Errorf("new password: %d %v", res.StatusCode, out["_raw"])
 	}
 
@@ -285,7 +286,7 @@ func TestInviteResetsTheAccount(t *testing.T) {
 	kim := e.user(t, org2, "kim", model.RoleUser)
 	e.giveTOTP(t, kim)
 	link = e.invite(t, kim)
-	b = e.browser(t)
+	b = e.browserAt(t, org2)
 	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "another new password"})
 	wantStatus(t, res, out, 200)
 	if str(out, "step") != "enrol" || b.hasSession() {
@@ -298,7 +299,7 @@ func TestRemovedPasswordAndReinvite(t *testing.T) {
 	org := e.org(t, "acme", nil)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	old := e.signedIn(t, pat)
-	res, out := e.browser(t).login("acme", "pat", userPassword)
+	res, out := e.browserAt(t, org).login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 200)
 
 	if err := e.Svc.RemovePassword(context.Background(), service.System, pat.ID); err != nil {
@@ -307,14 +308,14 @@ func TestRemovedPasswordAndReinvite(t *testing.T) {
 	if res, _ := old.get("/account"); res.StatusCode == 200 {
 		t.Fatal("session survived password removal")
 	}
-	res, out = e.browser(t).login("acme", "pat", userPassword)
+	res, out = e.browserAt(t, org).login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 401)
 	if str(out, "error") != "The email address or password is incorrect." {
 		t.Fatalf("not generic: %v", out)
 	}
 	// Forgot-password sends nothing to an account without a password: it needs a new invitation.
-	b := e.browser(t)
-	res, out = b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
+	b := e.browserAt(t, org)
+	res, out = b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
 	// ... and a reset link that was issued before the removal no longer works.
@@ -329,9 +330,9 @@ func TestRemovedPasswordAndReinvite(t *testing.T) {
 	link := e.invite(t, pat)
 	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
-	res, out = e.browser(t).login("acme", "pat", "a brand new password")
+	res, out = e.browserAt(t, org).login("acme", "pat", "a brand new password")
 	wantStatus(t, res, out, 200)
-	res, out = e.browser(t).login("acme", "pat", userPassword)
+	res, out = e.browserAt(t, org).login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 401)
 }
 
@@ -339,7 +340,7 @@ func TestInviteClearsLockoutAndRevokesOlderLink(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0; c.Limits.LockoutAttempts = 2 })
 	org := e.org(t, "acme", nil)
 	pat := e.user(t, org, "pat", model.RoleUser)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	b.login("acme", "pat", "x")
 	b.login("acme", "pat", "x")
 	res, out := b.login("acme", "pat", userPassword)
@@ -357,7 +358,7 @@ func TestInviteClearsLockoutAndRevokesOlderLink(t *testing.T) {
 	wantStatus(t, res, out, 410)
 	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(second), "password": "a brand new password"})
 	wantStatus(t, res, out, 200)
-	res, out = e.browser(t).login("acme", "pat", "a brand new password")
+	res, out = e.browserAt(t, org).login("acme", "pat", "a brand new password")
 	wantStatus(t, res, out, 200)
 }
 
@@ -369,7 +370,7 @@ func TestInviteExpiredAndInactive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	if res, _ := b.get("/invite?token=" + tok); res.StatusCode != http.StatusGone {
 		t.Fatalf("expired page: %d", res.StatusCode)
 	}
@@ -394,10 +395,10 @@ func TestInviteMailLinkWorksThroughTheModule(t *testing.T) {
 	}
 	m := e.nextMail(t)
 	link := linkPath(t, m)
-	if !strings.HasPrefix(link, "/invite?token=") || !strings.Contains(m.Text, "invited") || !strings.Contains(m.Text, "7 days") {
+	if !strings.HasPrefix(link, web.OrgPath(org.ID, "/invite?token=")) || !strings.Contains(m.Text, "invited") || !strings.Contains(m.Text, "7 days") {
 		t.Fatalf("mail %s", m.Text)
 	}
-	res, out := e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+	res, out := e.browserAt(t, org).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 	wantStatus(t, res, out, 200)
 }
 
@@ -427,7 +428,7 @@ func TestEmailedInvitationVerifiesAddress(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		res, out := e.browser(t).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
+		res, out := e.browserAt(t, org).post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "password": "my first password"})
 		if change {
 			// The invitation went to an address that is no longer the account's: it opens nothing (it would have
 			// set the password of an account whose mail now goes elsewhere).
@@ -450,7 +451,7 @@ func TestInvitePasskeyRefusedCeremonies(t *testing.T) {
 	tok := tokenOf(link)
 	_, link2 := e.invitee(t, org, "other")
 	tok2 := tokenOf(link2)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 
 	for _, token := range []string{"bogus", ""} {
 		res, out := b.post("/api-internal/invite/passkey/begin", map[string]any{"token": token})
@@ -499,7 +500,7 @@ func TestInvitePasskeyRefusedWhereOrgDisablesPasskeys(t *testing.T) {
 	e := newEnv(t, noIPLimit)
 	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasskeyLogin = false })
 	u, link := e.invitee(t, org, "newbie")
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tokenOf(link), "challenge": "x", "credential": json.RawMessage(`{"id":"x"}`)})
 	wantStatus(t, res, out, 403)
 	if b.hasSession() || e.passkeyCount(t, u) != 0 {
@@ -537,7 +538,7 @@ func TestInviteLosingConcurrentCompletionDoesNotReplaceWinnerPasskey(t *testing.
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	u, link := e.invitee(t, org, "newbie")
-	a, b := e.browser(t), e.browser(t)
+	a, b := e.browserAt(t, org), e.browserAt(t, org)
 	bodyA, st, out := a.invitePasskeyBody(tokenOf(link), nil)
 	if st != 200 {
 		t.Fatalf("begin A: %d %v", st, out)
@@ -590,7 +591,7 @@ func TestInviteLosingConcurrentCompletionDoesNotReplaceWinnerPasskey(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := e.browser(t)
+	probe := e.browserAt(t, org)
 	probe.auth = a.auth
 	loserStatus, loserOut := probe.passkeyLogin(map[string]any{"org": "acme"})
 	if len(remaining) != 1 || remaining[0].ID != winner[0].ID || loserStatus == 200 {

@@ -16,6 +16,13 @@ const csrf = () => {
   return m ? m.content : ''
 }
 
+// orgBase is the address space of the page's organization, /o/<org id>: the signed-in user's own on signed-in pages, the
+// one a sign-in page is for on the others ("" where a page has none). The templates put it on the root element.
+export const orgBase = () => document.documentElement.dataset.orgBase || ''
+
+// accountApi is the path of the account API (the signed-in user's own self-service endpoints), plus rest.
+export const accountApi = (rest = '') => orgBase() + '/api-internal/account' + rest
+
 export function qs(params) {
   const u = new URLSearchParams()
   for (const [k, v] of Object.entries(params || {})) {
@@ -46,7 +53,8 @@ export async function api(method, url, body, { signal } = {}) {
     try { data = await res.json() } catch { data = null }
   }
   if (res.status === 401) {
-    window.location.assign('/?next=' + encodeURIComponent(location.pathname + location.search))
+    const base = orgBase()
+    window.location.assign((base ? base + '/login' : '/') + '?next=' + encodeURIComponent(location.pathname + location.search))
     throw new ApiError(401, data)
   }
   if (!res.ok) throw new ApiError(res.status, data)

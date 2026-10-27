@@ -190,3 +190,43 @@ func TestReconcileAddsRequestColumn(t *testing.T) {
 		}
 	})
 }
+
+// A table has an index only for what is queried: none by scope where every record has the empty scope, none by expiry
+// where no record has an expiry, and (where the database has partial ones) one of the expiring records only for a
+// kind that expires only now and then.
+func TestIndexesFollowTheModel(t *testing.T) {
+	for _, driver := range []string{"sqlite", "postgres", "mysql"} {
+		d, err := newDialect(driver)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0
+		for _, k := range model.Kinds() {
+			ix := newTable(d, k).ddl(d)[1:] // (the first statement makes the table)
+			total += len(ix)
+			has := func(name string) string {
+				for _, stmt := range ix {
+					if strings.Contains(stmt, d.quote("ix_"+string(k)+"_"+name)+" ON") {
+						return stmt
+					}
+				}
+				return ""
+			}
+			if got := has("scope") != ""; got == model.Unscoped(k) {
+				t.Errorf("%s %s: scope index %v, unscoped %v", driver, k, got, model.Unscoped(k))
+			}
+			e := has("expires")
+			switch {
+			case model.ExpiryOf(k) == model.NeverExpires && e != "":
+				t.Errorf("%s %s never expires and has an expiry index: %s", driver, k, e)
+			case model.ExpiryOf(k) != model.NeverExpires && e == "":
+				t.Errorf("%s %s may expire and has no expiry index", driver, k)
+			case model.ExpiryOf(k) == model.MayExpire && !d.isMySQL() && !strings.Contains(e, "WHERE expires IS NOT NULL"):
+				t.Errorf("%s %s: the expiry index is not partial: %s", driver, k, e)
+			case model.ExpiryOf(k) == model.AlwaysExpires && strings.Contains(e, "WHERE"):
+				t.Errorf("%s %s: every record expires, but the expiry index is partial: %s", driver, k, e)
+			}
+		}
+		t.Logf("%s: %d indexes in all", driver, total)
+	}
+}

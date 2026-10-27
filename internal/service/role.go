@@ -16,7 +16,11 @@ import (
 // What goes with a change in privilege today: a user who becomes a manager or administrator loses the sign-in links
 // nobody chose (emailLinks), as privileged accounts are never linked by email address. They are deleted in the
 // transaction that promotes the user, so no copy of the account is ever privileged and linked by email address at
-// once. Demotion has none: what a session or token may do is decided by the user's role at each request, not by one
+// once. Its sessions and refresh grants end too, in the same write: a new session epoch (model.User.SessionEpoch).
+// A session may have met its second factor only through rules for plain users (an upstream provider trusted for it,
+// or a code mailed to the address: both count for users below manager only), and what a session holds is not judged
+// again by the user's role at each request, so a promotion must not carry such a session over to a privileged
+// account. Demotion has none: what a session or token may do is decided by the user's role at each request, not by one
 // held in it. (A new account has no links, so creation sets its role in the record.)
 func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role) (also []store.Op,
 	finish func(ctx context.Context, a *Actor, err error), err error) {
@@ -26,6 +30,7 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	if before.Privileged() || !role.Privileged() {
 		return nil, finish, nil
 	}
+	u.SessionEpoch = NewCredEpoch()
 	links, err := s.emailLinks(ctx, u)
 	if err != nil {
 		return nil, nil, err

@@ -17,9 +17,6 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// SessionCookie is the browser session cookie. The __Host- prefix pins it to this origin over HTTPS.
-const SessionCookie = "__Host-quisora_session"
-
 const (
 	sessionCacheTTL   = 5 * time.Second
 	lastSeenThrottle  = 5 * time.Minute
@@ -117,8 +114,7 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	if err := m.svc.Sessions.Create(ctx, s); err != nil {
 		return nil, err
 	}
-	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: raw, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Expires: s.Expires})
+	setSessionCookie(w, s, raw)
 	return s, nil
 }
 
@@ -137,16 +133,26 @@ func (m *Sessions) Current(r *http.Request) (*model.Session, *model.User) {
 
 // Check is Current that also says when the session could not be checked: the error is the store's refusal
 // (store.ErrUnavailable), no verdict, and the session and user are then nil.
+//
+// The session is the first valid one of the organizations the request may present a session of (sessionOrgs), each
+// from its own cookie (SessionCookieFor), and of that organization: a cookie never stands for a session of another.
 func (m *Sessions) Check(r *http.Request) (*model.Session, *model.User, error) {
-	c, err := r.Cookie(SessionCookie)
-	if err != nil || len(c.Value) < 20 || len(c.Value) > 100 {
-		return nil, nil, nil
+	var failed error
+	for _, org := range m.sessionOrgs(r) {
+		c, err := r.Cookie(SessionCookieFor(org))
+		if err != nil || len(c.Value) < 20 || len(c.Value) > 100 {
+			continue
+		}
+		s, u, err := m.lookup(r.Context(), SessionID(c.Value))
+		if s == nil || !cookieMatches(s, c.Value) || s.OrgID != org {
+			if err != nil && failed == nil {
+				failed = err
+			}
+			continue
+		}
+		return s, u, nil
 	}
-	s, u, err := m.lookup(r.Context(), SessionID(c.Value))
-	if s == nil || !cookieMatches(s, c.Value) {
-		return nil, nil, err
-	}
-	return s, u, nil
+	return nil, nil, failed
 }
 
 // cookieMatches checks the secret part of an upgraded session's cookie ("<id>.<secret>"); a session never upgraded
@@ -200,8 +206,7 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 			return nil, err
 		}
 		m.Evict(s.ID, "")
-		http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: s.ID + "." + secret, Path: "/", Secure: true, HttpOnly: true,
-			SameSite: http.SameSiteLaxMode, Expires: s.Expires})
+		setSessionCookie(w, s, s.ID+"."+secret)
 		return s, nil
 	}
 	return nil, store.ErrStale
@@ -354,11 +359,15 @@ func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
 // told to try again, and the retry needs it to find the session to end (a cookie cleared over a session left alive
 // would leave it, and its grants, running until they expire with no way to end them from this browser).
 func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Request) (*model.Session, error) {
+	sess, _ := m.Current(r)
+	org := m.sessionOrgs(r)[0]
+	if sess != nil {
+		org = sess.OrgID
+	}
 	clear := func() {
-		http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
+		http.SetCookie(w, &http.Cookie{Name: SessionCookieFor(org), Value: "", Path: "/", Secure: true, HttpOnly: true,
 			SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	}
-	sess, _ := m.Current(r)
 	if sess == nil {
 		clear()
 		return nil, nil

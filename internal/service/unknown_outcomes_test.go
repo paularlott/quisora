@@ -360,20 +360,18 @@ func TestEveryAuditedChangeRecordsAnUnknownOutcome(t *testing.T) {
 			c := e.client(org.ID, "c-del")
 			return func() error { return e.svc.DeleteClient(e.ctx, service.System, c.ID) }
 		}},
-		{"client.self_register", model.KindClient, func(e *env, _ *model.Org) run {
+		{"client.self_register", model.KindClient, func(e *env, org *model.Org) run {
 			return func() error {
-				_, err := e.svc.RegisterClient(e.ctx, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
+				_, err := e.svc.RegisterClient(e.ctx, org.ID, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
 				return err
 			}
 		}},
 		{"client.self_registered.revoke", model.KindClient, func(e *env, org *model.Org) run {
-			app, err := e.svc.RegisterClient(e.ctx, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
+			app, err := e.svc.RegisterClient(e.ctx, org.ID, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			ten := e.tenant(org.ID, "t7")
-			e.svc.NoteSelfRegisteredUse(e.ctx, app, ten)
-			return func() error { return e.svc.RevokeSelfRegisteredApp(e.ctx, service.System, ten.ID, app.ID) }
+			return func() error { return e.svc.RevokeSelfRegisteredApp(e.ctx, service.System, org.ID, app.ID) }
 		}},
 		{"provider.create", model.KindProvider, func(e *env, org *model.Org) run {
 			return func() error {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 func isAccessTokenTyp(typ string) bool {
@@ -18,8 +19,9 @@ func isAccessTokenTyp(typ string) bool {
 	return t == "at+jwt" || t == "application/at+jwt"
 }
 
-// VerifyAccessToken validates an access token issued by this provider: signature (kid lookup, algorithm bound to
-// the key), RFC 9068 typ, issuer, expiry, and that the subject is still allowed (user active, refresh grant not
+// VerifyAccessToken validates an access token issued by this provider, for any of its organizations (the issuer says
+// which: verifyIn requires one): signature (kid lookup, algorithm bound to the key), RFC 9068 typ, issuer, expiry, and
+// that the subject is still allowed (user active, refresh grant not
 // revoked and not ended by an emergency sign-out, client enabled). SCIM and other resource servers in this process
 // call it directly.
 //
@@ -61,16 +63,17 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 		if err := json.Unmarshal(pj.Payload, cl); err != nil {
 			return nil, badToken("claims")
 		}
-		if cl.Iss == p.issuer && cl.Exp != 0 && now.Before(time.Unix(int64(cl.Exp), 0)) {
+		if _, ok := p.issuerOrg(cl.Iss); ok && cl.Exp != 0 && now.Before(time.Unix(int64(cl.Exp), 0)) {
 			p.verified.put(k, pj.Header.Kid, pj.Header.Alg, cl, time.Unix(int64(cl.Exp), 0), now)
 		}
 	}
-	if cl.Iss != p.issuer || cl.Exp == 0 || now.After(time.Unix(int64(cl.Exp), 0)) ||
+	orgID, ok := p.issuerOrg(cl.Iss)
+	if !ok || cl.Exp == 0 || now.After(time.Unix(int64(cl.Exp), 0)) ||
 		cl.Nbf != 0 && time.Unix(int64(cl.Nbf), 0).After(now.Add(leeway)) ||
 		cl.Iat != 0 && time.Unix(int64(cl.Iat), 0).After(now.Add(leeway)) || cl.Sub == "" || cl.ClientID == "" {
 		return nil, badToken("claims")
 	}
-	ce, err := p.client(ctx, cl.ClientID)
+	ce, err := p.client(ctx, orgID, cl.ClientID)
 	if err != nil && !gone(err) {
 		return nil, unavailable(err)
 	}
@@ -84,7 +87,7 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 	if err != nil && !gone(err) {
 		return nil, unavailable(err)
 	}
-	if err != nil {
+	if err != nil || u.OrgID != orgID {
 		return nil, badToken("user inactive")
 	}
 	if ok, err := p.svc.UserUsable(ctx, u); err != nil {
@@ -104,6 +107,20 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 	return cl, nil
 }
 
+// verifyIn is VerifyAccessToken for a token that must be organization orgID's: one issued by another organization is
+// no token here, whoever presents it (clients of two organizations may have the same client_id, a metadata document's
+// URL, and users the same names).
+func (p *Provider) verifyIn(ctx context.Context, orgID, tok string) (*Claims, error) {
+	cl, err := p.VerifyAccessToken(ctx, tok)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Iss != p.issuer(orgID) {
+		return nil, badToken("another organization's token")
+	}
+	return cl, nil
+}
+
 // tokenAccess decides whether the user of access token cl may still use the application it was issued to, as a
 // sign-in to it now would: the resource still accepts the application (a self-registered one, placed in the
 // tenant that owns the resources in aud) and the user still has access to it in its tenant (members-only). Userinfo
@@ -112,7 +129,8 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 // user may not (access taken away or expired, the client gone, the resource closed); app is their access when they
 // may. An error is a read that failed: no decision, which the caller answers as 503 and never as either verdict.
 func (p *Provider) tokenAccess(ctx context.Context, cl *Claims, u *model.User) (app *service.AppAccess, ok bool, err error) {
-	ce, err := p.client(ctx, cl.ClientID)
+	orgID, _ := p.issuerOrg(cl.Iss) // verified: the token's issuer is an organization's
+	ce, err := p.client(ctx, orgID, cl.ClientID)
 	if err != nil {
 		if gone(err) {
 			return nil, false, nil
@@ -205,7 +223,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrDPoPProof):
 		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_dpop_proof")
 		return
-	case errors.Is(err, service.ErrUnavailable):
+	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
 		bearerUnavailable(w, err) // the token could not be checked: not refused, not served
 		return
 	case err != nil && scheme == "DPoP":
@@ -331,7 +349,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 		return nil, err
 	}
 	if err != nil || u.OrgID != caller.OrgID || !slices.Contains(t.Scopes, service.ScopeAPI) ||
-		(len(t.Audience) > 0 && !slices.Contains(t.Audience, caller.ID)) {
+		(len(t.Audience) > 0 && !slices.Contains(t.Audience, caller.ClientID())) {
 		return inactive, nil
 	}
 	app, err := p.appAccess(ctx, caller, nil, u)
@@ -390,7 +408,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 // introspectJWT answers for an access token only if the caller is an audience of it, or is allowed to introspect
 // every token of the token's organization (introspect_org).
 func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok string) ([]byte, error) {
-	cl, err := p.VerifyAccessToken(ctx, tok)
+	cl, err := p.verifyIn(ctx, caller.OrgID, tok)
 	if err != nil {
 		if errors.Is(err, service.ErrUnavailable) {
 			return nil, err
@@ -400,7 +418,7 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	// Active for the client the token was issued to (its id is in aud), or for a client allowed to introspect every
 	// token of its organization (introspect_org). The RFC 8707 resources a token names are in aud as URIs, not client
 	// ids: a resource server that introspects tokens issued to other clients needs introspect_org.
-	if !slices.Contains(cl.Aud, caller.ID) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
+	if !slices.Contains(cl.Aud, caller.ClientID()) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
 		return inactive, nil
 	}
 	// A user's token is active only while the user may still use the application (tokenAccess, as userinfo decides
@@ -499,7 +517,7 @@ func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, 
 	// RFC 7662 token_type names how the token is presented (RFC 6749 §7.1); a refresh token is never presented
 	// to a resource, so it has none.
 	o.str("token_kind", "refresh_token")
-	o.str("client_id", g.ClientID)
+	o.str("client_id", caller.ClientID())
 	o.str("sub", g.UserID)
 	o.str("username", u.Username)
 	o.str("scope", joinScope(g.Scopes))
@@ -527,7 +545,7 @@ func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok st
 	if err != nil && !gone(err) {
 		return nil, false, unavailable(err)
 	}
-	if err != nil || g.ClientID != caller.ID || g.Revoked || time.Now().After(g.Expires) {
+	if err != nil || g.ClientID != caller.ID || time.Now().After(g.Expires) {
 		return nil, false, nil
 	}
 	if !p.authentic(pr, g) {
@@ -555,7 +573,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, e)
 		return
 	}
-	p.corsRestrict(w, r, ce.c.ID)
+	p.corsRestrict(w, r, ce.c.ClientID())
 	tok := r.PostForm.Get("token")
 	if tok == "" {
 		writeOAuthError(w, oerr("invalid_request", "token is required"))
@@ -572,18 +590,18 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// A JWT cannot be recalled, but revoking one of this client's user tokens ends the grant it came from,
 		// which stops refreshing and makes introspection report it inactive. A token from a token exchange carries
 		// the grant of the application the user signed in to: its holder (acting for the user) cannot end that.
-		cl, err := p.VerifyAccessToken(ctx, tok)
+		cl, err := p.verifyIn(ctx, ce.c.OrgID, tok)
 		if errors.Is(err, service.ErrUnavailable) {
 			writeOAuthError(w, serverError(err)) // whether there is a grant to end could not be read
 			return
 		}
-		if err == nil && cl.ClientID == ce.c.ID && cl.GID == "" && len(cl.Act) == 0 {
+		if err == nil && cl.ClientID == ce.c.ClientID() && cl.GID == "" && len(cl.Act) == 0 {
 			// A client credentials token has no grant to end, and a JWT cannot be recalled: say so (RFC 7009
 			// §2.2.1) rather than answer 200, which the client would take to mean the token is dead.
 			writeOAuthError(w, oerr("unsupported_token_type", "a client credentials token cannot be revoked: it lasts until it expires"))
 			return
 		}
-		if err == nil && cl.ClientID == ce.c.ID && cl.GID != "" && len(cl.Act) == 0 {
+		if err == nil && cl.ClientID == ce.c.ClientID() && cl.GID != "" && len(cl.Act) == 0 {
 			// RFC 7009 §2.2.1: the client retries; nothing is audited as done (a revocation of unknown outcome, as such)
 			if err := p.auditedClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
 				func() error { return p.revokeGrant(ctx, cl.GID) }); err != nil {

@@ -12,7 +12,7 @@ test('email first, then the password', async ({ page }) => {
     sent = route.request().postDataJSON()
     return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Wrong email address or password.' }) })
   })
-  await page.goto('/login/acme')
+  await page.goto('/o/acme/login')
 
   // the email step: the field, Continue, providers; no password field yet
   const email = page.locator('#f-email')
@@ -60,7 +60,8 @@ test('email first, then the password', async ({ page }) => {
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByText('Wrong email address or password.').first()).toBeVisible()
   expect(calls).toBe(1)
-  expect(sent).toMatchObject({ org: 'acme', email: 'someone@acme.example', password: 'not it' })
+  expect(sent).toMatchObject({ email: 'someone@acme.example', password: 'not it' })
+  expect(sent).not.toHaveProperty('org') // the organization is the page's, in its address
 
   // Change goes back to the email step with the address kept and the password dropped
   await page.getByRole('button', { name: /^Change/ }).click()
@@ -87,7 +88,7 @@ test('a code by email finishes the second factor', async ({ page }) => {
     return r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'That code is incorrect, or a newer one was sent.', field: 'mcode' }) })
   })
   const toPassword = async () => {
-    await page.goto('/login/acme')
+    await page.goto('/o/acme/login')
     await page.locator('#f-email').fill('alan@acme.example')
     await page.getByRole('button', { name: 'Continue' }).click()
     await page.locator('#f-password').fill('stubbed password')

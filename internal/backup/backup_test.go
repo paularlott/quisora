@@ -62,7 +62,7 @@ func setup(t testing.TB, users int) *fixture {
 func (f *fixture) backup(t testing.TB) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if _, err := backup.Write(f.ctx, f.src, f.sealer, &buf); err != nil {
+	if _, err := backup.WriteWith(f.ctx, f.src, f.sealer, &buf, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -153,7 +153,7 @@ func BenchmarkBackup(b *testing.B) {
 	f := setup(b, 2000)
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := backup.Write(f.ctx, f.src, f.sealer, io.Discard); err != nil {
+		if _, err := backup.WriteWith(f.ctx, f.src, f.sealer, io.Discard, backup.Options{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -423,7 +423,7 @@ func TestBackupNamesTheKeysItsSecretsNeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if _, err := backup.Write(ctx, src, ring, &buf); err != nil {
+	if _, err := backup.WriteWith(ctx, src, ring, &buf, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), ring, ""); err != nil {
@@ -440,23 +440,14 @@ func TestBackupNamesTheKeysItsSecretsNeed(t *testing.T) {
 func TestRestoreKeepsPartitionKey(t *testing.T) {
 	f := setup(t, 30)
 	ctx := f.ctx
-	res := store.NewTable[model.Reservation](f.src)
-	rv := &model.Reservation{Meta: model.Meta{ID: "res/https://api.example.com"}, HolderKind: model.KindTenant, HolderID: "t-1"}
-	if err := res.Put(ctx, rv); err != nil {
-		t.Fatal(err)
-	}
 	data := f.backup(t)
 	dst, err := sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "p.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dst.Close()
-	stats, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, "")
-	if err != nil {
+	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, ""); err != nil {
 		t.Fatal(err)
-	}
-	if stats[model.KindReservation] != 1 {
-		t.Fatalf("the reservation is backed up: %v", stats)
 	}
 	checked := map[model.Kind]int{}
 	for _, k := range model.Kinds() {
@@ -481,7 +472,7 @@ func TestRestoreKeepsPartitionKey(t *testing.T) {
 			}
 		}
 	}
-	if checked[model.KindUser] < 30 || checked[model.KindOrg] == 0 || checked[model.KindReservation] != 1 {
+	if checked[model.KindUser] < 30 || checked[model.KindOrg] == 0 {
 		t.Fatalf("records checked: %v", checked)
 	}
 	u, err := dst.Get(ctx, model.KindUser, f.user.ID)
@@ -491,9 +482,5 @@ func TestRestoreKeepsPartitionKey(t *testing.T) {
 	o, err := dst.Get(ctx, model.KindOrg, f.user.OrgID)
 	if err != nil || o.Partition != "" {
 		t.Fatalf("an organization is global: %v %+v", err, o)
-	}
-	r, err := dst.Get(ctx, model.KindReservation, rv.ID)
-	if err != nil || r.Partition != rv.ID {
-		t.Fatalf("a reservation's key is the reserved key: %v %+v", err, r)
 	}
 }

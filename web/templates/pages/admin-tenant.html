@@ -80,14 +80,14 @@
       {{template "pager"}}
     </section>
 
-    <section class="glass-card" aria-labelledby="selfreg-h" x-data="tenantSelfReg" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/self-registered" x-show="tenant.settings.self_registration || hasItems">
+    <section class="glass-card" aria-labelledby="selfreg-h" x-data="tenantSelfReg" data-api="{{.Data.API}}/self-registered" x-show="tenant.settings.self_registration || hasItems">
       <h2 class="section-title mb-1" id="selfreg-h" tabindex="-1">Self-registered apps</h2>
-      <p class="muted mb-4">Apps that registered themselves and that users of this tenant allowed, for the resources under Sign-in rules. Revoking one ends every user's access to it.</p>
+      <p class="muted mb-4">Apps that registered themselves in this organization and that its users allowed, for the resources of its tenants. Revoking one ends every user's access to it.</p>
       <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
       <p class="muted" x-show="isEmpty" x-cloak>No self-registered app has been allowed yet.</p>
-      <div class="table-wrap" role="region" aria-label="Self-registered apps of this tenant" tabindex="0" x-show="hasItems" x-cloak>
+      <div class="table-wrap" role="region" aria-label="Self-registered apps of this organization" tabindex="0" x-show="hasItems" x-cloak>
         <table class="table">
-          <caption class="sr-only">Self-registered apps of this tenant</caption>
+          <caption class="sr-only">Self-registered apps of this organization</caption>
           <thead><tr><th scope="col">App</th><th scope="col">Sends sign-ins to</th><th scope="col">Users</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody>
             <template x-for="row in items" :key="row.client_id"><tr>
@@ -101,6 +101,8 @@
         </table>
       </div>
     </section>
+
+    {{template "connection" .Data.Connection}}
   </div></template>
 
   {{template "tenant-dialog" .}}

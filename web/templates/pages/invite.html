@@ -14,7 +14,7 @@
   {{if .Data.NoMethods}}
   <div class="stack" x-show="isSetup">
     <div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>{{.Data.Org}} signs people in through its sign-in providers, so there is no password or passkey to set up here. Sign in with your organization's provider instead.</span></div>
-    <a class="btn btn-primary w-full" href="/login/{{.Data.OrgName}}">Go to sign in</a>
+    <a class="btn btn-primary w-full" href="/o/{{.Org.ID}}/login">Go to sign in</a>
   </div>
   {{else}}
   <form class="stack" x-show="isSetup" @submit.prevent="submitPassword" novalidate>
@@ -40,7 +40,7 @@
 <div class="stack">
   <h1 class="page-title">This link has expired</h1>
   <div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>The invitation link is invalid, has already been used or has expired. Ask your administrator to send a new one.</span></div>
-  <a class="btn btn-secondary" href="/">Go to sign in</a>
+  <a class="btn btn-secondary" href="/o/{{.Org.ID}}/login">Go to sign in</a>
 </div>
 {{end}}
 {{end}}

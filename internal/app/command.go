@@ -88,7 +88,11 @@ func commandRefuse(w http.ResponseWriter, status int, msg string) {
 func (m commandModule) accept(w http.ResponseWriter, r *http.Request, in commandRequest) bool {
 	ctx := r.Context()
 	n, err := m.a.Eph.Incr(ctx, nsCommand, "ip|"+web.RateKeyIP(r), 1, time.Minute)
-	if err != nil || n > commandRequestsPerMin {
+	if err != nil { // refused (a limit never fails open), but as "try again": no limit was reached
+		commandRefuse(w, http.StatusServiceUnavailable, "this server cannot count requests now: try again shortly")
+		return false
+	}
+	if n > commandRequestsPerMin {
 		commandRefuse(w, http.StatusTooManyRequests, "too many requests: try again in a minute")
 		return false
 	}
@@ -106,7 +110,12 @@ func (m commandModule) accept(w http.ResponseWriter, r *http.Request, in command
 			"(check the clocks)")
 		return false
 	}
-	if n, err := m.a.Eph.Incr(ctx, nsCommand, "nonce|"+sig.Nonce, 1, 2*commandWindow); err != nil || n != 1 {
+	n, err = m.a.Eph.Incr(ctx, nsCommand, "nonce|"+sig.Nonce, 1, 2*commandWindow)
+	if err != nil { // the nonce could not be checked: refused, but not as a replay
+		commandRefuse(w, http.StatusServiceUnavailable, "this server cannot check the request now: try again shortly")
+		return false
+	}
+	if n != 1 {
 		commandRefuse(w, http.StatusUnauthorized, "the request was already used")
 		return false
 	}

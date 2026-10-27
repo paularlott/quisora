@@ -282,7 +282,7 @@ func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, cod
 	if err != nil {
 		return Claims{}, "", err
 	}
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {s.CallbackURL(p.ID)},
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {s.CallbackURL(p.OrgID, p.ID)},
 		"code_verifier": {st.Verifier}}
 	var basic [2]string
 	if contains(d.TokenAuthMethods, "client_secret_basic") && !contains(d.TokenAuthMethods, "client_secret_post") {

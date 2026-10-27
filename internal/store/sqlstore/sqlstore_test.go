@@ -34,8 +34,8 @@ func TestReopen(t *testing.T) {
 	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
 		ctx := context.Background()
 		s, dsn := openTest(t, d.name, d.env, 0)
-		rec := &store.Record{Kind: "key", ID: "k1", Version: store.Clock.Now(), Origin: "x", Scope: "s", Data: []byte("d"),
-			Fields: map[string]any{"alg": "ES256"}}
+		rec := &store.Record{Kind: "identity", ID: "k1", Version: store.Clock.Now(), Origin: "x", Scope: "s", Data: []byte("d"),
+			Fields: map[string]any{"provider_id": "p1"}}
 		if err := s.Put(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestReopen(t *testing.T) {
 			if s.FeedID() != feed {
 				t.Fatal("feed id changed on reopen")
 			}
-			if got, err := s.Get(ctx, "key", "k1"); err != nil || string(got.Data) != "d" || got.Fields["alg"] != "ES256" {
+			if got, err := s.Get(ctx, "identity", "k1"); err != nil || string(got.Data) != "d" || got.Fields["provider_id"] != "p1" {
 				t.Fatalf("reopen lost data: %v %+v", err, got)
 			}
 			s.Close()

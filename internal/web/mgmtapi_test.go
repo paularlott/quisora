@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
@@ -158,5 +159,29 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 	}
 	if r := do(sess, nil); r.StatusCode == http.StatusTooManyRequests {
 		t.Error("a session request was limited: only bearer authentication counts")
+	}
+}
+
+// downCounters is an ephemeral store whose counters fail (the cluster node that owns them does not answer).
+type downCounters struct{ ephemeral.Store }
+
+func (downCounters) Incr(context.Context, string, string, int64, time.Duration) (int64, error) {
+	return 0, errors.New("counter owner did not answer")
+}
+
+// A failure counter that cannot be read refuses bearer requests (a limit never fails open), but as "unavailable"
+// with Retry-After, not as the too-many-failures 429 of an address that has not failed at all.
+func TestManagementBearerCounterFailureIsUnavailable(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
+	env.Server.Eph = downCounters{env.Server.Eph}
+	req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/probe", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	resp, err := env.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("valid token with a failing counter: %d, want 503 with Retry-After", resp.StatusCode)
 	}
 }

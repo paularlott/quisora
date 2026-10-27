@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -18,7 +19,10 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 
 	a, hc, base := startAppWith(t, "sqlite", func(c *config.Config) { c.Metrics.Token = "scrape-secret" })
-	_ = a
+	primary, err := a.Svc.PrimaryOrg(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	get := func(tok string) (int, string) {
 		req, _ := http.NewRequest("GET", base+"/metrics", nil)
 		if tok != "" {
@@ -39,7 +43,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("wrong token: %d", code)
 	}
 	// a failed sign-in shows up in the audit counter
-	_, _ = hc.Post(base+"/api-internal/login/password", "application/json", strings.NewReader(`{}`))
+	_, _ = hc.Post(base+"/o/"+primary.ID+"/api-internal/login/password", "application/json", strings.NewReader(`{}`))
 	code, body := get("scrape-secret")
 	if code != http.StatusOK {
 		t.Fatalf("with the token: %d", code)

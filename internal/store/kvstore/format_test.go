@@ -173,9 +173,9 @@ func TestMigrationLock(t *testing.T) {
 func TestRewriteRecordsKeepsVersionAndSkipsTombstones(t *testing.T) {
 	ctx := context.Background()
 	s := openBadger(t, BadgerOptions{})
-	put := func(id, purpose string) {
+	put := func(id, client string) {
 		t.Helper()
-		rec, err := store.Encode(&model.LinkToken{Meta: model.Meta{ID: id}, UserID: "sc", Purpose: purpose, TokenHash: "h-" + id})
+		rec, err := store.Encode(&model.Grant{Meta: model.Meta{ID: id}, UserID: "sc", ClientID: client})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,21 +188,21 @@ func TestRewriteRecordsKeepsVersionAndSkipsTombstones(t *testing.T) {
 	put("c", "keep")
 	// A tombstone is left alone.
 	put("d", "old")
-	tomb := &store.Record{Kind: model.KindLink, ID: "d", Version: store.Clock.Now(), Origin: "n", Deleted: true}
+	tomb := &store.Record{Kind: model.KindGrant, ID: "d", Version: store.Clock.Now(), Origin: "n", Deleted: true}
 	if err := s.Put(ctx, tomb); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := s.Get(ctx, model.KindLink, "a")
+	before, _ := s.Get(ctx, model.KindGrant, "a")
 
-	n, err := s.rewriteRecords(ctx, model.KindLink, func(r *store.Record) (bool, error) {
-		var l model.LinkToken
+	n, err := s.rewriteRecords(ctx, model.KindGrant, func(r *store.Record) (bool, error) {
+		var l model.Grant
 		if err := store.Decode(r, &l); err != nil {
 			return false, err
 		}
-		if l.Purpose != "old" {
+		if l.ClientID != "old" {
 			return false, nil
 		}
-		l.Purpose = "new"
+		l.ClientID = "new"
 		enc, err := store.Encode(&l)
 		if err != nil {
 			return false, err
@@ -213,17 +213,17 @@ func TestRewriteRecordsKeepsVersionAndSkipsTombstones(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("rewrite: %d %v", n, err)
 	}
-	after, err := s.Get(ctx, model.KindLink, "a")
-	if err != nil || after.Version != before.Version || after.Fields["purpose"] != "new" {
+	after, err := s.Get(ctx, model.KindGrant, "a")
+	if err != nil || after.Version != before.Version || after.Fields["client_id"] != "new" {
 		t.Fatalf("after: %+v %v", after, err)
 	}
-	res, err := s.List(ctx, model.KindLink, store.ListQuery{Scope: "sc", Filters: []store.Filter{{Field: "purpose", Value: "new"}}})
+	res, err := s.List(ctx, model.KindGrant, store.ListQuery{Scope: "sc", Filters: []store.Filter{{Field: "client_id", Value: "new"}}})
 	if err != nil || len(res.Records) != 2 {
 		t.Fatalf("filter on rewritten field: %d %v", len(res.Records), err)
 	}
 	// The error of fn aborts and is returned.
 	boom := errors.New("boom")
-	if _, err := s.rewriteRecords(ctx, model.KindLink, func(*store.Record) (bool, error) { return false, boom }); !errors.Is(err, boom) {
+	if _, err := s.rewriteRecords(ctx, model.KindGrant, func(*store.Record) (bool, error) { return false, boom }); !errors.Is(err, boom) {
 		t.Fatalf("fn error: %v", err)
 	}
 	// Nothing to rewrite in another kind.
@@ -233,7 +233,7 @@ func TestRewriteRecordsKeepsVersionAndSkipsTombstones(t *testing.T) {
 	// A canceled context stops it.
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := s.rewriteRecords(cctx, model.KindLink, func(*store.Record) (bool, error) { return false, nil }); err == nil {
+	if _, err := s.rewriteRecords(cctx, model.KindGrant, func(*store.Record) (bool, error) { return false, nil }); err == nil {
 		t.Fatal("canceled context")
 	}
 }

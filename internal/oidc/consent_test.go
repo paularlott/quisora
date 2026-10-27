@@ -37,7 +37,7 @@ func TestConsentFlow(t *testing.T) {
 	v, ch := pkce()
 
 	u := h.authorize(c, authzQuery(cl, ch, nil))
-	if u.Path != "/oauth/consent" {
+	if u.Path != orgBase+"/oauth/consent" {
 		t.Fatalf("expected consent: %s", u)
 	}
 	flowID := u.Query().Get("flow")
@@ -57,7 +57,7 @@ func TestConsentFlow(t *testing.T) {
 		return redirect
 	}
 	// CSRF is enforced
-	req, _ := http.NewRequest("POST", h.env.URL+"/api-internal/oauth/consent", strings.NewReader(`{"flow":"x","approve":true}`))
+	req, _ := http.NewRequest("POST", h.env.URL+orgBase+"/api-internal/oauth/consent", strings.NewReader(`{"flow":"x","approve":true}`))
 	if r, _ := c.Do(req); r.StatusCode != 403 {
 		t.Fatalf("no CSRF accepted: %d", r.StatusCode)
 	}
@@ -85,7 +85,7 @@ func TestConsentFlow(t *testing.T) {
 		t.Fatalf("consent not remembered: %s", u)
 	}
 	// ... unless the client asks for it again
-	if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"prompt": {"consent"}})); u.Path != "/oauth/consent" {
+	if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"prompt": {"consent"}})); u.Path != orgBase+"/oauth/consent" {
 		t.Fatalf("prompt=consent: %s", u)
 	}
 	// prompt=none with a new scope that was never consented
@@ -120,7 +120,7 @@ func TestConsentBoundToBrowserAndParallelFlows(t *testing.T) {
 	u1 := h.authorize(a, authzQuery(cl, ch1, nil))
 	u2 := h.authorize(a, authzQuery(cl, ch2, nil))
 	f1, f2 := u1.Query().Get("flow"), u2.Query().Get("flow")
-	if u1.Path != "/oauth/consent" || u2.Path != "/oauth/consent" || f1 == f2 {
+	if u1.Path != orgBase+"/oauth/consent" || u2.Path != orgBase+"/oauth/consent" || f1 == f2 {
 		t.Fatalf("%s %s", u1, u2)
 	}
 	// browser B cannot view or answer A's consent
@@ -150,7 +150,7 @@ func TestConsentNamesScopesWithoutDescription(t *testing.T) {
 	c, _ := h.session(h.user)
 	_, ch := pkce()
 	u := h.authorize(c, authzQuery(cl, ch, url.Values{"scope": {"openid api"}}))
-	if u.Path != "/oauth/consent" {
+	if u.Path != orgBase+"/oauth/consent" {
 		t.Fatalf("consent: %s", u)
 	}
 	if page := body(h.get(c, u.RequestURI())); !strings.Contains(page, "Access: api") {

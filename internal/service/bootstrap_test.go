@@ -67,7 +67,7 @@ func TestBootstrapOnce(t *testing.T) {
 	// a bootstrap that stopped after the organization (no admin yet) is completed by the next run
 	st2 := memstore.New()
 	half := service.New(cfg, st2, sealer)
-	o2 := &model.Org{Meta: model.Meta{ID: model.PrimaryOrgID}, Name: "primary", Primary: true, Settings: model.DefaultOrgSettings()}
+	o2 := &model.Org{Meta: model.Meta{ID: model.PrimaryOrgID}, Name: "primary", Settings: model.DefaultOrgSettings()}
 	if err := half.Orgs.Create(ctx, o2); err != nil {
 		t.Fatal(err)
 	}

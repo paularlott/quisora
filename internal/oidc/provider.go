@@ -68,10 +68,9 @@ type Provider struct {
 	keyGen        uint64     // bumped by Invalidate
 	lastKIDReload atomic.Int64
 	jwksCache     atomic.Pointer[jwksSnapshot]
-	origins       atomic.Pointer[originSet]
-	originsMu     sync.Mutex // one re-read of the public clients' origins at a time
 
 	clients *ttlCache[*clientEntry]
+	origins *ttlCache[*originSet] // by organization id: the origins of its public clients (cors.go)
 	users   *ttlCache[*model.User]
 	orgs    *ttlCache[*model.Org]
 	tenants *ttlCache[*model.Tenant]
@@ -89,27 +88,22 @@ type Provider struct {
 	bcWorkers int                       // senders running (at most bcWorkersMax; none while nothing waits)
 	bcRetry   *queue.Queue[LogoutRetry] // failed logouts waiting to be tried again (OpenLogoutQueue; nil: none)
 
-	discovery []byte
-	issuer    string
-	tokenURL  string
 }
 
 // New builds the provider for server s. Register mounts its routes.
 func New(s *web.Server) *Provider {
-	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log, issuer: s.Cfg.Issuer(),
-		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), users: newTTLCache[*model.User](cacheTTL, 200_000),
+	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log,
+		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), origins: newTTLCache[*originSet](cacheTTL, 20_000), users: newTTLCache[*model.User](cacheTTL, 200_000),
 		orgs: newTTLCache[*model.Org](cacheTTL, 20_000), tenants: newTTLCache[*model.Tenant](cacheTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](cacheTTL, 200_000),
 		remoteKey: map[string]*remoteJWKS{}, bcQueue: make(chan bcTarget, bcQueueMax)}
-	p.tokenURL = p.issuer + "/oauth/token"
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
-	p.discovery = p.buildDiscovery()
 	return p
 }
 
 // InvalidateClient evicts a cached client ("" = all).
 func (p *Provider) InvalidateClient(id string) {
-	p.origins.Store(nil)
+	p.origins.clear() // a record id does not say whose organization's origins changed
 	if id == "" {
 		p.clients.clear()
 		return
@@ -189,38 +183,52 @@ func (p *Provider) Register(s *web.Server) {
 	} else if err != nil {
 		p.log.Error("oidc: ensuring signing keys", "error", err)
 	}
+	// Every endpoint is the organization's own, under /o/{org}/ (an id or a name: web.Org), with the organization's
+	// issuer (issuer). The preflights of the metadata and the keys name no organization's data, so they need not
+	// look one up; those that allow the origins of a public client do (handleCORSPreflight).
 	m := s.Mux
-	m.HandleFunc("GET /.well-known/openid-configuration", p.handleDiscovery)
-	m.HandleFunc("GET /.well-known/oauth-authorization-server", p.handleDiscovery)
-	m.HandleFunc("OPTIONS /.well-known/openid-configuration", handlePreflight)
-	m.HandleFunc("OPTIONS /.well-known/oauth-authorization-server", handlePreflight)
-	m.HandleFunc("GET /oauth/jwks", p.handleJWKS)
-	m.HandleFunc("OPTIONS /oauth/jwks", handlePreflight)
+	endpoint := func(method, path string, h http.Handler) { m.Handle(method+" /o/{org}"+path, s.InOrg(h)) }
+	fn := func(method, path string, f http.HandlerFunc) { endpoint(method, path, f) }
+	preflight := func(path string, h http.HandlerFunc) { m.HandleFunc("OPTIONS /o/{org}"+path, h) }
 
-	m.HandleFunc("GET /oauth/authorize", p.handleAuthorize)
-	m.HandleFunc("POST /oauth/authorize", p.handleAuthorize)
-	m.HandleFunc("GET /oauth/authorize/resume", p.handleResume)
-	m.HandleFunc("GET /oauth/authorize/cancel", p.handleCancel)
-	m.Handle("GET /oauth/consent", s.RequirePage(p.handleConsentPage))
-	m.Handle("POST /api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
+	// The metadata documents (RFC 8414, OpenID Connect Discovery) are served at the organization's id form only, as
+	// the issuer in them is the address they were fetched from; they are also served the way RFC 8414 §3.1 inserts
+	// the well-known segment between the host and the issuer's path, which is how MCP clients find them.
+	for _, doc := range []string{"/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"} {
+		for _, form := range []struct{ before, after string }{{"", doc}, {doc, ""}} {
+			path := form.before + "/o/{org}" + form.after
+			m.Handle("GET "+path, s.InOrg(p.handleDiscovery(form.before, form.after)))
+			m.HandleFunc("OPTIONS "+path, handlePreflight)
+		}
+	}
+	fn("GET", "/oauth/jwks", p.handleJWKS)
+	preflight("/oauth/jwks", handlePreflight)
 
-	m.HandleFunc("POST /oauth/device_authorization", p.handleDeviceAuthorization)
-	m.HandleFunc("GET /device", p.handleDevicePage)
-	m.HandleFunc("POST /oauth/par", p.handlePAR)
-	m.HandleFunc("OPTIONS /oauth/par", p.handleCORSPreflight)
-	m.HandleFunc("POST /oauth/token", p.handleToken)
-	m.HandleFunc("OPTIONS /oauth/token", p.handleCORSPreflight)
-	m.HandleFunc("OPTIONS /oauth/revoke", p.handleCORSPreflight)
-	m.HandleFunc("OPTIONS /oauth/userinfo", p.handleCORSPreflight)
-	m.HandleFunc("GET /oauth/userinfo", p.handleUserinfo)
-	m.HandleFunc("POST /oauth/userinfo", p.handleUserinfo)
-	m.HandleFunc("POST /oauth/introspect", p.handleIntrospect)
-	m.HandleFunc("POST /oauth/revoke", p.handleRevoke)
-	m.HandleFunc("POST /oauth/register", p.handleRegister)
+	fn("GET", "/oauth/authorize", p.handleAuthorize)
+	fn("POST", "/oauth/authorize", p.handleAuthorize)
+	fn("GET", "/oauth/authorize/resume", p.handleResume)
+	fn("GET", "/oauth/authorize/cancel", p.handleCancel)
+	endpoint("GET", "/oauth/consent", s.RequirePage(p.handleConsentPage))
+	endpoint("POST", "/api-internal/oauth/consent", s.RequireAPI(p.handleConsent))
 
-	m.HandleFunc("GET /oauth/logout", p.handleLogout)
-	m.HandleFunc("POST /oauth/logout", p.handleLogout)
-	m.Handle("POST /oauth/logout/confirm", s.WithSession(http.HandlerFunc(p.handleLogoutConfirm)))
+	fn("POST", "/oauth/device_authorization", p.handleDeviceAuthorization)
+	fn("OPTIONS", "/oauth/device_authorization", p.handleCORSPreflight)
+	fn("GET", "/device", p.handleDevicePage)
+	fn("POST", "/oauth/par", p.handlePAR)
+	fn("OPTIONS", "/oauth/par", p.handleCORSPreflight)
+	fn("POST", "/oauth/token", p.handleToken)
+	fn("OPTIONS", "/oauth/token", p.handleCORSPreflight)
+	fn("OPTIONS", "/oauth/revoke", p.handleCORSPreflight)
+	fn("OPTIONS", "/oauth/userinfo", p.handleCORSPreflight)
+	fn("GET", "/oauth/userinfo", p.handleUserinfo)
+	fn("POST", "/oauth/userinfo", p.handleUserinfo)
+	fn("POST", "/oauth/introspect", p.handleIntrospect)
+	fn("POST", "/oauth/revoke", p.handleRevoke)
+	fn("POST", "/oauth/register", p.handleRegister)
+
+	fn("GET", "/oauth/logout", p.handleLogout)
+	fn("POST", "/oauth/logout", p.handleLogout)
+	endpoint("POST", "/oauth/logout/confirm", s.WithSession(http.HandlerFunc(p.handleLogoutConfirm)))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -279,7 +287,7 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return false, unavailable(err)
 		}
-		if err == nil && !g.Revoked {
+		if err == nil {
 			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
 		}
 		p.grants.putIf(id, st, tok)
@@ -388,20 +396,38 @@ func (c *ttlCache[T]) clear() {
 // ---------------------------------------------------------------------------------------------------------------
 // Discovery and JWKS
 
-func (p *Provider) buildDiscovery() []byte {
-	iss := p.issuer
+// issuer is the issuer of organization orgID (Config.OrgIssuer): its tokens carry it as iss, and every endpoint of it is
+// under it. A token of one organization is not another's: each checks the issuer of its own.
+func (p *Provider) issuer(orgID string) string { return p.cfg.OrgIssuer(orgID) }
+
+// issuerOrg is the id of the organization whose issuer iss is, and false for any other string.
+func (p *Provider) issuerOrg(iss string) (string, bool) {
+	id, ok := strings.CutPrefix(iss, p.cfg.OrgIssuer(""))
+	return id, ok && model.IsID(id)
+}
+
+// requestURL is the absolute URL a request was made to (the DPoP proofs and client assertions of the request name it).
+func (p *Provider) requestURL(r *http.Request) string { return p.cfg.Server.PublicURL + r.URL.Path }
+
+// tokenURL is the token endpoint of organization orgID.
+func (p *Provider) tokenURL(orgID string) string { return p.cfg.OrgEndpoints(orgID).Token }
+
+// buildDiscovery is the metadata document of organization orgID: its issuer and the endpoints under it
+// (Config.OrgEndpoints, which the console shows too).
+func (p *Provider) buildDiscovery(orgID string) []byte {
+	e := p.cfg.OrgEndpoints(orgID)
 	d := map[string]any{
-		"issuer":                                iss,
-		"authorization_endpoint":                iss + "/oauth/authorize",
-		"token_endpoint":                        iss + "/oauth/token",
-		"userinfo_endpoint":                     iss + "/oauth/userinfo",
-		"jwks_uri":                              iss + "/oauth/jwks",
-		"introspection_endpoint":                iss + "/oauth/introspect",
-		"registration_endpoint":                 iss + "/oauth/register",
-		"revocation_endpoint":                   iss + "/oauth/revoke",
-		"end_session_endpoint":                  iss + "/oauth/logout",
-		"pushed_authorization_request_endpoint": iss + "/oauth/par",
-		"device_authorization_endpoint":         iss + "/oauth/device_authorization",
+		"issuer":                                e.Issuer,
+		"authorization_endpoint":                e.Authorization,
+		"token_endpoint":                        e.Token,
+		"userinfo_endpoint":                     e.UserInfo,
+		"jwks_uri":                              e.JWKS,
+		"introspection_endpoint":                e.Introspection,
+		"registration_endpoint":                 e.Registration,
+		"revocation_endpoint":                   e.Revocation,
+		"end_session_endpoint":                  e.EndSession,
+		"pushed_authorization_request_endpoint": e.PAR,
+		"device_authorization_endpoint":         e.DeviceAuthorization,
 		"require_pushed_authorization_requests": false, // per client (require_pushed_authorization_requests)
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query", "form_post"},
@@ -455,11 +481,25 @@ func handlePreflight(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (p *Provider) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
-	setCORS(w)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	_, _ = w.Write(p.discovery)
+// handleDiscovery serves the metadata document of the organization at /o/<org> with before in front of it and after
+// behind it ("" and the well-known path, or the other way round: RFC 8414 §3.1). A document is only served where the
+// issuer in it is the address: a request that names the organization by its name is sent to the id form.
+func (p *Provider) handleDiscovery(before, after string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		org := web.Org(r)
+		if r.PathValue("org") != org.ID {
+			target := before + web.OrgPath(org.ID, after)
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(p.buildDiscovery(org.ID))
+	}
 }
 
 func (p *Provider) handleJWKS(w http.ResponseWriter, r *http.Request) {

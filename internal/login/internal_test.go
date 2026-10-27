@@ -4,28 +4,38 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"io"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 )
 
+const testOrg = "0190b0de-0000-7000-8000-00000000a001"
+
+var testOrgModel = &model.Org{ID: testOrg, Name: "acme"}
+
 func TestSafeNext(t *testing.T) {
-	ok := []string{"/", "/account", "/oauth/authorize?flow=abc&x=1", "/a/b#frag", "/%2f%2fevil.example", "/a//b"}
-	bad := []string{"", "account", "//evil.example", "///evil.example", "/\\evil.example", "https://evil.example", "http://x", "javascript:alert(1)",
-		"/a\\b", "/a\nb", "/a\rb", "/a\x00b", "/a\tb", "/\x7f", "data:text/html,x", " /account", strings.Repeat("/a", 2000)}
+	in := "/o/" + testOrg
+	ok := []string{in, "/o/acme", "/o/acme/account?x=1", "/o/ACME/account", in + "/account", in + "/oauth/authorize?flow=abc&x=1", in + "/a/b#frag", in + "/%2f%2fevil.example", in + "/a//b",
+		"/admin", "/admin/orgs/acme/users?x=1"}
+	bad := []string{"", "account", "/", "/account", "//evil.example", "///evil.example", "/\\evil.example", "https://evil.example", "http://x",
+		"javascript:alert(1)", in + "/a\\b", in + "/a\nb", in + "/a\rb", in + "/a\x00b", in + "/a\tb", in + "/\x7f", "data:text/html,x",
+		" " + in + "/account", in + strings.Repeat("/a", 2000),
+		// another organization's space, by id or by name, and what only looks like this one's or the console's
+		"/o/0190b0de-0000-7000-8000-00000000a002/account", "/o/other/account", "/o/acmex/account", in + "x/account", "/administrator", "/o",
+		// dot segments climb out of the space
+		in + "/../0190b0de-0000-7000-8000-00000000a002/account", in + "/./../x", in + "/%2e%2e/x", "/admin/../account"}
 	for _, n := range ok {
-		if safeNext(n) != n {
-			t.Errorf("safeNext(%q) rejected a local path", n)
+		if safeNext(testOrgModel, n) != n {
+			t.Errorf("safeNext(%q) rejected a path in the organization's space (by id or by name) or the console", n)
 		}
 	}
 	for _, n := range bad {
-		if got := safeNext(n); got != "" {
+		if got := safeNext(testOrgModel, n); got != "" {
 			t.Errorf("safeNext(%q) = %q, want rejection", n, got)
 		}
 	}
-	if nextOrDefault("//evil.example") != "/account" || nextOrDefault("/x") != "/x" {
+	if nextOrDefault(testOrgModel, "//evil.example") != in+"/account" || nextOrDefault(testOrgModel, in+"/x") != in+"/x" {
 		t.Error("nextOrDefault")
 	}
 }
@@ -82,29 +92,11 @@ func TestLoginURLBuilding(t *testing.T) {
 	if withNext("/login", "") != "/login" || withNext("/login", "/a b?c=d") != "/login?next=%2Fa+b%3Fc%3Dd" {
 		t.Error("withNext")
 	}
-	org := &model.Org{Name: "ac me"}
-	if got := loginURL(org, "/x", "t1", "denied"); got != "/login/ac%20me?error=denied&next=%2Fx&tenant=t1" {
+	org := &model.Org{ID: testOrg, Name: "acme"}
+	if got := loginURL(org, "/x", "t1", "denied"); got != "/o/"+testOrg+"/login?error=denied&next=%2Fx&tenant=t1" {
 		t.Errorf("loginURL = %q", got)
 	}
-	if got := loginURL(org, "", "", ""); got != "/login/ac%20me" {
+	if got := loginURL(org, "", "", ""); got != "/o/"+testOrg+"/login" {
 		t.Errorf("loginURL bare = %q", got)
-	}
-}
-
-func TestTenantParam(t *testing.T) {
-	for q, want := range map[string]string{
-		"tenant=acme":                        "acme",
-		"tenant=%20ACME%20":                  "acme",
-		"tenant=":                            "",
-		"":                                   "",
-		"tenant=a/b":                         "",
-		"tenant=..%2f..":                     "",
-		"tenant=" + strings.Repeat("a", 500): "",
-		"tenant=<script>":                    "",
-	} {
-		r := httptest.NewRequest("GET", "/login/x?"+q, nil)
-		if got := tenantParam(r); got != want {
-			t.Errorf("tenantParam(%.40q) = %q, want %q", q, got, want)
-		}
 	}
 }

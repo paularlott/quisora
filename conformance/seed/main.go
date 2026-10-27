@@ -148,7 +148,8 @@ func main() {
 		must(err)
 		repl = append(repl, "@"+key+"_ID@", cl.ID, "@"+key+"_JWKS@", private)
 	}
-	r := strings.NewReplacer(append(repl, "@ISSUER@", *publicURL)...)
+	// The suite tests the organization's own issuer (/o/<id>): its discovery, endpoints and sign-in pages are all under it.
+	r := strings.NewReplacer(append(repl, "@ISSUER@", cfg.OrgIssuer(org.ID))...)
 	must(os.MkdirAll(*out, 0o700))
 	files, _ := filepath.Glob(filepath.Join(*templates, "*.json"))
 	for _, f := range files {

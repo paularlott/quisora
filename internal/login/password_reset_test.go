@@ -9,6 +9,7 @@ import (
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 func TestForgotAndReset(t *testing.T) {
@@ -20,11 +21,10 @@ func TestForgotAndReset(t *testing.T) {
 	gone, _ := e.Svc.FindUserByEmail(context.Background(), org.ID, "gone@example.com")
 	e.Svc.UpdateUser(context.Background(), service.System, gone.ID, service.UserInput{Active: &f})
 
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	// Always 200 and the same body; no mail unless the account exists, is active and has an address.
 	var bodies []string
-	for _, tr := range []map[string]any{{"org": "acme", "email": "ghost@example.com"}, {"org": "nope", "email": "pat@example.com"}, {"org": "acme", "email": "gone@example.com"},
-		{"org": "acme", "email": "pat@example.com"}} {
+	for _, tr := range []map[string]any{{"email": "ghost@example.com"}, {"email": "gone@example.com"}, {"email": "pat@example.com"}} {
 		res, out := b.post("/api-internal/password/forgot", tr)
 		wantStatus(t, res, out, 200)
 		bodies = append(bodies, str(out, "_raw"))
@@ -40,7 +40,7 @@ func TestForgotAndReset(t *testing.T) {
 		t.Fatalf("mail %+v", m)
 	}
 	link := linkPath(t, m)
-	if !strings.HasPrefix(link, "/reset?token=") {
+	if !strings.HasPrefix(link, web.OrgPath(org.ID, "/reset?token=")) {
 		t.Fatalf("link %s", link)
 	}
 
@@ -55,7 +55,7 @@ func TestForgotAndReset(t *testing.T) {
 		!strings.Contains(body, "pat") {
 		t.Fatalf("reset page: %d %.300s", res.StatusCode, body)
 	}
-	tok := strings.TrimPrefix(link, "/reset?token=")
+	tok := tokenOf(link)
 
 	// A weak password does not burn the link.
 	res2, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "short"})
@@ -68,7 +68,7 @@ func TestForgotAndReset(t *testing.T) {
 	}
 	res2, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
 	wantStatus(t, res2, out, 200)
-	if str(out, "next") != "/login/acme" {
+	if str(out, "next") != web.OrgPath(org.ID, "/login") {
 		t.Fatalf("reset response %v", out)
 	}
 	// single use
@@ -94,7 +94,7 @@ func TestResetClearsLockout(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LockoutAttempts = 2; c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	pat := e.user(t, org, "pat", model.RoleUser)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	b.login("acme", "pat", "x")
 	b.login("acme", "pat", "x")
 	res, out := b.login("acme", "pat", userPassword)
@@ -102,7 +102,7 @@ func TestResetClearsLockout(t *testing.T) {
 	if err := e.Mailer.SendReset(context.Background(), pat, org); err != nil {
 		t.Fatal(err)
 	}
-	tok := strings.TrimPrefix(linkPath(t, e.nextMail(t)), "/reset?token=")
+	tok := tokenOf(linkPath(t, e.nextMail(t)))
 	res, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "yet another password"})
 	wantStatus(t, res, out, 200)
 	res, out = b.login("acme", "pat", "yet another password")
@@ -113,9 +113,9 @@ func TestForgotThrottleAndDisabledPassword(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	e.user(t, org, "pat", model.RoleUser)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	for range 8 {
-		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
+		res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
 		wantStatus(t, res, out, 200)
 	}
 	if n := e.drainMails(t); n != 5 {
@@ -124,15 +124,15 @@ func TestForgotThrottleAndDisabledPassword(t *testing.T) {
 	// org without password sign-in: nothing is mailed
 	org2 := e.org(t, "nopw", func(s *model.OrgSettings) { s.PasswordLogin = false })
 	e.user(t, org2, "sam", model.RoleUser) // has a password, but the org does not allow password sign-in
-	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "nopw", "email": "sam@example.com"})
+	res, out := b.post("/o/nopw/api-internal/password/forgot", map[string]any{"email": "sam@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
 	// the "forgot" link appears on the page of an organization that signs in with passwords, not on that org's
-	_, body := b.get("/login/acme")
+	_, body := b.get("/o/acme/login")
 	if !strings.Contains(body, "Forgot your password?") {
 		t.Fatal("forgot link missing")
 	}
-	if _, body = b.get("/login/nopw"); strings.Contains(body, "Forgot your password?") {
+	if _, body = b.get("/o/nopw/login"); strings.Contains(body, "Forgot your password?") {
 		t.Fatal("forgot link on an organization without password sign-in")
 	}
 }
@@ -141,7 +141,7 @@ func TestNoMailerDisablesLinks(t *testing.T) {
 	e := newEnv(t, nil)
 	e.Mod.Mail = nil // as when no mailer is wired in
 	b := e.browser(t)
-	res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "primary", "email": "admin@example.com"})
+	res, out := b.post("/o/primary/api-internal/password/forgot", map[string]any{"email": "admin@example.com"})
 	wantStatus(t, res, out, 200)
 	e.noMail(t)
 	res, out = b.post("/api-internal/password/reset", map[string]any{"token": "x", "password": "a long enough password"})
@@ -149,7 +149,7 @@ func TestNoMailerDisablesLinks(t *testing.T) {
 	if res, _ := b.get("/reset?token=x"); res.StatusCode != http.StatusGone {
 		t.Fatalf("reset page: %d", res.StatusCode)
 	}
-	_, body := b.get("/login/primary")
+	_, body := b.get("/o/primary/login")
 	if strings.Contains(body, "Forgot your password?") {
 		t.Fatal("forgot link shown without a mailer")
 	}
@@ -161,9 +161,9 @@ func TestResetRequestKeepsEarlierLink(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	e.user(t, org, "pat", model.RoleUser)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	forgot := func() string {
-		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "acme", "email": "pat@example.com"})
+		res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
 		wantStatus(t, res, out, 200)
 		return tokenOf(linkPath(t, e.nextMail(t)))
 	}

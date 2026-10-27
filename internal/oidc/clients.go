@@ -59,35 +59,62 @@ func parseKeys(jwks []JWK) []pubKey {
 	return out
 }
 
-// client returns the (cached) client record.
-func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) {
+// client returns the (cached) client the application of organization orgID names by client_id. A client of another
+// organization is unknown, exactly as one that does not exist: nothing tells that it is somewhere else.
+func (p *Provider) client(ctx context.Context, orgID, id string) (*clientEntry, error) {
 	if len(id) == 0 || len(id) > service.MaxMetadataURL {
 		return nil, store.ErrNotFound
 	}
-	e, ok := p.clients.get(id)
-	if !ok {
-		tok := p.clients.token(id)
-		c, err := p.svc.Clients.Get(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		e = &clientEntry{c: c}
-		if c.JWKS != "" {
-			if jwks, err := ParseJWKS([]byte(c.JWKS)); err == nil {
-				e.keys = parseKeys(jwks)
-			}
-		}
-		p.clients.putIf(id, e, tok)
+	e, err := p.loadClient(ctx, model.ClientRecordID(orgID, id))
+	if err != nil {
+		return nil, err
 	}
-	// An application stands on its organization: one of a deleted organization is unknown (the orphan sweep removes
-	// its record later). A self-registered one belongs to none until a tenant takes it.
-	if e.c.OrgID != "" {
-		if _, err := p.org(ctx, e.c.OrgID); err != nil {
-			if gone(err) {
-				return nil, store.ErrNotFound
-			}
-			return nil, err
+	// The record's id is the client_id too, except for a metadata-document application's (its digest): that one is
+	// named by its URL, never by its record id.
+	if e.c.OrgID != orgID || e.c.ClientID() != id {
+		return nil, store.ErrNotFound
+	}
+	return p.standing(ctx, e)
+}
+
+// recordClient returns the (cached) client of a record id: how grants, sessions and flows name the clients they were
+// made for (model.Client.ID).
+func (p *Provider) recordClient(ctx context.Context, id string) (*clientEntry, error) {
+	e, err := p.loadClient(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return p.standing(ctx, e)
+}
+
+// loadClient reads a client's record through the cache.
+func (p *Provider) loadClient(ctx context.Context, id string) (*clientEntry, error) {
+	if e, ok := p.clients.get(id); ok {
+		return e, nil
+	}
+	tok := p.clients.token(id)
+	c, err := p.svc.Clients.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	e := &clientEntry{c: c}
+	if c.JWKS != "" {
+		if jwks, err := ParseJWKS([]byte(c.JWKS)); err == nil {
+			e.keys = parseKeys(jwks)
 		}
+	}
+	p.clients.putIf(id, e, tok)
+	return e, nil
+}
+
+// standing returns e if its application still stands on its organization: one of a deleted organization is unknown (the
+// orphan sweep removes its record later).
+func (p *Provider) standing(ctx context.Context, e *clientEntry) (*clientEntry, error) {
+	if _, err := p.org(ctx, e.c.OrgID); err != nil {
+		if gone(err) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
 	}
 	return e, nil
 }
@@ -169,31 +196,50 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	ipKey := "client-auth-ip|" + ip
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
 		desc: "too many failed client authentications; try again in a minute", retry: true}
+	// A counter that cannot be read or updated refuses the request (a limit never fails open) but answers "try again"
+	// (503) rather than "too many failures": nothing tripped, and the valid client must retry, not back off a minute.
 	// Over the limit, every attempt from this client and address is refused, the right secret included, before
 	// anything is checked: guessing cannot go on, and a correct guess among the refused ones teaches nothing.
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 0, time.Minute); err != nil || n >= clientAuthFailuresPerMin {
+	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 0, time.Minute)
+	if err != nil {
+		return nil, serverError(unavailable(err))
+	}
+	if n >= clientAuthFailuresPerMin {
 		return nil, limited
 	}
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute); err != nil || n >= clientAuthFailuresPerIPMin {
+	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute)
+	if err != nil {
+		return nil, serverError(unavailable(err))
+	}
+	if n >= clientAuthFailuresPerIPMin {
 		return nil, limited
 	}
 	ce, e := p.checkClient(r, allowPublic)
 	if e == nil || e.code != "invalid_client" {
 		return ce, e
 	}
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 1, time.Minute); err != nil || n > clientAuthFailuresPerIPMin {
+	// The authentication has already failed: if counting the failure fails too, the caller still gets that
+	// failure (invalid_client), not a limit it has not reached.
+	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 1, time.Minute)
+	if err != nil {
+		return ce, e
+	}
+	if n > clientAuthFailuresPerIPMin {
 		return nil, limited
 	}
-	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
-	if err == nil && n == clientAuthFailuresPerMin {
+	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
+	if err != nil {
+		return ce, e
+	}
+	if n == clientAuthFailuresPerMin {
 		// The failure that reaches the limit: once per client, address and minute. Only for a client that exists
 		// (an unknown id has no organization to record it in, and anyone can make up any number of them).
-		if c, cerr := p.client(r.Context(), authClientID(r)); cerr == nil {
+		if c, cerr := p.client(r.Context(), web.Org(r).ID, authClientID(r)); cerr == nil {
 			p.auditClient(r.Context(), c.c, "", "oauth.client_auth.limited", map[string]string{
 				"failures_per_minute": strconv.Itoa(clientAuthFailuresPerMin)})
 		}
 	}
-	if err != nil || n > clientAuthFailuresPerMin {
+	if n > clientAuthFailuresPerMin {
 		return nil, limited
 	}
 	return ce, e
@@ -278,11 +324,12 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		methods++
 	}
 	ctx := r.Context()
+	org := web.Org(r)
 	if methods == 0 {
 		// Public clients identify themselves by client_id alone; a confidential client never falls back to this.
 		if allowPublic {
 			if cid := form.Get("client_id"); cid != "" {
-				if e, err := p.client(ctx, cid); err == nil && e.c.Enabled && e.c.Public() {
+				if e, err := p.client(ctx, org.ID, cid); err == nil && e.c.Enabled && e.c.Public() {
 					return e, nil
 				}
 			}
@@ -290,9 +337,9 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		return nil, errInvalidClient("client authentication required")
 	}
 	if assertion != "" {
-		return p.authAssertion(ctx, form.Get("client_id"), assertion, p.issuer+r.URL.Path)
+		return p.authAssertion(ctx, org.ID, form.Get("client_id"), assertion, p.requestURL(r))
 	}
-	e, err := p.client(ctx, id)
+	e, err := p.client(ctx, org.ID, id)
 	if err != nil && !gone(err) { // the client could not be read (the store refused or failed): not "invalid"
 		return nil, serverError(unavailable(err))
 	}
@@ -306,9 +353,9 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 	return e, nil
 }
 
-// authAssertion verifies an RFC 7523 private_key_jwt client assertion presented at endpoint (the URL of the endpoint
-// called: the token, PAR, introspection or revocation endpoint).
-func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, endpoint string) (*clientEntry, *oauthError) {
+// authAssertion verifies an RFC 7523 private_key_jwt client assertion of a client of organization orgID, presented at
+// endpoint (the URL of the endpoint called: the token, PAR, introspection or revocation endpoint).
+func (p *Provider) authAssertion(ctx context.Context, orgID, formClientID, assertion, endpoint string) (*clientEntry, *oauthError) {
 	bad := errInvalidClient("invalid client assertion")
 	pj, err := ParseJWT(assertion)
 	if err != nil {
@@ -321,7 +368,7 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, e
 	if formClientID != "" && formClientID != cl.Iss {
 		return nil, bad
 	}
-	e, err := p.client(ctx, cl.Iss)
+	e, err := p.client(ctx, orgID, cl.Iss)
 	if err != nil && !gone(err) {
 		return nil, serverError(unavailable(err))
 	}
@@ -333,7 +380,7 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, e
 	}
 	// FAPI 2.0 §5.3.2.1: the issuer alone, as a string, is the audience (an assertion made for another server's
 	// token endpoint cannot be replayed here), and RS256 is not allowed.
-	if e.c.FAPI && (pj.Header.Alg == AlgRS256 || !audIsIssuer(pj.Payload, p.issuer)) {
+	if e.c.FAPI && (pj.Header.Alg == AlgRS256 || !audIsIssuer(pj.Payload, p.issuer(orgID))) {
 		return nil, errInvalidClient("a FAPI 2.0 client's assertion needs aud set to the issuer alone, and an algorithm other than RS256")
 	}
 	now := time.Now()
@@ -345,10 +392,10 @@ func (p *Provider) authAssertion(ctx context.Context, formClientID, assertion, e
 		cl.Nbf != 0 && time.Unix(int64(cl.Nbf), 0).After(now.Add(leeway)) {
 		return nil, errInvalidClient("assertion not yet valid")
 	}
-	// RFC 7523 §3: the audience identifies this server: its issuer, its token endpoint (the usual choice), or the
-	// endpoint the assertion is presented at (RFC 9126 §2 for PAR; libraries do the same for introspection and
+	// RFC 7523 §3: the audience identifies this server (here, the organization): its issuer, its token endpoint (the
+	// usual choice), or the endpoint the assertion is presented at (RFC 9126 §2 for PAR; libraries do the same for introspection and
 	// revocation).
-	if !cl.Aud.Has(p.tokenURL) && !cl.Aud.Has(p.issuer) && !cl.Aud.Has(endpoint) {
+	if !cl.Aud.Has(p.tokenURL(orgID)) && !cl.Aud.Has(p.issuer(orgID)) && !cl.Aud.Has(endpoint) {
 		return nil, errInvalidClient("assertion audience must be the issuer, the token endpoint or the endpoint called")
 	}
 	if cl.Jti == "" || len(cl.Jti) > 256 {

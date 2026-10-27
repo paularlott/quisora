@@ -38,42 +38,42 @@ func TestRateLimit(t *testing.T) {
 	wantStatus(t, res, out, 200)
 }
 
-// Case and whitespace variants of a real org name share one per-IP bucket; random unknown names share another.
+// An organization's name in any case and its id are one address space: they share one per-IP bucket. An organization
+// that does not exist has no endpoints, so there is nothing for random names to mint buckets of.
 func TestRateLimitOrgNormalisation(t *testing.T) {
 	const limit = 50
-	run := func(t *testing.T, name func(i int) string) *browser {
-		e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = limit; c.Limits.LockoutAttempts = 100000 })
-		e.org(t, "acme", nil)
-		b := e.browser(t)
-		first429 := 0
-		for i := 1; i <= limit+10; i++ {
-			org := name(i)
-			res, _ := b.login(org, "pat", "wrong-password")
-			if res.StatusCode == http.StatusTooManyRequests {
-				first429 = i
-				break
-			}
-			if res.StatusCode != http.StatusUnauthorized {
-				t.Fatalf("attempt %d (%q): status %d", i, org, res.StatusCode)
-			}
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = limit; c.Limits.LockoutAttempts = 100000 })
+	org := e.org(t, "acme", nil)
+	b := e.browser(t)
+	refs := []string{"acme", "ACME", "Acme", org.ID}
+	first429 := 0
+	for i := 1; i <= limit+10; i++ {
+		ref := refs[i%len(refs)]
+		res, _ := b.login(ref, "pat", "wrong-password")
+		if res.StatusCode == http.StatusTooManyRequests {
+			first429 = i
+			break
 		}
-		if first429 != limit+1 {
-			t.Fatalf("first 429 at attempt %d, want %d", first429, limit+1)
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d (%q): status %d", i, ref, res.StatusCode)
 		}
-		return b
 	}
-	t.Run("case and whitespace variants", func(t *testing.T) {
-		variants := []string{"acme", "acme ", " acme", "ACME", "Acme", "\tacme\n"}
-		b := run(t, func(i int) string { return variants[i%len(variants)] })
-		// The forgot-password form shares the buckets too.
-		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": " ACME ", "email": "pat@example.com"})
-		wantStatus(t, res, out, 429)
-	})
-	t.Run("random unknown org names", func(t *testing.T) {
-		b := run(t, func(i int) string { return fmt.Sprintf("no-such-org-%d", i) })
-		res, out := b.post("/api-internal/password/forgot", map[string]any{"org": "yet-another", "email": "pat@example.com"})
-		wantStatus(t, res, out, 429)
-	})
+	if first429 != limit+1 {
+		t.Fatalf("first 429 at attempt %d, want %d", first429, limit+1)
+	}
+	// The forgot-password form shares the bucket too.
+	res, out := b.post("/o/ACME/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
+	wantStatus(t, res, out, 429)
+	// Another organization has its own.
+	other := e.org(t, "other", nil)
+	if res, out := e.browser(t).login(other.ID, "pat", "wrong-password"); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("another organization shares the bucket: %d %v", res.StatusCode, out)
+	}
+	for i := range 5 {
+		if res, _ := b.login(fmt.Sprintf("no-such-org-%d", i), "pat", "x"); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("unknown organization: %d", res.StatusCode)
+		}
+	}
 }
 
 // One IP cannot exceed three times the per-org limit by spreading attempts across organizations.
@@ -119,13 +119,14 @@ func TestKnownDeviceSurvivesFlood(t *testing.T) {
 	org := e.org(t, "acme", nil)
 	e.user(t, org, "pat", model.RoleUser)
 	e.user(t, org, "sam", model.RoleUser)
+	e.org(t, "other", nil)
 	b := e.browser(t)
 	res, out := b.login("acme", "pat", userPassword)
 	wantStatus(t, res, out, 200)
 
 	attacker := e.browser(t)
 	for i := 0; i < 20; i++ { // past the per-org limit and the address-wide ceiling
-		attacker.login([]string{"acme", "primary", "nope"}[i%3], "x@y.z", "x")
+		attacker.login([]string{"acme", "primary", "other"}[i%3], "x@y.z", "x")
 	}
 	if res, out := e.browser(t).login("acme", "pat", userPassword); res.StatusCode != 429 {
 		t.Fatalf("flood did not limit the address: %d %v", res.StatusCode, out["_raw"])
@@ -341,20 +342,48 @@ func TestLockoutHoldsForParallelAttempts(t *testing.T) {
 	wantStatus(t, res, out, 429)
 }
 
-// brokenCounters is an ephemeral store whose counters fail (a database that cannot take the write).
-type brokenCounters struct{ ephemeral.Store }
+// brokenCounters is an ephemeral store whose counters fail (a database that cannot take the write, or a cluster
+// node that owns them and does not answer in time). Only the counters of namespace ns fail; "" is all of them.
+type brokenCounters struct {
+	ephemeral.Store
+	ns string
+}
 
-func (brokenCounters) Incr(context.Context, string, string, int64, time.Duration) (int64, error) {
+func (b brokenCounters) Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error) {
+	if b.ns != "" && b.ns != ns {
+		return b.Store.Incr(ctx, ns, key, delta, window)
+	}
 	return 0, errors.New("counter unavailable")
 }
 
-// Counters fail closed: when the rate-limit counter cannot be updated, sign-in is refused, not allowed.
+// Counters fail closed: when a rate-limit or lockout counter cannot be used, sign-in is refused, not allowed. But the
+// answer is "unavailable" (retry), not a limit or lockout that was never reached: a valid user is not told they
+// failed too often, and no limit or lockout is audited.
 func TestCountersFailClosed(t *testing.T) {
-	e := newEnv(t, nil)
-	e.member(t)
-	e.Server.Eph = brokenCounters{e.Server.Eph}
-	res, out := e.browser(t).login("primary", "member", userPassword)
-	if res.StatusCode != 429 {
-		t.Fatalf("sign-in with a failing rate-limit counter: %d %v", res.StatusCode, out)
+	for _, c := range []struct{ name, ns string }{
+		{"rate limit counters", "rl"},
+		{"lockout counters", "lockout"},
+		{"all counters", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, lockoutAfter(3))
+			e.member(t)
+			e.Server.Eph = brokenCounters{e.Server.Eph, c.ns}
+			b := e.browser(t)
+			res, out := b.login("primary", "member", userPassword)
+			wantStatus(t, res, out, 503)
+			if res.Header.Get("Retry-After") == "" {
+				t.Errorf("no Retry-After: %v", res.Header)
+			}
+			if b.hasSession() {
+				t.Error("signed in with a failing counter")
+			}
+			if n := e.lockedReasons(t); n != 0 {
+				t.Errorf("%d sign-in failures audited as locked, none was", n)
+			}
+			if l := e.audits(t, "login.limited"); len(l) != 0 {
+				t.Errorf("%d limits audited as tripped, none was", len(l))
+			}
+		})
 	}
 }

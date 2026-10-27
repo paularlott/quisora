@@ -21,9 +21,9 @@ export const INVITE_PAGES = [
   { name: 'invite-password-passkey', path: '/__demo/invite?as=iris', as: 'none' },
   { name: 'invite-passkey-only', path: '/__demo/invite?as=quinn', as: 'none' },
   { name: 'invite-providers-only', path: '/admin/orgs', as: 'super', steps: [providersOnly] },
-  { name: 'invite-invalid', path: '/invite?token=not-a-real-token', as: 'none' },
+  { name: 'invite-invalid', path: '/o/acme/invite?token=not-a-real-token', as: 'none' },
   // the page an emailed verification link opens (the address is confirmed only by its button)
-  { name: 'verify-email', path: '/verify-email?token=demo-token', as: 'none' },
+  { name: 'verify-email', path: '/o/acme/verify-email?token=demo-token', as: 'none' },
 ]
 
 // A browser without WebAuthn: the page says so instead of offering a passkey button. The init script lasts for the

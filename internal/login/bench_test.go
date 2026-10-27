@@ -117,9 +117,9 @@ func benchGet(b *testing.B, path string) {
 }
 
 func BenchmarkLandingPage(b *testing.B) { benchGet(b, "/") }
-func BenchmarkLoginPage(b *testing.B)   { benchGet(b, "/login/primary") }
+func BenchmarkLoginPage(b *testing.B)   { benchGet(b, "/o/primary/login") }
 func BenchmarkLoginPageNext(b *testing.B) {
-	benchGet(b, "/login/primary?next=%2Foauth%2Fauthorize%3Fflow%3Dabc")
+	benchGet(b, "/o/primary/login?next=%2Foauth%2Fauthorize%3Fflow%3Dabc")
 }
 
 func BenchmarkLandingPageParallel(b *testing.B) {

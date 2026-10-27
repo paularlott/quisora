@@ -27,9 +27,9 @@ func (h *harness) push(c *model.Client, secret string, q url.Values) tokResp {
 	}
 	if secret == "" {
 		f.Set("client_id", c.ID)
-		return h.post("/oauth/par", f, "", "")
+		return h.post(orgBase+"/oauth/par", f, "", "")
 	}
-	return h.clientPost("/oauth/par", f, c, secret)
+	return h.clientPost(orgBase+"/oauth/par", f, c, secret)
 }
 
 func pushedQuery(c *model.Client, requestURI string) url.Values {
@@ -71,12 +71,12 @@ func TestPushedAuthorizationRequest(t *testing.T) {
 	// only by the client that pushed it
 	other, _ := h.newClient(nil)
 	r = h.push(cl, secret, authzQuery(cl, ch, nil))
-	resp := h.get(c, "/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode())
+	resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode())
 	if b := body(resp); resp.StatusCode != 400 || resp.Header.Get("Location") != "" || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("another client's request_uri: %d", resp.StatusCode)
 	}
 	// an unknown one
-	resp = h.get(c, "/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode())
+	resp = h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode())
 	if b := body(resp); resp.StatusCode != 400 || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("unknown request_uri: %d", resp.StatusCode)
 	}
@@ -188,7 +188,7 @@ func TestPushedRequestUsedWhenDecided(t *testing.T) {
 		uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
 		anon := h.anon()
 		for i := 0; i < 2; i++ { // not signed in: sent to the sign-in page, twice
-			if u := h.authorize(anon, pushedQuery(cl, uri)); !strings.HasPrefix(u.Path, "/login/") {
+			if u := h.authorize(anon, pushedQuery(cl, uri)); !strings.HasSuffix(u.Path, "/login") {
 				t.Fatalf("visit %d: %s", i, u)
 			}
 		}
@@ -211,7 +211,7 @@ func TestPushedRequestUsedWhenDecided(t *testing.T) {
 		b2, csrf2 := h.session(h.user)
 		flowOf := func(b *http.Client) string {
 			u := h.authorize(b, pushedQuery(cl, uri))
-			if u.Path != "/oauth/consent" {
+			if u.Path != orgBase+"/oauth/consent" {
 				t.Fatalf("expected consent: %s", u)
 			}
 			return u.Query().Get("flow")
@@ -236,8 +236,8 @@ func TestPushedRequestUsedWhenDecided(t *testing.T) {
 		c, _ := h.session(h.user)
 		_, ch := pkce()
 		uri := h.push(cl, secret, authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}})).str("request_uri")
-		body(h.get(c, "/oauth/authorize?"+pushedQuery(cl, uri).Encode()))
-		resp := h.get(c, "/oauth/authorize?"+pushedQuery(cl, uri).Encode())
+		body(h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode()))
+		resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
 		if pg := body(resp); resp.StatusCode != 200 || !strings.Contains(pg, "invalid_request_uri") {
 			t.Fatalf("reuse: %d %s", resp.StatusCode, pg)
 		}
@@ -254,8 +254,8 @@ func TestCancelSignIn(t *testing.T) {
 		b := h.anon()
 		login := h.authorize(b, q)
 		next := login.Query().Get("next") // the sign-in page's Cancel link (login.cancelURL) is built from it
-		cancel := "/oauth/authorize/cancel?" + strings.TrimPrefix(next, "/oauth/authorize/resume?")
-		if !strings.HasPrefix(next, "/oauth/authorize/resume?flow=") {
+		cancel := orgBase + "/oauth/authorize/cancel?" + strings.TrimPrefix(next, orgBase+"/oauth/authorize/resume?")
+		if !strings.HasPrefix(next, orgBase+"/oauth/authorize/resume?flow=") {
 			t.Fatalf("%s: next %q", name, next)
 		}
 		// another browser cannot cancel it
@@ -325,7 +325,7 @@ func TestPushedRequestURIRefusals(t *testing.T) {
 		}
 		return id
 	}
-	unparsable, _ := json.Marshal(pushedRequest{ClientID: cl.ID, Params: "a=%zz"})
+	unparsable, _ := json.Marshal(pushedRequest{Org: cl.OrgID, ClientID: cl.ID, Params: "a=%zz"})
 	for name, tc := range map[string]struct{ client, requestURI string }{
 		"no client":         {"", parURNPrefix + "x"},
 		"no id":             {cl.ID, parURNPrefix},
@@ -333,7 +333,7 @@ func TestPushedRequestURIRefusals(t *testing.T) {
 		"not json":          {cl.ID, parURNPrefix + put([]byte("not json"))},
 		"unparsable params": {cl.ID, parURNPrefix + put(unparsable)},
 	} {
-		resp := h.get(c, "/oauth/authorize?"+url.Values{"client_id": {tc.client}, "request_uri": {tc.requestURI}}.Encode())
+		resp := h.get(c, orgBase+"/oauth/authorize?"+url.Values{"client_id": {tc.client}, "request_uri": {tc.requestURI}}.Encode())
 		if pg := body(resp); resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" ||
 			!strings.Contains(pg, "This sign-in request is not valid") {
 			t.Errorf("%s: %d %.80s", name, resp.StatusCode, pg)
@@ -363,15 +363,15 @@ func TestPushedRequestNotResurrectedByDelayedFirstVisit(t *testing.T) {
 			g.hold()
 		}
 	}}}}
-	raw, _ := json.Marshal(pushedRequest{ClientID: "client", Params: "client_id=client&response_type=code"})
+	raw, _ := json.Marshal(pushedRequest{Org: "org", ClientID: "client", Params: "client_id=client&response_type=code"})
 	id, err := local.New(ctx, nsPAR, raw, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	loaded := make(chan error, 1)
-	go func() { _, _, _, err := p.loadPushed(ctx, "client", parURNPrefix+id); loaded <- err }()
+	go func() { _, _, _, err := p.loadPushed(ctx, "org", "client", parURNPrefix+id); loaded <- err }()
 	g.waitHeld(t)
-	if _, _, used, err := p.loadPushed(ctx, "client", parURNPrefix+id); err != nil || used {
+	if _, _, used, err := p.loadPushed(ctx, "org", "client", parURNPrefix+id); err != nil || used {
 		t.Fatalf("second visit: used=%v err=%v", used, err)
 	}
 	if !p.usePushed(ctx, id) {

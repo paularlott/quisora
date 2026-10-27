@@ -24,7 +24,7 @@ test('API token: applications and scopes, on create and edit', async ({ page }) 
     patched = route.request().postDataJSON()
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ item }) })
   })
-  await page.goto('/account')
+  await page.goto('/o/acme/account')
   await expect(page.getByRole('row', { name: /Reports/ })).toContainText('for Orders; only orders:read')
 
   // create: no scopes until an application is ticked, then only that application's

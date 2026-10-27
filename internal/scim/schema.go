@@ -14,7 +14,6 @@ const (
 	schemaIdpGroup     = "urn:paularlott:quisora:scim:schemas:2.0:Group"
 	schemaOrg          = "urn:paularlott:quisora:scim:schemas:2.0:Organization"
 	schemaListResponse = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
-	schemaPatchOp      = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
 	schemaError        = "urn:ietf:params:scim:api:messages:2.0:Error"
 	schemaSPC          = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
 	schemaResourceType = "urn:ietf:params:scim:schemas:core:2.0:ResourceType"

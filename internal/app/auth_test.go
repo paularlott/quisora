@@ -103,9 +103,9 @@ func TestPromptLoginKeepsOtherApplicationsGrants(t *testing.T) {
 		if prompt != "" {
 			q.Set("prompt", prompt)
 		}
-		resp := get(base + "/oauth/authorize?" + q.Encode())
+		resp := get(base + "/o/" + org.ID + "/oauth/authorize?" + q.Encode())
 		loc := resp.Header.Get("Location")
-		if strings.HasPrefix(loc, "/login/acme?") {
+		if strings.HasPrefix(loc, "/o/"+org.ID+"/login?") {
 			resp, err := hc.Get(base + loc)
 			if err != nil {
 				t.Fatal(err)
@@ -117,9 +117,9 @@ func TestPromptLoginKeepsOtherApplicationsGrants(t *testing.T) {
 				t.Fatalf("login page %d", resp.StatusCode)
 			}
 			lu, _ := url.Parse(loc)
-			body, _ := json.Marshal(map[string]string{"org": "acme", "email": who + "@acme.test", "password": "correct horse battery",
+			body, _ := json.Marshal(map[string]string{"email": who + "@acme.test", "password": "correct horse battery",
 				"next": lu.Query().Get("next"), "tenant": lu.Query().Get("tenant")})
-			code, out := doJSON(t, hc, "POST", base+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
+			code, out := doJSON(t, hc, "POST", base+"/o/"+org.ID+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
 				"X-CSRF-Token": string(m[1]), "Origin": base}, strings.NewReader(string(body)))
 			if code != 200 || out["next"] == nil {
 				t.Fatalf("sign-in as %s: %d %v", who, code, out)
@@ -134,7 +134,7 @@ func TestPromptLoginKeepsOtherApplicationsGrants(t *testing.T) {
 		}
 		form := url.Values{"grant_type": {"authorization_code"}, "code": {cb.Query().Get("code")}, "redirect_uri": {redirect},
 			"code_verifier": {verifier}, "client_id": {cl.ID}, "client_secret": {secret}}
-		code, tok := doJSON(t, hc, "POST", base+"/oauth/token", formHdr, strings.NewReader(form.Encode()))
+		code, tok := doJSON(t, hc, "POST", base+"/o/"+org.ID+"/oauth/token", formHdr, strings.NewReader(form.Encode()))
 		if code != 200 || tok["refresh_token"] == nil {
 			t.Fatalf("token: %d %v", code, tok)
 		}
@@ -142,7 +142,7 @@ func TestPromptLoginKeepsOtherApplicationsGrants(t *testing.T) {
 	}
 	refreshOK := func(cl *model.Client, secret, rt string) bool {
 		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}
-		code, _ := doJSON(t, hc, "POST", base+"/oauth/token", formHdr, strings.NewReader(form.Encode()))
+		code, _ := doJSON(t, hc, "POST", base+"/o/"+org.ID+"/oauth/token", formHdr, strings.NewReader(form.Encode()))
 		return code == 200
 	}
 

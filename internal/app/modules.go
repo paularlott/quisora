@@ -10,7 +10,6 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/admin"
-	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/events"
 
 	"github.com/paularlott/quisora/internal/login"
@@ -82,7 +81,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var lastOthers string
 	var lastRing string
 	var sweep service.Sweep
-	var resvSweep cluster.ReservationSweep
 	hk := housekeepingLog{log: a.Log}
 	every := housekeepingEvery // read once: the closure below runs on its own goroutine
 	a.background(func() {
@@ -144,12 +142,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 			// do not expire takes about a day at five million users.
 			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); hk.ok("orphan sweep", err) && n > 0 {
 				a.Log.Info("removed records whose owner is gone", "count", n)
-			}
-			// Global unique values (a tenant's resource, a passkey's credential id) reserved for a record that was never
-			// written or is gone are released here, a batch a minute (claims take a reservation over only when they see
-			// its holder does not hold it).
-			if n, err := a.Node.SweepReservations(ctx, &resvSweep, 20_000); hk.ok("reservation sweep", err) && n > 0 {
-				a.Log.Info("reserved values whose holder is gone were released", "count", n)
 			}
 			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
 			if time.Since(lastSelfReg) >= time.Hour {

@@ -1,6 +1,8 @@
-// Package login is the sign-in and self-service HTTP module: the landing page, per-organization sign-in (password
+// Package login is the sign-in and self-service HTTP module: the landing redirect, per-organization sign-in (password
 // with optional TOTP, passkeys, upstream providers), password reset and invitation pages, logout, and the account
-// JSON API behind /account.
+// JSON API behind the account page. Every page and endpoint of it is in an organization's own address space,
+// /o/{org}/... (web.Server.InOrg): the organization is the one the path names, the browser's session there is that
+// organization's only, and nothing here takes the organization from anywhere else.
 //
 // Authentication method references (amr) recorded on sessions and surfaced in ID tokens:
 //
@@ -25,7 +27,7 @@
 // look identical for unknown users, inactive users and wrong passwords and cost an argon2 hash either way; failed
 // passwords and TOTP codes count toward a per-account lockout kept in ephemeral state (never database writes);
 // every attempt is rate limited per organization and client IP; a TOTP code works once (TOTPLastStep); the "next"
-// parameter is only ever honoured when it is a local path.
+// parameter is only ever honoured when it is a path in the organization's own address space (or the console).
 package login
 
 import (
@@ -37,6 +39,7 @@ import (
 	"net/http"
 	netmail "net/mail"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -68,7 +71,6 @@ const (
 	enrolTTL       = 10 * time.Minute
 	reauthTTL      = 5 * time.Minute
 	ticketAttempts = 5
-	defaultNext    = "/account"
 	msgBadLogin    = "The email address or password is incorrect."
 	msgBadCSRF     = "The request could not be verified. Reload the page and try again."
 )
@@ -104,9 +106,12 @@ func New(s *web.Server, o Options) *Module {
 	}
 	// Provider issuers are entered by organization administrators: the same address guard as back-channel logout
 	// and client JWKS (allowed_networks or allow_private_networks lets an internal provider through), and the extra
-	// CA roots.
+	// CA roots. The requests of an organization provider to its source organization are this server's own: it serves
+	// them itself, not over the network (web.Server.SelfTransport).
 	roots, _ := secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
-	m.Upstream = upstream.New(s.Svc, s.Eph, s.Cfg.Server.PublicURL, secure.OutboundClient(s.Cfg.OutboundReach, roots, s.Log))
+	client := secure.OutboundClient(s.Cfg.OutboundReach, roots, s.Log)
+	client.Transport = s.SelfTransport(client.Transport)
+	m.Upstream = upstream.New(s.Svc, s.Eph, s.Cfg.Server.PublicURL, client)
 	if m.Mail != nil && m.Mail.Svc == nil {
 		m.Mail.SetService(s.Svc)
 	}
@@ -124,35 +129,41 @@ func (m *Module) Register(s *web.Server) {
 		return m.reauthed(r.Context(), acct{sess: sess}) || time.Since(sess.AuthTime) < reauthTTL
 	}
 	mux := s.Mux
+	// inOrg registers an organization's page or endpoint: the path names the organization (s.InOrg), and with it the
+	// session the request may present.
+	inOrg := func(pattern string, h http.Handler) {
+		method, path, _ := strings.Cut(pattern, " ")
+		mux.Handle(method+" /o/{org}"+path, s.InOrg(h))
+	}
 	// pages
-	mux.Handle("GET /{$}", s.WithSession(http.HandlerFunc(m.landing)))
-	mux.Handle("GET /login/{org}", s.WithSession(http.HandlerFunc(m.loginPage)))
-	mux.Handle("GET /login/{org}/provider/{id}", http.HandlerFunc(m.providerStart))
-	mux.Handle("GET /login/callback/{provider}", http.HandlerFunc(m.providerCallback))
-	mux.Handle("GET /invite", http.HandlerFunc(m.invitePage))
-	mux.Handle("GET /reset", http.HandlerFunc(m.resetPage))
-	mux.Handle("GET /verify-email", http.HandlerFunc(m.verifyEmailPage))
-	mux.Handle("POST /verify-email", http.HandlerFunc(m.verifyEmail))
-	mux.Handle("GET /logout", s.WithSession(http.HandlerFunc(m.logoutPage)))
-	mux.Handle("POST /logout", s.WithSession(http.HandlerFunc(m.logout)))
-	mux.Handle("GET /account", s.RequirePage(m.accountPage))
+	mux.HandleFunc("GET /{$}", m.landing)
+	inOrg("GET /login", s.WithSession(http.HandlerFunc(m.loginPage)))
+	inOrg("GET /login/provider/{id}", http.HandlerFunc(m.providerStart))
+	inOrg("GET /login/callback/{provider}", http.HandlerFunc(m.providerCallback))
+	inOrg("GET /invite", http.HandlerFunc(m.invitePage))
+	inOrg("GET /reset", http.HandlerFunc(m.resetPage))
+	inOrg("GET /verify-email", http.HandlerFunc(m.verifyEmailPage))
+	inOrg("POST /verify-email", http.HandlerFunc(m.verifyEmail))
+	inOrg("GET /logout", s.WithSession(http.HandlerFunc(m.logoutPage)))
+	inOrg("POST /logout", s.WithSession(http.HandlerFunc(m.logout)))
+	inOrg("GET /account", s.RequirePage(m.accountPage))
 
 	// anonymous sign-in JSON
-	mux.HandleFunc("POST /api-internal/login/password", m.password)
-	mux.HandleFunc("POST /api-internal/login/totp", m.totp)
-	mux.HandleFunc("POST /api-internal/login/recovery", m.recovery)
-	mux.HandleFunc("POST /api-internal/login/email/send", m.emailSend)
-	mux.HandleFunc("POST /api-internal/login/email", m.emailVerify)
-	mux.HandleFunc("POST /api-internal/login/passkey/begin", m.passkeyBegin)
-	mux.HandleFunc("POST /api-internal/login/passkey/finish", m.passkeyFinish)
-	mux.HandleFunc("POST /api-internal/login/enrol/totp/begin", m.enrolTOTPBegin)
-	mux.HandleFunc("POST /api-internal/login/enrol/totp/confirm", m.enrolTOTPConfirm)
-	mux.HandleFunc("POST /api-internal/login/enrol/passkey/begin", m.enrolPasskeyBegin)
-	mux.HandleFunc("POST /api-internal/login/enrol/passkey/finish", m.enrolPasskeyFinish)
-	mux.HandleFunc("POST /api-internal/password/forgot", m.forgot)
-	mux.HandleFunc("POST /api-internal/password/reset", m.reset)
-	mux.HandleFunc("POST /api-internal/invite/passkey/begin", m.inviteBegin)
-	mux.HandleFunc("POST /api-internal/invite/complete", m.inviteComplete)
+	inOrg("POST /api-internal/login/password", http.HandlerFunc(m.password))
+	inOrg("POST /api-internal/login/totp", http.HandlerFunc(m.totp))
+	inOrg("POST /api-internal/login/recovery", http.HandlerFunc(m.recovery))
+	inOrg("POST /api-internal/login/email/send", http.HandlerFunc(m.emailSend))
+	inOrg("POST /api-internal/login/email", http.HandlerFunc(m.emailVerify))
+	inOrg("POST /api-internal/login/passkey/begin", http.HandlerFunc(m.passkeyBegin))
+	inOrg("POST /api-internal/login/passkey/finish", http.HandlerFunc(m.passkeyFinish))
+	inOrg("POST /api-internal/login/enrol/totp/begin", http.HandlerFunc(m.enrolTOTPBegin))
+	inOrg("POST /api-internal/login/enrol/totp/confirm", http.HandlerFunc(m.enrolTOTPConfirm))
+	inOrg("POST /api-internal/login/enrol/passkey/begin", http.HandlerFunc(m.enrolPasskeyBegin))
+	inOrg("POST /api-internal/login/enrol/passkey/finish", http.HandlerFunc(m.enrolPasskeyFinish))
+	inOrg("POST /api-internal/password/forgot", http.HandlerFunc(m.forgot))
+	inOrg("POST /api-internal/password/reset", http.HandlerFunc(m.reset))
+	inOrg("POST /api-internal/invite/passkey/begin", http.HandlerFunc(m.inviteBegin))
+	inOrg("POST /api-internal/invite/complete", http.HandlerFunc(m.inviteComplete))
 
 	m.registerAccount(s)
 }
@@ -176,9 +187,12 @@ func (m *Module) anonOK(w http.ResponseWriter, r *http.Request) bool {
 // decode reads a JSON body; unknown fields are rejected.
 func decode(w http.ResponseWriter, r *http.Request, v any) bool { return web.DecodeJSON(w, r, v) }
 
-// safeNext returns next when it is a local path (starts with a single "/", no scheme, host, backslash or control
-// character) and "" otherwise.
-func safeNext(next string) string {
+// safeNext returns next when a browser sent there after signing in to org stays where that sign-in belongs, and ""
+// otherwise: a local path (starts with a single "/", no scheme, host, backslash or control character) in the
+// organization's own address space, /o/<org id> (or its name: the page a browser was sent from may have been opened
+// by name), or in the console, /admin. Another organization's pages are not the place for this sign-in to lead, and a
+// path with dot segments could climb out of either.
+func safeNext(org *model.Org, next string) string {
 	if next == "" || len(next) > 2048 || next[0] != '/' || strings.HasPrefix(next, "//") {
 		return ""
 	}
@@ -191,14 +205,25 @@ func safeNext(next string) string {
 	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" {
 		return ""
 	}
+	if slices.ContainsFunc(strings.Split(u.Path, "/"), func(seg string) bool { return seg == "." || seg == ".." }) {
+		return ""
+	}
+	if !inSpace(u.Path, web.OrgPath(org.ID, "")) && !inSpace(strings.ToLower(u.Path), web.OrgPath(org.Name, "")) && !inSpace(u.Path, "/admin") {
+		return ""
+	}
 	return next
 }
 
-func nextOrDefault(next string) string {
-	if n := safeNext(next); n != "" {
+// inSpace reports whether path is root or below it (root has no trailing slash).
+func inSpace(path, root string) bool { return path == root || strings.HasPrefix(path, root+"/") }
+
+// nextOrDefault is where a sign-in to org continues: next when it stays in the organization's space (safeNext), else
+// the organization's account page.
+func nextOrDefault(org *model.Org, next string) string {
+	if n := safeNext(org, next); n != "" {
 		return n
 	}
-	return defaultNext
+	return web.OrgPath(org.ID, "/account")
 }
 
 // WebAuthn ceremony purposes (passkey.PurposeKey): every finish handler accepts only its own.
@@ -240,60 +265,54 @@ func (m *Module) methods(ctx context.Context, org *model.Org, tenantName, next s
 	return eff, t.Name, nil
 }
 
-// unknownOrgKey is the shared rate-limit bucket for every organization name that does not exist, so random names
-// cannot mint fresh buckets.
-const unknownOrgKey = "unknown"
-
-// resolveOrg normalises an organization name once (trim + lower case) and looks it up. The returned key is the
-// canonical name for a real org and a single fixed pseudo-key otherwise; use it for rate limiting.
-func (m *Module) resolveOrg(ctx context.Context, raw string) (*model.Org, string, error) {
-	name := strings.ToLower(strings.TrimSpace(raw))
-	if name == "" {
-		return nil, unknownOrgKey, nil
-	}
-	org, err := m.s.Svc.OrgByName(ctx, name)
-	if err != nil && !errors.Is(err, service.ErrNotFound) && !errors.Is(err, store.ErrNotFound) {
-		return nil, unknownOrgKey, err // not "no such organization": the store cannot answer now
-	}
-	if err != nil || org == nil {
-		return nil, unknownOrgKey, nil
-	}
-	return org, strings.ToLower(org.Name), nil
-}
-
-// allow counts a sign-in request for org+client IP in a one-minute window and reports whether it is within the
-// configured limit (Limits.LoginPerIPMin). A request from a browser that has signed in to the account (or org) it is
+// allow counts a sign-in request for a bucket (an organization's id, or its id and a kind of link or callback) and
+// client IP in a one-minute window and reports whether it is within the configured limit (Limits.LoginPerIPMin). A request from a browser that has signed in to the account (or org) it is
 // for, as k says, is counted against that account's own budget instead (see device.go), so a flood from the same
 // address does not keep it out.
 //
 // tripped names the limit ("device", "address" or "organization") when this request is the first one it refuses in
-// its minute, so the audit log gets one event per limit and minute, not one per refused request.
-func (m *Module) allow(r *http.Request, orgKey string, k known) (ok bool, tripped string, uid string) {
+// its minute, so the audit log gets one event per limit and minute, not one per refused request. Counters fail
+// closed: a counter that cannot be read or updated refuses (ok is false) and err says so, so that the refusal is
+// answered as "unavailable" and no limit is reported as tripped.
+func (m *Module) allow(r *http.Request, bucket string, k known) (ok bool, tripped string, uid string, err error) {
 	limit := int64(m.s.Cfg.Limits.LoginPerIPMin)
 	if limit <= 0 {
-		return true, "", ""
+		return true, "", "", nil
 	}
 	if uid, ok := m.knownDevice(r, k); ok {
 		n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-dev|"+uid, 1, time.Minute)
-		return err == nil && n <= limit, tripIf(n == limit+1, "device"), uid
+		if err != nil {
+			return false, "", uid, err
+		}
+		return n <= limit, tripIf(n == limit+1, "device"), uid, nil
 	}
 	ip := web.RateKeyIP(r)
 	// An IP-only ceiling (three times the per-org limit) bounds what one client can spend across organizations,
 	// whatever names it sends.
-	// Counters fail closed: a counter that cannot be read or updated refuses rather than allows.
-	if n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-ip|"+ip, 1, time.Minute); err != nil || n > 3*limit {
-		return false, tripIf(n == 3*limit+1, "address"), ""
+	n, err := m.s.Eph.Incr(r.Context(), nsRate, "login-ip|"+ip, 1, time.Minute)
+	if err != nil {
+		return false, "", "", err
 	}
-	key := "login|" + strings.ToLower(orgKey) + "|" + ip
-	n, err := m.s.Eph.Incr(r.Context(), nsRate, key, 1, time.Minute)
-	return err == nil && n <= limit, tripIf(n == limit+1, "organization"), ""
+	if n > 3*limit {
+		return false, tripIf(n == 3*limit+1, "address"), "", nil
+	}
+	key := "login|" + bucket + "|" + ip
+	n, err = m.s.Eph.Incr(r.Context(), nsRate, key, 1, time.Minute)
+	if err != nil {
+		return false, "", "", err
+	}
+	return n <= limit, tripIf(n == limit+1, "organization"), "", nil
 }
 
-// allowed is allow for a page that answers a refusal its own way (a link page shows the link as invalid).
-func (m *Module) allowed(r *http.Request, orgKey string, k known) bool {
-	ok, tripped, uid := m.allow(r, orgKey, k)
+// allowed is allow for a page that answers a refusal its own way (a link page shows the link as invalid). A counter
+// that fails refuses too, but is not audited as a limit that tripped.
+func (m *Module) allowed(r *http.Request, bucket string, k known) bool {
+	ok, tripped, uid, err := m.allow(r, bucket, k)
+	if err != nil {
+		return false
+	}
 	if tripped != "" {
-		m.auditLimited(r, orgKey, tripped, uid)
+		m.auditLimited(r, bucket, tripped, uid)
 	}
 	return ok
 }
@@ -305,14 +324,19 @@ func tripIf(first bool, limit string) string {
 	return ""
 }
 
-// rateLimit is allow plus the 429 response (with Retry-After); it returns false when the request was rejected.
-func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, orgKey string, k known) bool {
-	ok, tripped, uid := m.allow(r, orgKey, k)
+// rateLimit is allow plus the 429 response (with Retry-After); it returns false when the request was rejected. A
+// counter that fails is answered as unavailable, and nothing is audited.
+func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, bucket string, k known) bool {
+	ok, tripped, uid, err := m.allow(r, bucket, k)
+	if err != nil {
+		unavailableResponse(w)
+		return false
+	}
 	if ok {
 		return true
 	}
 	if tripped != "" {
-		m.auditLimited(r, orgKey, tripped, uid)
+		m.auditLimited(r, bucket, tripped, uid)
 	}
 	w.Header().Set("Retry-After", "60")
 	writeErr(w, http.StatusTooManyRequests, "Too many attempts. Please wait a minute and try again.", "")
@@ -320,22 +344,15 @@ func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, orgKey string
 }
 
 // auditLimited records that a sign-in limit started refusing requests (login.limited): once per limit and minute.
-func (m *Module) auditLimited(r *http.Request, orgKey, limit, uid string) {
+func (m *Module) auditLimited(r *http.Request, bucket, limit, uid string) {
 	ctx := r.Context()
-	org, err := m.s.Svc.OrgByName(ctx, strings.ToLower(orgKey))
-	if err != nil {
-		org, _ = m.s.Svc.PrimaryOrg(ctx) // not an organization (a link, a callback): the primary one's log
-	}
-	orgID := ""
-	if org != nil {
-		orgID = org.ID
-	}
+	orgID := web.Org(r).ID
 	target := web.ClientIP(r)
 	if uid != "" {
 		target = uid
 	}
 	m.s.Svc.Audit(ctx, &service.Actor{IP: web.ClientIP(r), Name: "anonymous"}, orgID, "login.limited", target,
-		map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": orgKey})
+		map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": bucket})
 }
 
 // ---- lockout -------------------------------------------------------------------------------------------------
@@ -362,21 +379,25 @@ func lockKey(u *model.User, org *model.Org, login string) string {
 	return "x:" + id + ":" + base64.RawURLEncoding.EncodeToString(h[:12])
 }
 
-// charge counts an attempt against the lockout counter key before the attempt is checked, and reports false when
-// the account has used up its attempts (or the counter cannot be reached: fail closed). Counting first is what makes
+// charge counts an attempt against the lockout counter key before the attempt is checked, and reports open false
+// when the account has used up its attempts. A counter that cannot be reached is an error, not a lockout: the caller
+// refuses the attempt (fail closed) but answers "unavailable" and audits no lockout. Counting first is what makes
 // the limit hold for attempts sent at once: had only finished failures counted, every attempt in a burst would pass
 // the check before the first was charged. The charge is a failure unless it is given back: settle, deferred by the
 // caller, refunds it for every outcome but a wrong credential (n is then this failure's number: tripped).
-func (m *Module) charge(ctx context.Context, key string) (n int64, ok bool) {
+func (m *Module) charge(ctx context.Context, key string) (n int64, open bool, err error) {
 	max := m.s.Cfg.Limits.LockoutAttempts
 	if max <= 0 {
-		return 0, true
+		return 0, true, nil
 	}
-	n, err := m.s.Eph.Incr(ctx, nsLockout, key, 1, m.lockWindow())
-	if err == nil && n > int64(max) { // refused while locked: not an attempt, so the counter stays at the limit
+	n, err = m.s.Eph.Incr(ctx, nsLockout, key, 1, m.lockWindow())
+	if err != nil {
+		return 0, false, err
+	}
+	if n > int64(max) { // refused while locked: not an attempt, so the counter stays at the limit
 		_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, m.lockWindow())
 	}
-	return n, err == nil && n <= int64(max)
+	return n, n <= int64(max), nil
 }
 
 // settle gives back a charge (charge) unless *wrong says the attempt was a wrong credential.
@@ -514,7 +535,8 @@ func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model
 const msgExpired = "Your sign-in has expired. Start again."
 
 // step loads the sign-in a request continues: a ticket at one of the steps, its user and organization (ticketUser),
-// within the organization's rate limit for the account. On failure it has written the answer (401 for a dead ticket,
+// within the organization's rate limit for the account. A ticket of another organization than the path's is dead
+// here, as an expired one is. On failure it has written the answer (401 for a dead ticket,
 // 429 when limited) and the handler returns.
 func (m *Module) step(w http.ResponseWriter, r *http.Request, id string, steps ...string) (*ticket, *model.User, *model.Org, bool) {
 	ctx := r.Context()
@@ -524,11 +546,11 @@ func (m *Module) step(w http.ResponseWriter, r *http.Request, id string, steps .
 		return nil, nil, nil, false
 	}
 	u, org, ok := m.ticketUser(ctx, t)
-	if !ok {
+	if !ok || org.ID != web.Org(r).ID {
 		writeErr(w, http.StatusUnauthorized, msgExpired, "")
 		return nil, nil, nil, false
 	}
-	if !m.rateLimit(w, r, org.Name, known{userID: u.ID}) {
+	if !m.rateLimit(w, r, org.ID, known{userID: u.ID}) {
 		return nil, nil, nil, false
 	}
 	return t, u, org, true
@@ -563,14 +585,19 @@ func (m *Module) useTicket(ctx context.Context, id string) bool {
 	return err == nil
 }
 
-// attempt counts tries against one ticket and drops it after too many.
-func (m *Module) attempt(ctx context.Context, id string) bool {
+// attempt counts tries against one ticket and drops it after too many. A counter that cannot be used is an error,
+// not "too many": the caller refuses the try (fail closed) but answers "unavailable", and the ticket is kept so the
+// person can try again once the counter answers.
+func (m *Module) attempt(ctx context.Context, id string) (within bool, err error) {
 	n, err := m.s.Eph.Incr(ctx, nsTry, id, 1, enrolTTL)
-	if err != nil || n > ticketAttempts {
-		_ = m.s.Eph.Delete(ctx, nsTicket, id)
-		return false
+	if err != nil {
+		return false, err
 	}
-	return true
+	if n > ticketAttempts {
+		_ = m.s.Eph.Delete(ctx, nsTicket, id)
+		return false, nil
+	}
+	return true, nil
 }
 
 // ---- completing a sign-in ------------------------------------------------------------------------------------
@@ -584,6 +611,9 @@ func (m *Module) complete(w http.ResponseWriter, r *http.Request, u *model.User,
 // completeWith is complete with session options (the upstream provider of a federated sign-in).
 func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.User, org *model.Org, opt web.SessionOptions, next string) (string, error) {
 	ctx := r.Context()
+	if org.ID != web.Org(r).ID || u.OrgID != org.ID { // (every step has checked; this one must never sign in across organizations)
+		return "", errors.New("login: a sign-in of another organization than the page's")
+	}
 	amr := opt.AMR
 	upgraded := false
 	if old, _ := m.s.Sessions.Current(r); old != nil {
@@ -622,7 +652,7 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 	if m.s.Cfg.Audit.Logins {
 		m.audit(r, "login.success", org, u, u.Username, map[string]string{"amr": strings.Join(amr, " ")})
 	}
-	return nextOrDefault(next), nil
+	return nextOrDefault(org, next), nil
 }
 
 // noteSession records the session a sign-in made for the rest of the request's audit events (login.success).
@@ -635,8 +665,11 @@ func noteSession(ctx context.Context, sess *model.Session) {
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrUnavailable) ||
 		errors.Is(err, service.ErrOutcomeUnknown) || errors.Is(err, service.ErrUnavailable) {
-		// the cluster could not confirm the change in time: trying again is safe, and the answer says so
-		m.s.Log.Warn(what, "error", err, "path", r.URL.Path)
+		// the cluster could not confirm the change in time: trying again is safe, and the answer says so. A request
+		// whose client went away ends the same way and is not worth a warning: nobody is waiting for the answer.
+		if r.Context().Err() == nil {
+			m.s.Log.Warn(what, "error", err, "path", r.URL.Path)
+		}
 		w.Header().Set("Retry-After", "5")
 		writeErr(w, http.StatusServiceUnavailable, "We could not complete this just now. Please try again in a moment.", "")
 		return

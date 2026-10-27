@@ -24,7 +24,8 @@ import (
 
 // flow is a validated authorization request waiting for sign-in / consent (ephemeral, ns "oauth.flow").
 type flow struct {
-	ClientID    string   `json:"c"`
+	Org         string   `json:"o"` // the organization it was made in: only its endpoints carry it on
+	ClientID    string   `json:"c"` // as the application sent it (model.Client.ClientID)
 	RedirectURI string   `json:"r"`
 	Scopes      []string `json:"sc"`
 	State       string   `json:"st,omitempty"`
@@ -54,7 +55,12 @@ type flow struct {
 // consent is what the request asks the user to allow (consentScopes).
 func (f *flow) consent() []string { return consentScopes(f.Scopes, f.ClaimsUI, f.ClaimsID) }
 
-// Flow binding. /oauth/authorize gives the browser a random secret in a cookie and stores only its SHA-256 in the
+// resumePath is where the browser continues flow id of organization orgID after signing in.
+func resumePath(orgID, id string) string {
+	return web.OrgPath(orgID, "/oauth/authorize/resume?flow="+url.QueryEscape(id))
+}
+
+// Flow binding. /o/<org>/oauth/authorize gives the browser a random secret in a cookie and stores only its SHA-256 in the
 // flow; resume and consent require the cookie to match, so a flow id planted in a victim's browser (flow fixation)
 // cannot be completed there, nor can a stolen id be resumed from another browser. Each flow has its own cookie,
 // `__Host-quisora_flow_<first 8 hex of SHA-256(flow id)>`, so several flows can run concurrently in one browser; they
@@ -274,7 +280,15 @@ const authorizePerIPMin = 300
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Counted first, whatever the request: one that names no real client still costs a store read, and one that does
 	// holds a flow in memory for flowTTL. Nothing is known yet to redirect to, so a refusal is a page.
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > authorizePerIPMin {
+	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.RateKeyIP(r), 1, time.Minute)
+	if err != nil {
+		// The counter cannot be used, so the request is refused, but as "try again", not as the limit it has not hit.
+		w.Header().Set("Retry-After", "5")
+		p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
+			"This request cannot be completed at the moment. Try again in a moment.")
+		return
+	}
+	if n > authorizePerIPMin {
 		w.Header().Set("Retry-After", "60")
 		p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-in requests",
 			"Too many sign-in requests came from your network. Wait a minute, then try again.")
@@ -291,12 +305,13 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		p.message(w, r, http.StatusBadRequest, "Invalid request", "This request could not be read", "")
 		return
 	}
+	org := web.Org(r)
 	// A pushed request (RFC 9126): its parameters are the ones the client pushed, whatever else the URL carries.
 	pushed := strings.HasPrefix(q.Get("request_uri"), parURNPrefix)
 	var pushedID string
 	pushedUsed := false
 	if pushed {
-		pq, id, used, err := p.loadPushed(r.Context(), q.Get("client_id"), q.Get("request_uri"))
+		pq, id, used, err := p.loadPushed(r.Context(), org.ID, q.Get("client_id"), q.Get("request_uri"))
 		if err != nil {
 			p.invalidRequestURI(w, r)
 			return
@@ -307,19 +322,19 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// naming documents for anything else never make this server fetch anything.
 	if metadataURL(q.Get("client_id")) {
 		if res, err := parseResources(q["resource"]); err != nil || len(res) == 0 {
-			ce, _ := p.client(r.Context(), q.Get("client_id"))
+			ce, _ := p.client(r.Context(), org.ID, q.Get("client_id"))
 			if ce == nil || ce.c.SelfRegistered {
 				p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
 					"The link you followed is not valid. Return to the application and try again.")
 				return
 			}
-		} else if _, err := p.svc.TenantForResources(r.Context(), res); err != nil {
+		} else if _, err := p.svc.TenantForResources(r.Context(), org.ID, res); err != nil {
 			p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
 				"The link you followed is not valid. Return to the application and try again.")
 			return
 		}
 	}
-	ce, err := p.appClient(r.Context(), r, q.Get("client_id"))
+	ce, err := p.appClient(r.Context(), r, org.ID, q.Get("client_id"))
 	if err != nil && !gone(err) { // the application or its organization cannot be read now: not an unknown one
 		p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
 			"This request cannot be completed at the moment. Try again in a moment.")
@@ -338,7 +353,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// From here on errors go back to the client.
-	f := &flow{ClientID: c.ID, RedirectURI: redirectURI, MaxAge: -1, Mode: "query", Created: time.Now().UnixNano()}
+	f := &flow{Org: org.ID, ClientID: c.ClientID(), RedirectURI: redirectURI, MaxAge: -1, Mode: "query", Created: time.Now().UnixNano()}
 	f.State = q.Get("state")
 	if len(f.State) > 2048 || dup == "state" {
 		f.State = ""
@@ -379,7 +394,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkAuthz validates the parameters of an authorization request q for client c (its redirect URI already matched)
-// into f, the same way for /oauth/authorize and for a pushed request (par.go). It returns the client that governs the
+// into f, the same way for /o/<org>/oauth/authorize and for a pushed request (par.go). It returns the client that governs the
 // request: c, or for a self-registered application its view in the tenant owning the requested resources.
 func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client, f *flow) (*model.Client, *oauthError) {
 	switch m := q.Get("response_mode"); m {
@@ -490,11 +505,15 @@ func (p *Provider) handleResume(w http.ResponseWriter, r *http.Request) {
 		p.expired(w, r)
 		return
 	}
+	if f.Org != web.Org(r).ID {
+		p.expired(w, r) // another organization's flow is none of this one's
+		return
+	}
 	if !flowBound(r, id, &f) {
 		p.wrongBrowser(w, r)
 		return
 	}
-	ce, err := p.appClient(r.Context(), r, f.ClientID)
+	ce, err := p.appClient(r.Context(), r, f.Org, f.ClientID)
 	if err != nil || !ce.c.Enabled {
 		p.expired(w, r)
 		return
@@ -513,7 +532,7 @@ func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("flow")
 	raw, err := p.s.Eph.Get(r.Context(), nsFlow, id)
 	var f flow
-	if err != nil || json.Unmarshal(raw, &f) != nil {
+	if err != nil || json.Unmarshal(raw, &f) != nil || f.Org != web.Org(r).ID {
 		p.expired(w, r)
 		return
 	}
@@ -556,14 +575,8 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 			return
 		}
 		p.saveFlow(ctx, id, f)
-		next := "/oauth/authorize/resume?flow=" + url.QueryEscape(id)
-		org, err := p.org(ctx, c.OrgID)
-		if err != nil {
-			p.message(w, r, http.StatusBadRequest, "Unavailable", "This application is not available", "")
-			return
-		}
-		target := "/login/" + url.PathEscape(org.Name) + "?tenant=" + url.QueryEscape(tenant.Name) +
-			"&next=" + url.QueryEscape(next)
+		target := web.OrgPath(c.OrgID, "/login") + "?tenant=" + url.QueryEscape(tenant.Name) +
+			"&next=" + url.QueryEscape(resumePath(c.OrgID, id))
 		if reauth {
 			target += "&reauth=1"
 		}
@@ -575,10 +588,6 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 
 	if sess == nil {
 		signIn(false)
-		return
-	}
-	if user.OrgID != c.OrgID {
-		signIn(true)
 		return
 	}
 	org, err := p.org(ctx, user.OrgID)
@@ -663,7 +672,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 				return
 			}
 			p.saveFlow(ctx, id, f)
-			http.Redirect(w, r, "/oauth/consent?flow="+url.QueryEscape(id), http.StatusFound)
+			http.Redirect(w, r, web.OrgPath(c.OrgID, "/oauth/consent?flow="+url.QueryEscape(id)), http.StatusFound)
 			return
 		}
 	}
@@ -676,7 +685,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 				"It has expired, or it was already used. Start again on your device to get a new code.")
 			return
 		}
-		p.svc.Audit(ctx, service.ActorForUser(user, web.ClientIP(r)), user.OrgID, "oauth.device.approve", c.Name, map[string]string{"client_id": c.ID,
+		p.svc.Audit(ctx, service.ActorForUser(user, web.ClientIP(r)), user.OrgID, "oauth.device.approve", c.Name, map[string]string{"client_id": c.ClientID(),
 			"scopes": strings.Join(f.Scopes, " ")})
 		p.message(w, r, http.StatusOK, "Device signed in", "Your device is signed in to "+c.Name,
 			"Return to your device: it carries on by itself. You can close this page.")
@@ -739,7 +748,7 @@ func (p *Provider) hasConsent(ctx context.Context, userID, clientID string, scop
 		return false
 	}
 	for _, g := range gs {
-		if g.ClientID == clientID && !g.Revoked && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
+		if g.ClientID == clientID && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
 			subset(resources, g.Resources) {
 			return true
 		}
@@ -767,7 +776,7 @@ func (p *Provider) respond(w http.ResponseWriter, r *http.Request, f *flow, para
 	if f.State != "" {
 		params.Set("state", f.State)
 	}
-	params.Set("iss", p.issuer)
+	params.Set("iss", p.issuer(web.Org(r).ID))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if f.Mode == "form_post" {
 		u, err := url.Parse(f.RedirectURI)
@@ -829,7 +838,7 @@ var errWrongBrowser = errors.New("oidc: flow belongs to another browser")
 // for a second factor through acr_values (login.Options.StepUp).
 func (p *Provider) FlowWantsMFA(ctx context.Context, next string) bool {
 	u, err := url.Parse(next)
-	if err != nil || u.Path != "/oauth/authorize/resume" {
+	if err != nil {
 		return false
 	}
 	raw, err := p.s.Eph.Get(ctx, nsFlow, u.Query().Get("flow"))
@@ -837,7 +846,7 @@ func (p *Provider) FlowWantsMFA(ctx context.Context, next string) bool {
 		return false
 	}
 	var f flow
-	return json.Unmarshal(raw, &f) == nil && f.MFA
+	return json.Unmarshal(raw, &f) == nil && f.MFA && u.Path == web.OrgPath(f.Org, "/oauth/authorize/resume")
 }
 
 func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, error) {
@@ -850,10 +859,13 @@ func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, e
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, nil, err
 	}
+	if f.Org != web.Org(r).ID {
+		return nil, nil, ephemeral.ErrNotFound
+	}
 	if !flowBound(r, id, &f) {
 		return nil, nil, errWrongBrowser
 	}
-	ce, err := p.appClient(ctx, r, f.ClientID)
+	ce, err := p.appClient(ctx, r, f.Org, f.ClientID)
 	if err != nil || !ce.c.Enabled {
 		return nil, nil, ephemeral.ErrNotFound
 	}
@@ -876,10 +888,6 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := web.User(r)
-	if u.OrgID != c.OrgID {
-		p.expired(w, r)
-		return
-	}
 	data := ConsentData{Flow: id, ClientName: c.Name, Username: u.FullName(), ReturnURL: returnURL(f.RedirectURI)}
 	if t, err := p.clientTenant(r.Context(), c); err == nil && t.Name != model.DefaultTenantName {
 		data.Tenant = t.DisplayName
@@ -935,18 +943,14 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := web.User(r)
-	if u.OrgID != c.OrgID {
-		web.WriteJSON(w, http.StatusForbidden, web.ErrorBody{Error: "You cannot authorize this application."})
-		return
-	}
 	f.Decision, f.DecidedBy = "deny", u.ID
 	if in.Approve {
 		f.Decision = "allow"
 	}
 	p.saveFlow(r.Context(), in.Flow, f)
-	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, map[string]string{"client_id": c.ID,
+	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, map[string]string{"client_id": c.ClientID(),
 		"decision": f.Decision, "scopes": strings.Join(f.consent(), " ")})
-	web.WriteJSON(w, http.StatusOK, map[string]string{"redirect": "/oauth/authorize/resume?flow=" + url.QueryEscape(in.Flow)})
+	web.WriteJSON(w, http.StatusOK, map[string]string{"redirect": resumePath(c.OrgID, in.Flow)})
 }
 
 // formActionSource is the CSP source a form_post page may post to for redirect URI u: its origin, or for a native

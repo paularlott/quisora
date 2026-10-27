@@ -24,7 +24,7 @@ Settings every deployment sets:
 
 | Setting                             | Flag                      | Notes                                                                                                                                                              |
 | ----------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `server.public_url`                 | `--public-url`            | The issuer and the address users reach. https only.                                                                                                                |
+| `server.public_url`                 | `--public-url`            | The address users reach, and the base of every organization's issuer (`<public_url>/o/<org id>`). https only.                                                                                                                |
 | `server.listen`                     | `--listen`                | Default `:8443`. HTTPS only; there is no plain-HTTP listener.                                                                                                      |
 | `server.data_dir`                   | `--data-dir`              | Everything the node keeps on disk ([layout](#the-data-directory)). Required; default `data`. One per node.                                                         |
 | `server.master_key`                 | `--master-key`            | Seals secrets at rest. Required (identical on every node of a cluster); nothing is generated or kept in the data directory. Keep it safe, apart from the data and the backups. |
@@ -236,12 +236,11 @@ a node started with only the old key refuses to start.
 
 ## The primary organization
 
-The primary organization is the first one, made by `quisora bootstrap`, and it never changes. Super admins belong to it,
-and the server's emergency sign-out counters are kept on it. When its super admins are all gone, `quisora invite
+The primary organization is the first one, made by `quisora bootstrap`, and it never changes. Its id is
+`00000000-0000-7000-8000-000000000001`, so its sign-in page is `/o/00000000-0000-7000-8000-000000000001/login` (what
+`https://<public_url>/` redirects to) and its issuer `<public_url>/o/00000000-0000-7000-8000-000000000001`. Super
+admins belong to it, and the server's emergency sign-out counters are kept on it. When its super admins are all gone, `quisora invite
 --break-glass --super-admin` (above) recovers access.
-
-A store with more than one organization marked primary (left only by an interrupted `quisora set-primary` of an
-earlier build) is refused at start: restore a backup made before it.
 
 ## Storage backends
 
@@ -254,6 +253,12 @@ must exist.
 | `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go, in `<data-dir>/quisora.db`. | none                                                                   |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
 | `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
+
+Every backend keeps to the same contract, so what one accepts every other accepts. A record's id and scope are at most
+191 characters (the width of a server database's key columns), a string field 255 (the tags field `model.MaxTagsText`);
+a longer one is refused before anything is written, and unique values (a resource address, a provider's subject) may be
+any length. Deleting a record that is not live writes nothing. A write never moves a record to another partition. A call
+whose context has ended, or on a store that is closed, answers "unavailable" (HTTP 503 where a request met it).
 
 **Durability and write speed (one BadgerDB node).** With `sync_writes = true` (the default) every acknowledged write is
 on disk; concurrent writes share one sync, so a fast disk (an NVMe drive with power-loss protection) loses little to
@@ -798,13 +803,20 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
 | Token introspection             | 48,800/s | 48,500/s |   48,100/s |
 | Password sign-in                |    487/s |    473/s |      516/s |
 
+- A gossip cluster of three BadgerDB nodes (all on that one machine, every write committed on two of them before it
+  is visible) keeps these rates with the load spread over its nodes: refresh token 52,000/s, client credentials
+  48,000/s, introspection 46,600/s, password sign-in 434/s.
+
 - A password sign-in costs ~26 ms of CPU (argon2id, 19 MiB; m=19456, t=2, p=1). Stored hashes are sealed with the
   master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
   far outside these (over 256 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
 - Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 10.3 GB per node on disk);
-  lookups and token traffic do not slow down at that size. Memory per node: about 160 MB of Go heap idle and at most
-  450 MB under full load (every scenario at 64 concurrent clients), plus the store's own caches (BadgerDB: about
+  lookups and token traffic do not slow down at that size. Memory per node (measured at 100 organizations × 1,000
+  users): about 150–250 MB of Go heap idle and at most
+  about 400 MB under full load without password sign-ins (every other scenario at once, 64 concurrent clients each),
+  plus 19 MiB for each password being hashed (at most `limits.password_workers`, one per CPU by default: about 900 MB
+  in all with every scenario at once on 15 cores), plus the store's own caches (BadgerDB: about
   0.5 GB of block, index and memtable memory), plus `limits.ephemeral_mb` at most for short-lived sign-in state (1 GiB
   by default, a few MB in normal use). Plan 2 GB per node. BadgerDB also maps its files into memory: the operating
   system shows them as resident (several GB at this size), but they are file pages it can drop at any time, not

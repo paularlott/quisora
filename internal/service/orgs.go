@@ -3,10 +3,7 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
-	"sync"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -50,7 +47,7 @@ func (s *Service) canAssignRole(ctx context.Context, a *Actor, org *model.Org, r
 	}
 	switch role {
 	case model.RoleSuperAdmin:
-		return a.IsSuper() && org.Primary
+		return a.IsSuper() && org.Primary()
 	case model.RoleAdmin, model.RoleManager:
 		return s.canAdminOrg(a, org.ID)
 	case model.RoleUser:
@@ -90,59 +87,11 @@ func orgConflict(err error) error {
 	return mapStore(err)
 }
 
-// primaryOrgs returns every organization marked primary, ordered by id: one (ErrTwoPrimaries otherwise).
-func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
-	orgs, _, err := s.Orgs.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "primary", Value: true}}})
-	if err != nil {
-		return nil, err
-	}
-	slices.SortFunc(orgs, func(a, b *model.Org) int { return strings.Compare(a.ID, b.ID) })
-	return orgs, nil
-}
-
-// ErrTwoPrimaries is the error of PrimaryOrg when more than one organization is marked primary. The primary
-// organization is the first one, made by "quisora bootstrap", and never changes: a second can only have been left by
-// an interrupted "quisora set-primary" of an earlier build, or by damage.
-var ErrTwoPrimaries = errors.New("more than one organization is marked primary (left by an interrupted \"quisora set-primary\" " +
-	"of an earlier build, or by damage): restore a backup made before it")
-
-// PrimaryOrg returns the primary organization: ErrNotFound before "quisora bootstrap" made it (or before the store
-// holds it here), ErrTwoPrimaries if more than one is marked.
+// PrimaryOrg returns the primary organization (model.PrimaryOrgID): ErrNotFound before "quisora bootstrap" made it (or
+// before the store holds it here).
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
-	// It never changes, so finding it (which lists the organizations) is done once; the organization itself is read
-	// every time.
-	s.primary.mu.Lock()
-	id := s.primary.id
-	s.primary.mu.Unlock()
-	if id != "" {
-		if o, err := s.Orgs.Get(ctx, id); err == nil && o.Primary {
-			return o, nil
-		}
-	}
-	orgs, err := s.primaryOrgs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	switch {
-	case len(orgs) == 0:
-		return nil, ErrNotFound
-	case len(orgs) > 1:
-		names := make([]string, len(orgs))
-		for i, o := range orgs {
-			names[i] = o.Name
-		}
-		return nil, fmt.Errorf("%w: %s", ErrTwoPrimaries, strings.Join(names, ", "))
-	}
-	s.primary.mu.Lock()
-	s.primary.id = orgs[0].ID
-	s.primary.mu.Unlock()
-	return orgs[0], nil
-}
-
-// primaryChoice is PrimaryOrg's remembered organization id.
-type primaryChoice struct {
-	mu sync.Mutex
-	id string
+	o, err := s.Orgs.Get(ctx, model.PrimaryOrgID)
+	return o, mapStore(err)
 }
 
 // GetOrg returns an org the actor may see (its own, or any for super admins). a == nil skips the check (internal).
@@ -154,10 +103,20 @@ func (s *Service) GetOrg(ctx context.Context, a *Actor, id string) (*model.Org, 
 	return o, mapStore(err)
 }
 
-// OrgByName looks up an organization by its URL name (public: used by /login/<org>).
+// OrgByName looks up an organization by its URL name.
 func (s *Service) OrgByName(ctx context.Context, name string) (*model.Org, error) {
 	o, err := s.Orgs.GetByUnique(ctx, model.OrgNameKey(name))
 	return o, mapStore(err)
+}
+
+// OrgByRef looks up the organization a URL names (public: /o/<org>/...): by id when ref is one (model.IsID), by name
+// otherwise.
+func (s *Service) OrgByRef(ctx context.Context, ref string) (*model.Org, error) {
+	if model.IsID(ref) {
+		o, err := s.Orgs.Get(ctx, ref)
+		return o, mapStore(err)
+	}
+	return s.OrgByName(ctx, ref)
 }
 
 // ListOrgs lists organizations visible to the actor.
@@ -251,7 +210,7 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if err != nil {
 		return mapStore(err)
 	}
-	if o.Primary {
+	if o.Primary() {
 		return ErrPrimaryOrg
 	}
 	n, err := s.Users.Count(ctx, id) // gated by the organization's partition: a node trailing it refuses

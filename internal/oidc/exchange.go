@@ -46,7 +46,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 		return nil, oerr("invalid_request", "only access tokens can be requested")
 	}
 	invalid := oerr("invalid_grant", "the subject token is invalid, expired or revoked")
-	cl, err := p.VerifyAccessToken(ctx, st)
+	cl, err := p.verifyIn(ctx, c.OrgID, st)
 	if err != nil {
 		if errors.Is(err, service.ErrUnavailable) {
 			return nil, serverError(err) // not known to be bad: the caller keeps the subject token and retries
@@ -56,7 +56,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	if cl.Sub == cl.ClientID {
 		return nil, oerr("invalid_grant", "the subject token must be a user's token")
 	}
-	if !slices.Contains(cl.Aud, c.ID) && !(c.IntrospectOrg && cl.Org == c.OrgID) {
+	if !slices.Contains(cl.Aud, c.ClientID()) && !(c.IntrospectOrg && cl.Org == c.OrgID) {
 		return nil, oerr("invalid_grant", "the subject token was not issued for this client")
 	}
 	u, err := p.user(ctx, cl.Sub)
@@ -126,15 +126,15 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 // (if any) nested inside. A client narrowing a token issued to itself adds no actor.
 func exchangeActor(c *model.Client, cl *Claims) (string, *oauthError) {
 	prev := cl.Act
-	if depth := actDepth(prev); depth < 0 || depth >= maxActDepth && cl.ClientID != c.ID {
+	if depth := actDepth(prev); depth < 0 || depth >= maxActDepth && cl.ClientID != c.ClientID() {
 		return "", oerr("invalid_grant", "the subject token's chain of actors is too long")
 	}
-	if cl.ClientID == c.ID {
+	if cl.ClientID == c.ClientID() {
 		return string(prev), nil
 	}
 	o := newObj(128)
-	o.str("sub", c.ID)
-	o.str("client_id", c.ID)
+	o.str("sub", c.ClientID())
+	o.str("client_id", c.ClientID())
 	if len(prev) > 0 {
 		o.raw("act", string(prev))
 	}

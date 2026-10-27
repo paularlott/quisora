@@ -2,6 +2,8 @@ package model
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/base64"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -36,7 +38,6 @@ type Org struct {
 	Meta
 	Name        string      `msgpack:"n" json:"name"`
 	DisplayName string      `msgpack:"dn" json:"display_name"`
-	Primary     bool        `msgpack:"p" json:"primary"`
 	Settings    OrgSettings `msgpack:"s" json:"settings"`
 	// SignOut are the organization's emergency sign-out counters (signout.go); LastSignOut the last pull.
 	SignOut     SignOutCounters `msgpack:"so" json:"-"`
@@ -47,16 +48,25 @@ type Org struct {
 }
 
 func (o *Org) Kind() Kind { return KindOrg }
+
+// Primary reports whether o is the server's own organization, the first one ("quisora bootstrap" makes it with the
+// fixed id PrimaryOrgID): its super admins administer the server. It never changes, so it is not stored.
+func (o *Org) Primary() bool { return o.ID == PrimaryOrgID }
+
 func (o *Org) Index() Index {
 	return Index{
 		Partition: "", // global: every organization's page and sign-in reads the organization list
 		Unique:    []string{OrgNameKey(o.Name)},
-		Fields:    map[string]any{"name": o.Name, "display_name": o.DisplayName, "primary": o.Primary, "created": o.Created},
+		Fields:    map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created},
 	}
 }
 
 // OrgNameKey is the unique key for an organization name.
 func OrgNameKey(name string) string { return Lower(name) }
+
+// OrgPath is the path of an organization's page or endpoint: /o/<id> followed by rest ("" or starting with "/"). Every
+// organization has its own address space, and the OAuth issuer is its root.
+func OrgPath(orgID, rest string) string { return "/o/" + orgID + rest }
 
 var orgNameRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
@@ -67,11 +77,13 @@ var ReservedOrgNames = map[string]bool{
 	"www": true, "auth": true, "signin": true, "signup": true, "register": true, "system": true, "root": true,
 	"null": true, "undefined": true, "callback": true, "invite": true, "reset": true, "verify-email": true,
 	"api-docs": true, "branding": true, "oauth2": true, "openid": true, "well-known-openid": true, "new": true, "settings": true, "help": true, "docs": true,
+	"o": true,
 }
 
-// ValidOrgName reports whether name is a URL-safe, unreserved organization name.
+// ValidOrgName reports whether name is a URL-safe, unreserved organization name that cannot be taken for an id
+// (IsID): /o/<org> names an organization by either.
 func ValidOrgName(name string) bool {
-	return orgNameRe.MatchString(name) && !ReservedOrgNames[name]
+	return orgNameRe.MatchString(name) && !ReservedOrgNames[name] && !IsID(name)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -322,10 +334,8 @@ func (u *User) Index() Index {
 		Unique:    uq,
 		Fields: map[string]any{
 			"username": u.Username, "email": u.Email, "name": u.FullName(), "family_name": u.FamilyName,
-			"external_id": u.ExternalID,
-			"role":        string(u.Role), "active": u.Active, "inactive": !u.Active, "created": u.Created,
-			"tags": strings.Join(u.Tags, " "), "user_type": u.UserType, "department": u.Work.Department,
-			"manager_id": u.Work.ManagerID, "employee_number": u.Work.EmployeeNumber,
+			"role": string(u.Role), "active": u.Active, "inactive": !u.Active, "created": u.Created,
+			"tags": strings.Join(u.Tags, " "), "manager_id": u.Work.ManagerID,
 			"expiring": u.ValidUntil != nil, "valid_until": validUntilField(u.ValidUntil),
 			"super_admin": u.Role == RoleSuperAdmin, "admin_rank": u.Role.Rank() >= RoleAdmin.Rank(),
 		},
@@ -381,7 +391,7 @@ func (g *Group) Index() Index {
 		Scope:     g.OrgID,
 		Partition: g.OrgID,
 		Unique:    uq,
-		Fields: map[string]any{"display_name": g.DisplayName, "external_id": g.ExternalID, "created": g.Created,
+		Fields: map[string]any{"display_name": g.DisplayName, "created": g.Created,
 			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0},
 	}
 }
@@ -432,13 +442,13 @@ func (m *Member) Index() Index {
 	if !m.Active() {
 		// Out of both membership indexes, so "members of a group" and "groups of a user" never list it, and it
 		// expires once no writer could still be stalled on an older change.
-		return Index{Scope: m.OrgID, Partition: m.OrgID, Fields: map[string]any{"group_id": "", "user_id": "", "created": m.Created},
+		return Index{Scope: m.OrgID, Partition: m.OrgID, Fields: map[string]any{"group_id": "", "user_id": ""},
 			Expires: m.Removed.Add(RemovedMemberRetention)}
 	}
 	return Index{
 		Scope:     m.OrgID,
 		Partition: m.OrgID,
-		Fields:    map[string]any{"group_id": m.GroupID, "user_id": m.UserID, "created": m.Created},
+		Fields:    map[string]any{"group_id": m.GroupID, "user_id": m.UserID},
 	}
 }
 
@@ -493,8 +503,9 @@ type Tenant struct {
 	DisplayName string         `msgpack:"dn" json:"display_name"`
 	Description string         `msgpack:"d" json:"description,omitempty"`
 	Settings    TenantSettings `msgpack:"s" json:"settings"`
-	// Resources are the APIs (resource indicators, RFC 8707: an MCP server's URL, say) the tenant owns: unique
-	// across the server. A self-registered application asking for one of them is governed by this tenant.
+	// Resources are the APIs (resource indicators, RFC 8707: an MCP server's URL, say) the tenant owns: unique within
+	// the organization (another organization may own the same URL). A self-registered application asking for one of
+	// them is governed by this tenant.
 	Resources []string `msgpack:"res,omitempty" json:"resources"`
 }
 
@@ -502,7 +513,7 @@ func (t *Tenant) Kind() Kind { return KindTenant }
 func (t *Tenant) Index() Index {
 	uniq := []string{TenantNameKey(t.OrgID, t.Name)}
 	for _, r := range t.Resources {
-		uniq = append(uniq, TenantResourceKey(r))
+		uniq = append(uniq, TenantResourceKey(t.OrgID, r))
 	}
 	return Index{
 		Scope:     t.OrgID,
@@ -514,15 +525,13 @@ func (t *Tenant) Index() Index {
 
 func TenantNameKey(orgID, name string) string { return orgID + "/n/" + Lower(name) }
 
-// TenantResourceKey is the unique value claiming a resource for one tenant (server-wide): its canonical form, so
-// "https://MCP.example.com/mcp/" cannot be claimed by another tenant than "https://mcp.example.com/mcp".
-func TenantResourceKey(resource string) string {
-	return tenantResourcePrefix + CanonicalResource(resource)
+// TenantResourceKey is the unique value claiming a resource for one tenant of an organization: its canonical form, so
+// "https://MCP.example.com/mcp/" cannot be claimed by another tenant than "https://mcp.example.com/mcp". It starts with
+// the organization's id like every unique value of the organization's records, so the same resource may belong to
+// tenants of two organizations.
+func TenantResourceKey(orgID, resource string) string {
+	return orgID + "/res/" + CanonicalResource(resource)
 }
-
-// tenantResourcePrefix starts every TenantResourceKey. The other unique keys of a tenant start with an organization id,
-// a UUID, which never reads "res/".
-const tenantResourcePrefix = "res/"
 
 // CanonicalResource is a resource indicator compared loosely: scheme and host lower case, no default port, no
 // trailing slash on the path (the MCP authorization spec's canonical server URI). Not a URI: s itself.
@@ -572,8 +581,7 @@ func (a *TenantAccess) Index() Index {
 	return Index{
 		Scope:     a.OrgID,
 		Partition: a.OrgID,
-		Fields: map[string]any{"tenant_id": a.TenantID, "subject_id": a.SubjectID, "subject_type": a.SubjectType,
-			"created": a.Created},
+		Fields:    map[string]any{"tenant_id": a.TenantID},
 	}
 }
 
@@ -643,36 +651,59 @@ type Client struct {
 	// RFC 8628). Off: only plain users may, as a code someone was talked into entering would give their device an
 	// administrator's tokens.
 	DevicePrivileged bool `msgpack:"dvp,omitempty" json:"device_privileged_users"`
+	// ProviderID is the organization provider (of another organization, Provider.SourceOrg) this client is the sign-in
+	// application of: made and removed with it, never by hand. A client whose provider is gone or no longer uses it is
+	// an orphan the sweep removes.
+	ProviderID string `msgpack:"pv,omitempty" json:"-"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to
-	// no organization (OrgID and TenantID empty): each authorization request names resources, and the tenant that
-	// owns them (Tenant.Resources), if it allows self-registered apps, decides who may sign in and how. Always a
-	// public client with PKCE; consent is always asked.
+	// the organization it registered or was first authorized in (OrgID), and no tenant (TenantID empty): each
+	// authorization request names resources, and the tenant of that organization that owns them (Tenant.Resources), if
+	// it allows self-registered apps, decides who may sign in and how. Always a public client with PKCE; consent is
+	// always asked.
 	SelfRegistered bool `msgpack:"sr,omitempty" json:"self_registered,omitempty"`
+	// MetadataURL is the client_id of a metadata-document application: the URL of its document, which the application
+	// sends as it is. The record's id is ClientRecordID of it, since the same document is the application of every
+	// organization that lets it in, one record each. Empty for every other client, whose client_id is its id.
+	MetadataURL string `msgpack:"mu,omitempty" json:"-"`
 	// MetadataFetched is when a metadata-document client's document was last read (zero for RFC 7591 ones).
 	MetadataFetched time.Time `msgpack:"mf,omitempty" json:"metadata_fetched,omitzero"`
 	// LastUsed is when a self-registered app was last given an authorization code; one never used is removed a day
 	// after it registered.
 	LastUsed time.Time `msgpack:"lu,omitempty" json:"last_used,omitzero"`
-	// UsedIn lists the tenants a self-registered app has been authorized in (for their administrators' lists).
-	UsedIn []string `msgpack:"ui,omitempty" json:"-"`
-}
-
-// SelfRegisteredClientID reports whether a client id is that of a self-registered application: a dynamically registered
-// one ("dyn-" and a random part) or the URL of a Client ID Metadata Document. Such a client belongs to no organization,
-// so its record (and its partition key) is global: partition 0.
-func SelfRegisteredClientID(id string) bool {
-	return strings.HasPrefix(id, DynamicClientPrefix) || strings.HasPrefix(id, "https://")
 }
 
 // DynamicClientPrefix starts the id of a dynamically registered (RFC 7591) client.
 const DynamicClientPrefix = "dyn-"
 
-// IsMetadataClient reports whether the client's id is the URL of its Client ID Metadata Document.
-func (c *Client) IsMetadataClient() bool {
-	return c.SelfRegistered && strings.HasPrefix(c.ID, "https://")
+// metadataClientPrefix starts the record id of a metadata-document client (ClientRecordID).
+const metadataClientPrefix = "md_"
+
+// ClientRecordID is the id of the record of the client an application names in organization orgID by clientID, the
+// client_id it sends. A client's record id is its client_id, except for a metadata-document application, whose
+// client_id is the URL of its document and the same in every organization: its record id is a digest of the
+// organization and the URL, so each organization has a record of its own, and a request names it with the URL alone.
+func ClientRecordID(orgID, clientID string) string {
+	if !strings.HasPrefix(clientID, "https://") {
+		return clientID
+	}
+	sum := sha256.Sum256([]byte(orgID + "\n" + clientID))
+	return metadataClientPrefix + base64.RawURLEncoding.EncodeToString(sum[:])
 }
+
+// ClientID is the client_id the application sends and finds in its tokens (aud, client_id, azp): its id, except for a
+// metadata-document application, whose id is a record's (ClientRecordID) and whose client_id is the URL of its document.
+func (c *Client) ClientID() string {
+	if c.MetadataURL != "" {
+		return c.MetadataURL
+	}
+	return c.ID
+}
+
+// IsMetadataClient reports whether the client is a metadata-document application (its client_id is the URL of its
+// Client ID Metadata Document).
+func (c *Client) IsMetadataClient() bool { return c.SelfRegistered && c.MetadataURL != "" }
 
 // RequirePKCE reports whether authorization requests of the client must use PKCE (S256).
 func (c *Client) RequirePKCE() bool { return !c.PKCEOptional || c.Public() }
@@ -680,7 +711,7 @@ func (c *Client) RequirePKCE() bool { return !c.PKCEOptional || c.Public() }
 func (c *Client) Kind() Kind { return KindClient }
 func (c *Client) Index() Index {
 	return Index{
-		Scope:     c.OrgID, // a self-registered client has none: global
+		Scope:     c.OrgID,
 		Partition: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
 			"created": c.Created, "self_registered": c.SelfRegistered,
@@ -692,18 +723,21 @@ func (c *Client) Index() Index {
 // Upstream sign-in providers
 
 // Provider types. Every type but GitHub is OpenID Connect underneath: Google, GitLab and Auth0 are presets of the
-// issuer and scopes; Microsoft (Entra ID) adds its tenant rules.
+// issuer and scopes; Microsoft (Entra ID) adds its tenant rules; an organization provider is the issuer of another
+// organization of this server (Provider.SourceOrg), whose users sign in to this one as guests.
 const (
-	ProviderOIDC      = "oidc"
-	ProviderGitHub    = "github"
-	ProviderGoogle    = "google"
-	ProviderGitLab    = "gitlab"
-	ProviderAuth0     = "auth0"
-	ProviderMicrosoft = "microsoft"
+	ProviderOIDC         = "oidc"
+	ProviderGitHub       = "github"
+	ProviderGoogle       = "google"
+	ProviderGitLab       = "gitlab"
+	ProviderAuth0        = "auth0"
+	ProviderMicrosoft    = "microsoft"
+	ProviderOrganization = "organization"
 )
 
 // ProviderTypes lists the provider types in the order the admin console offers them.
-var ProviderTypes = []string{ProviderOIDC, ProviderGoogle, ProviderMicrosoft, ProviderGitHub, ProviderGitLab, ProviderAuth0}
+var ProviderTypes = []string{ProviderOIDC, ProviderGoogle, ProviderMicrosoft, ProviderGitHub, ProviderGitLab, ProviderAuth0,
+	ProviderOrganization}
 
 // MicrosoftAuthority is the Microsoft identity platform.
 const MicrosoftAuthority = "https://login.microsoftonline.com"
@@ -733,6 +767,10 @@ type Provider struct {
 	// "organizations"; with a tenant ID only that tenant is allowed).
 	Tenant         string   `msgpack:"tn" json:"tenant,omitempty"`
 	AllowedTenants []string `msgpack:"at" json:"allowed_tenants,omitempty"`
+	// SourceOrg is the organization whose users sign in through an organization provider: the provider's issuer is
+	// that organization's, and its client (ClientID) is an application of that organization, made and removed with
+	// the provider (Client.ProviderID).
+	SourceOrg string `msgpack:"so,omitempty" json:"source_org,omitempty"`
 }
 
 // OIDC reports whether the provider signs in with OpenID Connect (every type but GitHub).
@@ -783,14 +821,16 @@ func (p *Passkey) Kind() Kind { return KindPasskey }
 func (p *Passkey) Index() Index {
 	return Index{
 		Scope:     p.UserID,
-		Partition: p.OrgID, // the credential id is unique across organizations: a reservation holds it (GlobalUnique)
-		Unique:    []string{PasskeyCredentialKey(p.CredentialID)},
-		Fields:    map[string]any{"name": p.Name, "created": p.Created, "last_used": p.LastUsed},
+		Partition: p.OrgID,
+		Unique:    []string{PasskeyCredentialKey(p.UserID, p.CredentialID)},
 	}
 }
 
-// PasskeyCredentialKey is the unique key for a WebAuthn credential id.
-func PasskeyCredentialKey(id []byte) string { return b64(id) }
+// PasskeyCredentialKey is the unique key for a WebAuthn credential id: unique per user, not across the server. A
+// passkey is bound to the site, not to an organization, so one person may register the same authenticator in several
+// organizations; each such passkey lives in its own organization's partition, and a sign-in names the user first (the
+// WebAuthn user handle), then finds the credential among that user's passkeys.
+func PasskeyCredentialKey(userID string, id []byte) string { return userID + "/" + b64(id) }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Upstream identities linked to users
@@ -818,6 +858,13 @@ type Identity struct {
 	RefreshChecked time.Time `msgpack:"rc,omitempty" json:"-"`
 }
 
+// ProviderCallbackPath is the path of provider providerID's callback address in organization orgID's address space: where
+// the upstream provider sends the browser back, and so the redirect URI registered with it. One function, so the
+// address an organization provider registers in its source organization is the one the sign-in uses.
+func ProviderCallbackPath(orgID, providerID string) string {
+	return OrgPath(orgID, "/login/callback/"+url.PathEscape(providerID))
+}
+
 // ProviderAuthority names who issues a provider's subjects: its type, issuer and (Microsoft) directory, and when the
 // provider was created, so one deleted and created again under the same id never matches the old links.
 func ProviderAuthority(p *Provider) string {
@@ -836,7 +883,7 @@ func (i *Identity) Index() Index {
 		Scope:     i.UserID,
 		Partition: i.OrgID,
 		Unique:    []string{IdentityKey(i.ProviderID, i.Subject)},
-		Fields:    map[string]any{"provider_id": i.ProviderID, "created": i.Created},
+		Fields:    map[string]any{"provider_id": i.ProviderID},
 	}
 }
 
@@ -877,7 +924,6 @@ func (s *Session) Index() Index {
 	return Index{
 		Scope:     s.UserID,
 		Partition: s.OrgID,
-		Fields:    map[string]any{"ip": s.IP, "created": s.Created, "last_seen": s.LastSeen},
 		Expires:   s.Expires,
 	}
 }
@@ -922,7 +968,6 @@ type Grant struct {
 	ClaimsUI []string  `msgpack:"cu,omitempty" json:"claims_userinfo,omitempty"`
 	ClaimsID []string  `msgpack:"cid,omitempty" json:"claims_id_token,omitempty"`
 	Expires  time.Time `msgpack:"ex" json:"expires"`
-	Revoked  bool      `msgpack:"rv" json:"revoked"`
 	// Stamp is the session sign-out counters it was made under (signout.go).
 	Stamp SignOutStamp `msgpack:"st" json:"-"`
 	// DPoPJKT binds the refresh tokens of a public client's grant to a DPoP key (RFC 9449 §5): the thumbprint of
@@ -935,7 +980,7 @@ func (g *Grant) Index() Index {
 	return Index{
 		Scope:     g.UserID,
 		Partition: g.OrgID,
-		Fields:    map[string]any{"client_id": g.ClientID, "session_id": g.SessionID, "created": g.Created},
+		Fields:    map[string]any{"client_id": g.ClientID},
 		Expires:   g.Expires,
 	}
 }
@@ -970,7 +1015,7 @@ func (t *APIToken) Index() Index {
 	return Index{
 		Scope:     t.UserID,
 		Partition: t.OrgID,
-		Fields:    map[string]any{"name": t.Name, "created": t.Created, "last_used": t.LastUsed},
+		Fields:    map[string]any{"created": t.Created},
 		Expires:   t.Expires,
 	}
 }
@@ -990,7 +1035,7 @@ type SigningKey struct {
 
 func (k *SigningKey) Kind() Kind { return KindKey }
 func (k *SigningKey) Index() Index {
-	return Index{Partition: "", Fields: map[string]any{"alg": k.Alg, "created": k.Created}, Expires: k.Expires}
+	return Index{Partition: "", Expires: k.Expires}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1081,8 +1126,7 @@ func LinkTokenKey(hash string) string { return "t/" + hash }
 
 func (l *LinkToken) Kind() Kind { return KindLink }
 func (l *LinkToken) Index() Index {
-	return Index{Scope: l.UserID, Partition: l.OrgID, Unique: []string{LinkTokenKey(l.TokenHash)},
-		Fields: map[string]any{"purpose": l.Purpose, "created": l.Created}, Expires: l.Expires}
+	return Index{Scope: l.UserID, Partition: l.OrgID, Unique: []string{LinkTokenKey(l.TokenHash)}, Expires: l.Expires}
 }
 
 // SignIn holds a user's sign-in stamps, kept apart from the user record (ID is the user's id). A sign-in writes
@@ -1101,11 +1145,12 @@ type SignIn struct {
 
 func (s *SignIn) Kind() Kind { return KindSignIn }
 func (s *SignIn) Index() Index {
-	return Index{Scope: s.OrgID, Partition: s.OrgID, Fields: map[string]any{"last_login": s.LastLogin}}
+	return Index{Partition: s.OrgID} // read by user id only: never listed by organization, so it has no scope
 }
 
-// Lock is a cluster-wide lock record (a compare-and-swap its owner decides): Holder holds it until Until. Used to serialise
-// decisions that read more than one record (the super admins the server keeps).
+// Lock is a lease record, replicated with a compare-and-swap its owner decides: Holder holds it until Until, and a
+// holder that stops renewing it stops counting. Each node's report of its master keys is one (service.ReportMasterKey):
+// Holder is the report, Until how long it counts.
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`
@@ -1146,36 +1191,4 @@ func validUntilField(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
-}
-
-// Reservation claims a unique value that must hold across organizations (GlobalUnique) in a cluster that replicates by
-// partition: the record with ID = the reserved key names the record that holds the value, by kind and id. Its
-// partition key is the reserved key itself, so one node (the owner of that key's partition) decides every claim of a
-// value, and the claims spread over the partitions. A reservation whose holder no longer exists, or no longer lists
-// the value among its unique values, is free: the next claim takes it over when its copy of the holder shows that, and
-// the housekeeping leader's sweep releases it when the holder is gone (cluster.Node.SweepReservations).
-type Reservation struct {
-	Meta
-	// HolderKind and HolderID name the record that holds the reserved key.
-	HolderKind Kind   `msgpack:"hk" json:"holder_kind"`
-	HolderID   string `msgpack:"hi" json:"holder_id"`
-}
-
-func (r *Reservation) Kind() Kind { return KindReservation }
-func (r *Reservation) Index() Index {
-	return Index{Partition: r.ID}
-}
-
-// GlobalUnique reports whether key, a unique value of a record of kind, must be unique across organizations. Every
-// other unique value is prefixed by the organization (or by an id of one organization's record) and so lives in one
-// partition; these two are looked up with no organization at hand (a tenant's resource indicator in an authorization
-// request, a discoverable passkey's credential id on the landing page) and are reserved (KindReservation).
-func GlobalUnique(kind Kind, key string) bool {
-	switch kind {
-	case KindTenant:
-		return strings.HasPrefix(key, tenantResourcePrefix)
-	case KindPasskey:
-		return true
-	}
-	return false
 }

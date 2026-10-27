@@ -160,25 +160,28 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	self, err := s.emailActor(ctx, a, u)
-	if err != nil {
-		return nil, err
-	}
-	if self && !u.Role.Privileged() {
-		return nil, ErrForbidden
-	}
-	verified = verified && !self
-	if verified {
-		// as MarkEmailVerified: a verified address links sign-ins from providers to the account
-		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
-			return nil, err
-		}
-	}
 	addr, err := normEmail(address)
 	if err != nil {
 		return nil, err
 	}
+	// Who may do this is judged inside the write, on the copy being written, as every try meets it (modifyUser): a
+	// promotion committed since the read above makes the write stale, and the actor is judged again on the promoted
+	// account, never on the rank it had.
 	u, err = s.modifyUserAudited(ctx, a, u, "user.email.add", map[string]string{"email": addr, "verified": boolStr(verified)}, func(u *model.User) error {
+		self, err := s.emailActor(ctx, a, u)
+		if err != nil {
+			return err
+		}
+		if self && !u.Role.Privileged() {
+			return ErrForbidden
+		}
+		v := verified && !self
+		if v {
+			// as MarkEmailVerified: a verified address links sign-ins from providers to the account
+			if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+				return err
+			}
+		}
 		if strings.EqualFold(u.Email, addr) {
 			return &conflictErr{Invalid("email", "is already the primary email address")}
 		}
@@ -188,7 +191,7 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 		if len(u.LinkedEmails) >= model.MaxLinkedEmails {
 			return Invalid("email", "at most "+itoa(model.MaxLinkedEmails)+" linked email addresses are allowed")
 		}
-		u.LinkedEmails = append(u.LinkedEmails, model.LinkedEmail{Address: addr, Verified: verified, Added: time.Now().UTC()})
+		u.LinkedEmails = append(u.LinkedEmails, model.LinkedEmail{Address: addr, Verified: v, Added: time.Now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -204,16 +207,16 @@ func (s *Service) RemoveLinkedEmail(ctx context.Context, a *Actor, userID, addre
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if self, err := s.emailActor(ctx, a, u); err != nil {
-		return nil, err
-	} else if self && !u.Role.Privileged() {
-		return nil, ErrForbidden
-	}
 	address = strings.TrimSpace(address)
-	if strings.EqualFold(u.Email, address) {
-		return nil, Invalid("email", "is the primary address; make another address primary before removing it")
-	}
 	u, err = s.modifyUserAudited(ctx, a, u, "user.email.remove", map[string]string{"email": address}, func(u *model.User) error {
+		if self, err := s.emailActor(ctx, a, u); err != nil {
+			return err
+		} else if self && !u.Role.Privileged() {
+			return ErrForbidden
+		}
+		if strings.EqualFold(u.Email, address) {
+			return Invalid("email", "is the primary address; make another address primary before removing it")
+		}
 		for i, l := range u.LinkedEmails {
 			if strings.EqualFold(l.Address, address) {
 				u.LinkedEmails = append(u.LinkedEmails[:i:i], u.LinkedEmails[i+1:]...)
@@ -236,18 +239,19 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if _, err := s.emailActor(ctx, a, u); err != nil {
-		return nil, err
-	}
-	if a != System && a.UserID != u.ID {
-		// as changing the primary address in UpdateUser: password resets go there
-		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
-			return nil, err
-		}
-	}
 	address = strings.TrimSpace(address)
 	detail := map[string]string{}
 	u, err = s.modifyUserAudited(ctx, a, u, "user.email.primary", detail, func(u *model.User) error {
+		if _, err := s.emailActor(ctx, a, u); err != nil {
+			return err
+		}
+		if a != System && a.UserID != u.ID {
+			// as changing the primary address in UpdateUser: password resets go there. Judged on the copy being
+			// written: an account promoted since the caller's read is a privileged account's sign-in reset.
+			if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+				return err
+			}
+		}
 		l, ok := u.LinkedEmail(address)
 		if !ok {
 			return ErrNotFound
@@ -301,14 +305,14 @@ func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, addre
 	if a != System && a.UserID == u.ID {
 		return nil, Invalid("email", "your own email address is verified by the link mailed to it")
 	}
-	if _, err := s.emailActor(ctx, a, u); err != nil {
-		return nil, err
-	}
-	if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
-		return nil, err
-	}
 	address = strings.TrimSpace(address)
 	u, err = s.modifyUserAudited(ctx, a, u, "user.email.verify", map[string]string{"email": address, "method": "manual"}, func(u *model.User) error {
+		if _, err := s.emailActor(ctx, a, u); err != nil {
+			return err
+		}
+		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
+			return err
+		}
 		if strings.EqualFold(u.Email, address) {
 			if u.EmailVerified {
 				return &conflictErr{Invalid("email", "is already verified")}

@@ -48,7 +48,7 @@ func TestFooterRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	r.Render(rec, 200, "landing", &Page{Data: map[string]any{}, Site: Site{Name: "Q", Footer: FooterHTML(`© 2026 <a href="https://fortix.com">Fortix</a><script>x</script>`)}})
+	r.Render(rec, 200, "not-found", &Page{Data: map[string]any{}, Site: Site{Name: "Q", Footer: FooterHTML(`© 2026 <a href="https://fortix.com">Fortix</a><script>x</script>`)}})
 	if body := rec.Body.String(); !strings.Contains(body, `<p>© 2026 <a href="https://fortix.com">Fortix</a></p>`) {
 		t.Errorf("footer not rendered as markup:\n%s", body)
 	}

@@ -244,7 +244,7 @@ func TestRestoreFromAtStart(t *testing.T) {
 	ctx := context.Background()
 	src, _, _ := startApp(t, "sqlite")
 	var buf bytes.Buffer
-	if _, err := backup.Write(ctx, src.Store, src.Svc.Sealer, &buf); err != nil { // as GET /api/backup does
+	if _, err := backup.WriteWith(ctx, src.Store, src.Svc.Sealer, &buf, backup.Options{}); err != nil { // as GET /api/backup does
 		t.Fatal(err)
 	}
 	file := filepath.Join(t.TempDir(), "quisora.bak")

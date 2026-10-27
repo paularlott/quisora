@@ -15,6 +15,8 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/upstream"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 func TestUpstreamOIDCSignIn(t *testing.T) {
@@ -23,13 +25,13 @@ func TestUpstreamOIDCSignIn(t *testing.T) {
 	b := u.browser(t)
 
 	// The provider shows as a button on the organization page.
-	_, body := b.get("/login/acme?next=/x")
-	if !strings.Contains(body, "Continue with Corp SSO") || !strings.Contains(body, "/login/acme/provider/"+p.ID+"?next=%2Fx") {
+	_, body := b.get("/o/acme/login?next=" + url.QueryEscape(u.at("/x")))
+	if !strings.Contains(body, "Continue with Corp SSO") || !strings.Contains(body, u.at("/login/provider/"+p.ID+"?next=")+url.QueryEscape(u.at("/x"))) {
 		t.Fatalf("provider button missing: %.800s", body)
 	}
 
 	res := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/x" || !b.hasSession() {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/x") || !b.hasSession() {
 		t.Fatalf("callback: %d %q session=%v", res.StatusCode, res.Header.Get("Location"), b.hasSession())
 	}
 	user, err := u.Svc.FindUserByEmail(context.Background(), u.org.ID, "pat@corp.example")
@@ -58,7 +60,7 @@ func TestUpstreamOIDCSignIn(t *testing.T) {
 	// Same identity again: same user, not a second one, default next.
 	b2 := u.browser(t)
 	res = b2.via(t, u, p, "acme", "", claims("sub-1", "changed@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/account" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/account") {
 		t.Fatalf("second sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	if n, _ := u.Svc.Users.Count(context.Background(), u.org.ID); n != 1 {
@@ -77,7 +79,7 @@ func TestUpstreamHostileNext(t *testing.T) {
 	p := u.oidcProvider(t, nil)
 	b := u.browser(t)
 	res := b.via(t, u, p, "acme", "//evil.example/steal", claims("s1", "a@corp.example"))
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/account" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/account") {
 		t.Fatalf("hostile next: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 }
@@ -109,7 +111,7 @@ func TestUpstreamFailuresRedirectToLoginWithMessage(t *testing.T) {
 	} {
 		b := u.browser(t)
 		res := b.via(t, u, tc.p, "acme", "/back", tc.c)
-		want := "/login/acme?error=" + tc.code + "&next=%2Fback"
+		want := u.at("/login?error=" + tc.code + "&next=" + url.QueryEscape(u.at("/back")))
 		if res.StatusCode != 302 || res.Header.Get("Location") != want || b.hasSession() {
 			t.Errorf("%s: %d %q session=%v (want %s)", tc.name, res.StatusCode, res.Header.Get("Location"), b.hasSession(), want)
 			continue
@@ -127,7 +129,7 @@ func TestUpstreamFailuresRedirectToLoginWithMessage(t *testing.T) {
 		t.Fatalf("failure audits %d", n)
 	}
 	// An arbitrary error code in the URL is never reflected.
-	_, body := u.browser(t).get("/login/acme?error=%3Cscript%3Ealert(1)%3C/script%3E")
+	_, body := u.browser(t).get("/o/acme/login?error=%3Cscript%3Ealert(1)%3C/script%3E")
 	if strings.Contains(body, "<script>alert") {
 		t.Fatal("error parameter reflected")
 	}
@@ -139,13 +141,13 @@ func TestUpstreamStateProtection(t *testing.T) {
 
 	// A callback without the cookie of the browser that started it (login CSRF): refused, nothing signed in.
 	b := u.browser(t)
-	res, _ := b.get("/login/acme/provider/" + p.ID)
+	res, _ := b.get("/o/acme/login/provider/" + p.ID)
 	loc := res.Header.Get("Location")
 	lu, _ := url.Parse(loc)
 	code := u.oidc.Authorize(loc, claims("c1", "c1@corp.example"))
-	attacker := u.browser(t)
+	attacker := u.browserAt(t, u.org)
 	res, _ = attacker.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=" + code)
-	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "/?error=failed") || attacker.hasSession() {
+	if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), u.at("/login?error=failed")) || attacker.hasSession() {
 		t.Fatalf("callback without cookie: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// ...and the state is burnt, so the real browser cannot finish it either.
@@ -155,46 +157,91 @@ func TestUpstreamStateProtection(t *testing.T) {
 	}
 	// Unknown state, empty callback.
 	for _, q := range []string{"state=n1.nope&code=x", "", "code=x"} {
-		res, _ = u.browser(t).get("/login/callback/" + p.ID + "?" + q)
-		if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), "/?error=") {
+		res, _ = u.browserAt(t, u.org).get("/login/callback/" + p.ID + "?" + q)
+		if res.StatusCode != 302 || !strings.HasPrefix(res.Header.Get("Location"), u.at("/login?error=")) {
 			t.Fatalf("callback %q: %d %q", q, res.StatusCode, res.Header.Get("Location"))
 		}
 	}
 	// A callback for a provider id that does not exist, and a denial with a state that was never issued.
-	b0 := u.browser(t)
+	b0 := u.browserAt(t, u.org)
 	res, _ = b0.get("/login/callback/nope?state=x&code=y")
 	if res.StatusCode != 302 || b0.hasSession() {
 		t.Fatalf("callback for unknown provider: %d", res.StatusCode)
 	}
-	res, _ = u.browser(t).get("/login/callback/" + p.ID + "?error=access_denied&state=unknown")
-	if res.Header.Get("Location") != "/?error=failed" {
+	res, _ = u.browserAt(t, u.org).get("/login/callback/" + p.ID + "?error=access_denied&state=unknown")
+	if res.Header.Get("Location") != u.at("/login?error=failed") {
 		t.Fatalf("denied with an unknown state: %q", res.Header.Get("Location"))
 	}
 	// The user denied access at the provider.
 	b = u.browser(t)
-	res, _ = b.get("/login/acme/provider/" + p.ID + "?next=/n")
+	res, _ = b.get("/o/acme/login/provider/" + p.ID + "?next=" + url.QueryEscape(u.at("/n")))
 	st, _ := url.Parse(res.Header.Get("Location"))
 	res, _ = b.get("/login/callback/" + p.ID + "?error=access_denied&state=" + url.QueryEscape(st.Query().Get("state")))
-	if res.StatusCode != 302 || res.Header.Get("Location") != "/login/acme?error=denied&next=%2Fn" {
+	if res.StatusCode != 302 || res.Header.Get("Location") != u.at("/login?error=denied&next="+url.QueryEscape(u.at("/n"))) {
 		t.Fatalf("denied: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+}
+
+// A provider's callback address is its organization's, and a response that arrives at another organization's is
+// refused as an unknown state is: the state is burnt, nobody is signed in, and the browser goes to the sign-in page of
+// the organization whose address it reached.
+func TestUpstreamCallbackIsPerOrganization(t *testing.T) {
+	u := newUpEnv(t, nil)
+	p := u.oidcProvider(t, nil)
+	other := u.org2(t)
+	if got, want := u.Mod.Upstream.CallbackURL(u.org.ID, p.ID), u.Cfg.Server.PublicURL+"/o/"+u.org.ID+"/login/callback/"+p.ID; got != want {
+		t.Fatalf("callback url %q, want %q", got, want)
+	}
+	if upstream.CallbackPath(u.org.ID, p.ID) == upstream.CallbackPath(other.ID, p.ID) {
+		t.Fatal("two organizations share a callback path")
+	}
+
+	b := u.browser(t)
+	res, _ := b.get("/o/acme/login/provider/" + p.ID)
+	loc := res.Header.Get("Location")
+	lu, _ := url.Parse(loc)
+	if got, want := lu.Query().Get("redirect_uri"), u.Mod.Upstream.CallbackURL(u.org.ID, p.ID); got != want {
+		t.Fatalf("redirect_uri %q, want %q", got, want)
+	}
+	code := u.oidc.Authorize(loc, claims("c1", "c1@corp.example"))
+	state := url.QueryEscape(lu.Query().Get("state"))
+	res, _ = b.get("/o/other/login/callback/" + p.ID + "?state=" + state + "&code=" + code)
+	if res.StatusCode != 302 || res.Header.Get("Location") != web.OrgPath(other.ID, "/login?error=failed") || b.hasSession() {
+		t.Fatalf("callback at another organization: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	// the state is burnt: the right address cannot finish it now either
+	res, _ = b.get("/o/acme/login/callback/" + p.ID + "?state=" + state + "&code=" + code)
+	if b.hasSession() || res.Header.Get("Location") != u.at("/login?error=failed") {
+		t.Fatalf("burnt state: %d %q session=%v", res.StatusCode, res.Header.Get("Location"), b.hasSession())
+	}
+	if n, _ := u.Svc.Users.Count(context.Background(), u.org.ID); n != 0 {
+		t.Fatalf("a user was provisioned: %d", n)
+	}
+	// a denial that arrives at another organization's address does not consume the state either
+	res, _ = b.get("/o/acme/login/provider/" + p.ID)
+	lu, _ = url.Parse(res.Header.Get("Location"))
+	st := url.QueryEscape(lu.Query().Get("state"))
+	res, _ = b.get("/o/other/login/callback/" + p.ID + "?error=access_denied&state=" + st)
+	if res.Header.Get("Location") != web.OrgPath(other.ID, "/login?error=failed") {
+		t.Fatalf("denial at another organization: %q", res.Header.Get("Location"))
 	}
 }
 
 func TestUpstreamProviderScoping(t *testing.T) {
 	u := newUpEnv(t, nil)
 	p := u.oidcProvider(t, nil)
-	u.org2(t)
+	other := u.org2(t)
 	b := u.browser(t)
 	// A provider id from another organization's page does nothing.
-	res, _ := b.get("/login/other/provider/" + p.ID)
-	if res.StatusCode != 302 || res.Header.Get("Location") != "/login/other?error=disabled" {
+	res, _ := b.get("/o/other/login/provider/" + p.ID)
+	if res.StatusCode != 302 || res.Header.Get("Location") != web.OrgPath(other.ID, "/login?error=disabled") {
 		t.Fatalf("cross-org provider: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	res, _ = b.get("/login/acme/provider/nope")
-	if res.Header.Get("Location") != "/login/acme?error=disabled" {
+	res, _ = b.get("/o/acme/login/provider/nope")
+	if res.Header.Get("Location") != u.at("/login?error=disabled") {
 		t.Fatalf("unknown provider: %q", res.Header.Get("Location"))
 	}
-	res, _ = b.get("/login/nope/provider/" + p.ID)
+	res, _ = b.get("/o/nope/login/provider/" + p.ID)
 	if res.StatusCode != 404 {
 		t.Fatalf("unknown org: %d", res.StatusCode)
 	}
@@ -203,12 +250,12 @@ func TestUpstreamProviderScoping(t *testing.T) {
 	if _, err := u.Svc.UpdateProvider(context.Background(), service.System, p.ID, service.ProviderInput{Enabled: &off}); err != nil {
 		t.Fatal(err)
 	}
-	_, body := b.get("/login/acme")
+	_, body := b.get("/o/acme/login")
 	if strings.Contains(body, "Continue with Corp SSO") {
 		t.Fatal("disabled provider listed")
 	}
-	res, _ = b.get("/login/acme/provider/" + p.ID)
-	if res.Header.Get("Location") != "/login/acme?error=disabled" {
+	res, _ = b.get("/o/acme/login/provider/" + p.ID)
+	if res.Header.Get("Location") != u.at("/login?error=disabled") {
 		t.Fatalf("disabled provider start: %q", res.Header.Get("Location"))
 	}
 }
@@ -225,7 +272,7 @@ func TestUpstreamInactiveLinkedUser(t *testing.T) {
 	}
 	b2 := u.browser(t)
 	res := b2.via(t, u, p, "acme", "", claims("i1", "i1@corp.example"))
-	if res.Header.Get("Location") != "/login/acme?error=disabled" || b2.hasSession() {
+	if res.Header.Get("Location") != u.at("/login?error=disabled") || b2.hasSession() {
 		t.Fatalf("inactive user: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 }
@@ -240,7 +287,7 @@ func TestUpstreamGitHub(t *testing.T) {
 	}
 	b := u.browser(t)
 	res := b.via(t, u, p, "acme", "/gh", nil)
-	if res.StatusCode != 303 || res.Header.Get("Location") != "/gh" || !b.hasSession() {
+	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/gh") || !b.hasSession() {
 		t.Fatalf("github sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	user, err := u.Svc.FindUserByEmail(context.Background(), u.org.ID, "octo@example.com")
@@ -252,14 +299,14 @@ func TestUpstreamGitHub(t *testing.T) {
 	u.gh.Emails = []map[string]any{{"email": "x@example.com", "primary": true, "verified": false}}
 	b2 := u.browser(t)
 	res = b2.via(t, u, p, "acme", "", nil)
-	if res.Header.Get("Location") != "/login/acme?error=unverified" || b2.hasSession() {
+	if res.Header.Get("Location") != u.at("/login?error=unverified") || b2.hasSession() {
 		t.Fatalf("unverified github email: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// Domain outside the allow list.
 	u.gh.Emails = []map[string]any{{"email": "x@other.org", "primary": true, "verified": true}}
 	b3 := u.browser(t)
 	res = b3.via(t, u, p, "acme", "", nil)
-	if res.Header.Get("Location") != "/login/acme?error=domain" {
+	if res.Header.Get("Location") != u.at("/login?error=domain") {
 		t.Fatalf("github domain: %q", res.Header.Get("Location"))
 	}
 }
@@ -300,7 +347,7 @@ func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 	c["amr"] = []string{"mfa", "otp"} // what the provider says counts for nothing here
 	res := b2.via(t, u, p, "acme", "/x", c)
 	loc := res.Header.Get("Location")
-	if res.StatusCode != 303 || !strings.HasPrefix(loc, "/login/acme?") || !strings.Contains(loc, "step=1") || strings.Contains(loc, "ticket") || b2.hasSession() {
+	if res.StatusCode != 303 || !strings.HasPrefix(loc, u.at("/login?")) || !strings.Contains(loc, "step=1") || strings.Contains(loc, "ticket") || b2.hasSession() {
 		t.Fatalf("callback: %d %q session=%v", res.StatusCode, loc, b2.hasSession())
 	}
 	_, body := b2.get(loc)
@@ -314,7 +361,7 @@ func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 	}
 	res2, out := b2.post("/api-internal/login/totp", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
 	wantStatus(t, res2, out, 200)
-	if str(out, "next") != "/x" || !b2.hasSession() {
+	if str(out, "next") != u.at("/x") || !b2.hasSession() {
 		t.Fatalf("after the code: %v", out)
 	}
 	var fed *model.Session
@@ -438,7 +485,7 @@ func TestUpstreamRejectsInvalidIDTokens(t *testing.T) {
 			b := u.browser(t)
 			res := b.via(t, u, p, "acme", "", c)
 			loc := res.Header.Get("Location")
-			if res.StatusCode != http.StatusFound || loc != "/login/acme?error=failed" || b.hasSession() {
+			if res.StatusCode != http.StatusFound || loc != u.at("/login?error=failed") || b.hasSession() {
 				t.Fatalf("%d %q session=%v", res.StatusCode, loc, b.hasSession())
 			}
 			if _, body := b.get(loc); !strings.Contains(body, "did not work") {
@@ -477,7 +524,7 @@ func TestProviderStepCookieIsScoped(t *testing.T) {
 		t.Fatal("step shown for another organization")
 	}
 	// without ?step=1 nothing is shown either
-	if _, body := b2.get("/login/acme"); strings.Contains(body, `data-step="totp"`) {
+	if _, body := b2.get("/o/acme/login"); strings.Contains(body, `data-step="totp"`) {
 		t.Fatal("step shown without step=1")
 	}
 
@@ -492,13 +539,13 @@ func TestProviderStepCookieIsScoped(t *testing.T) {
 	}
 	hu, _ := url.Parse(u.URL)
 	b3.c.Jar.SetCookies(hu, []*http.Cookie{{Name: "__Host-quisora_step", Value: tk, Path: "/", Secure: true}})
-	if _, body := b3.get("/login/acme?step=1"); strings.Contains(body, "data-ticket") {
+	if _, body := b3.get("/o/acme/login?step=1"); strings.Contains(body, "data-ticket") {
 		t.Fatal("a password ticket was shown through the step cookie")
 	}
 	// oversized and unknown values are ignored
 	for _, v := range []string{strings.Repeat("a", 300), "n1.unknown"} {
 		b3.c.Jar.SetCookies(hu, []*http.Cookie{{Name: "__Host-quisora_step", Value: v, Path: "/", Secure: true}})
-		if res, body := b3.get("/login/acme?step=1"); res.StatusCode != 200 || strings.Contains(body, "data-ticket") {
+		if res, body := b3.get("/o/acme/login?step=1"); res.StatusCode != 200 || strings.Contains(body, "data-ticket") {
 			t.Fatalf("cookie %.10q: %d", v, res.StatusCode)
 		}
 	}

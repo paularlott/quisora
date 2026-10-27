@@ -125,7 +125,7 @@ func TestValidateAcceptsAndDerives(t *testing.T) {
 	c.Mail.SMTPHost, c.Mail.From = "smtp", "Identity <no-reply@example.com>"
 	c.Audit.VictoriaLogs = "http://vl:9428"
 	c.Server.TrustProxy = []string{"10.0.0.0/8", "::1"}
-	if err := c.Validate(); err != nil || c.Server.PublicURL != "https://id.example.com" || c.Issuer() != "https://id.example.com" {
+	if err := c.Validate(); err != nil || c.Server.PublicURL != "https://id.example.com" {
 		t.Fatalf("%v %q", err, c.Server.PublicURL)
 	}
 }

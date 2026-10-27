@@ -4,7 +4,8 @@
 // deployment behind an IP address (which WebAuthn forbids as an RP ID) cannot use passkeys; New reports that.
 // Challenges live in the ephemeral store (namespace "webauthn") and are single use: Finish takes the challenge
 // before verifying anything, so a replayed or failed response can never be retried against the same challenge.
-// The WebAuthn user handle is the user id's bytes.
+// The WebAuthn user handle is the user id's bytes: a credential id is unique per user (model.PasskeyCredentialKey),
+// so a discoverable sign-in reads the user from the handle and then finds the credential among that user's passkeys.
 package passkey
 
 import (
@@ -86,12 +87,22 @@ func (s *Service) RPID() string { return s.wa.Config.RPID }
 // User adapter
 
 type waUser struct {
-	u     *model.User
+	u *model.User
+	// org is the display name of u's organization, when the authenticator is to be told it (registration).
+	org   string
 	creds []webauthn.Credential
 }
 
-func (w *waUser) WebAuthnID() []byte                         { return []byte(w.u.ID) }
-func (w *waUser) WebAuthnName() string                       { return w.u.Username }
+func (w *waUser) WebAuthnID() []byte { return []byte(w.u.ID) }
+
+// WebAuthnName is the account name the browser's passkey picker shows: with the organization's name after it, since
+// one person may have accounts of the same name in several organizations, all under this one site.
+func (w *waUser) WebAuthnName() string {
+	if w.org == "" {
+		return w.u.Username
+	}
+	return w.u.Username + " · " + w.org
+}
 func (w *waUser) WebAuthnDisplayName() string                { return w.u.FullName() }
 func (w *waUser) WebAuthnCredentials() []webauthn.Credential { return w.creds }
 
@@ -184,6 +195,13 @@ func (s *Service) BeginRegistration(ctx context.Context, u *model.User, extra ma
 	w, _, err := s.loadUser(ctx, u)
 	if err != nil {
 		return "", nil, err
+	}
+	org, err := s.svc.Orgs.Get(ctx, u.OrgID)
+	if err != nil {
+		return "", nil, err
+	}
+	if w.org = org.DisplayName; w.org == "" {
+		w.org = org.Name
 	}
 	creation, sd, err := s.wa.BeginRegistration(w,
 		webauthn.WithExclusions(webauthn.Credentials(w.creds).CredentialDescriptors()),
@@ -307,18 +325,10 @@ func (s *Service) StoreForInvite(ctx context.Context, u *model.User, reg *Regist
 func (s *Service) createPasskey(ctx context.Context, reg *Registration, epoch uint64) (*model.Passkey, error) {
 	pk := *reg.Passkey
 	pk.Epoch = epoch
-	err := s.svc.Passkeys.Create(ctx, &pk)
-	if errors.Is(err, store.ErrConflict) {
-		// Held by a passkey that counts for nothing (its account was deleted or reset) it is freed; otherwise
-		// it is registered already.
-		if freed, ferr := s.svc.ReleaseUnique(ctx, model.KindPasskey, model.PasskeyCredentialKey(pk.CredentialID)); ferr == nil && freed {
-			err = s.svc.Passkeys.Create(ctx, &pk)
-		}
-		if errors.Is(err, store.ErrConflict) {
-			return nil, fmt.Errorf("%w: credential already registered", ErrVerify)
-		}
-	}
-	if err != nil {
+	// The credential id is unique per user: a conflict is this user having the credential already.
+	if err := s.svc.Passkeys.Create(ctx, &pk); errors.Is(err, store.ErrConflict) {
+		return nil, fmt.Errorf("%w: credential already registered", ErrVerify)
+	} else if err != nil {
 		return nil, err
 	}
 	return &pk, nil
@@ -435,23 +445,24 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 	} else {
 		var wu webauthn.User
 		wu, cred, err = s.wa.ValidatePasskeyLogin(func(rawID, userHandle []byte) (webauthn.User, error) {
-			pk, perr := s.svc.Passkeys.GetByUnique(ctx, model.PasskeyCredentialKey(rawID))
-			if perr != nil {
-				return nil, ErrUnknownCredential
-			}
-			u, uerr := s.svc.UserByID(ctx, pk.UserID)
+			// The user handle names the account (a credential id is not unique across users); a sign-in is of one
+			// organization (its sign-in page names it in the ceremony) and takes only that organization's accounts.
+			u, uerr := s.svc.UserByID(ctx, string(userHandle))
 			if uerr != nil && !errors.Is(uerr, service.ErrNotFound) {
 				return nil, uerr
 			}
-			if uerr != nil || string(userHandle) != u.ID {
+			if uerr != nil || c.Extra["org"] != u.OrgID {
 				return nil, ErrUnknownCredential
-			}
-			if !u.Enabled(time.Now()) {
-				return nil, ErrInactive
 			}
 			w, all, lerr := s.loadUser(ctx, u)
 			if lerr != nil {
 				return nil, lerr
+			}
+			if !slices.ContainsFunc(all, func(p *model.Passkey) bool { return string(p.CredentialID) == string(rawID) }) {
+				return nil, ErrUnknownCredential
+			}
+			if !u.Enabled(time.Now()) {
+				return nil, ErrInactive
 			}
 			user, pks = u, all
 			return w, nil
@@ -464,7 +475,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			return nil, ErrInactive
 		case errors.Is(err, ErrUnknownCredential):
 			return nil, ErrUnknownCredential
-		case errors.Is(err, service.ErrUnavailable):
+		case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
 			return nil, err // the account could not be read from the cluster: try again, not "wrong passkey"
 		}
 		var unk *protocol.ErrorUnknownCredential

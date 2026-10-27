@@ -33,12 +33,12 @@ proxy's configuration decides.
 The helpers in [jwt.sh](jwt.sh) (bash, OpenSSL 3 and jq) make the client assertions and DPoP proofs.
 
 ```bash
-export QUISORA=https://id.example.com
+export ISSUER=https://id.example.com/o/<org id>      # the organization's issuer
 source docs/oauth/jwt.sh
 new_key client.key                                 # the client's signing key
 echo "{\"keys\":[$(jwk client.key k1)]}"           # register this as the client's public keys (JWKS)
 new_key dpop.key                                   # the DPoP key
-assertion() { client_assertion client.key "$CLIENT_ID" "$QUISORA"; }   # aud: the issuer, as FAPI requires
+assertion() { client_assertion client.key "$CLIENT_ID" "$ISSUER"; }   # aud: the issuer, as FAPI requires
 JWT_BEARER=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
 nonce() { grep -i '^dpop-nonce:' headers.txt | cut -d' ' -f2 | tr -d '\r'; }
 ```
@@ -49,7 +49,7 @@ nonce() { grep -i '^dpop-nonce:' headers.txt | cut -d' ' -f2 | tr -d '\r'; }
 VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
 CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
 push() {
-  curl -s -D headers.txt "$QUISORA/oauth/par" -H "DPoP: $(dpop_proof dpop.key POST "$QUISORA/oauth/par" "$1")" \
+  curl -s -D headers.txt "$ISSUER/oauth/par" -H "DPoP: $(dpop_proof dpop.key POST "$ISSUER/oauth/par" "$1")" \
     -d client_assertion_type=$JWT_BEARER --data-urlencode "client_assertion=$(assertion)" \
     -d response_type=code -d redirect_uri="$REDIRECT_URI" -d scope="openid accounts" \
     -d state=s1 -d nonce=n1 -d code_challenge="$CHALLENGE" -d code_challenge_method=S256
@@ -61,7 +61,7 @@ push "$(nonce)" | tee par.json # {"request_uri": "urn:ietf:params:oauth:request_
 **2. Send the browser** to the authorization endpoint with the reference, within 60 seconds:
 
 ```bash
-echo "$QUISORA/oauth/authorize?client_id=$CLIENT_ID&request_uri=$(jq -r .request_uri par.json | jq -Rr @uri)"
+echo "$ISSUER/oauth/authorize?client_id=$CLIENT_ID&request_uri=$(jq -r .request_uri par.json | jq -Rr @uri)"
 ```
 
 The user signs in and approves; the browser returns to the redirect URI with `code`, `state` and `iss`. Exchange the
@@ -70,7 +70,7 @@ code within 60 seconds.
 **3. Exchange the code**, with a new assertion and a proof of the same key:
 
 ```bash
-curl -s -D headers.txt "$QUISORA/oauth/token" -H "DPoP: $(dpop_proof dpop.key POST "$QUISORA/oauth/token" "$(nonce)")" \
+curl -s -D headers.txt "$ISSUER/oauth/token" -H "DPoP: $(dpop_proof dpop.key POST "$ISSUER/oauth/token" "$(nonce)")" \
   -d client_assertion_type=$JWT_BEARER --data-urlencode "client_assertion=$(assertion)" \
   -d grant_type=authorization_code -d code="$CODE" -d redirect_uri="$REDIRECT_URI" -d code_verifier="$VERIFIER" \
   | tee tokens.json
@@ -80,7 +80,7 @@ curl -s -D headers.txt "$QUISORA/oauth/token" -H "DPoP: $(dpop_proof dpop.key PO
 ([using the token](dpop.md#using-the-token)), and refresh with an assertion and a proof:
 
 ```bash
-curl -s -D headers.txt "$QUISORA/oauth/token" -H "DPoP: $(dpop_proof dpop.key POST "$QUISORA/oauth/token" "$(nonce)")" \
+curl -s -D headers.txt "$ISSUER/oauth/token" -H "DPoP: $(dpop_proof dpop.key POST "$ISSUER/oauth/token" "$(nonce)")" \
   -d client_assertion_type=$JWT_BEARER --data-urlencode "client_assertion=$(assertion)" \
   -d grant_type=refresh_token -d refresh_token="$(jq -r .refresh_token tokens.json)"
 ```

@@ -67,22 +67,11 @@ func CheckRecord(rec *Record) error {
 	return nil
 }
 
-// CheckTx is CheckRecord for every record of a transaction, and refuses one that writes a value unique across
-// organizations (model.GlobalUnique: a gossip cluster reserves it with a write of its own, so a record holding one is
-// written alone): ErrBadTx.
+// CheckTx is CheckRecord for every record of a transaction.
 func CheckTx(ops []Op) error {
 	for _, op := range ops {
 		if err := CheckRecord(op.Rec); err != nil {
 			return err
-		}
-		if op.Rec.Deleted {
-			continue
-		}
-		for _, u := range op.Rec.Unique {
-			if model.GlobalUnique(op.Rec.Kind, u) {
-				return fmt.Errorf("%w: %s %s holds a value unique across organizations (it is written alone)", ErrBadTx,
-					op.Rec.Kind, op.Rec.ID)
-			}
 		}
 	}
 	return nil

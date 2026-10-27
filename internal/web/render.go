@@ -36,10 +36,9 @@ type Page struct {
 	Site  Site
 	Title string
 	User  *model.User
-	Org   *model.Org // the signed-in user's org, or the org of a /login/<org> page
-	// HomeOrg is the signed-in user's organization name (Org may be another one on admin pages), and Path the page's
-	// address: the re-authentication dialog every signed-in page carries signs in there and comes back here.
-	HomeOrg string
+	Org   *model.Org // the signed-in user's organization, or, signed out, the organization of the page (/o/<org>)
+	// Path is the page's address: the re-authentication dialog every signed-in page carries signs in at the user's
+	// organization and comes back here.
 	Path    string
 	CSRF    string // session CSRF token, or the anonymous double-submit token
 	IsSuper bool

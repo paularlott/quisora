@@ -28,10 +28,10 @@ func TestIntrospectionAndUserinfoFailClosedOnAccessReadFailure(t *testing.T) {
 	good := h.env.Svc.Access.S
 	h.env.Svc.Access.S = failReads(good, model.KindAccess)
 	for _, tok := range []string{at, rt} {
-		r := h.post("/oauth/introspect", url.Values{"token": {tok}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
+		r := h.post(orgBase+"/oauth/introspect", url.Values{"token": {tok}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
 		expectUnavailable(t, "introspect with unreadable access", r)
 	}
-	ui := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at)
+	ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	if text := body(ui); ui.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("userinfo with unreadable access: %d %s", ui.StatusCode, text)
 	}
@@ -41,7 +41,7 @@ func TestIntrospectionAndUserinfoFailClosedOnAccessReadFailure(t *testing.T) {
 			t.Fatalf("token inactive once the store answers again: %v", m)
 		}
 	}
-	if ui := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); ui.StatusCode != http.StatusOK {
+	if ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); ui.StatusCode != http.StatusOK {
 		t.Fatalf("userinfo once the store answers again: %d %s", ui.StatusCode, body(ui))
 	}
 }
@@ -65,7 +65,7 @@ func TestRefreshFailsClosedOnStoreReadFailures(t *testing.T) {
 
 	// Refresh-token introspection reads the same grant: the same answer.
 	h.env.Svc.Grants.S = failReads(grants, model.KindGrant)
-	r := h.post("/oauth/introspect", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
+	r := h.post(orgBase+"/oauth/introspect", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
 	expectUnavailable(t, "introspect refresh token with unreadable grant", r)
 	h.env.Svc.Grants.S = grants
 
@@ -104,14 +104,14 @@ func TestUserinfoFailsClosedWhenGroupsCannotBeRead(t *testing.T) {
 	members := h.env.Svc.Members.S
 	h.env.Svc.Members.S = failLists(members, model.KindMember)
 	h.p.InvalidateMembership(h.env.Primary.ID) // the sign-in cached the groups; a change makes them be read again
-	ui := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at)
+	ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	if text := body(ui); ui.StatusCode != http.StatusServiceUnavailable || ui.Header.Get("WWW-Authenticate") != "" {
 		t.Fatalf("userinfo with unreadable groups: %d %q %s", ui.StatusCode, ui.Header.Get("WWW-Authenticate"), text)
 	}
-	r := h.post("/oauth/introspect", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
+	r := h.post(orgBase+"/oauth/introspect", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
 	expectUnavailable(t, "introspect with unreadable groups", r)
 	h.env.Svc.Members.S = members
-	if ui := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at); ui.StatusCode != 200 {
+	if ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); ui.StatusCode != 200 {
 		t.Fatalf("userinfo once the store answers again: %d %s", ui.StatusCode, body(ui))
 	}
 }
@@ -151,7 +151,7 @@ func TestRevocationFailureIsReportedAndNotAudited(t *testing.T) {
 	at, rt := tokens.str("access_token"), tokens.str("refresh_token")
 	good := h.env.Svc.Grants.S
 	h.env.Svc.Grants.S = failDeletes(good, model.KindGrant)
-	r := h.post("/oauth/revoke", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
+	r := h.post(orgBase+"/oauth/revoke", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
 	expectUnavailable(t, "revoke with failing deletion", r)
 	if n := len(h.auditEvents("oauth.revoke")); n != 0 {
 		t.Fatalf("a revocation that did not happen was audited (%d events)", n)
@@ -160,7 +160,7 @@ func TestRevocationFailureIsReportedAndNotAudited(t *testing.T) {
 		t.Fatal("control: the grant should still work, the deletion failed")
 	}
 	h.env.Svc.Grants.S = good
-	if r := h.post("/oauth/revoke", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+	if r := h.post(orgBase+"/oauth/revoke", url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
 		t.Fatalf("retry: %d %v", r.status, r.m)
 	}
 	if n := len(h.auditEvents("oauth.revoke")); n != 1 {
@@ -174,13 +174,13 @@ func TestRevocationFailureIsReportedAndNotAudited(t *testing.T) {
 	again, _ := h.login(cl, secret, nil)
 	rt = again.str("refresh_token")
 	h.env.Svc.Grants.S = failDeletes(good, model.KindGrant)
-	r = h.post("/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
+	r = h.post(orgBase+"/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", "")
 	expectUnavailable(t, "revoke refresh token with failing deletion", r)
 	if h.refreshWith(cl, secret, rt).status != 200 {
 		t.Fatal("control: the grant should still work, the deletion failed")
 	}
 	h.env.Svc.Grants.S = good
-	if r := h.post("/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+	if r := h.post(orgBase+"/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
 		t.Fatalf("retry: %d %v", r.status, r.m)
 	}
 	if h.refreshWith(cl, secret, rt).status == 200 {
@@ -196,7 +196,7 @@ func TestCodeExchangeFailsClosedOnStoreFailures(t *testing.T) {
 		"session unreadable": func(h *harness) { h.env.Svc.Sessions.S = failReads(h.env.Svc.Sessions.S, model.KindSession) },
 		"sign-out counters unreadable": func(h *harness) {
 			h.env.Svc.InvalidateSignOut()
-			h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
+			h.env.Svc.Orgs.S = failReadsAfter(h.env.Svc.Orgs.S, model.KindOrg, 1) // the endpoint's own lookup goes through
 		},
 		"grant not writable": func(h *harness) {
 			h.env.Svc.Grants.S = failCAS(h.env.Svc.Grants.S, model.KindGrant, func() error { return store.ErrUnavailable })
@@ -235,7 +235,7 @@ func TestLogoutReportsFailureWhenSessionCannotBeEnded(t *testing.T) {
 	good := h.env.Svc.Sessions.S
 	h.env.Svc.Sessions.S = failDeletes(good, model.KindSession)
 	q := url.Values{"id_token_hint": {idt}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"s"}}
-	resp := h.get(c, "/oauth/logout?"+q.Encode())
+	resp := h.get(c, orgBase+"/oauth/logout?"+q.Encode())
 	if text := body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Location") != "" {
 		t.Fatalf("logout with failing deletion: %d %q %s", resp.StatusCode, resp.Header.Get("Location"), text)
 	}
@@ -288,7 +288,7 @@ func TestAuthorizeFailsClosedOnStoreFailures(t *testing.T) {
 		h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
 		h.p.orgs.clear()
 		h.p.clients.clear()
-		resp := h.get(c, "/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+		resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
 		if body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Location") != "" {
 			t.Fatalf("unreadable organization: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 		}
@@ -362,7 +362,7 @@ func TestLogoutConfirmationFailsClosed(t *testing.T) {
 		}
 		return nil
 	})
-	resp := h.get(c, "/oauth/logout?client_id="+cl.ID)
+	resp := h.get(c, orgBase+"/oauth/logout?client_id="+cl.ID)
 	if body(resp); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("confirmation: %d", resp.StatusCode)
 	}
@@ -375,16 +375,16 @@ func TestLogoutConfirmationFailsClosed(t *testing.T) {
 			other = k
 		}
 	}
-	tok, err := signJWT(other.alg, other.priv, mkHeader(other.alg, ks.list[0].kid, typJWT), mustJSON(map[string]any{"iss": h.p.issuer, "aud": cl.ID, "sub": h.user.ID}))
+	tok, err := signJWT(other.alg, other.priv, mkHeader(other.alg, ks.list[0].kid, typJWT), mustJSON(map[string]any{"iss": h.issuer(), "aud": cl.ID, "sub": h.user.ID}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp = h.get(c, "/oauth/logout?id_token_hint="+tok)
+	resp = h.get(c, orgBase+"/oauth/logout?id_token_hint="+tok)
 	if body(resp); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("hint with the wrong algorithm: %d", resp.StatusCode)
 	}
 	// the confirmed sign-out cannot end the session
-	resp = h.get(c, "/oauth/logout")
+	resp = h.get(c, orgBase+"/oauth/logout")
 	page := body(resp)
 	id, pageCSRF := regexpValue(page, "id"), regexpValue(page, "csrf")
 	sessions := h.env.Svc.Sessions.S
@@ -397,7 +397,7 @@ func TestLogoutConfirmationFailsClosed(t *testing.T) {
 	}
 	h.env.Svc.Sessions.S = sessions
 	// the request was used up: ask again, and this time it ends with the plain page (no address to return to)
-	page = body(h.get(c, "/oauth/logout"))
+	page = body(h.get(c, orgBase+"/oauth/logout"))
 	id, pageCSRF = regexpValue(page, "id"), regexpValue(page, "csrf")
 	resp = confirm()
 	if pg := body(resp); resp.StatusCode != 200 || !strings.Contains(pg, "signed out") {
@@ -432,7 +432,7 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		if _, err := h.p.VerifyAccessToken(t.Context(), at); !isUnavailable(err) {
 			t.Fatalf("user read: %v", err)
 		}
-		ui := h.get(h.http, "/oauth/userinfo", "Authorization", "Bearer "+at)
+		ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 		if body(ui); ui.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("userinfo with unreadable user: %d", ui.StatusCode)
 		}
@@ -447,10 +447,10 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		}
 		// revocation and introspection cannot decide either
 		f := url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}
-		expectUnavailable(t, "revoke", h.post("/oauth/revoke", f, "", ""))
-		expectUnavailable(t, "introspect", h.post("/oauth/introspect", f, "", ""))
+		expectUnavailable(t, "revoke", h.post(orgBase+"/oauth/revoke", f, "", ""))
+		expectUnavailable(t, "introspect", h.post(orgBase+"/oauth/introspect", f, "", ""))
 		f.Set("token", r.str("refresh_token"))
-		expectUnavailable(t, "revoke refresh", h.post("/oauth/revoke", f, "", ""))
+		expectUnavailable(t, "revoke refresh", h.post(orgBase+"/oauth/revoke", f, "", ""))
 	})
 	t.Run("organization", func(t *testing.T) {
 		h, _, _, r := login(t)

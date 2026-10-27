@@ -15,7 +15,6 @@ import (
 )
 
 type passwordReq struct {
-	Org      string `json:"org"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Next     string `json:"next"`
@@ -54,7 +53,8 @@ func (m *Module) alternatives(ctx context.Context, u *model.User, step string) [
 	return out
 }
 
-// password handles POST /api-internal/login/password: {org, email, password[, next]} -> {next} or {step, ticket}.
+// password handles POST /o/{org}/api-internal/login/password: {email, password[, next, tenant]} -> {next} or
+// {step, ticket}.
 func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -64,24 +64,13 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	org, orgKey, err := m.resolveOrg(ctx, in.Org)
-	if err != nil {
-		m.internalError(w, r, "organization", err)
-		return
-	}
-	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
+	org := web.Org(r)
+	if !m.rateLimit(w, r, org.ID, m.knownLogin(org, in.Email)) {
 		return
 	}
 	login := strings.TrimSpace(in.Email) // the email address; the username never signs in
 	if login == "" || in.Password == "" || len(login) > 256 || len(in.Password) > 1024 {
 		writeErr(w, http.StatusUnprocessableEntity, "Enter your email address and password.", "email")
-		return
-	}
-	if org == nil {
-		// Org names are public (/login/<org> redirects when unknown), so this leaks nothing; answering without a
-		// hash keeps random org names from being used to burn password workers.
-		m.audit(r, "login.failure", nil, nil, login, map[string]string{"reason": "unknown org"})
-		writeErr(w, http.StatusUnauthorized, msgBadLogin, "")
 		return
 	}
 	eff, tenant, err := m.methods(ctx, org, in.Tenant, in.Next)
@@ -94,7 +83,11 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		u, _ = m.s.Svc.FindUserByEmail(ctx, org.ID, login)
 	} // else: treated like an unknown user (generic failure after a dummy hash), so a switched-off org or tenant looks the same
 	key := m.lockKeyFor(r, u, lockKey(u, org, login))
-	n, open := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, key)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return
+	}
 	if !open {
 		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -109,11 +102,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		check = nil
 	}
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	orgID := ""
-	if org != nil {
-		orgID = org.ID
-	}
-	ok, err := m.s.Svc.VerifyPassword(vctx, orgID, check, in.Password)
+	ok, err := m.s.Svc.VerifyPassword(vctx, org.ID, check, in.Password)
 	cancel()
 	if errors.Is(err, secure.ErrBusy) {
 		w.Header().Set("Retry-After", "1")
@@ -137,7 +126,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.afterPassword(w, r, u, org, eff, tenant, safeNext(in.Next))
+	m.afterPassword(w, r, u, org, eff, tenant, safeNext(org, in.Next))
 }
 
 // secondFactor decides what follows a first factor (a password, or a sign-in at an upstream provider): the user's
@@ -255,7 +244,7 @@ type totpReq struct {
 	Code   string `json:"code"`
 }
 
-// totp handles POST /api-internal/login/totp: {ticket, code} -> {next}.
+// totp handles POST /o/{org}/api-internal/login/totp: {ticket, code} -> {next}.
 func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -274,7 +263,11 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	n, open := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, key)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return
+	}
 	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -282,7 +275,12 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 	}
 	wrong := false
 	defer m.settle(ctx, key, &wrong)
-	if !m.attempt(ctx, in.Ticket) {
+	within, err := m.attempt(ctx, in.Ticket)
+	if err != nil { // the counter failed: refused, but not as too many tries
+		unavailableResponse(w)
+		return
+	}
+	if !within {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
@@ -319,7 +317,7 @@ type recoveryReq struct {
 	Code   string `json:"code"`
 }
 
-// recovery handles POST /api-internal/login/recovery: {ticket, code} -> {next}. A recovery code stands in for the
+// recovery handles POST /o/{org}/api-internal/login/recovery: {ticket, code} -> {next}. A recovery code stands in for the
 // second factor a sign-in asks for after the first (an authenticator code, or a passkey), once. It counts towards
 // the lockout like a wrong authenticator code, and its owner is emailed when one is used.
 func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
@@ -336,7 +334,11 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	n, open := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, key)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return
+	}
 	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
 		m.lockedResponse(w)
@@ -344,7 +346,12 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 	}
 	wrong := false
 	defer m.settle(ctx, key, &wrong)
-	if !m.attempt(ctx, in.Ticket) {
+	within, err := m.attempt(ctx, in.Ticket)
+	if err != nil { // the counter failed: refused, but not as too many tries
+		unavailableResponse(w)
+		return
+	}
+	if !within {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
@@ -388,12 +395,11 @@ func (m *Module) consumeTOTP(ctx context.Context, u *model.User, secret, code st
 // Forgotten password
 
 type forgotReq struct {
-	Org    string `json:"org"`
 	Tenant string `json:"tenant"`
 	Email  string `json:"email"`
 }
 
-// forgot handles POST /api-internal/password/forgot. It always answers 200 so it cannot be used to find accounts.
+// forgot handles POST /o/{org}/api-internal/password/forgot. It always answers 200 so it cannot be used to find accounts.
 func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -403,20 +409,12 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	org, orgKey, err := m.resolveOrg(ctx, in.Org)
-	if err != nil {
-		m.internalError(w, r, "organization", err)
+	org := web.Org(r)
+	if !m.rateLimit(w, r, org.ID, m.knownLogin(org, in.Email)) {
 		return
 	}
-	if !m.rateLimit(w, r, orgKey, m.knownLogin(org, in.Email)) {
-		return
-	}
-	allowed := false
-	if org != nil {
-		eff, _, err := m.methods(ctx, org, in.Tenant, "")
-		allowed = err == nil && eff.PasswordReset
-	}
-	if allowed && m.Mail != nil && len(in.Email) <= 256 {
+	eff, _, err := m.methods(ctx, org, in.Tenant, "")
+	if err == nil && eff.PasswordReset && m.Mail != nil && len(in.Email) <= 256 {
 		if u, err := m.s.Svc.FindUserByEmail(ctx, org.ID, in.Email); err == nil && u.Enabled(time.Now()) && u.PasswordHash != "" {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
 			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
@@ -448,15 +446,12 @@ const msgBadLink = "This link is invalid or has expired."
 
 // resettable reports whether the user of a reset link may still set a password this way: the org allows password
 // sign-in and resets, and the account has a password (accounts without one use an invitation).
-func (m *Module) resettable(ctx context.Context, u *model.User) (*model.Org, bool) {
-	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil || !org.Settings.PasswordLogin || !org.Settings.PasswordReset || u.PasswordHash == "" {
-		return org, false
-	}
-	return org, true
+func resettable(org *model.Org, u *model.User) bool {
+	return org.Settings.PasswordLogin && org.Settings.PasswordReset && u.PasswordHash != ""
 }
 
-// reset handles POST /api-internal/password/reset: {token, password} for a "forgot password" link.
+// reset handles POST /o/{org}/api-internal/password/reset: {token, password} for a "forgot password" link of the
+// organization (one of another is invalid here).
 func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -465,24 +460,20 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !m.rateLimit(w, r, "reset", known{any: true}) {
-		return
-	}
 	ctx := r.Context()
-	_, u, err := m.s.Svc.PeekLink(ctx, in.Token, service.LinkReset)
-	if err != nil {
-		writeErr(w, http.StatusGone, msgBadLink, "")
+	if !m.rateLimit(w, r, web.Org(r).ID+"|reset", known{any: true}) {
 		return
 	}
-	org, ok := m.resettable(ctx, u)
-	if !ok {
+	org := web.Org(r)
+	u, ok := m.peekLink(ctx, org, in.Token, service.LinkReset)
+	if !ok || !resettable(org, u) {
 		writeErr(w, http.StatusGone, msgBadLink, "")
 		return
 	}
 	// One commit sets the password and uses the link up (with any invitation of the account); a password the
 	// policy refuses, or a failure, leaves the link usable. Every session and refresh grant of the account ends.
 	resetting := u
-	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password, 0)
+	_, u, err := m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password, 0)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrLink):
@@ -499,7 +490,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	m.clearLocks(ctx, u.ID)
 	m.s.Sessions.Evict("", u.ID)
 	m.audit(r, "password.reset", org, u, u.Username, nil)
-	web.WriteJSON(w, http.StatusOK, stepResp{Next: "/login/" + org.Name})
+	web.WriteJSON(w, http.StatusOK, stepResp{Next: web.OrgPath(org.ID, "/login")})
 }
 
 // errFactorLost: a second factor is required and the account's only ones (passkeys) can no longer sign in.

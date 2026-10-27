@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminProviders" data-api="{{.Data.API}}/providers" data-base="{{.Data.API}}" data-public="{{.Site.PublicURL}}" data-sort="name" data-noun="providers" data-live="provider" class="stack-lg">
+<div x-data="adminProviders" data-api="{{.Data.API}}/providers" data-base="{{.Data.API}}" data-public="{{.Site.PublicURL}}" data-org-id="{{.Org.ID}}" data-super="{{if .IsSuper}}1{{end}}" data-sort="name" data-noun="providers" data-live="provider" class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">{{.Org.DisplayName}}</p>
@@ -30,8 +30,8 @@
             <td><div x-text="row.domainsText"></div><div class="cell-sub" x-text="row.provisionText"></div></td>
             <td><span :class="row.statusClass" x-text="row.statusText"></span></td>
             <td class="actions">
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit" x-show="!row.readOnly">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove" x-show="!row.readOnly">{{template "icon" "trash"}}</button>
             </td>
           </tr></template>
         </tbody>
@@ -46,7 +46,7 @@
   <form @submit.prevent="submit" novalidate>
     <div class="dialog-body">
       {{template "edit-notice"}}
-      <div class="field">
+      <div class="field" x-show="!isOrg" x-cloak>
         <p class="label" id="callback-url-l">Callback URL</p>
         <div class="code-box" x-data="copyFrom"><code id="callback-url-dlg" x-text="callbackUrl"></code>
           <button type="button" class="btn btn-secondary btn-sm" data-source="callback-url-dlg" data-what="callback URL" aria-describedby="callback-url-l" @click="copy">
@@ -56,10 +56,19 @@
       <div class="field-row">
         <div class="field">
           <label class="label" for="f-type">Type</label>
-          <select class="select" id="f-type" name="type" x-model="form.type" @change="typeChanged" aria-describedby="e-type" :aria-invalid="invalid.type"><option value="oidc">OpenID Connect</option><option value="google">Google</option><option value="microsoft">Microsoft (Entra ID)</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="auth0">Auth0</option></select>
+          <select class="select" id="f-type" name="type" x-model="form.type" @change="typeChanged" aria-describedby="e-type" :aria-invalid="invalid.type"><option value="oidc">OpenID Connect</option><option value="google">Google</option><option value="microsoft">Microsoft (Entra ID)</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="auth0">Auth0</option>{{if .IsSuper}}<option value="organization">Another organization</option>{{end}}</select>
           <p class="field-error" id="e-type" x-text="errors.type"></p>
         </div>
         {{template "field" (dict "name" "name" "label" "Button label" "autofocus" true "autocomplete" "off" "placeholderBind" "namePlaceholder" "help" " " "helpBind" "nameHelp")}}
+      </div>
+      <div class="field" x-show="isOrg" x-cloak>
+        <label class="label" for="f-source_org">Organization <span class="req" aria-hidden="true">*</span></label>
+        <select class="select" id="f-source_org" name="source_org" x-model="form.source_org" aria-required="true" :aria-invalid="invalid.source_org" aria-describedby="e-source_org h-source_org">
+          <option value="">Choose an organization</option>
+          <template x-for="o in orgs" :key="o.id"><option :value="o.id" x-text="o.label"></option></template>
+        </select>
+        <p class="help" id="h-source_org">Its users sign in to this organization with &ldquo;Continue with&rdquo; and the organization&rsquo;s name. They are guests: add each person here first, with the same email address, which must be verified. Quisora makes the application they sign in with in that organization, and removes it with this provider.</p>
+        <p class="field-error" id="e-source_org" x-text="errors.source_org"></p>
       </div>
       <div class="field" x-show="hasAddress" x-cloak>
         <label class="label" for="f-issuer"><span x-text="addressLabel">Issuer URL</span> <span class="req" aria-hidden="true" x-show="addressRequired">*</span></label>
@@ -72,7 +81,7 @@
         {{template "list-field" (dict "name" "allowed_tenants" "label" "Allowed tenants" "item" "Tenant ID" "add" "Add tenant" "mono" true "optional" true "show" "multiTenant" "placeholder" "72f988bf-86f1-41af-91ab-2d7cd011db47" "help" "The directories whose users may sign in. Personal Microsoft accounts are not supported.")}}
         <p class="help">Microsoft's email claim is set by each directory's administrators, so an address counts as verified (for linking existing users) only when Microsoft vouches for its domain: add the optional claim <code>xms_edov</code> to the app registration's ID token.</p>
       </div>
-      <div class="field-row">
+      <div class="field-row" x-show="!isOrg" x-cloak>
         {{template "field" (dict "name" "client_id" "label" "Client ID" "required" true "autocomplete" "off")}}
         <div class="field">
           <label class="label" for="f-client_secret">Client secret <span class="req" aria-hidden="true" x-show="secretRequired">*</span></label>
@@ -81,7 +90,7 @@
           <p class="field-error" id="e-client_secret" x-text="errors.client_secret"></p>
         </div>
       </div>
-      {{template "tag-field" (dict "name" "scopes" "noun" "scope" "label" "Scopes" "help" "What Quisora asks the provider for when a user signs in.")}}
+      <div x-show="!isOrg" x-cloak>{{template "tag-field" (dict "name" "scopes" "noun" "scope" "label" "Scopes" "help" "What Quisora asks the provider for when a user signs in.")}}</div>
       {{template "list-field" (dict "name" "allowed_domains" "label" "Allowed email domains" "item" "Domain" "add" "Add domain" "mono" true "optional" true "placeholder" "example.com" "help" "Optional. With none, any email address may sign in this way; add domains to allow only addresses at them.")}}
       {{template "check-field" (dict "name" "auto_provision" "label" "Create accounts automatically" "switch" true "help" "People who sign in for the first time get an account. Otherwise only existing users can.")}}
       {{template "check-field" (dict "name" "link_by_email" "label" "Link existing users by verified email" "switch" true "help" "On a person's first sign-in, match them to the one existing user whose verified email address (primary or linked) the provider also reports as verified.")}}

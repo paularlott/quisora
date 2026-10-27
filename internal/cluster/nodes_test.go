@@ -163,7 +163,3 @@ func tenants(tn *tnode) *store.Table[model.Tenant, *model.Tenant] {
 func newTenant(org, name string, resources ...string) *model.Tenant {
 	return &model.Tenant{OrgID: org, Name: name, Resources: resources}
 }
-
-func passkeys(tn *tnode) *store.Table[model.Passkey, *model.Passkey] {
-	return store.NewTable[model.Passkey](tn.st())
-}

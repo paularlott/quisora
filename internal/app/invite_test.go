@@ -44,11 +44,12 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 
 	// "quisora bootstrap" printed the invitation link (startApp ran it before serving)
 	m := []string{"", lastBootstrapLink}
-	if !strings.HasPrefix(m[1], base+"/invite?token=") {
-		t.Fatalf("bootstrap link: %q", m[1])
-	}
 	ctx := context.Background()
 	primary, _ := a.Svc.PrimaryOrg(ctx)
+	if !strings.HasPrefix(m[1], base+"/o/"+primary.ID+"/invite?token=") {
+		t.Fatalf("bootstrap link: %q", m[1])
+	}
+	org := base + "/o/" + primary.ID
 	admin, _ := a.Svc.FindUserByEmail(ctx, primary.ID, "admin@example.com")
 	if admin.PasswordHash != "" || !primary.Settings.RequireMFA || admin.Role != "super_admin" {
 		t.Fatalf("bootstrap state: %+v %+v", admin, primary.Settings)
@@ -67,14 +68,14 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 	}
 	post := func(p string, body any) (int, map[string]any) {
 		b, _ := json.Marshal(body)
-		return doJSON(t, hc, "POST", base+p, map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf[1]}, bytes.NewReader(b))
+		return doJSON(t, hc, "POST", org+p, map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf[1]}, bytes.NewReader(b))
 	}
 	tok := m[1][strings.Index(m[1], "token=")+6:]
 	code, out := post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "violet harbour lantern"})
 	if code != 200 || out["step"] != "enrol" || out["ticket"] == nil {
 		t.Fatalf("expected the enrolment step: %d %v", code, out)
 	}
-	if resp, _ := hc.Get(base + "/account"); resp.StatusCode == 200 {
+	if resp, _ := hc.Get(org + "/account"); resp.StatusCode == 200 {
 		t.Fatal("session before the second factor")
 	}
 	ticket := out["ticket"]
@@ -83,10 +84,10 @@ func TestBootstrapAdminInvitationRequiresSecondFactor(t *testing.T) {
 		t.Fatalf("totp begin %d %v", code, out)
 	}
 	code, out = post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpNow(out["secret"].(string))})
-	if code != 200 || out["next"] != "/account" {
+	if code != 200 || out["next"] != "/o/"+primary.ID+"/account" {
 		t.Fatalf("totp confirm %d %v", code, out)
 	}
-	resp, err = hc.Get(base + "/account")
+	resp, err = hc.Get(org + "/account")
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("account after enrolment: %v %v", resp, err)
 	}
@@ -182,6 +183,10 @@ func TestIssueInviteStoreLockedAndFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	primary, err := a.Svc.PrimaryOrg(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, _, err = IssueInvite(ctx, c, log, "primary", "admin@example.com", false, false)
 	if !errors.Is(err, ErrStoreLocked) {
 		t.Fatalf("a locked store: %v", err)
@@ -189,7 +194,7 @@ func TestIssueInviteStoreLockedAndFree(t *testing.T) {
 	a.Close()
 
 	link, _, err := IssueInvite(ctx, c, log, "primary", "admin@example.com", false, false)
-	if err != nil || !strings.HasPrefix(link, "https://quisora.example.test/invite?token=") {
+	if err != nil || !strings.HasPrefix(link, "https://quisora.example.test/o/"+primary.ID+"/invite?token=") {
 		t.Fatalf("free store: %q %v", link, err)
 	}
 	// ... and the link it wrote is honoured by a server started afterwards.

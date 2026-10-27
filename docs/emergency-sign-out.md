@@ -62,7 +62,8 @@ certificates to trust for the server, and `--insecure` skips the check.
 
 Ended, at once, on every node:
 
-- every browser session, including the console's (your own session stays);
+- every browser session of the organizations affected (a browser holds one session per organization), including the
+  console's (your own session stays);
 - every refresh grant, so applications cannot get new tokens, and the access tokens issued from those grants stop
   working at userinfo and introspection;
 - with the option, every personal API token.

@@ -242,7 +242,7 @@ func TestTenantPage(t *testing.T) {
 			t.Errorf("non-admin: %d want 403", code)
 		}
 	}
-	if code, _, l := get(w.anon(), "/admin/orgs/acme/tenants/staff"); code != 303 || !strings.HasPrefix(l, "/login/acme?next=") {
+	if code, _, l := get(w.anon(), "/admin/orgs/acme/tenants/staff"); code != 303 || !strings.HasPrefix(l, "/o/acme/login?next=") {
 		t.Errorf("anonymous: %d %q", code, l)
 	}
 	// old clients URL redirects (302) for everyone who can sign in; anonymous users are sent to sign-in first
@@ -287,8 +287,8 @@ func TestTenantAccessAPI(t *testing.T) {
 	}
 	want(t, ad.get(T+"/"+aid), 200)
 
-	// malformed bodies, unknown subjects and unknown ids; the tenant's self-registered users are listed alongside
-	SR := A + "/tenants/" + made.str("id") + "/self-registered"
+	// malformed bodies, unknown subjects and unknown ids; the organization's self-registered apps are listed alongside
+	SR := A + "/self-registered"
 	for _, c := range []struct {
 		method, path string
 		body         any
@@ -340,7 +340,6 @@ func TestTenantByName(t *testing.T) {
 		t.Fatalf("by name: %s", byName.Raw)
 	}
 	want(t, ad.patch(T+"/mcp", map[string]any{"display_name": "MCP servers"}), 200)
-	want(t, ad.get(T+"/mcp/self-registered"), 200)
 	want(t, ad.get(T+"/no-such-tenant"), 404)
 	want(t, w.as("other").get(G+"/tenants/mcp"), 404) // globex has no tenant named mcp
 	want(t, w.as("other").get(A+"/tenants/mcp"), 404) // and acme's is not theirs

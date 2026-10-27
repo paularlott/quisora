@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // DPoP: sender-constrained tokens (RFC 9449). A client sends a DPoP proof, a JWT signed with a key of its own whose
@@ -99,7 +100,7 @@ func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce, fa
 		return "", dpopErr("the DPoP proof needs a jti")
 	case cl.Htm != r.Method:
 		return "", dpopErr("the DPoP proof's htm is not this request's method")
-	case !sameHTU(cl.Htu, p.issuer+r.URL.Path):
+	case !sameHTU(cl.Htu, p.requestURL(r)):
 		return "", dpopErr("the DPoP proof's htu is not this endpoint")
 	case cl.Iat == 0 || iat.After(now.Add(leeway)) || iat.Before(now.Add(-dpopMaxAge-leeway)):
 		return "", dpopErr("the DPoP proof's iat is too old or in the future")
@@ -230,9 +231,16 @@ func (p *Provider) setDPoPNonce(w http.ResponseWriter) {
 
 // VerifyRequestToken is VerifyAccessToken for a token presented with the given authorization scheme ("Bearer" or
 // "DPoP") in request r: a DPoP-bound token is accepted only with the DPoP scheme and a proof of its key for this
-// request, and the DPoP scheme only with a bound token. A failed proof is ErrDPoPProof.
+// request, and the DPoP scheme only with a bound token. A failed proof is ErrDPoPProof. A request to an organization's
+// endpoint (web.Org) takes that organization's tokens only.
 func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Claims, error) {
-	cl, err := p.VerifyAccessToken(r.Context(), tok)
+	var cl *Claims
+	var err error
+	if org := web.Org(r); org != nil {
+		cl, err = p.verifyIn(r.Context(), org.ID, tok)
+	} else {
+		cl, err = p.VerifyAccessToken(r.Context(), tok)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +255,8 @@ func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Cla
 		return nil, badToken("a DPoP-bound token was presented as a bearer token")
 	}
 	fapi := false
-	if ce, err := p.client(r.Context(), cl.ClientID); err == nil {
+	orgID, _ := p.issuerOrg(cl.Iss) // verified: the token's issuer is an organization's
+	if ce, err := p.client(r.Context(), orgID, cl.ClientID); err == nil {
 		fapi = ce.c.FAPI
 	}
 	jkt, e := p.checkProof(r, tok, false, fapi)

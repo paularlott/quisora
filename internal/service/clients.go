@@ -328,6 +328,8 @@ func (s *Service) ListClients(ctx context.Context, a *Actor, orgID string, q sto
 		return nil, 0, ErrForbidden
 	}
 	q.Scope = orgID
+	// The applications that registered themselves are listed apart (SelfRegisteredApps): nobody set them up.
+	q.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "self_registered", Value: false})
 	l, n, err := s.Clients.List(ctx, q)
 	return l, n, mapStore(err)
 }
@@ -337,21 +339,28 @@ func (s *Service) GetClient(ctx context.Context, a *Actor, id string) (*model.Cl
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if !s.canAdminOrg(a, c.OrgID) {
-		return nil, ErrNotFound
+	if c.SelfRegistered || !s.canAdminOrg(a, c.OrgID) {
+		return nil, ErrNotFound // self-registered applications are not edited: they are listed and removed (selfreg.go)
 	}
 	return c, nil
 }
 
 // CreateClient creates a client and returns it with its secret (shown once).
 func (s *Service) CreateClient(ctx context.Context, a *Actor, orgID string, in ClientInput) (*model.Client, string, error) {
+	return s.createClient(ctx, a, orgID, in, "")
+}
+
+// createClient is CreateClient for a client that may be the sign-in application of an organization provider
+// (Client.ProviderID; "" for every other).
+func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in ClientInput, providerID string) (*model.Client, string, error) {
 	if !s.canAdminOrg(a, orgID) {
 		return nil, "", ErrForbidden
 	}
 	// Refresh tokens rotate by default: a copy that is used after the client used the token is detected and ends the
 	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
-		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "offline_access"}}
+		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "offline_access"},
+		ProviderID: providerID}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")
 	}
@@ -385,6 +394,9 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if superOnly(c) && !a.IsSuper() {
 		return nil, ErrForbidden // provisioning and first-party clients are managed by super admins only
 	}
+	if err := providerMade(c); err != nil {
+		return nil, err
+	}
 	was := snapshot(c)
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
@@ -400,6 +412,16 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 // only they change, rotate or delete it.
 func superOnly(c *model.Client) bool { return c.SCIM || c.FirstParty }
 
+// providerMade refuses a change to a client an organization sign-in provider made for itself (Client.ProviderID): its
+// redirect URI and secret are the provider's, kept in step by the provider's own changes, so a change made to the
+// client alone would only break the provider's sign-ins.
+func providerMade(c *model.Client) error {
+	if c.ProviderID == "" {
+		return nil
+	}
+	return Invalid("client", "this application is the sign-in of another organization's provider: change or delete the provider instead")
+}
+
 // RotateClientSecret issues a new secret; the old one stops working immediately.
 func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (string, error) {
 	c, err := s.GetClient(ctx, a, id)
@@ -411,6 +433,9 @@ func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (
 	}
 	if superOnly(c) && !a.IsSuper() {
 		return "", ErrForbidden // the credential of a super-admin-only capability stays with super admins
+	}
+	if err := providerMade(c); err != nil {
+		return "", err
 	}
 	secret := "qsrs_" + secure.RandomToken(32)
 	c.SecretHash = string(secure.HashSecret(secret))
@@ -428,6 +453,9 @@ func (s *Service) DeleteClient(ctx context.Context, a *Actor, id string) error {
 	}
 	if superOnly(c) && !a.IsSuper() {
 		return ErrForbidden
+	}
+	if err := providerMade(c); err != nil {
+		return err
 	}
 	return mapStore(s.audited(ctx, a, c.OrgID, "client.delete", c.Name, map[string]string{"client_id": c.ID},
 		func() error { return s.Clients.Delete(ctx, id) }))

@@ -11,6 +11,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	ut "github.com/paularlott/quisora/internal/upstream/upstreamtest"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 type upEnv struct {
@@ -46,12 +47,25 @@ func claims(sub, email string) map[string]any {
 	return map[string]any{"sub": sub, "email": email, "email_verified": true, "name": "Pat Doe"}
 }
 
-// via runs the provider round trip and returns the callback response.
+// at is a path of the test organization's address space.
+func (u *upEnv) at(rest string) string { return web.OrgPath(u.org.ID, rest) }
+
+// nextOf is the next a test means: a path of the organization's space, except one that is not a local path at all
+// (a hostile one), which is sent as it is.
+func (u *upEnv) nextOf(next string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+		return u.at(next)
+	}
+	return next
+}
+
+// via runs the provider round trip and returns the callback response. next is a path in the organization's space
+// (u.at), given without its /o/<id> prefix.
 func (b *browser) via(t *testing.T, u *upEnv, p *model.Provider, org, next string, c map[string]any) *http.Response {
 	t.Helper()
-	path := "/login/" + org + "/provider/" + p.ID
+	path := "/o/" + org + "/login/provider/" + p.ID
 	if next != "" {
-		path += "?next=" + url.QueryEscape(next)
+		path += "?next=" + url.QueryEscape(u.nextOf(next))
 	}
 	res, _ := b.get(path)
 	if res.StatusCode != 302 {
@@ -75,7 +89,7 @@ func (b *browser) via(t *testing.T, u *upEnv, p *model.Provider, org, next strin
 // viaTenant is via for a sign-in made on behalf of a tenant.
 func (b *browser) viaTenant(t *testing.T, u *upEnv, p *model.Provider, org, tenant, next string, c map[string]any) *http.Response {
 	t.Helper()
-	res, _ := b.get("/login/" + org + "/provider/" + p.ID + "?tenant=" + tenant + "&next=" + url.QueryEscape(next))
+	res, _ := b.get("/o/" + org + "/login/provider/" + p.ID + "?tenant=" + tenant + "&next=" + url.QueryEscape(u.nextOf(next)))
 	if res.StatusCode != 302 {
 		t.Fatalf("provider start: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}

@@ -177,7 +177,7 @@ test('tenant page: clients created, moved and deleted elsewhere update the list;
     await expect(a.getByText('No clients in this tenant yet')).toBeVisible()
     // the tenant itself changed elsewhere: the summary follows
     await apiCall(b, 'PATCH', `${API}/tenants/${t1.id}`, { settings: { password_login: false, passkey_login: true, all_providers: true, providers: [], require_mfa: true } })
-    await expect(a.locator('.kv')).toContainText('Required', { timeout: 3500 })
+    await expect(a.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('Required', { timeout: 3500 })
     // deleted elsewhere
     await apiCall(b, 'DELETE', `${API}/tenants/${t1.id}`)
     await expect(a.locator('.alert', { hasText: 'This tenant was deleted by someone else' })).toBeVisible({ timeout: 3500 })
@@ -275,8 +275,8 @@ test('user page cards: sessions follow sign-ins and sign-outs elsewhere', async 
   try {
     const up = await uctx.newPage()
     await signIn(up, 'user')
-    await up.goto('/account')
-    const me = await apiCall(up, 'GET', '/api-internal/account')
+    await up.goto('/o/acme/account')
+    const me = await apiCall(up, 'GET', '/o/acme/api-internal/account')
     const id = me.id || me.user_id || (me.user && me.user.id)
     expect(id, JSON.stringify(me).slice(0, 200)).toBeTruthy()
     await a.goto(`${A}/users/${id}`)
@@ -306,8 +306,8 @@ test('account page: addresses an administrator adds and removes appear and go', 
   try {
     const up = await uctx.newPage()
     await signIn(up, 'user')
-    await up.goto('/account')
-    const me = await apiCall(up, 'GET', '/api-internal/account')
+    await up.goto('/o/acme/account')
+    const me = await apiCall(up, 'GET', '/o/acme/api-internal/account')
     const id = me.user.id
     const list = up.getByRole('list', { name: 'Email addresses' })
     await expect(list).toBeVisible()

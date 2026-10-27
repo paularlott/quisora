@@ -85,7 +85,7 @@ test('providers: each has its own callback URL, shown in the list and the dialog
   await page.goto(`${A}/providers`, { waitUntil: 'load' })
   await page.waitForSelector('tbody tr')
   const first = (await apiCall(page, 'GET', `${API}/providers?sort=name`)).items[0]
-  expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/login/callback/' + first.id + '$'))
+  expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/o/[0-9a-f-]{36}/login/callback/' + first.id + '$'))
   const row = page.getByRole('row', { name: new RegExp(first.name) })
   await expect(row).toContainText(first.callback_url)
   await row.getByRole('button', { name: 'Copy callback URL of ' + first.name }).click()
@@ -95,7 +95,7 @@ test('providers: each has its own callback URL, shown in the list and the dialog
   await page.getByRole('button', { name: 'New provider' }).click()
   const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
   const shown = (await dlg.locator('#callback-url-dlg').innerText()).trim()
-  expect(shown).toMatch(/\/login\/callback\/[0-9a-f-]{36}$/)
+  expect(shown).toMatch(/\/o\/[0-9a-f-]{36}\/login\/callback\/[0-9a-f-]{36}$/)
   await dlg.getByRole('button', { name: /Copy/ }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown)
   const name = uniq('CB')
@@ -112,13 +112,13 @@ test('providers: each has its own callback URL, shown in the list and the dialog
 
 test('header: the Live updates button is there for administrators and managers, not for users', async ({ page }) => {
   await signIn(page, 'admin')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   const header = page.locator('header.app-header')
   await expect(header.getByRole('button', { name: 'Pause live updates' })).toBeVisible()
   await page.goto(`${A}/groups`, { waitUntil: 'load' })
   await expect(page.getByRole('button', { name: 'Pause live updates' })).toHaveCount(1) // only the header one
   await signIn(page, 'user')
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await expect(page.getByRole('button', { name: 'Pause live updates' })).toHaveCount(0)
 })
 
@@ -141,8 +141,8 @@ test('header: on a page with nothing live the switch says On, not Connecting', a
   await expect(page.locator('#live-state')).toHaveText('On')
   await page.goto(`${A}/users`, { waitUntil: 'load' })
   await expect(page.locator('#live-state')).toHaveText('Connected')
-  // the account page follows the user's own stream
-  await page.goto('/account', { waitUntil: 'load' })
+  // the account page follows the user's own stream (the super admin's, in the primary organization)
+  await page.goto('/o/primary/account', { waitUntil: 'load' })
   await expect(page.locator('#live-state')).toHaveText('Connected')
 })
 
@@ -260,11 +260,11 @@ test('account: sign-in providers can be connected (after confirming it is you) a
   await page.route('**/api-internal/account/providers/p1/connect', (route) => {
     begins++
     if (begins === 1) return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Confirm it is you with your password or a passkey first.', field: 'reauth' }) })
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/account?provider=connected#providers' }) })
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: '/o/acme/account?provider=connected#providers' }) })
   })
   await page.route('**/api-internal/account/reauth', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   await expect(page.locator('#providers')).toContainText('Acme SSO')
   await expect(page.locator('#providers')).toContainText('Not connected')
   await page.getByRole('button', { name: 'Connect Acme SSO' }).click()
@@ -376,7 +376,7 @@ test('account: recovery codes are made after confirming it is you, shown once, a
   })
   await page.route('**/api-internal/account/reauth', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) : route.fallback())
-  await page.goto('/account', { waitUntil: 'load' })
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
   const row = page.locator('[x-data="accountRecovery"]')
   await expect(row).toContainText('None')
   await row.getByRole('button', { name: 'Create codes…' }).click()

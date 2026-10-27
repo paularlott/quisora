@@ -18,9 +18,9 @@ test('tenant: self-registered apps setting, resources and the apps card', async 
     created: '2026-10-20T10:00:00Z', last_used: '2026-10-20T11:00:00Z', users: 2 }
   let listed = [app]
   let revoked = ''
-  await page.route(`**/tenants/${t.id}/self-registered`, (route) => route.fulfill({ status: 200, contentType: 'application/json',
+  await page.route(`**${API}/self-registered`, (route) => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ items: listed, total: listed.length }) }))
-  await page.route(`**/tenants/${t.id}/self-registered/*`, (route) => {
+  await page.route(`**${API}/self-registered/*`, (route) => {
     if (route.request().method() !== 'DELETE') return route.fallback()
     revoked = decodeURIComponent(route.request().url().split('/').pop())
     listed = []
@@ -33,8 +33,8 @@ test('tenant: self-registered apps setting, resources and the apps card', async 
   await expect(page.locator('#tenant-id')).toHaveText(t.id)
   await expect(page.getByRole('button', { name: 'Copy tenant ID' })).toBeVisible()
   expect((await apiCall(page, 'GET', `${API}/tenants/${slug}`)).id).toBe(t.id) // the API takes the name too
-  await expect(page.locator('.kv')).toContainText('Self-registered apps')
-  await expect(page.locator('.kv')).toContainText('Not allowed')
+  await expect(page.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('Self-registered apps')
+  await expect(page.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('Not allowed')
   // the card shows while the tenant has authorized apps, even with the switch off
   const card = page.getByRole('region', { name: 'Self-registered apps', exact: true })
   await expect(card).toContainText('Claude')
@@ -54,7 +54,7 @@ test('tenant: self-registered apps setting, resources and the apps card', async 
   const saved = await apiCall(page, 'GET', `${API}/tenants/${t.id}`)
   expect(saved.settings.self_registration).toBe(true)
   expect(saved.resources).toEqual([resource])
-  await expect(page.locator('.kv')).toContainText('For ' + resource)
+  await expect(page.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('For ' + resource)
 
   // a resource another tenant owns is refused at the field
   const other = await apiCall(page, 'POST', `${API}/tenants`, { name: uniq('sr2'), display_name: 'Other' })

@@ -85,3 +85,19 @@ func TestMsgpackKeysUnique(t *testing.T) {
 		walk(reflect.TypeOf(NewEntity(k)).Elem())
 	}
 }
+
+// A kind that is NeverExpires gives its records no expiry, whatever they hold, and the other kinds pass the
+// expiry of the record on (a member's is made of when it was removed).
+func TestExpiryOfMatchesIndex(t *testing.T) {
+	for _, k := range Kinds() {
+		e := NewEntity(k)
+		f := reflect.ValueOf(e).Elem().FieldByName("Expires")
+		if !f.IsValid() {
+			continue
+		}
+		f.Set(reflect.ValueOf(t0))
+		if got := !e.Index().Expires.IsZero(); got != (ExpiryOf(k) != NeverExpires) {
+			t.Errorf("%s: the index carries an expiry: %v, the kind's expiry is %d", k, got, ExpiryOf(k))
+		}
+	}
+}

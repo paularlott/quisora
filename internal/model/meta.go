@@ -31,15 +31,11 @@ const (
 	KindAudit    Kind = "audit"
 	KindLink     Kind = "link"
 	KindSignIn   Kind = "signin" // a user's sign-in stamps (SignIn)
-	KindLock     Kind = "lock"   // cluster-wide locks (Lock)
+	KindLock     Kind = "lock"   // leases (Lock), such as each node's master key report
 	KindReplay   Kind = "replay" // single-use values seen, until they expire (Replay)
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
 	// every node of a cluster without gossip sees it. Never backed up or replicated.
 	KindEphemeral Kind = "eph"
-	// KindReservation claims a unique value that must be unique across organizations (GlobalUnique) in a cluster that
-	// replicates by partition: ID is the reserved key, the data names the record that holds it (Reservation). Written
-	// only by that cluster layer; shared-database and standalone stores never hold one.
-	KindReservation Kind = "resv"
 )
 
 // Meta is embedded in every stored entity.
@@ -66,13 +62,11 @@ type Index struct {
 	//   - everything scoped to an organization (an entity with an OrgID: users, groups, memberships, tenants, access,
 	//     clients, providers, passkeys, identities, sessions, grants, API tokens, audit events, link tokens, sign-in
 	//     records): the OrgID, so an organization's records, and every unique value scoped to it, share a partition.
-	//     An entity whose OrgID is empty (a self-registered client, a server-level audit event) is global;
+	//     An entity whose OrgID is empty (a server-level audit event) is global;
 	//   - KindOrg and KindKey (organizations, signing keys): "". They are read by every organization and by pages that
 	//     have no organization yet, and the organization list is one record set;
 	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
 	//     other, so they spread over the partitions instead of loading partition 0;
-	//   - KindReservation: the reserved key (the record's ID), so the load of claiming global unique values spreads and
-	//     the owner of the key's partition is the one place its claim is decided;
 	//   - KindEphemeral: "". It is node-local (or shared-database) state that is never replicated by partition, so the
 	//     key is never used.
 	Partition string
@@ -100,6 +94,16 @@ type Entity interface {
 // NewID returns a time-ordered UUIDv7 string.
 func NewID() string {
 	return uuid.Must(uuid.NewV7()).String()
+}
+
+// IsID reports whether s has the form of an id (NewID: a UUID in its canonical form). An organization's name never
+// does (ValidOrgName), so a path segment names an organization by id or by name unambiguously (/o/<id or name>).
+func IsID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	_, err := uuid.Parse(s)
+	return err == nil
 }
 
 // ClientIDPrefix starts every client ID, so a client ID is recognizable where it is pasted (an application's config,

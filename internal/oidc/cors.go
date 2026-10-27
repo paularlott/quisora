@@ -3,10 +3,10 @@ package oidc
 import (
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // CORS for browser-based public clients: the token, revocation and userinfo endpoints answer for the
@@ -15,7 +15,6 @@ import (
 type originSet struct {
 	exact    map[string]bool // https://app.example.com
 	loopback map[string]bool // http://127.0.0.1 (any port)
-	at       time.Time
 }
 
 // originsOf lists the CORS origins a client's redirect URIs imply.
@@ -42,33 +41,27 @@ func (s *originSet) allows(origin string) bool {
 	return err == nil && u.Scheme == "http" && isLoopbackHost(u.Hostname()) && s.loopback["http://"+u.Hostname()]
 }
 
-// publicOrigins returns the (cached) origins of every enabled public client.
+// publicOrigins returns the (cached) origins of the enabled public clients of the request's organization: a client
+// of one organization has no say over another's endpoints. A store that cannot be read allows nobody, and the set
+// is not kept: the next request reads again.
 func (p *Provider) publicOrigins(r *http.Request) *originSet {
-	s := p.origins.Load()
-	if s != nil && time.Since(s.at) < cacheTTL {
+	orgID := web.Org(r).ID
+	if s, ok := p.origins.get(orgID); ok {
 		return s
 	}
-	// One request re-reads the clients; the others meanwhile use the set they have (or wait for the first one).
-	if s != nil && !p.originsMu.TryLock() {
-		return s
+	tok := p.origins.token(orgID)
+	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}}
+	cs, _, err := p.svc.Clients.List(r.Context(), store.ListQuery{Scope: orgID,
+		Filters: []store.Filter{{Field: "auth_method", Value: model.AuthMethodNone}}})
+	if err != nil {
+		return set
 	}
-	if s == nil {
-		p.originsMu.Lock()
-	}
-	defer p.originsMu.Unlock()
-	if s := p.origins.Load(); s != nil && time.Since(s.at) < cacheTTL {
-		return s // read by the request that held the lock
-	}
-	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}, at: time.Now()}
-	cs, _, err := p.svc.Clients.List(r.Context(), store.ListQuery{Filters: []store.Filter{{Field: "auth_method", Value: model.AuthMethodNone}}})
-	if err == nil {
-		for _, c := range cs {
-			if c.Enabled {
-				originsOf(c, set)
-			}
+	for _, c := range cs {
+		if c.Enabled {
+			originsOf(c, set)
 		}
 	}
-	p.origins.Store(set)
+	p.origins.putIf(orgID, set, tok)
 	return set
 }
 
@@ -118,7 +111,7 @@ func (p *Provider) corsRestrict(w http.ResponseWriter, r *http.Request, clientID
 	if o == "" || w.Header().Get("Access-Control-Allow-Origin") == "" {
 		return
 	}
-	ce, err := p.client(r.Context(), clientID)
+	ce, err := p.client(r.Context(), web.Org(r).ID, clientID)
 	if err == nil && ce.c.Public() {
 		set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}}
 		originsOf(ce.c, set)

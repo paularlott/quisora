@@ -14,9 +14,9 @@ import (
 )
 
 // Pushed authorization requests (RFC 9126). The client posts the parameters of an authorization request to
-// /oauth/par, authenticated the way it authenticates at the token endpoint, and gets back a single-use request_uri;
-// it then sends the browser to /oauth/authorize with only client_id and that request_uri. The parameters never pass
-// through the browser, and they are checked (the same way the authorization endpoint checks them) before the user is
+// /o/<org>/oauth/par, authenticated the way it authenticates at the token endpoint, and gets back a single-use
+// request_uri; it then sends the browser to /o/<org>/oauth/authorize with only client_id and that request_uri. The
+// parameters never pass through the browser, and they are checked (the same way the authorization endpoint checks them) before the user is
 // involved. A client with RequirePAR may start sign-ins no other way.
 //
 // A request_uri must first be used within parTTL. It is used up when the request is decided (a code is issued, or
@@ -32,7 +32,8 @@ const (
 
 // pushedRequest is a pushed authorization request waiting for the browser (ephemeral, ns "oauth.par", single use).
 type pushedRequest struct {
-	ClientID string `json:"c"`
+	Org      string `json:"o"`           // the organization it was pushed to: only it takes the browser's visit
+	ClientID string `json:"c"`           // as the client sent it (model.Client.ClientID)
 	Params   string `json:"q"`           // the authorization request's parameters, form-encoded
 	Started  bool   `json:"s,omitempty"` // visited: it lasts as long as a sign-in flow from then on
 	Used     bool   `json:"u,omitempty"` // decided: presenting it again is an error
@@ -62,7 +63,7 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, e)
 		return
 	}
-	p.corsRestrict(w, r, ce.c.ID)
+	p.corsRestrict(w, r, ce.c.ClientID())
 	c := ce.c
 	if form.Get("request_uri") != "" {
 		writeOAuthError(w, oerr("invalid_request", "request_uri cannot be pushed"))
@@ -99,13 +100,13 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 			params[k] = v
 		}
 	}
-	params.Set("client_id", c.ID) // a client using Basic authentication need not repeat it in the body
+	params.Set("client_id", c.ClientID()) // a client using Basic authentication need not repeat it in the body
 	enc := params.Encode()
 	if len(enc) > parMaxParams { // kept in memory until used: a real request is a fraction of this
 		writeOAuthError(w, oerr("invalid_request", "the authorization request is too large"))
 		return
 	}
-	b, _ := json.Marshal(pushedRequest{ClientID: c.ID, Params: enc})
+	b, _ := json.Marshal(pushedRequest{Org: c.OrgID, ClientID: c.ClientID(), Params: enc})
 	id, err := p.s.Eph.New(r.Context(), nsPAR, b, parTTL)
 	if errors.Is(err, ephemeral.ErrFull) {
 		writeOAuthError(w, &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
@@ -124,9 +125,10 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(o.bytes())
 }
 
-// loadPushed returns the parameters pushed as uri by clientID (only that client may use it), its id, and whether it
-// was already used. Its first visit makes it last as long as the sign-in flow it starts.
-func (p *Provider) loadPushed(ctx context.Context, clientID, uri string) (q url.Values, id string, used bool, err error) {
+// loadPushed returns the parameters pushed as uri to organization orgID by clientID (only that client may use it, and
+// only there), its id, and whether it was already used. Its first visit makes it last as long as the sign-in flow it
+// starts.
+func (p *Provider) loadPushed(ctx context.Context, orgID, clientID, uri string) (q url.Values, id string, used bool, err error) {
 	id = strings.TrimPrefix(uri, parURNPrefix)
 	if clientID == "" || id == "" || len(id) > 200 {
 		return nil, "", false, errPushed
@@ -136,7 +138,7 @@ func (p *Provider) loadPushed(ctx context.Context, clientID, uri string) (q url.
 		return nil, "", false, errPushed
 	}
 	var pr pushedRequest
-	if json.Unmarshal(raw, &pr) != nil || pr.ClientID != clientID {
+	if json.Unmarshal(raw, &pr) != nil || pr.Org != orgID || pr.ClientID != clientID {
 		return nil, "", false, errPushed
 	}
 	if q, err = url.ParseQuery(pr.Params); err != nil {

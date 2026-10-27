@@ -8,10 +8,12 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// orgView adds the user count (shown to super admins) to an organization.
+// orgView adds to an organization whether it is the primary one (derived: model.Org.Primary) and the user count (shown
+// to super admins).
 type orgView struct {
 	*model.Org
-	Users *int `json:"users,omitempty"`
+	Primary bool `json:"primary"`
+	Users   *int `json:"users,omitempty"`
 }
 
 // viewOf is o as a sees it: the last emergency sign-out (who pulled it, and why) is for those who manage the
@@ -22,7 +24,7 @@ func (m *Module) viewOf(a *service.Actor, o *model.Org) orgView {
 		cp.LastSignOut = nil
 		o = &cp
 	}
-	return orgView{Org: o}
+	return orgView{Org: o, Primary: o.Primary()}
 }
 
 func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +57,7 @@ func (m *Module) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	zero := 0
-	web.WriteJSON(w, http.StatusCreated, orgView{Org: o, Users: &zero})
+	web.WriteJSON(w, http.StatusCreated, orgView{Org: o, Primary: o.Primary(), Users: &zero})
 }
 
 func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +76,7 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		in.Settings = nil
 	}
 	// The primary organization's sign-in policy covers the super admins themselves.
-	if o.Primary && in.Settings != nil && a.IsSuper() && !m.stepUp(w, r) {
+	if o.Primary() && in.Settings != nil && a.IsSuper() && !m.stepUp(w, r) {
 		return
 	}
 	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, o.ID, in)
@@ -82,7 +84,7 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, orgView{Org: upd})
+	web.WriteJSON(w, http.StatusOK, orgView{Org: upd, Primary: upd.Primary()})
 }
 
 // deleteOrg deletes an organization; ?cascade=1 allows one with users (they, its groups, clients and providers stop

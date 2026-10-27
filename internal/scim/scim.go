@@ -27,6 +27,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -130,11 +131,11 @@ func (m *Module) fromService(err error) *Error {
 	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
 		return errf(409, "", "%s", capitalise(err.Error()))
-	case errors.Is(err, service.ErrOutcomeUnknown):
+	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		// Sent, but the node that decides it was lost before it answered: a retry of a create would find the resource
 		// (409), so the client is told to read it back rather than to treat this as a failure of its own.
 		return errf(503, "", "The change may or may not have been made (the cluster lost the node that decides it); read the resource back before retrying")
-	case errors.Is(err, service.ErrUnavailable):
+	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
 		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):
 		return badValue("%s", err.Error())
@@ -347,7 +348,11 @@ func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 	if tok == "" {
 		return nil, errf(401, "", "A bearer token is required")
 	}
-	if m.srv.BearerLimited(r) {
+	limited, err := m.srv.BearerLimited(r)
+	if err != nil { // the counter failed, not the caller: refused, but retryable
+		return nil, errf(503, "", "The token could not be checked right now; try again shortly")
+	}
+	if limited {
 		return nil, errf(429, "", "Too many failed authentications from this address; try again in a minute")
 	}
 	actor, e := m.resolve(r, tok, scheme)

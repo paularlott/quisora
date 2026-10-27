@@ -32,7 +32,7 @@ test('passkey-only organization: creating a passkey with a virtual authenticator
   await page.keyboard.press('Enter')
   // the invitation is consumed: the page moves on (account page, or a follow-up step) and no error is shown
   await expect(page.locator('.alert-error:visible')).toHaveCount(0)
-  await page.waitForURL((u) => !u.pathname.startsWith('/invite'), { timeout: 10000 })
+  await page.waitForURL((u) => !/\/invite$/.test(u.pathname), { timeout: 10000 })
 })
 
 test('browser without WebAuthn: the passkey button is replaced by an explanation', async ({ page }) => {

@@ -641,7 +641,49 @@ func (c *Config) SharedStorage() bool { return !c.LocalStorage() }
 func (c *Config) Replicate() bool { return c.Cluster.Bind != "" }
 
 // Issuer returns the OIDC issuer identifier.
-func (c *Config) Issuer() string { return c.Server.PublicURL }
+// OrgIssuer is the OAuth issuer of an organization: its own, under /o/<id>, so a token of one organization is never
+// taken for another's (an API checks the issuer and its audience), and every endpoint of it is the organization's.
+func (c *Config) OrgIssuer(orgID string) string { return c.Server.PublicURL + "/o/" + orgID }
+
+// Endpoints are an organization's OAuth and OpenID Connect addresses: the one list the discovery document publishes
+// and the console shows for applications to be configured with.
+type Endpoints struct {
+	Issuer              string
+	Discovery           string // OpenID Connect discovery (issuer + /.well-known/openid-configuration)
+	Metadata            string // OAuth authorization server metadata at its RFC 8414 address (MCP clients look there)
+	Authorization       string
+	Token               string
+	PAR                 string // pushed authorization requests (RFC 9126)
+	UserInfo            string
+	JWKS                string
+	Introspection       string
+	Revocation          string
+	EndSession          string
+	DeviceAuthorization string
+	DeviceVerification  string // the page a device sign-in's user code is entered on
+	Registration        string // dynamic client registration (RFC 7591)
+}
+
+// OrgEndpoints returns the endpoints of organization orgID.
+func (c *Config) OrgEndpoints(orgID string) Endpoints {
+	iss := c.OrgIssuer(orgID)
+	return Endpoints{
+		Issuer:              iss,
+		Discovery:           iss + "/.well-known/openid-configuration",
+		Metadata:            c.Server.PublicURL + "/.well-known/oauth-authorization-server/o/" + orgID,
+		Authorization:       iss + "/oauth/authorize",
+		Token:               iss + "/oauth/token",
+		PAR:                 iss + "/oauth/par",
+		UserInfo:            iss + "/oauth/userinfo",
+		JWKS:                iss + "/oauth/jwks",
+		Introspection:       iss + "/oauth/introspect",
+		Revocation:          iss + "/oauth/revoke",
+		EndSession:          iss + "/oauth/logout",
+		DeviceAuthorization: iss + "/oauth/device_authorization",
+		DeviceVerification:  iss + "/device",
+		Registration:        iss + "/oauth/register",
+	}
+}
 
 func (t Tokens) Access() time.Duration  { return time.Duration(t.AccessTTL) * time.Second }
 func (t Tokens) IDToken() time.Duration { return time.Duration(t.IDTokenTTL) * time.Second }

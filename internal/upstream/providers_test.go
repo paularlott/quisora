@@ -65,7 +65,7 @@ func TestGitHubTokenFailure(t *testing.T) {
 	p := e.githubProvider(t, nil)
 	authURL, state, _ := e.up.BeginTenant(e.ctx, e.org, p, "", "")
 	_ = e.gh.Authorize(authURL)
-	if _, err := e.up.Finish(e.ctx, p.ID, state, state, "wrong-code"); !errors.Is(err, upstream.ErrUpstream) {
+	if _, err := e.up.Finish(e.ctx, e.org.ID, p.ID, state, state, "wrong-code"); !errors.Is(err, upstream.ErrUpstream) {
 		t.Fatalf("want ErrUpstream, got %v", err)
 	}
 }

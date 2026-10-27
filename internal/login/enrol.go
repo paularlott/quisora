@@ -68,7 +68,7 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 // completion of the sign-in, or its owner, got there first.
 const msgChanged = "Your account changed while you were signing in. Start again."
 
-// enrolTOTPBegin handles POST /api-internal/login/enrol/totp/begin: {ticket} -> {secret, uri, qr}.
+// enrolTOTPBegin handles POST /o/{org}/api-internal/login/enrol/totp/begin: {ticket} -> {secret, uri, qr}.
 func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -101,7 +101,7 @@ type enrolConfirmReq struct {
 	Code   string `json:"code"`
 }
 
-// enrolTOTPConfirm handles POST /api-internal/login/enrol/totp/confirm: {ticket, code} -> {next}.
+// enrolTOTPConfirm handles POST /o/{org}/api-internal/login/enrol/totp/confirm: {ticket, code} -> {next}.
 func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) {
 		return
@@ -119,7 +119,12 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "Start the Authenticator App set-up first.", "")
 		return
 	}
-	if !m.attempt(ctx, in.Ticket) {
+	within, err := m.attempt(ctx, in.Ticket)
+	if err != nil { // the counter failed: refused, but not as too many tries
+		unavailableResponse(w)
+		return
+	}
+	if !within {
 		writeErr(w, http.StatusUnauthorized, "Too many incorrect codes. Start again.", "")
 		return
 	}
@@ -160,7 +165,7 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
 }
 
-// enrolPasskeyBegin handles POST /api-internal/login/enrol/passkey/begin: {ticket} -> {challenge, options}.
+// enrolPasskeyBegin handles POST /o/{org}/api-internal/login/enrol/passkey/begin: {ticket} -> {challenge, options}.
 func (m *Module) enrolPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return
@@ -188,7 +193,7 @@ type enrolPasskeyFinishReq struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// enrolPasskeyFinish handles POST /api-internal/login/enrol/passkey/finish -> {next}.
+// enrolPasskeyFinish handles POST /o/{org}/api-internal/login/enrol/passkey/finish -> {next}.
 func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	if !m.anonOK(w, r) || !m.passkeysOK(w) {
 		return
@@ -202,7 +207,12 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if !m.attempt(ctx, in.Ticket) {
+	within, err := m.attempt(ctx, in.Ticket)
+	if err != nil { // the counter failed: refused, but not as too many tries
+		unavailableResponse(w)
+		return
+	}
+	if !within {
 		writeErr(w, http.StatusUnauthorized, "Too many failed attempts. Start again.", "")
 		return
 	}

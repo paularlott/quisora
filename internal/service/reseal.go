@@ -94,7 +94,7 @@ func (s *Service) resealSecrets(ctx context.Context, limit int, dry bool) (Resea
 	}
 	now := time.Now()
 	err := walk(ctx, s.Grants, func(g *model.Grant) error {
-		if g.Revoked || now.After(g.Expires) {
+		if now.After(g.Expires) {
 			return nil // never refreshed again
 		}
 		return reseal(GrantKeyBinding(g.ID), &g.Key, func() error { return s.Grants.Update(ctx, g) })

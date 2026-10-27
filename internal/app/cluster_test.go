@@ -290,10 +290,10 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 		return resp
 	}
 	// 1. authorize on node 0 → the sign-in page
-	resp := get(nextNode() + "/oauth/authorize?" + q.Encode())
+	resp := get(nextNode() + "/o/" + org.ID + "/oauth/authorize?" + q.Encode())
 	loc := resp.Header.Get("Location")
 	resp.Body.Close()
-	if !strings.HasPrefix(loc, "/login/acme?") {
+	if !strings.HasPrefix(loc, "/o/"+org.ID+"/login?") {
 		t.Fatalf("authorize: %d %s", resp.StatusCode, loc)
 	}
 	// 2. the sign-in page from node 1
@@ -306,9 +306,9 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 	}
 	lu, _ := url.Parse(loc)
 	// 3. password sign-in on node 0
-	body, _ := json.Marshal(map[string]string{"org": "acme", "email": "jane@acme.test", "password": "correct horse battery",
+	body, _ := json.Marshal(map[string]string{"email": "jane@acme.test", "password": "correct horse battery",
 		"next": lu.Query().Get("next"), "tenant": lu.Query().Get("tenant")})
-	code, out := doJSON(t, hc, "POST", nextNode()+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
+	code, out := doJSON(t, hc, "POST", nextNode()+"/o/"+org.ID+"/api-internal/login/password", map[string]string{"Content-Type": "application/json",
 		"X-CSRF-Token": string(m[1]), "Origin": publicURL}, strings.NewReader(string(body)))
 	if code != 200 || out["next"] == nil {
 		t.Fatalf("password sign-in: %d %v", code, out)
@@ -324,17 +324,17 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {cb.Query().Get("code")}, "redirect_uri": {"https://app.example/cb"},
 		"code_verifier": {verifier}, "client_id": {cl.ID}, "client_secret": {secret}}
 	hdr := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
-	code, tok := doJSON(t, hc, "POST", nextNode()+"/oauth/token", hdr, strings.NewReader(form.Encode()))
+	code, tok := doJSON(t, hc, "POST", nextNode()+"/o/"+org.ID+"/oauth/token", hdr, strings.NewReader(form.Encode()))
 	if code != 200 || tok["refresh_token"] == nil {
 		t.Fatalf("code exchange on the other node: %d %v", code, tok)
 	}
 	// 6. refresh on node 1, userinfo on node 0
 	rf := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok["refresh_token"].(string)}, "client_id": {cl.ID}, "client_secret": {secret}}
-	code, tok2 := doJSON(t, hc, "POST", nextNode()+"/oauth/token", hdr, strings.NewReader(rf.Encode()))
+	code, tok2 := doJSON(t, hc, "POST", nextNode()+"/o/"+org.ID+"/oauth/token", hdr, strings.NewReader(rf.Encode()))
 	if code != 200 {
 		t.Fatalf("refresh on the other node: %d %v", code, tok2)
 	}
-	if code, _ := doJSON(t, hc, "GET", nextNode()+"/oauth/userinfo", map[string]string{"Authorization": "Bearer " + tok2["access_token"].(string)}, nil); code != 200 {
+	if code, _ := doJSON(t, hc, "GET", nextNode()+"/o/"+org.ID+"/oauth/userinfo", map[string]string{"Authorization": "Bearer " + tok2["access_token"].(string)}, nil); code != 200 {
 		t.Fatalf("userinfo: %d", code)
 	}
 	// Exactly one node runs housekeeping.
@@ -361,7 +361,7 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 	deadline := time.Now().Add(8 * time.Second)
 	for _, n := range apps { // every node, not just one
 		for {
-			code, _ := doJSON(t, hc, "GET", "https://"+n.Cfg.Server.Listen+"/oauth/userinfo",
+			code, _ := doJSON(t, hc, "GET", "https://"+n.Cfg.Server.Listen+"/o/"+org.ID+"/oauth/userinfo",
 				map[string]string{"Authorization": "Bearer " + tok2["access_token"].(string)}, nil)
 			if code == 401 {
 				break
@@ -378,7 +378,7 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 	}
 	deadline = time.Now().Add(8 * time.Second)
 	for { // a node may still have the disabled client cached for a few seconds
-		code, _ := doJSON(t, hc, "POST", nextNode()+"/oauth/token", hdr, strings.NewReader(form.Encode()))
+		code, _ := doJSON(t, hc, "POST", nextNode()+"/o/"+org.ID+"/oauth/token", hdr, strings.NewReader(form.Encode()))
 		if code == 400 {
 			break
 		}
@@ -388,7 +388,7 @@ func crossNodeOAuth(t *testing.T, apps []*App, hc *http.Client, publicURL string
 		time.Sleep(250 * time.Millisecond)
 	}
 	for { // the grant is gone everywhere; a node may still answer 401 while it has the disabled client cached
-		code, _ := doJSON(t, hc, "POST", nextNode()+"/oauth/token", hdr, strings.NewReader(rf.Encode()))
+		code, _ := doJSON(t, hc, "POST", nextNode()+"/o/"+org.ID+"/oauth/token", hdr, strings.NewReader(rf.Encode()))
 		if code == 400 {
 			break
 		}

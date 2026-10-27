@@ -71,14 +71,14 @@ func TestTokenExchangeByResourceServer(t *testing.T) {
 		t.Fatalf("nested act: %v", act2)
 	}
 	// revoking the exchanged token does not end the user's grant at the application
-	if rr := h.clientPost("/oauth/revoke", url.Values{"token": {x.str("access_token")}}, api, apiSecret); rr.status != 200 {
+	if rr := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {x.str("access_token")}}, api, apiSecret); rr.status != 200 {
 		t.Fatalf("revoke: %d", rr.status)
 	}
 	if rf := h.refreshWith(app, asecret, rt); rf.status != 200 {
 		t.Fatalf("grant ended by revoking an exchanged token: %v", rf.m)
 	}
 	// ending the grant ends the exchanged token
-	if rr := h.clientPost("/oauth/revoke", url.Values{"token": {rt}}, app, asecret); rr.status != 200 {
+	if rr := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, app, asecret); rr.status != 200 {
 		t.Fatal("revoke refresh")
 	}
 	h.p.InvalidateGrant(subject["gid"].(string))

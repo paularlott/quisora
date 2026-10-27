@@ -40,11 +40,11 @@ func TestResetOfUnknownOutcomeSaysThePasswordMayBeSet(t *testing.T) {
 	if err := e.Mailer.SendReset(context.Background(), pat, org); err != nil {
 		t.Fatal(err)
 	}
-	tok := strings.TrimPrefix(linkPath(t, e.nextMail(t)), "/reset?token=")
+	tok := tokenOf(linkPath(t, e.nextMail(t)))
 	f := &landsThenUnconfirmed{Store: e.Svc.Users.S}
 	e.Svc.Users.S = f
 	f.armed.Store(true)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, out := b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "a brand new password"})
 	wantStatus(t, res, out, http.StatusServiceUnavailable)
 	if msg := str(out, "error"); !strings.Contains(msg, "sign") || !strings.Contains(msg, "may have been changed") {
@@ -77,7 +77,7 @@ func TestInviteOfUnknownOutcomeSaysItMayHaveBeenAccepted(t *testing.T) {
 	f := &landsThenUnconfirmed{Store: e.Svc.Users.S}
 	e.Svc.Users.S = f
 	f.armed.Store(true)
-	b := e.browser(t)
+	b := e.browserAt(t, org)
 	res, out := b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res, out, http.StatusServiceUnavailable)
 	if msg := str(out, "error"); !strings.Contains(msg, "may have been accepted") || !strings.Contains(msg, "signing in") {

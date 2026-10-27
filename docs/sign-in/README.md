@@ -13,6 +13,20 @@ Quisora is in [Connecting applications](../oauth/README.md).)
 | [Codes by email](email-codes.md) | A second factor by email, for organizations that allow it |
 | [Emergency sign-out and lock-out](../emergency-sign-out.md) | Ending everyone's sessions at once, or one person's access |
 
+## Where people sign in
+
+Organizations are self-contained: each has its own address space, `/o/<org>/`, where `<org>` is the organization's id
+(a UUID: the form every link Quisora makes uses) or its name (a name can never look like a UUID, and `o` is reserved).
+The sign-in page is `/o/<org>/login`, with `/o/<org>/account`, `/o/<org>/invite`, `/o/<org>/reset`,
+`/o/<org>/verify-email` and `/o/<org>/logout` beside it; the links in invitation, reset and verification emails are
+`/o/<org id>/…`. `https://id.example.com/` redirects to the primary organization's sign-in page (its id is
+`00000000-0000-7000-8000-000000000001`).
+
+A browser keeps one session per organization (a cookie of its own for each): being signed in to one organization is not
+being signed in to another. The console (`/admin`) and the management API (`/api`) are the server's, not an
+organization's: they use the session of the organization they administer if the browser has one, otherwise the primary
+organization's (super admins), otherwise any other.
+
 ## Ways to sign in
 
 Each organization chooses its methods (super admins: **Organizations** → **Edit** → **Sign-in methods**), and each
@@ -87,7 +101,7 @@ organization may set shorter ones on its settings, never longer. Managers and ab
 hours) and `session.privileged_idle` (1 hour) when those are shorter. The primary organization's settings (methods,
 second factor, session lifetimes) cover the super admins, so only super admins change them.
 
-Users see their sessions on their account page and can end any of them; administrators can end a user's sessions
+Users see their sessions of the organization on their account page and can end any of them; administrators can end a user's sessions
 from the user's page. Changing a password signs the user out of every other browser and device.
 
 ## Confirming it is you

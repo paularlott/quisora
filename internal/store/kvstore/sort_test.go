@@ -35,7 +35,8 @@ func TestSortedPagesAreBounded(t *testing.T) {
 			u.GivenName = "" // the name falls back to the username
 		}
 		if i%11 == 0 {
-			u.Work.Department = "dept" // most departments are empty: empty values sort first, as one run
+			end := time.Unix(1_800_000_000+int64(i), 0)
+			u.ValidUntil = &end // most users have no end date: empty values sort first, as one run
 		}
 		if i%37 == 5 {
 			u.Role = model.RoleSuperAdmin
@@ -140,7 +141,7 @@ func TestSortedPagesAreBounded(t *testing.T) {
 			{Scope: "org", Sort: "name", Desc: desc, Filters: []store.Filter{{Field: "role", Value: "user"}}, Offset: 50, Limit: 25},
 			{Scope: "org", Sort: "name", Desc: desc, Filters: []store.Filter{{Field: "role", Value: "user"}}},
 			{Scope: "org", Desc: desc, Search: "USER-01", Limit: 10},
-			{Scope: "org", Sort: "department", Desc: desc, Search: "user-02", Limit: 10}, // no sort index: ordered in memory
+			{Scope: "org", Sort: "valid_until", Desc: desc, Search: "user-02", Limit: 10}, // no sort index: ordered in memory
 			{Scope: "org", Sort: "name", Desc: desc, Filters: visibility, Search: "user-03"},
 			{Scope: "", Sort: "username", Desc: desc, Limit: 10}, // a scoped kind without a scope: ordered in memory
 		} {
@@ -160,8 +161,8 @@ func TestSortedPagesAreBounded(t *testing.T) {
 	}
 }
 
-// A kind whose records expire (grants) keeps exact totals: its ranges have expiring members, so the engine counts
-// them, leaving out the expired; the counters follow the purge of the expired members.
+// A kind whose records expire (grants) keeps exact totals: the engine counts its ranges, leaving out the expired
+// members, and keeps no counters.
 func TestExpiringRangesCountExactly(t *testing.T) {
 	ctx := context.Background()
 	s := openBadger(t, BadgerOptions{InMemory: true})
@@ -193,8 +194,8 @@ func TestExpiringRangesCountExactly(t *testing.T) {
 	if n, _ := s.Count(ctx, model.KindGrant, "u1"); n != 15 {
 		t.Errorf("count after purge %d", n)
 	}
-	if n, x, _ := s.counts(ctx, scopeBucket(model.KindGrant, "u1")); n != 15 || x != 15 {
-		t.Errorf("counters after purge: %d members, %d expiring", n, x)
+	if n, x, _ := s.counts(ctx, scopeBucket(model.KindGrant, "u1")); n != 0 || x != 0 {
+		t.Errorf("counters of grants: %d members, %d expiring", n, x)
 	}
 }
 

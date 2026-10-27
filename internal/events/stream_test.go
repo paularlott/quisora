@@ -113,7 +113,7 @@ func TestAccountStreamOpen(t *testing.T) {
 	pc, _ := env.Session(plain)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", env.URL+web.AccountEventsPath, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", env.URL+web.OrgPath(env.Primary.ID, web.AccountEventsPath), nil)
 	res, err := pc.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestAccountStreamOpen(t *testing.T) {
 		t.Fatalf("account stream: %d %q", res.StatusCode, line)
 	}
 	anon := env.Client()
-	r2, err := anon.Get(env.URL + web.AccountEventsPath)
+	r2, err := anon.Get(env.URL + web.OrgPath(env.Primary.ID, web.AccountEventsPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestStreamEndsWhenSessionEnds(t *testing.T) {
 	t.Cleanup(func() { recheckEvery = old })
 	for name, path := range map[string]string{
 		"console": web.EventsPath + "?org=primary",
-		"account": web.AccountEventsPath,
+		"account": web.OrgPath(model.PrimaryOrgID, web.AccountEventsPath),
 	} {
 		t.Run(name, func(t *testing.T) {
 			hub := NewHub()
@@ -208,7 +208,7 @@ func TestAccountStreamReceivesOwnChanges(t *testing.T) {
 	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
 	hub.OrgOfUser = func(string) string { return env.Primary.ID }
 	c, _ := env.ConsoleSession(env.Admin)
-	_, sc := openStream(t, c, env.URL+web.AccountEventsPath)
+	_, sc := openStream(t, c, env.URL+web.OrgPath(env.Primary.ID, web.AccountEventsPath))
 	if !waitEvent(sc, "ready") {
 		t.Fatal("no ready")
 	}

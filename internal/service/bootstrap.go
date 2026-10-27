@@ -27,7 +27,7 @@ func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User
 	if errors.Is(err, ErrNotFound) {
 		settings := model.DefaultOrgSettings()
 		settings.RequireMFA = true // the first administrator always uses a second factor
-		org = &model.Org{Name: "primary", DisplayName: "Primary", Primary: true, Settings: settings}
+		org = &model.Org{Name: "primary", DisplayName: "Primary", Settings: settings}
 		if err := s.createBootstrap(ctx, org, model.PrimaryOrgID, now); err != nil && !errors.Is(err, errExists) {
 			return nil, "", err
 		}

@@ -1,0 +1,58 @@
+package web_test
+
+import (
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/paularlott/quisora/internal/web"
+	"github.com/paularlott/quisora/internal/webtest"
+)
+
+type pingRoutes struct{}
+
+func (pingRoutes) Register(s *web.Server) {
+	s.Mux.HandleFunc("POST /o/x/ping", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("X-Seen", r.Host+" "+r.RemoteAddr+" "+r.RequestURI)
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write(b)
+	})
+	s.Mux.HandleFunc("GET /elsewhere", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+}
+
+type baseCalls struct{ urls []string }
+
+func (b *baseCalls) RoundTrip(r *http.Request) (*http.Response, error) {
+	b.urls = append(b.urls, r.URL.String())
+	return &http.Response{StatusCode: http.StatusAccepted, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+}
+
+// The server answers requests to its own organizations' addresses itself, through its whole handler, from the loopback
+// address; everything else, including its other paths and other hosts, goes to the transport it was given.
+func TestSelfTransportServesOrganizationPathsInProcess(t *testing.T) {
+	e := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{pingRoutes{}} }})
+	base := &baseCalls{}
+	c := &http.Client{Transport: e.Server.SelfTransport(base)}
+
+	res, err := c.Post(e.Cfg.Server.PublicURL+"/o/x/ping?a=1", "text/plain", strings.NewReader("body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	host := strings.TrimPrefix(e.Cfg.Server.PublicURL, "https://")
+	if res.StatusCode != http.StatusTeapot || string(b) != "body" || res.Header.Get("X-Seen") != host+" 127.0.0.1:0 /o/x/ping?a=1" ||
+		res.Header.Get("X-Content-Type-Options") == "" {
+		t.Fatalf("in-process: %d %q %q %q", res.StatusCode, b, res.Header.Get("X-Seen"), res.Header.Get("X-Content-Type-Options"))
+	}
+	for _, u := range []string{e.Cfg.Server.PublicURL + "/elsewhere", "https://other.example/o/x/ping"} {
+		if res, err := c.Get(u); err != nil || res.StatusCode != http.StatusAccepted {
+			t.Fatalf("%s: %v", u, err)
+		}
+	}
+	if len(base.urls) != 2 {
+		t.Fatalf("requests that reached the base transport: %v", base.urls)
+	}
+}

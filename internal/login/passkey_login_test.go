@@ -48,22 +48,26 @@ func TestPasskeyRegisterAndLogin(t *testing.T) {
 		t.Fatalf("account after passkey login: %d", res.StatusCode)
 	}
 
-	// From the landing page: no org given at all.
+	// At another organization's page the same passkey signs nobody in: it is an account of acme.
 	b2 := e.browser(t)
 	b2.auth = signed.auth
-	status, out = b2.passkeyLogin(map[string]any{})
-	if status != 200 || str(out, "next") != "/account" {
-		t.Fatalf("landing passkey login: %d %v", status, out)
+	status, out = b2.passkeyLogin(map[string]any{"org": "primary"})
+	if status != 401 || b2.hasSession() {
+		t.Fatalf("passkey of acme at the primary organization's page: %d %v", status, out)
 	}
-	// Hostile next is dropped.
+	// Hostile next is dropped, and so is one that leads out of the organization's space.
+	for _, next := range []string{"//evil.example", "/o/" + model.PrimaryOrgID + "/account"} {
+		b3 := e.browser(t)
+		b3.auth = signed.auth
+		status, out = b3.passkeyLogin(map[string]any{"org": "acme", "next": next})
+		if status != 200 || str(out, "next") != b.base+"/account" {
+			t.Fatalf("next %q: %d %v", next, status, out)
+		}
+	}
 	b3 := e.browser(t)
 	b3.auth = signed.auth
-	status, out = b3.passkeyLogin(map[string]any{"next": "//evil.example"})
-	if status != 200 || str(out, "next") != "/account" {
-		t.Fatalf("hostile next: %d %v", status, out)
-	}
 	// The discoverable options never list credentials.
-	res, o := b3.post("/api-internal/login/passkey/begin", map[string]any{})
+	res, o := b3.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, o, 200)
 	if strings.Contains(str(o, "_raw"), "allowCredentials") && !strings.Contains(str(o, "_raw"), `"allowCredentials":null`) {
 		if !strings.Contains(str(o, "_raw"), `"allowCredentials":[]`) {
@@ -100,14 +104,14 @@ func TestPasskeyLoginFailures(t *testing.T) {
 	// Replayed challenge.
 	b = e.browser(t)
 	b.auth = signed.auth
-	res, begin := b.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin := b.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	assertion, _, _ := b.auth.Get(opts)
 	body := map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)}
 	res, out = b.post("/api-internal/login/passkey/finish", body)
 	wantStatus(t, res, out, 200)
-	res, out = e.browser(t).post("/api-internal/login/passkey/finish", body)
+	res, out = e.browserAt(t, org).post("/api-internal/login/passkey/finish", body)
 	wantStatus(t, res, out, 401)
 
 	// Organization mismatch: the passkey belongs to acme.
@@ -118,10 +122,10 @@ func TestPasskeyLoginFailures(t *testing.T) {
 		t.Fatalf("passkey accepted for another org: %d %v", status, out)
 	}
 	// Unknown organization at begin.
-	res, out = b.post("/api-internal/login/passkey/begin", map[string]any{"org": "nope"})
-	wantStatus(t, res, out, 403)
+	res, out = b.post("/o/nope/api-internal/login/passkey/begin", map[string]any{})
+	wantStatus(t, res, out, 404)
 
-	// Org that disabled passkeys: begin is refused; a landing-page ceremony is refused at finish.
+	// Org that disabled passkeys: begin is refused; a ceremony begun before is refused at finish.
 	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasskeyLogin = false })
 	b = e.browser(t)
 	b.auth = signed.auth
@@ -129,9 +133,16 @@ func TestPasskeyLoginFailures(t *testing.T) {
 	if status != 403 {
 		t.Fatalf("begin for org without passkeys: %d", status)
 	}
-	status, out = b.passkeyLogin(map[string]any{})
-	if status != 403 || b.hasSession() {
-		t.Fatalf("finish for org without passkeys: %d %v", status, out)
+	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasskeyLogin = true })
+	res, begin = b.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
+	wantStatus(t, res, begin, 200)
+	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasskeyLogin = false })
+	opts, _ = json.Marshal(begin["options"])
+	assertion, _, _ = b.auth.Get(opts)
+	res, out = b.post("/api-internal/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(assertion)})
+	wantStatus(t, res, out, 403)
+	if b.hasSession() {
+		t.Fatal("finish for org without passkeys signed in")
 	}
 	e.setSettings(t, org, func(s *model.OrgSettings) { s.PasskeyLogin = true })
 
@@ -143,13 +154,13 @@ func TestPasskeyLoginFailures(t *testing.T) {
 			t.Fatalf("normal login %d %v", status, out)
 		}
 	}
-	res, begin = b.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin = b.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
 	opts, _ = json.Marshal(begin["options"])
 	stale, err := signed.auth.GetWith(opts, cred, 1, e.Cfg.Server.PublicURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b2 := e.browser(t)
+	b2 := e.browserAt(t, org)
 	res, out = b2.post("/api-internal/login/passkey/finish", map[string]any{"challenge": begin["challenge"], "credential": json.RawMessage(stale)})
 	wantStatus(t, res, out, 401)
 	if b2.hasSession() {
@@ -185,9 +196,9 @@ func TestPasskeysDisabledOnIPHost(t *testing.T) {
 	b := e.browser(t)
 	res, out := b.post("/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, out, 503)
-	_, body := b.get("/")
-	if strings.Contains(body, `data-passkeys="1"`) {
-		t.Fatal("landing page offers passkeys on an IP host")
+	res, body := b.get("/login")
+	if res.StatusCode != 200 || strings.Contains(body, `data-passkey="1"`) || strings.Contains(body, "Sign in with a passkey") {
+		t.Fatalf("sign-in page offers passkeys on an IP host: %d", res.StatusCode)
 	}
 	// password login still works
 	res, out = b.login("primary", "admin", e.Password)
@@ -226,7 +237,7 @@ func TestPasskeyCeremoniesArePurposeBound(t *testing.T) {
 
 	// sign-in ceremony -> reauth finish
 	anon.auth = signed.auth
-	res, begin = anon.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
+	res, begin = anon.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
 	wantStatus(t, res, begin, 200)
 	ch, cred = assert(anon, begin)
 	res, out = signed.post("/api-internal/account/reauth/passkey/finish", map[string]any{"challenge": ch, "credential": cred})
@@ -262,7 +273,7 @@ func TestPasskeyCeremoniesArePurposeBound(t *testing.T) {
 	// ticket begins the ceremony, and pat's session must not be able to finish it.
 	quinn := e.user(t, org, "quinn", model.RoleUser)
 	tid, _ := e.Mod.PutEnrolTicket(quinn.ID)
-	res, begin = e.browser(t).post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": tid})
+	res, begin = e.browserAt(t, org).post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": tid})
 	wantStatus(t, res, begin, 200)
 	opts, _ := json.Marshal(begin["options"])
 	regCred, _, err := virtualauth.New(e.Cfg.Server.PublicURL).Create(opts)
@@ -357,7 +368,7 @@ func TestPasskeyLoginRefused(t *testing.T) {
 		}, nil},
 		{"response from another origin", nil, func(t *testing.T) (int, *browser) {
 			b := e.browser(t)
-			res, begin := b.post("/api-internal/login/passkey/begin", map[string]any{"org": "acme"})
+			res, begin := b.post("/o/acme/api-internal/login/passkey/begin", map[string]any{})
 			wantStatus(t, res, begin, 200)
 			opts, _ := json.Marshal(begin["options"])
 			evil, err := signed.auth.GetWith(opts, signed.auth.Creds[0], 99, "https://evil.example")

@@ -1,5 +1,5 @@
 // OAuth pages: consent, sign-out confirmation and the auto-submitting form_post response.
-import { post } from '../lib/api.js'
+import { orgBase, post } from '../lib/api.js'
 
 function message(e) {
   return (e && e.message) || 'Something went wrong. Please try again.'
@@ -20,7 +20,7 @@ export default function (Alpine) {
       this.busy = true
       this.error = ''
       try {
-        const res = await post('/api-internal/oauth/consent', { flow: this.flow, approve })
+        const res = await post(orgBase() + '/api-internal/oauth/consent', { flow: this.flow, approve })
         window.location.assign(res.redirect)
       } catch (e) {
         this.error = message(e)

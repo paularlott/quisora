@@ -48,7 +48,7 @@ func newDPoPKey(t testing.TB, alg string) dpopKey {
 func (h *harness) proof(k dpopKey, method, path string, edit func(hdr, cl map[string]any)) string {
 	h.t.Helper()
 	hdr := map[string]any{"typ": dpopTyp, "alg": k.alg, "jwk": k.jwk}
-	cl := map[string]any{"jti": secureID(), "htm": method, "htu": h.env.Cfg.Issuer() + path, "iat": time.Now().Unix(),
+	cl := map[string]any{"jti": secureID(), "htm": method, "htu": h.env.Cfg.Server.PublicURL + path, "iat": time.Now().Unix(),
 		"nonce": h.p.dpopNonce(time.Now())}
 	if edit != nil {
 		edit(hdr, cl)
@@ -85,9 +85,9 @@ func (h *harness) tokenDPoP(form url.Values, c *model.Client, secret, proof stri
 		f.Set("client_secret", secret)
 	}
 	if proof == "" {
-		return h.post("/oauth/token", f, "", "")
+		return h.post(orgBase+"/oauth/token", f, "", "")
 	}
-	return h.post("/oauth/token", f, "", "", "DPoP", proof)
+	return h.post(orgBase+"/oauth/token", f, "", "", "DPoP", proof)
 }
 
 func (h *harness) userinfoDPoP(auth, proof string) *http.Response {
@@ -96,7 +96,7 @@ func (h *harness) userinfoDPoP(auth, proof string) *http.Response {
 	if proof != "" {
 		hdr = append(hdr, "DPoP", proof)
 	}
-	return h.get(h.http, "/oauth/userinfo", hdr...)
+	return h.get(h.http, orgBase+"/oauth/userinfo", hdr...)
 }
 
 func TestDPoPCodeFlowAndUserinfo(t *testing.T) {
@@ -110,13 +110,13 @@ func TestDPoPCodeFlowAndUserinfo(t *testing.T) {
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback}, "code_verifier": {v}}
 
 	// without a nonce: told to use one
-	r := h.tokenDPoP(form, cl, secret, h.proof(k, "POST", "/oauth/token", func(_, c map[string]any) { c["nonce"] = nil }))
+	r := h.tokenDPoP(form, cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", func(_, c map[string]any) { c["nonce"] = nil }))
 	nonce := r.hdr.Get("DPoP-Nonce")
 	if r.status != 400 || r.m["error"] != "use_dpop_nonce" || nonce == "" {
 		t.Fatalf("no nonce: %d %v", r.status, r.m)
 	}
 	// with the nonce it was given
-	r = h.tokenDPoP(form, cl, secret, h.proof(k, "POST", "/oauth/token", func(_, c map[string]any) { c["nonce"] = nonce }))
+	r = h.tokenDPoP(form, cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", func(_, c map[string]any) { c["nonce"] = nonce }))
 	if r.status != 200 || r.str("token_type") != "DPoP" || r.hdr.Get("DPoP-Nonce") == "" {
 		t.Fatalf("exchange: %d %v", r.status, r.m)
 	}
@@ -127,7 +127,7 @@ func TestDPoPCodeFlowAndUserinfo(t *testing.T) {
 
 	// userinfo: the DPoP scheme with a proof of the key, for this request
 	good := func() string {
-		return h.proof(k, "GET", "/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = nil })
+		return h.proof(k, "GET", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = nil })
 	}
 	if resp := h.userinfoDPoP("DPoP "+at, good()); resp.StatusCode != 200 {
 		t.Fatalf("userinfo: %d %s", resp.StatusCode, body(resp))
@@ -139,13 +139,13 @@ func TestDPoPCodeFlowAndUserinfo(t *testing.T) {
 		"bearer scheme":   {"Bearer " + at, ""},
 		"bearer + proof":  {"Bearer " + at, good()},
 		"no proof":        {"DPoP " + at, ""},
-		"other key":       {"DPoP " + at, h.proof(other, "GET", "/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at) })},
-		"no ath":          {"DPoP " + at, h.proof(k, "GET", "/oauth/userinfo", nil)},
-		"wrong ath":       {"DPoP " + at, h.proof(k, "GET", "/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath("x") })},
-		"wrong method":    {"DPoP " + at, h.proof(k, "POST", "/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at) })},
-		"token endpoint":  {"DPoP " + at, h.proof(k, "GET", "/oauth/token", func(_, c map[string]any) { c["ath"] = ath(at) })},
+		"other key":       {"DPoP " + at, h.proof(other, "GET", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at) })},
+		"no ath":          {"DPoP " + at, h.proof(k, "GET", orgBase+"/oauth/userinfo", nil)},
+		"wrong ath":       {"DPoP " + at, h.proof(k, "GET", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath("x") })},
+		"wrong method":    {"DPoP " + at, h.proof(k, "POST", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at) })},
+		"token endpoint":  {"DPoP " + at, h.proof(k, "GET", orgBase+"/oauth/token", func(_, c map[string]any) { c["ath"] = ath(at) })},
 		"replayed proof":  {"DPoP " + at, replayed},
-		"bad nonce":       {"DPoP " + at, h.proof(k, "GET", "/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = "1.x" })},
+		"bad nonce":       {"DPoP " + at, h.proof(k, "GET", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = "1.x" })},
 		"unbound as DPoP": {"DPoP " + h.login1(cl, secret), ""},
 	} {
 		resp := h.userinfoDPoP(tc.auth, tc.proof)
@@ -184,7 +184,7 @@ func TestDPoPPublicClientRefreshBound(t *testing.T) {
 	v, ch := pkce()
 	u := h.authorize(c, authzQuery(pub, ch, nil))
 	r := h.tokenDPoP(url.Values{"grant_type": {"authorization_code"}, "code": {u.Query().Get("code")},
-		"redirect_uri": {pub.RedirectURIs[0]}, "code_verifier": {v}}, pub, "", h.proof(k, "POST", "/oauth/token", nil))
+		"redirect_uri": {pub.RedirectURIs[0]}, "code_verifier": {v}}, pub, "", h.proof(k, "POST", orgBase+"/oauth/token", nil))
 	if r.status != 200 || r.str("token_type") != "DPoP" {
 		t.Fatalf("exchange: %d %v", r.status, r.m)
 	}
@@ -193,11 +193,11 @@ func TestDPoPPublicClientRefreshBound(t *testing.T) {
 	if x := h.tokenDPoP(refresh, pub, "", ""); x.m["error"] != "invalid_grant" {
 		t.Fatalf("refresh without proof: %v", x.m)
 	}
-	if x := h.tokenDPoP(refresh, pub, "", h.proof(newDPoPKey(t, AlgES256), "POST", "/oauth/token", nil)); x.m["error"] != "invalid_grant" {
+	if x := h.tokenDPoP(refresh, pub, "", h.proof(newDPoPKey(t, AlgES256), "POST", orgBase+"/oauth/token", nil)); x.m["error"] != "invalid_grant" {
 		t.Fatalf("refresh with another key: %v", x.m)
 	}
 	// the failed attempts did not use the token up
-	x := h.tokenDPoP(refresh, pub, "", h.proof(k, "POST", "/oauth/token", nil))
+	x := h.tokenDPoP(refresh, pub, "", h.proof(k, "POST", orgBase+"/oauth/token", nil))
 	if x.status != 200 || x.str("token_type") != "DPoP" || x.str("refresh_token") == "" {
 		t.Fatalf("refresh with the key: %d %v", x.status, x.m)
 	}
@@ -212,14 +212,14 @@ func TestDPoPProofChecks(t *testing.T) {
 	cc := url.Values{"grant_type": {"client_credentials"}}
 	priv := k.priv.(*ecdsa.PrivateKey)
 	withD := map[string]any{"kty": "EC", "crv": "P-256", "x": k.jwk.X, "y": k.jwk.Y, "d": b64.EncodeToString(priv.D.Bytes())}
-	used := h.proof(k, "POST", "/oauth/token", nil)
+	used := h.proof(k, "POST", orgBase+"/oauth/token", nil)
 	if r := h.tokenDPoP(cc, cl, secret, used); r.status != 200 || r.str("token_type") != "DPoP" {
 		t.Fatalf("good proof: %d %v", r.status, r.m)
 	}
 	oldNonce := h.p.dpopNonce(time.Now().Add(-dpopNonceSteps * dpopNonceStep))
 	badSig := func() string {
-		p := h.proof(k, "POST", "/oauth/token", nil)
-		o := h.proof(other, "POST", "/oauth/token", nil)
+		p := h.proof(k, "POST", orgBase+"/oauth/token", nil)
+		o := h.proof(other, "POST", orgBase+"/oauth/token", nil)
 		return p[:strings.LastIndexByte(p, '.')] + o[strings.LastIndexByte(o, '.'):]
 	}()
 	for name, edit := range map[string]func(hdr, c map[string]any){
@@ -243,7 +243,7 @@ func TestDPoPProofChecks(t *testing.T) {
 			hd["jwk"] = map[string]any{"kty": "EC", "crv": "P-256", "x": "AA", "y": "AA"}
 		},
 	} {
-		if r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", "/oauth/token", edit)); r.m["error"] != "invalid_dpop_proof" {
+		if r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", edit)); r.m["error"] != "invalid_dpop_proof" {
 			t.Errorf("%s: %d %v", name, r.status, r.m)
 		}
 	}
@@ -268,17 +268,17 @@ func TestDPoPProofChecks(t *testing.T) {
 		"wrong mac":     strconv.FormatInt(cur, 10) + "." + b64.EncodeToString(make([]byte, 16)),
 		"not base64":    strconv.FormatInt(cur, 10) + ".!!!",
 	} {
-		r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", "/oauth/token", func(_, c map[string]any) { c["nonce"] = n }))
+		r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", func(_, c map[string]any) { c["nonce"] = n }))
 		if r.m["error"] != "use_dpop_nonce" || r.hdr.Get("DPoP-Nonce") == "" {
 			t.Errorf("%s: %d %v", name, r.status, r.m)
 		}
 	}
 	// two proofs
 	f := url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}
-	req, _ := http.NewRequest("POST", h.env.URL+"/oauth/token", strings.NewReader(f.Encode()))
+	req, _ := http.NewRequest("POST", h.env.URL+orgBase+"/oauth/token", strings.NewReader(f.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Add("DPoP", h.proof(k, "POST", "/oauth/token", nil))
-	req.Header.Add("DPoP", h.proof(k, "POST", "/oauth/token", nil))
+	req.Header.Add("DPoP", h.proof(k, "POST", orgBase+"/oauth/token", nil))
+	req.Header.Add("DPoP", h.proof(k, "POST", orgBase+"/oauth/token", nil))
 	resp, err := h.http.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestDPoPBoundClient(t *testing.T) {
 		t.Fatalf("no proof: %v", r.m)
 	}
 	k := newDPoPKey(t, AlgEdDSA)
-	r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", "/oauth/token", nil))
+	r := h.tokenDPoP(cc, cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", nil))
 	if r.status != 200 || r.str("token_type") != "DPoP" {
 		t.Fatalf("proof: %v", r.m)
 	}
@@ -330,7 +330,7 @@ func TestDPoPJKTBindsCode(t *testing.T) {
 	}
 	v, ch := pkce()
 	code := h.getCode(c, cl, ch, url.Values{"dpop_jkt": {k.jkt}})
-	if r := exchange(code, v, h.proof(newDPoPKey(t, AlgES256), "POST", "/oauth/token", nil)); r.m["error"] != "invalid_grant" {
+	if r := exchange(code, v, h.proof(newDPoPKey(t, AlgES256), "POST", orgBase+"/oauth/token", nil)); r.m["error"] != "invalid_grant" {
 		t.Fatalf("other key: %v", r.m)
 	}
 	v, ch = pkce()
@@ -340,7 +340,7 @@ func TestDPoPJKTBindsCode(t *testing.T) {
 	}
 	v, ch = pkce()
 	code = h.getCode(c, cl, ch, url.Values{"dpop_jkt": {k.jkt}})
-	if r := exchange(code, v, h.proof(k, "POST", "/oauth/token", nil)); r.status != 200 || r.str("token_type") != "DPoP" {
+	if r := exchange(code, v, h.proof(k, "POST", orgBase+"/oauth/token", nil)); r.status != 200 || r.str("token_type") != "DPoP" {
 		t.Fatalf("the key: %v", r.m)
 	}
 	if u := h.authorize(c, authzQuery(cl, ch, url.Values{"dpop_jkt": {"short"}})); u.Query().Get("error") != "invalid_request" {
@@ -357,7 +357,7 @@ func TestDPoPJKTBindsCode(t *testing.T) {
 	}
 	f.Set("client_id", cl.ID)
 	f.Set("client_secret", secret)
-	pr := h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", nil))
+	pr := h.post(orgBase+"/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", orgBase+"/oauth/par", nil))
 	if pr.status != 201 {
 		t.Fatalf("push: %d %v", pr.status, pr.m)
 	}
@@ -367,16 +367,16 @@ func TestDPoPJKTBindsCode(t *testing.T) {
 	}
 	// a pushed dpop_jkt that is the proof's key is accepted, one that is not is refused
 	f.Set("dpop_jkt", k.jkt)
-	if pr := h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", nil)); pr.status != 201 {
+	if pr := h.post(orgBase+"/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", orgBase+"/oauth/par", nil)); pr.status != 201 {
 		t.Fatalf("matching dpop_jkt: %d %v", pr.status, pr.m)
 	}
 	f.Set("dpop_jkt", newDPoPKey(t, AlgEdDSA).jkt)
-	if pr := h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", nil)); pr.m["error"] != "invalid_dpop_proof" {
+	if pr := h.post(orgBase+"/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", orgBase+"/oauth/par", nil)); pr.m["error"] != "invalid_dpop_proof" {
 		t.Fatalf("mismatched dpop_jkt: %v", pr.m)
 	}
 	// a proof without the server's nonce gets one
 	f.Del("dpop_jkt")
-	pr = h.post("/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", "/oauth/par", func(_, c map[string]any) { c["nonce"] = nil }))
+	pr = h.post(orgBase+"/oauth/par", f, "", "", "DPoP", h.proof(k, "POST", orgBase+"/oauth/par", func(_, c map[string]any) { c["nonce"] = nil }))
 	if pr.m["error"] != "use_dpop_nonce" || pr.hdr.Get("DPoP-Nonce") == "" {
 		t.Fatalf("proof without a nonce: %d %v", pr.status, pr.m)
 	}

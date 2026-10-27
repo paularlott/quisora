@@ -22,8 +22,8 @@ which of them their applications offer.
 
 Every type needs a **Client ID** and **Client secret** from the provider. The dialog shows the provider's **Callback
 URL** from the start: register it at the provider as the redirect URI (the dialog says where for each type), then
-paste the client ID and secret back. It is `https://id.example.com/login/callback/<provider id>`; each provider has
-its own, so a response meant for one provider cannot be passed off as another's.
+paste the client ID and secret back. It is `https://id.example.com/o/<org id>/login/callback/<provider id>`: the provider's organization's address
+space, and each provider has its own, so a response meant for one provider cannot be passed off as another's.
 
 The other settings:
 
@@ -123,3 +123,76 @@ lab, set `server.allow_private_networks` to allow every private address. A provi
 | `account.provider.connect`, `account.provider.connect_refused`, `account.provider.disconnect` | A user connected or disconnected a provider |
 | `user.provider.disconnect` | An administrator disconnected one |
 | `login.failure` with reason `upstream …` | A provider sign-in was refused (`not_linked`, `unverified`, `domain`, `exists`, `disabled`…) |
+
+## Users of another organization (guest accounts)
+
+Organizations are separate: a user belongs to one, and signs in to its pages and applications there. To let the people
+of one organization (typically the primary one, the server's own) use another organization's applications, set up an
+**Organization** provider in the second one, as Microsoft Entra calls it a guest (B2B) account: the person keeps signing
+in where they belong, and the other organization adds them, as a guest, to the people it lets in. The sign-in page of
+the second organization shows **Continue with &lt;the first organization's name&gt;**.
+
+Only a **super admin** can create, change or delete one: it makes an application in the other organization.
+
+### Setting it up
+
+In the organization that receives the guests (organization B): **Providers** → **New provider** → type **Another
+organization**, and choose the organization whose users sign in (S) from the list. Nothing else is needed:
+
+- The provider's issuer is S's own (`https://id.example.com/o/<S id>`). Its requests to S (discovery, token, keys) are
+  answered by the server itself, in memory: they work whatever the server can reach on its own public address, and never
+  leave the process.
+- Quisora makes the client the provider signs in with, in S: a confidential application named
+  `Sign-in to <B's name>` in S's default tenant, whose only redirect URI is the provider's callback address, with the
+  scopes `openid profile email`. It is first-party, so the people signing in are not asked for consent, and its secret is
+  sealed into the provider; nobody sees it. It is listed with S's applications, and made and removed with the provider:
+  edit the provider, not the application. S's own rules for that tenant (who may sign in, second factors) apply to the
+  sign-in at S, as for any application of S.
+- **Button label** defaults to S's display name. Scopes, client ID and secret are not entered.
+- **Link existing users by verified email** is on, **Create accounts automatically** is off, and **counts as a second
+  factor** is off. Allowed email domains work as for any provider.
+
+Changing the organization moves the client (a new one in the new organization, the old one removed) and unlinks everyone
+who had signed in through the provider. Deleting the provider deletes its client. These are two writes in two
+organizations, never one transaction, so they are ordered to leave at most an unused client: the client is made before
+the provider is written, and removed after the provider is deleted or no longer uses it. When a removal fails (the
+store was unavailable), Quisora logs a warning and the housekeeping orphan sweep removes the client within the day; a
+client made for a provider whose creation then failed, or never completed, is removed the same way.
+
+### Adding a guest
+
+An administrator of B adds each person: **Users** → **New user** (or invite them), with the **same email address** the
+person has in S, verified: an invitation they accept verifies it, or an administrator marks it verified. The person then
+chooses **Continue with …** on B's sign-in page, signs in at S if they are not yet (with S's password, passkey or
+second factor) and returns to B. Quisora links the two accounts by that verified address, as for any provider
+([who signs in as whom](#who-signs-in-as-whom)): the link is S's user id, so changing the address later does not break
+it. Someone S knows but B has not added is refused (`not_linked`).
+
+Switch **Create accounts automatically** on instead to let every user of S in as a guest, a plain `user` in B with their
+S name and verified address; combine it with **Allowed email domains** and the tenants' access lists
+(**Who can sign in**) to keep that bounded. As everywhere, managers and administrators of B are not linked by email:
+they connect the provider on their own account page.
+
+### Second factors and leavers
+
+A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
+factor where one is required, and the person gives the second factor they have in B. The provider is *not* trusted to
+have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
+everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
+
+The provider asks for no refresh token, so there is no leaver detection: a person disabled or removed in S keeps the
+B session they already have until it ends (its idle and absolute limits). Disable or remove their guest account in B
+too (ending its sessions), or use [emergency sign-out](../emergency-sign-out.md).
+
+Through the management API, as a super admin:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"organization","source_org":"primary"}' "$QUISORA/api/orgs/acme/providers"
+```
+
+`source_org` is the other organization's name or id. `PATCH` the provider's `source_org` to move it; `client_id`,
+`client_secret`, `issuer` and `scopes` are ignored for this type.
+
+Audit: `provider.create`/`update`/`delete` in B, and `client.create`/`client.delete` in S for the client made and removed
+with it.

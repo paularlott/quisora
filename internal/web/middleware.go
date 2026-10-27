@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -199,7 +198,10 @@ func shed(max int, next http.Handler) http.Handler {
 // (cheap, cached, and every relying party's token validation depends on them), and the event streams (long-lived
 // streams have their own per-node limit, see internal/events).
 func unshed(p string) bool {
-	switch p {
+	if strings.HasPrefix(p, "/.well-known/oauth-authorization-server/") || strings.HasPrefix(p, "/.well-known/openid-configuration/") {
+		return true // an organization's metadata at its RFC 8414 address
+	}
+	switch InOrgPath(p) {
 	case EventsPath, AccountEventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
 		"/.well-known/oauth-authorization-server":
 		return true
@@ -207,16 +209,30 @@ func unshed(p string) bool {
 	return false
 }
 
-// APIPath reports whether p is under the management API (/api/) or the console's own (/api-internal/): such
-// requests get their errors as JSON.
+// InOrgPath is p within its organization's address space: the rest of /o/<org>/... (OrgPath), or p itself outside one.
+func InOrgPath(p string) string {
+	rest, ok := strings.CutPrefix(p, "/o/")
+	if !ok {
+		return p
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[i:]
+	}
+	return "/"
+}
+
+// APIPath reports whether p is under the management API (/api/) or the console's and pages' own (/api-internal/,
+// within an organization or not): such requests get their errors as JSON.
 func APIPath(p string) bool {
+	p = InOrgPath(p)
 	return strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/api-internal/")
 }
 
 // EventsPath is the Server-Sent Events stream of the management API.
 const EventsPath = "/api/events"
 
-// AccountEventsPath is the account page's live-update stream (the signed-in user's own changes).
+// AccountEventsPath is the account page's live-update stream (the signed-in user's own changes), within the user's
+// organization (OrgPath).
 const AccountEventsPath = "/api-internal/account/events"
 
 // Session returns the request's session (set by WithSession / RequireUser).
@@ -286,18 +302,18 @@ func (s *Server) RequirePage(next http.HandlerFunc) http.Handler {
 	}))
 }
 
-// signInFor is where a signed-out visitor of a page goes: an organization's admin page to that organization's
-// sign-in page, back here afterwards; anything else to the help page (sign-in needs the organization).
+// signInFor is where a signed-out visitor of a page goes, back here afterwards: an organization's own pages (under
+// /o/<org>) and its console pages (/admin/orgs/<org>) to its sign-in page; the server's pages (the rest of the
+// console) to the primary organization's, whose administrators administer the server.
 func signInFor(r *http.Request) string {
-	if rest, ok := strings.CutPrefix(r.URL.Path, "/admin/orgs/"); ok {
-		if org, _, _ := strings.Cut(rest, "/"); org != "" && orgName.MatchString(org) {
-			return "/login/" + org + "?next=" + urlQueryEscape(r.URL.RequestURI())
-		}
+	org := model.PrimaryOrgID
+	if o := Org(r); o != nil {
+		org = o.ID
+	} else if ref := r.PathValue("org"); ref != "" {
+		org = ref
 	}
-	return "/"
+	return "/o/" + url.PathEscape(org) + "/login?next=" + urlQueryEscape(r.URL.RequestURI())
 }
-
-var orgName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // RequireAPI requires a signed-in user for a JSON endpoint and, for unsafe methods, a matching CSRF header
 // (X-CSRF-Token) and same-origin request.

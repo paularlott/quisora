@@ -8,18 +8,27 @@ import (
 	"testing"
 
 	logtesting "github.com/paularlott/logger/testing"
+
+	"github.com/paularlott/quisora/internal/model"
 )
 
+// A signed-out visitor goes to the sign-in page of the organization the page is about (its console pages name it), and
+// otherwise to the primary organization's, coming back afterwards.
 func TestSignInFor(t *testing.T) {
+	var got string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/orgs/{org}/", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
+	mux.HandleFunc("/admin/orgs/{org}", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
+	mux.HandleFunc("/", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
+	primary := "/o/" + model.PrimaryOrgID + "/login?next="
 	for path, want := range map[string]string{
-		"/admin/orgs/acme/users?x=1": "/login/acme?next=%2Fadmin%2Forgs%2Facme%2Fusers%3Fx%3D1",
-		"/admin/orgs/acme":           "/login/acme?next=%2Fadmin%2Forgs%2Facme",
-		"/admin/orgs/Bad_Name/users": "/",
-		"/admin/orgs//users":         "/",
-		"/account":                   "/",
-		"/admin":                     "/",
+		"/admin/orgs/acme/users?x=1": "/o/acme/login?next=%2Fadmin%2Forgs%2Facme%2Fusers%3Fx%3D1",
+		"/admin/orgs/acme":           "/o/acme/login?next=%2Fadmin%2Forgs%2Facme",
+		"/admin/system":              primary + "%2Fadmin%2Fsystem",
+		"/admin":                     primary + "%2Fadmin",
 	} {
-		if got := signInFor(httptest.NewRequest("GET", path, nil)); got != want {
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
+		if got != want {
 			t.Errorf("%s: %q, want %q", path, got, want)
 		}
 	}

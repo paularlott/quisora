@@ -24,7 +24,7 @@ func (h *harness) forge(typ string, payload []byte) string {
 
 func (h *harness) forgeAccess(cl *model.Client, edit func(map[string]any)) string {
 	now := time.Now()
-	m := map[string]any{"iss": h.p.issuer, "sub": h.user.ID, "client_id": cl.ID, "aud": []string{cl.ID}, "scope": "openid",
+	m := map[string]any{"iss": h.issuer(), "sub": h.user.ID, "client_id": cl.ID, "aud": []string{cl.ID}, "scope": "openid",
 		"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "jti": secureID()}
 	if edit != nil {
 		edit(m)
@@ -46,7 +46,7 @@ func TestVerifyAccessTokenRefusals(t *testing.T) {
 		t.Fatalf("control: %v", err)
 	}
 	for name, tok := range map[string]string{
-		"id token typ":  h.forge(typJWT, mustJSON(map[string]any{"iss": h.p.issuer})),
+		"id token typ":  h.forge(typJWT, mustJSON(map[string]any{"iss": h.issuer()})),
 		"claims shape":  h.forge(typAccess, []byte(`[1]`)),
 		"issuer":        h.forgeAccess(cl, func(m map[string]any) { m["iss"] = "https://evil.example" }),
 		"no expiry":     h.forgeAccess(cl, func(m map[string]any) { m["exp"] = nil }),
@@ -76,7 +76,7 @@ func TestVerifyAccessTokenRefusals(t *testing.T) {
 		}
 	}
 	fake := func(kid string) string {
-		b := mustJSON(map[string]any{"iss": h.p.issuer, "sub": h.user.ID, "client_id": cl.ID, "exp": time.Now().Add(time.Minute).Unix()})
+		b := mustJSON(map[string]any{"iss": h.issuer(), "sub": h.user.ID, "client_id": cl.ID, "exp": time.Now().Add(time.Minute).Unix()})
 		tok, err := signJWT(other.alg, other.priv, mkHeader(other.alg, kid, typAccess), b)
 		if err != nil {
 			t.Fatal(err)

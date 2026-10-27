@@ -25,7 +25,9 @@ func TestOrgNames(t *testing.T) {
 			t.Errorf("%q rejected", n)
 		}
 	}
-	for _, n := range []string{"", "Acme", "-a", "a-", "a_b", "admin", "api", "docs", strings.Repeat("a", 64), "a b"} {
+	// "o" is the organizations' address space; a name never looks like an id (/o/<id or name>)
+	for _, n := range []string{"", "Acme", "-a", "a-", "a_b", "admin", "api", "docs", strings.Repeat("a", 64), "a b", "o",
+		PrimaryOrgID, NewID()} {
 		if ValidOrgName(n) {
 			t.Errorf("%q accepted", n)
 		}
@@ -33,11 +35,14 @@ func TestOrgNames(t *testing.T) {
 	if OrgNameKey(" ACME ") != "acme" {
 		t.Error("OrgNameKey")
 	}
-	o := Org{Name: "Acme", DisplayName: "A", Primary: true}
+	o := Org{Name: "Acme", DisplayName: "A"}
 	o.Created = t0
 	ix := o.Index()
-	if ix.Scope != "" || !slices.Equal(ix.Unique, []string{"acme"}) || ix.Fields["primary"] != true {
+	if ix.Scope != "" || !slices.Equal(ix.Unique, []string{"acme"}) {
 		t.Errorf("org index %+v", ix)
+	}
+	if o.Primary() || !(&Org{Meta: Meta{ID: PrimaryOrgID}}).Primary() {
+		t.Error("only the organization with the fixed id is primary")
 	}
 	if d := DefaultOrgSettings(); !d.PasswordLogin || !d.PasswordReset || !d.PasskeyLogin || d.RequireMFA {
 		t.Errorf("defaults %+v", d)
@@ -184,7 +189,7 @@ func TestGroupAndMember(t *testing.T) {
 func TestTenant(t *testing.T) {
 	tn := &Tenant{OrgID: "o", Name: "Default", Resources: []string{"https://MCP.example.com:443/mcp/"}}
 	ix := tn.Index()
-	if !slices.Equal(ix.Unique, []string{"o/n/default", "res/https://mcp.example.com/mcp"}) {
+	if !slices.Equal(ix.Unique, []string{"o/n/default", "o/res/https://mcp.example.com/mcp"}) {
 		t.Errorf("unique %v", ix.Unique)
 	}
 	if TenantNameKey("o", "N") != "o/n/n" {
@@ -204,12 +209,12 @@ func TestTenant(t *testing.T) {
 			t.Errorf("CanonicalResource(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if TenantResourceKey("HTTPS://A.com/") != TenantResourceKey("https://a.com") {
+	if TenantResourceKey("o", "HTTPS://A.com/") != TenantResourceKey("o", "https://a.com") {
 		t.Error("resource keys differ")
 	}
 
 	a := &TenantAccess{OrgID: "o", TenantID: "t", SubjectID: "s", SubjectType: SubjectUser, Clients: []string{"c1"}}
-	if a.Index().Fields["subject_type"] != "user" || AccessID("t", "s") != "t:s" {
+	if a.Index().Fields["tenant_id"] != "t" || AccessID("t", "s") != "t:s" {
 		t.Error("access index")
 	}
 	if !a.Live(t0) || !a.Live(time.Time{}) {
@@ -225,6 +230,29 @@ func TestTenant(t *testing.T) {
 	a.AllClients = true
 	if !a.Covers("c2") {
 		t.Error("AllClients")
+	}
+}
+
+// A metadata-document application is one record per organization, named by its URL in each: the record id differs
+// between organizations, is the same for the same organization and URL, fits a record id, and the client_id the
+// application sees is the URL. Every other client is its own id.
+func TestClientRecordID(t *testing.T) {
+	const url = "https://app.example.com/oauth/client.json"
+	a, b := ClientRecordID("org-a", url), ClientRecordID("org-b", url)
+	if a == b || a != ClientRecordID("org-a", url) || a == url || len(a) > 191 || !strings.HasPrefix(a, metadataClientPrefix) {
+		t.Errorf("record ids %q, %q", a, b)
+	}
+	if ClientRecordID("org-a", url+"x") == a {
+		t.Error("two documents of one organization share a record")
+	}
+	for _, id := range []string{"c_0dk2Yv", "dyn-abc"} {
+		if ClientRecordID("org-a", id) != id {
+			t.Errorf("%s is not its own record id", id)
+		}
+	}
+	md := &Client{Meta: Meta{ID: a}, MetadataURL: url}
+	if md.ClientID() != url || (&Client{Meta: Meta{ID: "c_x"}}).ClientID() != "c_x" {
+		t.Error("ClientID")
 	}
 }
 
@@ -248,8 +276,8 @@ func TestClientAndProvider(t *testing.T) {
 	for _, x := range []struct {
 		c  Client
 		ok bool
-	}{{Client{SelfRegistered: true, Meta: Meta{ID: "https://a/b"}}, true}, {Client{SelfRegistered: true, Meta: Meta{ID: "c_x"}}, false},
-		{Client{Meta: Meta{ID: "https://a/b"}}, false}} {
+	}{{Client{SelfRegistered: true, MetadataURL: "https://a/b", Meta: Meta{ID: "md_x"}}, true}, {Client{SelfRegistered: true, Meta: Meta{ID: "c_x"}}, false},
+		{Client{MetadataURL: "https://a/b", Meta: Meta{ID: "md_x"}}, false}} {
 		if x.c.IsMetadataClient() != x.ok {
 			t.Errorf("IsMetadataClient(%+v)", x.c)
 		}
@@ -292,10 +320,13 @@ func TestPasskeyAndSession(t *testing.T) {
 	if pk.Usable() || (&Passkey{}).Usable() {
 		t.Error("unusable")
 	}
-	if k := PasskeyCredentialKey(pk.CredentialID); k != "-_8B" {
-		t.Errorf("key %q (raw URL base64)", k)
+	if k := PasskeyCredentialKey("u", pk.CredentialID); k != "u/-_8B" {
+		t.Errorf("key %q (the user id, then the raw URL base64 credential id)", k)
 	}
-	if ix := pk.Index(); ix.Scope != "u" || ix.Unique[0] != "-_8B" {
+	if PasskeyCredentialKey("v", pk.CredentialID) == PasskeyCredentialKey("u", pk.CredentialID) {
+		t.Error("the same credential id of two users shares a key")
+	}
+	if ix := pk.Index(); ix.Scope != "u" || ix.Unique[0] != "u/-_8B" {
 		t.Errorf("index %+v", ix)
 	}
 
@@ -341,7 +372,7 @@ func TestAuditAndLinks(t *testing.T) {
 		t.Errorf("link index %+v", ix)
 	}
 	si := &SignIn{OrgID: "o", LastLogin: t0}
-	if ix := si.Index(); ix.Scope != "o" || !ix.Fields["last_login"].(time.Time).Equal(t0) {
+	if ix := si.Index(); ix.Scope != "" || ix.Partition != "o" || !Unscoped(KindSignIn) {
 		t.Error("signin index")
 	}
 	if ix := (&Lock{}).Index(); ix.Scope != "" || ix.Fields != nil {
@@ -354,7 +385,7 @@ func TestAuditAndLinks(t *testing.T) {
 	if ix := e.Index(); !ix.Expires.Equal(t0) || e.GetMeta() != &e.Meta {
 		t.Error("ephemeral")
 	}
-	if k := (&SigningKey{Alg: "ES256", Expires: t0}).Index(); k.Fields["alg"] != "ES256" || !k.Expires.Equal(t0) {
+	if k := (&SigningKey{Alg: "ES256", Expires: t0}).Index(); !k.Expires.Equal(t0) {
 		t.Error("key index")
 	}
 }

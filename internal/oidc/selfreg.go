@@ -15,22 +15,23 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// Self-registered applications (service/selfreg.go): dynamic client registration (RFC 7591) at /oauth/register,
-// and clients whose client_id is the https URL of their Client ID Metadata Document, read on first use. Neither
-// belongs to an organization; forResources places one in the tenant that owns the resources a request names.
+// Self-registered applications (service/selfreg.go): dynamic client registration (RFC 7591) at /o/<org>/oauth/register,
+// and clients whose client_id is the https URL of their Client ID Metadata Document, read on first use. Each belongs to
+// the organization it registered or was authorized in; forResources places one in the tenant of that organization that
+// owns the resources a request names.
 
 // registerPerIPMin bounds registrations per address and minute (registration is unauthenticated).
 const registerPerIPMin = 10
 
 // forResources returns the client as the request sees it: itself for an administrator's client; for a
-// self-registered one, a copy in the tenant that owns resources (service.InTenant), with that tenant. An error
-// means the resources accept no self-registered application (none named, not one tenant's, or the tenant does not
-// allow them).
+// self-registered one, a copy in the tenant of its organization that owns resources (service.InTenant), with that
+// tenant. An error means the resources accept no self-registered application (none named, not one tenant's of the
+// organization, or the tenant does not allow them).
 func (p *Provider) forResources(ctx context.Context, c *model.Client, resources []string) (*model.Client, *model.Tenant, error) {
 	if !c.SelfRegistered {
 		return c, nil, nil
 	}
-	t, err := p.svc.TenantForResources(ctx, resources)
+	t, err := p.svc.TenantForResources(ctx, c.OrgID, resources)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,71 +56,95 @@ const nsCIMD = "oauth.cimd"
 // metadataPerIPMin bounds the metadata documents read per address and minute for applications not stored yet.
 const metadataPerIPMin = 20
 
-// appClient is the client of a sign-in (authorize, resume, consent). A client_id that is a metadata document URL is
-// the stored application when one has been authorized before (its document read again once MetadataRefresh old),
-// else the application the document describes, read now or earlier in this sign-in, not stored.
-func (p *Provider) appClient(ctx context.Context, r *http.Request, id string) (*clientEntry, error) {
+// appClient is the client of a sign-in (authorize, resume, consent) in organization orgID. A client_id that is a
+// metadata document URL is the stored application when the organization has authorized it before (its document read
+// again once MetadataRefresh old), else the application the document describes, read now or earlier in this sign-in,
+// not stored.
+func (p *Provider) appClient(ctx context.Context, r *http.Request, orgID, id string) (*clientEntry, error) {
 	if !metadataURL(id) {
-		return p.client(ctx, id)
+		return p.client(ctx, orgID, id)
 	}
-	if ce, err := p.client(ctx, id); err == nil {
+	if ce, err := p.client(ctx, orgID, id); err == nil {
 		if !ce.c.SelfRegistered || time.Since(ce.c.MetadataFetched) < service.MetadataRefresh {
 			return ce, nil
 		}
-		if fresh := p.readMetadata(ctx, r, id, false); fresh != nil {
+		fresh, rerr := p.readMetadata(ctx, r, orgID, id, false)
+		if fresh != nil {
 			if c, err := p.svc.RefreshMetadataClient(ctx, fresh); err == nil {
-				p.clients.del(id)
+				p.clients.del(c.ID)
 				return &clientEntry{c: c}, nil
 			}
 		}
 		if time.Since(ce.c.MetadataFetched) < service.MetadataStale {
 			return ce, nil // the document cannot be read now: the copy kept is good for a while
 		}
+		if rerr != nil {
+			return nil, rerr
+		}
 		return nil, store.ErrNotFound
 	}
 	if doc, err := p.s.Eph.Get(ctx, nsCIMD, id); err == nil {
-		if c, err := service.ParseMetadata(id, doc); err == nil {
+		if c, err := service.ParseMetadata(orgID, id, doc); err == nil {
 			return &clientEntry{c: c}, nil
 		}
 	}
-	if c := p.readMetadata(ctx, r, id, true); c != nil {
+	c, err := p.readMetadata(ctx, r, orgID, id, true)
+	if c != nil {
 		return &clientEntry{c: c}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	return nil, store.ErrNotFound
 }
 
-// readMetadata reads and checks the document at id (at most once a minute per URL, and for an application not
-// stored yet, metadataPerIPMin per address): nil when it cannot be read or is not a valid document.
-func (p *Provider) readMetadata(ctx context.Context, r *http.Request, id string, unstored bool) *model.Client {
-	if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd|"+id, 1, time.Minute); err != nil || n > 1 {
-		return nil
+// readMetadata reads and checks the document at id for organization orgID (at most once a minute per URL, and for an
+// application not stored yet, metadataPerIPMin per address): nil when it cannot be read or is not a valid document.
+// The error is set only when a counter could not be used: nothing was fetched (a limit never fails open), but the
+// document was not judged either, so the caller reports "unavailable", not "unknown application".
+func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id string, unstored bool) (*model.Client, error) {
+	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd|"+id, 1, time.Minute)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	if n > 1 {
+		return nil, nil
 	}
 	if unstored && r != nil {
-		if n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > metadataPerIPMin {
-			return nil
+		n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.RateKeyIP(r), 1, time.Minute)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		if n > metadataPerIPMin {
+			return nil, nil
 		}
 	}
 	doc, err := p.fetch(ctx, id, service.MaxMetadataBytes)
 	if err != nil {
 		p.log.Warn("oidc: reading a client metadata document", "client_id", id, "error", err)
-		return nil
+		return nil, nil
 	}
-	c, err := service.ParseMetadata(id, doc)
+	c, err := service.ParseMetadata(orgID, id, doc)
 	if err != nil {
 		p.log.Warn("oidc: client metadata document refused", "client_id", id, "error", err)
-		return nil
+		return nil, nil
 	}
 	if unstored {
 		_ = p.s.Eph.Set(ctx, nsCIMD, id, doc, flowTTL)
 	}
-	return c
+	return c, nil
 }
 
 // handleRegister is dynamic client registration (RFC 7591): public clients with PKCE for user sign-in only, limited
 // per address and capped in total; see service.RegisterClient.
 func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "register|"+web.RateKeyIP(r), 1, time.Minute); err != nil || n > registerPerIPMin {
+	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "register|"+web.RateKeyIP(r), 1, time.Minute)
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
+	if n > registerPerIPMin {
 		w.Header().Set("Retry-After", "60")
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down", desc: "too many registrations from this address"})
 		return
@@ -130,7 +155,7 @@ func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.ClientID = ""
-	c, err := p.svc.RegisterClient(r.Context(), in)
+	c, err := p.svc.RegisterClient(r.Context(), web.Org(r).ID, in)
 	var re *service.RegistrationError
 	switch {
 	case errors.As(err, &re):

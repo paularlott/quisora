@@ -47,7 +47,7 @@ func TestInviteThroughRunningServer(t *testing.T) {
 	}
 	// break-glass works, through the server (its self-signed certificate trusted from the data directory)
 	link, expires, how, err := Invite(ctx, c, log, "", "", false, "primary", "admin@example.com", true, false)
-	if err != nil || how != "the running server" || !strings.HasPrefix(link, base+"/invite?token=") ||
+	if err != nil || how != "the running server" || !strings.HasPrefix(link, base+"/o/"+org.ID+"/invite?token=") ||
 		time.Until(expires) > service.BreakGlassTTL {
 		t.Fatalf("break-glass: %q %v %s %v", link, expires, how, err)
 	}

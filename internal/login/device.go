@@ -135,12 +135,8 @@ func (m *Module) rememberDevice(w http.ResponseWriter, r *http.Request, u *model
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(deviceTTL.Seconds())})
 }
 
-// knownLogin is the known for a step that names an org and the email to sign in with (no match when the org does
-// not exist).
+// knownLogin is the known for a step that names an org and the email to sign in with.
 func (m *Module) knownLogin(org *model.Org, login string) known {
-	if org == nil {
-		return known{}
-	}
 	tag := m.loginTag(org.ID, login)
 	if tag == "" {
 		return known{}

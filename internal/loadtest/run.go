@@ -91,53 +91,63 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 		return &request{req: req, status: 200}
 	}
 	orgName := func(rng *rand.Rand) string { return OrgName(1 + rng.Intn(d.Orgs)) }
+	// call is one prepared request of a scenario: the organization's endpoint (each organization has its own address
+	// space, /o/<org>) and its body.
+	type call struct{ path, body string }
 	switch sc {
 	case "discovery":
+		if len(d.Samples) == 0 {
+			return nil, errors.New("the data file has no organizations")
+		}
 		return func(rng *rand.Rand, base string) *request {
-			return get(base, "/.well-known/openid-configuration")
+			// (by id: a discovery document is served at the organization's id form only)
+			return get(base, "/o/"+d.Samples[rng.Intn(len(d.Samples))].OrgID+"/.well-known/openid-configuration")
 		}, nil
 
 	case "refresh", "refresh_groups":
-		var bodies []string
+		var calls []call
 		for _, g := range d.Grants {
 			if g.Groups == (sc == "refresh_groups") {
-				bodies = append(bodies, "grant_type=refresh_token&client_id="+g.ClientID+"&client_secret="+g.Secret+
-					"&refresh_token="+g.Token)
+				calls = append(calls, call{"/o/" + g.Org + "/oauth/token", "grant_type=refresh_token&client_id=" + g.ClientID +
+					"&client_secret=" + g.Secret + "&refresh_token=" + g.Token})
 			}
 		}
-		if len(bodies) == 0 {
+		if len(calls) == 0 {
 			return nil, errors.New("the data file has no refresh tokens for this scenario (seed with --grants)")
 		}
 		return func(rng *rand.Rand, base string) *request {
-			r := form(base, "/oauth/token", bodies[rng.Intn(len(bodies))])
+			c := calls[rng.Intn(len(calls))]
+			r := form(base, c.path, c.body)
 			r.body = `"access_token"`
 			return r
 		}, nil
 
 	case "client_credentials":
-		var bodies []string
+		var calls []call
 		for _, s := range d.Samples {
 			if s.CCID != "" {
-				bodies = append(bodies, "grant_type=client_credentials&client_id="+s.CCID+"&client_secret="+s.CCSecret)
+				calls = append(calls, call{"/o/" + s.OrgID + "/oauth/token",
+					"grant_type=client_credentials&client_id=" + s.CCID + "&client_secret=" + s.CCSecret})
 			}
 		}
-		if len(bodies) == 0 {
+		if len(calls) == 0 {
 			return nil, errors.New("the data file has no client_credentials clients (seed with --clients >= 2)")
 		}
 		return func(rng *rand.Rand, base string) *request {
-			r := form(base, "/oauth/token", bodies[rng.Intn(len(bodies))])
+			c := calls[rng.Intn(len(calls))]
+			r := form(base, c.path, c.body)
 			r.body = `"access_token"`
 			return r
 		}, nil
 
 	case "introspect":
 		// Mint a pool of access tokens by refreshing, then introspect them as the owning client.
-		var bodies []string
+		var calls []call
 		for _, g := range d.Grants {
-			if g.Groups || len(bodies) >= 256 {
+			if g.Groups || len(calls) >= 256 {
 				continue
 			}
-			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0]+"/oauth/token", strings.NewReader(
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0]+"/o/"+g.Org+"/oauth/token", strings.NewReader(
 				"grant_type=refresh_token&client_id="+g.ClientID+"&client_secret="+g.Secret+"&refresh_token="+g.Token))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			resp, err := hc.Do(req)
@@ -152,13 +162,15 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 			if err != nil || tr.Access == "" {
 				return nil, fmt.Errorf("introspect setup: token request answered %d", resp.StatusCode)
 			}
-			bodies = append(bodies, "token="+tr.Access+"&client_id="+g.ClientID+"&client_secret="+g.Secret)
+			calls = append(calls, call{"/o/" + g.Org + "/oauth/introspect", "token=" + tr.Access + "&client_id=" + g.ClientID +
+				"&client_secret=" + g.Secret})
 		}
-		if len(bodies) == 0 {
+		if len(calls) == 0 {
 			return nil, errors.New("the data file has no refresh tokens (seed with --grants)")
 		}
 		return func(rng *rand.Rand, base string) *request {
-			r := form(base, "/oauth/introspect", bodies[rng.Intn(len(bodies))])
+			c := calls[rng.Intn(len(calls))]
+			r := form(base, c.path, c.body)
 			r.body = `"active":true`
 			return r
 		}, nil
@@ -171,9 +183,8 @@ func newGenerator(ctx context.Context, sc string, d *Data, urls []string, hc *ht
 			if n > 2 {
 				first, n = 3, n-2
 			}
-			body := `{"org":"` + org + `","email":"` + UserEmail(org, first+rng.Intn(n)) + `","password":"` +
-				d.Password + `","next":""}`
-			req, _ := http.NewRequest(http.MethodPost, base+"/api-internal/login/password", strings.NewReader(body))
+			body := `{"email":"` + UserEmail(org, first+rng.Intn(n)) + `","password":"` + d.Password + `","next":""}`
+			req, _ := http.NewRequest(http.MethodPost, base+"/o/"+org+"/api-internal/login/password", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			tok := csrfToken(rng)
 			req.Header.Set("X-CSRF-Token", tok)

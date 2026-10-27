@@ -11,6 +11,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // SetService enables the emails that carry links (invitation, reset, verification): the links are the service's
@@ -40,12 +41,21 @@ func (m *Mailer) SendInviteLink(ctx context.Context, u *model.User, org *model.O
 	if u.Email == "" {
 		return errors.New("mail: user has no email address")
 	}
-	if err := m.render(ctx, u, org, inviteTpl, link, time.Until(expires)); err != nil {
+	// The address the invitation is bound to, not the one on the caller's copy of the user, which may be older (an
+	// address corrected since): a link is only ever mailed to the address it opens the account for.
+	to := u.Email
+	if m.Svc != nil {
+		var err error
+		if to, err = m.Svc.LinkAddress(ctx, link); err != nil {
+			return err
+		}
+	}
+	if err := m.renderTo(ctx, to, u, org, inviteTpl, link, time.Until(expires)); err != nil {
 		return err
 	}
 	if m.Svc != nil {
 		// Accepting an invitation that went to the address on file proves the address.
-		if err := m.Svc.MarkLinkSent(ctx, link, u.Email); err != nil {
+		if err := m.Svc.MarkLinkSent(ctx, link, to); err != nil {
 			m.Log.Warn("mail: invitation not marked as emailed", "error", err)
 		}
 	}
@@ -72,6 +82,7 @@ type tplData struct {
 	Code    string // a sign-in code (codeTpl)
 }
 
+// linkPaths are the pages the mailed links open, in the address space of the organization of the user they are for.
 var linkPaths = map[string]string{service.LinkInvite: "/invite", service.LinkReset: "/reset", service.LinkVerify: "/verify-email"}
 
 func (m *Mailer) sendLink(ctx context.Context, purpose string, ttl time.Duration, u *model.User, org *model.Org, t *tpl) error {
@@ -81,11 +92,12 @@ func (m *Mailer) sendLink(ctx context.Context, purpose string, ttl time.Duration
 	if u.Email == "" {
 		return errors.New("mail: user has no email address")
 	}
-	tok, _, err := m.Svc.IssueLink(ctx, u, purpose, u.Email, ttl)
+	tok, l, err := m.Svc.IssueLink(ctx, u, purpose, u.Email, ttl)
 	if err != nil {
 		return err
 	}
-	return m.render(ctx, u, org, t, m.Svc.LinkURL(linkPaths[purpose], tok), ttl)
+	// To the address the link was issued for (the account's as it is now), not the caller's copy of the user's.
+	return m.renderTo(ctx, l.Email, u, org, t, m.Svc.LinkURL(u.OrgID, linkPaths[purpose], tok), ttl)
 }
 
 // SendVerifyAddress emails a verification link to one address of u (a linked address, or the primary): the link is
@@ -98,13 +110,13 @@ func (m *Mailer) SendVerifyAddress(ctx context.Context, u *model.User, org *mode
 	if err != nil {
 		return err
 	}
-	return m.renderTo(ctx, address, u, org, verifyTpl, m.Svc.LinkURL(linkPaths[service.LinkVerify], tok), service.VerifyTTL)
+	return m.renderTo(ctx, address, u, org, verifyTpl, m.Svc.LinkURL(u.OrgID, linkPaths[service.LinkVerify], tok), service.VerifyTTL)
 }
 
 // SendRecoveryUsed tells u that one of their recovery codes was used to sign in, and how many are left: someone who
 // got hold of the codes is noticed at their first use.
 func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model.Org, left int) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Link: m.Cfg.Server.PublicURL + "/account", Left: strconv.Itoa(left)}
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Link: m.Cfg.Server.PublicURL + web.OrgPath(u.OrgID, "/account"), Left: strconv.Itoa(left)}
 	if org != nil {
 		d.Org = org.DisplayName
 	}
@@ -128,10 +140,6 @@ func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.O
 	}
 	msg.To = u.Email
 	return m.Send(ctx, msg)
-}
-
-func (m *Mailer) render(ctx context.Context, u *model.User, org *model.Org, t *tpl, link string, ttl time.Duration) error {
-	return m.renderTo(ctx, u.Email, u, org, t, link, ttl)
 }
 
 func (m *Mailer) renderTo(ctx context.Context, to string, u *model.User, org *model.Org, t *tpl, link string, ttl time.Duration) error {

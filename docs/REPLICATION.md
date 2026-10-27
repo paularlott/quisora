@@ -21,7 +21,7 @@ write made says so and serves nothing), backups must be format version 1 (as thi
 
 The data is split into **64 partitions**, a constant of the format. Every record has a **partition key**: the
 organization's id for everything an organization owns, a record's own id for the independent single-record kinds
-(locks, replay values, reservations), and nothing (partition 0, the global data) for organizations, signing keys and
+(locks, replay values), and nothing (partition 0, the global data) for organizations, signing keys and
 the like. The key is hashed to a partition (`partition.PartitionOf`: partition 0 for no key, else 1 to 63). Every
 partition has one **owner** node at a time, chosen by the library from the nodes that are ready (rendezvous hashing,
 with the next ranks as fallbacks). **Every change to a record goes to the owner of its partition**, which checks it
@@ -47,9 +47,9 @@ fact.
    a live write over one is refused (`store.ErrDeleted`, which matches `store.ErrNotFound`); an id comes back only by
    an explicit create (`CompareAndPut` with expected version 0) that the owner orders after the deletion.
 3. **Of two records claiming one unique value, one claim is refused.** The owner checks unique values against its
-   committed data, within the partition, as part of the write: the second claim fails with `store.ErrConflict`. A value
-   that must be unique across organizations is reserved first (below). Nothing is created, flagged or stripped
-   afterwards.
+   committed data, within the partition, as part of the write: the second claim fails with `store.ErrConflict`. Every
+   unique value is scoped to one organization (below), so one partition's owner decides each. Nothing is created,
+   flagged or stripped afterwards.
 4. **A node that cannot know its data is current does not act on it.** A node that is copying the cluster's data
    (a new node, a lost disk), catching up after a start, cut off from the majority or misconfigured serves nothing but
    its health probes (`/readyz` answers 503), makes no replicated write and owns no rate-limit counter. Readiness is the
@@ -69,7 +69,7 @@ fact.
    minorities, cluster ids and sizes) is tested in the gossip library (`partition/`, with its fault-injection tests).
    Quisora's own tests in `internal/cluster/*_test.go` cover what it builds on it: the scenarios in which the cluster
    drives a backend's durable state run on every backend (replication of writes, the store's errors, whole-cluster
-   restart, the lost-disk resync and global reservations on BadgerDB, SQLite, and PostgreSQL, MySQL and MariaDB when
+   restart, the lost-disk resync and unique values on BadgerDB, SQLite, and PostgreSQL, MySQL and MariaDB when
    their test DSNs are set: `scripts/test-dbs.sh`; purges, a node restored from its own snapshot and seeding on BadgerDB
    and SQLite); the others (one end-to-end owner loss, concurrent updates and claims, force-start, lagging and diverged
    partitions, unconfirmed and slow writes, resizes, membership, clocks, key rotation and compatibility) each run on
@@ -105,9 +105,8 @@ a fourth node adds a node to lose without letting any more fail. A cluster of tw
 | records | key | partition |
 |---|---|---|
 | everything scoped to an organization: users, groups, memberships, tenants, access, clients, providers, passkeys, identities, sessions, grants, API tokens, link tokens, sign-in records | the organization's id | one of 1 to 63, the same for all of an organization's records |
-| organizations, signing keys, an entity with no organization (a self-registered client) | none | 0 |
+| organizations, signing keys, and a server-level audit event with no organization | none | 0 |
 | locks, replay values (`KindLock`, `KindReplay`) | the record's own id | spread over 1 to 63 |
-| reservations (`KindReservation`, below) | the reservation's id | spread over 1 to 63 |
 | short-lived state (`KindEphemeral`) and audit events (`KindAudit`) | never replicated: each node's own | none |
 
 An organization's records, and every unique value scoped to it, are therefore in one partition: the owner checks them
@@ -185,7 +184,7 @@ partitions); an owner holds at most 32 forwarded changes of one partition at onc
 catch-ups at once in the background, matching the exports a node serves at once. These are the library's defaults,
 which Quisora keeps. A write is not abandoned when its caller goes away: it is seen through, within the library's write
 timeout. Writes are checked on the owner against committed data, so **every check that must not run on a stale copy
-runs there**: the compare-and-swap on the version the caller read, the unique values, and the reservations below.
+runs there**: the compare-and-swap on the version the caller read, and the unique values.
 
 The owner's `Commit` applies exactly what `Prepare` decided, deterministically, on every node; the change hooks
 (`Node.OnChange`: cache eviction, live admin pages) run for every applied record, local or replicated, on every node.
@@ -230,7 +229,7 @@ partitions.
   single-record reads of the cluster store (`Get`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrUnavailable`
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
   the cluster for longer than that bound and a cache's 5 s, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
-  not in a partition and are exempt; a reservation follows the partition of its own id. Listings and counts are not
+  not in a partition and are exempt. Listings and counts are not
   gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
   the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
   revoked key). Its JWKS then answers 503 once its cached key set is due (5 s), rather than the keys it last loaded. A follower keeps serving a partition while its owner hands it over
@@ -253,45 +252,20 @@ partitions.
 ## Unique values
 
 A unique value is checked by the owner, against its committed data, in the partition of the record. Every unique value
-is either prefixed by the organization or by an id of one organization's record (users, groups, tenant names,
-providers, identities, link tokens) and so lives in one partition, or must hold across organizations. Two values must
-hold across organizations (`model.GlobalUnique`), because they are looked up with no organization at hand: a tenant's
-**resource indicator** (`res/<canonical uri>`, in an authorization request) and a **passkey's credential id** (a
-discoverable sign-in from the landing page).
+is scoped to one organization: it starts with the organization's id, or is an id of one organization's record (users,
+groups, tenant names, providers, identities, link tokens), and so it lives in the one partition that holds the
+organization's records. Two organizations may therefore hold the same value. A tenant's **resource indicator**
+(`<organization id>/res/<canonical uri>`) is unique within its organization only: the same API or MCP server address
+may be registered by tenants of two organizations (a token's `iss` says whose it is). A passkey's credential id is
+unique per user (`<user id>/<credential id>`). Nothing is unique across organizations, so no unique value is looked
+up without an organization, and no write ever needs the partitions of two organizations: an organization is one
+partition's data, with one owner that commits its writes, much like a replicated MariaDB primary per organization
+whose data the other nodes replicate. A transaction that would write in more than one partition is refused
+(`store.ErrBadTx`), and a write that would change a stored record's partition is refused (`store.ErrBadRecord`: a
+record never moves).
 
-A global value is held by a **reservation**, a record of its own kind (`model.KindReservation`, `model.Reservation`:
-the kind and id of the record that holds it). Its id is the kind and the value (hashed, deterministically, when that
-would not fit the 191-character id column of the SQL backends) and its partition key is that id, so the claims spread
-over the partitions and one owner decides each. Writing a record that lists a global value:
-
-1. **claims** it first: a change to the reservation's partition that creates the reservation for this record (the
-   owner refuses with a conflict if another record holds it; claiming a value the record holds already changes
-   nothing). The claim is skipped when the write is a compare-and-swap on the very version of the record this node holds,
-   that version lists the value, and this node's committed reservation names the record (every passkey sign-in's count,
-   every tenant update): if the compare-and-swap succeeds the record still lists the value when the write commits, and a
-   reservation is released or taken over only after a later version of its holder without the value, which the
-   compare-and-swap rules out;
-2. writes the record **without** that value in its unique list (it is reserved, not indexed): a reservation is released
-   if this write fails for certain, and kept if its outcome is unknown;
-3. afterwards **releases** the reservations of values the record held before and no longer lists (an update that drops
-   a resource, a deletion): best effort, because
-4. a reservation whose holder no longer lists the value or was deleted (a lost release) is **taken over by the next
-   claim**, once it is older than a minute (`reservationGrace`), and only on positive evidence: the owner of the
-   reservation takes it over when its own copy of the holder is a tombstone or a live record that does not list the value,
-   **written after the reservation** (its version is later). A holder the owner does not have, or has only as it was
-   before the reservation, proves nothing (its copy of the holder's partition may lag behind the update that added the
-   value), so the reservation stays and is left to the sweep (5). The holder is written after the claim, so a young reservation whose holder does not hold the value yet is never
-   taken from under a record that is about to be written;
-5. a reservation whose holder never came (a crash between the two writes) or is gone, which no claim will take over, is
-   released by the **housekeeping leader's sweep** (`Node.SweepReservations`, a batch each minute, a pass over every
-   reservation taking as long as the orphan sweep): for each reservation older than a minute whose holder this node does
-   not see holding it, the holder is read through the owner of its own partition (a linearizable read), and if it does not
-   exist, is deleted or does not list the value, the reservation is released with a compare-and-swap on the version read.
-
-`GetByUnique` for a global value reads the reservation, then the record it names, and returns the record only if it
-still lists the value. A crash can leave a value reserved with no record until the sweep reaches it (a few minutes at the
-least: the minute of grace and the next pass); a retry of the same creation (a new record id) is refused as a conflict
-until then.
+A unique value of any length is accepted: a value longer than 512 characters (or one that looks like a hash) is
+indexed by its SHA-256 (`store.UniqueIndexKey`), the same on every backend, and the record keeps the value itself.
 
 ## Records, versions and generations
 
@@ -309,8 +283,13 @@ partition's (epoch, sequence), never from clocks**. A new version of a record is
   otherwise) and continues its generation; with `expect == 0` (a create) over nothing it starts generation 0, over a
   tombstone a generation whose epoch is that tombstone's version, over an expired record it keeps the generation.
 - A deletion (`Put` of a tombstone, or `DeleteIf` against a version) carries the partition key and scope of the record it
-  deletes (the landing node looks it up, asking the owners if it does not hold the record). Deleting what is not there
-  changes nothing.
+  deletes (the landing node looks it up, asking the owners if it does not hold the record). Deleting a record that is not
+  live (missing, or already a tombstone) writes nothing.
+- **The same contract on every store.** A record's id and scope are at most 191 characters, its partition key 512, a
+  string field 255 (the tags field `model.MaxTagsText`); a longer one is refused (`store.ErrBadRecord`) before anything
+  is written. Unique values have no limit (above). A write never moves a record to another partition (a tombstone keeps
+  its record's). A call whose context has ended (a write: before it begins, and then it writes nothing) and any call to a closed store
+  answer `store.ErrUnavailable`.
 - Node-local state (`KindEphemeral`: leases, markers, short-lived sign-in state) is never replicated.
 - **Audit events** (`KindAudit`), in the database audit mode, are **never replicated**: every node writes the events it
   records to its own database, a local write that needs no owner, no majority and no readiness (a node cut off from the
@@ -332,7 +311,7 @@ cluster it meets is refused (below).
 
 ### Housekeeping
 
-Key rotation, user end dates, orphan and reservation sweeps and re-sealing run on **one node: the owner of partition 0**
+Key rotation, user end dates, the orphan sweep and re-sealing run on **one node: the owner of partition 0**
 (the global data), as long as it can read partition 0 and is writable (`Node.IsLeader`; `leader` in the status, and
 `quisora_leader`, say which node that is). There is no separate election: partition 0's owner is the node every other node
 already agrees on, and a hand-back (a restart, a resize, a clock that is off) or a crash moves housekeeping with it. A new
@@ -427,8 +406,7 @@ expired are removed by every node from its own copy.
 - **Seeding.** `quisora bootstrap`, `quisora restore` and the load test's seed on a gossip node write the records they
   create or restore as writes of their partitions (`cluster.StartNewCluster`), a page of one kind at a time: the records of
   a page that belong to one partition are one write with the partition's next sequence number (so memory is bounded by a
-  page, and a record written after an earlier run is stamped too), turn the global unique values they list into
-  reservations and create a new **data set** (below) whose data is this node's; the other nodes start with empty databases
+  page, and a record written after an earlier run is stamped too), and create a new **data set** (below) whose data is this node's; the other nodes start with empty databases
   and copy everything from it. A restore needs an empty database (the first node of a new cluster), never over data. Until
   the node has run it can be run again (the data set stays the same); **it is refused on a node that already holds a data
   set** (its `cluster-state.json`, saved for this very database, says it took part in a cluster or adopted one's data set):
@@ -640,16 +618,16 @@ read), so a deleted user is never a member, whatever the clean-up has done (a pe
 after the deletion included). A manager reference is cleared through the sparse `manager_id` index: only the
 deleted user's reports are read.
 
-A unique value held by such a record (a provider identity's subject, a passkey's credential id) does not wait for the
+A unique value held by such a record (a provider identity's subject) does not wait for the
 sweep: a create that finds it taken asks `service.ReleaseUnique`, which removes the holder if, read through its owner, it
 counts for nothing, and the create is tried once more. Deleting an account never blocks linking its provider
-identity, or registering its authenticator, to another.
+identity to another.
 
 ### Serving while not ready
 
 Until a node is ready, **every path except `/healthz`, `/readyz`, `/assets/…`, `/branding/…` and `/favicon.ico`
-answers 503** with `Retry-After: 5` (JSON `temporarily_unavailable` for `/oauth/…` and `/.well-known/…`, JSON
-`{"error": …}` for `/api/…` and `/scim/…`, plain text otherwise): management and SCIM reads, the authorization and
+answers 503** with `Retry-After: 5` (JSON `temporarily_unavailable` for `/.well-known/…`, JSON
+`{"error": …}` for `/api/…` and `/scim/…`, plain text otherwise, an organization's `/o/<org>/…` pages and OAuth endpoints included): management and SCIM reads, the authorization and
 sign-in pages, discovery and JWKS alike, so a client that bypasses the load balancer never receives partial, stale or
 deleted data (`web.Server.serveGate`), the token, userinfo and introspection endpoints included: a node cut off from the
 majority issues no tokens and answers no introspection, and clients retry on another node. A restarting node issues no
@@ -699,8 +677,8 @@ message carries the sender's `ClusterSize`, and a receiver configured differentl
 compare-and-swap, quorum read) and are not reused. The compatibility version published in gossip
 metadata (`quisora.compat`) is 2: a node of the earlier mode, which publishes 1, and this one refuse each other.
 
-The **change** a node sends is `change{Op, Mode, Expect, Rec, Kind, ID, Key, Before}` (msgpack): a record write, a
-reservation claim or release, or a purge point; the **write's data** is `writeData{Recs, Purge}`: the stamped records every
+The **change** a node sends is `change{Op, Mode, Expect, Rec, Before, Ops, Base, Replay}` (msgpack): a record write, a
+transaction or a purge point; the **write's data** is `writeData{Recs, Purge}`: the stamped records every
 node applies, and the purge point to apply first. Both stay under the cluster's packet limit (4 MB by default), so a
 record must too; a fresh read's reply is asked again in halves when it would not fit.
 
@@ -885,9 +863,6 @@ dates are compare-and-swap updates and purging is idempotent. Keep clock skew be
   was sent. The next owner settles it, committed once or never; callers re-read before they retry what is not idempotent.
 - **Local reads are a message behind a write** made on another node, a heartbeat at the worst; `Store.Put` waits for the writer's own
   node, and the checks that must see the latest state read through the owner.
-- **A global unique value** can stay reserved after a creation whose second write never happened, until the housekeeping
-  leader's sweep releases it (the minute of grace plus the wait for the next pass; claims never take over a reservation
-  whose holder their node does not have).
 - **A data set is chosen by the operator.** A node with no data set adopts the one the nodes it sees publish; one bootstrapped
   or restored by mistake while it is the only node up with a data set is the one the empty nodes adopt. Nodes of different data
   sets never exchange data, but an empty node that sees two of them joins neither until one is gone: bootstrap one node of a new

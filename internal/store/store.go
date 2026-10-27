@@ -16,10 +16,7 @@ import (
 
 var (
 	ErrNotFound = errors.New("store: not found")
-	// ErrConflict is returned by Put when a unique value is held by another live record of the same kind. A value
-	// unique across organizations (model.GlobalUnique) may also be answered with it for a short while (at most a
-	// minute) after the record that held it gave it up, or after a write of it whose outcome was not known: a gossip
-	// cluster reserves such a value with a write of its own, released after the record's.
+	// ErrConflict is returned by Put when a unique value is held by another live record of the same kind.
 	ErrConflict = errors.New("store: unique value already in use")
 	// ErrStale is returned by Put when the stored record is at the same or a newer version, and by CompareAndPut
 	// when the stored version is not the expected one.
@@ -35,9 +32,8 @@ var (
 	// vouch for its copy, or a write whose outcome could not be settled within its deadline). A write may have been
 	// applied by an earlier attempt; retrying it is safe (Record.Req).
 	ErrUnavailable = errors.New("store: unavailable now, try again shortly")
-	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, a record listing
-	// a value unique across organizations (model.GlobalUnique: such a record is written alone, every store), or (in a
-	// gossip cluster) writes in more than one partition or of node-local kinds. Nothing was written.
+	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, or (in a gossip
+	// cluster) writes in more than one partition (an organization's) or of node-local kinds. Nothing was written.
 	ErrBadTx = errors.New("store: invalid transaction")
 	// ErrBadRecord is returned for a record no store may hold: an id, scope, partition key or string field longer than
 	// the limits (limits.go: the same in every store), or a write that would change a stored record's partition key (a

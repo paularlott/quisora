@@ -2,7 +2,7 @@
      (extra <head> markup) and "scripts" (extra script tags) blocks. On admin pages .Org is the organization being
      administered. */}}
 {{define "base"}}<!doctype html>
-<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="app"{{with .Site.Skin}} data-skin="{{.}}"{{end}} data-mail="{{if .Site.Mail}}1{{else}}0{{end}}" data-me="{{with .User}}{{.ID}}{{end}}">
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="app"{{with .Site.Skin}} data-skin="{{.}}"{{end}} data-mail="{{if .Site.Mail}}1{{else}}0{{end}}" data-me="{{with .User}}{{.ID}}{{end}}"{{with .User}} data-org-base="/o/{{.OrgID}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,7 +24,7 @@
 
 <header class="app-header glass-panel">
   {{if .User}}<button type="button" class="btn btn-ghost btn-icon md:hidden" x-ref="navToggle" aria-controls="primary-nav" :aria-expanded="navExpanded" aria-label="Open navigation menu" aria-expanded="false" @click="openNav">{{template "icon" "menu"}}</button>{{end}}
-  <a class="brand" href="{{if .User}}/account{{else}}/{{end}}">
+  <a class="brand" href="{{if .User}}/o/{{.User.OrgID}}/account{{else}}/{{end}}">
     <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="32" height="32">
     <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="32" height="32">
     <span>{{.Site.Name}}</span>
@@ -47,9 +47,9 @@
           <div class="cell-sub">{{.User.Email}}</div>
           <div class="mt-2"><span class="badge badge-accent">{{if eq .User.Role "super_admin"}}Super administrator{{else if eq .User.Role "admin"}}Administrator{{else if eq .User.Role "manager"}}Manager{{else}}User{{end}}</span></div>
         </div>
-        <a class="menu-item" href="/account">{{template "icon" "user"}} Your account</a>
+        <a class="menu-item" href="/o/{{.User.OrgID}}/account">{{template "icon" "user"}} Your account</a>
         <div x-data="systemTheme"><button type="button" class="menu-item" @click="use">{{template "icon" "sliders"}} Match system theme</button></div>
-        <a class="menu-item" href="/logout">{{template "icon" "logout"}} Sign out</a>
+        <a class="menu-item" href="/o/{{.User.OrgID}}/logout">{{template "icon" "logout"}} Sign out</a>
       </div>
     </div>
     {{else}}
@@ -69,7 +69,7 @@
     <div class="nav-scroll">
     <div class="nav-group">
       <span class="eyebrow nav-heading">Account</span>
-      <a class="nav-link" href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
+      <a class="nav-link" href="/o/{{.User.OrgID}}/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
     </div>
     {{if .IsMgr}}
     <div class="nav-group">
@@ -113,7 +113,7 @@
 <footer class="app-footer"><p>{{with .Site.Footer}}{{.}}{{else}}{{.Site.Name}}{{end}}</p></footer>
 {{template "toasts"}}
 {{template "confirm-dialog"}}
-{{if .User}}{{template "reauth-dialog" (dict "org" .HomeOrg "next" .Path)}}{{end}}
+{{if .User}}{{template "reauth-dialog" (dict "org" .User.OrgID "next" .Path)}}{{end}}
 {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}

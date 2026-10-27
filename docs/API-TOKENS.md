@@ -134,11 +134,12 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$QUI
 ## Your own applications (`api`)
 
 An `api` token is for your own scripts calling **your applications**, not Quisora. The application checks each token
-it receives with Quisora's introspection endpoint, authenticating as its own confidential client (RFC 7662). Clients
-use `client_secret_post` unless they were set up otherwise, so the credentials go in the form:
+it receives with the introspection endpoint of its own organization (`/o/<org id>/oauth/introspect`), authenticating as
+its own confidential client (RFC 7662). Clients use `client_secret_post` unless they were set up otherwise, so the
+credentials go in the form:
 
 ```bash
-curl -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" -d "token=$TOKEN" "$QUISORA/oauth/introspect"
+curl -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" -d "token=$TOKEN" "$QUISORA/o/<org id>/oauth/introspect"
 ```
 
 A client set to `client_secret_basic` sends them as HTTP Basic instead (`curl -u "$CLIENT_ID:$CLIENT_SECRET" …`).
@@ -185,7 +186,7 @@ Applications receive them as `roles`: the union of the user's own entry and thei
 application, with those entries' tags added to `tags`. A sign-in's access token (and its introspection, and
 userinfo) carries them, and so does the introspection of a personal `api` token, for the application that asks.
 
-The token is active only to clients of the owner's organization, and, if you chose applications when making it,
+The token is active only to clients of the owner's organization (at that organization's introspection endpoint), and, if you chose applications when making it,
 only to those. A token limited to some scopes is active only to the applications that declare at least one of them:
 another application would otherwise see `api` alone and take it for full access. Anything else (another
 organization's client, a token without the `api` scope, a revoked or expired token) answers `{"active": false}`.
@@ -222,7 +223,7 @@ and `GET /api-internal/account/tokens` lists the `apps` you can choose from, eac
   secret stops working at once; the name, scopes and expiry stay the same.
 - **Revoke**: delete the token on Your account. Administrators can revoke a user's tokens on the user's page or with
   `DELETE /api/orgs/{org}/users/{id}/tokens/{token}`.
-- The OAuth revocation endpoint (`/oauth/revoke`) does not revoke personal API tokens: it answers
+- The OAuth revocation endpoint (`/o/<org id>/oauth/revoke`) does not revoke personal API tokens: it answers
   `unsupported_token_type`.
 - **How long they last**: at most `tokens.api_token_max_days` (365 by default); a token made without a lifetime gets
   the maximum. Set it to 0 to allow tokens that never expire (a lifetime typed in is then at most 10 years). Tokens with the `backup` scope always expire within 30 days. A new secret never extends a
