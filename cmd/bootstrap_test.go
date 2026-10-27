@@ -71,12 +71,6 @@ func TestOperatorCommandsEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("set-primary refuses an unknown organization", func(t *testing.T) {
-		if _, _, err := e.run(t, "", "set-primary", "nosuch", "--super-admin", "a@example.com"); err == nil {
-			t.Fatal("set-primary of an unknown organization succeeded")
-		}
-	})
-
 	// plain, then encrypted with a password file
 	t.Run("backup", func(t *testing.T) {
 		_ = os.WriteFile(pwf, []byte("correct horse battery\nignored\n"), 0o600)
@@ -143,7 +137,7 @@ func TestBootstrapRefusals(t *testing.T) {
 	if _, _, err := bad.run(t, "", "bootstrap"); err == nil || !strings.Contains(err.Error(), "server.listen") {
 		t.Fatalf("invalid configuration: %v", err)
 	}
-	for _, args := range [][]string{{"invite", "primary", "a@example.com"}, {"set-primary", "x", "--super-admin", "a@b.c"},
+	for _, args := range [][]string{{"invite", "primary", "a@example.com"},
 		{"sign-out", "--all", "--yes", "--reason", "r"}, {"backup", "--password-file", "x", "-"}, {"restore", "-"}, {"serve"}} {
 		if _, _, err := bad.run(t, "", args...); err == nil {
 			t.Fatalf("%v ran with an invalid configuration", args)

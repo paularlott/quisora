@@ -85,8 +85,8 @@ It is audited as `org.signout` (one organization) or `server.signout` (all), wit
 Each organization, and the server as a whole, keeps a sign-out counter, and every session, grant and API token is
 stamped with the counters when it is made. Pulling the lever increments a counter in one write, which the cluster
 confirms like any other; from then on everything stamped before it is refused. So it does not depend on the nodes'
-clocks, and it cannot be half done. The counters are part of backups and move with the primary organization
-(`quisora set-primary`), so nothing a sign-out ended comes back with a restore.
+clocks, and it cannot be half done. The counters are part of backups and are kept on the primary organization, which never
+changes, so nothing a sign-out ended comes back with a restore.
 
 ### In a gossip cluster
 

@@ -280,11 +280,6 @@ func TestEveryAuditedChangeRecordsAnUnknownOutcome(t *testing.T) {
 			o := e.org("doomed")
 			return func() error { return e.svc.DeleteOrg(e.ctx, service.System, o.ID, false) }
 		}},
-		{"org.primary", model.KindOrg, func(e *env, _ *model.Org) run {
-			o := e.org("next-primary")
-			boss := e.user(o.ID, "boss", model.RoleAdmin)
-			return func() error { _, _, err := e.svc.SetPrimaryOrg(e.ctx, o.ID, boss.ID); return err }
-		}},
 		{"org.signout", model.KindOrg, func(e *env, org *model.Org) run {
 			return func() error {
 				_, err := e.svc.SignOutOrg(e.ctx, service.System, org.ID, service.SignOutOptions{Reason: "test"})

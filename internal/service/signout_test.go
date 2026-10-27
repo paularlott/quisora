@@ -171,18 +171,8 @@ func TestSignOutServer(t *testing.T) {
 		t.Error("the server sign-out was not audited in the primary organization")
 	}
 
-	// another organization made primary: what the server's lever ended stays ended
-	if _, _, err := e.svc.SetPrimaryOrg(e.ctx, acme.ID, admin.ID); err != nil {
-		t.Fatal(err)
-	}
-	if e.sessionLive(alanSess) || e.tokenLive(alanTok) {
-		t.Error("moving the primary organization brought signed-out credentials back")
-	}
 	if !e.sessionLive(e.session(alan)) {
-		t.Error("a session made after the move does not work")
-	}
-	if p, _ := e.svc.PrimaryOrg(e.ctx); p.LastServerSignOut == nil {
-		t.Error("the last server sign-out did not move with the primary organization")
+		t.Error("a session made after the sign-out does not work")
 	}
 
 	n, err := e.svc.SweepSignOut(e.ctx, actor(e.super), "", true)

@@ -76,12 +76,12 @@ func TestAuditAttribution(t *testing.T) {
 		// system, with how it was authenticated and the address of the request; the system's own work, and any other
 		// actor's, is not touched.
 		c := newCast(t)
-		ctx := service.WithRequest(service.WithCommand(c.ctx, "set-primary", "request signed with the master key"),
+		ctx := service.WithRequest(service.WithCommand(c.ctx, "sign-out", "request signed with the master key"),
 			&service.RequestInfo{ID: "r", IP: "198.51.100.9"})
-		c.svc.Audit(ctx, service.System, c.a.ID, "org.primary", "acme", map[string]string{"previous": "primary"})
-		e := c.lastAudit("org.primary")
-		if e.Actor != "command:set-primary" || e.IP != "198.51.100.9" || e.Detail["command"] != "set-primary" ||
-			e.Detail["authenticated"] != "request signed with the master key" || e.Detail["previous"] != "primary" {
+		c.svc.Audit(ctx, service.System, c.a.ID, "org.signout", "acme", map[string]string{"reason": "drill"})
+		e := c.lastAudit("org.signout")
+		if e.Actor != "command:sign-out" || e.IP != "198.51.100.9" || e.Detail["command"] != "sign-out" ||
+			e.Detail["authenticated"] != "request signed with the master key" || e.Detail["reason"] != "drill" {
 			t.Fatalf("a command's event: actor %q ip %q detail %v", e.Actor, e.IP, e.Detail)
 		}
 		c.svc.Audit(ctx, &service.Actor{Name: "pat"}, c.a.ID, "user.update", "x", nil)

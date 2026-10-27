@@ -7,8 +7,8 @@ import (
 )
 
 // applyRole is the only place the role of an existing user changes (TestRoleIsSetOnlyByApplyRole holds the code to
-// that): UpdateUser (the console, the management API and SCIM), the break-glass promotion of "quisora invite
-// --super-admin" and "quisora set-primary" all come here, so a change in privilege has the same consequences whichever
+// that): UpdateUser (the console, the management API and SCIM), and the break-glass promotion of "quisora invite
+// --super-admin" all come here, so a change in privilege has the same consequences whichever
 // way it was made. It sets the role on u, the copy about to be written, and returns what completes the change: finish
 // is called right after the write with its error, and does what follows from the new role, once, whether the write
 // confirmed or its outcome is not known (a rerun of a change that landed finds nothing to change, so would never do

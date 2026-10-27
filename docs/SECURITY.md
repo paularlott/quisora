@@ -157,11 +157,11 @@ and the servers keep running:
    (`detail.super_admin=granted`), both by `command:invite`.
 
 Without `--break-glass`, `quisora invite` issues an ordinary invitation (7 days) the same way, and refuses a disabled
-account. `quisora set-primary` (making another organization the primary one, when the primary's super admins are all
-gone) is the same kind of request, **signed with the master key and sent to a running node** (in a gossip cluster the
-data is changed only through a node: a write to a stopped node's database would belong to no partition write and reach
-no other node); it is recorded as `org.primary` by the actor `command:set-primary`. So is `quisora sign-out` (the
-emergency sign-out), recorded as `org.signout` or `server.signout` by `command:sign-out`. `quisora force-start`, which makes a
+account. `quisora sign-out` (the emergency sign-out) is the same kind of request, **signed with the master key and
+sent to a running node** (in a gossip cluster the data is changed only through a node: a write to a stopped node's
+database would belong to no partition write and reach no other node); it is recorded as `org.signout` or
+`server.signout` by `command:sign-out`. The primary organization never changes (the first one, made by `quisora
+bootstrap`), so there is no command to move it. `quisora force-start`, which makes a
 node copy its data from fewer nodes than a majority, is recorded as `cluster.force_start` by `command:force-start`.
 Whoever runs any of these commands holds the master key (or the node's data directory), and with it everything the server protects: keep the
 configuration and the key as protected as the break-glass step they enable. A user who is only locked out by failed

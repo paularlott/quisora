@@ -14,6 +14,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // "quisora invite" while the server runs on its own BadgerDB store: the command asks the server (signed with the
@@ -168,5 +169,28 @@ func TestInviteSuperAdminThroughRunningServer(t *testing.T) {
 	requireCommandActor(t, a, "user.update", "invite")
 	if _, _, err := a.Svc.PeekLink(ctx, link[strings.Index(link, "token=")+6:], service.LinkInvite); err != nil {
 		t.Fatalf("the invitation does not open: %v", err)
+	}
+}
+
+// requireCommandActor checks that the audit event of action was recorded as the operator's command, not as the system:
+// the command's actor, the address the request came from, and the command and its authentication in the detail.
+func requireCommandActor(t *testing.T, a *App, action, command string) {
+	t.Helper()
+	items, _, err := a.Svc.Audits.List(context.Background(), store.ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range items {
+		if e.Action != action {
+			continue
+		}
+		found = true
+		if e.Actor != "command:"+command || e.IP == "" || e.Detail["command"] != command || !strings.Contains(e.Detail["authenticated"], "master key") {
+			t.Fatalf("%s recorded as actor %q ip %q detail %v", action, e.Actor, e.IP, e.Detail)
+		}
+	}
+	if !found {
+		t.Fatalf("no %s event was recorded", action)
 	}
 }

@@ -142,8 +142,7 @@ of "which write may have been committed" at a takeover, rest on there being one.
 **Cross-partition changes** (creating an organization writes the organization in partition 0 and its first
 administrator in its own partition) have no transaction across partitions: each is a sequence of single-partition
 writes, ordered so that a crash between them leaves something harmless and repeatable, as today. The inventory is in
-the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization, `quisora set-primary`
-(resumable: run again to finish), global unique values (claim, write, release) and deleting an organization (one write;
+the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization, global unique values (claim, write, release) and deleting an organization (one write;
 the rest is the orphan sweep).
 
 ## Reads

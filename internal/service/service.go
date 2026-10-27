@@ -109,7 +109,7 @@ type commandKey struct{}
 type commandInfo struct{ name, how string }
 
 // WithCommand marks ctx as serving an operator's command that a running node carries out ("quisora invite" and "quisora
-// set-primary" through the server, authenticated by the master key alone; "quisora force-start", by access to the node's
+// sign-out" through the server, authenticated by the master key alone; "quisora force-start", by access to the node's
 // data directory): the audit events the system records in it are attributed to that command (actor "command:<name>",
 // the address a request came from, and the command and how it was authenticated in the detail), so an auditor can tell
 // the operator's command from what the system does by itself.

@@ -244,15 +244,18 @@ func testCompareAndPut(t *testing.T, s store.Store) {
 	tb := users(s)
 	u := newUser("org1", "hank")
 	must(t, tb.Put(ctx, u))
-	a, _ := tb.Get(ctx, u.ID)
-	b, _ := tb.Get(ctx, u.ID)
+	a, err := tb.Get(ctx, u.ID)
+	must(t, err)
+	b, err := tb.Get(ctx, u.ID)
+	must(t, err)
 	a.GivenName = "A"
 	must(t, tb.Update(ctx, a))
 	b.GivenName = "B"
 	if err := tb.Update(ctx, b); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("lost update not detected: %v", err)
 	}
-	got, _ := tb.Get(ctx, u.ID)
+	got, err := tb.Get(ctx, u.ID)
+	must(t, err)
 	if got.GivenName != "A" {
 		t.Fatal("stale update applied")
 	}
@@ -275,7 +278,7 @@ func testCompareAndPut(t *testing.T, s store.Store) {
 	if err := s.CompareAndPut(ctx, same, cur.Version); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("a version not above the expected one: want ErrStale, got %v", err)
 	}
-	if now, _ := s.Get(ctx, model.KindUser, u.ID); now.Version != cur.Version {
+	if now, err := s.Get(ctx, model.KindUser, u.ID); err != nil || now.Version != cur.Version {
 		t.Fatalf("a refused CompareAndPut changed the record: version %d, was %d", now.Version, cur.Version)
 	}
 	// Unique clash on update.
@@ -1034,7 +1037,7 @@ func testPutReplicated(t *testing.T, s store.Store) {
 	if ok, err := s.PutReplicated(ctx, replica(u, v+10, "n2")); err != nil || ok {
 		t.Fatalf("the same version: %v %v", ok, err)
 	}
-	if g, _ := users(s).Get(ctx, u.ID); g.GivenName != "v2" {
+	if g, err := users(s).Get(ctx, u.ID); err != nil || g.GivenName != "v2" {
 		t.Fatalf("an older record replaced a newer one: %q", g.GivenName)
 	}
 	u.GivenName = "v3"

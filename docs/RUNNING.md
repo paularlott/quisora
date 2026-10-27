@@ -233,27 +233,14 @@ a node started with only the old key refuses to start.
   invitation lasts 7 days) and their retries would have ended, so they are worthless even if the key comes back. A
   sweep that removed any is recorded in the audit log (`queue.purge_lost`, with how many and `queued_before`).
 
-## Changing the primary organization
+## The primary organization
 
-The primary organization is the one super admins belong to. To make another organization primary:
+The primary organization is the first one, made by `quisora bootstrap`, and it never changes. Super admins belong to it,
+and the server's emergency sign-out counters are kept on it. When its super admins are all gone, `quisora invite
+--break-glass --super-admin` (above) recovers access.
 
-```bash
-quisora set-primary acme --super-admin alice@acme.example
-```
-
-- `alice@acme.example` (a user of `acme`) becomes its super admin; the previous primary organization's super admins
-  become administrators of that organization. The change is audited in both. The server's emergency sign-out
-  counters move with it.
-- **It can be run again.** The change is four writes (the new primary marked, its super admin promoted, the old super
-  admins demoted, the old primary unmarked) in the global partition and two organizations' partitions, with no
-  transaction over them. If it stops part-way (a node lost, the store refusing a write), the command fails and the state
-  is safe at every step: until the last write both organizations are marked primary, every node chooses the same one
-  and logs an error until it is finished, and running the same command again finishes what is left and audits it. When nothing is left it says the organization is the
-  primary already.
-- On a shared database it works while the servers run; they follow within seconds. On BadgerDB or SQLite stop the
-  server first. In a gossip cluster run it while the nodes run: it asks a running node (`server.public_url`, or
-  `--server`), signing the request with the master key, and the change is committed like any other (a write made to a
-  stopped node's database would reach no other node).
+A store with more than one organization marked primary (left only by an interrupted `quisora set-primary` of an
+earlier build) is refused at start: restore a backup made before it.
 
 ## Storage backends
 
@@ -392,7 +379,7 @@ How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator
   the receiver's clock. ([Clocks](REPLICATION.md#clocks))
 - **Open the gossip port** (`cluster.bind`, TCP and UDP) between the nodes only: the partition protocol's messages (writes, promises,
   catch-up streams) use it, encrypted and authenticated by `cluster.key`.
-- **`quisora invite`, `quisora set-primary` and `quisora sign-out` go through a running node** in a gossip cluster (they sign the
+- **`quisora invite` and `quisora sign-out` go through a running node** in a gossip cluster (they sign the
   request with the master key); `quisora bootstrap --new-cluster` and `quisora restore` are for the first node of a new cluster,
   with an empty database: they alone create a cluster's data set.
 
@@ -499,11 +486,11 @@ Every event has:
   event's number in that start's sequence (1, 2, 3…), so a gap is an event VictoriaLogs does not hold
   ([SOC2.md](SOC2.md#completeness)).
 
-`quisora invite`, `quisora set-primary` and `quisora sign-out` carried out by a running node (a gossip cluster, or a node-local
-store that a server holds) are recorded with the actor `command:invite`, `command:set-primary` or `command:sign-out`, the address the request came from in `ip`, and
+`quisora invite` and `quisora sign-out` carried out by a running node (a gossip cluster, or a node-local
+store that a server holds) are recorded with the actor `command:invite` or `command:sign-out`, the address the request came from in `ip`, and
 `detail.command` and `detail.authenticated` (a request signed with the master key); the forced start `cluster.force_start` is
 `command:force-start`. The system's own work (housekeeping, key rotation) keeps the actor `system`. Commands that run in
-their own process against a store (`bootstrap`, `restore`, and `invite`, `set-primary` or `sign-out` against a shared database or
+their own process against a store (`bootstrap`, `restore`, and `invite` or `sign-out` against a shared database or
 a stopped node that does not replicate) record who ran them: the actor is
 `cli:<os user>@<host>`, with `detail.os_user`, `detail.host`, `detail.pid` and `detail.command`. A restore (offline,
 or `server.restore_from` at start-up) is written to the primary organization's log as `backup.restore` once the

@@ -17,8 +17,8 @@ import (
 // they all change the role through applyRole: the sign-in links nobody chose (made by email address, or of unknown
 // origin) are gone, an audit event says so, and the links the user made themselves stay.
 func TestEveryPromotionDropsEmailLinks(t *testing.T) {
-	// each path makes a user of an organization (the primary one, or a new one set-primary makes primary) with two
-	// links, promotes them and returns them with the role they should have
+	// each path makes a user of the primary organization with two links, promotes them and returns them with the
+	// role they should have
 	paths := []struct {
 		name string
 		run  func(e *env, promote func(u *model.User)) (*model.User, model.Role)
@@ -43,15 +43,6 @@ func TestEveryPromotionDropsEmailLinks(t *testing.T) {
 			u := e.user(e.primary.ID, "viabg", model.RoleUser)
 			promote(u)
 			if _, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID, true); err != nil {
-				e.t.Fatal(err)
-			}
-			return u, model.RoleSuperAdmin
-		}},
-		{"set-primary", func(e *env, promote func(*model.User)) (*model.User, model.Role) {
-			o := e.org("next-primary")
-			u := e.user(o.ID, "viaprimary", model.RoleUser)
-			promote(u)
-			if _, _, err := e.svc.SetPrimaryOrg(e.ctx, o.ID, u.ID); err != nil {
 				e.t.Fatal(err)
 			}
 			return u, model.RoleSuperAdmin

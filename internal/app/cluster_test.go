@@ -155,10 +155,6 @@ func TestGossipCommandsNeedARunningNode(t *testing.T) {
 		!strings.Contains(err.Error(), "running node") {
 		t.Fatalf("invite: %v", err)
 	}
-	if _, _, err := SetPrimaryVia(context.Background(), c, log, "", "", false, "primary", "a@b.test"); err == nil ||
-		!strings.Contains(err.Error(), "running node") {
-		t.Fatalf("set-primary: %v", err)
-	}
 	if _, _, _, err := SignOutVia(context.Background(), c, log, "", "", false, "primary", "why", false); err == nil ||
 		!strings.Contains(err.Error(), "running node") {
 		t.Fatalf("sign-out: %v", err)

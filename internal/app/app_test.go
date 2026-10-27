@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -489,5 +490,30 @@ func TestRotatedClientSecretRefused(t *testing.T) {
 	}
 	if code := token(fresh); code != 200 {
 		t.Fatalf("new secret: %d", code)
+	}
+}
+
+// A store with more than one organization marked primary (left by an interrupted set-primary of an earlier build) is
+// refused at start: the primary organization never changes, and no node chooses between two.
+func TestStartRefusesTwoPrimaryOrganizations(t *testing.T) {
+	a, _, _ := startApp(t, "sqlite")
+	ctx := context.Background()
+	o, err := a.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: ptr("second")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Primary = true
+	if err := a.Svc.Orgs.Update(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	cfg := a.Cfg
+	a.Close()
+	b, err := Start(ctx, cfg, logger.NewNullLogger())
+	if err == nil {
+		b.Close()
+		t.Fatal("a store with two primary organizations started")
+	}
+	if !errors.Is(err, service.ErrTwoPrimaries) {
+		t.Fatalf("start: %v", err)
 	}
 }

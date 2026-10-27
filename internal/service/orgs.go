@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -90,8 +90,7 @@ func orgConflict(err error) error {
 	return mapStore(err)
 }
 
-// primaryOrgs returns every organization marked primary, ordered by id: one, but two while SetPrimaryOrg is between
-// its writes (or was interrupted there).
+// primaryOrgs returns every organization marked primary, ordered by id: one (ErrTwoPrimaries otherwise).
 func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
 	orgs, _, err := s.Orgs.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "primary", Value: true}}})
 	if err != nil {
@@ -101,16 +100,21 @@ func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
 	return orgs, nil
 }
 
-// PrimaryOrg returns the primary organization. Should two be marked primary (a "quisora set-primary" that stopped
-// between its writes: running it again finishes it) every node chooses the same, the one with the lowest id, and logs
-// at error level every time; the choice is not remembered while it is in doubt.
+// ErrTwoPrimaries is the error of PrimaryOrg when more than one organization is marked primary. The primary
+// organization is the first one, made by "quisora bootstrap", and never changes: a second can only have been left by
+// an interrupted "quisora set-primary" of an earlier build, or by damage.
+var ErrTwoPrimaries = errors.New("more than one organization is marked primary (left by an interrupted \"quisora set-primary\" " +
+	"of an earlier build, or by damage): restore a backup made before it")
+
+// PrimaryOrg returns the primary organization: ErrNotFound before "quisora bootstrap" made it (or before a new member
+// of a gossip cluster received it), ErrTwoPrimaries if more than one is marked.
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
-	// The choice is remembered for primaryChoiceTTL at most (finding the primary reads every organization): servers
-	// that remembered different primaries of two agree again within it. The organization itself is read every time.
+	// It never changes, so finding it (which lists the organizations) is done once; the organization itself is read
+	// every time.
 	s.primary.mu.Lock()
-	id, at := s.primary.id, s.primary.at
+	id := s.primary.id
 	s.primary.mu.Unlock()
-	if id != "" && time.Since(at) < primaryChoiceTTL {
+	if id != "" {
 		if o, err := s.Orgs.Get(ctx, id); err == nil && o.Primary {
 			return o, nil
 		}
@@ -119,261 +123,26 @@ func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(orgs) == 0 {
+	switch {
+	case len(orgs) == 0:
 		return nil, ErrNotFound
-	}
-	if len(orgs) > 1 {
+	case len(orgs) > 1:
 		names := make([]string, len(orgs))
 		for i, o := range orgs {
 			names[i] = o.Name
 		}
-		s.Log.Error("more than one organization is marked primary (an interrupted set-primary): using "+orgs[0].Name+
-			"; run quisora set-primary again for the organization that should be primary to finish it",
-			"organizations", strings.Join(names, " "))
+		return nil, fmt.Errorf("%w: %s", ErrTwoPrimaries, strings.Join(names, ", "))
 	}
 	s.primary.mu.Lock()
-	s.primary.id, s.primary.at = orgs[0].ID, time.Now()
+	s.primary.id = orgs[0].ID
 	s.primary.mu.Unlock()
 	return orgs[0], nil
 }
 
-// primaryChoiceTTL bounds how long PrimaryOrg remembers which organization is primary. A variable for tests.
-var primaryChoiceTTL = time.Second
-
-// primaryChoice is PrimaryOrg's remembered choice (an id and when it was made).
+// primaryChoice is PrimaryOrg's remembered organization id.
 type primaryChoice struct {
 	mu sync.Mutex
 	id string
-	at time.Time
-}
-
-// updateFresh changes entity e of table t and writes it with a compare-and-swap. A write refused as stale (another
-// change of the record landed first, on any node) is made again on the record as its owner has it now (freshMany),
-// up to 8 times. change edits the copy and reports whether it needs writing at all (false: it is as wanted
-// already); an error from it ends the attempt. part is the record's partition key ("" for global data). It returns the
-// copy it left, written or not.
-func updateFresh[T any, PT interface {
-	*T
-	model.Entity
-}](ctx context.Context, s *Service, t *store.Table[T, PT], part string, e PT, change func(PT) (bool, error)) (PT, error) {
-	for attempt := 0; ; attempt++ {
-		if write, err := change(e); err != nil || !write {
-			return e, err
-		}
-		err := t.Update(ctx, e)
-		if err == nil {
-			return e, nil
-		}
-		if !errors.Is(err, store.ErrStale) || attempt >= 7 {
-			return e, mapStore(err)
-		}
-		id := e.GetMeta().ID
-		recs, err := s.freshMany(ctx, t.Kind, part, []string{id})
-		if err != nil {
-			return e, err
-		}
-		r, ok := recs[id]
-		if !ok {
-			return e, ErrNotFound
-		}
-		fresh := PT(new(T))
-		if err := store.Decode(r, fresh); err != nil {
-			return e, err
-		}
-		e = fresh
-	}
-}
-
-// SetPrimaryOrg makes orgID the primary organization ("quisora set-primary"; the system acts). Super admins belong to
-// the primary organization only, so superAdminID — a user of orgID — becomes its super admin, and every other super
-// admin (the old primary's) becomes an administrator of their organization. Returns the old primary (nil when
-// nothing says which it was: an interrupted change finished by a rerun) and the users demoted by this call.
-//
-// The change is four kinds of writes across the global partition and two organizations' partitions, and no
-// transaction covers them, so it is written to be run again: it reads what is done (the organizations marked
-// primary, the super admins outside orgID) and finishes the rest, in an order whose every prefix is safe: the new
-// primary is marked first (there is never a moment without one; two for a moment is harmless, PrimaryOrg chooses one
-// the same way everywhere), then its super admin, then the old primary's super admins are demoted, and the old primary
-// is unmarked last: a change that stopped part-way leaves two organizations marked primary, which every node logs at
-// error level until it is run again. A change that stopped after some of its writes took effect is audited as
-// incomplete (auditPartial). The server's sign-out counters are the highest of the organizations marked primary
-// (serverSignOut), and are copied to the new primary in the compare-and-swap loop that unmarks the old one, so a
-// server-wide sign-out counted on the old one meanwhile is never lost.
-// Each write that is refused as stale is made again on a fresh copy. When nothing is left to do it refuses: the
-// organization is the primary already.
-func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string) (old *model.Org, demoted []*model.User, err error) {
-	target, err := s.Orgs.Get(ctx, orgID)
-	if err != nil {
-		return nil, nil, mapStore(err)
-	}
-	admin, err := s.Users.Get(ctx, superAdminID)
-	if err != nil || admin.OrgID != target.ID {
-		return nil, nil, Invalid("super_admin", "must be a user of "+target.Name)
-	}
-	if !admin.Enabled(time.Now()) {
-		return nil, nil, Invalid("super_admin", "the account is disabled")
-	}
-	marked, err := s.primaryOrgs(ctx)
-	if err != nil {
-		return nil, nil, mapStore(err)
-	}
-	var others []*model.Org
-	for _, o := range marked {
-		if o.ID != target.ID {
-			others = append(others, o)
-		}
-	}
-	// Super admins outside the new primary: the old primary's, whether or not it is still marked.
-	supers, _, err := s.Users.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "super_admin", Value: true}}})
-	if err != nil {
-		return nil, nil, mapStore(err)
-	}
-	// The listing above is of every organization, which the staleness gate cannot vouch for; the marked old primaries'
-	// own are listed by organization, through it, so a node trailing one of them refuses instead of missing a super admin.
-	for _, o := range others {
-		own, _, err := s.Users.List(ctx, store.ListQuery{Scope: o.ID, Filters: []store.Filter{{Field: "super_admin", Value: true}}})
-		if err != nil {
-			return nil, nil, mapStore(err)
-		}
-		for _, u := range own {
-			if !slices.ContainsFunc(supers, func(x *model.User) bool { return x.ID == u.ID }) {
-				supers = append(supers, u)
-			}
-		}
-	}
-	supers = slices.DeleteFunc(supers, func(u *model.User) bool { return u.OrgID == target.ID })
-	switch {
-	case len(others) > 0:
-		old = others[0]
-	case len(supers) > 0: // the old primary is no longer marked: its super admins say which it was
-		old, _ = s.Orgs.Get(ctx, supers[0].OrgID)
-	}
-	if target.Primary && len(others) == 0 && len(supers) == 0 {
-		return nil, nil, Invalid("org", "it is the primary organization already")
-	}
-	if !target.Primary && len(others) == 0 {
-		return nil, nil, ErrNotFound // there is no primary to replace
-	}
-
-	// The audit event of the change: what it did when it ended, or its outcome unknown, so far as it got.
-	detail := map[string]string{"super_admin": admin.Username}
-	if old != nil {
-		detail["previous"] = old.Name
-	}
-	progressed, err := s.setPrimary(ctx, target, admin, others, supers, &demoted)
-	s.primary.mu.Lock()
-	s.primary.id = "" // chosen afresh at the next read
-	s.primary.mu.Unlock()
-	s.InvalidateSignOut()
-	names := make([]string, len(demoted))
-	for i, u := range demoted {
-		names[i] = u.Username
-	}
-	detail["demoted"] = strings.Join(names, " ")
-	events := []change{{target.ID, "org.primary", target.Name, detail}}
-	if old != nil && old.ID != target.ID {
-		events = append(events, change{old.ID, "org.primary", target.Name, detail})
-	}
-	s.auditPartial(ctx, System, err, progressed, events...)
-	if err != nil {
-		return nil, nil, err
-	}
-	return old, demoted, nil
-}
-
-// setPrimary writes the changes of SetPrimaryOrg (see there for their order), each made again on a fresh copy when it
-// is refused as stale; demoted collects the super admins that became administrators, and progressed says whether any
-// write may have taken effect. The promotion and the demotions are changes of a user's role: they go through
-// applyRole, as every other.
-func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *model.User, others []*model.Org, supers []*model.User,
-	demoted *[]*model.User) (progressed bool, err error) {
-	step := func(err error) error {
-		progressed = progressed || landed(err)
-		return err
-	}
-	// The new primary first. The server's emergency sign-out counters move with the role: starting again from the
-	// new primary's would bring back everything a server-wide sign-out ended.
-	target, err = updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
-		write := !t.Primary
-		t.Primary = true
-		for _, o := range others {
-			write = raiseServerSignOut(t, o) || write
-		}
-		return write, nil
-	})
-	if err = step(err); err != nil {
-		return progressed, err
-	}
-	promoted := func(context.Context, *Actor, error) {}
-	_, err = updateFresh(ctx, s, s.Users, target.ID, admin, func(u *model.User) (bool, error) {
-		if !u.Enabled(time.Now()) {
-			return false, Invalid("super_admin", "the account is disabled")
-		}
-		write := u.Role != model.RoleSuperAdmin
-		promoted = s.applyRole(u, model.RoleSuperAdmin)
-		return write, nil
-	})
-	promoted(ctx, System, err) // a promotion is finished as any other (links made by email address go)
-	if err = step(err); err != nil {
-		return progressed, err
-	}
-	for _, u := range supers {
-		changed := false
-		demotion := func(context.Context, *Actor, error) {}
-		got, err := updateFresh(ctx, s, s.Users, u.OrgID, u, func(u *model.User) (bool, error) {
-			changed = u.Role == model.RoleSuperAdmin
-			if changed {
-				demotion = s.applyRole(u, model.RoleAdmin)
-			}
-			return changed, nil
-		})
-		demotion(ctx, System, err)
-		if err = step(err); err != nil {
-			return progressed, err
-		}
-		if changed {
-			*demoted = append(*demoted, got)
-		}
-	}
-	// The old primary stops counting only once the new one holds its sign-out counters as they are at the unmark: a
-	// server-wide sign-out counted on it after they were copied changes its version, so the unmark is refused as stale
-	// and made again on the newer copy, copying again first.
-	for _, o := range others {
-		_, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
-			if !o.Primary {
-				return false, nil
-			}
-			t, err := updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
-				return raiseServerSignOut(t, o), nil
-			})
-			if step(err) != nil {
-				return false, err
-			}
-			target = t
-			o.Primary = false
-			return true, nil
-		})
-		if err = step(err); err != nil {
-			return progressed, err
-		}
-	}
-	return progressed, nil
-}
-
-// raiseServerSignOut raises t's server sign-out counters (and last event) to o's where o's are higher, and reports
-// whether it changed t.
-func raiseServerSignOut(t, o *model.Org) bool {
-	changed := false
-	if t.ServerSignOut.Sessions < o.ServerSignOut.Sessions {
-		t.ServerSignOut.Sessions, changed = o.ServerSignOut.Sessions, true
-	}
-	if t.ServerSignOut.APITokens < o.ServerSignOut.APITokens {
-		t.ServerSignOut.APITokens, changed = o.ServerSignOut.APITokens, true
-	}
-	if o.LastServerSignOut != nil && (t.LastServerSignOut == nil || t.LastServerSignOut.At.Before(o.LastServerSignOut.At)) {
-		t.LastServerSignOut, changed = o.LastServerSignOut, true
-	}
-	return changed
 }
 
 // GetOrg returns an org the actor may see (its own, or any for super admins). a == nil skips the check (internal).

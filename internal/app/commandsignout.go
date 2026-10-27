@@ -16,7 +16,7 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// "quisora sign-out" against a running server, as "quisora invite" and "quisora set-primary" do (command.go): a gossip
+// "quisora sign-out" against a running server, as "quisora invite" does (command.go): a gossip
 // cluster's data is changed through its nodes (a write made to a stopped node's database belongs to no partition write
 // and never reaches another node), and a node-local store belongs to the server that runs on it.
 const commandSignOutPath = "/api-internal/command/sign-out"
