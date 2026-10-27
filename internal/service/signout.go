@@ -19,8 +19,8 @@ import (
 // (SignOutCurrent). A sweep then deletes what was ended and tells applications (back-channel logout); it is only
 // cleanup, so it runs in the background.
 
-// signOutCacheTTL bounds how long a node trusts the counters it read. Org changes evict them at once on this node and,
-// through the cluster's change notices, on the others; the bound covers nodes that share a database without gossip.
+// signOutCacheTTL bounds how long a node trusts the counters it read: a change made elsewhere counts here within it,
+// whatever the store; an organization change this node hears of evicts them at once (InvalidateSignOut).
 const signOutCacheTTL = 5 * time.Second
 
 // signOutCache holds the counters last read. Organizations are kept in two generations: orgs, and prev, the orgs of
@@ -321,13 +321,15 @@ func (s *Service) SweepSignOut(ctx context.Context, a *Actor, orgID string, apiT
 	return total, err
 }
 
-// signOutSweepGap is the pause after each tombstone a sign-out sweep writes: at most 500 a second, one at a time,
-// across every organization. The sweep is cleanup (everything it ends stopped working when the lever was pulled), and
-// a partition's owner commits one write at a time, so a sweep that wrote as fast as the store answers would keep the
-// partitions of the organizations it walks busy for its whole run and queue every sign-in behind it. A partition write
-// carries one record today, so the sweep cannot write a partition's tombstones in one change (batching needs the
-// cluster layer to carry several records in a change); it is paced instead. A variable for tests.
-var signOutSweepGap = 2 * time.Millisecond
+// A sign-out sweep writes its removals in transactions of up to signOutSweepBatch (everything it removes in one
+// organization is that organization's, so one transaction holds any of them), one at a time across every organization,
+// with a pause of signOutSweepGap after each: at most 10,000 removals a second. The sweep is cleanup (everything it
+// ends stopped working when the lever was pulled), so it is paced: a sweep that wrote as fast as the store answers
+// would keep the store busy for its whole run and queue every sign-in behind it. Variables for tests.
+var (
+	signOutSweepBatch = 100
+	signOutSweepGap   = 10 * time.Millisecond
+)
 
 func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (SignOutSweep, error) {
 	var n SignOutSweep
@@ -340,23 +342,36 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 		return n, err
 	}
 	var errs sweepErrs
-	tomb := func(k model.Kind, id string) bool {
+	var batch []store.Op
+	var pending SignOutSweep // what batch removes
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
 		if err := ctx.Err(); err != nil { // cancelled: what is left is found by the next sweep
 			errs.add(err)
-			return false
-		}
-		if err := s.Store.Put(ctx, store.Tombstone(k, id)); err != nil && !errors.Is(err, store.ErrStale) {
+		} else if err := s.Store.Tx(ctx, batch); err != nil {
 			errs.add(err)
-			pause(ctx, signOutSweepGap)
-			return false
+		} else {
+			n.Sessions += pending.Sessions
+			n.Grants += pending.Grants
+			n.APITokens += pending.APITokens
 		}
+		batch, pending = nil, SignOutSweep{}
 		pause(ctx, signOutSweepGap)
-		return true
+	}
+	tomb := func(k model.Kind, id string, count *int) {
+		batch = append(batch, store.Op{Rec: store.Tombstone(k, id)})
+		*count++
+		if len(batch) >= signOutSweepBatch {
+			flush()
+		}
 	}
 	for after := ""; ; {
 		users, _, err := s.Users.List(ctx, store.ListQuery{Scope: orgID, After: after, Limit: 500})
 		if err != nil {
 			errs.add(err)
+			flush()
 			return n, errs.err()
 		}
 		for _, u := range users {
@@ -378,9 +393,7 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 			if len(ended) > 0 {
 				s.sessionsEnding(ctx, u.ID, ended) // back-channel logout, before the records go
 				for _, id := range ended {
-					if tomb(model.KindSession, id) {
-						n.Sessions++
-					}
+					tomb(model.KindSession, id, &pending.Sessions)
 				}
 			}
 			grants, err := s.Grants.All(ctx, u.ID)
@@ -388,8 +401,8 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 				errs.add(err)
 			}
 			for _, g := range grants {
-				if !g.Stamp.Current(sess) && tomb(model.KindGrant, g.ID) {
-					n.Grants++
+				if !g.Stamp.Current(sess) {
+					tomb(model.KindGrant, g.ID, &pending.Grants)
 				}
 			}
 			if apiTokens {
@@ -398,8 +411,8 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 					errs.add(err)
 				}
 				for _, t := range tokens {
-					if !t.Stamp.Current(tok) && tomb(model.KindAPIToken, t.ID) {
-						n.APITokens++
+					if !t.Stamp.Current(tok) {
+						tomb(model.KindAPIToken, t.ID, &pending.APITokens)
 					}
 				}
 			}
@@ -409,6 +422,7 @@ func (s *Service) sweepOrg(ctx context.Context, orgID string, apiTokens bool) (S
 		}
 		after = users[len(users)-1].ID
 	}
+	flush()
 	return n, errs.err()
 }
 

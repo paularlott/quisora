@@ -111,7 +111,6 @@ func oidcSites(t *testing.T, c *tcluster) []*oidcSite {
 			t.Fatal(err)
 		}
 		svc := service.New(cfg, tn.st(), sealer)
-		svc.Writable = tn.n.Writable
 		srv, err := web.New(cfg, svc, tn.n.EphemeralStore(), logger.NewNullLogger())
 		if err != nil {
 			t.Fatal(err)

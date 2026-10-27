@@ -12,9 +12,9 @@ import (
 )
 
 // UseOnce records that the single-use value key (the caller namespaces it) was used, until expires, and reports
-// false when it was used already. The record is a model.Replay, which a cluster confirms by a majority before it
-// counts: unlike state kept in one node's memory, it survives that node stopping, restarting or no longer owning the
-// key.
+// false when it was used already. The record is a model.Replay, created only where none exists (the store lets one
+// creation win): unlike state kept in one node's memory, it holds for every node and survives a node stopping or
+// restarting.
 func (s *Service) UseOnce(ctx context.Context, key string, expires time.Time) (bool, error) {
 	sum := sha256.Sum256([]byte(key))
 	err := s.Replays.Create(ctx, &model.Replay{Meta: model.Meta{ID: base64.RawURLEncoding.EncodeToString(sum[:])}, Expires: expires})

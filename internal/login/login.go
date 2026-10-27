@@ -461,7 +461,6 @@ func auditLogin(login string) string {
 type ticket struct {
 	Step    string   `json:"s"` // totp, passkey, email_code, enrol
 	UserID  string   `json:"u"`
-	OrgID   string   `json:"o,omitempty"` // the user's organization: the account is read from its partition's owner
 	Next    string   `json:"n,omitempty"`
 	AMR     []string `json:"a"`
 	Pending string   `json:"p,omitempty"` // sealed TOTP secret being enrolled
@@ -483,7 +482,7 @@ func (m *Module) bind(ctx context.Context, t *ticket, u *model.User) error {
 	if err != nil {
 		return err
 	}
-	t.UserID, t.OrgID, t.Gen, t.Stamp = u.ID, u.OrgID, u.SecurityGen, st
+	t.UserID, t.Gen, t.Stamp = u.ID, u.SecurityGen, st
 	return nil
 }
 
@@ -613,7 +612,7 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 		noteSession(ctx, sess)
 	}
 	// The last sign-in time is best effort and nothing below needs it: it is recorded in the background, so the sign-in
-	// does not wait for one more write (in a gossip cluster, a round trip to the partition's owner and a majority).
+	// does not wait for one more write.
 	touched := *u
 	m.s.Svc.Background(ctx, func(ctx context.Context) { m.s.Svc.TouchLogin(ctx, &touched) })
 	// Only the counter this browser charges (lockKeyFor): the owner signing in from a known browser must not reset
@@ -634,7 +633,7 @@ func noteSession(ctx context.Context, sess *model.Session) {
 }
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
-	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrNotWritable) ||
+	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrUnavailable) ||
 		errors.Is(err, service.ErrOutcomeUnknown) || errors.Is(err, service.ErrUnavailable) {
 		// the cluster could not confirm the change in time: trying again is safe, and the answer says so
 		m.s.Log.Warn(what, "error", err, "path", r.URL.Path)

@@ -200,7 +200,7 @@ func TestCodeExchangeFailsClosedOnStoreFailures(t *testing.T) {
 			h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
 		},
 		"grant not writable": func(h *harness) {
-			h.env.Svc.Grants.S = failCAS(h.env.Svc.Grants.S, model.KindGrant, func() error { return store.ErrNotWritable })
+			h.env.Svc.Grants.S = failCAS(h.env.Svc.Grants.S, model.KindGrant, func() error { return store.ErrUnavailable })
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

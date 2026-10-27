@@ -203,8 +203,9 @@ and only then made active. Do each step on every node, one node at a time, befor
 3. Every node: `master_key = "<new>"`, `previous_master_keys = ["<old>"]`; reload or restart. New secrets are sealed
    with the new key. While some nodes still seal with the old one, the status says `waiting_for_nodes` and names
    them, and nothing is re-sealed. Once all do, the housekeeping leader re-seals every stored secret, and the status
-   says `complete`. A live node that has no current report of its keys (it has not reported yet, or its report lapsed)
-   counts as not agreeing: the leader logs it as "no current report" and waits.
+   says `complete`. A node reports its keys when it starts, before it serves, and serves only while its report counts
+   (renewed every 5 minutes, good for 15): one whose report lapsed (its store refused the renewals) is not ready until
+   it reports again, so every node that may seal anything is in the status.
 4. Every node: remove `previous_master_keys`; reload or restart.
 
 On a shared database the first node with the new key active also moves the database's key check to it: from then on

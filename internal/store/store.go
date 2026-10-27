@@ -32,8 +32,6 @@ var (
 	// vouch for its copy, or a write whose outcome could not be settled within its deadline). A write may have been
 	// applied by an earlier attempt; retrying it is safe (Record.Req).
 	ErrUnavailable = errors.New("store: unavailable now, try again shortly")
-	// ErrNotWritable is ErrUnavailable, by its earlier name.
-	ErrNotWritable = ErrUnavailable
 	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, or (in a
 	// gossip cluster) writes in more than one partition or of node-local kinds. Nothing was written.
 	ErrBadTx = errors.New("store: invalid transaction")

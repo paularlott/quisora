@@ -53,6 +53,9 @@ type App struct {
 
 	// passes counts the housekeeping passes this node has run as the leader (tests wait for them).
 	passes atomic.Int64
+	// keyReported is when this node's master key report was last stored (unix nanos; 0: never): the node serves only
+	// while it counts (keyReportCurrent).
+	keyReported atomic.Int64
 
 	// bg tracks the node's background loops (purging, the start-up audit records, indexing older audit events): Close
 	// cancels their context and waits for them before it closes anything they use.
@@ -136,9 +139,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 
 	a.Svc = service.New(c, a.Store, sealer)
 	a.Svc.Log = log
-	a.Svc.Writable = node.Writable
-	a.Svc.GlobalReadable = node.VouchesForGlobal
-	a.Svc.Readable = node.VouchesFor
 	a.closers = append(a.closers, a.Svc.WaitBackground) // closed before the store (closers run in reverse)
 	if err := a.setupAudit(c, node, log); err != nil {
 		a.Close()
@@ -161,14 +161,18 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	}
 	a.Server = srv
 	srv.Bearer = bearer(a.Svc)
-	srv.Health = &health{node: node, svc: a.Svc}
+	srv.Health = &health{node: node, svc: a.Svc, keyReported: a.keyReportCurrent}
+	// The master key this node seals with is reported before anything it seals can be stored (the signing keys made at
+	// start-up, below): a rotation's re-sealing waits for every node whose report counts (service.MasterKeyAgreed). A
+	// store that refuses now leaves it to the reporting loop, and the node unready until then.
+	rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := a.reportKey(rctx); err != nil {
+		log.Warn("master key: this node's key is not reported yet (retried; the node serves once it is)", "error", err)
+	}
+	rcancel()
 	srv.Status = func() any { return readyzStatus(node.Status()) }
 	srv.Site.Clustered = !node.Status().Standalone
 	a.registerMetrics()
-	if node.SharedDatabase() {
-		// No gossip, so no eviction messages from the other nodes: cached sessions are trusted for 5 seconds.
-		srv.Sessions.CacheTTL = 5 * time.Second
-	}
 	if c.Mail.Enabled() { // its queue is on disk: messages left by the last run go out now
 		if a.mailer, err = mail.New(c, log, sealer, &mail.SMTP{Cfg: c.Mail}); err != nil {
 			a.Close()
@@ -182,7 +186,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.closers = append(a.closers, func() { stop(); a.bg.Wait() })
 	// Every master key report says how many queued items still need a previous key (re-sealing them first).
 	a.Svc.QueuesStale = a.resealQueues
-	a.Svc.LiveNodes = node.LiveNodes
 	srv.Use(modules(bg, a)...)
 	// Replication is already applying records (node.Start): the hook goes in once what it calls (the modules'
 	// caches and their onChange hooks) is built. Until the server starts nothing is cached, so nothing is missed.
@@ -360,14 +363,18 @@ func readyzStatus(st cluster.Status) readyzCluster {
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the
 // primary organization exists, made by "quisora bootstrap" or received from the cluster).
 type health struct {
-	node  *cluster.Node
-	svc   *service.Service
-	setUp atomic.Bool // a primary organization was found: once set up, always (readiness checks it on every request)
+	node        *cluster.Node
+	svc         *service.Service
+	keyReported func() bool // this node's master key report counts (App.keyReportCurrent)
+	setUp       atomic.Bool // a primary organization was found: once set up, always (readiness checks it on every request)
 }
 
 func (h *health) Ready() (bool, string) {
 	if ok, why := h.node.Ready(); !ok {
 		return ok, why
+	}
+	if !h.keyReported() {
+		return false, "this node's master key report is not stored (it is retried)"
 	}
 	if h.setUp.Load() {
 		return true, ""

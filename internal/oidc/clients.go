@@ -65,13 +65,6 @@ func (p *Provider) client(ctx context.Context, id string) (*clientEntry, error) 
 		return nil, store.ErrNotFound
 	}
 	e, ok := p.clients.get(id)
-	if ok {
-		// Not served from the cache while this node cannot vouch for the partition the client lives in (it trails its
-		// owner: a disabled client or a rotated secret may not have reached it): the store is asked, and refuses.
-		if f := p.svc.Readable; f != nil && !f(e.c.OrgID) {
-			ok = false
-		}
-	}
 	if !ok {
 		tok := p.clients.token(id)
 		c, err := p.svc.Clients.Get(ctx, id)
@@ -300,7 +293,7 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		return p.authAssertion(ctx, form.Get("client_id"), assertion, p.issuer+r.URL.Path)
 	}
 	e, err := p.client(ctx, id)
-	if err != nil && !gone(err) { // the client could not be read (this node cannot vouch for it, the store failed): not "invalid"
+	if err != nil && !gone(err) { // the client could not be read (the store refused or failed): not "invalid"
 		return nil, serverError(unavailable(err))
 	}
 	if err != nil || !e.c.Enabled {

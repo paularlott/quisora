@@ -230,7 +230,7 @@ func TestOutcomeUnknownChangesAreAudited(t *testing.T) {
 			GrantTypes: &[]string{"authorization_code"}, Scopes: &[]string{"openid"}}
 	}
 
-	fail = store.ErrNotWritable
+	fail = store.ErrUnavailable
 	if _, _, err := e.svc.CreateClient(e.ctx, service.System, org.ID, in("refused")); !errors.Is(err, service.ErrUnavailable) || errors.Is(err, service.ErrOutcomeUnknown) {
 		t.Fatalf("a refused write: %v", err)
 	}

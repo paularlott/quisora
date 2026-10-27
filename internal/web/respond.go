@@ -53,7 +53,7 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server lost contact with the part of the cluster that decides this change before it answered, so the change may or may not have been made. Check, then try again."})
-	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrNotWritable):
+	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot make changes right now (it cannot reach enough of its cluster). Nothing was changed; please try again shortly."})
 	case errors.Is(err, service.ErrInvalid):

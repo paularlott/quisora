@@ -123,7 +123,7 @@ func TestClassifyTransientErrors(t *testing.T) {
 	for _, m := range []map[string]error{lost, retry} {
 		for n, err := range m {
 			got := unavailable(err)
-			if !errors.Is(got, store.ErrUnavailable) || !errors.Is(got, store.ErrNotWritable) {
+			if !errors.Is(got, store.ErrUnavailable) || !errors.Is(got, store.ErrUnavailable) {
 				t.Errorf("%s: %v is not ErrUnavailable", n, got)
 			}
 			if !errors.Is(got, err) && n != "pg wrapped" { // the cause stays in the chain

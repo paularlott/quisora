@@ -582,7 +582,7 @@ func waitFor(t testing.TB, d time.Duration, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// asked runs op, again while the node refuses it for not being able to vouch for its copy now (store.ErrNotWritable),
+// asked runs op, again while the node refuses it for not being able to vouch for its copy now (store.ErrUnavailable),
 // as a client told to retry (503) would: a node starved of CPU (a loaded test run) can go longer than the test timings'
 // StaleAfter (300 ms) without hearing a partition's owner, and refuses until it does. Any other answer, or the refusal
 // after 10 s, is op's.
@@ -590,7 +590,7 @@ func asked(op func() error) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		err := op()
-		if !errors.Is(err, store.ErrNotWritable) || time.Now().After(deadline) {
+		if !errors.Is(err, store.ErrUnavailable) || time.Now().After(deadline) {
 			return err
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -823,7 +823,7 @@ func writeN(t testing.TB, tn *tnode, org string, n int) []string {
 }
 
 // putRetrying writes rec through tn and returns its id, trying again for as long as the node refuses it with nothing
-// written (store.ErrNotWritable: a partition that has no owner yet, a node still catching up, a takeover under way) or
+// written (store.ErrUnavailable: a partition that has no owner yet, a node still catching up, a takeover under way) or
 // the outcome is not known (store.ErrUnconfirmed: settled once or never, and written whole again), up to a generous
 // deadline.
 func putRetrying(t testing.TB, tn *tnode, rec *store.Record) string {
@@ -834,7 +834,7 @@ func putRetrying(t testing.TB, tn *tnode, rec *store.Record) string {
 		if err == nil {
 			return rec.ID
 		}
-		if !errors.Is(err, store.ErrNotWritable) && !errors.Is(err, store.ErrUnconfirmed) || time.Now().After(deadline) {
+		if !errors.Is(err, store.ErrUnavailable) && !errors.Is(err, store.ErrUnconfirmed) || time.Now().After(deadline) {
 			t.Fatalf("put on node %d: %v", tn.idx, err)
 		}
 		time.Sleep(100 * time.Millisecond)

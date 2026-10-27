@@ -157,7 +157,7 @@ func TestWritesOnOneCluster(t *testing.T) {
 
 // A write made from a copy that has fallen behind is refused by the owner, which compares against its committed data:
 // an administrator's change is never erased by an update made from an older copy. A node that cannot catch up with the
-// owner's refusal within the staleness bound fails closed (store.ErrNotWritable, retry) instead of answering stale.
+// owner's refusal within the staleness bound fails closed (store.ErrUnavailable, retry) instead of answering stale.
 func testStaleCopyUpdateIsRefused(t *testing.T, c *tcluster) {
 	org, _ := c.orgNotOwnedBy(1)
 	u := newUser(org, "alice")
@@ -178,8 +178,8 @@ func testStaleCopyUpdateIsRefused(t *testing.T, c *tcluster) {
 	}
 	stale.GivenName = "signed in"
 	begin := time.Now()
-	if err := users(c.nodes[1]).Update(bg, stale); !errors.Is(err, store.ErrNotWritable) {
-		t.Fatalf("a write from an outdated copy on a node that cannot catch up: %v, want store.ErrNotWritable", err)
+	if err := users(c.nodes[1]).Update(bg, stale); !errors.Is(err, store.ErrUnavailable) {
+		t.Fatalf("a write from an outdated copy on a node that cannot catch up: %v, want store.ErrUnavailable", err)
 	}
 	if d := time.Since(begin); d < 250*time.Millisecond {
 		t.Fatalf("the node did not wait to catch up with the refusal: %s", d)
@@ -329,7 +329,7 @@ func testReplayRefusedWhicheverNodeStopsServing(t *testing.T, c *tcluster) {
 		why := "test: not serving"
 		c.nodes[stopped].n.mixed.Store(&why)
 		c.nodes[stopped].n.rebuild()
-		if err := use(stopped); !errors.Is(err, store.ErrNotWritable) || !strings.Contains(err.Error(), why) {
+		if err := use(stopped); !errors.Is(err, store.ErrUnavailable) || !strings.Contains(err.Error(), why) {
 			t.Fatalf("a write on node %d, which does not serve: %v", stopped, err)
 		}
 		for i := range c.nodes {
@@ -345,15 +345,15 @@ func testReplayRefusedWhicheverNodeStopsServing(t *testing.T, c *tcluster) {
 	}
 }
 
-// A write or a fresh read on a node that does not serve is refused with store.ErrNotWritable. A gossip node takes no
+// A write or a fresh read on a node that does not serve is refused with store.ErrUnavailable. A gossip node takes no
 // record from outside its partitions (PutReplicated): what it holds arrives through partition writes alone.
 func TestWriteFromANodeThatIsNotReady(t *testing.T) {
 	n, _ := gnode(t) // built, not started: not ready
 	err := n.Store().Put(bg, newRec(newID(), ""))
-	if !errors.Is(err, store.ErrNotWritable) {
+	if !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("%v", err)
 	}
-	if _, err := n.Store().Fresh(bg, dataKind, []string{"x"}); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := n.Store().Fresh(bg, dataKind, []string{"x"}); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a fresh read on a node that is not ready: %v", err)
 	}
 	rec := newRec(newID(), "")

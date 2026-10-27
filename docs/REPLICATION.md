@@ -128,7 +128,7 @@ owner timeout (three heartbeats: 1.5 s), and a node that thinks it should own a 
 first: so two nodes that can each reach a majority but not each other do not take a partition back and forth. A
 partition whose owner is lost is taken over after the owner timeout, the rank delay (1 s per rank) and the backoff (up
 to 1.5 s) plus one promise round: **about 3.5 seconds** after an owner crashes (3.75 s measured at full scale), during
-which writes to it fail with `store.ErrNotWritable` or wait for it, up to the 5 s write timeout. An owner that is
+which writes to it fail with `store.ErrUnavailable` or wait for it, up to the 5 s write timeout. An owner that is
 stopped (`SIGTERM`) hands its partitions back at once, and a partition handed back to a node that returns is taken
 over at once (the claim's fast path), not after the timeouts. Views can disagree about who should own a partition;
 that costs refused or delayed writes on the partitions involved, never a lost or
@@ -162,7 +162,7 @@ record's partition (`partition.Manager.Write`) and return when it has committed:
    a record gone), its refusal carries the owner's committed position; the landing node waits (bounded by the
    partition's staleness bound, `StaleAfter`, 1.5 s) until it has applied that position before it returns `store.ErrStale`
    (or the other refusal), so the caller's re-read sees what made the change stale instead of the same old copy. A node
-   that cannot catch up in that time fails closed: it returns `store.ErrNotWritable` (503, retry), never a refusal the
+   that cannot catch up in that time fails closed: it returns `store.ErrUnavailable` (503, retry), never a refusal the
    caller would judge by a copy it cannot trust. A refresh token presented again after its rotation, on a node
    whose copy of the grant is a message behind, is therefore detected as reuse (the grant ends and it is audited), while
    a client retrying, within the grace, the token whose answer it lost is given the token it missed.
@@ -211,27 +211,25 @@ partitions.
 
 - **Most reads are local**, on whichever node took the request, and see only committed data: listings, loading a client,
   checking a session or an API token. They lag the owner by a message after a write, a heartbeat at the worst.
-- **Fresh reads** (`store.QuorumReader`, `cluster.Store.Fresh`: the last-administrator check, the users a guard counts,
-  `service.FreshUser`) go through the owners (`partition.Manager.Read`): the owner confirms with a majority that it still
-  owns the partition and answers from its committed data, so the read returns every write committed before it was
-  called, on any node, and never a state from before a write that had returned. The ids are grouped by partition from
-  this node's copy of each record (a record's partition never changes); an id this node does not hold is asked of every
-  partition's owner (kinds whose partition follows from the id are asked of one), unless the caller knows the
-  organization, which names the partition: `cluster.Store.FreshIn` (`store.PartitionReader`) asks that one owner, and the
-  service passes the organization wherever it has it (passkey and link sign-in, the orphan sweep, the guards that count
-  an organization's users). Tombstones are returned too. A reply
-  that would not fit one message is refused and the read asked again in halves.
+- **Caches above the store** (sessions, clients, users, organizations, signing keys, sign-out counters) hold an entry
+  at most 5 s, whatever the store: a change made elsewhere counts on every node within that, and sooner on a node that
+  hears of it (`Node.OnChange` evicts the entry). So what a node serves is current within `StaleAfter` (the gate below)
+  plus those 5 s, as with a database replica behind a cache.
+- **Fresh reads are the cluster store's own.** When a write's outcome is unknown, the store reads the record on its
+  partition's owner (`cluster.Store.FreshIn`, `partition.Manager.Read`: the owner confirms with a majority that it still
+  owns the partition and answers from its committed data) to settle the write. The application never asks for one: a
+  decision that must be exact is a compare-and-swap, which the owner decides.
 - **The staleness gate.** A node serves a record from its own copy only while it can vouch for its copy of the record's
   partition (`partition.Manager.CanRead`): it has heard the partition's owner within the protocol's `StaleAfter` (or,
   owning it, a majority), it has not trailed what the owner reported committed for that long (a follower whose catch-up
   keeps failing), the partition has not diverged here, and the node is not copying its data (resync). Otherwise the
-  single-record reads of the cluster store (`Get`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrNotWritable`
+  single-record reads of the cluster store (`Get`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrUnavailable`
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
-  the cluster, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
+  the cluster for longer than that bound and a cache's 5 s, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
   not in a partition and are exempt; a reservation follows the partition of its own id. Listings and counts are not
   gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
   the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
-  revoked key). Its JWKS then answers 503 rather than the keys it last loaded. A follower keeps serving a partition while its owner hands it over
+  revoked key). Its JWKS then answers 503 once its cached key set is due (5 s), rather than the keys it last loaded. A follower keeps serving a partition while its owner hands it over
   (freshness counts from the last owner heard, within the staleness limit, as between heartbeats); a partition whose owner
   crashed is refused once that limit passes, until its new owner is heard (writes to it fail meanwhile too).
   A node that is cut off from the majority hears no owner, so its partitions are unreadable, and it is not ready.
@@ -340,7 +338,7 @@ run again by the next owner.
 Housekeeping is **fenced** by the same tenure. A pass starts with a context carrying the epoch under which this node owns
 partition 0 (`Node.fence`), and each write made with it first checks that this node still owns partition 0 at that epoch
 (`Node.fenced`); a node that was deposed in the middle of a pass (paused, cut off, handed partition 0 back) has the rest of
-that pass's writes refused (`store.ErrNotWritable`) instead of racing the new housekeeper's. What remains is the moment
+that pass's writes refused (`store.ErrUnavailable`) instead of racing the new housekeeper's. What remains is the moment
 between the check and the write, in which two housekeepers are harmless for the same reason as in the shared-database mode
 (below). A node that becomes housekeeper again later starts a new pass under the new epoch.
 
@@ -480,7 +478,7 @@ With 3 nodes (with 5, read "up to two"):
 | **misconfigured** | database shared with another gossip node, owned by another node id, mixed with non-gossip nodes, holding records no partition write made, set up apart from the cluster, prefix collision, **size or build disagreement**, clock off | no / no | none |
 
 Only node-local records (`KindEphemeral`) are written on a node that is not ready. A refused write returns
-`store.ErrNotWritable` (HTTP 503) and has no effect anywhere. A node never leads unless it is writable, so
+`store.ErrUnavailable` (HTTP 503) and has no effect anywhere. A node never leads unless it is writable, so
 housekeeping (key rotation, user end dates, orphan sweeps, purges) runs only where the data is current (see
 "Housekeeping" below). The status
 (`GET /api/cluster`) shows each node's state and why it is not ready, and every partition's owner, epoch, committed

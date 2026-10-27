@@ -298,7 +298,7 @@ func testRestartManagerFailureLeavesNoManager(t *testing.T, c *tcluster) {
 	if ok, _ := n0.Ready(); ok || n0.Writable() {
 		t.Fatal("a node without a partition protocol serves")
 	}
-	if _, err := n0.st.Get(bg, dataKind, "anything"); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := n0.st.Get(bg, dataKind, "anything"); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a read on a node without a partition protocol: %v", err)
 	}
 	managerStart.Store(nil)

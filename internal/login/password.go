@@ -421,7 +421,7 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
 			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
 			if n, err := m.s.Eph.Incr(ctx, nsForgot, u.ID, 1, time.Hour); err == nil && n <= 5 {
-				// After the answer, not before: the link is a replicated write and the mail a queued one, and the time
+				// After the answer, not before: the link is a stored write and the mail a queued one, and the time
 				// they take must not tell an existing account from an unknown address.
 				m.audit(r, "password.forgot", org, u, u.Username, nil)
 				m.s.Svc.Background(ctx, func(ctx context.Context) {

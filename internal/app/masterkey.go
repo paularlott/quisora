@@ -71,7 +71,7 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 	cur.Replace(next)
 	a.resealQueues()
 	a.Log.Info("master keys reloaded", "key", cur.ActiveKeyID(), "previous", cur.KeyIDs()[1:])
-	if err := a.Svc.ReportMasterKey(ctx, a.Node.ID()); err != nil && !errors.Is(err, context.Canceled) {
+	if err := a.reportKey(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		a.Log.Warn("master key: reporting this node's key (retried)", "error", err)
 	}
 	return nil

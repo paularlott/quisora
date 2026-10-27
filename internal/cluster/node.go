@@ -1106,25 +1106,6 @@ func (n *Node) IsLeader() bool {
 	return pm != nil && pm.IsOwner(globalPartition) && pm.CanRead(globalPartition) && n.Writable()
 }
 
-// LiveNodes lists the ids of the nodes of this node's data set that are alive in this node's view, this one included
-// (nil without gossip: nodes sharing a database have no member list).
-func (n *Node) LiveNodes() []string {
-	if n.gc == nil {
-		return nil
-	}
-	set := ""
-	if g := n.genesis.Load(); g != nil {
-		set = *g
-	}
-	var out []string
-	for _, ms := range n.members(true) {
-		if ms.State == "alive" && (ms.Self || ms.DataSet == set) {
-			out = append(out, ms.ID)
-		}
-	}
-	return out
-}
-
 // quorumOK reports whether this node sees at least a majority of the configured cluster size (itself included).
 func (n *Node) quorumOK() bool {
 	return n.mem.Load().alive >= n.Quorum()
@@ -1140,19 +1121,6 @@ func (n *Node) Quorum() int {
 
 // Size returns the number of nodes the cluster is made of: cluster.size at start, then as changed by Resize.
 func (n *Node) Size() int { return int(n.nodes.Load()) }
-
-// VouchesForGlobal reports whether this node may serve its copy of the global partition (organizations, signing keys):
-// always without gossip; in a gossip cluster while the partition is readable here (not trailing its owner).
-func (n *Node) VouchesForGlobal() bool {
-	return n.gc == nil || n.readable(context.Background(), globalPartition) == nil
-}
-
-// VouchesFor reports whether this node may serve its copy of the partition that holds partitionKey's records (an
-// organization's id; "" the global partition): always without gossip; in a gossip cluster while the partition is
-// readable here (not trailing its owner).
-func (n *Node) VouchesFor(partitionKey string) bool {
-	return n.gc == nil || n.readable(context.Background(), partitionNum(partitionKey)) == nil
-}
 
 // Writable reports whether admin writes and new sign-ins are allowed: standalone, or the partition protocol is ready
 // (caught up, not resynchronising), a majority of the cluster is in view and the node is not misconfigured.
@@ -1182,7 +1150,7 @@ func (n *Node) refusal() string {
 // allowWrite decides whether a local write may be made now. In a gossip cluster only a node that is ready and sees a
 // majority writes (Writable): catching up after a start, resynchronising or cut off from the majority it writes
 // nothing that replicates — not even sign-outs. Short-lived state, and in a gossip cluster audit events (localOnly), are
-// node-local and always allowed. A refused write has no effect anywhere (store.ErrNotWritable).
+// node-local and always allowed. A refused write has no effect anywhere (store.ErrUnavailable).
 func (n *Node) allowWrite(ctx context.Context, rec *store.Record) error {
 	if rec.Kind == model.KindEphemeral || (n.gc != nil && localOnly(rec.Kind)) {
 		return nil // node-local: a node records its own audit events whatever its state
@@ -1194,7 +1162,7 @@ func (n *Node) allowWrite(ctx context.Context, rec *store.Record) error {
 		return nil
 	}
 	if why := n.refusal(); why != "" {
-		return fmt.Errorf("%w: %s", store.ErrNotWritable, why)
+		return fmt.Errorf("%w: %s", store.ErrUnavailable, why)
 	}
 	if n.Writable() {
 		return nil
@@ -1203,7 +1171,7 @@ func (n *Node) allowWrite(ctx context.Context, rec *store.Record) error {
 	if why == "" {
 		why = "no quorum"
 	}
-	return fmt.Errorf("%w: %s", store.ErrNotWritable, why)
+	return fmt.Errorf("%w: %s", store.ErrUnavailable, why)
 }
 
 // maxSkew is how far ahead of this node's clock a version from a peer may be: versions come from the writers'
@@ -1230,14 +1198,14 @@ func (n *Node) checkSkew(rec *store.Record) {
 }
 
 // allowRead decides whether a read through the owners may be made now: not before the node is ready, and not while it
-// resynchronises (its own copy is then not trustworthy either). store.ErrNotWritable, as a refused write.
+// resynchronises (its own copy is then not trustworthy either). store.ErrUnavailable, as a refused write.
 func (n *Node) allowRead() error {
 	if why := n.refusal(); why != "" {
-		return fmt.Errorf("%w: %s", store.ErrNotWritable, why)
+		return fmt.Errorf("%w: %s", store.ErrUnavailable, why)
 	}
 	if pm := n.manager(); pm == nil || !pm.Ready() || pm.Resyncing() {
 		_, why := n.Ready()
-		return fmt.Errorf("%w: %s", store.ErrNotWritable, why)
+		return fmt.Errorf("%w: %s", store.ErrUnavailable, why)
 	}
 	return nil
 }
@@ -1296,7 +1264,7 @@ func (n *Node) Ready() (bool, string) {
 	// for it (it has not heard its owner yet after starting, or trails it) serves no sign-in or token, so it takes no
 	// traffic. One partition only: another partition's trouble refuses its own records, not the node.
 	if err := n.readableWithin(context.Background(), globalPartition, 0); err != nil {
-		return false, "the global partition cannot be read here yet: " + strings.TrimPrefix(err.Error(), store.ErrNotWritable.Error()+": ")
+		return false, "the global partition cannot be read here yet: " + strings.TrimPrefix(err.Error(), store.ErrUnavailable.Error()+": ")
 	}
 	return true, ""
 }

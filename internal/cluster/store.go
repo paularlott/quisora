@@ -36,7 +36,7 @@ var (
 func (s *Store) Inner() store.Store { return s.inner }
 
 // Get returns the live record kind/id from this node's copy; in a gossip cluster, only while this node can vouch for the
-// copy of the record's partition (the staleness gate, partstatus.go: store.ErrNotWritable otherwise).
+// copy of the record's partition (the staleness gate, partstatus.go: store.ErrUnavailable otherwise).
 func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
 	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Get(ctx, kind, id) })
 }
@@ -119,7 +119,7 @@ func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) 
 // Put writes rec (stamping this node as its Origin), replacing the record: in a gossip cluster the owner of its
 // partition stamps the version, and refuses a live write over a tombstone (store.ErrDeleted) or a unique value held by
 // another record (store.ErrConflict). rec.Version, Epoch and Created are the stored ones afterwards. A node that
-// cannot know that its data is current refuses (store.ErrNotWritable, see Node.allowWrite); a write whose outcome is
+// cannot know that its data is current refuses (store.ErrUnavailable, see Node.allowWrite); a write whose outcome is
 // not known (the owner was lost mid-write) is store.ErrUnconfirmed.
 func (s *Store) Put(ctx context.Context, rec *store.Record) error {
 	return s.write(ctx, rec, modeUpsert, 0)
@@ -192,7 +192,7 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 }
 
 // Snapshot delegates to the wrapped store when it has point-in-time views (store.Snapshotter). In a gossip cluster it
-// is refused (store.ErrNotWritable) when the view may hold a partition part-way through a full import, which reset it
+// is refused (store.ErrUnavailable) when the view may hold a partition part-way through a full import, which reset it
 // first: a backup of it would be complete and verifiable, and miss that partition's records. That is when one is
 // importing as the snapshot is asked for, or one began meanwhile (the view may be after its reset).
 func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
@@ -214,7 +214,7 @@ func (s *Store) snapshotOf(ctx context.Context, sn store.Snapshotter) (store.Rea
 		return nil, err
 	}
 	refused := func(p int) error {
-		return fmt.Errorf("%w: partition %d is being copied whole to this node; try again once it has finished", store.ErrNotWritable, p)
+		return fmt.Errorf("%w: partition %d is being copied whole to this node; try again once it has finished", store.ErrUnavailable, p)
 	}
 	began := s.n.pst.imports.Load()
 	if p, ok := s.n.pst.anyImporting(); ok {
@@ -513,7 +513,7 @@ func (s *Store) waitWritten(ctx context.Context, p int, pos partition.Pos) {
 // it would build the retry, or from which it would miss what made the change stale (a refresh token presented again
 // after its rotation, say). It waits for the partition's staleness bound (partition.Config.StaleAfter, past which this
 // node refuses its reads of the partition anyway) and fails closed: a node that cannot catch up by then returns
-// store.ErrNotWritable, to be retried, instead of the refusal the caller would judge by a copy it cannot trust. nil: the
+// store.ErrUnavailable, to be retried, instead of the refusal the caller would judge by a copy it cannot trust. nil: the
 // copy is current (or the error was not a refusal).
 func (s *Store) awaitRefused(ctx context.Context, p int, err error) error {
 	var re *partition.RefusedError
@@ -521,7 +521,7 @@ func (s *Store) awaitRefused(ctx context.Context, p int, err error) error {
 		return nil
 	}
 	if werr := s.waitApplied(ctx, p, re.Pos, time.Duration(s.n.staleAfter.Load())); werr != nil {
-		return fmt.Errorf("%w: this node is behind on partition %d", store.ErrNotWritable, p)
+		return fmt.Errorf("%w: this node is behind on partition %d", store.ErrUnavailable, p)
 	}
 	return nil
 }
@@ -602,7 +602,7 @@ func storeErr(err error) error {
 	case errors.Is(err, store.ErrUnavailable):
 		return err
 	}
-	return fmt.Errorf("%w: %v", store.ErrNotWritable, err)
+	return fmt.Errorf("%w: %v", store.ErrUnavailable, err)
 }
 
 // ---- fresh reads ----

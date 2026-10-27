@@ -517,3 +517,26 @@ func TestStartRefusesTwoPrimaryOrganizations(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 }
+
+// A node serves only while its own master key report counts: it is reported at start, before the node serves, and a
+// node whose report lapsed (a store that refused its renewals) is not ready until it is stored again, so a rotation
+// never finishes while a node may still seal with another key (service.MasterKeyAgreed).
+func TestReadyOnlyWhileTheMasterKeyReportCounts(t *testing.T) {
+	a, hc, base := startApp(t, "badgerdb")
+	if !a.keyReportCurrent() {
+		t.Fatal("the master key was not reported at start")
+	}
+	if code, _ := doJSON(t, hc, "GET", base+"/readyz", nil, nil); code != 200 {
+		t.Fatalf("readyz %d with a current report", code)
+	}
+	a.keyReported.Store(time.Now().Add(-service.MasterKeyReportTTL).UnixNano()) // (lapsed)
+	if code, _ := doJSON(t, hc, "GET", base+"/readyz", nil, nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz %d with a lapsed report, want 503", code)
+	}
+	if err := a.reportKey(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := doJSON(t, hc, "GET", base+"/readyz", nil, nil); code != 200 {
+		t.Fatalf("readyz %d once reported again", code)
+	}
+}

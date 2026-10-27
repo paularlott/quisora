@@ -158,11 +158,11 @@ func TestSessionDeleteReportsGrantDeletionFailure(t *testing.T) {
 	}
 }
 
-// A cached session is not served while the node cannot vouch for the partition the session lives in (it trails its
-// owner: the session may have been revoked): the store is asked instead.
-func TestSessionCacheNotServedWhileTrailing(t *testing.T) {
+// A cached session counts for at most the cache's bound after it was read: a session revoked where this node did not
+// hear of it (no eviction) is refused once the bound has passed, whatever the store.
+func TestSessionCacheBoundedByItsTTL(t *testing.T) {
 	ctx := context.Background()
-	svc, u, s := sessionFixture(t, memstore.New(), time.Now().UTC())
+	svc, _, s := sessionFixture(t, memstore.New(), time.Now().UTC())
 	if err := svc.Sessions.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -174,14 +174,15 @@ func TestSessionCacheNotServedWhileTrailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := m.Lookup(ctx, s.ID); got == nil {
-		t.Fatal("control: the cache should serve the session while the node vouches for it")
+		t.Fatal("control: the cache should serve the session within its bound")
 	}
-	asked := ""
-	svc.Readable = func(key string) bool { asked = key; return false }
+	if m.CacheTTL > 5*time.Second {
+		t.Fatalf("sessions are cached for %v, more than the 5s bound", m.CacheTTL)
+	}
+	m.mu.Lock()
+	m.cache[s.ID].fetched = time.Now().Add(-m.CacheTTL - time.Millisecond)
+	m.mu.Unlock()
 	if got, _ := m.Lookup(ctx, s.ID); got != nil {
-		t.Fatal("a cached session was served by a node that cannot vouch for its partition")
-	}
-	if asked != u.OrgID {
-		t.Fatalf("asked about %q, the session's organization is %q", asked, u.OrgID)
+		t.Fatal("a cached session was served past the cache's bound")
 	}
 }

@@ -46,7 +46,7 @@ func TestWriteErrorMapsServiceErrors(t *testing.T) {
 		"not empty":        {service.ErrNotEmpty, 409, "Organization still has users.", ""},
 		"outcome unknown":  {service.ErrOutcomeUnknown, 503, "This server lost contact", ""},
 		"raw unconfirmed":  {wrap(store.ErrUnconfirmed), 503, "This server lost contact", ""},
-		"raw not writable": {wrap(store.ErrNotWritable), 503, "This server cannot make changes right now", ""},
+		"raw not writable": {wrap(store.ErrUnavailable), 503, "This server cannot make changes right now", ""},
 		"unavailable":      {service.ErrUnavailable, 503, "This server cannot make changes right now", ""},
 		"unknown error":    {errors.New("secret detail: db password is hunter2"), 500, "Something went wrong. Please try again.", ""},
 		"too large":        {service.ErrTooLarge, 413, "A change may add or remove at most", ""},

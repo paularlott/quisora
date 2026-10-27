@@ -19,7 +19,7 @@ const (
 // admin when they do not exist yet ("quisora bootstrap"; serving never creates them). The admin has no password: it
 // returns an invitation link through which they set one (or create a passkey). Returns nil, "" when nothing was
 // created. Everything is written create-only, with fixed ids and the oldest possible version (model.PrimaryOrgID):
-// whatever already exists — here, in a shared database or anywhere in a gossip cluster — wins, so a mistaken run
+// whatever already exists in the store wins, so a mistaken run
 // cannot overwrite anything.
 func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User, string, error) {
 	now := time.Now().UTC()

@@ -379,7 +379,7 @@ func TestResizeWithWritesInFlightAndANodeDown(t *testing.T) {
 				case err == nil:
 					confirmed.Store(rec.ID, true)
 					wrote.Add(1)
-				case errors.Is(err, store.ErrNotWritable), errors.Is(err, store.ErrUnconfirmed):
+				case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrUnconfirmed):
 					time.Sleep(20 * time.Millisecond) // the sizes disagree for a moment, a partition changes hands
 				default:
 					t.Errorf("writer on node %d: %v", tn.idx, err)

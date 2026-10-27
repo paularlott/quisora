@@ -35,9 +35,9 @@ func TestTrailingNodeRefusesToCountAnOrganization(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "node 1 to refuse counting the partition it trails", func() bool {
 		_, err := tenants(c.nodes[1]).Count(bg, org)
-		return errors.Is(err, store.ErrNotWritable)
+		return errors.Is(err, store.ErrUnavailable)
 	})
-	if _, _, err := tenants(c.nodes[1]).List(bg, store.ListQuery{Scope: org}); !errors.Is(err, store.ErrNotWritable) {
+	if _, _, err := tenants(c.nodes[1]).List(bg, store.ListQuery{Scope: org}); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a listing on the trailing node: %v", err)
 	}
 	if n, err := tenants(c.nodes[0]).Count(bg, org); err != nil || n != 2 {

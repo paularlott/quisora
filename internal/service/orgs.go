@@ -106,8 +106,8 @@ func (s *Service) primaryOrgs(ctx context.Context) ([]*model.Org, error) {
 var ErrTwoPrimaries = errors.New("more than one organization is marked primary (left by an interrupted \"quisora set-primary\" " +
 	"of an earlier build, or by damage): restore a backup made before it")
 
-// PrimaryOrg returns the primary organization: ErrNotFound before "quisora bootstrap" made it (or before a new member
-// of a gossip cluster received it), ErrTwoPrimaries if more than one is marked.
+// PrimaryOrg returns the primary organization: ErrNotFound before "quisora bootstrap" made it (or before the store
+// holds it here), ErrTwoPrimaries if more than one is marked.
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
 	// It never changes, so finding it (which lists the organizations) is done once; the organization itself is read
 	// every time.

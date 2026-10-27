@@ -11,7 +11,7 @@ import (
 
 // Quisora survives the loss of an owner, end to end through its store: the owner of a partition is cut off without a
 // word (a crash, as the others see it), the others go on writing the partition, nothing acknowledged is lost, the
-// isolated old owner refuses writes (store.ErrNotWritable), and once it is back it holds the same data and writes
+// isolated old owner refuses writes (store.ErrUnavailable), and once it is back it holds the same data and writes
 // again. (The partition protocol's failover, hand-over, splits, catch-up and resync are gossip/partition's own tests.)
 func TestOwnerCrash(t *testing.T) {
 	c := started(t, badgerBackend())
@@ -36,7 +36,7 @@ func TestOwnerCrash(t *testing.T) {
 	// the old owner, cut off, cannot write the partition
 	waitFor(t, 20*time.Second, "the isolated node stops accepting writes", func() bool { return !c.nodes[owner].n.Writable() })
 	r := newOrgRec(org)
-	if err := c.nodes[owner].st().Put(bg, r); !errors.Is(err, store.ErrNotWritable) {
+	if err := c.nodes[owner].st().Put(bg, r); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a write on the isolated node: %v", err)
 	}
 	// what the survivors acknowledged is there on both
@@ -73,7 +73,7 @@ func TestAloneAfterAllStopped(t *testing.T) {
 		ok, _ := tn.n.Ready()
 		return !ok && !tn.n.Writable()
 	})
-	if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrNotWritable) {
+	if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("%v", err)
 	}
 }

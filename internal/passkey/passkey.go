@@ -146,10 +146,7 @@ type ceremony struct {
 	Kind    string               `json:"k"` // "reg" or "login"
 	Session webauthn.SessionData `json:"s"`
 	UserID  string               `json:"u,omitempty"`
-	// OrgID is the user's organization when the ceremony is for a known user (the account is read fresh from its
-	// partition's owner: "" for a ceremony begun before it was kept, which asks every owner).
-	OrgID string            `json:"o,omitempty"`
-	Extra map[string]string `json:"x,omitempty"`
+	Extra   map[string]string    `json:"x,omitempty"`
 	// Gen is the user's security generation (model.User.SecurityGen) when a ceremony for a known user began: the
 	// finish refuses the ceremony once the account's has moved on (a credential set, changed or removed meanwhile),
 	// so a response to a challenge issued against the account as it was does not register or sign in against the
@@ -365,7 +362,7 @@ func (s *Service) BeginLogin(ctx context.Context, u *model.User, extra map[strin
 	}
 	c := &ceremony{Kind: "login", Session: *sd, UserID: uid, Extra: extra}
 	if u != nil {
-		c.Gen, c.OrgID = u.SecurityGen, u.OrgID
+		c.Gen = u.SecurityGen
 	}
 	id, err := s.save(ctx, c)
 	return id, assertion, err
@@ -561,9 +558,6 @@ func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.C
 		now.Sub(pk.LastUsed) < time.Minute {
 		return false, nil
 	}
-	if !s.svc.CanWrite() {
-		return false, fmt.Errorf("%w: the sign count cannot be recorded now", service.ErrUnavailable)
-	}
 	for range 3 {
 		pk.SignCount, pk.BackupState, pk.LastUsed = cred.Authenticator.SignCount, cred.Flags.BackupState, now
 		err := s.svc.Passkeys.Update(ctx, pk)
@@ -586,7 +580,7 @@ func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.C
 // unavailable turns a store error that says the write cannot be made now, or may not have been, into service.ErrUnavailable
 // (try again); any other error (and nil) is returned as it is.
 func unavailable(err error) error {
-	if errors.Is(err, store.ErrNotWritable) || errors.Is(err, store.ErrUnconfirmed) {
+	if errors.Is(err, store.ErrUnavailable) || errors.Is(err, store.ErrUnconfirmed) {
 		return fmt.Errorf("%w: %v", service.ErrUnavailable, err)
 	}
 	return err

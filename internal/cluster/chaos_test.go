@@ -639,9 +639,7 @@ func (h *chaosHarness) onNode(rng *rand.Rand, prefer int, fn func(nd *chaosNode)
 }
 
 func (h *chaosHarness) newService(tn *tnode, cs *chaosStore) *service.Service {
-	svc := service.New(h.cfg, cs, h.seal)
-	svc.Writable = tn.n.Writable
-	return svc
+	return service.New(h.cfg, cs, h.seal)
 }
 
 func (h *chaosHarness) newChaosStore(tn *tnode, idx int) *chaosStore {
@@ -1015,7 +1013,7 @@ func (h *chaosHarness) answer(nd *chaosNode, what string, part int, err error) (
 	case errors.Is(err, store.ErrNotFound):
 		h.count("read %s: not found", what)
 		return false, true, false
-	case errors.Is(err, store.ErrNotWritable):
+	case errors.Is(err, store.ErrUnavailable):
 		h.count("read %s: refused (not writable)", what)
 		nd.lastRefused[part].Store(time.Now().UnixNano())
 		return false, false, true
@@ -1844,7 +1842,7 @@ func TestChaosSoak(t *testing.T) {
 				h.led.finish(op, outAck, o.Version, nil, 0, false, time.Now())
 				break
 			}
-			if !errors.Is(err, store.ErrNotWritable) && !errors.Is(err, store.ErrUnconfirmed) || time.Now().After(deadline) {
+			if !errors.Is(err, store.ErrUnavailable) && !errors.Is(err, store.ErrUnconfirmed) || time.Now().After(deadline) {
 				t.Fatalf("setup: organization %s: %v", name, err)
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -2086,7 +2084,7 @@ func TestChaosNoStaleServingAfterContactRegained(t *testing.T) {
 	c.partition([]int{owner, other}, []int{follower})
 	waitFor(t, 10*time.Second, "the cut-off follower to refuse listing", func() bool {
 		_, err := listed(c.nodes[follower])
-		return errors.Is(err, store.ErrNotWritable)
+		return errors.Is(err, store.ErrUnavailable)
 	})
 	if err := keys(c.nodes[owner]).Delete(bg, k.ID); err != nil {
 		t.Fatal(err)

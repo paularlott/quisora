@@ -59,7 +59,7 @@ func (s *Service) VerifyPassword(ctx context.Context, orgID string, u *model.Use
 	if err != nil || !ok {
 		return false, err
 	}
-	if rehash && s.CanWrite() {
+	if rehash {
 		s.rehashPassword(ctx, u, stored, password)
 	}
 	return true, nil

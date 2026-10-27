@@ -213,7 +213,7 @@ func TestCloneThatCannotBeDisabledIsNotReportedAsDisabled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f := &failingPasskeyWrites{Store: e.svc.Passkeys.S, err: store.ErrNotWritable}
+	f := &failingPasskeyWrites{Store: e.svc.Passkeys.S, err: store.ErrUnavailable}
 	e.svc.Passkeys.S = f
 	id, opts := e.options(t, nil)
 	stale, err := e.auth.GetWith(opts, c, 2, origin)

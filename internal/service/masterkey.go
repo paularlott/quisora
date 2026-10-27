@@ -99,9 +99,9 @@ func (s *Service) MasterKeyNodes(ctx context.Context) (map[string]NodeKeys, erro
 // MasterKeyAgreed reports whether every live node seals with this service's active master key, and the nodes that do
 // not (node id -> key id). With self (this node's id), the reports in view count only once this node's own is among
 // them: a node that does not see its own report (its write has not been made yet, or its copy lags) cannot trust the
-// absence of the others' either, and agreement is not declared on an empty view (self -> "not reported yet"). A live
-// node (LiveNodes) with no current report, one that has not made its first yet or whose report lapsed, is not known to
-// agree either ("no current report"), so re-sealing never starts while a node may still seal with another key.
+// absence of the others' either, and agreement is not declared on an empty view (self -> "not reported yet"). The
+// current reports are every node that may seal anything: a node serves only while its own report counts (the app's
+// readiness), so re-sealing never starts while a node may still seal with another key.
 func (s *Service) MasterKeyAgreed(ctx context.Context, self string) (bool, map[string]string, error) {
 	nodes, err := s.MasterKeyNodes(ctx)
 	if err != nil {
@@ -114,13 +114,6 @@ func (s *Service) MasterKeyAgreed(ctx context.Context, self string) (bool, map[s
 	for node, k := range nodes {
 		if k.Active != s.Sealer.ActiveKeyID() {
 			others[node] = k.Active
-		}
-	}
-	if s.LiveNodes != nil {
-		for _, node := range s.LiveNodes() {
-			if _, ok := nodes[node]; !ok && others[node] == "" {
-				others[node] = "no current report"
-			}
 		}
 	}
 	return len(others) == 0, others, nil
@@ -160,14 +153,6 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 	}
 	st.Nodes, st.NodesAgree = nodes, true
 	var others, queued, lost []string
-	if s.LiveNodes != nil { // a live node with no current report may not seal with Active (as MasterKeyAgreed)
-		for _, node := range s.LiveNodes() {
-			if _, ok := nodes[node]; !ok {
-				st.NodesAgree = false
-				others = append(others, node+" (no current report)")
-			}
-		}
-	}
 	for node, k := range nodes {
 		if k.Active != st.Active {
 			st.NodesAgree = false

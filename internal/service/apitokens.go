@@ -472,12 +472,11 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 const apiTokenTouch = 5 * time.Minute
 
 // touchAPIToken records that t was used, in the background (best effort: a lost race or a failed write only delays
-// it): the request does not wait for a write, in a gossip cluster a round trip to the partition's owner and a
-// majority, that it does not need. One write at a time per token; a request that finds one running skips it, and the
+// it): the request does not wait for a write it does not need. One write at a time per token; a request that finds one running skips it, and the
 // next that finds the stamp old tries again. t itself is not changed.
 func (s *Service) touchAPIToken(ctx context.Context, t *model.APIToken) {
 	now := time.Now().UTC()
-	if now.Sub(t.LastUsed) < apiTokenTouch || !s.CanWrite() {
+	if now.Sub(t.LastUsed) < apiTokenTouch {
 		return
 	}
 	cp := *t

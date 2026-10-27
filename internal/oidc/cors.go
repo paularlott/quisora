@@ -44,12 +44,8 @@ func (s *originSet) allows(origin string) bool {
 
 // publicOrigins returns the (cached) origins of every enabled public client.
 func (p *Provider) publicOrigins(r *http.Request) *originSet {
-	ttl := time.Minute
-	if p.shortOrigins.Load() {
-		ttl = shortTTL
-	}
 	s := p.origins.Load()
-	if s != nil && time.Since(s.at) < ttl {
+	if s != nil && time.Since(s.at) < cacheTTL {
 		return s
 	}
 	// One request re-reads the clients; the others meanwhile use the set they have (or wait for the first one).
@@ -60,7 +56,7 @@ func (p *Provider) publicOrigins(r *http.Request) *originSet {
 		p.originsMu.Lock()
 	}
 	defer p.originsMu.Unlock()
-	if s := p.origins.Load(); s != nil && time.Since(s.at) < ttl {
+	if s := p.origins.Load(); s != nil && time.Since(s.at) < cacheTTL {
 		return s // read by the request that held the lock
 	}
 	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}, at: time.Now()}

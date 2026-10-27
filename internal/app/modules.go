@@ -27,11 +27,6 @@ import (
 // modules builds the HTTP modules and hooks their caches and housekeeping into the cluster.
 func modules(ctx context.Context, a *App) []web.Module {
 	op := oidc.New(a.Server)
-	if a.Node.SharedDatabase() {
-		// Load-bearing: nodes sharing a database without gossip hear of no change, so the caches' age is the only
-		// bound on how long a disabled client, a rotated secret or key keeps working on another node.
-		op.ShortCaches()
-	}
 	a.OIDC = op
 	a.onChange = append(a.onChange, func(rec *store.Record) {
 		switch rec.Kind {
@@ -223,7 +218,7 @@ func (h *housekeepingLog) ok(task string, err error) bool {
 		}
 		return true
 	}
-	if !errors.Is(err, store.ErrNotWritable) && !errors.Is(err, service.ErrUnavailable) {
+	if !errors.Is(err, store.ErrUnavailable) && !errors.Is(err, service.ErrUnavailable) {
 		h.log.Error(task, "error", err)
 		return false
 	}
@@ -241,20 +236,41 @@ func (h *housekeepingLog) ok(task string, err error) bool {
 // housekeepingEvery is how often the housekeeping leader runs (tests shorten it).
 var housekeepingEvery = time.Minute
 
-// reportMasterKey reports this node's master key (service.ReportMasterKey) now and every few minutes, retrying while
-// the node cannot write yet.
+// reportMasterKey reports this node's master key (reportKey) every few minutes, retrying every second while the store
+// refuses.
 func (a *App) reportMasterKey(ctx context.Context) {
 	wait := time.Duration(0)
+	if a.keyReportCurrent() {
+		wait = service.MasterKeyReportTTL / 3 // (reported at start)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
 		}
-		if err := a.Svc.ReportMasterKey(ctx, a.Node.ID()); err != nil {
-			wait = 5 * time.Second
+		if err := a.reportKey(ctx); err != nil {
+			wait = time.Second
 			continue
 		}
 		wait = service.MasterKeyReportTTL / 3
 	}
+}
+
+// reportKey stores this node's master key report (service.ReportMasterKey) and notes when.
+func (a *App) reportKey(ctx context.Context) error {
+	at := time.Now()
+	if err := a.Svc.ReportMasterKey(ctx, a.Node.ID()); err != nil {
+		return err
+	}
+	a.keyReported.Store(at.UnixNano())
+	return nil
+}
+
+// keyReportCurrent says whether this node's last stored report still counts (service.MasterKeyReportTTL from when it
+// was made): a node serves only while it does, so a node whose report lapsed (a store that refused its renewals) seals
+// nothing a rotation does not see.
+func (a *App) keyReportCurrent() bool {
+	at := a.keyReported.Load()
+	return at != 0 && time.Since(time.Unix(0, at)) < service.MasterKeyReportTTL
 }

@@ -334,21 +334,21 @@ type orgsRefused struct{ store.Store }
 
 func (s orgsRefused) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
 	if kind == model.KindOrg {
-		return nil, store.ErrNotWritable
+		return nil, store.ErrUnavailable
 	}
 	return s.Store.GetByUnique(ctx, kind, value)
 }
 
 func (s orgsRefused) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
 	if kind == model.KindOrg {
-		return nil, store.ErrNotWritable
+		return nil, store.ErrUnavailable
 	}
 	return s.Store.Get(ctx, kind, id)
 }
 
 func (s orgsRefused) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
 	if kind == model.KindOrg {
-		return nil, store.ErrNotWritable
+		return nil, store.ErrUnavailable
 	}
 	return s.Store.List(ctx, kind, q)
 }

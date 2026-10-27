@@ -105,9 +105,9 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func serverError(err error) *oauthError {
-	if errors.Is(err, store.ErrNotWritable) || errors.Is(err, store.ErrUnconfirmed) {
-		// This node cannot write now (cut off from the majority of its cluster, within the grace that keeps the
-		// token endpoint answering what needs no write): the client retries, here or elsewhere.
+	if errors.Is(err, store.ErrUnavailable) || errors.Is(err, store.ErrUnconfirmed) {
+		// The store cannot make the change now (or may have made it: unconfirmed): the client retries, here or
+		// elsewhere.
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
 			desc: "this server cannot make changes now; try again shortly", retry: true}
 	}
@@ -640,10 +640,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			if ferr != nil || fresh.Revoked {
 				return nil, invalid
 			}
-			// The token was rotated moments ago, on another node, and this node's copy did not show it yet: the store
-			// waited until this node had the write that made the change stale (Store.awaitRefused), so fresh is the
-			// grant as it is now, and a retry is judged on it as in the first case above: the client gets the token it
-			// missed, and nothing rotates again.
+			// The token was rotated moments ago elsewhere: a store that answers stale answers reads with the copy that
+			// made it stale, so fresh is the grant as it is now, and a retry is judged on it as in the first case above:
+			// the client gets the token it missed, and nothing rotates again.
 			if isRefreshRetry(c, fresh, pr.counter) {
 				g = fresh
 				break

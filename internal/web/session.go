@@ -22,7 +22,7 @@ import (
 const SessionCookie = "__Host-quisora_session"
 
 const (
-	sessionCacheTTL   = 30 * time.Second
+	sessionCacheTTL   = 5 * time.Second
 	lastSeenThrottle  = 5 * time.Minute
 	sessionCacheLimit = 100_000
 )
@@ -36,10 +36,10 @@ type cachedSession struct {
 }
 
 // Sessions creates, looks up and ends browser sessions. Lookups are cached per node for a short time; Evict is
-// called by the cluster layer when a session or user record changes.
+// called when this node hears that a session or user record changed.
 type Sessions struct {
-	// CacheTTL bounds how long a node trusts a cached session (default 30s; nodes that share a database without
-	// gossip get no eviction messages, so they use a shorter one).
+	// CacheTTL bounds how long a node trusts a cached session (default 5s): a change made elsewhere counts here within
+	// it, whatever the store; one this node hears of (Evict) counts at once.
 	CacheTTL time.Duration
 	svc      *service.Service
 	mu       sync.RWMutex
@@ -249,11 +249,6 @@ func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *mode
 	if cs != nil && now.Sub(cs.fetched) <= m.CacheTTL && !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
 		cs = nil
 	}
-	// A node that cannot vouch for the partition the session and its user live in (it trails their owner: a revocation
-	// may not have reached it) serves nothing cached: the store is asked, and refuses as it does for any read.
-	if f := m.svc.Readable; cs != nil && f != nil && !(f(cs.sess.OrgID) && f(cs.user.OrgID)) {
-		cs = nil
-	}
 	if cs == nil || now.Sub(cs.fetched) > m.CacheTTL {
 		sessTok := m.gens.Token(id)
 		s, err := m.svc.Sessions.Get(ctx, id)
@@ -325,15 +320,11 @@ func (m *Sessions) fill(id string, cs *cachedSession, sessTok, userTok uint64) {
 	set[id] = struct{}{}
 }
 
-// touchLater records that the session is in use, in the background: the request does not wait for a write (in a gossip
-// cluster, a round trip to the partition's owner and a majority) it does not need. One write at a time per session: a
-// request that finds one running (or a node that may not change replicated data now) skips it, and the next one
-// that finds the stamp old tries again.
+// touchLater records that the session is in use, in the background: the request does not wait for a write it does
+// not need. One write at a time per session: a request that finds one running skips it, and the next one that finds
+// the stamp old tries again.
 func (m *Sessions) touchLater(ctx context.Context, cs *cachedSession) {
 	id := cs.sess.ID
-	if !m.svc.CanWrite() {
-		return
-	}
 	if _, busy := m.touching.LoadOrStore(id, struct{}{}); busy {
 		return
 	}

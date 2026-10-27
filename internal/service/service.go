@@ -37,9 +37,8 @@ var (
 	// have been made (the next owner settles it, once or never). It is an ErrUnavailable too (try again shortly), but
 	// what is not idempotent is read back first.
 	ErrOutcomeUnknown = errors.New("the outcome of the change is not known")
-	// ErrUnavailable: this server cannot make the change now (it is catching up with its cluster or cannot reach a
-	// majority of it). Nothing changed (unless it is also an ErrOutcomeUnknown); try again shortly or through another
-	// server.
+	// ErrUnavailable: this server cannot make the change now (its store refused: store.ErrUnavailable). Nothing
+	// changed (unless it is also an ErrOutcomeUnknown); try again shortly or through another server.
 	ErrUnavailable = errors.New("this server cannot make changes now")
 )
 
@@ -70,7 +69,7 @@ func mapStore(err error) error {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	case errors.Is(err, store.ErrUnconfirmed):
 		return fmt.Errorf("%w: %w: %v", ErrOutcomeUnknown, ErrUnavailable, err)
-	case errors.Is(err, store.ErrNotWritable):
+	case errors.Is(err, store.ErrUnavailable):
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return err
@@ -176,20 +175,6 @@ type Service struct {
 	bg            sync.WaitGroup // Background work
 	tokenTouching sync.Map       // ids of API tokens whose last use is being recorded (touchAPIToken)
 
-	// Writable reports whether this node may change replicated data now (cluster.Node.Writable; nil: always). Writes
-	// made in passing while serving reads (a session's or token's last use, a sign-in's last-login stamp) are skipped
-	// when it is false: the store would refuse them, and a node that cannot know its data is current must not
-	// replicate anything it changed on its own.
-	Writable func() bool
-	// GlobalReadable reports whether this node can vouch for its copy of the global data (signing keys,
-	// organizations); nil: always. What is cached from it (the signing keys, the published key set) is not served
-	// while it is false: a key the cluster revoked must not be published or used by a node that trails it.
-	GlobalReadable func() bool
-	// Readable reports whether this node can vouch for its copy of a partition's records (an organization's id; "" the
-	// global one); nil: always. A cached session or client is not served while it is false (a revoked session or a
-	// rotated secret must not be honoured by a node that stopped following the owner of its partition).
-	Readable func(partitionKey string) bool
-
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.
 	OnSessionsEnding func(ctx context.Context, userID string, sessionIDs []string)
@@ -197,18 +182,11 @@ type Service struct {
 	// previous master key (reported with the node's keys, ReportMasterKey: they keep the rotation unfinished), and how
 	// many need one that is not configured (reported as a warning: they hold nothing back).
 	QueuesStale func() (stale, lost int)
-	// LiveNodes, when set, lists the ids of the nodes of the cluster that are up now (this one included). A live node
-	// with no current master key report is not known to seal with the active key (MasterKeyAgreed). Without it (one
-	// node, or nodes sharing a database) only the reports say which nodes are live. Set by the app.
-	LiveNodes func() []string
 
 	// OnAppAccessEnding is called just before a user's grants to one client are removed (RevokeAppAccess), so that
 	// client can be sent back-channel logout tokens and the grants stop working at once. Set by the app.
 	OnAppAccessEnding func(ctx context.Context, userID, clientID string)
 }
-
-// CanWrite reports whether best-effort writes made while serving reads should be attempted (see Writable).
-func (s *Service) CanWrite() bool { return s.Writable == nil || s.Writable() }
 
 // sessionsEnding runs the OnSessionsEnding hook if set.
 func (s *Service) sessionsEnding(ctx context.Context, userID string, sessionIDs []string) {

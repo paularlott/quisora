@@ -14,36 +14,6 @@ import (
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
-// A session's last-use stamp is a write made while serving a read. A node that may not change replicated data now
-// (catching up, cut off from the majority, out of date) skips it: the session record is not touched at all, so a
-// stale copy of a session deleted elsewhere is never written (and could never be sent back). A writable node stamps it.
-func TestSessionTouchSkippedWhenNotWritable(t *testing.T) {
-	ctx := context.Background()
-	old := time.Now().Add(-10 * time.Minute).UTC()
-	svc, _, s := sessionFixture(t, memstore.New(), old)
-	writable := false
-	svc.Writable = func() bool { return writable }
-	if err := svc.Sessions.Create(ctx, s); err != nil {
-		t.Fatal(err)
-	}
-	m := NewSessions(svc)
-	if got, _ := m.Lookup(ctx, s.ID); got == nil {
-		t.Fatal("session not found")
-	}
-	svc.WaitBackground()
-	if cur, _ := svc.Sessions.Get(ctx, s.ID); cur.Version != s.Version || !cur.LastSeen.Equal(old) {
-		t.Fatal("a node that may not write touched the session")
-	}
-	writable = true
-	if got, _ := m.Lookup(ctx, s.ID); got == nil {
-		t.Fatal("session not found")
-	}
-	svc.WaitBackground()
-	if cur, _ := svc.Sessions.Get(ctx, s.ID); cur.Version == s.Version || !cur.LastSeen.After(old) {
-		t.Fatal("a writable node did not record the session's use")
-	}
-}
-
 // slowWrites holds every write of a kind until release is closed, and counts them: a store whose writes take long.
 type slowWrites struct {
 	store.Store
@@ -68,18 +38,20 @@ func TestSessionTouchRunsInTheBackgroundOneAtATime(t *testing.T) {
 	ctx := context.Background()
 	slow := &slowWrites{Store: memstore.New(), started: make(chan struct{}, 8), release: make(chan struct{})}
 	old := time.Now().Add(-10 * time.Minute).UTC()
-	svc, _, s := sessionFixture(t, slow, old)
+	svc, _, s := sessionFixture(t, slow, time.Now().UTC())
 	if err := svc.Sessions.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
 	slow.kind = model.KindSession // (creating it is not the write under test)
 	m := NewSessions(svc)
-	// Cached first (without a write), so that every lookup below shares the cached copy the write starts from.
-	svc.Writable = func() bool { return false }
+	// Cached first (just used: no write), then made old, so that every lookup below shares the cached copy the write
+	// starts from.
 	if got, _ := m.Lookup(ctx, s.ID); got == nil {
 		t.Fatal("session missing")
 	}
-	svc.Writable = func() bool { return true }
+	m.mu.Lock()
+	m.cache[s.ID].sess.LastSeen = old
+	m.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -177,7 +149,6 @@ func TestSessionFillBeforeEvictionIsNotCached(t *testing.T) {
 	ctx := context.Background()
 	recs := &afterGets{Store: memstore.New()}
 	svc, u, s := sessionFixture(t, recs, time.Now())
-	svc.Writable = func() bool { return false } // no last-use writes: only the reads are counted
 	if err := svc.Sessions.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

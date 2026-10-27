@@ -65,7 +65,7 @@ func TestEmptyNodesWaitForABootstrappedNode(t *testing.T) {
 		if tn.n.IsLeader() {
 			t.Fatal("a node without a data set runs housekeeping")
 		}
-		if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrNotWritable) {
+		if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
 			t.Fatalf("a write on a node without a data set: %v", err)
 		}
 	}

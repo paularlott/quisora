@@ -32,7 +32,7 @@ type Module interface {
 	Register(s *Server)
 }
 
-// Health reports readiness (set by the cluster layer: false while a node cannot reach a majority).
+// Health reports readiness (set by the app: false while the store is not ready to serve, or the server is not set up).
 type Health interface {
 	Ready() (bool, string)
 }
@@ -135,10 +135,10 @@ func alwaysServed(p string) bool {
 }
 
 // serveGate answers 503 (Retry-After: 5) to everything but the probes and static files while this node is not
-// ready (Health): a node that is starting, catching up, copying its first data, out of date, misconfigured or cut
-// off from the majority must not hand data it cannot vouch for — partial, stale or since deleted — to a caller that
-// bypasses the load balancer (admin and management API reads, SCIM, the authorization pages, discovery, JWKS, the
-// token endpoints). Ready is the single gate: a ready node is also writable (Node.Writable).
+// ready (Health): a store that is not ready to serve (starting, misconfigured, out of date) must not hand out data —
+// partial, stale or since deleted — to a caller that bypasses the load balancer (admin and management API reads,
+// SCIM, the authorization pages, discovery, JWKS, the token endpoints), as a database node that is not ready refuses
+// queries.
 func (s *Server) serveGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path

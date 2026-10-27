@@ -429,11 +429,11 @@ func TestGossipNodes(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for _, a := range apps {
 		for {
-			if ok, _ := a.Node.Ready(); ok {
+			if ok, _ := a.Server.Health.Ready(); ok { // (as the load balancer sees it: the master key reported too)
 				break
 			}
 			if time.Now().After(deadline) {
-				_, why := a.Node.Ready()
+				_, why := a.Server.Health.Ready()
 				t.Fatalf("node not ready: %s", why)
 			}
 			time.Sleep(100 * time.Millisecond)

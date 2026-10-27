@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,12 +18,26 @@ import (
 type pacedSweepFixture struct {
 	s   *Service
 	org *model.Org
+	uid string
+	txs *countTx
+}
+
+// countTx counts the transactions written through it.
+type countTx struct {
+	store.Store
+	n atomic.Int64
+}
+
+func (c *countTx) Tx(ctx context.Context, ops []store.Op) error {
+	c.n.Add(1)
+	return c.Store.Tx(ctx, ops)
 }
 
 func newPacedSweep(t *testing.T, sessions int) *pacedSweepFixture {
 	t.Helper()
 	ctx := context.Background()
-	s := newInternalService(t, memstore.New())
+	txs := &countTx{Store: memstore.New()}
+	s := newInternalService(t, txs)
 	if _, _, err := s.Bootstrap(ctx, "root@example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -46,32 +61,42 @@ func newPacedSweep(t *testing.T, sessions int) *pacedSweepFixture {
 	if _, err := s.SignOutOrg(ctx, System, org.ID, SignOutOptions{Reason: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	return &pacedSweepFixture{s: s, org: org}
+	txs.n.Store(0)
+	return &pacedSweepFixture{s: s, org: org, uid: u.ID, txs: txs}
 }
 
-// The sweep writes its tombstones one at a time with a pause between them, so it cannot keep the partitions of the
-// organizations it walks busy.
-func TestSignOutSweepIsPaced(t *testing.T) {
-	saved := signOutSweepGap
-	signOutSweepGap = 5 * time.Millisecond
-	defer func() { signOutSweepGap = saved }()
-	f := newPacedSweep(t, 6)
+// sweepPace sets the sweep's batch and pause for one test.
+func sweepPace(t *testing.T, batch int, gap time.Duration) {
+	b, g := signOutSweepBatch, signOutSweepGap
+	signOutSweepBatch, signOutSweepGap = batch, gap
+	t.Cleanup(func() { signOutSweepBatch, signOutSweepGap = b, g })
+}
+
+// The sweep writes its removals in transactions of up to a batch, with a pause after each, so it cannot keep the
+// store busy: seven sessions in batches of three are three transactions and three pauses.
+func TestSignOutSweepIsBatchedAndPaced(t *testing.T) {
+	sweepPace(t, 3, 10*time.Millisecond)
+	f := newPacedSweep(t, 7)
 	start := time.Now()
 	n, err := f.s.SweepSignOut(context.Background(), System, f.org.ID, false)
 	took := time.Since(start)
-	if err != nil || n.Sessions != 6 {
+	if err != nil || n.Sessions != 7 {
 		t.Fatalf("%+v %v", n, err)
 	}
-	if took < 6*5*time.Millisecond*8/10 {
-		t.Fatalf("six tombstones in %v: not paced", took)
+	if got := f.txs.n.Load(); got != 3 {
+		t.Fatalf("seven removals in batches of three written in %d transactions, want 3", got)
+	}
+	if took < 3*10*time.Millisecond*8/10 {
+		t.Fatalf("three transactions in %v: not paced", took)
+	}
+	if left, err := f.s.Sessions.Count(context.Background(), f.uid); err != nil || left != 0 {
+		t.Fatalf("%d sessions left (%v)", left, err)
 	}
 }
 
 // A cancelled sweep stops, rather than walking on: what is left is found by the next one.
 func TestSignOutSweepStopsWhenCancelled(t *testing.T) {
-	saved := signOutSweepGap
-	signOutSweepGap = 15 * time.Millisecond
-	defer func() { signOutSweepGap = saved }()
+	sweepPace(t, 2, 15*time.Millisecond)
 	f := newPacedSweep(t, 40)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()

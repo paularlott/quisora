@@ -15,7 +15,7 @@ import (
 // not trailed what the owner reported committed for long (a follower whose catch-up keeps failing), and the partition has
 // not diverged here. Otherwise a revoked session, a disabled user or a rotated secret could be served from a copy that
 // no longer follows the cluster, for as long as it stays behind. The single-record reads of the cluster store refuse,
-// as an unavailable store does (store.ErrNotWritable), in gossip mode only; a node's own audit events and short-lived
+// as an unavailable store does (store.ErrUnavailable), in gossip mode only; a node's own audit events and short-lived
 // state are exempt (they are not in a partition), and a reservation is the partition of its own id.
 //
 // The node's readiness follows: it is not ready while a partition has diverged here (only an operator can resync it)
@@ -52,23 +52,23 @@ func (n *Node) readableWithin(ctx context.Context, p int, wait time.Duration) er
 		if why == "" {
 			why = "starting"
 		}
-		return fmt.Errorf("%w: %s", store.ErrNotWritable, why)
+		return fmt.Errorf("%w: %s", store.ErrUnavailable, why)
 	}
 	if n.pst != nil {
 		// A full import of a partition has begun here and not finished: its reset removed records, so no read of it is
 		// true, lag detection or not.
 		if p >= 0 {
 			if n.pst.isImporting(p) {
-				return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrNotWritable, p)
+				return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrUnavailable, p)
 			}
 		} else if q, ok := n.pst.anyImporting(); ok {
-			return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrNotWritable, q)
+			return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrUnavailable, q)
 		}
 	}
 	if p >= 0 {
 		st, err := pm.PartitionStatus(p)
 		if err != nil {
-			return fmt.Errorf("%w: %v", store.ErrNotWritable, err)
+			return fmt.Errorf("%w: %v", store.ErrUnavailable, err)
 		}
 		return n.partitionReadable(ctx, pm, st, wait)
 	}
@@ -85,7 +85,7 @@ func (n *Node) readableWithin(ctx context.Context, p int, wait time.Duration) er
 func (n *Node) partitionReadable(ctx context.Context, pm *partition.Manager, st partition.PartitionStatus, wait time.Duration) error {
 	p := st.Partition
 	if !st.CanRead {
-		return fmt.Errorf("%w: partition %d cannot be read on this node: %s", store.ErrNotWritable, p, unreadableWhy(st))
+		return fmt.Errorf("%w: partition %d cannot be read on this node: %s", store.ErrUnavailable, p, unreadableWhy(st))
 	}
 	if st.Committed.Seq >= st.OwnerCommitted.Seq {
 		return nil
@@ -98,7 +98,7 @@ func (n *Node) partitionReadable(ctx context.Context, pm *partition.Manager, st 
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: this node is behind on partition %d", store.ErrNotWritable, p)
+	return fmt.Errorf("%w: this node is behind on partition %d", store.ErrUnavailable, p)
 }
 
 // unreadableWhy says why a partition is not readable here.

@@ -124,7 +124,7 @@ func TestLeaseReleaseAndFence(t *testing.T) {
 	if a.IsLeader() {
 		t.Fatal("still leader after releasing")
 	}
-	if err := a.fenced(ctx); !errors.Is(err, store.ErrNotWritable) {
+	if err := a.fenced(ctx); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a fenced write after the release: %v", err)
 	}
 	// The other node takes over at once.
@@ -198,7 +198,7 @@ func TestHousekeepingFencedAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("b takes over: %v", err)
 	}
 	a.lease.until.Store(time.Now().Add(time.Hour).UnixNano()) // a's clock (or pause) makes it believe it still leads
-	if err := a.Store().Put(ctx, newRec(newID(), "")); !errors.Is(err, store.ErrNotWritable) {
+	if err := a.Store().Put(ctx, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a housekeeping write after the lease passed on: %v", err)
 	}
 	if err := b.Store().Put(b.fence(bg), newRec(newID(), "")); err != nil {

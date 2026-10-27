@@ -290,7 +290,7 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 		t.Helper()
 		for _, tr := range tries {
 			err := tn.st().Put(bg, tr.rec)
-			if tr.ok && err != nil || !tr.ok && !errors.Is(err, store.ErrNotWritable) {
+			if tr.ok && err != nil || !tr.ok && !errors.Is(err, store.ErrUnavailable) {
 				t.Fatalf("%s, %s: %v (want allowed: %v)", state, tr.what, err, tr.ok)
 			}
 			if !tr.ok && !tr.rec.Deleted {

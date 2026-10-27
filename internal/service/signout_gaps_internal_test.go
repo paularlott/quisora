@@ -72,7 +72,7 @@ func TestSweepKeepsItsPositionOnAnError(t *testing.T) {
 	withSweepAge(t)
 	sw := sweepStartingAt(model.KindUser)
 	start := *sw
-	st.err = store.ErrNotWritable // the organization (the owner of the user) cannot be read
+	st.err = store.ErrUnavailable // the organization (the owner of the user) cannot be read
 	if _, err := s.SweepOrphans(ctx, sw, 100); err == nil {
 		t.Fatal("a sweep that could not read an owner succeeded")
 	}

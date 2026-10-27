@@ -239,9 +239,9 @@ func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "node 1 to refuse the partition it trails", func() bool {
 		_, err := sessions(c.nodes[1]).Get(bg, sess.ID)
-		return errors.Is(err, store.ErrNotWritable)
+		return errors.Is(err, store.ErrUnavailable)
 	})
-	if _, err := c.nodes[1].st().Lookup(bg, model.KindSession, sess.ID); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := c.nodes[1].st().Lookup(bg, model.KindSession, sess.ID); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a lookup on the trailing node: %v", err)
 	}
 	if _, err := sessions(c.nodes[1]).Get(bg, other.ID); err != nil {
@@ -310,7 +310,7 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 		ok, why := c.nodes[2].n.Ready()
 		return !ok && strings.Contains(why, "diverged")
 	})
-	if _, err := c.nodes[2].st().Get(bg, dataKind, ids[0]); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := c.nodes[2].st().Get(bg, dataKind, ids[0]); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a record of the diverged partition served: %v", err)
 	}
 	for _, tn := range c.nodes[:2] {
@@ -359,11 +359,8 @@ func TestTrailingNodeRefusesToListSigningKeys(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "the trailing node to refuse listing the keys", func() bool {
 		_, _, err := keys(c.nodes[trail]).List(bg, store.ListQuery{})
-		return errors.Is(err, store.ErrNotWritable)
+		return errors.Is(err, store.ErrUnavailable)
 	})
-	if c.nodes[trail].n.VouchesForGlobal() || !c.nodes[owner].n.VouchesForGlobal() {
-		t.Fatal("VouchesForGlobal does not follow the global partition's readability")
-	}
 	if ks, _, err := keys(c.nodes[owner]).List(bg, store.ListQuery{}); err != nil || len(ks) != 0 {
 		t.Fatalf("the majority's listing: %d keys, %v", len(ks), err)
 	}
@@ -415,10 +412,10 @@ func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
 	if st, err := victim.n.pst.State(p); err != nil || st.Committed.Seq != 0 || st.Pending != nil {
 		t.Fatalf("the library is told the partition holds %+v (%v), want nothing", st, err)
 	}
-	if err := victim.n.readable(bg, p); !errors.Is(err, store.ErrNotWritable) || !strings.Contains(err.Error(), "importing") {
+	if err := victim.n.readable(bg, p); !errors.Is(err, store.ErrUnavailable) || !strings.Contains(err.Error(), "importing") {
 		t.Fatalf("a read of the partition while its import is unfinished: %v", err)
 	}
-	if _, err := victim.st().Get(bg, dataKind, first[0]); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := victim.st().Get(bg, dataKind, first[0]); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a read in the emptied partition: %v", err)
 	}
 	if err := victim.n.pst.Commit(&partition.Write{Partition: p, Pos: partition.Pos{Seq: upTo.Seq + 1}}); err == nil {
@@ -526,7 +523,7 @@ func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
 	n.pst.importing[5].Store(true)
 	_, err := n.st.Snapshot(bg)
 	n.pst.importing[5].Store(false)
-	if !errors.Is(err, store.ErrNotWritable) {
+	if !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("snapshot while a partition is importing: %v", err)
 	}
 	r, err := n.st.Snapshot(bg)
@@ -534,7 +531,7 @@ func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
 		t.Fatalf("snapshot with no import: %v", err)
 	}
 	r.Close()
-	if _, err := n.st.snapshotOf(bg, importBegins{n.st.inner.(store.Snapshotter), n}); !errors.Is(err, store.ErrNotWritable) {
+	if _, err := n.st.snapshotOf(bg, importBegins{n.st.inner.(store.Snapshotter), n}); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("snapshot taken as an import began: %v", err)
 	}
 }

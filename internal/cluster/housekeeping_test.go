@@ -70,7 +70,7 @@ func TestHousekeepingFencedAfterDeposed(t *testing.T) {
 	c.heal()
 	c.waitReady()
 	waitFor(t, 30*time.Second, "the old owner to be fenced", func() bool { return old.n.fenced(fctx) != nil })
-	if err := old.st().Put(fctx, newOrgRec("")); !errors.Is(err, store.ErrNotWritable) {
+	if err := old.st().Put(fctx, newOrgRec("")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a housekeeping write of a deposed leader: %v", err)
 	}
 	putRetrying(t, old, newOrgRec("")) // the node itself is fine

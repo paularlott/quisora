@@ -24,7 +24,7 @@ func (f *provisionFaults) Tx(ctx context.Context, ops []store.Op) error {
 	creates := false
 	for _, op := range ops {
 		if op.Rec.Kind == model.KindIdentity && f.identityDown.Load() {
-			return store.ErrNotWritable
+			return store.ErrUnavailable
 		}
 		creates = creates || op.Rec.Kind == model.KindUser && op.Match && op.Expect == 0
 	}

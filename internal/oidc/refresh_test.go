@@ -400,7 +400,7 @@ func TestRefreshWriteConflicts(t *testing.T) {
 	}
 	t.Run("not writable", func(t *testing.T) {
 		rt, _ := fresh()
-		failGrants(t, func() error { return store.ErrNotWritable })
+		failGrants(t, func() error { return store.ErrUnavailable })
 		expectUnavailable(t, "not writable", h.refreshWith(cl, secret, rt))
 	})
 	t.Run("other write error", func(t *testing.T) {

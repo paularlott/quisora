@@ -27,8 +27,8 @@ var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember,
 	model.KindClient, model.KindProvider, model.KindPasskey, model.KindIdentity, model.KindAPIToken, model.KindSignIn,
 	model.KindSession, model.KindGrant, model.KindLock}
 
-// sweepMinAge is how old a record must be before the sweep may remove it: its owner, created on another node, may
-// not have reached this one yet.
+// sweepMinAge is how old a record must be before the sweep may remove it: well past the store's staleness bound, so
+// its owner, made elsewhere at the same time, is visible here.
 var sweepMinAge = time.Hour
 
 // lockRetention is how long a lock record outlives its holder's lease (a holder that died; a node reporting its

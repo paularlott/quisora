@@ -208,21 +208,18 @@ func TestPublicClientRevokeAndIntrospect(t *testing.T) {
 	}
 }
 
-// Nodes sharing a database without gossip are never told about another node's client changes, so the CORS origin
-// cache is bounded like the client cache there (ShortCaches); otherwise it lasts a minute, evicted by change hooks.
+// The CORS origin cache is bounded like every cache here (cacheTTL), whatever the store: within the bound it is
+// served, past it read again.
 func TestOriginCacheTTL(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	for _, short := range []bool{false, true} {
-		if short {
-			h.p.ShortCaches()
-		}
-		r := httptest.NewRequest("OPTIONS", "/oauth/token", nil)
-		first := h.p.publicOrigins(r)
-		first.at = time.Now().Add(-shortTTL - time.Second)
-		reloaded := h.p.publicOrigins(r) != first
-		if reloaded != short {
-			t.Errorf("short caches %v: reloaded after %v = %v", short, shortTTL+time.Second, reloaded)
-		}
+	r := httptest.NewRequest("OPTIONS", "/oauth/token", nil)
+	first := h.p.publicOrigins(r)
+	if h.p.publicOrigins(r) != first {
+		t.Error("the origins were read again within the bound")
+	}
+	first.at = time.Now().Add(-cacheTTL - time.Second)
+	if h.p.publicOrigins(r) == first {
+		t.Errorf("the origins were not read again after %v", cacheTTL+time.Second)
 	}
 }

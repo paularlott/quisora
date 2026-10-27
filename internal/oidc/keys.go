@@ -27,8 +27,6 @@ const (
 	// keyOverlap is how long a freshly published key waits before it signs, so every relying party that caches the
 	// JWKS (max-age 5 minutes) has seen it first.
 	keyOverlap = 15 * time.Minute
-	// keyRefresh is the backstop interval for re-reading signing keys from the store (Invalidate evicts sooner).
-	keyRefresh = 60 * time.Second
 	// unknownKIDRefresh bounds how often a token naming an unknown kid may force a reload.
 	unknownKIDRefresh = 5 * time.Second
 )
@@ -176,21 +174,9 @@ func (p *Provider) canMint(ks *keySet) error {
 	return nil
 }
 
-// vouched refuses (store.ErrNotWritable) while this node cannot vouch for the signing keys (service GlobalReadable):
-// nothing cached is served then, whatever its age.
-func (p *Provider) vouched() error {
-	if f := p.svc.GlobalReadable; f != nil && !f() {
-		return fmt.Errorf("%w: this node trails the cluster's signing keys", store.ErrNotWritable)
-	}
-	return nil
-}
-
 // keys returns the cached key set, reloading it when stale.
 func (p *Provider) keys(ctx context.Context) (*keySet, error) {
-	if err := p.vouched(); err != nil {
-		return nil, err
-	}
-	if ks := p.keySet.Load(); ks != nil && time.Since(ks.loaded) < p.keyMaxAge() {
+	if ks := p.keySet.Load(); ks != nil && time.Since(ks.loaded) < cacheTTL {
 		return ks, nil
 	}
 	return p.reloadKeys(ctx, false)
@@ -199,16 +185,16 @@ func (p *Provider) keys(ctx context.Context) (*keySet, error) {
 func (p *Provider) reloadKeys(ctx context.Context, force bool) (*keySet, error) {
 	p.keyMu.Lock()
 	defer p.keyMu.Unlock()
-	if ks := p.keySet.Load(); ks != nil && !force && time.Since(ks.loaded) < p.keyMaxAge() {
+	if ks := p.keySet.Load(); ks != nil && !force && time.Since(ks.loaded) < cacheTTL {
 		return ks, nil
 	}
 	for {
 		gen := p.generation()
 		ks, err := p.loadKeys(ctx)
 		if err != nil {
-			// The keys last loaded stand in while the store cannot be read, but not when this node cannot vouch for them
-			// (it trails the cluster: a key may have been revoked since): it answers unavailable rather than publish them.
-			if old := p.keySet.Load(); old != nil && !errors.Is(err, store.ErrNotWritable) {
+			// The keys last loaded stand in while the store fails, but not when it refuses (unavailable): past cacheTTL
+			// they are not known to be current (a key may have been revoked since), so the answer is unavailable.
+			if old := p.keySet.Load(); old != nil && !errors.Is(err, store.ErrUnavailable) {
 				return old, nil
 			}
 			return nil, err
@@ -460,9 +446,6 @@ func (p *Provider) RemoveKey(ctx context.Context, id string) error {
 
 // jwksJSON returns the published key set: every unexpired key (including ones that have not started signing).
 func (p *Provider) jwksJSON(ctx context.Context) ([]byte, error) {
-	if err := p.vouched(); err != nil {
-		return nil, err
-	}
 	if c := p.jwksCache.Load(); c != nil && time.Since(c.at) < 30*time.Second && c.loaded == p.keySet.Load() {
 		return c.body, nil
 	}
@@ -496,12 +479,4 @@ func atHash(alg, accessToken string) string {
 	}
 	h := sha256.Sum256([]byte(accessToken))
 	return b64.EncodeToString(h[:16])
-}
-
-// keyMaxAge is how long the loaded key set is trusted before it is read again (ShortCaches shortens it).
-func (p *Provider) keyMaxAge() time.Duration {
-	if p.shortKeys.Load() {
-		return shortTTL
-	}
-	return keyRefresh
 }

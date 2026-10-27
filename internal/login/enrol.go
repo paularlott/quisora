@@ -140,7 +140,7 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	// The commit: a compare-and-swap on the version of the user enrolTicket read and validated this request (no
 	// factor, same generation as the ticket), moving the security generation on. Two completions for the same
 	// account — this ticket twice, or two tickets issued from the same password — both read the same version, and
-	// the store lets exactly one write it (the owner of the record's partition decides which); the other finds it stale and
+	// the store lets exactly one write it; the other finds it stale and
 	// sends its browser back to sign in, where the factor that won now stands between it and a session.
 	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
 		if errors.Is(err, store.ErrStale) {

@@ -66,7 +66,7 @@ func (a *App) purgeLostQueueItems(ctx context.Context, before time.Time) (mail, 
 		org = p.ID
 	}
 	a.Svc.Audit(ctx, service.System, org, "queue.purge_lost", "queues", detail)
-	if rerr := a.Svc.ReportMasterKey(context.WithoutCancel(ctx), a.Node.ID()); rerr != nil {
+	if rerr := a.reportKey(context.WithoutCancel(ctx)); rerr != nil {
 		a.Log.Warn("master key: reporting this node's key (retried)", "error", rerr)
 	}
 	return mail, logout, err

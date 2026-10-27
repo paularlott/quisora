@@ -16,7 +16,7 @@ import (
 func TestHousekeepingWaitsQuietlyForAWritableCluster(t *testing.T) {
 	log := logtest.New()
 	hk := housekeepingLog{log: log}
-	unwritable := fmt.Errorf("%w: partition 0 has no owner", store.ErrNotWritable)
+	unwritable := fmt.Errorf("%w: partition 0 has no owner", store.ErrUnavailable)
 	for range 5 {
 		if hk.ok("signing key rotation", unwritable) {
 			t.Fatal("a failure reported as done")

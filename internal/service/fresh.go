@@ -8,8 +8,7 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// Reads are of this node's copy, as the store answers them: current within its bound (StaleAfter in a gossip
-// cluster), or refused (store.ErrUnavailable). A decision that must be exact is made by a write (compare-and-swap), not
+// Reads are as the store answers them: current within its bound, or refused (store.ErrUnavailable). A decision that must be exact is made by a write (compare-and-swap), not
 // by a read.
 
 // getMany reads the live records of kind with these ids: missing, expired and deleted ones are left out.

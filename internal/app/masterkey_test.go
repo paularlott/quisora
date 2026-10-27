@@ -115,7 +115,7 @@ func TestGossipMasterKeyRotation(t *testing.T) {
 			}
 		}
 	}
-	waitAll("the cluster to be ready", 60*time.Second, func(n *rotNode) bool { ok, _ := n.app.Node.Ready(); return ok })
+	waitAll("the cluster to be ready", 60*time.Second, func(n *rotNode) bool { ok, _ := n.app.Server.Health.Ready(); return ok })
 
 	// Secrets sealed with the old key: a user's authenticator secret, a provider's client secret, a refresh grant.
 	write := func(n *rotNode, fn func() error) {
@@ -194,7 +194,7 @@ func TestGossipMasterKeyRotation(t *testing.T) {
 		key, err := s.GrantRefreshKey(gg)
 		return err == nil && string(key) == string(grantKey) && !stale(gg.Key)
 	}
-	ready := func(n *rotNode) bool { ok, _ := n.app.Node.Ready(); return ok }
+	ready := func(n *rotNode) bool { ok, _ := n.app.Server.Health.Ready(); return ok }
 	state := func(n *rotNode, want string, removable bool) func(*rotNode) bool {
 		return func(*rotNode) bool {
 			st, err := n.app.Svc.RotationStatus(ctx)

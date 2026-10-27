@@ -38,11 +38,13 @@ const (
 	nsLogout   = "oauth.logout"
 	flowTTL    = 20 * time.Minute
 	usedTTL    = time.Hour
-	cacheTTL   = 30 * time.Second // clients; hooks evict sooner
-	shortTTL   = 5 * time.Second  // users, orgs
-	grantTTL   = 3 * time.Second  // grant-alive checks for introspection / userinfo
-	leeway     = 30 * time.Second
-	maxScopes  = 64
+	// cacheTTL bounds every cache of stored data here (clients, users, organizations, tenants, groups, the public
+	// clients' origins, the signing keys): a change made elsewhere counts here within it, whatever the store; a change
+	// this node hears of (cache eviction hooks) counts at once.
+	cacheTTL  = 5 * time.Second
+	grantTTL  = 3 * time.Second // grant-alive checks for introspection / userinfo
+	leeway    = 30 * time.Second
+	maxScopes = 64
 )
 
 // Provider is the OIDC provider module.
@@ -66,10 +68,8 @@ type Provider struct {
 	keyGen        uint64     // bumped by Invalidate
 	lastKIDReload atomic.Int64
 	jwksCache     atomic.Pointer[jwksSnapshot]
-	shortKeys     atomic.Bool // ShortCaches: re-read signing keys every few seconds
 	origins       atomic.Pointer[originSet]
-	originsMu     sync.Mutex  // one re-read of the public clients' origins at a time
-	shortOrigins  atomic.Bool // origins are re-read after shortTTL, not a minute (ShortCaches)
+	originsMu     sync.Mutex // one re-read of the public clients' origins at a time
 
 	clients *ttlCache[*clientEntry]
 	users   *ttlCache[*model.User]
@@ -97,25 +97,14 @@ type Provider struct {
 // New builds the provider for server s. Register mounts its routes.
 func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log, issuer: s.Cfg.Issuer(),
-		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), users: newTTLCache[*model.User](shortTTL, 200_000),
-		orgs: newTTLCache[*model.Org](shortTTL, 20_000), tenants: newTTLCache[*model.Tenant](shortTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](shortTTL, 200_000),
+		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), users: newTTLCache[*model.User](cacheTTL, 200_000),
+		orgs: newTTLCache[*model.Org](cacheTTL, 20_000), tenants: newTTLCache[*model.Tenant](cacheTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](cacheTTL, 200_000),
 		remoteKey: map[string]*remoteJWKS{}, bcQueue: make(chan bcTarget, bcQueueMax)}
 	p.tokenURL = p.issuer + "/oauth/token"
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
 	p.discovery = p.buildDiscovery()
 	return p
-}
-
-// ShortCaches bounds the client and CORS origin caches like the user and organization caches (5s). Nodes that share a database
-// without gossip call it: they are never told about another node's changes, so a cache entry's age is the only
-// bound on how long a disabled client or a rotated secret keeps working there.
-func (p *Provider) ShortCaches() {
-	p.clients.mu.Lock()
-	p.clients.ttl = shortTTL
-	p.clients.mu.Unlock()
-	p.shortKeys.Store(true) // a key rotated by another node is published (and used) here within seconds
-	p.shortOrigins.Store(true)
 }
 
 // InvalidateClient evicts a cached client ("" = all).
@@ -193,13 +182,12 @@ func (p *Provider) Register(s *web.Server) {
 	}
 	// So does a user removing one application's access from their account.
 	p.svc.OnAppAccessEnding = p.BackchannelLogoutClient
-	// A node that may not change replicated data now (catching up after a start, a new node copying the cluster's
-	// data) leaves keys to the housekeeping leader: a key it made from its own, possibly incomplete, view would be
-	// one more for every node.
-	if p.svc.CanWrite() {
-		if err := p.EnsureKeys(context.Background()); err != nil {
-			p.log.Error("oidc: ensuring signing keys", "error", err)
-		}
+	// A store that refuses now (still starting, say) leaves the keys to the housekeeping leader's rotation and to the
+	// first token signed.
+	if err := p.EnsureKeys(context.Background()); errors.Is(err, store.ErrUnavailable) {
+		p.log.Warn("oidc: signing keys not checked at start-up: the store refused; they are checked again later", "error", err)
+	} else if err != nil {
+		p.log.Error("oidc: ensuring signing keys", "error", err)
 	}
 	m := s.Mux
 	m.HandleFunc("GET /.well-known/openid-configuration", p.handleDiscovery)

@@ -12,8 +12,8 @@ import (
 )
 
 // Sign-in stamps live in each user's SignIn record (model.SignIn), never on the user: a sign-in writes only that
-// record, so it can neither overwrite nor be overwritten by an administrator's change of the user. In a gossip
-// cluster both kinds are written with a compare-and-swap that the owner of their partition checks.
+// record, so it can neither overwrite nor be overwritten by an administrator's change of the user. Both kinds are
+// written with a compare-and-swap.
 
 // WithSignIn fills in the users' LastLogin from their sign-in records (one batch read; a user without one, or a
 // failed read, keeps the zero value).
@@ -76,9 +76,6 @@ func (s *Service) updateSignIn(ctx context.Context, u *model.User, fn func(si *m
 // TouchLogin records a successful sign-in on the user's sign-in record (at most once a minute per user, to keep
 // writes down) and sets u.LastLogin. Best effort: a failure is not the sign-in's.
 func (s *Service) TouchLogin(ctx context.Context, u *model.User) {
-	if !s.CanWrite() {
-		return
-	}
 	now := time.Now().UTC()
 	err := s.updateSignIn(ctx, u, func(si *model.SignIn) bool {
 		if now.Sub(si.LastLogin) < time.Minute {
@@ -94,8 +91,7 @@ func (s *Service) TouchLogin(ctx context.Context, u *model.User) {
 }
 
 // ConsumeTOTP verifies a TOTP code and records its time step on the user's sign-in record with a compare-and-swap
-// — cluster-wide in a gossip cluster, confirmed by a majority — before it says yes: a code is accepted once, on
-// whichever node, and two nodes presented the same code at once accept it at most once. It fails closed: when the
+// before it says yes: a code is accepted once, on whichever node, and two nodes presented the same code at once accept it at most once. It fails closed: when the
 // step cannot be recorded the code is refused, with an error saying so (ErrUnavailable; ErrOutcomeUnknown when the step
 // may have been recorded: the code is used up then): not a wrong code, which is no error.
 func (s *Service) ConsumeTOTP(ctx context.Context, u *model.User, secret, code string) (bool, error) {

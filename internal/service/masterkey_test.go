@@ -42,23 +42,17 @@ func TestMasterKeyAgreement(t *testing.T) {
 	if ok, _, _ := e.svc.MasterKeyAgreed(e.ctx, ""); !ok {
 		t.Error("an expired report still counts")
 	}
-	// a live node whose report lapsed (or never came) is not known to agree
-	e.svc.LiveNodes = func() []string { return []string{"node-a", "node-b", "node-c"} }
-	ok, others, err = e.svc.MasterKeyAgreed(e.ctx, "node-a")
-	if err != nil || ok || len(others) != 2 || others["node-b"] != "no current report" || others["node-c"] != "no current report" {
-		t.Fatalf("live nodes without a current report: %v %v %v", ok, others, err)
-	}
-	if st, err := e.svc.RotationStatus(e.ctx); err != nil || st.NodesAgree || st.State != "waiting_for_nodes" {
-		t.Fatalf("status with live nodes without a current report: %+v %v", st, err)
-	}
 	if err := other.ReportMasterKey(e.ctx, "node-b"); err != nil { // (on its own key)
 		t.Fatal(err)
 	}
 	if err := e.svc.ReportMasterKey(e.ctx, "node-c"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, others, _ = e.svc.MasterKeyAgreed(e.ctx, "node-a"); ok || len(others) != 1 || others["node-b"] == "" || others["node-b"] == "no current report" {
+	if ok, others, _ = e.svc.MasterKeyAgreed(e.ctx, "node-a"); ok || len(others) != 1 || others["node-b"] == "" {
 		t.Fatalf("after the reports: %v %v", ok, others)
+	}
+	if st, err := e.svc.RotationStatus(e.ctx); err != nil || st.NodesAgree || st.State != "waiting_for_nodes" {
+		t.Fatalf("status with a node on another key: %+v %v", st, err)
 	}
 }
 

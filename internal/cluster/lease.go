@@ -145,7 +145,7 @@ func (n *Node) fenced(ctx context.Context) error {
 	if !ok || held(ctx) {
 		return nil
 	}
-	return fmt.Errorf("%w: housekeeping has passed to another node", store.ErrNotWritable)
+	return fmt.Errorf("%w: housekeeping has passed to another node", store.ErrUnavailable)
 }
 
 // release gives the lease up on shutdown so another node takes over at once.
