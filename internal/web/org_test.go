@@ -91,3 +91,22 @@ func TestSessionsBelongToTheirOrganization(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// The organization cache keeps an organization under its id and its name only: the many spellings a name is matched
+// in still resolve, but each would otherwise be an entry of its own, and a client could grow the cache without end.
+func TestOrgCacheKeepsCanonicalReferencesOnly(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{whoami{}} }})
+	beta, err := env.Svc.CreateOrg(context.Background(), service.System, service.OrgInput{Name: ptr("beta"), DisplayName: ptr("Beta")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := env.Client()
+	for _, ref := range []string{beta.ID, "beta", "BETA", "Beta", "bEtA"} {
+		if resp, body := get(t, c, env.URL+"/o/"+ref+"/whoami"); !strings.Contains(body, `"org":"`+beta.ID+`"`) {
+			t.Fatalf("%s: %d %s", ref, resp.StatusCode, body)
+		}
+	}
+	if n := env.Server.CachedOrgs(); n != 2 {
+		t.Fatalf("%d cached references, want 2 (id and name)", n)
+	}
+}

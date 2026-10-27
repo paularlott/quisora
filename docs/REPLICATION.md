@@ -119,7 +119,7 @@ real CPU cost of a sign-in, stays on the node that took the request.
 The owner of a partition is the ready node with the highest rendezvous hash of (partition, node id), computed by every
 node from its own view of the membership; when a node leaves or joins, only the partitions whose highest hash was or
 becomes that node move. A node is a candidate once it has caught up and a hold-down has passed
-(`ReadyHoldDown`, 3 s by default: slept once, after the start-up catch-up and before the node publishes that it is ready,
+(`ReadyHoldDown`, twice the owner timeout: 10 s, slept once, after the start-up catch-up and before the node publishes that it is ready,
 so a node that crash-loops does not claim partitions between its starts; it does not apply when a running node loses and
 regains a majority). Readiness gates
 **ownership only**: a node that is not ready but holds its data still promises, stores writes and serves catch-up, or a
@@ -127,11 +127,16 @@ three-node cluster could not write while one node restarts.
 
 Owners tell every node about once per `HeartbeatInterval` (500 ms) which partitions they own, at which epoch and
 position. A node refuses to promise a partition to a challenger while it has heard from the current owner within the
-owner timeout (three heartbeats: 1.5 s), and a node that thinks it should own a partition waits a random backoff
-first: so two nodes that can each reach a majority but not each other do not take a partition back and forth. A
+owner timeout (5 s, as Galera's `evs.suspect_timeout`), and a node that thinks it should own a partition waits a random
+backoff first: so two nodes that can each reach a majority but not each other do not take a partition back and forth. A
 partition whose owner is lost is taken over after the owner timeout, the rank delay (1 s per rank) and the backoff (up
-to 1.5 s) plus one promise round: **about 3.5 seconds** after an owner crashes (3.75 s measured at full scale), during
-which writes to it fail with `store.ErrUnavailable` or wait for it, up to the 5 s write timeout. An owner that is
+to 1.5 s) plus one promise round: **about 6.5 seconds** after an owner crashes (7.5 s measured under full load), during which writes to it fail with
+`store.ErrUnavailable` (503, retry) once the 5 s write timeout has passed. The owner timeout is that long so that a node
+that is busy, not gone, keeps its partitions: with the protocol's default (three heartbeats, 1.5 s), nodes on saturated
+CPUs (a flood of password sign-ins) heard each other's heartbeats late, stopped serving reads and stopped being ready
+although every node was up. The gossip failure detector waits as long: the partition protocol counts only the nodes
+gossip holds alive, so gossip pings a peer only after 5 s without a message from it and suspects it when that ping goes
+unanswered for a second (its defaults, 1.5 s and 500 ms, cost a busy node its quorum the same way). An owner that is
 stopped (`SIGTERM`) hands its partitions back at once, and a partition handed back to a node that returns is taken
 over at once (the claim's fast path), not after the timeouts. Views can disagree about who should own a partition;
 that costs refused or delayed writes on the partitions involved, never a lost or
@@ -163,7 +168,7 @@ record's partition (`partition.Manager.Write`) and return when it has committed:
    returns, so `Get` after `Put` sees it on the same node. Other nodes see it a message later.
 5. **A refusal is read after what caused it.** When the owner refuses a change (a stale version, a unique value in use,
    a record gone), its refusal carries the owner's committed position; the landing node waits (bounded by the
-   partition's staleness bound, `StaleAfter`, 1.5 s) until it has applied that position before it returns `store.ErrStale`
+   partition's staleness bound, `StaleAfter`: the owner timeout, 5 s) until it has applied that position before it returns `store.ErrStale`
    (or the other refusal), so the caller's re-read sees what made the change stale instead of the same old copy. A node
    that cannot catch up in that time fails closed: it returns `store.ErrUnavailable` (503, retry), never a refusal the
    caller would judge by a copy it cannot trust. A refresh token presented again after its rotation, on a node
@@ -851,7 +856,7 @@ dates are compare-and-swap updates and purging is idempotent. Keep clock skew be
 
 ## Known limits
 
-- **A partition without a majority is unavailable** for writes and fresh reads; a lost owner takes about 3.5 seconds to replace
+- **A partition without a majority is unavailable** for writes and fresh reads; a lost owner takes about 6.5 seconds to replace
   (writes to its partitions wait for it, up to the 5 s write timeout, then fail with 503). A node stopped with `SIGTERM` hands over
   at once.
 - **One write at a time per partition**: an organization's sign-ins and token grants all go through its one owner (audit

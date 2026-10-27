@@ -68,10 +68,12 @@ func (s *Server) InOrg(next http.Handler) http.Handler {
 // to count here, as the OIDC provider's caches do; a change this node hears of counts at once (InvalidateOrgs).
 const orgTTL = 5 * time.Second
 
-// orgCache keeps the organizations InOrg resolved, by the reference the path gave (id or name). Every request under
+// orgCache keeps the organizations InOrg resolved, by their id and their name exactly as stored. Every request under
 // /o/<org> resolves one, and a store read may wait for the writes in flight (BadgerDB's read timestamp): uncached,
-// the discovery and token endpoints queue behind every sign-in. It holds existing organizations only, so it is
-// bounded by their number (twice: id and name), and is emptied whenever any organization changes, which is rare.
+// the discovery and token endpoints queue behind every sign-in. Only those two forms are kept, so it is bounded by the
+// number of organizations (twice) however a client spells a name (a name is matched in any case and Unicode form:
+// every spelling would be an entry of its own); another spelling is read from the store each time. It is emptied
+// whenever any organization changes, which is rare.
 type orgCache struct {
 	mu  sync.RWMutex
 	m   map[string]orgEntry
@@ -94,6 +96,9 @@ func (c *orgCache) get(ctx context.Context, svc *service.Service, ref string) (*
 	org, err := svc.OrgByRef(ctx, ref)
 	if err != nil {
 		return nil, err
+	}
+	if ref != org.ID && ref != org.Name {
+		return org, nil
 	}
 	c.mu.Lock()
 	if c.gen == gen {

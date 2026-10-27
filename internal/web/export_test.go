@@ -11,3 +11,10 @@ func SetDrainUnit(t *testing.T, d time.Duration) {
 	drainUnit = d
 	t.Cleanup(func() { drainUnit = old })
 }
+
+// CachedOrgs is how many references the organization cache holds.
+func (s *Server) CachedOrgs() int {
+	s.orgs.mu.RLock()
+	defer s.orgs.mu.RUnlock()
+	return len(s.orgs.m)
+}

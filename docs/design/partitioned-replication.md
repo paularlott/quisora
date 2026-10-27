@@ -276,7 +276,8 @@ Built and tested in the gossip library first; Quisora moves to it only if this h
    (docs/REPLICATION.md, "Changing the cluster size").
 4. *How long a write waits for an ownership change:* the library's write timeout, 5 s.
 5. *The owner timeout, heartbeat interval, backoff and staleness bound:* a heartbeat every 500 ms, an owner timeout of
-   three heartbeats, a rank delay of 1 s and a random backoff of up to 1.5 s (a takeover about 3.5 s after a crash), and
+   5 s (as Galera's suspect timeout; three heartbeats lost busy nodes under load), a rank delay of 1 s and a random
+   backoff of up to 1.5 s (a takeover about 6.5 s after a crash), and
    a node that cannot see a majority stops being ready at once and serves nothing (the token endpoints included).
 
 ## Plan (done)

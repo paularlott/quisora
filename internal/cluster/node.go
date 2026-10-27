@@ -376,6 +376,13 @@ func (n *Node) buildGossip() error {
 	gcfg.NumIncomingWorkers = 32
 	gcfg.NumSendWorkers = 16
 	gcfg.IncomingPacketQueueDepth = 4096
+	// The partition protocol counts only the nodes gossip holds alive (writes, heartbeats, promises, quorum), so a peer
+	// gossip suspects is as good as gone to it: gossip must tolerate the silence ownerTimeout does. Its defaults
+	// suspected a peer after 1.5 s without a message and one ping unanswered in 500 ms, which a busy node (saturated
+	// CPUs) missed, and the nodes then lost their quorum although every one was up. A ping is sent only after
+	// ownerTimeout of silence and gets a second (less than the 2 s health check interval).
+	gcfg.SuspectTimeout = ownerTimeout
+	gcfg.PingTimeout = time.Second
 	gcfg.ApplicationVersion = build.Version // shown per node on the cluster page (compatibility: metaCompat)
 	if n.opt.Gossip != nil {
 		n.opt.Gossip(gcfg)
@@ -455,6 +462,19 @@ func (n *Node) newManager() (*partition.Manager, error) {
 	return pm, nil
 }
 
+// ownerTimeout is how long a partition's owner may go unheard before the other nodes stop serving their copies of it
+// (it is also the protocol's StaleAfter) and one of them takes it over: 5 seconds, as Galera's evs.suspect_timeout. The
+// library's default, three heartbeats (1.5 s), lost a cluster whose nodes were busy, not gone: under a flood of password
+// sign-ins on saturated CPUs the heartbeats arrived late, the nodes refused reads and stopped being ready although every
+// node was up. It bounds how stale a node's answers can be when it is cut off from an owner, the same 5 seconds the
+// per-node caches allow a change made elsewhere (oidc cacheTTL, web orgTTL).
+const ownerTimeout = 5 * time.Second
+
+// takeoverBackoff is the random pause before a node proposes itself as the owner of a partition whose owner is gone
+// (partition.Tuning.BackoffMax; its default would be ownerTimeout): it only spreads the candidates' attempts, which
+// their ranks already order, so a lost owner is replaced within about ownerTimeout and this, not twice ownerTimeout.
+const takeoverBackoff = 1500 * time.Millisecond
+
 // partitionConfig is the partition protocol's configuration for the cluster's current size and this node's data set.
 // The library's defaults stand, Tuning.MaxChangesPerPartition and Tuning.MaxConcurrentCatchUps included: 32 changes of one hot
 // partition at once (an organization's sign-ins all go to one owner, one write at a time; more wait a few
@@ -469,6 +489,7 @@ func (n *Node) partitionConfig() partition.Config {
 	// Whether this node has formed (it has promised, or synchronised with an intact majority) is kept in
 	// cluster-state.json; a new data set forms around the node it was seeded on, whose founder the empty nodes copy.
 	pc.Formed, pc.SetFormed = n.formed.Load, n.setFormed
+	pc.OwnerTimeout, pc.Tuning.BackoffMax = ownerTimeout, takeoverBackoff
 	if n.opt.Partition != nil {
 		n.opt.Partition(&pc)
 	}
@@ -489,7 +510,7 @@ func transportDeadline(pc partition.Config) time.Duration {
 }
 
 // staleAfter is the partition protocol's StaleAfter for a configuration pc (partition.Config's defaulting: the owner
-// timeout, three heartbeats).
+// timeout, else three heartbeats).
 func staleAfter(pc partition.Config) time.Duration {
 	if pc.StaleAfter > 0 {
 		return pc.StaleAfter
