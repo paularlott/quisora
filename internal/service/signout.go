@@ -92,10 +92,9 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 		}
 	}
 	if !okSrv || now.Sub(srvAt) > signOutCacheTTL {
-		p, perr := s.PrimaryOrg(ctx)
-		switch {
+		var perr error
+		switch srv, perr = s.serverSignOut(ctx); {
 		case perr == nil:
-			srv = p.ServerSignOut
 			c.mu.Lock()
 			if c.gen == gen {
 				c.server, c.hasSrv, c.fetched = srv, true, now
@@ -106,6 +105,24 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 		}
 	}
 	return co.c, srv, nil
+}
+
+// serverSignOut returns the server's sign-out counters: the highest of the organizations marked primary (two while a
+// set-primary is under way: a server-wide sign-out counts on the one PrimaryOrg chooses, which a node may have
+// remembered differently for a moment; SetPrimaryOrg copies them to the new one before the old stops counting).
+func (s *Service) serverSignOut(ctx context.Context) (model.SignOutCounters, error) {
+	orgs, err := s.primaryOrgs(ctx)
+	if err != nil {
+		return model.SignOutCounters{}, err
+	}
+	if len(orgs) == 0 {
+		return model.SignOutCounters{}, ErrNotFound
+	}
+	c := orgs[0].ServerSignOut
+	for _, o := range orgs[1:] {
+		c.Sessions, c.APITokens = max(c.Sessions, o.ServerSignOut.Sessions), max(c.APITokens, o.ServerSignOut.APITokens)
+	}
+	return c, nil
 }
 
 // gateRefused reports whether err is the staleness gate refusing a read: the node cannot vouch for its copy.
@@ -228,6 +245,15 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 		o, err := s.Orgs.Get(ctx, orgID)
 		if err != nil {
 			return nil, mapStore(err)
+		}
+		if server && !o.Primary && attempt < 4 {
+			// no longer the primary (a set-primary finished since it was chosen): counted on the one that is
+			p, err := s.PrimaryOrg(ctx)
+			if err != nil {
+				return nil, mapStore(err)
+			}
+			orgID = p.ID
+			continue
 		}
 		c := &o.SignOut
 		if server {

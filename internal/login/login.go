@@ -415,6 +415,19 @@ func (m *Module) lockedResponse(w http.ResponseWriter) {
 // ---- audit ---------------------------------------------------------------------------------------------------
 
 func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.User, login string, detail map[string]string) {
+	a, orgID, target := auditActor(r, org, u, login)
+	m.s.Svc.Audit(context.WithoutCancel(r.Context()), a, orgID, action, target, detail)
+}
+
+// auditUnknown records action as audit does, with outcome "unknown": the change ended with err, whose outcome is not
+// known (it may have been made), and one that was made must not be missing from the audit log.
+func (m *Module) auditUnknown(r *http.Request, action string, org *model.Org, u *model.User, detail map[string]string, err error) {
+	a, orgID, target := auditActor(r, org, u, u.Username)
+	_ = m.s.Svc.Audited(context.WithoutCancel(r.Context()), a, orgID, action, target, detail, func() error { return err })
+}
+
+// auditActor is who an audit event of the request names, in which organization, and its target.
+func auditActor(r *http.Request, org *model.Org, u *model.User, login string) (*service.Actor, string, string) {
 	login = auditLogin(login)
 	a := &service.Actor{IP: web.ClientIP(r), Name: login}
 	target := login
@@ -426,7 +439,7 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 		a.UserID, a.OrgID, a.Role, a.Name = u.ID, u.OrgID, u.Role, u.Username
 		target, orgID = u.Username, u.OrgID
 	}
-	m.s.Svc.Audit(context.WithoutCancel(r.Context()), a, orgID, action, target, detail)
+	return a, orgID, target
 }
 
 // auditLogin is what an audit event records of a login typed for an account that was not found: the address when it

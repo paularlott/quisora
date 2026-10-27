@@ -481,6 +481,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 	}
 	// One commit sets the password and uses the link up (with any invitation of the account); a password the
 	// policy refuses, or a failure, leaves the link usable. Every session and refresh grant of the account ends.
+	resetting := u
 	_, u, err = m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkReset, in.Password, 0)
 	if err != nil {
 		switch {
@@ -488,6 +489,7 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusGone, msgBadLink, "")
 		case errors.Is(err, service.ErrOutcomeUnknown):
 			// The link is used up if the reset was made, and trying it again would only say it is invalid.
+			m.auditUnknown(r, "password.reset", org, resetting, nil, err)
 			writeErr(w, http.StatusServiceUnavailable, msgResetUnknown, "")
 		default:
 			web.WriteError(w, err)

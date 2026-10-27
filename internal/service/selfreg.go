@@ -22,7 +22,8 @@ import (
 //
 // They are public clients with PKCE (no secret to keep), for user scopes only, with redirect URIs that are https, the
 // loopback interface or a private-use scheme; consent is always asked. Registration is unauthenticated, so it is
-// limited per address (by the caller) and capped in total, and a registration never used is removed after a day.
+// limited per address (by the caller) and capped in total, a registration never used is removed after a day, and one
+// no longer used after selfRegIdleTTL.
 
 const (
 	// MaxSelfRegistered caps self-registered applications nobody has used yet: registration is refused beyond it
@@ -30,6 +31,9 @@ const (
 	MaxSelfRegistered = 10000
 	// selfRegUnusedTTL is how long a self-registered application never used to sign anyone in is kept.
 	selfRegUnusedTTL = 24 * time.Hour
+	// selfRegIdleTTL is how long one is kept after its last use (at least the refresh token lifetime, so it holds no
+	// grant that still works: a grant ends that long after it was made, and each was made at a use).
+	selfRegIdleTTL = 90 * 24 * time.Hour
 	// MetadataRefresh is how old a metadata document may get before it is read again; MetadataStale, how old one
 	// may be used while its URL cannot be read.
 	MetadataRefresh = 24 * time.Hour
@@ -239,15 +243,17 @@ func (s *Service) NoteSelfRegisteredUse(ctx context.Context, app *model.Client, 
 }
 
 // PurgeSelfRegistered removes the self-registered applications never used to sign anyone in within a day of
-// registering. It returns how many went.
+// registering, and those not used for selfRegIdleTTL (or the refresh token lifetime, if longer): registration is
+// unauthenticated, and nothing else would ever remove one. It returns how many went.
 func (s *Service) PurgeSelfRegistered(ctx context.Context, now time.Time) int {
 	l, _, err := s.Clients.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "self_registered", Value: true}}})
 	if err != nil {
 		return 0
 	}
+	idle := max(selfRegIdleTTL, s.Cfg.Tokens.Refresh()+24*time.Hour)
 	n := 0
 	for _, c := range l {
-		if c.LastUsed.IsZero() && now.Sub(c.Created) > selfRegUnusedTTL {
+		if c.LastUsed.IsZero() && now.Sub(c.Created) > selfRegUnusedTTL || !c.LastUsed.IsZero() && now.Sub(c.LastUsed) > idle {
 			if err := s.Clients.Delete(ctx, c.ID); err == nil {
 				n++
 			}

@@ -152,6 +152,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 	if wantPassword {
 		password = in.Password
 	}
+	invited := u
 	_, u, err := m.s.Svc.UseSignInLink(ctx, in.Token, service.LinkInvite, password, epoch)
 	if err != nil {
 		if errors.Is(err, service.ErrLink) {
@@ -162,6 +163,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, service.ErrOutcomeUnknown) {
 			// (the commit may be in effect: its passkey stays; the sweep tidies orphans.) The invitation is used up if it
 			// is, and trying it again would only say it is invalid: say what to do instead.
+			m.auditUnknown(r, "invite.accept", org, invited, nil, err)
 			writeErr(w, http.StatusServiceUnavailable, msgInviteUnknown, "")
 		} else {
 			web.WriteError(w, err)

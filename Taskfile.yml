@@ -145,10 +145,17 @@ tasks:
     cmds:
       - scripts/cover.sh
 
+  chaos:
+    desc: "The cluster chaos soak, strict (any invariant broken fails it), a minute on each node-local backend: random node kills, cut links, failed and cut catch-ups, unknown write outcomes (internal/cluster/chaos_test.go; QUISORA_CHAOS_SEED replays a run)"
+    cmds:
+      - QUISORA_CHAOS=1 QUISORA_CHAOS_STRICT=1 QUISORA_CHAOS_BACKEND=badger go test -count=1 -timeout 15m -run TestChaosSoak ./internal/cluster/
+      - QUISORA_CHAOS=1 QUISORA_CHAOS_STRICT=1 QUISORA_CHAOS_BACKEND=sqlite go test -count=1 -timeout 15m -run TestChaosSoak ./internal/cluster/
+
   check:
-    desc: "Release gate: vet and every Go test with the race detector, production coverage at or above its floor, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
+    desc: "Release gate: vet and every Go test with the race detector, the cluster chaos soak, production coverage at or above its floor, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
     cmds:
       - task: test
+      - task: chaos
       - task: cover
       - task: apidocs-lint
       - go run golang.org/x/vuln/cmd/govulncheck@latest ./...

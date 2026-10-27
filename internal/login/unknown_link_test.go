@@ -11,6 +11,7 @@ import (
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -49,11 +50,22 @@ func TestResetOfUnknownOutcomeSaysThePasswordMayBeSet(t *testing.T) {
 	if msg := str(out, "error"); !strings.Contains(msg, "sign") || !strings.Contains(msg, "may have been changed") {
 		t.Fatalf("the answer does not say the password may be set: %q", msg)
 	}
+	wantUnknownAudit(t, e, "password.reset")
 	// it was: the link is used up, and the new password signs in
 	res, out = b.post("/api-internal/password/reset", map[string]any{"token": tok, "password": "another new password"})
 	wantStatus(t, res, out, http.StatusGone)
 	res, out = e.browser(t).login("acme", "pat", "a brand new password")
 	wantStatus(t, res, out, 200)
+}
+
+// wantUnknownAudit fails t unless action is on record once, with outcome "unknown": a change that may have been made
+// is never missing from the audit log.
+func wantUnknownAudit(t *testing.T, e *env, action string) {
+	t.Helper()
+	got := e.audits(t, action)
+	if len(got) != 1 || got[0].Outcome != service.OutcomeUnknown {
+		t.Fatalf("audit of %s with an unknown outcome: %+v", action, got)
+	}
 }
 
 // The same for the acceptance of an invitation.
@@ -71,6 +83,7 @@ func TestInviteOfUnknownOutcomeSaysItMayHaveBeenAccepted(t *testing.T) {
 	if msg := str(out, "error"); !strings.Contains(msg, "may have been accepted") || !strings.Contains(msg, "signing in") {
 		t.Fatalf("the answer does not say the invitation may be accepted: %q", msg)
 	}
+	wantUnknownAudit(t, e, "invite.accept")
 	res, out = b.post("/api-internal/invite/complete", map[string]any{"token": tok, "password": "my first password"})
 	wantStatus(t, res, out, http.StatusGone)
 }

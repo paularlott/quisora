@@ -10,6 +10,10 @@ import (
 // OutcomeUnknown is the outcome of the audit event of a change whose outcome is not known (audited).
 const OutcomeUnknown = "unknown"
 
+// OutcomeIncomplete is the outcome of the audit event of a change of several writes that stopped part-way, after some
+// of them took effect (auditPartial).
+const OutcomeIncomplete = "incomplete"
+
 type outcomeKey struct{}
 
 // change is the audit event of one change: what it records when the change takes effect.
@@ -49,6 +53,21 @@ func (s *Service) auditOutcome(ctx context.Context, a *Actor, err error, events 
 		return
 	}
 	for _, e := range events {
+		s.Audit(ctx, a, e.org, e.action, e.target, e.detail)
+	}
+}
+
+// auditPartial records the events of a change of several writes that ended with err after some of them took effect
+// (progressed): a known failure records them with outcome "incomplete" and the error, as the writes that did take
+// effect must be on record; otherwise it is auditOutcome.
+func (s *Service) auditPartial(ctx context.Context, a *Actor, err error, progressed bool, events ...change) {
+	if err == nil || outcomeUnknown(err) || !progressed {
+		s.auditOutcome(ctx, a, err, events...)
+		return
+	}
+	ctx = context.WithValue(ctx, outcomeKey{}, OutcomeIncomplete)
+	for _, e := range events {
+		e.detail["error"] = err.Error()
 		s.Audit(ctx, a, e.org, e.action, e.target, e.detail)
 	}
 }

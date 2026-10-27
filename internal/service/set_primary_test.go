@@ -143,8 +143,13 @@ func TestSetPrimaryOrgResumesAtEveryStep(t *testing.T) {
 			if _, _, err := m.svc.SetPrimaryOrg(m.ctx, m.acme.ID, m.boss.ID); !errors.Is(err, service.ErrUnavailable) {
 				t.Fatalf("failing write: %v", err)
 			}
-			if len(m.audited(m.acme.ID, "org.primary")) != 0 {
-				t.Fatal("an unfinished change was audited")
+			// What took effect is on record: a change stopped after a write landed is audited as incomplete.
+			wantIncomplete := 0
+			if i > 0 {
+				wantIncomplete = 1
+			}
+			if got := m.audited(m.acme.ID, "org.primary"); len(got) != wantIncomplete || outcomes(got, service.OutcomeIncomplete) != wantIncomplete {
+				t.Fatalf("audit of the unfinished change: %d events, %d incomplete; want %d", len(got), outcomes(got, service.OutcomeIncomplete), wantIncomplete)
 			}
 			// Whatever state it stopped in, the server has a primary organization.
 			if p, err := m.svc.PrimaryOrg(m.ctx); err != nil || (p.ID != m.acme.ID && p.ID != m.primary.ID) {
@@ -174,8 +179,12 @@ func TestSetPrimaryOrgResumesAtEveryStep(t *testing.T) {
 			if i == 2 && len(demoted) < wantDemoted || i != 2 && len(demoted) != wantDemoted {
 				t.Errorf("demoted %d users", len(demoted))
 			}
-			if len(m.audited(m.acme.ID, "org.primary")) != 1 || len(m.audited(m.primary.ID, "org.primary")) != 1 {
-				t.Errorf("audit of the rerun: new %d old %d", len(m.audited(m.acme.ID, "org.primary")), len(m.audited(m.primary.ID, "org.primary")))
+			finished := func(org string) int {
+				got := m.audited(org, "org.primary")
+				return len(got) - outcomes(got, service.OutcomeIncomplete)
+			}
+			if finished(m.acme.ID) != 1 || finished(m.primary.ID) != 1 {
+				t.Errorf("audit of the rerun: new %d old %d", finished(m.acme.ID), finished(m.primary.ID))
 			}
 			// Nothing is left: a third run refuses, as it always did for the primary.
 			if _, _, err := m.svc.SetPrimaryOrg(m.ctx, m.acme.ID, m.boss.ID); !isInvalid(err) {
@@ -301,5 +310,79 @@ func TestTwoPrimariesChooseTheSameOnEveryServer(t *testing.T) {
 		if p, err := svc.PrimaryOrg(e.ctx); err != nil || p.ID != min(first.ID, acme.ID) {
 			t.Errorf("%s server: %v %v, want the lowest id %s", name, p.ID, err, min(first.ID, acme.ID))
 		}
+	}
+}
+
+// outcomes counts the events of items with outcome o.
+func outcomes(items []*model.Audit, o string) int {
+	n := 0
+	for _, e := range items {
+		if e.Outcome == o {
+			n++
+		}
+	}
+	return n
+}
+
+// A server-wide sign-out counted on the old primary while the change runs (here, just before the old primary is
+// unmarked) is not lost when it stops counting: the new primary holds it.
+func TestSetPrimaryOrgKeepsASignOutCountedMeanwhile(t *testing.T) {
+	m := newPrimaryMove(t)
+	before, err := m.svc.SessionStamp(m.ctx, m.acme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.h.beforeCAS = func(r *store.Record, _ hlc.Timestamp) error {
+		if r.Kind != model.KindOrg || r.ID != m.primary.ID {
+			return nil
+		}
+		m.h.beforeCAS = nil // once: the sign-out lands just before the unmark
+		o, err := m.svc.Orgs.Get(m.ctx, m.primary.ID)
+		if err != nil {
+			return err
+		}
+		o.ServerSignOut.Sessions++
+		return m.svc.Orgs.Update(m.ctx, o)
+	}
+	if _, _, err := m.svc.SetPrimaryOrg(m.ctx, m.acme.ID, m.boss.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.done()
+	m.svc.InvalidateSignOut()
+	after, err := m.svc.SessionStamp(m.ctx, m.acme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Server != before.Server+1 {
+		t.Fatalf("server sign-out counter %d after the move, want %d: the sign-out counted meanwhile was lost", after.Server, before.Server+1)
+	}
+}
+
+// A server-wide sign-out that read the old primary just before a set-primary finished is counted on the new one: its
+// write is refused as stale, and the copy it reads again is no longer primary.
+func TestServerSignOutRacingSetPrimaryCountsOnTheNewPrimary(t *testing.T) {
+	m := newPrimaryMove(t)
+	before, err := m.svc.SessionStamp(m.ctx, m.acme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.h.beforeCAS = func(r *store.Record, _ hlc.Timestamp) error {
+		if r.Kind != model.KindOrg || r.ID != m.primary.ID {
+			return nil
+		}
+		m.h.beforeCAS = nil // the move runs, whole, just before the sign-out's write
+		_, _, err := m.svc.SetPrimaryOrg(m.ctx, m.acme.ID, m.boss.ID)
+		return err
+	}
+	if _, err := m.svc.SignOutServer(m.ctx, actor(m.super), service.SignOutOptions{Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	m.svc.InvalidateSignOut()
+	after, err := m.svc.SessionStamp(m.ctx, m.acme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Server != before.Server+1 {
+		t.Fatalf("server sign-out counter %d, want %d: the sign-out was counted on the old primary", after.Server, before.Server+1)
 	}
 }

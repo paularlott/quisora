@@ -181,6 +181,16 @@ func TestRefreshMetadataClientAndPurge(t *testing.T) {
 	if _, err := c.svc.Clients.Get(c.ctx, mid); err != nil {
 		t.Error("used application purged")
 	}
+	// A used one goes once it has not been used for 90 days (the refresh token lifetime is shorter): no grant of it
+	// still works by then.
+	c.svc.PurgeSelfRegistered(c.ctx, time.Now().Add(60*24*time.Hour))
+	if _, err := c.svc.Clients.Get(c.ctx, mid); err != nil {
+		t.Error("an application used 60 days ago was purged")
+	}
+	c.svc.PurgeSelfRegistered(c.ctx, time.Now().Add(91*24*time.Hour))
+	if _, err := c.svc.Clients.Get(c.ctx, mid); err == nil {
+		t.Error("an application unused for 91 days was kept")
+	}
 }
 
 // A self-registered application's redirect URIs: https, http on the loopback interface, or a private-use scheme

@@ -39,30 +39,48 @@ func (s *Store) Inner() store.Store { return s.inner }
 // Get returns the live record kind/id from this node's copy; in a gossip cluster, only while this node can vouch for the
 // copy of the record's partition (the staleness gate, partstatus.go: store.ErrNotWritable otherwise).
 func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	r, err := s.inner.Get(ctx, kind, id)
-	return s.gated(ctx, kind, id, r, err)
+	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Get(ctx, kind, id) })
 }
 
-// gated passes a single-record read of kind/id (its result r, err) through the staleness gate: in a gossip cluster a
-// record found is served only while its partition is readable here, and one not found only while the partition its kind
-// and id name, if they name one, is (otherwise, while the node holds its data at all). Node-local kinds are exempt.
-func (s *Store) gated(ctx context.Context, kind model.Kind, id string, r *store.Record, err error) (*store.Record, error) {
+// gated passes a single-record read of kind/id through the staleness gate: in a gossip cluster a record found is
+// served only while its partition is readable here, and one not found only while the partition its kind and id name,
+// if they name one, is (otherwise, while the node holds its data at all). Node-local kinds are exempt. The partition is
+// known only from what read finds, so read runs first; a copy found behind is waited for (readable) and then read
+// again, since what read returned before the wait is the copy the wait was for.
+func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func() (*store.Record, error)) (*store.Record, error) {
+	r, err := read()
 	if s.n.gc == nil || localOnly(kind) {
 		return r, err
 	}
-	p := -1
-	switch {
-	case err == nil && r != nil:
-		p = recPartition(r)
-	case errors.Is(err, store.ErrNotFound):
-		if hp, ok := partitionHint(kind, id); ok {
-			p = hp
+	part := func(r *store.Record, err error) (int, error) {
+		switch {
+		case err == nil && r != nil:
+			return recPartition(r), nil
+		case errors.Is(err, store.ErrNotFound):
+			if hp, ok := partitionHint(kind, id); ok {
+				return hp, nil
+			}
+			return -1, nil
 		}
-	case err != nil:
+		return 0, err
+	}
+	p, perr := part(r, err)
+	if perr != nil {
+		return r, err
+	}
+	if s.n.readableWithin(ctx, p, 0) == nil {
 		return r, err
 	}
 	if gerr := s.n.readable(ctx, p); gerr != nil {
 		return nil, gerr
+	}
+	r, err = read()
+	if p2, perr := part(r, err); perr != nil {
+		return r, err
+	} else if p2 != p {
+		if gerr := s.n.readableWithin(ctx, p2, 0); gerr != nil {
+			return nil, gerr
+		}
 	}
 	return r, err
 }
@@ -72,20 +90,19 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, r *store.
 // Both reads pass the staleness gate (Get).
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
 	if s.n.gc == nil || !model.GlobalUnique(kind, value) {
-		r, err := s.inner.GetByUnique(ctx, kind, value)
-		return s.gated(ctx, kind, "", r, err)
+		return s.gated(ctx, kind, "", func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
 	}
 	rid := reservationID(kind, value)
-	cur, err := s.inner.Get(ctx, model.KindReservation, rid)
-	if cur, err = s.gated(ctx, model.KindReservation, rid, cur, err); err != nil {
+	cur, err := s.Get(ctx, model.KindReservation, rid)
+	if err != nil {
 		return nil, err
 	}
 	var r model.Reservation
 	if err := store.Decode(cur, &r); err != nil {
 		return nil, err
 	}
-	h, err := s.inner.Get(ctx, r.HolderKind, r.HolderID)
-	if h, err = s.gated(ctx, r.HolderKind, r.HolderID, h, err); err != nil {
+	h, err := s.Get(ctx, r.HolderKind, r.HolderID)
+	if err != nil {
 		return nil, err
 	}
 	if h.Kind != kind || !holdsUnique(h, value) {
@@ -120,12 +137,38 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if err := s.n.readable(ctx, -1); err != nil {
 		return nil, err
 	}
-	for _, r := range recs {
-		if err := s.n.readable(ctx, recPartition(r)); err != nil {
+	// As gated: a partition found behind is waited for, and then everything is read again.
+	waited := false
+	for p := range recPartitions(recs) {
+		if s.n.readableWithin(ctx, p, 0) == nil {
+			continue
+		}
+		if err := s.n.readable(ctx, p); err != nil {
+			return nil, err
+		}
+		waited = true
+	}
+	if !waited {
+		return recs, nil
+	}
+	if recs, err = store.GetMany(ctx, s.inner, kind, ids); err != nil {
+		return nil, err
+	}
+	for p := range recPartitions(recs) {
+		if err := s.n.readableWithin(ctx, p, 0); err != nil {
 			return nil, err
 		}
 	}
 	return recs, nil
+}
+
+// recPartitions is the set of the partitions of recs.
+func recPartitions(recs []*store.Record) map[int]struct{} {
+	ps := make(map[int]struct{}, 1)
+	for _, r := range recs {
+		ps[recPartition(r)] = struct{}{}
+	}
+	return ps
 }
 
 // ListDue lists the records due from the wrapped store's due index (store.DueLister), or ErrNoDueIndex.
@@ -138,16 +181,43 @@ func (s *Store) ListDue(ctx context.Context, kind model.Kind, before time.Time, 
 
 // Lookup returns the stored record whatever its state (store.Store), through the staleness gate (Get).
 func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	r, err := s.inner.Lookup(ctx, kind, id)
-	return s.gated(ctx, kind, id, r, err)
+	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Lookup(ctx, kind, id) })
 }
 
-// Snapshot delegates to the wrapped store when it has point-in-time views (store.Snapshotter).
+// Snapshot delegates to the wrapped store when it has point-in-time views (store.Snapshotter). In a gossip cluster it
+// is refused (store.ErrNotWritable) when the view may hold a partition part-way through a full import, which reset it
+// first: a backup of it would be complete and verifiable, and miss that partition's records. That is when one is
+// importing as the snapshot is asked for, or one began meanwhile (the view may be after its reset).
 func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
-	if sn, ok := s.inner.(store.Snapshotter); ok {
+	sn, ok := s.inner.(store.Snapshotter)
+	if !ok {
+		return nil, store.ErrNoSnapshot
+	}
+	if s.n.gc == nil || s.n.pst == nil {
 		return sn.Snapshot(ctx)
 	}
-	return nil, store.ErrNoSnapshot
+	return s.snapshotOf(ctx, sn)
+}
+
+// snapshotOf is Snapshot of sn, the wrapped store, in a gossip cluster.
+func (s *Store) snapshotOf(ctx context.Context, sn store.Snapshotter) (store.Reader, error) {
+	refused := func(p int) error {
+		return fmt.Errorf("%w: partition %d is being copied whole to this node; try again once it has finished", store.ErrNotWritable, p)
+	}
+	began := s.n.pst.imports.Load()
+	if p, ok := s.n.pst.anyImporting(); ok {
+		return nil, refused(p)
+	}
+	r, err := sn.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.n.pst.imports.Load() != began {
+		r.Close()
+		p, _ := s.n.pst.anyImporting()
+		return nil, refused(p)
+	}
+	return r, nil
 }
 
 // PutReplicated applies a record as it is. Nothing in the cluster layer calls it: a gossip cluster's records arrive

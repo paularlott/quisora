@@ -447,3 +447,24 @@ func (e *env) client(orgID, name string) *model.Client {
 	}
 	return c
 }
+
+// A passkey removal whose outcome is unknown ends the sessions the passkey signed in all the same: if it landed, a
+// retry finds no passkey to remove, and would never end them.
+func TestUnknownPasskeyRemovalEndsItsSessions(t *testing.T) {
+	e, l := newUnknownEnv(t)
+	u := e.user(e.primary.ID, "pk-unknown", model.RoleUser)
+	pk := e.passkey(u, "key")
+	now := time.Now().UTC()
+	s := &model.Session{Meta: model.Meta{ID: "sess-unknown"}, UserID: u.ID, OrgID: u.OrgID, Passkey: pk.ID, AuthTime: now,
+		LastSeen: now, Expires: now.Add(time.Hour), Epoch: e.fresh(u).SessionEpoch}
+	if err := e.svc.Sessions.Create(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	l.arm(model.KindUser)
+	if _, err := e.svc.RemovePasskey(e.ctx, service.System, u.ID, pk.ID, ""); err == nil {
+		t.Fatal("the removal reported success")
+	}
+	if _, err := e.svc.Sessions.Get(e.ctx, s.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the passkey's session survived its removal: %v", err)
+	}
+}

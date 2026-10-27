@@ -472,7 +472,7 @@ With 3 nodes (with 5, read "up to two"):
 | **ready** | caught up, a majority in view, every node agrees on the size and runs a compatible build | yes / yes | all |
 | **cut off** | fewer than a majority in view | no / no | none |
 | **partition diverged** | a partition diverged here | no / no | none |
-| **partition unreadable** | a partition cannot be read here (no owner heard, catch-up failing); `partitions_unreadable` counts them | yes / yes, except that partition's records | all |
+| **partition unreadable** | a partition cannot be read here (no owner heard, catch-up failing, being copied whole); `partitions_unreadable` counts them, `partitions_importing` those being copied whole | yes / yes, except that partition's records | all |
 | **misconfigured** | database shared with another gossip node, owned by another node id, mixed with non-gossip nodes, holding records no partition write made, set up apart from the cluster, prefix collision, **size or build disagreement**, clock off | no / no | none |
 
 Only node-local records (`KindEphemeral`) are written on a node that is not ready. A refused write returns
@@ -729,17 +729,19 @@ expires, on each node by its own clock, and the age of a tombstone for its purge
 
 `/readyz` (unauthenticated) reports, ready or not, `{"status": "ready" | "unavailable", "cluster": {"size", "quorum",
 "alive", "partitions_owned", "unconfirmed", "refused", "clock_skewed", "skew_refused", "clock_offset_ms",
-"partitions_unreadable", "partitions_diverged"}}`: counts only; the reason for not being ready stays in the log and in
+"partitions_unreadable", "partitions_diverged", "partitions_importing"}}`: counts only; the reason for not being ready stays in the log and in
 `GET /api/cluster`. `GET /api/cluster` (super administrators) returns the full status: node id, members, leader, ready
 and why not (`reason`), writable, catching up / resyncing, the forced start, the counters (changes committed, refused,
 unknown, unavailable; fresh reads and failed ones; partitions taken over; divergences found), the number of partitions
 this node owns and of those it cannot read or that diverged, and for each of the 64 partitions its owner as this node
 believes it, the owner's epoch counter, this node's committed sequence and promised epoch counter, whether this node can
-read it (`readable`), how long it has trailed the owner (`lag_ms`), whether a catch-up runs (`catching_up`) and whether it
-diverged here. The console's System page shows it to super administrators. **Metrics** (`/metrics`, with the metrics
+read it (`readable`), how long it has trailed the owner (`lag_ms`), whether a catch-up runs (`catching_up`), whether it is
+being copied whole and has not finished (`importing`: none of it is served, and a backup is refused, until it has) and
+whether it diverged here. The console's System page shows it to super administrators. **Metrics** (`/metrics`, with the metrics
 token): `quisora_partitions_owned`, `quisora_partition_writes_total`, `_writes_refused_total`, `_writes_unknown_total`,
 `_writes_unavailable_total`, `_reads_total`, `_reads_failed_total`, `_takeovers_total` (since the node started),
-`quisora_partitions_unreadable`, `quisora_partitions_diverged`, `quisora_partition_divergences_total`, and per partition
+`quisora_partitions_unreadable`, `quisora_partitions_importing`, `quisora_partitions_diverged`,
+`quisora_partition_divergences_total`, and per partition
 (label `partition`) `quisora_partition_lag_seconds`, `quisora_partition_catching_up`, `quisora_partition_diverged`, next to
 `quisora_ready`, `quisora_writable`, `quisora_leader`, `quisora_cluster_alive_nodes`, `quisora_cluster_size`.
 The Docker `HEALTHCHECK` (`quisora healthcheck`) is a **liveness** probe (`/healthz`): a node that is catching up or cut off is

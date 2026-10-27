@@ -344,12 +344,13 @@ type readyzCluster struct {
 	// diverged here (cluster.Status.PartitionsUnreadable, PartitionsDiverged): which ones, and why, is in GET /api/cluster.
 	Unreadable int `json:"partitions_unreadable"`
 	Diverged   int `json:"partitions_diverged"`
+	Importing  int `json:"partitions_importing"`
 }
 
 func readyzStatus(st cluster.Status) readyzCluster {
 	return readyzCluster{Size: st.Size, Quorum: st.Quorum, Alive: st.Alive, Partitions: st.PartitionsOwned, Unconfirmed: st.Unconfirmed,
 		Refused: st.Refused, ClockSkewed: st.ClockSkewed, SkewRefused: st.SkewRefused, ClockOffsetMs: st.ClockOffsetMs,
-		Unreadable: st.PartitionsUnreadable, Diverged: st.PartitionsDiverged}
+		Unreadable: st.PartitionsUnreadable, Diverged: st.PartitionsDiverged, Importing: st.PartitionsImporting}
 }
 
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the
@@ -430,6 +431,8 @@ func (a *App) registerMetrics() {
 	}
 	m.Gauge("quisora_partitions_unreadable", "Partitions this node cannot serve from its copy now (no owner heard, trailing it, diverged).", nil,
 		st(func(s cluster.Status) float64 { return float64(s.PartitionsUnreadable) }))
+	m.Gauge("quisora_partitions_importing", "Partitions being copied whole to this node (served by none of it until the copy finishes).", nil,
+		st(func(s cluster.Status) float64 { return float64(s.PartitionsImporting) }))
 	m.Gauge("quisora_partitions_diverged", "Partitions whose copy on this node holds writes their owner does not have (resync the node).", nil,
 		st(func(s cluster.Status) float64 { return float64(s.PartitionsDiverged) }))
 	m.Gauge("quisora_partition_divergences_total", "Divergences found on this node since its partition protocol started.", nil,

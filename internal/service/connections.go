@@ -498,7 +498,10 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		}
 		var afterErr error
 		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
-			if err := s.Users.Update(ctx, u); err != nil {
+			// What follows the removal is done whenever it may have landed (landed): a retry of one that did finds
+			// nothing to remove, so would never end the sessions it signed in.
+			err := s.Users.Update(ctx, u)
+			if !landed(err) {
 				return err
 			}
 			for _, g := range gone { // tidying: they count for nothing already
@@ -509,7 +512,7 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			if after != nil {
 				afterErr = after(u, gone, detail)
 			}
-			return nil
+			return err
 		})
 		if errors.Is(err, store.ErrStale) && attempt < 7 {
 			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy

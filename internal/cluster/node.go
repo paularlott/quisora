@@ -1332,8 +1332,10 @@ type Status struct {
 	Partitions      []PartitionStatus `json:"partitions,omitempty"`
 	// PartitionsUnreadable and PartitionsDiverged count the partitions this node cannot serve from its copy now, and
 	// those of them found diverged here; Divergences counts the divergences found since the partition protocol started.
+	// PartitionsImporting counts those being copied whole to this node (PartitionStatus.Importing).
 	PartitionsUnreadable int   `json:"partitions_unreadable"`
 	PartitionsDiverged   int   `json:"partitions_diverged"`
+	PartitionsImporting  int   `json:"partitions_importing"`
 	Divergences          int64 `json:"divergences"`
 	// ClockSkewed counts records received with a version more than maxSkew ahead of this node's clock (checkSkew);
 	// SkewRefused counts versions this node's clock refused to follow (store.Witness).
@@ -1360,11 +1362,13 @@ type PartitionStatus struct {
 	Promised  uint64 `json:"promised"`        // the highest epoch counter this node has promised
 	// Readable: this node serves reads of it from its copy (partition.Manager.CanRead). LagMs is how long it has been
 	// behind a committed position the owner reported (milliseconds, 0: not behind), CatchingUp whether a catch-up is
-	// running, and Diverged whether its copy was found to hold writes the owner does not have.
+	// running, and Diverged whether its copy was found to hold writes the owner does not have. Importing: a copy of it
+	// as a whole has begun here and not finished (its reset emptied it): it is not readable until it finishes.
 	Readable   bool  `json:"readable"`
 	LagMs      int64 `json:"lag_ms"`
 	CatchingUp bool  `json:"catching_up"`
 	Diverged   bool  `json:"diverged"`
+	Importing  bool  `json:"importing"`
 }
 
 // MemberStatus is one cluster member as this node sees it.
@@ -1464,6 +1468,10 @@ func (n *Node) Status() Status {
 			if ps.Owned {
 				s.PartitionsOwned++
 				ps.Owner = n.id
+			}
+			if n.pst.isImporting(p) {
+				ps.Importing, ps.Readable = true, false
+				s.PartitionsImporting++
 			}
 			if !ps.Readable {
 				s.PartitionsUnreadable++

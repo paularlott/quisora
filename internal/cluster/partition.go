@@ -185,6 +185,9 @@ type pstore struct {
 	// catches it up from nothing, and neither takes it over nor acknowledges a write on top of what it lacks), reads of
 	// it are refused (readable), and the next import of it, whatever the library asks, is a full one.
 	importing [partitions]atomic.Bool
+	// imports counts the full imports begun here (each before its reset): a snapshot taken while it did not move, with
+	// no partition importing before it, holds no partition part-way through one (Store.Snapshot).
+	imports atomic.Uint64
 	// exports bounds the exports running at once (exportSlots): each holds a snapshot, and on SQLite a reader
 	// connection, for as long as its stream lasts.
 	exports chan struct{}
@@ -229,6 +232,10 @@ func newPStore(n *Node, inner store.Store) (*pstore, error) {
 		}
 		s.states[p].Store(&st)
 		s.importing[p].Store(ps.Importing)
+		if ps.Importing {
+			n.log.Warn("a copy of a partition as a whole was cut short on this node: it serves none of the partition until "+
+				"it is copied again from the others", "partition", p)
+		}
 	}
 	return s, nil
 }
@@ -296,6 +303,16 @@ func (s *pstore) State(p int) (partition.State, error) {
 
 // isImporting reports whether a full import of p has begun here and not finished.
 func (s *pstore) isImporting(p int) bool { return s.importing[p].Load() }
+
+// anyImporting returns a partition a full import has begun here and not finished, if there is one.
+func (s *pstore) anyImporting() (int, bool) {
+	for p := range partitions {
+		if s.importing[p].Load() {
+			return p, true
+		}
+	}
+	return 0, false
+}
 
 func (s *pstore) SetPromised(p int, e partition.Epoch) error {
 	if err := s.pst.SetPartitionPromised(s.n.ctx, p, fromEpoch(e)); err != nil {
@@ -798,6 +815,10 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 		step := store.ImportStep{Full: full, First: first, Final: final, Removed: removed}
 		was := s.importing[p].Load()
 		if full && first {
+			if !was {
+				s.n.log.Info("copying a partition whole to this node: it serves none of it until the copy finishes", "partition", p)
+			}
+			s.imports.Add(1)
 			s.importing[p].Store(true) // before the backend resets anything: see importing
 		}
 		// Until an import completes, the partition's exports are refused by the backend (store.ErrImportUnfinished): its

@@ -1031,14 +1031,18 @@ func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) 
 func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
 	ids, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
+		s.Log.Warn("a promoted account's links made by email address could not be read: they are left", "user", u.ID, "error", err)
 		return
 	}
 	for _, id := range ids {
 		if id.Via != "email" && id.Via != "" {
 			continue
 		}
-		_ = s.audited(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
-			"reason": "promoted to " + string(u.Role)}, func() error { return s.Identities.Delete(ctx, id.ID) })
+		if err := s.audited(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
+			"reason": "promoted to " + string(u.Role)}, func() error { return s.Identities.Delete(ctx, id.ID) }); err != nil {
+			s.Log.Warn("a promoted account's link made by email address could not be removed: it is left", "user", u.ID,
+				"identity", id.ID, "error", err)
+		}
 	}
 }
 

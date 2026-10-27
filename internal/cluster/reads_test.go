@@ -10,6 +10,7 @@ import (
 
 	"github.com/paularlott/gossip"
 	"github.com/paularlott/gossip/partition"
+	"github.com/paularlott/quisora/internal/cluster/clustertest"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -453,4 +454,87 @@ func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
 	c.restart(0)
 	c.waitReady()
 	c.waitHas(extra.ID)
+}
+
+// A read on a node that is behind its owner waits for the copy to catch up, and then answers from the caught-up copy,
+// never with what it read before waiting (a user disabled meanwhile served as enabled).
+func TestReadWaitingForCatchUpAnswersTheCaughtUpCopy(t *testing.T) {
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.opts = func(o *Options) {
+		o.Partition = func(pc *partition.Config) { clustertest.Partition(pc); pc.StaleAfter = 5 * time.Second }
+	}
+	c.startAll()
+	c.waitReady()
+	org := c.orgOwnedBy(0)
+	p := partitionNum(org)
+	follower := c.nodes[1]
+	tn := newTenant(org, "before")
+	if err := tenants(c.nodes[0]).Create(bg, tn); err != nil {
+		t.Fatal(err)
+	}
+	c.waitVersion(t, model.KindTenant, tn.ID, tn.Version)
+	// the follower is cut off and misses a change
+	c.partition([]int{0, 2}, []int{1})
+	tn.Description = "after"
+	if err := tenants(c.nodes[0]).Update(bg, tn); err != nil {
+		t.Fatal(err)
+	}
+	// contact is regained while its catch-up fails: it hears the owner's position and is behind it
+	fs.of(follower).failImport.Store(int64(p) + 1)
+	c.heal()
+	waitFor(t, 10*time.Second, "the follower to hear it is behind", func() bool {
+		st, err := follower.n.manager().PartitionStatus(p)
+		return err == nil && st.CanRead && st.Committed.Seq < st.OwnerCommitted.Seq
+	})
+	type answer struct {
+		t   *model.Tenant
+		err error
+	}
+	got := make(chan answer, 1)
+	go func() {
+		r, err := tenants(follower).Get(bg, tn.ID)
+		got <- answer{r, err}
+	}()
+	time.Sleep(200 * time.Millisecond) // the read is waiting for the copy
+	fs.of(follower).failImport.Store(0)
+	a := <-got
+	if a.err != nil {
+		t.Fatalf("the read after catching up: %v", a.err)
+	}
+	if a.t.Description != "after" {
+		t.Fatalf("the read answered the copy it had before catching up: %q", a.t.Description)
+	}
+}
+
+// importBegins is a store whose snapshot is taken as a full import of partition p begins on node n.
+type importBegins struct {
+	store.Snapshotter
+	n *Node
+}
+
+func (s importBegins) Snapshot(ctx context.Context) (store.Reader, error) {
+	s.n.pst.imports.Add(1)
+	return s.Snapshotter.Snapshot(ctx)
+}
+
+// A backup is refused while a partition is being copied whole to the node (its reset emptied it), and when one began
+// as its snapshot was taken: the snapshot may hold the partition empty, and still verify.
+func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
+	c := started(t, badgerBackend())
+	n := c.nodes[0].n
+	n.pst.importing[5].Store(true)
+	_, err := n.st.Snapshot(bg)
+	n.pst.importing[5].Store(false)
+	if !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("snapshot while a partition is importing: %v", err)
+	}
+	r, err := n.st.Snapshot(bg)
+	if err != nil {
+		t.Fatalf("snapshot with no import: %v", err)
+	}
+	r.Close()
+	if _, err := n.st.snapshotOf(bg, importBegins{n.st.inner.(store.Snapshotter), n}); !errors.Is(err, store.ErrNotWritable) {
+		t.Fatalf("snapshot taken as an import began: %v", err)
+	}
 }

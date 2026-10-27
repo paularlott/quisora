@@ -195,7 +195,10 @@ func updateFresh[T any, PT interface {
 // primary is marked first (there is never a moment without one; two for a moment is harmless, PrimaryOrg chooses one
 // the same way everywhere), then its super admin, then the old primary's super admins are demoted, and the old primary
 // is unmarked last: a change that stopped part-way leaves two organizations marked primary, which every node logs at
-// error level until it is run again.
+// error level until it is run again. A change that stopped after some of its writes took effect is audited as
+// incomplete (auditPartial). The server's sign-out counters are the highest of the organizations marked primary
+// (serverSignOut), and are copied to the new primary in the compare-and-swap loop that unmarks the old one, so a
+// server-wide sign-out counted on the old one meanwhile is never lost.
 // Each write that is refused as stale is made again on a fresh copy. When nothing is left to do it refuses: the
 // organization is the primary already.
 func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string) (old *model.Org, demoted []*model.User, err error) {
@@ -257,7 +260,7 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 	if old != nil {
 		detail["previous"] = old.Name
 	}
-	err = s.setPrimary(ctx, target, admin, others, supers, &demoted)
+	progressed, err := s.setPrimary(ctx, target, admin, others, supers, &demoted)
 	s.primary.mu.Lock()
 	s.primary.id = "" // chosen afresh at the next read
 	s.primary.mu.Unlock()
@@ -271,7 +274,7 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 	if old != nil && old.ID != target.ID {
 		events = append(events, change{old.ID, "org.primary", target.Name, detail})
 	}
-	s.auditOutcome(ctx, System, err, events...)
+	s.auditPartial(ctx, System, err, progressed, events...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -279,30 +282,27 @@ func (s *Service) SetPrimaryOrg(ctx context.Context, orgID, superAdminID string)
 }
 
 // setPrimary writes the changes of SetPrimaryOrg (see there for their order), each made again on a fresh copy when it
-// is refused as stale; demoted collects the super admins that became administrators. The promotion and the
-// demotions are changes of a user's role: they go through applyRole, as every other.
+// is refused as stale; demoted collects the super admins that became administrators, and progressed says whether any
+// write may have taken effect. The promotion and the demotions are changes of a user's role: they go through
+// applyRole, as every other.
 func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *model.User, others []*model.Org, supers []*model.User,
-	demoted *[]*model.User) error {
+	demoted *[]*model.User) (progressed bool, err error) {
+	step := func(err error) error {
+		progressed = progressed || landed(err)
+		return err
+	}
 	// The new primary first. The server's emergency sign-out counters move with the role: starting again from the
 	// new primary's would bring back everything a server-wide sign-out ended.
-	target, err := updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
+	target, err = updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
 		write := !t.Primary
 		t.Primary = true
 		for _, o := range others {
-			if t.ServerSignOut.Sessions < o.ServerSignOut.Sessions {
-				t.ServerSignOut.Sessions, write = o.ServerSignOut.Sessions, true
-			}
-			if t.ServerSignOut.APITokens < o.ServerSignOut.APITokens {
-				t.ServerSignOut.APITokens, write = o.ServerSignOut.APITokens, true
-			}
-			if o.LastServerSignOut != nil && (t.LastServerSignOut == nil || t.LastServerSignOut.At.Before(o.LastServerSignOut.At)) {
-				t.LastServerSignOut, write = o.LastServerSignOut, true
-			}
+			write = raiseServerSignOut(t, o) || write
 		}
 		return write, nil
 	})
-	if err != nil {
-		return err
+	if err = step(err); err != nil {
+		return progressed, err
 	}
 	promoted := func(context.Context, *Actor, error) {}
 	_, err = updateFresh(ctx, s, s.Users, target.ID, admin, func(u *model.User) (bool, error) {
@@ -314,8 +314,8 @@ func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *mode
 		return write, nil
 	})
 	promoted(ctx, System, err) // a promotion is finished as any other (links made by email address go)
-	if err != nil {
-		return err
+	if err = step(err); err != nil {
+		return progressed, err
 	}
 	for _, u := range supers {
 		changed := false
@@ -328,23 +328,52 @@ func (s *Service) setPrimary(ctx context.Context, target *model.Org, admin *mode
 			return changed, nil
 		})
 		demotion(ctx, System, err)
-		if err != nil {
-			return err
+		if err = step(err); err != nil {
+			return progressed, err
 		}
 		if changed {
 			*demoted = append(*demoted, got)
 		}
 	}
+	// The old primary stops counting only once the new one holds its sign-out counters as they are at the unmark: a
+	// server-wide sign-out counted on it after they were copied changes its version, so the unmark is refused as stale
+	// and made again on the newer copy, copying again first.
 	for _, o := range others {
-		if _, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
-			write := o.Primary
+		_, err := updateFresh(ctx, s, s.Orgs, "", o, func(o *model.Org) (bool, error) {
+			if !o.Primary {
+				return false, nil
+			}
+			t, err := updateFresh(ctx, s, s.Orgs, "", target, func(t *model.Org) (bool, error) {
+				return raiseServerSignOut(t, o), nil
+			})
+			if step(err) != nil {
+				return false, err
+			}
+			target = t
 			o.Primary = false
-			return write, nil
-		}); err != nil {
-			return err
+			return true, nil
+		})
+		if err = step(err); err != nil {
+			return progressed, err
 		}
 	}
-	return nil
+	return progressed, nil
+}
+
+// raiseServerSignOut raises t's server sign-out counters (and last event) to o's where o's are higher, and reports
+// whether it changed t.
+func raiseServerSignOut(t, o *model.Org) bool {
+	changed := false
+	if t.ServerSignOut.Sessions < o.ServerSignOut.Sessions {
+		t.ServerSignOut.Sessions, changed = o.ServerSignOut.Sessions, true
+	}
+	if t.ServerSignOut.APITokens < o.ServerSignOut.APITokens {
+		t.ServerSignOut.APITokens, changed = o.ServerSignOut.APITokens, true
+	}
+	if o.LastServerSignOut != nil && (t.LastServerSignOut == nil || t.LastServerSignOut.At.Before(o.LastServerSignOut.At)) {
+		t.LastServerSignOut, changed = o.LastServerSignOut, true
+	}
+	return changed
 }
 
 // GetOrg returns an org the actor may see (its own, or any for super admins). a == nil skips the check (internal).
