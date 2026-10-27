@@ -419,7 +419,7 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		return err
 	}
 	rec.Origin = n.id
-	if rec.Deleted && (mode == modeUpsert || mode == modeMatch && expect == 0) {
+	if rec.Deleted && mode == modeUpsert {
 		mode = modeBlind // a deletion of a record that is not live writes nothing (store.Store.Put)
 	}
 	old, err := s.lookup(ctx, rec.Kind, rec.ID)
@@ -479,7 +479,7 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		return err
 	}
 	p := recPartition(rec)
-	res, err := s.submit(ctx, p, &change{Op: opWrite, Mode: mode, Expect: expect, Rec: b})
+	res, err := s.submit(ctx, p, &change{Op: opWrite, Mode: mode, Expect: expect, Rec: b, Base: versionOf(old)})
 	switch {
 	case isDone(err): // a retry of this request's write, which landed (submit settled it)
 		if err := s.settleDone(ctx, []*store.Record{rec}); err != nil {

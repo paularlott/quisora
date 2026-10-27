@@ -177,3 +177,49 @@ func TestLinkByEmailSeesAnAddressChangedMeanwhile(t *testing.T) {
 		t.Fatalf("an identity was made for an address the account no longer has: %v", err)
 	}
 }
+
+// linkUnconfirmed applies the first transaction that writes an identity and answers that its outcome is unknown.
+type linkUnconfirmed struct {
+	store.Store
+	done atomic.Bool
+}
+
+func (f *linkUnconfirmed) Tx(ctx context.Context, ops []store.Op) error {
+	for _, op := range ops {
+		if op.Rec.Kind == model.KindIdentity && f.done.CompareAndSwap(false, true) {
+			if err := f.Store.Tx(ctx, ops); err != nil {
+				return err
+			}
+			return store.ErrUnconfirmed
+		}
+	}
+	return f.Store.Tx(ctx, ops)
+}
+
+// A link by email address whose write's outcome is unknown is audited as such: the retry signs in through the link,
+// and would never record its making.
+func TestLinkByEmailOfUnknownOutcomeIsAudited(t *testing.T) {
+	f := &linkUnconfirmed{Store: memstore.New()}
+	e := setupOn(t, f)
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false) })
+	e.mkUser(t, "una", "una@example.com", true)
+	if _, err := e.signIn(p, std("una-sub", "una@example.com")); err == nil {
+		t.Fatal("a link of unknown outcome answered as made")
+	}
+	if !f.done.Load() {
+		t.Fatal("test set-up: no link was written")
+	}
+	pg, err := e.svc.ListAudit(e.ctx, service.System, e.org.ID, service.AuditQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range pg.Items {
+		if a.Action == "identity.link.email" {
+			if a.Outcome != service.OutcomeUnknown {
+				t.Fatalf("the link is audited with outcome %q, want %q", a.Outcome, service.OutcomeUnknown)
+			}
+			return
+		}
+	}
+	t.Fatal("a link of unknown outcome was not audited")
+}

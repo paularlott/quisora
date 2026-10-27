@@ -340,8 +340,8 @@ type Store interface {
 	Lookup(ctx context.Context, kind model.Kind, id string) (*Record, error)
 	// CompareAndPut writes rec only if the stored live record's version equals expect (ErrStale otherwise). With
 	// expect == 0 it succeeds only when there is no live record (create; over a tombstone this starts a new
-	// generation; a deletion with expect == 0 is Put's). ErrNotFound if expect != 0 and there is no live record. Also
-	// fails with ErrConflict like Put. It
+	// generation; a deletion with expect == 0 is refused with ErrStale over a live record, and writes nothing over one
+	// that is not). ErrNotFound if expect != 0 and there is no live record. Also fails with ErrConflict like Put. It
 	// stamps rec.Version and rec.Req and sets rec.Epoch and rec.Created as Put does. A retry (Retried) is answered as
 	// done, whatever expect.
 	CompareAndPut(ctx context.Context, rec *Record, expect hlc.Timestamp) error

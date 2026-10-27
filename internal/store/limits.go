@@ -1,7 +1,10 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -17,6 +20,20 @@ const (
 	// MaxFieldLength is the longest string field, in characters (a Words field: model.MaxTagsText).
 	MaxFieldLength = 255
 )
+
+// MaxUniqueIndexKey is the longest unique value a store indexes as itself (UniqueIndexKey).
+const MaxUniqueIndexKey = 512
+
+// UniqueIndexKey is how a store indexes unique value u: as itself, or, longer than MaxUniqueIndexKey (or looking like a
+// hash), as "#" and its SHA-256, so a value of any length is indexed whole within every engine's key limits (a SQL
+// column, a Badger key); the same value always gives the same key, and the record keeps the value itself.
+func UniqueIndexKey(u string) string {
+	if len(u) <= MaxUniqueIndexKey && !strings.HasPrefix(u, "#") {
+		return u
+	}
+	h := sha256.Sum256([]byte(u))
+	return "#" + base64.RawURLEncoding.EncodeToString(h[:])
+}
 
 // CheckRecord refuses a record longer than the limits above (ErrBadRecord). Every store checks each record a write
 // brings before it writes anything.

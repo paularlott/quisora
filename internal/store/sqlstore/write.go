@@ -2,15 +2,12 @@ package sqlstore
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -385,19 +382,9 @@ func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, er
 
 func (s *Store) releaseSQL() string { return s.releaseQ }
 
-// maxUniqueKey is the width of the unique table's value column (VARCHAR(512) on MySQL and MariaDB).
-const maxUniqueKey = 512
-
-// uniqueKey is how unique value u is kept in the unique table: as itself, or, longer than the column (or looking like a
-// hash), as "#" and its SHA-256, so a value of any length is indexed whole on every dialect (the same value always gives
-// the same key; the record keeps the value itself).
-func uniqueKey(u string) string {
-	if len(u) <= maxUniqueKey && !strings.HasPrefix(u, "#") {
-		return u
-	}
-	h := sha256.Sum256([]byte(u))
-	return "#" + base64.RawURLEncoding.EncodeToString(h[:])
-}
+// uniqueKey is how unique value u is kept in the unique table (store.UniqueIndexKey: the value column is
+// VARCHAR(512) on MySQL and MariaDB).
+func uniqueKey(u string) string { return store.UniqueIndexKey(u) }
 
 // warm prepares the statements a write to t uses, outside any transaction.
 func (s *Store) warm(ctx context.Context, t *table) {

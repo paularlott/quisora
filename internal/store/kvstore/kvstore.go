@@ -323,8 +323,10 @@ var errSnapshotImporting = fmt.Errorf("%w: a partition is part-way through an im
 // ---- keys ----
 
 func recKey(kind model.Kind, id string) string { return "rec/" + string(kind) + "/" + id }
-func uqKey(kind model.Kind, v string) string   { return "uq/" + string(kind) + "/" + v }
-func allBucket(kind model.Kind) string         { return "al/" + string(kind) }
+func uqKey(kind model.Kind, v string) string {
+	return "uq/" + string(kind) + "/" + store.UniqueIndexKey(v) // (a value of any length: within Badger's key limit)
+}
+func allBucket(kind model.Kind) string { return "al/" + string(kind) }
 
 var scopeEscaper = strings.NewReplacer("%", "%25", "/", "%2F")
 

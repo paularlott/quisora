@@ -66,6 +66,9 @@ func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result,
 	if !n.waitSlot() {
 		return res, fmt.Errorf("%w: %w: %v", errBusy, errUnsettled, err)
 	}
+	replay := *c
+	replay.Replay = true // (applied only while its records are where the first attempt found them: change.Base)
+	c = &replay
 	defer n.waitDone()
 	deadline := time.Now().Add(settleWait)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -196,6 +199,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		if op.Match {
 			mode, expect = modeMatch, uint64(op.Expect)
 		}
+		var base uint64 // the version the write is based on (change.Base)
 		if rec.Deleted {
 			// a tombstone carries the partition key of the record it deletes
 			fresh, err := s.lookupOrFresh(ctx, rec.Kind, rec.ID)
@@ -208,8 +212,8 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 				}
 				continue // nothing to delete, as for a deletion of its own (writePartitioned)
 			}
-			rec.Partition, rec.Scope = fresh.Partition, fresh.Scope
-			if !op.Match || op.Expect == 0 {
+			rec.Partition, rec.Scope, base = fresh.Partition, fresh.Scope, versionOf(fresh)
+			if !op.Match {
 				mode = modeBlind
 			}
 			for _, g := range globalsOf(fresh) {
@@ -223,6 +227,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			if err := store.CheckMove(rec, old != nil, partitionOf(old)); err != nil {
 				return err // (as for a write of its own: writePartitioned)
 			}
+			base = versionOf(old)
 			if globalKind(rec.Kind) {
 				// (it lists no value unique across organizations: store.CheckTx refused that)
 				if old == nil {
@@ -246,7 +251,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		if err != nil {
 			return err
 		}
-		c.Ops = append(c.Ops, txOp{Mode: mode, Expect: expect, Rec: b})
+		c.Ops = append(c.Ops, txOp{Mode: mode, Expect: expect, Rec: b, Base: base})
 		recs = append(recs, rec)
 	}
 	if len(recs) == 0 {

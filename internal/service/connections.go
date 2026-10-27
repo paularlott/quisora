@@ -466,8 +466,10 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			extra = append(extra, store.Op{Rec: store.Tombstone(g.Kind(), g.GetMeta().ID)})
 		}
 		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error { return s.writeUser(ctx, u, extra) })
-		if errors.Is(err, store.ErrStale) && attempt < 7 {
-			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy
+		if (errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound)) && attempt < 7 {
+			// changed meanwhile (another removal, a grant made on a session it ends, a session that expired since it
+			// was listed): decided again on the newer copies
+			continue
 		}
 		return mapStore(err)
 	}

@@ -86,13 +86,21 @@ type change struct {
 	Resv string
 	// Ops are opTx's writes, in order.
 	Ops []txOp
+	// Base (opWrite) is the version of the record, in any state, the writer based the write on (0: none); Replay marks
+	// the change submitted again after an attempt whose outcome was not known. A replay is applied only while the record
+	// is still at its Base (else whyStale, which the writer reports as unknown): an unconditional write replayed over a
+	// successor another writer committed meanwhile would overwrite it, or delete its new generation, and its own
+	// landing is recognised by its request id only while the record still carries it (retried).
+	Base   uint64
+	Replay bool
 }
 
-// txOp is one write of an opTx change: as an opWrite's Mode, Expect and Rec.
+// txOp is one write of an opTx change: as an opWrite's Mode, Expect, Rec and Base.
 type txOp struct {
 	Mode   uint8
 	Expect uint64
 	Rec    []byte
+	Base   uint64
 }
 
 // writeData is the data of a write (partition.Write.Data): the records every node applies, stamped by the owner, and
@@ -447,6 +455,9 @@ func (s *pstore) Prepare(p int, b []byte) (data, reply []byte, err error) {
 		if err := s.retried(rec); err != nil {
 			return nil, nil, err
 		}
+		if err := s.replayed(c.Replay, rec, c.Base); err != nil {
+			return nil, nil, err
+		}
 		if err := s.prepareWrite(p, c.Mode, c.Expect, rec, nil); err != nil {
 			return nil, nil, err
 		}
@@ -509,6 +520,30 @@ func (s *pstore) retried(rec *store.Record) error {
 	return nil
 }
 
+// replayed refuses a replay (change.Replay) of the write of rec when the record is no longer at base, the version the
+// writer based it on: whyStale, an answer the writer reports as unknown (ambiguous).
+func (s *pstore) replayed(replay bool, rec *store.Record, base uint64) error {
+	if !replay {
+		return nil
+	}
+	cur, err := s.lookup(rec.Kind, rec.ID)
+	if err != nil {
+		return err
+	}
+	if v := versionOf(cur); v != base {
+		return refuse(whyStale, "%s %s changed since the write was first submitted", rec.Kind, rec.ID)
+	}
+	return nil
+}
+
+// versionOf is r's version in any state (0 for nil).
+func versionOf(r *store.Record) uint64 {
+	if r == nil {
+		return 0
+	}
+	return uint64(r.Version)
+}
+
 // txUniques is what the earlier writes of a transaction did to unique values: the values they claimed (by record id)
 // and those they released, each of its kind (a value is unique among the records of one kind: uniqueKey). A later
 // write is checked against the committed copy as they leave it.
@@ -544,13 +579,16 @@ func (s *pstore) prepareTx(p int, c *change) ([]*store.Record, []writeReply, err
 		if err := s.retried(rec); err != nil {
 			return nil, nil, err
 		}
+		if err := s.replayed(c.Replay, rec, op.Base); err != nil {
+			return nil, nil, err
+		}
 		recs[i] = rec
 	}
 	tu := &txUniques{claimed: map[string]string{}, released: map[string]bool{}}
 	var write []*store.Record
 	stamps := make([]writeReply, len(c.Ops))
 	for i, op := range c.Ops {
-		if op.Mode == modeBlind {
+		if recs[i].Deleted && (op.Mode == modeBlind || op.Mode == modeMatch && op.Expect == 0) {
 			cur, err := s.lookup(recs[i].Kind, recs[i].ID)
 			if err != nil {
 				return nil, nil, err
@@ -606,6 +644,9 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 		if !live {
 			return refuse(whyNothing, "%s %s is not there", rec.Kind, rec.ID)
 		}
+	}
+	if rec.Deleted && !live {
+		return refuse(whyNothing, "%s %s is not there", rec.Kind, rec.ID) // (store.Store.Put: nothing is written)
 	}
 	rec.Version = nextVersion(cur)
 	var head *store.Head

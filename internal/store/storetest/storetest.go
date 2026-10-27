@@ -266,6 +266,12 @@ func testUniqueLong(t *testing.T, s store.Store) {
 	a.Subject = "short"
 	must(t, tb.Put(ctx, a))
 	must(t, tb.Put(ctx, clash)) // released
+	// longer than any engine's key (Badger's is 65,000 bytes)
+	huge := ident(strings.Repeat("h", 70_000) + "z")
+	must(t, tb.Put(ctx, huge))
+	if got, err := tb.GetByUnique(ctx, model.IdentityKey("p1", huge.Subject)); err != nil || got.ID != huge.ID {
+		t.Fatalf("a 70 KB unique value: %v %v", got, err)
+	}
 }
 
 // Every store takes the same records: an id or scope of MaxIDLength characters, a string field of MaxFieldLength (a
@@ -528,6 +534,13 @@ func testDeleteNotLive(t *testing.T, s store.Store) {
 	again := newUser("org1", "never-again")
 	again.ID = "never"
 	must(t, tb.Put(ctx, again)) // no tombstone stands in its way
+	// A deletion expecting no live record does not delete a live one.
+	if err := s.CompareAndPut(ctx, store.Tombstone(model.KindUser, again.ID), 0); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("a deletion with expect 0 of a live record: want ErrStale, got %v", err)
+	}
+	if _, err := tb.Get(ctx, again.ID); err != nil {
+		t.Fatalf("the live record was deleted: %v", err)
+	}
 }
 
 func testCreate(t *testing.T, s store.Store) {

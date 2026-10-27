@@ -144,7 +144,7 @@ tasks:
       - go vet -tags faults ./...
       - QUISORA_CONFORMANCE=1 go test -race -timeout 60m ./internal/cluster/
       # only the tests of the files built with the tag (//go:build faults): name a new one here
-      - QUISORA_CONFORMANCE=1 go test -race -timeout 60m -tags faults -run 'TestConformanceLostReplies|TestOverwrittenWriteWithALostReplyIsUnknownNotStale|TestPartitionSyncMode|TestImportTooBigForOneTransaction|TestBusyPartitionStateWritesNeverConflict|TestConcurrentPartitionCommitsOnSharedCountersSucceed' ./internal/cluster/ ./internal/store/kvstore/ ./internal/store/sqlstore/
+      - QUISORA_CONFORMANCE=1 go test -race -timeout 60m -tags faults -run 'TestConformanceLostReplies|TestOverwrittenWriteWithALostReplyIsUnknownNotStale|TestReplayedUnconditionalWriteKeepsTheSuccessor|TestPartitionSyncMode|TestImportTooBigForOneTransaction|TestBusyPartitionStateWritesNeverConflict|TestConcurrentPartitionCommitsOnSharedCountersSucceed' ./internal/cluster/ ./internal/store/kvstore/ ./internal/store/sqlstore/
 
   cover:
     desc: Statement coverage of the production code across packages; fails below the floor in scripts/coverage-floor

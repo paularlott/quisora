@@ -436,7 +436,7 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	// only while the account is enabled and not privileged as that write finds it (a promotion committed meanwhile is
 	// seen: service.LinkExisting), and only while one of the addresses the provider verified is still a verified address
 	// of the account as that write finds it (an address changed meanwhile is not the account's to be signed in by).
-	u, err := s.Svc.LinkExisting(ctx, users[0].ID, func(u *model.User) error {
+	allow := func(u *model.User) error {
 		if !slices.ContainsFunc(addrs, u.HasVerifiedEmail) {
 			return errNoLongerMatches
 		}
@@ -452,14 +452,22 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 			return ErrPrivileged
 		}
 		return nil
-	}, func(u *model.User) *model.Identity { return model.NewIdentity(u, p, c.Subject, c.Email, "email") })
+	}
+	link := func(u *model.User) *model.Identity { return model.NewIdentity(u, p, c.Subject, c.Email, "email") }
+	// Audited: a link whose write's outcome is unknown (it may have landed) is recorded as such, since a retry signs in
+	// through it and nothing would record its making again.
+	var u *model.User
+	err = s.Svc.Audited(ctx, actor, org.ID, "identity.link.email", users[0].Username,
+		map[string]string{"provider": p.Name, "subject": c.Subject}, func() (err error) {
+			u, err = s.Svc.LinkExisting(ctx, users[0].ID, allow, link)
+			return err
+		})
 	if errors.Is(err, errNoLongerMatches) {
 		return nil, nil // as if no account had matched
 	}
 	if err != nil {
 		return nil, err
 	}
-	s.Svc.Audit(ctx, actor, org.ID, "identity.link.email", u.Username, map[string]string{"provider": p.Name, "subject": c.Subject})
 	return u, nil
 }
 

@@ -82,3 +82,93 @@ func TestOverwrittenWriteWithALostReplyIsUnknownNotStale(t *testing.T) {
 		t.Fatalf("the intervening write was undone: %+v %v", got, err)
 	}
 }
+
+// An unconditional write (a Put, a plain deletion) that landed and lost its reply, and that another writer changed
+// before the store submitted it again, is never replayed over that successor: the replay is conditional on the version
+// the write was based on (change.Base), refused, and the write is reported unknown, the successor kept.
+func TestReplayedUnconditionalWriteKeepsTheSuccessor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// write is the first write, through node 0; change, the successor through node 1 once it holds that write
+		write  func(s *Store, u *model.User) error
+		change func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User)
+		// kept checks the successor survived
+		kept func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User)
+	}{
+		{
+			name: "put",
+			write: func(s *Store, u *model.User) error {
+				u.GivenName = "first"
+				r, err := store.Encode(u)
+				if err != nil {
+					return err
+				}
+				return s.Put(bg, r)
+			},
+			change: func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User) {
+				var cur *model.User
+				waitFor(t, 5*time.Second, "the other node to have the first write", func() bool {
+					got, err := other.Get(bg, u.ID)
+					cur = got
+					return err == nil && got.GivenName == "first"
+				})
+				cur.GivenName = "successor"
+				if err := other.Update(bg, cur); err != nil {
+					t.Errorf("the successor: %v", err)
+				}
+			},
+			kept: func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User) {
+				if got, err := other.Get(bg, u.ID); err != nil || got.GivenName != "successor" {
+					t.Fatalf("the successor was overwritten by the replay: %+v %v", got, err)
+				}
+			},
+		},
+		{
+			name:  "delete",
+			write: func(s *Store, u *model.User) error { return store.NewTable[model.User](s).Delete(bg, u.ID) },
+			change: func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User) {
+				waitFor(t, 5*time.Second, "the other node to have the deletion", func() bool {
+					_, err := other.Get(bg, u.ID)
+					return errors.Is(err, store.ErrNotFound)
+				})
+				again := &model.User{Meta: model.Meta{ID: u.ID}, OrgID: u.OrgID, Username: "again", Active: true}
+				if err := other.Create(bg, again); err != nil {
+					t.Errorf("the successor (created again): %v", err)
+				}
+			},
+			kept: func(t *testing.T, other *store.Table[model.User, *model.User], u *model.User) {
+				if got, err := other.Get(bg, u.ID); err != nil || got.Username != "again" {
+					t.Fatalf("the record created again was deleted by the replay: %+v %v", got, err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := started(t, badgerBackend())
+			org, _ := c.orgNotOwnedBy(0)
+			tb := store.NewTable[model.User](c.nodes[0].st())
+			u := &model.User{OrgID: org, Username: "replayed-" + tc.name, Active: true}
+			if err := tb.Create(bg, u); err != nil {
+				t.Fatal(err)
+			}
+			c.waitVersion(t, model.KindUser, u.ID, u.Version)
+			other := store.NewTable[model.User](c.nodes[1].st())
+			var lost atomic.Bool
+			c.nodes[0].n.faults.loseReply = func() bool {
+				if !lost.CompareAndSwap(false, true) {
+					return false
+				}
+				tc.change(t, other, u)
+				return true
+			}
+			err := tc.write(c.nodes[0].st(), u)
+			if !lost.Load() {
+				t.Fatal("test set-up: no reply was lost")
+			}
+			if !errors.Is(err, store.ErrUnconfirmed) {
+				t.Fatalf("a write that landed, was succeeded and lost its reply: %v, want unknown (unconfirmed)", err)
+			}
+			tc.kept(t, other, u)
+		})
+	}
+}

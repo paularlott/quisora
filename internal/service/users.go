@@ -1243,7 +1243,9 @@ func ptrBool(b bool) *bool { return &b }
 func ActiveFilter(active bool) store.Filter { return store.Filter{Field: "inactive", Value: !active} }
 
 // passkeySessionEnds returns the sessions passkeyID signed in for userID (but keepSession) and the deletions that end
-// them with their refresh grants, for a transaction; the applications are told first (back-channel logout).
+// them with their refresh grants, for a transaction; the applications are told first (back-channel logout). Each
+// session is deleted only at the version listed: a grant made meanwhile changed it (CreateSessionGrant), so the
+// transaction is refused (ErrStale) and decided again on fresh listings (removeWay), as EndSession does.
 func (s *Service) passkeySessionEnds(ctx context.Context, userID, passkeyID, keepSession string) ([]string, []store.Op, error) {
 	sessions, err := s.Sessions.All(ctx, userID)
 	if err != nil {
@@ -1254,7 +1256,7 @@ func (s *Service) passkeySessionEnds(ctx context.Context, userID, passkeyID, kee
 	for _, ss := range sessions {
 		if ss.Passkey == passkeyID && ss.ID != keepSession {
 			ids = append(ids, ss.ID)
-			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindSession, ss.ID)})
+			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindSession, ss.ID), Match: true, Expect: ss.Version})
 		}
 	}
 	if len(ids) == 0 {
@@ -1294,16 +1296,5 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, kee
 		return 0, nil
 	}
 	s.sessionsEnding(ctx, userID, ids)
-	var errs []error
-	n := 0
-	for _, ss := range ending {
-		ended, err := s.EndSession(ctx, ss)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("end session %s: %w", ss.ID, err))
-		}
-		if ended {
-			n++
-		}
-	}
-	return n, errors.Join(errs...)
+	return s.EndSessions(ctx, userID, ending)
 }

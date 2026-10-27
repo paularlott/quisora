@@ -179,40 +179,63 @@ func (s *Service) CreateSessionGrant(ctx context.Context, g *model.Grant, sess *
 	return err
 }
 
-// EndSession ends session sess with its refresh grants: the grants first, then the session, only while it is as read
-// (its version). A grant made meanwhile changed the session in the same transaction (CreateSessionGrant), so the
-// deletion is refused as stale, and the session is read and its grants listed again: none is left behind by a
-// revocation that reports success. Every deletion is attempted even when one fails (a session a compromised passkey
-// signed in ends whatever its grants do), and the failures are returned together; ended says whether the session itself
-// ended (a session already gone is no failure).
+// EndSession ends session sess with its refresh grants (EndSessions), and reports whether the session itself ended.
 func (s *Service) EndSession(ctx context.Context, sess *model.Session) (ended bool, err error) {
-	for attempt := 0; ; attempt++ {
-		var errs []error
-		grants, err := s.Grants.All(ctx, sess.UserID)
+	n, err := s.EndSessions(ctx, sess.UserID, []*model.Session{sess})
+	return n == 1, err
+}
+
+// EndSessions ends sessions, all of userID, with their refresh grants: the grants first, then each session, only while
+// it is as read (its version). A grant made meanwhile changed its session in the same transaction
+// (CreateSessionGrant), so that session's deletion is refused as stale, and the sessions so refused are read again and
+// their grants listed again: none is left behind by a revocation that reports success. The user's grants are listed
+// once a round, whatever the number of sessions. Every deletion is attempted even when one fails (a session a
+// compromised passkey signed in ends whatever its grants do), and the failures are returned together; ended counts
+// the sessions that ended (one already gone included).
+func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*model.Session) (ended int, err error) {
+	var errs []error
+	pending := sessions
+	for attempt := 0; len(pending) > 0; attempt++ {
+		ids := make(map[string]bool, len(pending))
+		for _, ss := range pending {
+			ids[ss.ID] = true
+		}
+		grants, err := s.Grants.All(ctx, userID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list refresh grants: %w", mapStore(err)))
 		}
 		for _, g := range grants {
-			if g.SessionID == sess.ID {
+			if ids[g.SessionID] {
 				if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 					errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
 				}
 			}
 		}
-		err = s.Sessions.DeleteIf(ctx, sess.ID, sess.Version)
-		if err == nil || errors.Is(err, store.ErrNotFound) {
-			return true, errors.Join(errs...)
+		var again []*model.Session
+		for _, ss := range pending {
+			err := s.Sessions.DeleteIf(ctx, ss.ID, ss.Version)
+			switch {
+			case err == nil || errors.Is(err, store.ErrNotFound):
+				ended++
+				continue
+			case !errors.Is(err, store.ErrStale) || attempt == 4:
+				errs = append(errs, fmt.Errorf("end session %s: %w", ss.ID, mapStore(err)))
+				continue
+			}
+			// Changed since it was read (a grant made, a sign-in noted): read it again, and its grants next round.
+			cur, err := s.Sessions.Get(ctx, ss.ID)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				ended++
+			case err != nil:
+				errs = append(errs, fmt.Errorf("end session %s: %w", ss.ID, mapStore(err)))
+			default:
+				again = append(again, cur)
+			}
 		}
-		if !errors.Is(err, store.ErrStale) || attempt == 4 {
-			return false, errors.Join(append(errs, fmt.Errorf("end session: %w", mapStore(err)))...)
-		}
-		// Changed since it was read (a grant made, a sign-in noted): read it again, and its grants.
-		if sess, err = s.Sessions.Get(ctx, sess.ID); errors.Is(err, store.ErrNotFound) {
-			return true, errors.Join(errs...)
-		} else if err != nil {
-			return false, errors.Join(append(errs, fmt.Errorf("end session: %w", mapStore(err)))...)
-		}
+		pending = again
 	}
+	return ended, errors.Join(errs...)
 }
 
 // UserUsable is the one test of whether a user may be signed in or act (a browser session, a refresh grant, an access
