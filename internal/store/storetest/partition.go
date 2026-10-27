@@ -43,6 +43,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ExportRefusedWhileAnImportIsUnfinished", testPartExportUnfinished},
 		{"ImportFullInBatches", testPartImportFullBatches},
 		{"ExportRefusedAfterAFullImportReset", testPartExportAfterReset},
+		{"SnapshotRefusedWhileAFullImportIsUnfinished", testPartSnapshotUnfinished},
 		{"ImportFullRestartedAtTheSamePosition", testPartImportFullSamePosition},
 		{"Purge", testPartPurge},
 		{"Tombstones", testPartTombstones},
@@ -1440,6 +1441,41 @@ func testPartExportAfterReset(t *testing.T, f Factory) {
 	must(t, ps.ImportPartition(ctx, 86, []store.PartitionRecord{{Record: c, Seq: 1}}, pos(2, 5), store.ImportStep{Full: true, Final: true}))
 	if got, at := exported(t, ps, 86, 0); at != pos(2, 5) || len(got) != 1 {
 		t.Fatalf("export after the import: %+v %v", at, keysOf(got))
+	}
+}
+
+// A snapshot whose view holds a partition part-way through a full import is refused (store.Snapshotter): the import's
+// reset removed records, and a backup of the view would be complete, verifiable and short. Before the import and once
+// it has finished, a snapshot is taken.
+func testPartSnapshotUnfinished(t *testing.T, f Factory) {
+	s := f(t)
+	defer s.Close()
+	ps := pstore(t, s)
+	sn, ok := s.(store.Snapshotter)
+	if !ok {
+		t.Skip("no snapshots")
+	}
+	snap := func() error {
+		v, err := sn.Snapshot(ctx)
+		if err == nil {
+			v.Close()
+		}
+		return err
+	}
+	if err := snap(); errors.Is(err, store.ErrNoSnapshot) {
+		t.Skip("no snapshots")
+	} else if err != nil {
+		t.Fatalf("a snapshot before the import: %v", err)
+	}
+	c := urec(t, "osn", "sn-c")
+	must(t, ps.ApplyPartition(ctx, 87, []*store.Record{c}, pos(1, 1)))
+	must(t, ps.ImportPartition(ctx, 87, nil, pos(2, 5), store.ImportStep{Full: true, First: true}))
+	if err := snap(); !errors.Is(err, store.ErrUnavailable) {
+		t.Fatalf("a snapshot while a full import is unfinished: %v, want ErrUnavailable", err)
+	}
+	must(t, ps.ImportPartition(ctx, 87, []store.PartitionRecord{{Record: c, Seq: 1}}, pos(2, 5), store.ImportStep{Full: true, Final: true}))
+	if err := snap(); err != nil {
+		t.Fatalf("a snapshot once the import has finished: %v", err)
 	}
 }
 

@@ -59,7 +59,11 @@ fact.
    audited (`quisora force-start`). Nothing is ever wiped or emptied automatically.
 6. **A write whose outcome is not known says so.** When the owner is lost or a reply times out after the write was sent,
    the caller gets `store.ErrUnconfirmed` (HTTP 503): the write may or may not be in effect; the next owner settles it,
-   committed once or never. The service layer treats it as it treats a lost reply from a database server.
+   committed once or never. The service layer treats it as it treats a lost reply from a database server. The store
+   settles what it can first: it submits the write again, and the owner recognises one that landed by its request id on
+   the record. A record another write has changed since no longer carries that id, so a refusal of the resubmission
+   (stale, conflict, deleted, not found), which the write's own landing may have caused, is reported as unknown too,
+   never as a refusal: as a SQL store does when it reads the record back after a lost connection.
 7. These rules are enforced by tests that model the failures, run with `-race`. The partition protocol itself (ownership,
    failover and hand-over, majority commit, pending writes and their settlement, catch-up and resync, splits and
    minorities, cluster ids and sizes) is tested in the gossip library (`partition/`, with its fault-injection tests).

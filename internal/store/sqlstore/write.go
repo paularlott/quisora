@@ -71,12 +71,12 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 }
 
 // write runs one Put or CompareAndPut: a transaction of one write.
-func (s *Store) write(ctx context.Context, m mode, rec *store.Record, expect hlc.Timestamp) error {
+func (s *Store) write(ctx context.Context, m mode, rec *store.Record, expect hlc.Timestamp) (err error) {
 	t, err := s.table(rec.Kind)
 	if err != nil {
 		return err
 	}
-	defer store.EnsureReq(rec)()
+	defer store.EnsureReq(rec, &err)()
 	_, err = s.apply(ctx, []op{{t: t, rec: rec, m: m, expect: expect}})
 	return err
 }
@@ -93,7 +93,7 @@ func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, err
 }
 
 // Tx applies ops all or nothing, in one SQL transaction (store.Store).
-func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
+func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	type key struct {
 		kind model.Kind
 		id   string
@@ -117,8 +117,8 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
 	if len(ops) == 0 {
 		return store.ErrBadTx
 	}
-	defer store.TxReq(ops)()
-	_, err := s.apply(ctx, list)
+	defer store.TxReq(ops, &err)()
+	_, err = s.apply(ctx, list)
 	return err
 }
 

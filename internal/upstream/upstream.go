@@ -427,30 +427,28 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	default:
 		return nil, fmt.Errorf("%w (more than one account matches)", ErrExists)
 	}
-	u := users[0]
-	if !u.Enabled(time.Now()) {
-		return nil, ErrDisabled
-	}
-	if u.Role.Privileged() {
-		// Managers and administrators are never linked by email: a provider that an organization administrator
-		// set up could otherwise claim any of their addresses and become them. They connect providers themselves,
-		// signed in (account page).
-		actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
-		s.Svc.Audit(ctx, actor, org.ID, "identity.link.refused", u.Username, map[string]string{"provider": p.Name,
-			"reason": "privileged account"})
-		return nil, ErrPrivileged
-	}
+	actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
 	// A new way into an existing account, as connecting a provider from the account page: what is in flight for the
-	// account (sign-in steps, enrolment, links) ends first (the security generation), then the link is made.
-	u, err = s.Svc.AdvanceSecurity(ctx, u.ID)
+	// account (sign-in steps, enrolment, links) ends (the security generation), in the write that makes the link, and
+	// only while the account is enabled and not privileged as that write finds it (a promotion committed meanwhile is
+	// seen: service.LinkExisting).
+	u, err := s.Svc.LinkExisting(ctx, users[0].ID, func(u *model.User) error {
+		if !u.Enabled(time.Now()) {
+			return ErrDisabled
+		}
+		if u.Role.Privileged() {
+			// Managers and administrators are never linked by email: a provider that an organization administrator
+			// set up could otherwise claim any of their addresses and become them. They connect providers
+			// themselves, signed in (account page).
+			s.Svc.Audit(ctx, actor, org.ID, "identity.link.refused", u.Username, map[string]string{"provider": p.Name,
+				"reason": "privileged account"})
+			return ErrPrivileged
+		}
+		return nil
+	}, func(u *model.User) *model.Identity { return model.NewIdentity(u, p, c.Subject, c.Email, "email") })
 	if err != nil {
 		return nil, err
 	}
-	id := model.NewIdentity(u, p, c.Subject, c.Email, "email")
-	if err := s.Svc.Identities.Create(ctx, id); err != nil {
-		return nil, err
-	}
-	actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
 	s.Svc.Audit(ctx, actor, org.ID, "identity.link.email", u.Username, map[string]string{"provider": p.Name, "subject": c.Subject})
 	return u, nil
 }

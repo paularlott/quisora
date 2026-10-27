@@ -195,13 +195,12 @@ type pstore struct {
 	states [partitions]atomic.Pointer[partition.State]
 	// importing[p] is set from the start of a full import of p until its Final batch is stored (and from start-up, if the
 	// backend's durable marker says one was cut short): the partition then holds only part of what the import brings
-	// into the emptied partition, whatever position states[p] still carries. State reports it empty (the library then
-	// catches it up from nothing, and neither takes it over nor acknowledges a write on top of what it lacks), reads of
-	// it are refused (readable), and the next import of it, whatever the library asks, is a full one.
+	// into the emptied partition, whatever position states[p] still carries. State reports it Incomplete, with the
+	// position and pending write it had (they are what this node stored: a promise it gives must still report them, or a
+	// takeover that hears only from it would miss writes it acknowledged; the library then catches it up with a full copy,
+	// and neither takes it over nor acknowledges a write on top of what it lacks), reads of it are refused (readable),
+	// and the next import of it, whatever the library asks, is a full one.
 	importing [partitions]atomic.Bool
-	// imports counts the full imports begun here (each before its reset): a snapshot taken while it did not move, with
-	// no partition importing before it, holds no partition part-way through one (Store.Snapshot).
-	imports atomic.Uint64
 	// exports bounds the exports running at once (exportSlots): each holds a snapshot, and on SQLite a reader
 	// connection, for as long as its stream lasts.
 	exports chan struct{}
@@ -315,11 +314,7 @@ func (s *pstore) State(p int) (partition.State, error) {
 		return partition.State{}, fmt.Errorf("cluster: partition %d out of range", p)
 	}
 	st := *s.states[p].Load()
-	if s.importing[p].Load() {
-		// A full import of the partition has begun and not finished: it holds nothing this node can vouch for, so the
-		// protocol sees a partition that is empty (the promise stays: that is a fact about what was answered).
-		st.Committed, st.Pending = partition.Pos{}, nil
-	}
+	st.Incomplete = s.importing[p].Load() // (see importing)
 	return st, nil
 }
 
@@ -404,6 +399,7 @@ func (s *pstore) Commit(w *partition.Write) error {
 	if err := s.pst.ApplyPartition(s.n.ctx, w.Partition, recs, fromPos(w.Pos)); err != nil {
 		return err
 	}
+	s.n.applies.Add(1)
 	s.committed(w.Partition, w.Pos)
 	s.n.applied(recs)
 	return nil
@@ -513,11 +509,15 @@ func (s *pstore) retried(rec *store.Record) error {
 }
 
 // txUniques is what the earlier writes of a transaction did to unique values: the values they claimed (by record id)
-// and those they released. A later write is checked against the committed copy as they leave it.
+// and those they released, each of its kind (a value is unique among the records of one kind: uniqueKey). A later
+// write is checked against the committed copy as they leave it.
 type txUniques struct {
-	claimed  map[string]string // value -> id of the record of the transaction claiming it
-	released map[string]bool
+	claimed  map[string]string // uniqueKey -> id of the record of the transaction claiming it
+	released map[string]bool   // uniqueKey
 }
+
+// uniqueKey names unique value u of kind k in a transaction's bookkeeping (txUniques).
+func uniqueKey(k model.Kind, u string) string { return string(k) + "\x00" + u }
 
 // prepareTx checks and stamps an opTx: every write of partition p, in order, each as prepareWrite would, with unique
 // values checked as the earlier writes leave them. A transaction one of whose records is its request's already was
@@ -623,13 +623,13 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 				return refuse(whyBad, "%s %s lists the global value %q (it is reserved, not indexed)", rec.Kind, rec.ID, u)
 			}
 			if tu != nil {
-				if id, ok := tu.claimed[u]; ok && id != rec.ID {
+				if id, ok := tu.claimed[uniqueKey(rec.Kind, u)]; ok && id != rec.ID {
 					return refuse(whyConflict, "%q is in use", u)
 				}
 			}
 			h, err := s.inner.GetByUnique(s.n.ctx, rec.Kind, u)
 			switch {
-			case err == nil && h.ID != rec.ID && (tu == nil || !tu.released[u]):
+			case err == nil && h.ID != rec.ID && (tu == nil || !tu.released[uniqueKey(rec.Kind, u)]):
 				return refuse(whyConflict, "%q is in use", u)
 			case err != nil && !errors.Is(err, store.ErrNotFound):
 				return err
@@ -640,14 +640,14 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 		if live {
 			for _, u := range cur.Unique {
 				if rec.Deleted || !slices.Contains(rec.Unique, u) {
-					tu.released[u] = true
+					tu.released[uniqueKey(rec.Kind, u)] = true
 				}
 			}
 		}
 		if !rec.Deleted {
 			for _, u := range rec.Unique {
-				tu.claimed[u] = rec.ID
-				delete(tu.released, u)
+				tu.claimed[uniqueKey(rec.Kind, u)] = rec.ID
+				delete(tu.released, uniqueKey(rec.Kind, u))
 			}
 		}
 	}
@@ -929,7 +929,7 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 	}
 	// An import that began and did not finish left the partition holding some of a source's records and none of the rest
 	// (a full one reset it first): whatever is asked now, it is replaced whole, by reset, then the stream (State reported
-	// the partition empty, so the stream is from position 0 and carries every live record: the result is exact).
+	// the partition Incomplete, so the library asked for all of it: the result is exact).
 	full = full || s.importing[p].Load()
 	br := bufio.NewReaderSize(r, exportBuffer)
 	batch := make([]store.PartitionRecord, 0, importBatch)
@@ -944,7 +944,6 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 			if !was {
 				s.n.log.Info("copying a partition whole to this node: it serves none of it until the copy finishes", "partition", p)
 			}
-			s.imports.Add(1)
 			s.importing[p].Store(true) // before the backend resets anything: see importing
 		}
 		// Until an import completes, the partition's exports are refused by the backend (store.ErrImportUnfinished): its
@@ -955,6 +954,7 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 			}
 			return err
 		}
+		s.n.applies.Add(1)
 		first = false
 		if final {
 			s.committed(p, upTo)

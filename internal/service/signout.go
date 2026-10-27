@@ -123,8 +123,11 @@ func (s *Service) apiTokenStamp(ctx context.Context, orgID string) (model.SignOu
 // SessionUsable is the one test of whether a session still signs its user in, wherever it is used (a browser
 // request, an authorization code or device sign-in redeemed from it): unexpired, its user enabled, made in the
 // account's session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of the account's
-// sign-in), and not ended by an emergency sign-out (its stamp). u must be the session's user, as recently read. An
-// error is the sign-out counters that could not be read: no verdict (the caller answers 503), never "ended".
+// sign-in), not ended by an emergency sign-out (its stamp), and, signed in with a passkey, that passkey still the
+// user's: a session stands on the passkey it was signed in with, so removing it ends the session wherever and whenever
+// it was made (a sign-in verified before the removal and finished after it, a session the removal's listing did not
+// see yet). u must be the session's user, as recently read. An error is a read that failed (the sign-out counters, the
+// passkey): no verdict (the caller answers 503), never "ended".
 func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) (bool, error) {
 	if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
 		return false, err
@@ -133,7 +136,22 @@ func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *mod
 	if err != nil {
 		return false, err
 	}
-	return SessionUsableAt(sess, u, want), nil
+	if !SessionUsableAt(sess, u, want) {
+		return false, nil
+	}
+	if sess.Passkey != "" {
+		pk, err := s.Passkeys.Get(ctx, sess.Passkey)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, mapStore(err)
+		}
+		if pk.UserID != u.ID {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // UserUsable is the one test of whether a user may be signed in or act (a browser session, a refresh grant, an access

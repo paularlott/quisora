@@ -492,6 +492,26 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	return u, nil
 }
 
+// LinkExisting links a new way into user userID's existing account (a sign-in provider's identity matched by email
+// address): link makes the identity, and it is created in the one write that moves the account's security generation
+// on (what is in flight for the account ends), only while allow passes on the account as that write finds it. A change
+// of the account committed meanwhile (a promotion, say) makes the write stale, and allow is asked again on the newer
+// copy, so the account is never linked on a judgement of a copy it has moved past.
+func (s *Service) LinkExisting(ctx context.Context, userID string, allow func(u *model.User) error,
+	link func(u *model.User) *model.Identity) (*model.User, error) {
+	return s.modifyUserWith(ctx, userID, func(u *model.User) ([]store.Op, error) {
+		if err := allow(u); err != nil {
+			return nil, err
+		}
+		u.BumpSecurity()
+		rec, err := store.Encode(link(u))
+		if err != nil {
+			return nil, err
+		}
+		return []store.Op{{Rec: rec, Match: true}}, nil
+	})
+}
+
 // userConflict turns a unique clash into a field error naming the clashing field.
 func (s *Service) userConflict(ctx context.Context, err error, u *model.User) error {
 	if !errors.Is(err, store.ErrConflict) {

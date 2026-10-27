@@ -319,7 +319,9 @@ var importFallbacks atomic.Int64
 // deletes it. The reset that starts an import removes records in transactions of their own, before the position moves, so
 // without the marker a crash between them leaves nothing above the committed position, and an export would advertise a
 // position the data no longer matches.
-func importActiveKey(p int) string { return "pimp-active/" + strconv.Itoa(p) }
+func importActiveKey(p int) string { return importActivePrefix + strconv.Itoa(p) }
+
+const importActivePrefix = "pimp-active/"
 
 func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.PartitionRecord, upTo store.PartitionPos, step store.ImportStep) error {
 	if err := store.CheckImport(p, recs, upTo); err != nil {

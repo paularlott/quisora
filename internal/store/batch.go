@@ -28,7 +28,10 @@ var ErrNoSnapshot = errors.New("store: no snapshot available")
 
 // Snapshotter is optionally implemented by backends that can read a consistent point-in-time view of the whole
 // store: Badger (one read transaction) and the SQL backends (one repeatable-read, read-only transaction). Backups
-// read through it when available.
+// read through it when available. A view that holds a partition part-way through a full import (its marker:
+// PartitionState.Importing) is refused with ErrUnavailable: the import's reset removed records the view would then
+// lack, and a backup of it would be complete, verifiable and short. The backend refuses it whoever asks, a running
+// node or an offline command.
 type Snapshotter interface {
 	Snapshot(ctx context.Context) (Reader, error)
 }

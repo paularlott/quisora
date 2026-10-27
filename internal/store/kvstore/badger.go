@@ -380,6 +380,16 @@ func rangeOf(t *badger.Txn, bucket, from, to string, limit int) ([]string, error
 
 // badgerSnapshot is a read-only engine over one Badger read transaction: a consistent point-in-time view of the
 // whole store (Store.Snapshot).
+// importing reports whether t's view holds the marker of a full import in progress (importActiveKey).
+func importing(t *badger.Txn) bool {
+	o := badger.DefaultIteratorOptions
+	o.Prefix, o.PrefetchValues = []byte(importActivePrefix), false
+	it := t.NewIterator(o)
+	defer it.Close()
+	it.Rewind()
+	return it.Valid()
+}
+
 type badgerSnapshot struct {
 	t *badger.Txn
 }

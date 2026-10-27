@@ -302,8 +302,16 @@ func (s *Store) Snapshot(context.Context) (store.Reader, error) {
 	if !ok {
 		return nil, store.ErrNoSnapshot
 	}
-	return &Store{eng: &badgerSnapshot{t: e.db.NewTransaction(false)}, feedID: s.FeedID()}, nil
+	t := e.db.NewTransaction(false)
+	if importing(t) {
+		t.Discard()
+		return nil, errSnapshotImporting
+	}
+	return &Store{eng: &badgerSnapshot{t: t}, feedID: s.FeedID()}, nil
 }
+
+// errSnapshotImporting refuses a snapshot whose view holds a partition part-way through a full import (Snapshotter).
+var errSnapshotImporting = fmt.Errorf("%w: a partition is part-way through a full import; try again once it has finished", store.ErrUnavailable)
 
 // ---- keys ----
 
@@ -935,20 +943,20 @@ func putTx(tx txn, rec *store.Record, match bool, expect hlc.Timestamp) error {
 	return apply(tx, old, rec, rec.Unique, keys, pstamp{})
 }
 
-func (s *Store) Put(ctx context.Context, rec *store.Record) error {
-	defer store.EnsureReq(rec)()
+func (s *Store) Put(ctx context.Context, rec *store.Record) (err error) {
+	defer store.EnsureReq(rec, &err)()
 	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, false, 0) })
 }
 
-func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
-	defer store.EnsureReq(rec)()
+func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) (err error) {
+	defer store.EnsureReq(rec, &err)()
 	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, true, expect) })
 }
 
 // Tx applies ops all or nothing as one write (one Badger transaction, or one operation of a group commit batch, which
 // is rolled back whole when it fails), routed by its first record. Each op runs as putTx does, in order, so a later
 // op sees what the earlier ones wrote: a unique value one releases another may claim, and two claiming one conflict.
-func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
+func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if len(ops) == 0 {
 		return store.ErrBadTx
 	}
@@ -960,7 +968,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
 		}
 		seen[k] = true
 	}
-	defer store.TxReq(ops)()
+	defer store.TxReq(ops, &err)()
 	return s.write(ctx, ops[0].Rec.Kind, ops[0].Rec.ID, func(tx txn) error {
 		stored := make([]*stored, len(ops))
 		retried := false

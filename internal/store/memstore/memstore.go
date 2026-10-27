@@ -158,8 +158,8 @@ func (s *Store) apply(rec *store.Record, match bool, expect hlc.Timestamp) error
 	return nil
 }
 
-func (s *Store) Put(_ context.Context, rec *store.Record) error {
-	defer store.EnsureReq(rec)()
+func (s *Store) Put(_ context.Context, rec *store.Record) (err error) {
+	defer store.EnsureReq(rec, &err)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.apply(rec, false, 0)
@@ -168,7 +168,7 @@ func (s *Store) Put(_ context.Context, rec *store.Record) error {
 // Tx applies ops all or nothing under one lock: each as apply does, in order, so a later op sees what the earlier ones
 // leave (a unique value one releases another may claim). A refusal puts back every record and unique entry the ops
 // touched.
-func (s *Store) Tx(_ context.Context, ops []store.Op) error {
+func (s *Store) Tx(_ context.Context, ops []store.Op) (err error) {
 	if len(ops) == 0 {
 		return store.ErrBadTx
 	}
@@ -180,7 +180,7 @@ func (s *Store) Tx(_ context.Context, ops []store.Op) error {
 		}
 		seen[k] = true
 	}
-	defer store.TxReq(ops)()
+	defer store.TxReq(ops, &err)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	retried := false
@@ -294,8 +294,8 @@ func (s *Store) putReplicated(rec *store.Record) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.Timestamp) error {
-	defer store.EnsureReq(rec)()
+func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.Timestamp) (err error) {
+	defer store.EnsureReq(rec, &err)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.apply(rec, true, expect)

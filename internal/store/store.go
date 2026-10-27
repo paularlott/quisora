@@ -182,21 +182,39 @@ var (
 	reqCount  atomic.Uint64
 )
 
-// EnsureReq gives rec a request id for the write being made when its writer set none, and returns what takes that id
-// off again, to be called when the write returns (deferred): an id the store made is this write's own, so a record its
-// writer changes and writes again is another request, not a retry of this one (Retried would answer it as done and
-// write nothing). An id the writer set is kept: writing it again is a retry. Every write path calls it first.
-func EnsureReq(rec *Record) (done func()) {
-	if rec.Req != "" {
-		return func() {}
+// EnsureReq gives rec a request id for the write being made when its writer set none, and returns what is called when
+// the write returns (deferred), with err the write's result:
+//   - a write that failed leaves rec as it was passed (no stamp, no id, its unique values and partition as given), so
+//     the same record written again is judged again in full;
+//   - one that succeeded keeps its stamps, and loses an id the store made: that id is this write's own, so a record its
+//     writer changes and writes again is another request, not a retry of this one (Retried would answer it as done
+//     and write nothing). An id the writer set is kept: writing it again is a retry.
+//
+// Every write path calls it first.
+func EnsureReq(rec *Record, err *error) (done func()) {
+	was := *rec
+	made := rec.Req == ""
+	if made {
+		rec.Req = NewReq()
 	}
-	rec.Req = NewReq()
-	return func() { rec.Req = "" }
+	return func() {
+		switch {
+		case *err != nil:
+			*rec = was
+		case made:
+			rec.Req = ""
+		}
+	}
 }
 
 // TxReq is EnsureReq for the records of a transaction (Store.Tx): the first op's id, its writer's or one the store
-// makes, on every op that has none; the returned function takes off those the store set.
-func TxReq(ops []Op) (done func()) {
+// makes, on every op that has none; when the transaction returns, a failed one leaves every record as it was passed,
+// and a successful one loses the ids the store set.
+func TxReq(ops []Op, err *error) (done func()) {
+	was := make([]Record, len(ops))
+	for i, op := range ops {
+		was[i] = *op.Rec
+	}
 	first := ops[0].Rec.Req
 	if first == "" {
 		first = NewReq()
@@ -209,6 +227,12 @@ func TxReq(ops []Op) (done func()) {
 		}
 	}
 	return func() {
+		if *err != nil {
+			for i, op := range ops {
+				*op.Rec = was[i]
+			}
+			return
+		}
 		for _, r := range set {
 			r.Req = ""
 		}

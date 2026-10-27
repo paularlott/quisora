@@ -47,6 +47,8 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"Retries", testRetries},
 		{"Tx", testTx},
 		{"TxRetried", testTxRetried},
+		{"TxUniquePerKind", testTxUniquePerKind},
+		{"FailedWriteLeavesTheRecord", testFailedWriteLeavesRecord},
 		{"Unique", testUnique},
 		{"UniqueReleasedOnChange", testUniqueReleased},
 		{"Tombstone", testTombstone},

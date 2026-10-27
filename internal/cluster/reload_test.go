@@ -441,7 +441,18 @@ func TestResizeWithWritesInFlightAndANodeDown(t *testing.T) {
 	confirmed.Range(func(k, _ any) bool { ids = append(ids, k.(string)); return true })
 	waitFor(t, 30*time.Second, "every confirmed write on every node", func() bool { return allHold(c.nodes, ids) })
 	waitFor(t, 30*time.Second, "every node at the same position", func() bool { return committedEqual(c.nodes) })
-	if !sameData(c.nodes) {
+	// (a node that has not heard a partition's owner since the resize refuses to list it for a moment: that is waited
+	// out, a difference is not)
+	var same bool
+	waitFor(t, 30*time.Second, "every node to list its data", func() bool {
+		var err error
+		same, err = compareData(c.nodes)
+		if err != nil && !errors.Is(err, store.ErrUnavailable) {
+			t.Fatal(err)
+		}
+		return err == nil
+	})
+	if !same {
 		t.Fatal("the nodes hold different data")
 	}
 }

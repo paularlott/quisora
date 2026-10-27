@@ -10,6 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
+	"github.com/paularlott/quisora/internal/upstream"
 )
 
 // provisionFaults is a store that fails the transaction an upstream auto-provision makes (the account and its link):
@@ -72,5 +73,57 @@ func TestAutoProvisionWritesNoAccountWithoutItsLink(t *testing.T) {
 	f.identityDown.Store(false)
 	if res, err := e.signIn(p, std("sub-2", "other@example.com")); err != nil || !res.Provisioned {
 		t.Fatalf("the retry: %v", err)
+	}
+}
+
+// promoteFirst promotes the user of the first transaction that links an identity, just before it runs: a promotion
+// committed between the account's check and the link.
+type promoteFirst struct {
+	store.Store
+	svc  *service.Service
+	done atomic.Bool
+}
+
+func (f *promoteFirst) Tx(ctx context.Context, ops []store.Op) error {
+	for _, op := range ops {
+		if op.Rec.Kind != model.KindIdentity || !f.done.CompareAndSwap(false, true) {
+			continue
+		}
+		var id model.Identity
+		if err := store.Decode(op.Rec, &id); err != nil {
+			return err
+		}
+		u, err := f.svc.Users.Get(ctx, id.UserID)
+		if err != nil {
+			return err
+		}
+		u.Role = model.RoleManager
+		if err := f.svc.Users.Update(ctx, u); err != nil {
+			return err
+		}
+	}
+	return f.Store.Tx(ctx, ops)
+}
+
+// A link by email address is made only while the account is not privileged as the link's own write finds it: a
+// promotion committed after the account was read and before the link makes that write stale, and the account, read
+// again, is refused as privileged, with no link made.
+func TestLinkByEmailSeesAPromotionCommittedMeanwhile(t *testing.T) {
+	f := &promoteFirst{Store: memstore.New()}
+	e := setupOn(t, f)
+	f.svc = e.svc
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false) })
+	u := e.mkUser(t, "pia", "pia@example.com", true)
+	if _, err := e.signIn(p, std("pia-sub", "pia@example.com")); !errors.Is(err, upstream.ErrPrivileged) {
+		t.Fatalf("a link by email of an account promoted meanwhile: want ErrPrivileged, got %v", err)
+	}
+	if !f.done.Load() {
+		t.Fatal("test set-up: the link's transaction was never made")
+	}
+	if _, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(p.ID, "pia-sub")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an identity was made for a privileged account: %v", err)
+	}
+	if got, _ := e.svc.Users.Get(e.ctx, u.ID); got.Role != model.RoleManager {
+		t.Fatalf("role %v", got.Role)
 	}
 }

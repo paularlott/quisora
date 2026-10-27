@@ -139,6 +139,7 @@ tasks:
       - go vet -tags onepassword ./...      # the build with 1Password service accounts compiles too
       - go test -race ./...
       - go test -tags onepassword ./internal/secrets/
+      - go test -race -tags faults ./internal/cluster/   # the tests that inject lost replies (not built into a release)
 
   cover:
     desc: Statement coverage of the production code across packages; fails below the floor in scripts/coverage-floor

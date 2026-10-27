@@ -301,6 +301,16 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 		_ = tx.Rollback()
 		return nil, unavailable(err)
 	}
+	// A view holding a partition part-way through a full import is refused (store.Snapshotter).
+	var one int
+	switch err := tx.QueryRowContext(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE kind = ? LIMIT 1"), importActive).Scan(&one); {
+	case err == nil:
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("%w: a partition is part-way through a full import; try again once it has finished", store.ErrUnavailable)
+	case !errors.Is(err, sql.ErrNoRows):
+		_ = tx.Rollback()
+		return nil, unavailable(err)
+	}
 	return &snapshot{s: s, tx: tx}, nil
 }
 

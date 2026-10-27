@@ -79,6 +79,9 @@ func owners(e model.Entity) []ownerRef {
 	case *model.SignIn:
 		return []ownerRef{{model.KindUser, v.ID}}
 	case *model.Session:
+		if v.Passkey != "" { // signed in with a passkey: it stands on it (SessionUsable)
+			return []ownerRef{{model.KindUser, v.UserID}, {model.KindPasskey, v.Passkey}}
+		}
 		return []ownerRef{{model.KindUser, v.UserID}}
 	case *model.Grant:
 		return []ownerRef{{model.KindUser, v.UserID}, {model.KindClient, v.ClientID}}

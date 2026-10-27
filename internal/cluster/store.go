@@ -45,8 +45,10 @@ func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 // served only while its partition is readable here, and one not found only while the partition its kind and id name,
 // if they name one, is (otherwise, while the node holds its data at all). Node-local kinds are exempt. The partition is
 // known only from what read finds, so read runs first; a copy found behind is waited for (readable) and then read
-// again, since what read returned before the wait is the copy the wait was for.
+// again, since what read returned before the wait is the copy the wait was for. So is one the gate found current
+// only after a change landed here since the read (Node.applies): what read returned may predate that change.
 func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func() (*store.Record, error)) (*store.Record, error) {
+	before := s.n.applies.Load()
 	r, err := read()
 	if s.n.gc == nil || localOnly(kind) {
 		return r, err
@@ -74,9 +76,10 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 		return r, err
 	}
 	if s.n.readableWithin(ctx, p, 0) == nil {
-		return r, err
-	}
-	if gerr := s.n.readable(ctx, p); gerr != nil {
+		if s.n.applies.Load() == before {
+			return r, err
+		}
+	} else if gerr := s.n.readable(ctx, p); gerr != nil {
 		return nil, gerr
 	}
 	r, err = read()
@@ -135,6 +138,7 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 // GetMany reads several records in one round trip of the wrapped store (store.MultiGetter), or one by one. In a gossip
 // cluster it is refused (the staleness gate, Get) when a record found is in a partition this node cannot read now.
 func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	before := s.n.applies.Load()
 	recs, err := store.GetMany(ctx, s.inner, kind, ids)
 	if err != nil || s.n.gc == nil || localOnly(kind) {
 		return recs, err
@@ -144,7 +148,8 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 			return nil, err
 		}
 	}
-	// As gated: a partition found behind is waited for, and then everything is read again.
+	// As gated: a partition found behind is waited for, and then everything is read again; so is a read a change landed
+	// after (checked once the gates are passed).
 	waited := false
 	for p := range recPartitions(recs) {
 		if s.n.readableWithin(ctx, p, 0) == nil {
@@ -155,7 +160,7 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 		}
 		waited = true
 	}
-	if !waited {
+	if !waited && s.n.applies.Load() == before {
 		return recs, nil
 	}
 	if recs, err = store.GetMany(ctx, s.inner, kind, ids); err != nil {
@@ -209,27 +214,12 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 // snapshotOf is Snapshot of sn, the wrapped store, in a gossip cluster.
 func (s *Store) snapshotOf(ctx context.Context, sn store.Snapshotter) (store.Reader, error) {
 	// Every partition must be readable here (none importing, behind or diverged): a snapshot is of one committed
-	// point of all of them, or refused.
+	// point of all of them, or refused. A full import that begins meanwhile is the backend's to refuse: its view then
+	// holds the import's marker (store.Snapshotter).
 	if err := s.n.readableWithin(ctx, -1, 0); err != nil {
 		return nil, err
 	}
-	refused := func(p int) error {
-		return fmt.Errorf("%w: partition %d is being copied whole to this node; try again once it has finished", store.ErrUnavailable, p)
-	}
-	began := s.n.pst.imports.Load()
-	if p, ok := s.n.pst.anyImporting(); ok {
-		return nil, refused(p)
-	}
-	r, err := sn.Snapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if s.n.pst.imports.Load() != began {
-		r.Close()
-		p, _ := s.n.pst.anyImporting()
-		return nil, refused(p)
-	}
-	return r, nil
+	return sn.Snapshot(ctx)
 }
 
 // PutReplicated applies a record as it is. Nothing in the cluster layer calls it: a gossip cluster's records arrive
@@ -305,8 +295,17 @@ func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.
 func (s *Store) Close() error { return s.inner.Close() }
 
 // write runs one write of rec.
-func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect uint64) error {
-	defer store.EnsureReq(rec)() // before the first attempt: every retry of the write carries the same request id
+func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect uint64) (err error) {
+	// Before the first attempt: every retry of the write carries the same request id, and a failed write leaves the
+	// caller's record as it was passed (store.EnsureReq). One that succeeded keeps its unique values as passed: the
+	// global ones are reserved, not stored with it (writePartitioned).
+	defer store.EnsureReq(rec, &err)()
+	unique := rec.Unique
+	defer func() {
+		if err == nil {
+			rec.Unique = unique
+		}
+	}()
 	if s.n.gc == nil || localOnly(rec.Kind) {
 		return s.writeLocal(ctx, rec, mode, expect)
 	}
@@ -470,7 +469,7 @@ func (s *Store) submitOnce(ctx context.Context, p int, c *change) (partition.Res
 		return partition.Result{}, partition.ErrUnavailable
 	}
 	res, err := pm.Write(context.WithoutCancel(ctx), p, b)
-	if err == nil && n.loseReply != nil && n.loseReply() {
+	if err == nil && n.faults.lostReply() {
 		err = fmt.Errorf("%w: the reply was lost (a test)", partition.ErrUnknown) // the write landed
 	}
 	switch {

@@ -2,13 +2,15 @@ package storetest
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// The storage contract's cases (docs/design/storage-contract.md): retried requests, and transactions.
+// The storage contract's cases (package store): retried requests, transactions, unique values per kind, and failed
+// writes that leave the caller's record as it was.
 
 // A write whose request is found stored is the retry of a write that was applied: it is answered as done, with the
 // stored version, and nothing is written again. Another request is refused as usual; a write with no request id is
@@ -231,5 +233,68 @@ func testTxRetried(t *testing.T, s store.Store) {
 	}
 	if err := s.Tx(ctx, other); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("another request's transaction of the same creates: want ErrStale, got %v", err)
+	}
+}
+
+// A unique value is unique among the records of one kind, in a transaction as anywhere: a group and a tenant of the same
+// name (the same unique value, model.GroupNameKey and TenantNameKey) are created together, and a transaction that
+// deletes a group does not free the same value for a second tenant while another tenant holds it.
+func testTxUniquePerKind(t *testing.T, s store.Store) {
+	g := &model.Group{OrgID: "org1", DisplayName: "same"}
+	te := &model.Tenant{OrgID: "org1", Name: "same"}
+	gr, _ := store.Encode(g)
+	tr, _ := store.Encode(te)
+	if err := s.Tx(ctx, []store.Op{{Rec: gr, Match: true}, {Rec: tr, Match: true}}); err != nil {
+		t.Fatalf("a group and a tenant of the same name in one transaction: %v", err)
+	}
+	other, _ := store.Encode(&model.Tenant{OrgID: "org1", Name: "same"})
+	err := s.Tx(ctx, []store.Op{{Rec: store.Tombstone(model.KindGroup, gr.ID)}, {Rec: other, Match: true}})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("a second tenant of a name another tenant holds, with a group of that name deleted: want ErrConflict, got %v", err)
+	}
+	if _, err := s.Get(ctx, model.KindGroup, gr.ID); err != nil {
+		t.Fatalf("the group of the refused transaction: %v", err)
+	}
+}
+
+// A write that fails leaves the caller's record as it was passed (version, unique values, partition, request id), so
+// the same record written again is judged again in full: a tenant whose name or resource (a value unique across
+// organizations) another holds is refused every time it is tried, by Put, CompareAndPut and Tx alike.
+func testFailedWriteLeavesRecord(t *testing.T, s store.Store) {
+	holder, _ := store.Encode(&model.Tenant{OrgID: "org1", Name: "held", Resources: []string{"https://api.example.com/mcp"}})
+	must(t, s.CompareAndPut(ctx, holder, 0))
+	for _, c := range []struct {
+		name  string
+		write func(r *store.Record) error
+	}{
+		{"Put", func(r *store.Record) error { return s.Put(ctx, r) }},
+		{"CompareAndPut", func(r *store.Record) error { return s.CompareAndPut(ctx, r, 0) }},
+	} {
+		for _, te := range []*model.Tenant{
+			{OrgID: "org1", Name: "held"}, // the name (of its organization)
+			{OrgID: "org2", Name: "free", Resources: []string{"https://api.example.com/mcp"}}, // the resource (of every one)
+		} {
+			rec, _ := store.Encode(te)
+			was := *rec
+			was.Unique = slices.Clone(rec.Unique)
+			for try := range 2 {
+				if err := c.write(rec); !errors.Is(err, store.ErrConflict) {
+					t.Fatalf("%s of %s, try %d: want ErrConflict, got %v", c.name, te.Name, try+1, err)
+				}
+				if rec.Version != was.Version || rec.Epoch != was.Epoch || rec.Created != was.Created || rec.Req != was.Req ||
+					rec.Partition != was.Partition || rec.Scope != was.Scope || !slices.Equal(rec.Unique, was.Unique) {
+					t.Fatalf("%s of %s, try %d: the record changed: %+v, was %+v", c.name, te.Name, try+1, rec, &was)
+				}
+			}
+		}
+	}
+	rec, _ := store.Encode(&model.Tenant{OrgID: "org1", Name: "held"})
+	was := *rec
+	was.Unique = slices.Clone(rec.Unique)
+	if err := s.Tx(ctx, []store.Op{{Rec: rec, Match: true}}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Tx: want ErrConflict, got %v", err)
+	}
+	if rec.Version != was.Version || rec.Req != was.Req || !slices.Equal(rec.Unique, was.Unique) {
+		t.Fatalf("Tx: the record changed: %+v, was %+v", rec, &was)
 	}
 }

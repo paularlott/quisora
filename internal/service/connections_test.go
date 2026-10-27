@@ -365,3 +365,40 @@ func TestEndPasskeySessionsReportsFailures(t *testing.T) {
 		t.Fatalf("the session itself should have ended: %d", n)
 	}
 }
+
+// A session signed in with a passkey stands on it: once the passkey is removed, a session made with it afterwards (a
+// sign-in verified before the removal and finished after it) does not sign its user in, and neither does one the
+// removal did not find; a session of another way in is not affected.
+func TestSessionMadeAfterItsPasskeyWasRemovedIsNotUsable(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	admin, u := e.user(org.ID, "admin", model.RoleAdmin), e.user(org.ID, "pk", model.RoleUser)
+	pk := e.passkey(u, "drop")
+	usable := func(s *model.Session) bool {
+		t.Helper()
+		ok, err := e.svc.SessionUsable(e.ctx, s, e.fresh(u))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	before, plain := e.session(u), e.session(u)
+	before.Passkey = pk.ID
+	if !usable(before) || !usable(plain) {
+		t.Fatal("control: the sessions should be usable")
+	}
+	if _, err := e.svc.RemovePasskey(e.ctx, actor(admin), u.ID, pk.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	after := e.session(u) // the in-flight sign-in's session, made after the removal committed
+	after.Passkey = pk.ID
+	if usable(after) {
+		t.Fatal("a session made with a passkey removed before it signs its user in")
+	}
+	if usable(before) {
+		t.Fatal("a session of a removed passkey that the removal did not end signs its user in")
+	}
+	if !usable(plain) {
+		t.Fatal("a session of another way in ended with the passkey")
+	}
+}

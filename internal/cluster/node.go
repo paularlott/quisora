@@ -165,6 +165,11 @@ type ownerInfo struct {
 
 // Node is this process's membership of the cluster.
 type Node struct {
+	// applies counts the changes this node has applied to its copy (commits, import batches, purges), each counted
+	// after it is readable and before the partition's committed position moves: a read that saw the count unchanged
+	// across it and the staleness gate saw no change land in between (Store.gated).
+	applies atomic.Uint64
+
 	cfg    *config.Config
 	opt    Options
 	log    logger.Logger
@@ -260,9 +265,8 @@ type Node struct {
 	staleAfter atomic.Int64
 	// waiting holds a place for each request waiting in the store (waitSlot): at most maxWaiting at once.
 	waiting chan struct{}
-	// loseReply, set by tests only, makes a write that landed report an unknown outcome when it returns true (the
-	// reply lost), for the settling to settle.
-	loseReply func() bool
+	// faults are the faults tests inject (built with the faults tag only: faults.go).
+	faults faultHooks
 	// tcpDeadline is the gossip transport's TCPDeadline (checked against the partition protocol's need: newManager).
 	tcpDeadline time.Duration
 

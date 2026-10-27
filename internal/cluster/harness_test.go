@@ -870,11 +870,18 @@ func committedEqual(nodes []*tnode) bool {
 
 // Every node holds the same records of dataKind in the same versions.
 func sameData(nodes []*tnode) bool {
+	same, err := compareData(nodes)
+	return err == nil && same
+}
+
+// compareData reports whether every node holds the same data, or the error of a node that could not list it (a node
+// that has not heard a partition's new owner yet refuses, store.ErrUnavailable).
+func compareData(nodes []*tnode) (bool, error) {
 	var ref map[string]*store.Record
 	for i, tn := range nodes {
 		res, err := tn.st().List(bg, dataKind, store.ListQuery{})
 		if err != nil {
-			return false
+			return false, err
 		}
 		m := map[string]*store.Record{}
 		for _, r := range res.Records {
@@ -885,15 +892,15 @@ func sameData(nodes []*tnode) bool {
 			continue
 		}
 		if len(m) != len(ref) {
-			return false
+			return false, nil
 		}
 		for id, r := range ref {
 			if o := m[id]; o == nil || o.Version != r.Version || string(o.Data) != string(r.Data) {
-				return false
+				return false, nil
 			}
 		}
 	}
-	return true
+	return true, nil
 }
 
 // copyTree copies a file or a directory tree.

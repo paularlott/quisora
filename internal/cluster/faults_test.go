@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -24,6 +25,16 @@ type faultStore struct {
 	// what the faults did (the chaos soak reports them): full imports started, imports failed by failImport, full imports
 	// cut after their reset
 	fullImports, failedImports, cutImports atomic.Int64
+	// afterGet, when set, runs after a Get has read, before it returns what it read (once: it is taken off first).
+	afterGet atomic.Pointer[func()]
+}
+
+func (f *faultStore) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	r, err := f.Store.Get(ctx, kind, id)
+	if h := f.afterGet.Swap(nil); h != nil {
+		(*h)()
+	}
+	return r, err
 }
 
 func (f *faultStore) PartitionState(ctx context.Context, p int) (store.PartitionState, error) {

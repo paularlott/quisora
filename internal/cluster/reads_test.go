@@ -368,8 +368,9 @@ func TestTrailingNodeRefusesToListSigningKeys(t *testing.T) {
 
 // A full import that is cut short after its reset has emptied the partition must not leave a node that serves the
 // emptied partition, or takes it over, from the old committed position it still holds: until an import completes the
-// node refuses to read the partition, reports it empty to the protocol (so it catches up from nothing, and a retry is a
-// full import whatever the library asked), and never acknowledges a write on top of what it lost. The acknowledged
+// node refuses to read the partition, reports it Incomplete to the protocol with the position it had (which a promise
+// it gives must still report; the library catches it up with a full copy, and a retry is a full import whatever the
+// library asked), and never acknowledges a write on top of what it lost. The acknowledged
 // records must all be on every node afterwards, the node that was cut short included, as an owner too.
 func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
 	var fs faults
@@ -392,6 +393,10 @@ func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
 	all := append(append([]string{}, first...), later...)
 
 	// a full copy of the partition starts on node 1 and is cut short after the reset
+	before, err := victim.n.pst.State(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	upTo, rc, err := c.nodes[0].n.pst.Export(p, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -409,8 +414,9 @@ func TestInterruptedFullImportIsRepeatedWhole(t *testing.T) {
 	if has(victim.st(), first[0]) {
 		t.Fatal("the reset left a record behind: the scenario is not what it should be")
 	}
-	if st, err := victim.n.pst.State(p); err != nil || st.Committed.Seq != 0 || st.Pending != nil {
-		t.Fatalf("the library is told the partition holds %+v (%v), want nothing", st, err)
+	if st, err := victim.n.pst.State(p); err != nil || !st.Incomplete || st.Committed != before.Committed ||
+		(st.Pending == nil) != (before.Pending == nil) {
+		t.Fatalf("the library is told %+v (%v), want Incomplete at the position it had, %+v", st, err, before)
 	}
 	if err := victim.n.readable(bg, p); !errors.Is(err, store.ErrUnavailable) || !strings.Contains(err.Error(), "importing") {
 		t.Fatalf("a read of the partition while its import is unfinished: %v", err)
@@ -504,19 +510,9 @@ func TestReadWaitingForCatchUpAnswersTheCaughtUpCopy(t *testing.T) {
 	}
 }
 
-// importBegins is a store whose snapshot is taken as a full import of partition p begins on node n.
-type importBegins struct {
-	store.Snapshotter
-	n *Node
-}
-
-func (s importBegins) Snapshot(ctx context.Context) (store.Reader, error) {
-	s.n.pst.imports.Add(1)
-	return s.Snapshotter.Snapshot(ctx)
-}
-
-// A backup is refused while a partition is being copied whole to the node (its reset emptied it), and when one began
-// as its snapshot was taken: the snapshot may hold the partition empty, and still verify.
+// A backup is refused while a partition is being copied whole to the node (its reset emptied it): the snapshot may hold
+// the partition empty, and still verify. (One that begins as the snapshot is taken is the backend's to refuse: its view
+// holds the import's marker, storetest's SnapshotRefusedWhileAFullImportIsUnfinished.)
 func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
 	c := started(t, badgerBackend())
 	n := c.nodes[0].n
@@ -531,7 +527,54 @@ func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
 		t.Fatalf("snapshot with no import: %v", err)
 	}
 	r.Close()
-	if _, err := n.st.snapshotOf(bg, importBegins{n.st.inner.(store.Snapshotter), n}); !errors.Is(err, store.ErrUnavailable) {
-		t.Fatalf("snapshot taken as an import began: %v", err)
+}
+
+// A read whose copy was behind when it read and caught up before the gate looked (the gate then finds the partition
+// current) answers the caught-up copy, never what it read before: a change applied in between makes it read again.
+func TestReadCaughtUpBetweenReadAndGateAnswersTheCaughtUpCopy(t *testing.T) {
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.opts = func(o *Options) {
+		o.Partition = func(pc *partition.Config) { clustertest.Partition(pc); pc.StaleAfter = 5 * time.Second }
+	}
+	c.startAll()
+	c.waitReady()
+	org := c.orgOwnedBy(0)
+	p := partitionNum(org)
+	follower := c.nodes[1]
+	tn := newTenant(org, "before")
+	if err := tenants(c.nodes[0]).Create(bg, tn); err != nil {
+		t.Fatal(err)
+	}
+	c.waitVersion(t, model.KindTenant, tn.ID, tn.Version)
+	c.partition([]int{0, 2}, []int{1})
+	tn.Description = "after"
+	if err := tenants(c.nodes[0]).Update(bg, tn); err != nil {
+		t.Fatal(err)
+	}
+	fs.of(follower).failImport.Store(int64(p) + 1)
+	c.heal()
+	waitFor(t, 10*time.Second, "the follower to hear it is behind", func() bool {
+		st, err := follower.n.manager().PartitionStatus(p)
+		return err == nil && st.CanRead && st.Committed.Seq < st.OwnerCommitted.Seq
+	})
+	// The read takes the old copy; the follower then catches up before the gate looks.
+	caughtUp := func() {
+		fs.of(follower).failImport.Store(0)
+		waitFor(t, 10*time.Second, "the follower to catch up", func() bool {
+			st, err := follower.n.manager().PartitionStatus(p)
+			return err == nil && st.Committed.Seq >= st.OwnerCommitted.Seq
+		})
+	}
+	fs.of(follower).afterGet.Store(&caughtUp)
+	got, err := tenants(follower).Get(bg, tn.ID)
+	if fs.of(follower).afterGet.Load() != nil {
+		t.Fatal("test set-up: the read did not reach the store")
+	}
+	if err != nil {
+		t.Fatalf("the read: %v", err)
+	}
+	if got.Description != "after" {
+		t.Fatalf("the read answered the copy it had before catching up: %q", got.Description)
 	}
 }

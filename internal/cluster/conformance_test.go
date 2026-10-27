@@ -9,14 +9,15 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/gossip/partition"
+	"github.com/paularlott/quisora/internal/cluster/clustertest"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/storetest"
 )
 
-// The store's conformance suite (storetest) run against cluster.Store: the measure of the storage contract
-// (docs/design/storage-contract.md, step 2). Every case that fails here and passes on a driver is a gap the contract
-// closes. Each case starts a cluster of its own, so it runs only with QUISORA_CONFORMANCE=1 (or when named with -run).
+// The store's conformance suite (storetest) run against cluster.Store: the measure of the storage contract (package
+// store). Every case that fails here and passes on a driver is a gap in the contract. Each case starts a cluster of its own, so it runs only with QUISORA_CONFORMANCE=1 (or when named with -run).
 //
 //	QUISORA_CONFORMANCE=1 go test -run TestConformance ./internal/cluster/
 //
@@ -26,8 +27,9 @@ import (
 //   - three nodes, split: writes through node 0, reads through node 1, each read made once StaleAfter has passed since
 //     the last write (the contract's bounded staleness: a read on another node may trail a write by StaleAfter at most);
 //     node-local kinds (audit events, short-lived state) are read where they were written, as the application does;
-//   - lost replies: three nodes through node 0, and every third partition write lands and then reports an unknown
-//     outcome below the store's settling (the reply lost), which the store must settle: its caller never sees it.
+//   - lost replies (built with the faults tag: TestConformanceLostReplies): three nodes through node 0, and every third
+//     partition write lands and then reports an unknown outcome below the store's settling (the reply lost), which the
+//     store must settle: its caller never sees it.
 //
 // A node that is behind is checked by TestBehindNodeAnswersCurrentOrRefuses (it runs always).
 func TestConformance(t *testing.T) {
@@ -38,21 +40,13 @@ func TestConformance(t *testing.T) {
 	for _, b := range localBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			t.Run("two nodes", func(t *testing.T) {
-				storetest.RunWith(t, func(tb testing.TB) store.Store { return noClose{conformCluster(tb, 2, b).nodes[0].st()} }, opt)
+				storetest.RunWith(t, func(tb testing.TB) store.Store { return noClose{conformClusterWith(tb, 2, b, steady).nodes[0].st()} }, opt)
 			})
 			t.Run("three nodes", func(t *testing.T) {
-				storetest.RunWith(t, func(tb testing.TB) store.Store { return noClose{conformCluster(tb, 3, b).nodes[0].st()} }, opt)
+				storetest.RunWith(t, func(tb testing.TB) store.Store { return noClose{conformClusterWith(tb, 3, b, steady).nodes[0].st()} }, opt)
 			})
 			t.Run("three nodes split", func(t *testing.T) {
 				storetest.RunWith(t, func(tb testing.TB) store.Store { return newSplit(conformCluster(tb, 3, b)) }, opt)
-			})
-			t.Run("lost replies", func(t *testing.T) {
-				storetest.RunWith(t, func(tb testing.TB) store.Store {
-					c := conformCluster(tb, 3, b)
-					var n atomic.Int64
-					c.nodes[0].n.loseReply = func() bool { return n.Add(1)%3 == 0 }
-					return noClose{c.nodes[0].st()}
-				}, opt)
 			})
 		})
 	}
@@ -149,7 +143,20 @@ func namedRun(test string) bool {
 
 // conformCluster starts a ready cluster of size nodes for one conformance case.
 func conformCluster(tb testing.TB, size int, b backend) *tcluster {
+	return conformClusterWith(tb, size, b, nil)
+}
+
+// steady gives a conformance cluster a staleness limit (2 s) that a loaded test machine's late heartbeats do not
+// reach: a node whose owner lease lapsed refuses reads (store.ErrUnavailable), which is correct, and not what the suite
+// is about. The variant reading through another node keeps the default, as each of its reads waits the limit out.
+func steady(o *Options) {
+	o.Partition = func(pc *partition.Config) { clustertest.Partition(pc); pc.StaleAfter = 2 * time.Second }
+}
+
+// conformClusterWith is conformCluster with the nodes' options set by opts (nil: the test defaults).
+func conformClusterWith(tb testing.TB, size int, b backend, opts func(*Options)) *tcluster {
 	c := newTCluster(tb, size, b)
+	c.opts = opts
 	c.startAll()
 	c.waitReady()
 	// every node has heard every partition's owner (a read that cannot tell its partition needs them all)

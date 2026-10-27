@@ -12,8 +12,9 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// The storage contract's cluster side (docs/design/storage-contract.md): a write's outcome is settled inside the store,
-// never handed to its caller as unknown; every wait is bounded, and so is the number of requests waiting at once.
+// The storage contract's cluster side (package store): a write's outcome is settled inside the store, and handed to its
+// caller as unknown only when it cannot be (errUnsettled); every wait is bounded, and so is the number of requests
+// waiting at once.
 
 // settleWait bounds how long a write whose outcome is unknown is settled for (its context's deadline, if sooner): a
 // takeover after an owner is lost takes a few seconds. A variable for tests.
@@ -26,8 +27,8 @@ var maxWaiting = 2048
 
 // errUnsettled marks a write whose outcome could not be settled before its deadline: it may have been applied (its
 // claims of global values are kept: the sweep releases those of a record that never was). It is store.ErrUnavailable
-// to the caller and also matches store.ErrUnconfirmed, which the service still reads as "may have been applied" (to
-// audit it and do its follow-ups) until its compensating code goes (docs/design/storage-contract.md, step 7).
+// to the caller and also matches store.ErrUnconfirmed, the one mark that a write may have been applied (the service
+// audits such a change with outcome unknown).
 var errUnsettled = fmt.Errorf("%w: the outcome of the write could not be settled in time", store.ErrUnconfirmed)
 
 // waitSlot takes one of the node's waiting places, and reports false when none is free (the caller refuses).
@@ -51,6 +52,11 @@ var errBusy = fmt.Errorf("%w: too many requests are waiting on this node", store
 // store.ErrUnavailable marked errUnsettled. Submitting again is safe for every change: a record write carries its
 // request id, and its owner answers one that landed with whyDone (the caller reads its stamp: settleDone); a claim,
 // a release and a purge are refused as nothing to do (whyHeld, whyNotHeld, whyNothing) once applied.
+//
+// The request id is known only while the record still carries it: a write that landed and was then overwritten (or
+// deleted) by another is not recognised, and its resubmission is refused as the first attempt itself may have caused
+// (stale, conflict, deleted, not found). Such a refusal of a resubmission is not an answer about this write: it is
+// unsettled too (ambiguous), as a SQL store's write whose connection was lost and whose record no longer shows it.
 func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result, error) {
 	res, err := s.submitOnce(ctx, p, c)
 	if err == nil || !unsettled(err) {
@@ -77,9 +83,27 @@ func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result,
 		case <-time.After(wait):
 		}
 		if res, err = s.submitOnce(ctx, p, c); err == nil || !unsettled(err) {
+			if ambiguous(err) {
+				return res, fmt.Errorf("%w: %w: an earlier attempt may have been applied and then changed: %v",
+					store.ErrUnavailable, errUnsettled, err)
+			}
 			return res, err
 		}
 	}
+}
+
+// ambiguous reports whether err, the refusal of a resubmitted write, may have been caused by its own earlier attempt
+// having landed (and been changed since): it then says nothing about whether the write was applied.
+func ambiguous(err error) bool {
+	var re *partition.RefusedError
+	if !errors.As(err, &re) {
+		return false
+	}
+	switch re.Code {
+	case whyStale, whyConflict, whyDeleted, whyNotFound:
+		return true
+	}
+	return false
 }
 
 // unsettled reports whether a write that ended with err may still be applied by trying again: its outcome is unknown,
@@ -116,12 +140,12 @@ func (s *Store) settleDone(ctx context.Context, recs []*store.Record) error {
 // Tx applies ops all or nothing (store.Store). In a gossip cluster every write must be of one partition, of a kind that
 // is replicated, and hold no value unique across organizations (a reservation is a write of another partition): the
 // transaction is one partition write, settled like any other. Otherwise (no gossip) it is the wrapped store's.
-func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
+func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	n := s.n
 	if len(ops) == 0 {
 		return store.ErrBadTx
 	}
-	defer store.TxReq(ops)()
+	defer store.TxReq(ops, &err)() // (a failed transaction leaves the callers' records as they were passed)
 	for _, op := range ops {
 		if err := n.allowWrite(ctx, op.Rec); err != nil {
 			return err
