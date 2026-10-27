@@ -237,7 +237,7 @@ func (c *committer) run(ops []*groupOp) {
 		time.Sleep(conflictBackoff(attempt))
 	}
 	if errors.Is(err, errConflict) {
-		err = fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
+		err = fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrUnavailable)
 	}
 	if isTxnTooBig(err) && len(ops) > 1 {
 		h := len(ops) / 2

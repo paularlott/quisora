@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -46,6 +47,8 @@ func BenchmarkSortedUserPage(b *testing.B) {
 				{"username-asc", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: visibility}},
 				{"username-desc-offset", store.ListQuery{Scope: "org", Sort: "username", Desc: true, Offset: 200, Limit: 25, Filters: visibility}},
 				{"active-desc-ties", store.ListQuery{Scope: "org", Sort: "active", Desc: true, Offset: 200, Limit: 25, Filters: visibility}},
+				{"role-user-username", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: append([]store.Filter{{Field: "role", Value: string(model.RoleUser)}}, visibility...)}},
+				{"role-super-username", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: []store.Filter{{Field: "role", Value: string(model.RoleSuperAdmin)}}}},
 				{"plain", store.ListQuery{Scope: "org", Limit: 25}},
 				{"plain-visibility", store.ListQuery{Scope: "org", Limit: 25, Filters: visibility}},
 				{"search-username", store.ListQuery{Scope: "org", Sort: "username", Search: "user-0000", Limit: 25, Filters: visibility}},
@@ -95,6 +98,66 @@ func BenchmarkEnginePageTotalScalesWithIndex(b *testing.B) {
 				ids, total, err := s.eng.Page(ctx, "bench-page", pageQuery{Limit: 25}, nowMs())
 				if err != nil || len(ids) != 25 || total != n {
 					b.Fatalf("page ids=%d total=%d err=%v", len(ids), total, err)
+				}
+			}
+		})
+	}
+}
+
+// The unlimited scope listings of every request: a user's sessions, a user's memberships (an indexed filter within the
+// organization's scope), and the organization's groups with changes pending (none).
+func BenchmarkScopeListings(b *testing.B) {
+	ctx := context.Background()
+	s, err := OpenBadger(ctx, b.TempDir(), BadgerOptions{InMemory: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	var recs []*store.Record
+	put := func(e model.Entity) {
+		rec, err := store.Encode(e)
+		if err != nil {
+			b.Fatal(err)
+		}
+		recs = append(recs, rec)
+		if len(recs) == 500 {
+			if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+				b.Fatal(err)
+			}
+			recs = recs[:0]
+		}
+	}
+	for u := range 1000 {
+		uid := fmt.Sprintf("user-%04d", u)
+		for range 3 {
+			put(&model.Session{Meta: model.Meta{ID: model.NewID()}, UserID: uid, OrgID: "org", Expires: time.Now().Add(time.Hour), IP: "10.0.0.1"})
+		}
+		for g := range 5 {
+			put(&model.Member{Meta: model.Meta{ID: model.NewID()}, GroupID: fmt.Sprintf("group-%d", (u+g)%200), UserID: uid, OrgID: "org"})
+		}
+	}
+	for g := range 200 {
+		put(&model.Group{Meta: model.Meta{ID: fmt.Sprintf("group-%d", g)}, OrgID: "org", DisplayName: fmt.Sprintf("group %d", g)})
+	}
+	if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+		b.Fatal(err)
+	}
+	for _, bc := range []struct {
+		name string
+		kind model.Kind
+		q    store.ListQuery
+		want int
+	}{
+		{"user-sessions", model.KindSession, store.ListQuery{Scope: "user-0500"}, 3},
+		{"user-memberships", model.KindMember, store.ListQuery{Scope: "org", Filters: []store.Filter{{Field: "user_id", Value: "user-0500"}}}, 5},
+		{"pending-groups-none", model.KindGroup, store.ListQuery{Scope: "org", Filters: []store.Filter{{Field: "pending", Value: true}}}, 0},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				page, err := s.List(ctx, bc.kind, bc.q)
+				if err != nil || len(page.Records) != bc.want || page.Total != bc.want {
+					b.Fatalf("page: %+v %v", page, err)
 				}
 			}
 		})

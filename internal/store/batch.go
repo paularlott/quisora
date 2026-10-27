@@ -44,20 +44,3 @@ type DueLister interface {
 	// kept; use a query).
 	ListDue(ctx context.Context, kind model.Kind, before time.Time, limit int) ([]*Record, error)
 }
-
-// QuorumReader is implemented by the cluster layer's store: Fresh returns the committed state of records as the owners
-// of their partitions have it (tombstones included), so a decision made on them reflects every write committed before
-// the call, wherever it was made. Without a cluster it reads the local store.
-type QuorumReader interface {
-	Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*Record, error)
-}
-
-// PartitionReader is a QuorumReader that can also be told which partition the records are in: FreshIn is Fresh for records
-// that all have the partition key partitionKey (Record.Partition: for organization data, the organization's id), asked
-// of that partition's owner directly, whether or not this store holds the records. An id this store holds is found
-// by Fresh from its own copy; one it does not hold (a record another node made a moment ago) would otherwise be asked
-// of every owner. The caller must know the key: a record of another partition is not found.
-type PartitionReader interface {
-	QuorumReader
-	FreshIn(ctx context.Context, kind model.Kind, partitionKey string, ids []string) (map[string]*Record, error)
-}

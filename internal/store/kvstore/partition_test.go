@@ -156,7 +156,7 @@ func TestImportTooBigForOneTransaction(t *testing.T) {
 		t.Fatal("the import fitted one transaction: raise n")
 	}
 	st, _ := s.PartitionState(ctx, 2)
-	if st.Committed.Seq != 5000 || st.Purged != 5000 {
+	if st.Committed.Seq != 5000 || st.Purged != 0 {
 		t.Fatalf("state: %+v", st)
 	}
 	count := 0

@@ -22,7 +22,7 @@ func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 		return nil, store.ErrNotFound
 	}
 	rec, err := t.scan(s.reader().queryRow(ctx, t.get, id, time.Now().UnixMicro()))
-	return rec, notFound(err)
+	return rec, unavailable(notFound(err))
 }
 
 // getManyBatch bounds the ids of one GetMany query (bind parameters: SQLite takes 32766, PostgreSQL 65535).
@@ -31,6 +31,11 @@ const getManyBatch = 500
 // GetMany returns the live records of kind among ids, in the order of ids, in one query per getManyBatch ids
 // (store.MultiGetter): a token's groups, a page of users' sign-in records, a group's members.
 func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	out, err := s.getMany(ctx, kind, ids)
+	return out, unavailable(err)
+}
+
+func (s *Store) getMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
 	t, ok := s.tables[kind]
 	if !ok || len(ids) == 0 {
 		return nil, nil
@@ -80,7 +85,7 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 		return nil, store.ErrNotFound
 	}
 	rec, err := t.scan(s.reader().queryRow(ctx, t.lookup, id))
-	return rec, notFound(err)
+	return rec, unavailable(notFound(err))
 }
 
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
@@ -88,19 +93,8 @@ func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) 
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	q := s.d.bind("SELECT " + qualify(t.cols, "k") + " FROM " + uniqueTable + " u JOIN " + t.name +
-		" k ON k.id = u.id WHERE u.kind = ? AND u.value = ? AND k.deleted = FALSE AND (k.expires IS NULL OR k.expires > ?)")
-	rec, err := t.scan(s.reader().queryRow(ctx, q, string(kind), value, time.Now().UnixMicro()))
-	return rec, notFound(err)
-}
-
-// qualify prefixes every column of a comma-separated list with a table alias.
-func qualify(cols, alias string) string {
-	parts := strings.Split(cols, ", ")
-	for i, p := range parts {
-		parts[i] = alias + "." + p
-	}
-	return strings.Join(parts, ", ")
+	rec, err := t.scan(s.reader().queryRow(ctx, t.byUnique, string(kind), value, time.Now().UnixMicro()))
+	return rec, unavailable(notFound(err))
 }
 
 func notFound(err error) error {
@@ -173,7 +167,8 @@ func (s *Store) where(t *table, q store.ListQuery) (string, []any, error) {
 }
 
 func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
-	return s.list(ctx, s.reader(), kind, q)
+	res, err := s.list(ctx, s.reader(), kind, q)
+	return res, unavailable(err)
 }
 
 func (s *Store) list(ctx context.Context, rd runner, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
@@ -207,7 +202,11 @@ func (s *Store) list(ctx context.Context, rd runner, kind model.Kind, q store.Li
 	if q.Limit > 0 {
 		limit = int64(q.Limit)
 	}
-	sel := s.d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE " + where + " ORDER BY " + order + " LIMIT ? OFFSET ?")
+	cols := t.cols
+	if q.IDsOnly { // the ids are wanted, not the records (store.ListQuery.IDsOnly): no data to read or decode
+		cols = "id"
+	}
+	sel := s.d.bind("SELECT " + cols + " FROM " + t.name + " WHERE " + where + " ORDER BY " + order + " LIMIT ? OFFSET ?")
 	rows, err := rd.query(ctx, sel, append(args[:len(args):len(args)], limit, int64(offset))...)
 	if err != nil {
 		return nil, err
@@ -215,7 +214,13 @@ func (s *Store) list(ctx context.Context, rd runner, kind model.Kind, q store.Li
 	defer rows.Close()
 	res := &store.ListResult{Records: []*store.Record{}}
 	for rows.Next() {
-		rec, err := t.scan(rows)
+		var rec *store.Record
+		if q.IDsOnly {
+			rec = &store.Record{Kind: kind}
+			err = rows.Scan(&rec.ID)
+		} else {
+			rec, err = t.scan(rows)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +251,8 @@ func (s *Store) count(ctx context.Context, rd runner, t *table, where string, ar
 }
 
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
-	return s.countScope(ctx, s.reader(), kind, scope)
+	n, err := s.countScope(ctx, s.reader(), kind, scope)
+	return n, unavailable(err)
 }
 
 func (s *Store) countScope(ctx context.Context, rd runner, kind model.Kind, scope string) (int, error) {
@@ -266,11 +272,13 @@ type snapshot struct {
 }
 
 func (v *snapshot) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
-	return v.s.list(ctx, runner{c: v.s.rc, tx: v.tx}, kind, q)
+	res, err := v.s.list(ctx, runner{c: v.s.rc, tx: v.tx}, kind, q)
+	return res, unavailable(err)
 }
 
 func (v *snapshot) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
-	return v.s.countScope(ctx, runner{c: v.s.rc, tx: v.tx}, kind, scope)
+	n, err := v.s.countScope(ctx, runner{c: v.s.rc, tx: v.tx}, kind, scope)
+	return n, unavailable(err)
 }
 
 func (v *snapshot) Close() error { return v.tx.Rollback() }
@@ -285,18 +293,23 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 	}
 	tx, err := s.rdb.BeginTx(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
 	// Fix the snapshot now: every dialect takes it at the transaction's first read, not when it begins.
 	var n int
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+feedTable).Scan(&n); err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, unavailable(err)
 	}
 	return &snapshot{s: s, tx: tx}, nil
 }
 
 func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
+	n, err := s.purge(ctx, tombstonesBefore, expiredBefore)
+	return n, unavailable(err)
+}
+
+func (s *Store) purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
 	var tombVersion int64
 	if tb := tombstonesBefore.Add(999 * time.Nanosecond); tb.UnixMicro() > 1735689600000000 {
 		tombVersion = int64(hlc.FromTime(tb))

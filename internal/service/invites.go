@@ -287,14 +287,18 @@ func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string, sup
 		roleDone := func(context.Context, *Actor, error) {}
 		changes := map[string]string{"break_glass": "made a super admin", "role": string(model.RoleSuperAdmin)}
 		err = s.audited(ctx, System, u.OrgID, "user.update", u.Username, changes, func() error {
-			changed, err := s.modifyUser(ctx, userID, func(u *model.User) error {
-				roleDone = s.applyRole(u, model.RoleSuperAdmin)
+			changed, err := s.modifyUserWith(ctx, userID, func(u *model.User) ([]store.Op, error) {
+				also, done, err := s.applyRole(ctx, u, model.RoleSuperAdmin)
+				if err != nil {
+					return nil, err
+				}
+				roleDone = done
 				u.Active = true
 				if u.ValidUntil != nil && !time.Now().Before(*u.ValidUntil) {
 					u.ValidUntil = nil // ended: the account must be usable again to be recovered
 				}
 				noteStatus(u, System, "break-glass: made a super admin")
-				return nil
+				return also, nil
 			})
 			roleDone(ctx, System, err) // for the copy of the last try: the one written, or that may have been
 			if err != nil {
@@ -381,16 +385,14 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 	now := time.Now().UTC()
 	u.PasswordHash, u.PasswordChangedAt = "", &now
 	u.BumpSecurity()
+	u.SessionEpoch = NewCredEpoch() // the account's sessions and refresh grants end at this write
 	detail := map[string]string{}
 	err = s.audited(ctx, a, u.OrgID, "user.password.remove", u.Username, detail, func() error {
 		err := s.Users.Update(ctx, u)
-		if !landed(err) {
-			return err
-		}
-		// Applied here even if a peer has not confirmed it yet, or the outcome is unknown (a retry of a removal that
-		// did land finds no password and would never end them): the sessions end and the audit records it regardless.
-		if serr := s.endUserSessions(ctx, u.ID, nil); serr != nil {
-			detail["sessions"] = "not all ended: " + serr.Error()
+		if err == nil { // tidying (they count for nothing already), and the applications are told
+			if serr := s.endUserSessions(ctx, u.ID, nil); serr != nil {
+				detail["sessions"] = "not all ended: " + serr.Error()
+			}
 		}
 		return err
 	})

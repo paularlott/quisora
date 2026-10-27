@@ -241,6 +241,10 @@ func (m *Module) Register(s *web.Server) {
 // an address, a sign-in on another device, a link followed in another tab). Session only.
 func (m *Module) accountStream(w http.ResponseWriter, r *http.Request) {
 	u := web.User(r)
+	if web.SessionUnchecked(r) {
+		web.WriteUnchecked(w)
+		return
+	}
 	if u == nil {
 		web.WriteJSON(w, http.StatusUnauthorized, web.ErrorBody{Error: "Your session has ended. Please sign in again."})
 		return

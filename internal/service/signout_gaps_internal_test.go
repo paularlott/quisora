@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -31,41 +29,6 @@ func (o *orgReads) Get(ctx context.Context, k model.Kind, id string) (*store.Rec
 		o.after()
 	}
 	return r, err
-}
-
-// A node that cannot vouch for its copy (the staleness gate refuses the read) does not go on with cached counters,
-// where a store error does for a short while: the emergency sign-out it may have missed counts.
-func TestSignOutCountersDoNotFallBackOnAGateRefusal(t *testing.T) {
-	ctx := context.Background()
-	st := &orgReads{Store: memstore.New()}
-	s := newInternalService(t, st)
-	if _, _, err := s.Bootstrap(ctx, "root@example.com"); err != nil {
-		t.Fatal(err)
-	}
-	p, err := s.PrimaryOrg(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.SessionStamp(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
-	age := func() {
-		s.signOut.mu.Lock()
-		co := s.signOut.orgs[p.ID]
-		co.fetched = time.Now().Add(-signOutCacheTTL - time.Second)
-		s.signOut.orgs[p.ID] = co
-		s.signOut.mu.Unlock()
-	}
-	age()
-	st.err = errors.New("store unavailable")
-	if _, err := s.SessionStamp(ctx, p.ID); err != nil {
-		t.Fatalf("a short store failure failed the check: %v", err)
-	}
-	age()
-	st.err = store.ErrNotWritable
-	if _, err := s.SessionStamp(ctx, p.ID); !errors.Is(err, store.ErrNotWritable) {
-		t.Fatalf("counters served although the node cannot vouch for them: %v", err)
-	}
 }
 
 // Counters read before an invalidation (an organization changed) are not stored when the read ends after it.

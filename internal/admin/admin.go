@@ -168,9 +168,22 @@ func (m *Module) routes() []Route {
 
 // orgFor resolves the {org} path value for the signed-in actor. Unknown orgs and orgs the actor may not see are
 // both reported as not found.
+// unanswered answers a lookup that ended with an error other than "not found" (the store could not answer: 503) as
+// that error, and reports whether it did: the caller answers "not found" only for what was looked up and is not there.
+func unanswered(w http.ResponseWriter, err error) bool {
+	if err == nil || errors.Is(err, service.ErrNotFound) || errors.Is(err, store.ErrNotFound) {
+		return false
+	}
+	web.WriteError(w, err)
+	return true
+}
+
 func (m *Module) orgFor(w http.ResponseWriter, r *http.Request) (*model.Org, *service.Actor, bool) {
 	a := web.Actor(r)
 	o, err := m.s.Svc.OrgByName(r.Context(), r.PathValue("org"))
+	if unanswered(w, err) {
+		return nil, nil, false
+	}
 	if err != nil || (!a.IsSuper() && o.ID != a.OrgID) {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, nil, false

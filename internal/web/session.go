@@ -132,15 +132,22 @@ func truncate(s string, n int) string {
 
 // Current returns the request's valid session and active user, or nil, nil.
 func (m *Sessions) Current(r *http.Request) (*model.Session, *model.User) {
+	s, u, _ := m.Check(r)
+	return s, u
+}
+
+// Check is Current that also says when the session could not be checked: the error is the store's refusal
+// (store.ErrUnavailable), no verdict, and the session and user are then nil.
+func (m *Sessions) Check(r *http.Request) (*model.Session, *model.User, error) {
 	c, err := r.Cookie(SessionCookie)
 	if err != nil || len(c.Value) < 20 || len(c.Value) > 100 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	s, u := m.Lookup(r.Context(), SessionID(c.Value))
+	s, u, err := m.lookup(r.Context(), SessionID(c.Value))
 	if s == nil || !cookieMatches(s, c.Value) {
-		return nil, nil
+		return nil, nil, err
 	}
-	return s, u
+	return s, u, nil
 }
 
 // cookieMatches checks the secret part of an upgraded session's cookie ("<id>.<secret>"); a session never upgraded
@@ -226,6 +233,12 @@ func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
 
 // Lookup returns a valid session and its active user by stored session id (see SessionID).
 func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *model.User) {
+	s, u, _ := m.lookup(ctx, id)
+	return s, u
+}
+
+// lookup is Lookup that also returns the store's refusal (store.ErrUnavailable) when it could not check the session.
+func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *model.User, error) {
 	now := time.Now()
 	m.mu.RLock()
 	cs := m.cache[id]
@@ -246,23 +259,32 @@ func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *mode
 		s, err := m.svc.Sessions.Get(ctx, id)
 		if err != nil {
 			m.Evict(id, "")
-			return nil, nil
+			return nil, nil, refused(err)
 		}
 		userTok := m.gens.Token("u:" + s.UserID)
 		u, err := m.svc.Users.Get(ctx, s.UserID)
 		if err != nil {
-			return nil, nil
+			return nil, nil, refused(err)
 		}
 		cs = &cachedSession{sess: s, user: u, fetched: now}
 		m.fill(id, cs, sessTok, userTok)
 	}
-	if ok, _ := m.svc.SessionUsable(ctx, cs.sess, cs.user); !ok { // (counters unreadable: not signed in, for now)
-		return nil, nil
+	if ok, err := m.svc.SessionUsable(ctx, cs.sess, cs.user); !ok {
+		return nil, nil, refused(err)
 	}
 	if now.Sub(cs.sess.LastSeen) > lastSeenThrottle {
 		m.touchLater(ctx, cs)
 	}
-	return cs.sess, cs.user
+	return cs.sess, cs.user, nil
+}
+
+// refused keeps err only when it is the store's refusal (store.ErrUnavailable): anything else (the session or user
+// gone, a record that does not decode) is no session.
+func refused(err error) error {
+	if errors.Is(err, store.ErrUnavailable) || errors.Is(err, service.ErrUnavailable) {
+		return err
+	}
+	return nil
 }
 
 // fill puts cs, read from the store, in the cache and makes room for it, unless the session or its user was evicted

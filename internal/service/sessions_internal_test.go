@@ -125,8 +125,8 @@ func (f *failingOrgs) Get(ctx context.Context, k model.Kind, id string) (*store.
 	return f.Store.Get(ctx, k, id)
 }
 
-// While the organization cannot be read again, sign-out counters read before keep serving for signOutMaxStale, then
-// the check fails: an emergency sign-out is never ignored for longer than that.
+// Sign-out counters are served from the cache within signOutCacheTTL; past it they are read again, and a store that
+// cannot answer fails the check (503): counters an emergency sign-out may have moved are never served past the bound.
 func TestSignOutCountersStaleBound(t *testing.T) {
 	ctx := context.Background()
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
@@ -153,13 +153,12 @@ func TestSignOutCountersStaleBound(t *testing.T) {
 		s.signOut.fetched = time.Now().Add(-d)
 		s.signOut.mu.Unlock()
 	}
-	age(signOutCacheTTL + time.Second) // due for a refresh, which fails: the recent counters serve
 	if _, err := s.SessionStamp(ctx, p.ID); err != nil {
-		t.Fatalf("a short outage failed the check: %v", err)
+		t.Fatalf("counters within the cache's bound: %v", err)
 	}
-	age(signOutMaxStale + time.Second)
+	age(signOutCacheTTL + time.Second) // due for a refresh, which fails
 	if _, err := s.SessionStamp(ctx, p.ID); err == nil {
-		t.Fatal("counters past signOutMaxStale still served while the store could not be read")
+		t.Fatal("counters past signOutCacheTTL served while the store could not be read")
 	}
 }
 
@@ -187,7 +186,7 @@ func TestSignOutCacheKeepsRecentOrganizationsOnly(t *testing.T) {
 	}
 	age := func() {
 		s.signOut.mu.Lock()
-		s.signOut.genAt = s.signOut.genAt.Add(-2 * signOutMaxStale)
+		s.signOut.genAt = s.signOut.genAt.Add(-2 * signOutGeneration)
 		s.signOut.mu.Unlock()
 	}
 	s.InvalidateSignOut()

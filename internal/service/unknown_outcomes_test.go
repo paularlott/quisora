@@ -58,6 +58,16 @@ func newUnknownEnv(t *testing.T) (*env, *landsThenUnknown) {
 		}
 		return nil
 	}
+	// A transaction one of whose writes is of the armed kind lands whole and reports its outcome unknown.
+	st.beforeTx = func(ops []store.Op) error {
+		for _, op := range ops {
+			if l.take(op.Rec.Kind) {
+				_ = inner.Tx(context.Background(), ops)
+				return store.ErrUnconfirmed
+			}
+		}
+		return nil
+	}
 	return newEnvOn(t, st), l
 }
 

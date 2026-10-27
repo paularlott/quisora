@@ -139,7 +139,7 @@ func TestGroupConflictIsolation(t *testing.T) {
 		Unique: []string{"o|half"}, Fields: map[string]any{"display_name": "c"}}
 	okClaim := g.submit(func() error { return s.CompareAndPut(bg, claim, 0) })
 	r3 := func() *store.Record { u := upd1; u.GivenName = "third"; return userRec(t, &u) }()
-	follow := g.submit(func() error { return s.CompareAndPut(bg, r3, r1.Version) }) // builds on r1, same batch
+	follow := g.submit(func() error { return s.Put(bg, r3) }) // over r1, same batch: the store stamps it newer
 	g.open()
 
 	for name, c := range map[string]struct {
@@ -181,8 +181,8 @@ func TestGroupConflictIsolation(t *testing.T) {
 	}
 }
 
-// Writes of one record queued together apply in arrival order: each CompareAndPut expects the version the previous
-// one wrote, a deletion follows them and a create starts the next generation.
+// Writes of one record queued together apply in arrival order: each Put is stamped newer than the previous one's, a
+// deletion follows them and a create starts the next generation.
 func TestGroupSameKeyOrder(t *testing.T) {
 	s := openGated(t, t.TempDir())
 	defer s.Close()
@@ -194,14 +194,13 @@ func TestGroupSameKeyOrder(t *testing.T) {
 	before := commits(s)
 	var chans []<-chan error
 	chans = append(chans, g.submit(func() error { return s.CompareAndPut(bg, first, 0) }))
-	prev := first
+	var puts []*store.Record
 	for i := range 5 {
 		c := *u
 		c.GivenName = fmt.Sprint(i)
 		r := userRec(t, &c)
-		expect := prev.Version
-		chans = append(chans, g.submit(func() error { return s.CompareAndPut(bg, r, expect) }))
-		prev = r
+		chans = append(chans, g.submit(func() error { return s.Put(bg, r) }))
+		puts = append(puts, r)
 	}
 	tomb := store.Tombstone(model.KindUser, u.ID)
 	chans = append(chans, g.submit(func() error { return s.Put(bg, tomb) }))
@@ -217,6 +216,13 @@ func TestGroupSameKeyOrder(t *testing.T) {
 	}
 	if n := commits(s) - before; n != 1 {
 		t.Errorf("the queued writes took %d commits, want 1", n)
+	}
+	prev := first
+	for i, r := range puts {
+		if r.Version <= prev.Version {
+			t.Fatalf("put %d stamped %d, not newer than the write before it (%d)", i, r.Version, prev.Version)
+		}
+		prev = r
 	}
 	got, err := tb.Get(bg, u.ID)
 	if err != nil || got.GivenName != "reborn" {
@@ -469,7 +475,7 @@ func TestUpdateRetriesConflictsThenGivesUp(t *testing.T) {
 	// retry gives up after maxRetries conflicts, reports a canceled context, and passes other errors through.
 	calls := 0
 	err = retry(ctx, func() error { calls++; return errConflict })
-	if !errors.Is(err, store.ErrStale) || calls != maxRetries {
+	if !errors.Is(err, store.ErrUnavailable) || calls != maxRetries {
 		t.Fatalf("retry exhaustion: %v after %d calls", err, calls)
 	}
 	cctx, cancel := context.WithCancel(ctx)
@@ -506,5 +512,42 @@ func TestGroupRunsInlineWhenGroupCommitDisabled(t *testing.T) {
 	}
 	if b, _ := e.Get(ctx, "x"); string(b) != "1" {
 		t.Fatal("write lost")
+	}
+}
+
+// A transaction is one write of a batch: a refused one leaves nothing of its earlier ops, and the writes around it
+// commit.
+func TestGroupTxIsolation(t *testing.T) {
+	s := openGated(t, t.TempDir())
+	defer s.Close()
+	a := &model.User{OrgID: "o", Username: "a", Email: "a@x", Role: model.RoleUser}
+	b := &model.User{OrgID: "o", Username: "b", Email: "b@x", Role: model.RoleUser}
+	c := &model.User{OrgID: "o", Username: "c", Email: "c@x", Role: model.RoleUser}
+	d := &model.User{OrgID: "o", Username: "d", Email: "d@x", Role: model.RoleUser}
+	for _, u := range []*model.User{a, b, c, d} {
+		u.ID = u.Username
+	}
+	g := hold(t, s)
+	okTx := g.submit(func() error {
+		return s.Tx(bg, []store.Op{{Rec: userRec(t, a), Match: true}, {Rec: userRec(t, b), Match: true}})
+	})
+	badTx := g.submit(func() error { // c is written, then d claims a's email: refused, c must not stay
+		d.Email = a.Email
+		return s.Tx(bg, []store.Op{{Rec: userRec(t, c), Match: true}, {Rec: userRec(t, d), Match: true}})
+	})
+	g.open()
+	if err := wait(t, okTx); err != nil {
+		t.Fatalf("first transaction: %v", err)
+	}
+	if err := wait(t, badTx); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second transaction: want ErrConflict, got %v", err)
+	}
+	for id, want := range map[string]bool{"a": true, "b": true, "c": false, "d": false} {
+		if _, err := s.Lookup(bg, model.KindUser, id); (err == nil) != want {
+			t.Errorf("user %s stored: %v, want %v", id, err == nil, want)
+		}
+	}
+	if n, _ := s.Count(bg, model.KindUser, "o"); n != 2 {
+		t.Fatalf("count %d, want 2", n)
 	}
 }

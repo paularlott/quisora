@@ -79,7 +79,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "department", Type: FieldString, Sort: true},
 		{Name: "manager_id", Type: FieldString, Index: true}, // a user's reports (deleting the manager): sparse, as empty strings are never indexed
 		{Name: "employee_number", Type: FieldString},
-		{Name: "expiring", Type: FieldBool},
+		{Name: "expiring", Type: FieldBool, Index: true}, // the end-date sweep (ExpireUsers), across organizations
 		{Name: "valid_until", Type: FieldTime, Sort: true},
 		// who may see the user (service.Visibility): super admins are hidden below them, administrators are a
 		// directory entry to managers. Indexed: every user listing of an ordinary administrator leaves the super
@@ -105,14 +105,14 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindAccess: {KindAccess, []Field{
-		{Name: "tenant_id", Type: FieldString},
+		{Name: "tenant_id", Type: FieldString, Index: true}, // a tenant's access entries (ListAccess)
 		{Name: "subject_id", Type: FieldString},
 		{Name: "subject_type", Type: FieldString},
 		{Name: "created", Type: FieldTime, Sort: true},
 	}},
 	KindClient: {KindClient, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
-		{Name: "tenant_id", Type: FieldString},
+		{Name: "tenant_id", Type: FieldString, Index: true},                                // a tenant's applications (the tenants page, deleting a tenant)
 		{Name: "auth_method", Type: FieldString, Sort: true, Index: true, SortIndex: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
 		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (purge)

@@ -80,6 +80,7 @@ func urec(t testing.TB, org, name string) *store.Record {
 	t.Helper()
 	r, err := store.Encode(newUser(org, name))
 	must(t, err)
+	r.Req = "req-" + name // the request id travels with the record through every partition path
 	if r.Partition != org {
 		t.Fatalf("a user of %q has partition key %q", org, r.Partition)
 	}
@@ -128,7 +129,7 @@ func rkey(r *store.Record) string { return string(r.Kind) + "/" + r.ID }
 func sameRecord(t testing.TB, what string, got, want *store.Record) {
 	t.Helper()
 	if got.Kind != want.Kind || got.ID != want.ID || got.Version != want.Version || got.Epoch != want.Epoch ||
-		got.Created != want.Created || got.Origin != want.Origin || got.Deleted != want.Deleted ||
+		got.Created != want.Created || got.Origin != want.Origin || got.Req != want.Req || got.Deleted != want.Deleted ||
 		got.Scope != want.Scope || got.Partition != want.Partition || !bytes.Equal(got.Data, want.Data) {
 		t.Fatalf("%s: got %+v, want %+v", what, got, want)
 	}
@@ -739,6 +740,9 @@ func testPartImportFull(t *testing.T, f Factory) {
 	must(t, ps.ApplyPartition(ctx, 61, []*store.Record{z}, pos(1, 1))) // another partition: untouched
 	plain := newUser(org, "fu-plain")                                  // a plain write: belongs to no partition write
 	must(t, users(s).Put(ctx, plain))
+	if _, err := ps.PurgePartition(ctx, 60, 2); err != nil { // (nothing below 2 to remove: the purge point is 1)
+		t.Fatal(err)
+	}
 	// The authoritative copy: y changed, q new, a tombstone, and x absent.
 	y2 := *y
 	y2.Version, y2.Data = y.Version+7, []byte("y2")
@@ -778,12 +782,9 @@ func testPartImportFull(t *testing.T, f Factory) {
 	if got[rkey(&y2)].Seq != 6 || got[rkey(q)].Seq != 8 || got[rkey(tq)].Seq != 7 {
 		t.Fatal("imported records keep their own sequences")
 	}
-	// The copy cannot say which tombstones its source had purged: it refuses deltas from before the copy.
-	if st, _ := ps.PartitionState(ctx, 60); st.Purged != 9 {
-		t.Fatalf("purge point after a full import: %d, want 9", st.Purged)
-	}
-	if _, err := exportAfter(ps, 60, 5, func(store.PartitionRecord) error { return nil }); !errors.Is(err, store.ErrPartitionPurged) {
-		t.Fatalf("a delta from before a full copy: %v", err)
+	// The purge point is the caller's (it purges to its source's, PurgePartition): a full import leaves it as it was.
+	if st, _ := ps.PartitionState(ctx, 60); st.Purged != 1 {
+		t.Fatalf("purge point after a full import: %d, want 1 (unchanged)", st.Purged)
 	}
 	if _, err := exportAfter(ps, 60, 9, func(store.PartitionRecord) error { return nil }); err != nil {
 		t.Fatalf("a delta from the copy's own position: %v", err)
@@ -1166,8 +1167,8 @@ func testPartImportFullBatches(t *testing.T, f Factory) {
 	if at != pos(3, 9) || !slices.Equal(keysOf(got), wantKeys) {
 		t.Fatalf("after the import: %v %+v", keysOf(got), at)
 	}
-	if st, _ := ps.PartitionState(ctx, 83); st.Purged != 9 {
-		t.Fatalf("purge point %d, want 9", st.Purged)
+	if st, _ := ps.PartitionState(ctx, 83); st.Purged != 0 {
+		t.Fatalf("purge point %d, want 0 (a full import leaves it to the caller)", st.Purged)
 	}
 	for _, d := range drop {
 		if _, err := s.Lookup(ctx, model.KindUser, d.ID); !errors.Is(err, store.ErrNotFound) {

@@ -826,11 +826,8 @@ func remove(tx txn, old *stored) error {
 
 // ---- reads ----
 
-func (s *Store) get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	b, err := s.eng.Get(ctx, recKey(kind, id))
-	if err != nil {
-		return nil, err
-	}
+// liveRecord decodes the stored body b of a record, which is nil when it was not found, and returns it when it is live.
+func liveRecord(b []byte) (*store.Record, error) {
 	if b == nil {
 		return nil, store.ErrNotFound
 	}
@@ -845,7 +842,11 @@ func (s *Store) get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 }
 
 func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	return s.get(ctx, kind, id)
+	b, err := s.eng.Get(ctx, recKey(kind, id))
+	if err != nil {
+		return nil, err
+	}
+	return liveRecord(b)
 }
 
 // Lookup returns the stored record whatever its state (store.Store).
@@ -864,15 +865,21 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 	return st.rec, nil
 }
 
+// GetByUnique reads the unique index and the record it names in one snapshot (two reads, one transaction).
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
-	b, err := s.eng.Get(ctx, uqKey(kind, value))
+	var b []byte
+	err := s.eng.View(ctx, func(get func(string) ([]byte, error)) error {
+		id, err := get(uqKey(kind, value))
+		if err != nil || id == nil {
+			return err
+		}
+		b, err = get(recKey(kind, string(id)))
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	if b == nil {
-		return nil, store.ErrNotFound
-	}
-	return s.get(ctx, kind, string(b))
+	return liveRecord(b)
 }
 
 // ---- writes ----
@@ -885,56 +892,99 @@ func (s *Store) write(ctx context.Context, kind model.Kind, id string, fn func(t
 	return s.eng.Update(ctx, fn)
 }
 
-func (s *Store) Put(ctx context.Context, rec *store.Record) error {
-	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error {
-		old, err := loadRec(tx, rec.Kind, rec.ID)
-		if err != nil {
-			return err
-		}
-		if old != nil && old.rec.Version >= rec.Version {
+// putTx is one write inside tx: Put (match false) or CompareAndPut(rec, expect) (match true). A retry (the stored
+// record carries rec's request id) is answered as done whatever the expectation, writing nothing; the store stamps
+// the version, so the caller's is neither compared nor used. It may run more than once (Update, group commit): the
+// stamps it sets are recomputed.
+func putTx(tx txn, rec *store.Record, match bool, expect hlc.Timestamp) error {
+	old, err := loadRec(tx, rec.Kind, rec.ID)
+	if err != nil {
+		return err
+	}
+	if old != nil && store.Retried(rec, old.rec.Head()) {
+		store.Settle(rec, old.rec.Head())
+		return nil
+	}
+	if match {
+		if expect == 0 && live(old) {
 			return store.ErrStale
 		}
-		if err := stamp(rec, old, false); err != nil {
-			return err
-		}
-		c, keys, err := conflicts(tx, rec)
-		if err != nil {
-			return err
-		} else if c {
-			return store.ErrConflict
-		}
-		return apply(tx, old, rec, rec.Unique, keys, pstamp{})
-	})
-}
-
-func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
-	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error {
-		old, err := loadRec(tx, rec.Kind, rec.ID)
-		if err != nil {
-			return err
-		}
-		if expect == 0 {
-			if live(old) || (old != nil && old.rec.Version >= rec.Version) {
-				return store.ErrStale
-			}
-		} else {
+		if expect != 0 {
 			if !live(old) {
 				return store.ErrNotFound
 			}
-			if old.rec.Version != expect || rec.Version <= expect {
+			if old.rec.Version != expect {
 				return store.ErrStale
 			}
 		}
-		if err := stamp(rec, old, expect == 0); err != nil {
-			return err
+	}
+	if old == nil {
+		store.StampWrite(rec, nil)
+	} else {
+		store.StampWrite(rec, old.rec.Head())
+	}
+	if err := stamp(rec, old, match && expect == 0); err != nil {
+		return err
+	}
+	c, keys, err := conflicts(tx, rec)
+	if err != nil {
+		return err
+	} else if c {
+		return store.ErrConflict
+	}
+	return apply(tx, old, rec, rec.Unique, keys, pstamp{})
+}
+
+func (s *Store) Put(ctx context.Context, rec *store.Record) error {
+	defer store.EnsureReq(rec)()
+	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, false, 0) })
+}
+
+func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	defer store.EnsureReq(rec)()
+	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, true, expect) })
+}
+
+// Tx applies ops all or nothing as one write (one Badger transaction, or one operation of a group commit batch, which
+// is rolled back whole when it fails), routed by its first record. Each op runs as putTx does, in order, so a later
+// op sees what the earlier ones wrote: a unique value one releases another may claim, and two claiming one conflict.
+func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
+	if len(ops) == 0 {
+		return store.ErrBadTx
+	}
+	seen := make(map[[2]string]bool, len(ops))
+	for _, op := range ops {
+		k := [2]string{string(op.Rec.Kind), op.Rec.ID}
+		if seen[k] {
+			return store.ErrBadTx
 		}
-		c, keys, err := conflicts(tx, rec)
-		if err != nil {
-			return err
-		} else if c {
-			return store.ErrConflict
+		seen[k] = true
+	}
+	defer store.TxReq(ops)()
+	return s.write(ctx, ops[0].Rec.Kind, ops[0].Rec.ID, func(tx txn) error {
+		stored := make([]*stored, len(ops))
+		retried := false
+		for i, op := range ops {
+			var err error
+			if stored[i], err = loadRec(tx, op.Rec.Kind, op.Rec.ID); err != nil {
+				return err
+			}
+			retried = retried || (stored[i] != nil && store.Retried(op.Rec, stored[i].rec.Head()))
 		}
-		return apply(tx, old, rec, rec.Unique, keys, pstamp{})
+		if retried { // the whole transaction was applied: every record it wrote takes its stored version
+			for i, op := range ops {
+				if stored[i] != nil && stored[i].rec.Req == op.Rec.Req {
+					store.Settle(op.Rec, stored[i].rec.Head())
+				}
+			}
+			return nil
+		}
+		for _, op := range ops {
+			if err := putTx(tx, op.Rec, op.Match, op.Expect); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -1194,23 +1244,33 @@ func (s *Store) searchIDs(ctx context.Context, kind model.Kind, q store.ListQuer
 	return ids, true, nil
 }
 
+// counted returns the total of the page p selects from the counted range rng (counterKey), or -1 when only a count of
+// the page's members gives it. When no member of the range carries an expiry its counter, less the members p skips
+// (every one a live member of the range), is the total, and p is set to stop at the end of the page. A page without
+// a limit reads the whole range anyway, and counts it as it goes.
+func (s *Store) counted(ctx context.Context, rng string, p *pageQuery) (int, error) {
+	if rng == "" || p.Limit <= 0 {
+		return -1, nil
+	}
+	n, expiring, err := s.counts(ctx, rng)
+	if err != nil || expiring > 0 {
+		return -1, err
+	}
+	p.NoTotal = true
+	return n - len(p.Skip), nil
+}
+
 // listPage loads the page p selects from bucket. idOf maps a member to its record id (nil: members are ids). rng is
-// the counted range (counterKey) the page selects from, "" when there is none: when no member of it carries an
-// expiry its counter, less the members p skips (every one a live member of the range), is the total, and the
-// engine stops at the end of the page. A query paged by key (after: by After) has the page length as its total.
+// the counted range (counterKey) the page selects from, "" when there is none (see counted). A query paged by key
+// (after: by After) has the page length as its total.
 func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p pageQuery, idOf func(string) string, rng string, after, idsOnly bool) (*store.ListResult, error) {
 	total := -1
-	switch {
-	case after:
+	if after {
 		p.NoTotal = true
-	case rng != "":
-		n, expiring, err := s.counts(ctx, rng)
-		if err != nil {
-			return nil, err
-		}
-		if expiring == 0 {
-			p.NoTotal, total = true, n-len(p.Skip)
-		}
+	} else if t, err := s.counted(ctx, rng, &p); err != nil {
+		return nil, err
+	} else {
+		total = t
 	}
 	members, scanned, err := s.eng.Page(ctx, bucket, p, nowMs())
 	if err != nil {
@@ -1314,15 +1374,9 @@ func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQue
 	if !q.Desc {
 		return s.listPage(ctx, kind, bucket, p, sortMemberID, rng, false, false)
 	}
-	total := -1
-	if rng != "" {
-		n, expiring, err := s.counts(ctx, rng)
-		if err != nil {
-			return nil, err
-		}
-		if expiring == 0 {
-			p.NoTotal, total = true, n-len(skip)
-		}
+	total, err := s.counted(ctx, rng, &p)
+	if err != nil {
+		return nil, err
 	}
 	members, scanned, err := s.eng.Page(ctx, bucket, p, nowMs())
 	if err != nil {
@@ -1663,7 +1717,7 @@ func retry(ctx context.Context, attempt func() error) error {
 		}
 		time.Sleep(conflictBackoff(i))
 	}
-	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrStale)
+	return fmt.Errorf("kvstore: too many conflicting retries: %w", store.ErrUnavailable)
 }
 
 // conflictBackoff is the wait before retry i of a conflicting transaction: exponential, up to about 6 ms, and random

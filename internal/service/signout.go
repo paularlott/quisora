@@ -24,7 +24,7 @@ import (
 const signOutCacheTTL = 5 * time.Second
 
 // signOutCache holds the counters last read. Organizations are kept in two generations: orgs, and prev, the orgs of
-// the generation before, which no entry outlives (signOutMaxStale is the longest one is of use), so only the
+// the generation before (signOutGeneration), so only the
 // organizations read lately are held, never every one ever read.
 type signOutCache struct {
 	mu      sync.Mutex
@@ -53,14 +53,13 @@ func (s *Service) InvalidateSignOut() {
 	s.signOut.mu.Unlock()
 }
 
-// signOutCounters returns the organization's and the server's counters, from the cache when fresh. On a read error
-// the last values read are used if there are any: a store hiccup must not sign everyone out. Not on a refusal of the
-// staleness gate (store.ErrNotWritable): a node that knows it cannot vouch for its copy must not go on with counters
-// an emergency sign-out may have moved.
-// signOutMaxStale bounds how long counters read before keep serving while they cannot be read again: a short store
-// blip does not fail every token check, but an emergency sign-out made meanwhile is never ignored for longer than
-// this. Past it the check fails (the caller answers 503), as the grant and session reads it goes with do.
-const signOutMaxStale = 30 * time.Second
+// signOutCounters returns the organization's and the server's counters, from the cache when fresh (signOutCacheTTL);
+// otherwise as the store answers now, or its error (the caller answers 503): the store reads current data or refuses,
+// and counters an emergency sign-out may have moved are never served past the cache's own bound.
+//
+// signOutGeneration is how long a generation of cached organizations lasts: an organization not read again within two
+// of them is dropped, so only those read lately are held.
+const signOutGeneration = 30 * time.Second
 
 func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, server model.SignOutCounters, err error) {
 	now := time.Now()
@@ -81,13 +80,13 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 			co = cachedCounters{c: o.SignOut, fetched: now}
 			c.mu.Lock()
 			if c.gen == gen {
-				if c.orgs == nil || now.Sub(c.genAt) > signOutMaxStale {
+				if c.orgs == nil || now.Sub(c.genAt) > signOutGeneration {
 					c.prev, c.orgs, c.genAt = c.orgs, map[string]cachedCounters{}, now
 				}
 				c.orgs[orgID] = co
 			}
 			c.mu.Unlock()
-		case gateRefused(gerr) || !okOrg || now.Sub(co.fetched) > signOutMaxStale:
+		default:
 			return org, server, gerr
 		}
 	}
@@ -101,16 +100,11 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 				c.server, c.hasSrv, c.fetched = srv, true, now
 			}
 			c.mu.Unlock()
-		case gateRefused(perr) || !okSrv || now.Sub(srvAt) > signOutMaxStale:
+		default:
 			return org, server, perr
 		}
 	}
 	return co.c, srv, nil
-}
-
-// gateRefused reports whether err is the staleness gate refusing a read: the node cannot vouch for its copy.
-func gateRefused(err error) bool {
-	return errors.Is(err, store.ErrNotWritable) || errors.Is(err, ErrUnavailable)
 }
 
 // SessionStamp is the stamp for a session or refresh grant made now in orgID.

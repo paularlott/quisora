@@ -331,7 +331,7 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 			return err
 		}
 	}
-	// put stores recs and, with setState, moves the position (a full import also raises the purge point and ends).
+	// put stores recs and, with setState, moves the position (and a full import ends).
 	put := func(tx txn, recs []store.PartitionRecord, setState bool) error {
 		st, err := loadState(tx, p)
 		if err != nil {
@@ -349,7 +349,6 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 			return nil
 		}
 		if step.Full {
-			st.Purged = max(st.Purged, upTo.Seq)
 			tx.Delete(importActiveKey(p)) // with the position
 		}
 		return commitState(tx, p, &st, upTo)

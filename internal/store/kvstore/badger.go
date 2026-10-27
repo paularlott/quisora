@@ -21,6 +21,11 @@ type BadgerOptions struct {
 	// NoSync disables fsync on commit (faster, may lose the last writes on a crash). Default: fsync every commit
 	// (concurrent record writes share commits, see Group).
 	NoSync bool
+	// SyncInterval, with NoSync, syncs the write-ahead log to disk this often (0: never; the operating system flushes
+	// it when it sees fit). A write is acknowledged once it is in the page cache, so it survives the process dying
+	// but not the machine: a power cut or kernel panic loses what was written in the last SyncInterval (and the time
+	// a sync takes). It is not for a store whose acknowledged writes others rely on (a cluster node).
+	SyncInterval time.Duration
 	// InMemory keeps everything in RAM (tests); path is ignored.
 	InMemory bool
 	// EncryptionKey (32 bytes) encrypts the files at rest; nil: not encrypted. A store keeps the choice it was
@@ -106,7 +111,18 @@ func OpenBadger(ctx context.Context, path string, o BadgerOptions) (*Store, erro
 	}
 	if !o.InMemory {
 		e.wg.Add(1)
-		go e.gcLoop(gc)
+		go e.every(gc, func() {
+			for e.db.RunValueLogGC(0.5) == nil {
+			}
+		})
+		if o.NoSync && o.SyncInterval > 0 {
+			e.wg.Add(1)
+			go e.every(o.SyncInterval, func() {
+				if err := e.db.Sync(); err != nil {
+					opts.Errorf("kvstore: periodic sync: %v", err)
+				}
+			})
+		}
 	}
 	if !o.Group.Disabled {
 		e.gc = newCommitter(e, o.Group)
@@ -154,17 +170,17 @@ func (e *badgerEngine) init() (string, error) {
 	return feedID, err
 }
 
-func (e *badgerEngine) gcLoop(every time.Duration) {
+// every runs fn every d until the engine is closed.
+func (e *badgerEngine) every(d time.Duration, fn func()) {
 	defer e.wg.Done()
-	t := time.NewTicker(every)
+	t := time.NewTicker(d)
 	defer t.Stop()
 	for {
 		select {
 		case <-e.stop:
 			return
 		case <-t.C:
-			for e.db.RunValueLogGC(0.5) == nil {
-			}
+			fn()
 		}
 	}
 }
@@ -190,6 +206,10 @@ func (e *badgerEngine) Get(_ context.Context, key string) ([]byte, error) {
 		return err
 	})
 	return out, err
+}
+
+func (e *badgerEngine) View(_ context.Context, fn func(get func(key string) ([]byte, error)) error) error {
+	return e.view(func(t *badger.Txn) error { return fn(func(key string) ([]byte, error) { return getVal(t, key) }) })
 }
 
 // view runs fn in a read transaction.
@@ -367,6 +387,9 @@ type badgerSnapshot struct {
 var errReadOnly = errors.New("kvstore: snapshot is read-only")
 
 func (b *badgerSnapshot) Get(_ context.Context, key string) ([]byte, error) { return getVal(b.t, key) }
+func (b *badgerSnapshot) View(_ context.Context, fn func(get func(key string) ([]byte, error)) error) error {
+	return fn(func(key string) ([]byte, error) { return getVal(b.t, key) })
+}
 func (b *badgerSnapshot) MGet(_ context.Context, keys []string) ([][]byte, error) {
 	return mget(b.t, keys)
 }

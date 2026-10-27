@@ -154,17 +154,11 @@ func MFA(amr []string) bool {
 	return (pwd && otp) || (key && uv)
 }
 
-// Fixed ids of what "quisora bootstrap" creates, and the version it writes them with: the oldest possible, so a record
-// that already exists anywhere — on this node, in a shared database, or on any peer of a gossip cluster — is newer
-// and wins. Bootstrapping by mistake (a new node of a running cluster, a second run) can never overwrite the primary
-// organization (however renamed), its default tenant or the first super admin. Any later change has a normal,
-// newer version.
+// Fixed ids of what "quisora bootstrap" creates, each written only where no record with its id exists (a create):
+// bootstrapping by mistake (a new node of a running cluster, a second run) can never overwrite the primary organization
+// (however renamed), its default tenant or the first super admin.
 const (
 	PrimaryOrgID     = "00000000-0000-7000-8000-000000000001"
 	BootstrapAdminID = "00000000-0000-7000-8000-000000000002"
 	PrimaryTenantID  = "00000000-0000-7000-8000-000000000003"
 )
-
-// BootstrapVersion is the version of records written by bootstrap (see PrimaryOrgID): the smallest there is (the
-// clock's own epoch, counter 1). Every version any node mints is larger.
-const BootstrapVersion hlc.Timestamp = 1

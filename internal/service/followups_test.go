@@ -61,9 +61,9 @@ func newLandsOnceEnv(t *testing.T) (*env, *landsOnce) {
 	return newEnvOn(t, st), st
 }
 
-// A deletion of a user whose outcome is unknown is followed through as one that is known: the applications are told and the users
-// who reported to them lose their manager. (A retry of one that landed finds no user and would never do it.)
-func TestDeleteUserOfUnknownOutcomeFollowsThrough(t *testing.T) {
+// A deletion of a user whose outcome is unknown, which landed, leaves nothing of theirs that counts: their sessions
+// stand on them, and the orphan sweep clears the manager of the users who reported to them.
+func TestDeleteUserOfUnknownOutcomeLeavesNothingThatCounts(t *testing.T) {
 	e, st := newLandsOnceEnv(t)
 	org := e.org("acme")
 	boss := e.user(org.ID, "boss", model.RoleUser)
@@ -72,8 +72,7 @@ func TestDeleteUserOfUnknownOutcomeFollowsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var told []string
-	e.svc.OnSessionsEnding = func(_ context.Context, userID string, _ []string) { told = append(told, userID) }
+	sess := e.session(boss)
 	st.arm(model.KindUser)
 	if err := e.svc.DeleteUser(e.ctx, service.System, boss.ID); !errors.Is(err, service.ErrOutcomeUnknown) {
 		t.Fatalf("the deletion: %v", err)
@@ -81,8 +80,11 @@ func TestDeleteUserOfUnknownOutcomeFollowsThrough(t *testing.T) {
 	if _, err := e.svc.Users.Get(e.ctx, boss.ID); err == nil {
 		t.Fatal("setup: the deletion did not land")
 	}
-	if len(told) != 1 || told[0] != boss.ID {
-		t.Fatalf("the applications were not told of the deleted user's ended sessions: %v", told)
+	if e.sessionCounts(sess, boss.ID) {
+		t.Fatal("a session of the deleted user still counts")
+	}
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
+		t.Fatal(err)
 	}
 	if got, err := e.svc.Users.Get(e.ctx, rep.ID); err != nil || got.Work.ManagerID != "" {
 		t.Fatalf("the report still has the deleted user as manager: %+v %v", got, err)
@@ -103,7 +105,7 @@ func TestRemovePasswordOfUnknownOutcomeEndsSessions(t *testing.T) {
 	if got, _ := e.svc.Users.Get(e.ctx, u.ID); got.PasswordHash != "" {
 		t.Fatal("setup: the removal did not land")
 	}
-	if e.sessionLive(sess) {
+	if e.sessionCounts(sess, u.ID) {
 		t.Fatal("a session survives the removal of the password")
 	}
 }
@@ -118,7 +120,7 @@ func TestDisableOfUnknownOutcomeEndsSessions(t *testing.T) {
 	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Active: ptr(false)}); !errors.Is(err, service.ErrOutcomeUnknown) {
 		t.Fatalf("the change: %v", err)
 	}
-	if e.sessionLive(sess) {
+	if e.sessionCounts(sess, u.ID) {
 		t.Fatal("a session survives the disabling")
 	}
 }

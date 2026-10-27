@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/store"
@@ -24,7 +25,8 @@ func OpenStore(ctx context.Context, c *config.Config) (store.Store, error) {
 			}
 		}
 		return kvstore.OpenBadger(ctx, c.DataPath(config.DirBadgerDB), kvstore.BadgerOptions{
-			NoSync: !st.BadgerDB.SyncWrites, EncryptionKey: key})
+			NoSync: !st.BadgerDB.SyncWrites, SyncInterval: time.Duration(st.BadgerDB.SyncIntervalMs) * time.Millisecond,
+			EncryptionKey: key})
 	case "sqlite":
 		return sqlstore.Open(ctx, sqlstore.Config{Driver: "sqlite", DSN: c.DataPath(config.FileSQLite)})
 	case "postgres", "mysql", "mariadb":

@@ -25,15 +25,28 @@ import (
 // Factory returns a new, empty store.
 type Factory func(t testing.TB) store.Store
 
+// Options adjust the suite to a store that is not one database: a gossip cluster.
+type Options struct {
+	// NoReplicated skips the cases of PutReplicated: a gossip cluster's records arrive through its partitions, and
+	// a restore loads a node before it starts.
+	NoReplicated bool
+}
+
 // Run runs every conformance test.
-func Run(t *testing.T, f Factory) {
+func Run(t *testing.T, f Factory) { RunWith(t, f, Options{}) }
+
+// RunWith runs every conformance test, as opt adjusts them.
+func RunWith(t *testing.T, f Factory, opt Options) {
 	tests := []struct {
 		name string
 		fn   func(*testing.T, store.Store)
 	}{
 		{"PutGet", testPutGet},
 		{"RoundTripTypes", testRoundTripTypes},
-		{"Stale", testStale},
+		{"VersionsStamped", testVersionsStamped},
+		{"Retries", testRetries},
+		{"Tx", testTx},
+		{"TxRetried", testTxRetried},
 		{"Unique", testUnique},
 		{"UniqueReleasedOnChange", testUniqueReleased},
 		{"Tombstone", testTombstone},
@@ -70,6 +83,9 @@ func Run(t *testing.T, f Factory) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if opt.NoReplicated && strings.HasPrefix(tc.name, "PutReplicated") {
+				t.Skip("this store takes no replicated writes")
+			}
 			s := f(t)
 			defer s.Close()
 			tc.fn(t, s)
@@ -117,7 +133,7 @@ func testPutGet(t *testing.T, s store.Store) {
 	}
 	r, err := s.Get(ctx, model.KindUser, u.ID)
 	must(t, err)
-	if r.Scope != "org1" || r.Origin != store.Origin() || len(r.Unique) != 2 {
+	if r.Scope != "org1" || r.Origin == "" || r.Req == "" || len(r.Unique) != 2 {
 		t.Fatalf("record metadata not preserved: %+v", r)
 	}
 }
@@ -148,16 +164,36 @@ func testRoundTripTypes(t *testing.T, s store.Store) {
 	}
 }
 
-func testStale(t *testing.T, s store.Store) {
+// The store stamps every write's version, newer than the one stored: a caller's version is not used, so a write made
+// with an old copy's version lands (as in any database), and only compare-and-put refuses an old copy.
+func testVersionsStamped(t *testing.T, s store.Store) {
 	u := newUser("org1", "carol")
 	must(t, users(s).Put(ctx, u))
-	r, _ := store.EncodeAsIs(u) // same version
-	if err := s.Put(ctx, r); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("same version: want ErrStale, got %v", err)
+	first := u.Version
+	same, _ := store.EncodeAsIs(u) // the stored version
+	must(t, s.Put(ctx, same))
+	if same.Version <= first {
+		t.Fatalf("a write of the stored version was not stamped newer: %d after %d", same.Version, first)
 	}
-	r.Version--
-	if err := s.Put(ctx, r); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("older version: want ErrStale, got %v", err)
+	old, _ := store.EncodeAsIs(u)
+	old.Version = 1 // far older than anything stored
+	must(t, s.Put(ctx, old))
+	if old.Version <= same.Version {
+		t.Fatalf("a write of an old version was not stamped newer: %d after %d", old.Version, same.Version)
+	}
+	got, err := s.Get(ctx, model.KindUser, u.ID)
+	must(t, err)
+	if got.Version != old.Version {
+		t.Fatalf("stored version %d, the write was given %d", got.Version, old.Version)
+	}
+	stale, _ := store.EncodeAsIs(u)
+	if err := s.CompareAndPut(ctx, stale, first); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("compare-and-put from an old copy: want ErrStale, got %v", err)
+	}
+	next, _ := store.EncodeAsIs(u)
+	must(t, s.CompareAndPut(ctx, next, got.Version))
+	if next.Version <= got.Version {
+		t.Fatalf("compare-and-put not stamped newer: %d after %d", next.Version, got.Version)
 	}
 }
 
@@ -213,10 +249,10 @@ func testTombstone(t *testing.T, s store.Store) {
 	}
 	// Unique values are free again.
 	must(t, tb.Put(ctx, newUser("org1", "frank")))
-	// A write older than the tombstone is stale.
+	// A live write over the tombstone (an update from a copy read before the deletion) does not bring it back.
 	old, _ := store.EncodeAsIs(u)
-	if err := s.Put(ctx, old); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("write older than tombstone: want ErrStale, got %v", err)
+	if err := s.Put(ctx, old); !errors.Is(err, store.ErrDeleted) {
+		t.Fatalf("live write over a tombstone: want ErrDeleted, got %v", err)
 	}
 	// Deleting a record that never existed is allowed (tombstone for replication).
 	must(t, s.Put(ctx, store.Tombstone(model.KindUser, "never")))
@@ -265,18 +301,13 @@ func testCompareAndPut(t *testing.T, s store.Store) {
 	if err := s.CompareAndPut(ctx, r, 12345); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
-	// An expectation ahead of the stored version is stale, and so is a version not above the expected one.
+	// An expectation ahead of the stored version is stale.
 	cur, err := s.Get(ctx, model.KindUser, u.ID)
 	must(t, err)
 	c := *got
 	next, _ := store.Encode(&c)
 	if err := s.CompareAndPut(ctx, next, cur.Version+1); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("expectation ahead of the stored version: want ErrStale, got %v", err)
-	}
-	same, _ := store.EncodeAsIs(got)
-	same.Version = cur.Version
-	if err := s.CompareAndPut(ctx, same, cur.Version); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("a version not above the expected one: want ErrStale, got %v", err)
 	}
 	if now, err := s.Get(ctx, model.KindUser, u.ID); err != nil || now.Version != cur.Version {
 		t.Fatalf("a refused CompareAndPut changed the record: version %d, was %d", now.Version, cur.Version)

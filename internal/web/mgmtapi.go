@@ -140,6 +140,10 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 			s.auditDenied(w, WithActor(r, a), a, next)
 			return
 		}
+		if SessionUnchecked(r) {
+			WriteUnchecked(w)
+			return
+		}
 		if User(r) == nil {
 			WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "Your session has ended. Please sign in again."})
 			return

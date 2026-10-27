@@ -25,11 +25,12 @@ type table struct {
 	fields []model.Field
 	cols   string // every column, in scan order
 
-	get    string // WHERE id = ? and live
-	lookup string // WHERE id = ?, whatever the state
-	meta   string // version, origin, deleted, expires, uniq, epoch, created_v of one id, row-locked
-	insert string
-	update string
+	get      string // WHERE id = ? and live
+	lookup   string // WHERE id = ?, whatever the state
+	byUnique string // WHERE id is the holder of a unique value (kind, value) and live
+	meta     string // version, origin, deleted, expires, uniq, epoch, created_v, req of one id, row-locked
+	insert   string
+	update   string
 
 	uInsert, uHolder, uSteal string // unique-table statements for this kind
 
@@ -39,13 +40,15 @@ type table struct {
 	goneSQL   string // id and kind-less metadata of the records of one partition (full import, purge)
 }
 
-// partColumns are the columns every kind table has for partition replication, beyond the record itself: part is
-// store.Record.Partition (read with the record); pnum and pseq stamp a record ApplyPartition or ImportPartition wrote
-// (the partition and the sequence of the write that last changed it; pseq 0: no stamp), written with it, and read only
-// by the partition methods. A table made before they existed gains them at open (reconcile).
+// partColumns are the columns every kind table has beyond the record's first ones: part is store.Record.Partition and
+// req is store.Record.Req (the request that wrote the record; "" on a row written before the column existed), both read
+// with the record; pnum and pseq stamp a record ApplyPartition or ImportPartition wrote (the partition and the sequence
+// of the write that last changed it; pseq 0: no stamp), written with it, and read only by the partition methods. A
+// table made before they existed gains them at open (reconcile).
 func partColumns(d *dialect) []struct{ name, def string } {
 	return []struct{ name, def string }{
 		{"part", d.keyType(512) + " NOT NULL DEFAULT ''"},
+		{"req", d.keyType(64) + " NOT NULL DEFAULT ''"},
 		{"pnum", "INT NOT NULL DEFAULT 0"},
 		{"pseq", "BIGINT NOT NULL DEFAULT 0"},
 	}
@@ -54,7 +57,7 @@ func partColumns(d *dialect) []struct{ name, def string } {
 func newTable(d *dialect, kind model.Kind) *table {
 	s := model.Schemas[kind]
 	t := &table{kind: kind, name: d.quote("qsr_" + string(kind)), fields: s.Fields}
-	cols := []string{"id", "version", "origin", "deleted", "scope", "expires", "uniq", "data", "epoch", "created_v", "part"}
+	cols := []string{"id", "version", "origin", "deleted", "scope", "expires", "uniq", "data", "epoch", "created_v", "part", "req"}
 	for _, f := range s.Fields {
 		cols = append(cols, f.Name)
 	}
@@ -69,7 +72,10 @@ func newTable(d *dialect, kind model.Kind) *table {
 	wcols := strings.Join(q, ", ")
 	marks := strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ")
 	t.get = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = ? AND deleted = FALSE AND (expires IS NULL OR expires > ?)")
-	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
+	// A scalar subquery, not a join: SQLite re-prepares a joined statement at every step (6x slower than the two lookups).
+	t.byUnique = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = (SELECT id FROM " + uniqueTable +
+		" WHERE kind = ? AND value = ?) AND deleted = FALSE AND (expires IS NULL OR expires > ?)")
+	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v, req FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
 	t.lookup = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = ?")
 	t.insert = d.bind("INSERT INTO " + t.name + " (" + wcols + ") VALUES (" + marks + ")")
 	t.exportSQL = d.bind("SELECT " + t.cols + ", pseq FROM " + t.name + " WHERE pnum = ? AND pseq > ? AND pseq <= ? ORDER BY pseq")
@@ -181,7 +187,7 @@ type pstamp struct {
 // args returns the column values of rec in insert order. Tombstones carry no scope, data, fields or expiry (and keep
 // their partition key).
 func (t *table) args(rec *store.Record, ps pstamp) ([]any, error) {
-	a := make([]any, 0, 14+len(t.fields))
+	a := make([]any, 0, 15+len(t.fields))
 	var expires any
 	scope := rec.Scope
 	if rec.Deleted {
@@ -197,7 +203,7 @@ func (t *table) args(rec *store.Record, ps pstamp) ([]any, error) {
 		uniq, data, created = encodeUnique(rec.Unique), rec.Data, int64(rec.Created)
 	}
 	a = append(a, rec.ID, int64(rec.Version), rec.Origin, rec.Deleted, scope, expires, uniq, blobArg(data), epoch, created,
-		rec.Partition)
+		rec.Partition, rec.Req)
 	for _, f := range t.fields {
 		var v any
 		if !rec.Deleted {
@@ -217,15 +223,15 @@ type scanner interface{ Scan(dest ...any) error }
 // scan reads a row selected with t.cols.
 func (t *table) scan(r scanner) (*store.Record, error) {
 	var (
-		id, origin, scope, part string
-		version                 int64
-		epoch, created          int64
-		deleted                 bool
-		expires                 sql.NullInt64
-		uniq                    sql.NullString
-		data                    []byte
+		id, origin, scope, part, req string
+		version                      int64
+		epoch, created               int64
+		deleted                      bool
+		expires                      sql.NullInt64
+		uniq                         sql.NullString
+		data                         []byte
 	)
-	dest := []any{&id, &version, &origin, &deleted, &scope, &expires, &uniq, &data, &epoch, &created, &part}
+	dest := []any{&id, &version, &origin, &deleted, &scope, &expires, &uniq, &data, &epoch, &created, &part, &req}
 	vals := make([]any, len(t.fields))
 	for i, f := range t.fields {
 		switch f.Type {
@@ -246,7 +252,7 @@ func (t *table) scan(r scanner) (*store.Record, error) {
 		return nil, err
 	}
 	rec := &store.Record{Kind: t.kind, ID: id, Version: hlc.Timestamp(version), Origin: origin, Deleted: deleted,
-		Scope: scope, Partition: part, Unique: unique, Data: data, Epoch: hlc.Timestamp(epoch),
+		Scope: scope, Partition: part, Req: req, Unique: unique, Data: data, Epoch: hlc.Timestamp(epoch),
 		Created: hlc.Timestamp(created)}
 	// Several nodes may write one database; their versions come from their own clocks. A version read here moves
 	// this node's clock past it, so its next write of the record is newer even when its wall clock is behind.
@@ -326,6 +332,12 @@ func (t *table) ddl(d *dialect) []string {
 		if f.Sort {
 			if e := d.sortIndexExpr(f); e != "" {
 				idx("s_"+f.Name, "scope, "+e+", id")
+				// Newest first is how a large kind's times are browsed (the audit log's default page): SQLite and PostgreSQL
+				// read the index above backwards and sort only the ties, but MySQL and MariaDB cannot (the tie-break by id
+				// stays ascending) and sort the whole scope: 7x slower on 60,000 audit events.
+				if d.isMySQL() && f.SortIndex && f.Type == model.FieldTime {
+					idx("s_"+f.Name+"_desc", "scope, "+e+" DESC, id")
+				}
 			}
 		}
 		if !f.Index || f.Words { // a Words field is matched with LIKE: no index serves it

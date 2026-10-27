@@ -131,8 +131,6 @@ type User struct {
 	Locale        string `msgpack:"lc" json:"locale,omitempty"`   // BCP 47 language tag (NormalizeLocale)
 	ZoneInfo      string `msgpack:"tz" json:"zoneinfo,omitempty"` // IANA time zone
 	UserType      string `msgpack:"ut" json:"user_type,omitempty"`
-	// ProvisionedBy is the sign-in provider that made the account at a first sign-in through it (auto-provisioning).
-	ProvisionedBy string `msgpack:"pvb,omitempty" json:"-"`
 	// ValidUntil ends the account at that moment: it can no longer sign in or use tokens, and the housekeeping sweep
 	// disables it (ending its sessions, with back-channel logout). Nil: no end.
 	ValidUntil *time.Time `msgpack:"vu,omitempty" json:"valid_until"`

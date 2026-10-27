@@ -74,8 +74,7 @@ func TestBootstrapOnce(t *testing.T) {
 	if u, link, err := half.Bootstrap(ctx, "root@example.com"); err != nil || u == nil || link == "" {
 		t.Fatalf("missing first admin not made: %v %v", u, err)
 	}
-	// records written by bootstrap carry the oldest version: anything that exists is newer
-	if r, err := st.Get(ctx, model.KindTenant, model.PrimaryTenantID); err != nil || r.Version != model.BootstrapVersion {
-		t.Fatalf("default tenant: %v %v", r, err)
+	if _, err := st.Get(ctx, model.KindTenant, model.PrimaryTenantID); err != nil {
+		t.Fatalf("default tenant: %v", err)
 	}
 }

@@ -415,10 +415,9 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 		pks  []*model.Passkey
 		cred *webauthn.Credential
 	)
-	// The account is read as its owner holds it (FreshUser), as the code-based sign-in steps read it: in a cluster a
-	// password reset, a lock-out or a disabled account on another node must not be missed for the replication lag.
+	// The account is read as the code-based sign-in steps read it (UserByID: current within the store's bound).
 	if c.UserID != "" {
-		user, err = s.svc.FreshUserIn(ctx, c.OrgID, c.UserID)
+		user, err = s.svc.UserByID(ctx, c.UserID)
 		if errors.Is(err, service.ErrNotFound) {
 			return nil, ErrUnknownCredential
 		}
@@ -443,7 +442,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			if perr != nil {
 				return nil, ErrUnknownCredential
 			}
-			u, uerr := s.svc.FreshUserIn(ctx, pk.OrgID, pk.UserID)
+			u, uerr := s.svc.UserByID(ctx, pk.UserID)
 			if uerr != nil && !errors.Is(uerr, service.ErrNotFound) {
 				return nil, uerr
 			}
@@ -571,7 +570,7 @@ func (s *Service) touch(ctx context.Context, pk *model.Passkey, cred *webauthn.C
 		if !errors.Is(err, store.ErrStale) {
 			return false, unavailable(err)
 		}
-		fresh, gerr := s.svc.FreshPasskeyIn(ctx, pk.OrgID, pk.ID)
+		fresh, gerr := s.svc.PasskeyByID(ctx, pk.ID)
 		if gerr != nil {
 			return false, gerr
 		}

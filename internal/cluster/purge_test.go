@@ -67,7 +67,7 @@ func TestPurgeTombstones(t *testing.T) {
 			})
 		}
 		tombstones("the old tombstones", ids[:3])
-		past := time.Now().Add(testRetention) // (a time at which these are past the retention)
+		past := time.Now().Add(tombstoneKeep(testRetention)) // (a time at which these are past the retention)
 		tombstones("the young tombstone", ids[3:4])
 
 		// every export slot taken: the scan reads nothing, and the partition is not counted as scanned
@@ -131,5 +131,49 @@ func TestPurgeTombstones(t *testing.T) {
 					committed.Committed.Seq)
 			}
 		}
+	})
+}
+
+// A tombstone is never purged before a write's settling (and the clocks' skew) has passed, whatever the retention: a
+// deletion retried while it settles is recognised by the request id on its tombstone, and must still find it.
+func TestPurgeKeepsTombstonesThroughSettling(t *testing.T) {
+	c := newTCluster(t, 3, badgerBackend())
+	c.opts = shortRetention // shorter than settleWait + store.MaxSkew
+	c.startAll()
+	c.waitReady()
+	ids := writeN(t, c.nodes[0], "keep-org", 1)
+	c.waitHas(ids[0])
+	if err := c.nodes[0].st().Put(bg, store.Tombstone(dataKind, ids[0])); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, "the tombstone everywhere", func() bool {
+		for _, tn := range c.nodes {
+			if !tombstoned(tn, ids[0]) {
+				return false
+			}
+		}
+		return true
+	})
+	purgeAll(c, time.Now().Add(testRetention+time.Second)) // past the retention, within the settling
+	consistently(t, time.Second, "the tombstone kept through the settling", func() bool {
+		for _, tn := range c.nodes {
+			if !tombstoned(tn, ids[0]) {
+				return false
+			}
+		}
+		return true
+	})
+	after := time.Now().Add(tombstoneKeep(testRetention) + time.Second)
+	waitFor(t, 15*time.Second, "the tombstone purged once the settling has passed", func() bool {
+		for _, tn := range c.nodes { // (scanning again at once: the pass above counts as this hour's scan)
+			tn.n.lastScan[partitionNum("keep-org")].Store(0)
+		}
+		purgeAll(c, after)
+		for _, tn := range c.nodes {
+			if !gone(tn, ids[0]) {
+				return false
+			}
+		}
+		return true
 	})
 }

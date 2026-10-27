@@ -587,10 +587,7 @@ func (s *Service) isMember(ctx context.Context, g *model.Group, userID string) (
 
 // membersToJudge reads the users (by id) whose memberships a change by a touches, as a's reach is judged on them
 // (checkMembership, clientMayAffectMembers): a user who no longer exists is left out, and one who cannot be read
-// refuses the change — a rank that could not be read is never taken as plain. For an actor whose reach depends on
-// the user's rank (anyone but a super admin: an administrator never reaches a super admin, a manager or a
-// provisioning client plain users only) each user is also read from the owners' copies (freshMany), and the newer copy
-// judged: a promotion a majority has confirmed counts even before it has reached this node.
+// refuses the change — a rank that could not be read is never taken as plain.
 func (s *Service) membersToJudge(ctx context.Context, a *Actor, ids []string) (map[string]*model.User, error) {
 	users := make(map[string]*model.User, len(ids))
 	for _, id := range ids {
@@ -600,27 +597,6 @@ func (s *Service) membersToJudge(ctx context.Context, a *Actor, ids []string) (m
 		}
 		if err != nil {
 			return nil, mapStore(err)
-		}
-		users[id] = u
-	}
-	if a.IsSuper() || len(users) == 0 {
-		return users, nil
-	}
-	known := make([]string, 0, len(users))
-	for id := range users {
-		known = append(known, id)
-	}
-	recs, err := s.freshMany(ctx, model.KindUser, users[known[0]].OrgID, known) // (the members of one group: one organization)
-	if err != nil {
-		return nil, err
-	}
-	for id, r := range recs {
-		if r.Version <= users[id].Version {
-			continue
-		}
-		u := &model.User{}
-		if err := store.Decode(r, u); err != nil {
-			return nil, err
 		}
 		users[id] = u
 	}
@@ -770,7 +746,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		for i, p := range readM {
 			ids[i] = model.MemberID(p.g.ID, userID)
 		}
-		recs, err := s.freshMany(ctx, model.KindMember, gs[0].OrgID, ids)
+		recs, err := s.getMany(ctx, model.KindMember, ids)
 		if err != nil {
 			return nil, err
 		}
@@ -788,7 +764,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		for i, p := range readG {
 			ids[i] = p.g.ID
 		}
-		if recs, err = s.freshMany(ctx, model.KindGroup, gs[0].OrgID, ids); err != nil {
+		if recs, err = s.getMany(ctx, model.KindGroup, ids); err != nil {
 			return nil, err
 		}
 		kept := open[:0]

@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,6 +48,9 @@ type wireRecord struct {
 	Partition string
 	PNum      uint32
 	PSeq      uint64
+	// Req is store.Record.Req. It is the last element of the array: a record stored before it existed is shorter and
+	// decodes with Req "" (a retry of its write is then not recognised, as for any write that left no id).
+	Req string
 }
 
 // pstamp is the partition stamp of a stored record (PNum and PSeq of the wire form): zero when there is none.
@@ -64,7 +68,7 @@ type stored struct {
 func encodeRecord(r *store.Record, ps pstamp) ([]byte, error) {
 	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted,
 		Scope: r.Scope, Unique: r.Unique, Data: r.Data, Epoch: uint64(r.Epoch), Created: uint64(r.Created),
-		Partition: r.Partition, PNum: ps.num, PSeq: ps.seq}
+		Partition: r.Partition, PNum: ps.num, PSeq: ps.seq, Req: r.Req}
 	if !r.Expires.IsZero() {
 		w.Expires = r.Expires.UnixNano()
 	}
@@ -99,36 +103,201 @@ func encodeRecord(r *store.Record, ps pstamp) ([]byte, error) {
 	return msgpack.MarshalAsArray(&w)
 }
 
+// decodeRecord reads what encodeRecord writes. It does not use reflection (a record is read on every Get and for
+// every record of a listed page: this is the hot path of the store, and the reflecting decoder took twice as long and
+// made more allocations): it reads the msgpack array of wireRecord's elements, in order, itself. A record stored
+// before Req existed has one element fewer. Every string of the record is a piece of one copy of its body (so
+// the strings of a record share that one allocation, and keep it alive as long as any of them does).
 func decodeRecord(b []byte) (*stored, error) {
-	var w wireRecord
-	if err := msgpack.UnmarshalAsArray(b, &w); err != nil {
-		return nil, fmt.Errorf("kvstore: decode record: %w", err)
+	r := reader{s: string(b)}
+	n := r.array()
+	if n != wireElements && n != wireElements-1 { // (a corrupt body fails here, or below)
+		return nil, errors.New("kvstore: decode record: unexpected layout")
 	}
-	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
-		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
-		Created: hlc.Timestamp(w.Created), Partition: w.Partition}
-	// Reading a version (one replicated from another node's clock) moves this node's clock past it, so its next
-	// write of the record is newer.
-	store.Witness(r.Version)
-	if w.Expires != 0 {
-		r.Expires = time.Unix(0, w.Expires)
+	rec := &store.Record{Kind: model.Kind(r.str()), ID: r.str(), Version: hlc.Timestamp(r.int())}
+	rec.Origin, rec.Deleted, rec.Scope = r.str(), r.bool(), r.str()
+	if k := r.array(); k > 0 && r.ok() {
+		rec.Unique = make([]string, k)
+		for i := range rec.Unique {
+			rec.Unique[i] = r.str()
+		}
 	}
-	if len(w.Fields) > 0 {
-		r.Fields = make(map[string]any, len(w.Fields))
-		for _, f := range w.Fields {
-			switch f.Type {
+	if k := r.array(); k > 0 && r.ok() {
+		rec.Fields = make(map[string]any, k)
+		for range k {
+			if r.array() != 6 {
+				r.fail()
+				break
+			}
+			name, typ, i, nano, str, flag := r.str(), r.int(), r.int(), r.int(), r.str(), r.bool()
+			switch uint8(typ) {
 			case ftNil:
-				r.Fields[f.Name] = nil
+				rec.Fields[name] = nil
 			case ftString:
-				r.Fields[f.Name] = f.Str
+				rec.Fields[name] = str
 			case ftInt:
-				r.Fields[f.Name] = f.Int
+				rec.Fields[name] = i
 			case ftBool:
-				r.Fields[f.Name] = f.Bool
+				rec.Fields[name] = flag
 			case ftTime:
-				r.Fields[f.Name] = time.Unix(f.Int, int64(f.Nano)).UTC()
+				rec.Fields[name] = time.Unix(i, nano).UTC()
 			}
 		}
 	}
-	return &stored{rec: r, ps: pstamp{w.PNum, w.PSeq}}, nil
+	rec.Data = r.bin()
+	if ns := r.int(); ns != 0 {
+		rec.Expires = time.Unix(0, ns)
+	}
+	rec.Epoch, rec.Created = hlc.Timestamp(r.int()), hlc.Timestamp(r.int())
+	rec.Partition = r.str()
+	ps := pstamp{num: uint32(r.int()), seq: uint64(r.int())}
+	if n == wireElements {
+		rec.Req = r.str()
+	}
+	if !r.ok() {
+		return nil, errors.New("kvstore: decode record: malformed body")
+	}
+	// Reading a version (one replicated from another node's clock) moves this node's clock past it, so its next
+	// write of the record is newer.
+	store.Witness(rec.Version)
+	return &stored{rec: rec, ps: ps}, nil
+}
+
+// wireElements is the number of elements of a stored record (wireRecord's fields).
+const wireElements = 16
+
+// reader reads msgpack values from s. A value that is not what was asked for (or is cut off) fails the reader: it
+// reads zero values from then on, and ok reports it.
+type reader struct {
+	s   string
+	bad bool
+}
+
+func (r *reader) ok() bool { return !r.bad }
+
+func (r *reader) fail() { r.bad, r.s = true, "" }
+
+// take returns the next n bytes.
+func (r *reader) take(n int) string {
+	if n < 0 || n > len(r.s) {
+		r.fail()
+		return ""
+	}
+	v := r.s[:n]
+	r.s = r.s[n:]
+	return v
+}
+
+// uint reads a big endian unsigned integer of n bytes.
+func (r *reader) uint(n int) uint64 {
+	var v uint64
+	for _, c := range []byte(r.take(n)) {
+		v = v<<8 | uint64(c)
+	}
+	return v
+}
+
+// nil consumes a msgpack nil, if that is next.
+func (r *reader) nil() bool {
+	if len(r.s) > 0 && r.s[0] == 0xc0 {
+		r.s = r.s[1:]
+		return true
+	}
+	return false
+}
+
+// array reads an array header and returns its length (nil: 0).
+func (r *reader) array() int {
+	if r.nil() {
+		return 0
+	}
+	switch t := r.take(1); {
+	case t == "":
+	case t[0]&0xf0 == 0x90:
+		return int(t[0] & 0x0f)
+	case t[0] == 0xdc:
+		return int(r.uint(2))
+	case t[0] == 0xdd:
+		return int(r.uint(4))
+	default:
+		r.fail()
+	}
+	return 0
+}
+
+// str reads a string (nil: "").
+func (r *reader) str() string {
+	if r.nil() {
+		return ""
+	}
+	switch t := r.take(1); {
+	case t == "":
+	case t[0]&0xe0 == 0xa0:
+		return r.take(int(t[0] & 0x1f))
+	case t[0] == 0xd9:
+		return r.take(int(r.uint(1)))
+	case t[0] == 0xda:
+		return r.take(int(r.uint(2)))
+	case t[0] == 0xdb:
+		return r.take(int(r.uint(4)))
+	default:
+		r.fail()
+	}
+	return ""
+}
+
+// bin reads a byte string as a copy (nil: nil).
+func (r *reader) bin() []byte {
+	if r.nil() {
+		return nil
+	}
+	switch t := r.take(1); {
+	case t == "":
+	case t[0] == 0xc4:
+		return []byte(r.take(int(r.uint(1))))
+	case t[0] == 0xc5:
+		return []byte(r.take(int(r.uint(2))))
+	case t[0] == 0xc6:
+		return []byte(r.take(int(r.uint(4))))
+	default:
+		r.fail()
+	}
+	return nil
+}
+
+func (r *reader) bool() bool {
+	t := r.take(1)
+	if t == "" || t[0]&^1 != 0xc2 {
+		r.fail()
+		return false
+	}
+	return t[0] == 0xc3
+}
+
+// int reads an integer of any msgpack width, signed or not (an unsigned 64 bit value comes back wrapped to int64).
+func (r *reader) int() int64 {
+	t := r.take(1)
+	if t == "" {
+		return 0
+	}
+	switch c := t[0]; {
+	case c <= 0x7f || c >= 0xe0:
+		return int64(int8(c))
+	case c == 0xcc:
+		return int64(r.uint(1))
+	case c == 0xcd:
+		return int64(r.uint(2))
+	case c == 0xce:
+		return int64(r.uint(4))
+	case c == 0xcf || c == 0xd3:
+		return int64(r.uint(8))
+	case c == 0xd0:
+		return int64(int8(r.uint(1)))
+	case c == 0xd1:
+		return int64(int16(r.uint(2)))
+	case c == 0xd2:
+		return int64(int32(r.uint(4)))
+	}
+	r.fail()
+	return 0
 }

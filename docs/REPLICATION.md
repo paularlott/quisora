@@ -363,19 +363,23 @@ expired are removed by every node from its own copy.
 
 ## Catching up, joining and returning
 
-- **By sequence, per partition, of committed writes only.** A node behind a committed position (from a heartbeat, a write
-  or the exchange at start) asks a node that has it for the changes after its own committed sequence; the owner is the
+- **By sequence, per partition, of committed writes only.** A node behind a committed position (from a heartbeat, a write or
+  the exchange at start) asks a node that has it for the changes after its own committed sequence; the owner is the
   preferred source, and any node is a safe source up to its own commit point because committed data is the same on every
-  node that has it. Nobody ever serves a pending write as data. The stream is a frame per record and an end marker. It is
-  produced as it is sent (the sender holds a snapshot of its database, reads it a page at a time and writes nothing to disk;
-  the snapshot is released when the stream ends or the receiver goes away) and applied as it arrives, a thousand records at a
-  time, so memory is bounded by a batch whatever the size of the partition. **The committed position moves only when the end
-  marker has been read**: a stream cut short leaves the position where it was, with the batches before the cut already
-  stored (committed data of the source, each record carrying the sequence of the write that made it, which an export does
-  not show above the position); the next catch-up asks for the same changes again and completes it. Until it has, the
-  node serves no catch-up of that partition (its export would leave out the records the unfinished import replaced). A
-  node serves at most four catch-ups at once (half its database's reader connections, on SQLite, at most): each holds a
-  snapshot, and a connection, for its whole stream. A request it refuses fails, and the asker tries again.
+  node that has it. Nobody ever serves a pending write as data. The stream is a frame per record, an end marker and the
+  source's purge point. It is produced as it is sent (the sender holds a snapshot of its database, reads it a page at a time
+  and writes nothing to disk; the snapshot is released when the stream ends or the receiver goes away) and applied as it
+  arrives, a thousand records at a time, so memory is bounded by a batch whatever the size of the partition. **The committed
+  position moves only when the end marker has been read**: a stream cut short leaves the position where it was, with the
+  batches before the cut already stored (committed data of the source, each record carrying the sequence of the write that
+  made it, which an export does not show above the position); the next catch-up asks for the same changes again and
+  completes it. Until it has, the node serves no catch-up of that partition (its export would leave out the records the
+  unfinished import replaced). A node serves at most four catch-ups at once (half its database's reader connections, on
+  SQLite, at most): each holds a snapshot, and a connection, for its whole stream. A request it refuses fails, and the asker
+  tries again. Before the position moves the node purges its tombstones to the source's purge point (or its own, if higher),
+  whether it copied by sequence or whole: the stream carries records, not the purge writes, and a purge point is only ever
+  one a purge write set (a whole copy does not take its own position as one), so every node at the same position holds the
+  same tombstones.
 - **Whole**, when the source purged the history needed (above), or for a node that has none.
 - **At start** a node asks every node in view for its state; once a majority including itself has answered (a **majority
   of the other nodes** for a node whose data is not intact) it catches every partition up and, after the hold-down,

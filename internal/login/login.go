@@ -501,7 +501,7 @@ func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bo
 // so with a compare-and-swap on this very version: a change made between this read and that write — another
 // completion of the same sign-in, the owner setting up a factor — makes the write stale, and the step refuses.
 func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, bool) {
-	u, err := m.s.Svc.FreshUserIn(ctx, t.OrgID, t.UserID)
+	u, err := m.s.Svc.UserByID(ctx, t.UserID)
 	if err != nil || !m.ticketCurrent(ctx, t, u) {
 		return nil, nil, false
 	}

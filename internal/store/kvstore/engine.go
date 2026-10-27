@@ -17,6 +17,9 @@ type engine interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	// MGet returns the values of keys in order (nil for absent keys).
 	MGet(ctx context.Context, keys []string) ([][]byte, error)
+	// View runs fn against one consistent snapshot, which get reads (nil for an absent key): for a read that needs
+	// the value of one key to name the next.
+	View(ctx context.Context, fn func(get func(key string) ([]byte, error)) error) error
 	// Page returns the members of bucket that p selects and that are live at nowMs, plus how many there are in all.
 	Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) (members []string, total int, err error)
 	// Count returns the number of members of bucket that are live at nowMs.

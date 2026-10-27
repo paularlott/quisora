@@ -38,9 +38,10 @@ func record(kind model.Kind, id string, expires time.Time, uniq ...string) *stor
 }
 
 // countingReads counts the records an engine loads (the record keys of its MGet calls; the two counter keys a total
-// reads are not records) and the scope-wide ranges it is asked to count (Page calls without NoTotal over a whole
-// bucket or scope range, whose From is empty or a scope prefix: a count of a run of equal sort values, bounded by
-// the offset, is not one): what a listing costs beyond its index reads.
+// reads are not records) and the scope-wide ranges it is asked to count (Page calls with a limit and without NoTotal
+// over a whole bucket or scope range, whose From is empty or a scope prefix: a count of a run of equal sort values,
+// bounded by the offset, is not one; nor is that of a page with no limit, which reads the range anyway): what a
+// listing costs beyond its index reads.
 type countingReads struct {
 	engine
 	records int
@@ -57,7 +58,7 @@ func (e *countingReads) MGet(ctx context.Context, keys []string) ([][]byte, erro
 }
 
 func (e *countingReads) Page(ctx context.Context, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
-	if !p.NoTotal && (p.From == "" || strings.HasSuffix(p.From, "/")) {
+	if !p.NoTotal && p.Limit > 0 && (p.From == "" || strings.HasSuffix(p.From, "/")) {
 		e.counted++
 	}
 	return e.engine.Page(ctx, bucket, p, nowMs)

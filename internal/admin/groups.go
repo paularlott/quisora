@@ -11,6 +11,9 @@ import (
 
 func (m *Module) groupFor(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor) (*model.Group, bool) {
 	g, err := m.s.Svc.GetGroup(r.Context(), a, r.PathValue("id"))
+	if unanswered(w, err) {
+		return nil, false
+	}
 	if err != nil || g.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +24,7 @@ type faultStore struct {
 	beforeGetByUnique func(kind model.Kind, value string) error
 	beforePut         func(r *store.Record) error
 	beforeCAS         func(r *store.Record, expect hlc.Timestamp) error
+	beforeTx          func(ops []store.Op) error
 	afterCAS          func(r *store.Record, err error)
 	beforeList        func(kind model.Kind, q store.ListQuery) error
 	afterList         func(kind model.Kind)
@@ -90,6 +90,37 @@ func (f *faultStore) CompareAndPut(ctx context.Context, r *store.Record, expect 
 	return err
 }
 
+// Tx runs beforeTx, then the hooks of each of its writes as they would run for it alone (beforeCAS for a
+// compare-and-put, beforePut for a put), before any is made; then the transaction, and afterCAS for each compare-and-put.
+func (f *faultStore) Tx(ctx context.Context, ops []store.Op) error {
+	if f.beforeTx != nil {
+		if err := f.beforeTx(ops); err != nil {
+			return err
+		}
+	}
+	for _, op := range ops {
+		var err error
+		switch {
+		case op.Match && f.beforeCAS != nil:
+			err = f.beforeCAS(op.Rec, op.Expect)
+		case !op.Match && f.beforePut != nil:
+			err = f.beforePut(op.Rec)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	err := f.Store.Tx(ctx, ops)
+	if f.afterCAS != nil {
+		for _, op := range ops {
+			if op.Match {
+				f.afterCAS(op.Rec, err)
+			}
+		}
+	}
+	return err
+}
+
 func (f *faultStore) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
 	if f.beforeList != nil {
 		if err := f.beforeList(kind, q); err != nil {
@@ -127,45 +158,6 @@ func failKind(got, want model.Kind) error {
 		return errInjected
 	}
 	return nil
-}
-
-// quorumStore is a store that answers quorum reads (store.QuorumReader) itself: from the records in newer where it
-// has them, as owners holding a write this node has not seen would, else from the store. It counts the reads.
-type quorumStore struct {
-	store.Store
-	newer map[string]*store.Record // by kind and id, see quorumKey
-	calls atomic.Int64
-}
-
-func quorumKey(kind model.Kind, id string) string { return string(kind) + "/" + id }
-
-// newerOnQuorum is a quorumStore whose owners hold the newer version of each given record.
-func newerOnQuorum(inner store.Store, newer ...*store.Record) *quorumStore {
-	q := &quorumStore{Store: inner, newer: map[string]*store.Record{}}
-	for _, r := range newer {
-		q.newer[quorumKey(r.Kind, r.ID)] = r
-	}
-	return q
-}
-
-func (q *quorumStore) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*store.Record, error) {
-	q.calls.Add(1)
-	out := make(map[string]*store.Record, len(ids))
-	for _, id := range ids {
-		if r, ok := q.newer[quorumKey(kind, id)]; ok {
-			out[id] = r
-			continue
-		}
-		r, err := q.Store.Lookup(ctx, kind, id)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		out[id] = r
-	}
-	return out, nil
 }
 
 // gate pauses one call of a faultStore until the test releases it, so that the test can act while the call is

@@ -55,12 +55,15 @@ func TestReconcileOlderSchema(t *testing.T) {
 		}
 		put(s, "client", "old", "", time.Unix(100, 0))
 
-		// Simulate an older model: no tenant table, no client.tenant_id, no created sort index.
-		drop := "DROP INDEX ix_client_s_created"
-		if s.d.isMySQL() {
-			drop += " ON qsr_client"
+		// Simulate an older model: no tenant table, no client.tenant_id (nor its index), no created sort index.
+		drop := func(index string) string {
+			if s.d.isMySQL() {
+				return "DROP INDEX " + index + " ON qsr_client"
+			}
+			return "DROP INDEX " + index
 		}
-		for _, q := range []string{drop, "ALTER TABLE qsr_client DROP COLUMN tenant_id", "DROP TABLE qsr_tenant"} {
+		for _, q := range []string{drop("ix_client_s_created"), drop("ix_client_f_tenant_id"),
+			"ALTER TABLE qsr_client DROP COLUMN tenant_id", "DROP TABLE qsr_tenant"} {
 			if _, err := s.wdb.Exec(q); err != nil {
 				t.Fatalf("%s: %v", q, err)
 			}
@@ -148,4 +151,42 @@ func TestSchemaVersionGuards(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A database from before records carried a request id gains the column at open; its rows read with none, and a write
+// stores one.
+func TestReconcileAddsRequestColumn(t *testing.T) {
+	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
+		ctx := context.Background()
+		cfg := schemaDatabase(t, d)
+		s, err := Open(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := record(model.KindLink, "old", time.Time{}, "u/old")
+		if err := s.Put(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.wdb.Exec("ALTER TABLE qsr_link DROP COLUMN req"); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		if s, err = Open(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if have, err := s.columns(ctx, s.wdb, "qsr_link"); err != nil || !have["req"] {
+			t.Fatalf("columns after reconcile: %v %v", have, err)
+		}
+		if got, err := s.Get(ctx, model.KindLink, "old"); err != nil || got.Req != "" || got.Version != rec.Version {
+			t.Fatalf("a row from before the column: %v %+v", err, got)
+		}
+		next := record(model.KindLink, "old", time.Time{}, "u/old")
+		if err := s.Put(ctx, next); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.Get(ctx, model.KindLink, "old"); err != nil || got.Req == "" {
+			t.Fatalf("a write after the column was added: %v %+v", err, got)
+		}
+	})
 }

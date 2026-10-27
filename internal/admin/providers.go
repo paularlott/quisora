@@ -31,6 +31,9 @@ func (m *Module) providerViews(ps []*model.Provider) []providerView {
 
 func (m *Module) providerFor(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor) (*model.Provider, bool) {
 	p, err := m.s.Svc.GetProvider(r.Context(), a, r.PathValue("id"))
+	if unanswered(w, err) {
+		return nil, false
+	}
 	if err != nil || p.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false

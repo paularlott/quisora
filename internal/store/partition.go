@@ -67,17 +67,19 @@ type PartitionStore interface {
 	// is copied with bounded memory. Every record is stored as given with its own sequence (Seq, 1 to upTo.Seq), as
 	// ApplyPartition does, and the committed position is set to upTo only by the Final batch (step: the caller makes
 	// every call of one import with the same upTo, First on the first, Final on the last, one batch being both). Every
-	// call fails, changing nothing, with ErrPartitionBehind unless upTo.Seq is above the stored committed sequence.
+	// call fails, changing nothing, with ErrPartitionBehind unless upTo.Seq is above the stored committed sequence. No
+	// call changes the purge point: the source's is not in the records, and the caller applies it with PurgePartition
+	// before the Final call (a purge point is only ever one that a purge of the partition set, never a position: every
+	// node at the same position must hold the same tombstones).
 	//
 	// With step.Full the copy replaces the partition, by reset then import: the First call, in one transaction, durably
 	// marks the import as in progress (ExportPartition refuses, ErrImportUnfinished, until it ends), and then removes (not
 	// tombstones) every record of p, in as many transactions as it takes, calling step.Removed for each after its removal
 	// is committed; the batches then store the source's records into the emptied partition; the Final call sets the
-	// committed position, raises the purge point to upTo.Seq (the copy holds the tombstones its source still had, and the
-	// backend does not know which the source had purged) and clears the marker, in one transaction. A record the reset
-	// removed and a batch brings back is reported removed all the same. The partition is not a copy of anything while the
-	// import runs (it holds only what the batches brought), and a full import that did not finish (a crash, a failed
-	// call) is repeated from its First call, which resets again.
+	// committed position and clears the marker, in one transaction. A record the reset removed and a batch brings back is
+	// reported removed all the same. The partition is not a copy of anything while the import runs (it holds only what
+	// the batches brought), and a full import that did not finish (a crash, a failed call) is repeated from its First
+	// call, which resets again.
 	//
 	// Atomicity: one batch is atomic, an import is not: a crash between its calls leaves the committed position where it
 	// was with the batches already applied stored (committed data of the source, never uncommitted data: every record
@@ -155,8 +157,7 @@ type PartitionState struct {
 	Pending    []byte
 	PendingSeq uint64
 	// Purged is the purge point: tombstones of the partition with a sequence at most Purged may have been removed
-	// (PurgePartition, or an import that copied the partition whole), so changes can be exported only after a sequence
-	// of at least Purged. 0: none purged.
+	// (PurgePartition), so changes can be exported only after a sequence of at least Purged. 0: none purged.
 	Purged uint64
 	// Importing is set while a full import of the partition has begun and not finished (the durable marker its First call
 	// sets and its Final call clears; it survives a restart). The partition then holds only what the import's batches

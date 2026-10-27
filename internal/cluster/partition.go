@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,7 @@ const (
 	opClaim                    // reserve a global unique value for a record (reservations)
 	opRelease                  // free a reserved value its holder no longer holds
 	opPurge                    // purge the tombstones below a sequence number
+	opTx                       // write several records of the partition, all or nothing (store.Store.Tx)
 )
 
 // How a record write is checked (change.Mode).
@@ -62,6 +64,7 @@ const (
 	whyHeld     = "held"     // claim: this record already holds the reservation (nothing to write)
 	whyNotHeld  = "not-held" // release: the reservation is not this record's (nothing to write)
 	whyNothing  = "nothing"  // nothing to do (a deletion of what is not there, a purge with nothing to purge)
+	whyDone     = "done"     // the write's request is stored already: a retry of a write that landed (store.Retried)
 	whyBad      = "bad"      // malformed or in the wrong partition: a bug, never expected
 	whyLarge    = "large"    // read: the reply would not fit one message; ask for fewer records
 )
@@ -80,6 +83,15 @@ type change struct {
 	// opRelease by the sweep (SweepReservations), which knows the reservation and not the value: the reservation's id
 	// instead of Key, and the version it read (Expect), which the reservation must still have.
 	Resv string
+	// Ops are opTx's writes, in order.
+	Ops []txOp
+}
+
+// txOp is one write of an opTx change: as an opWrite's Mode, Expect and Rec.
+type txOp struct {
+	Mode   uint8
+	Expect uint64
+	Rec    []byte
 }
 
 // writeData is the data of a write (partition.Write.Data): the records every node applies, stamped by the owner, and
@@ -89,11 +101,13 @@ type writeData struct {
 	Purge uint64
 }
 
-// writeReply is what the owner's Prepare tells the caller: the stamp of the record it wrote.
+// writeReply is what the owner's Prepare tells the caller: the stamp of the record it wrote, and for an opTx those of
+// each of its records, in order.
 type writeReply struct {
 	Version uint64
 	Epoch   uint64
 	Created uint64
+	Stamps  []writeReply
 }
 
 func encodeMsg(v any) ([]byte, error) { return msgpack.MarshalAsArray(v) }
@@ -232,6 +246,14 @@ func newPStore(n *Node, inner store.Store) (*pstore, error) {
 		}
 		s.states[p].Store(&st)
 		s.importing[p].Store(ps.Importing)
+		// A purge records its point before it removes the tombstones below it, in batches (a crash part-way must
+		// never leave tombstones missing below a lower point): one that a crash cut short is finished here, or
+		// the tombstones it left would stay for good on this node alone.
+		if ps.Purged > 0 {
+			if _, err := pst.PurgePartition(n.ctx, p, ps.Purged+1); err != nil {
+				return nil, fmt.Errorf("cluster: partition %d: finishing its purge: %w", p, err)
+			}
+		}
 		if ps.Importing {
 			n.log.Warn("a copy of a partition as a whole was cut short on this node: it serves none of the partition until "+
 				"it is copied again from the others", "partition", p)
@@ -421,11 +443,21 @@ func (s *pstore) Prepare(p int, b []byte) (data, reply []byte, err error) {
 	var purge uint64
 	switch c.Op {
 	case opWrite:
-		rec, err := s.prepareWrite(p, &c)
+		rec, err := decodeRecord(c.Rec)
 		if err != nil {
+			return nil, nil, refuse(whyBad, "%v", err)
+		}
+		if err := s.retried(rec); err != nil {
 			return nil, nil, err
 		}
-		recs, rep = []*store.Record{rec}, writeReply{uint64(rec.Version), uint64(rec.Epoch), uint64(rec.Created)}
+		if err := s.prepareWrite(p, c.Mode, c.Expect, rec, nil); err != nil {
+			return nil, nil, err
+		}
+		recs, rep = []*store.Record{rec}, stampOf(rec)
+	case opTx:
+		if recs, rep.Stamps, err = s.prepareTx(p, &c); err != nil {
+			return nil, nil, err
+		}
 	case opClaim:
 		rec, err := s.prepareClaim(p, &c)
 		if err != nil {
@@ -463,44 +495,115 @@ func (s *pstore) Prepare(p int, b []byte) (data, reply []byte, err error) {
 	return data, reply, nil
 }
 
-// prepareWrite checks and stamps one record write against the committed copy: the version compare of a
-// compare-and-swap, a live write over a tombstone, the unique values within the partition.
-func (s *pstore) prepareWrite(p int, c *change) (*store.Record, error) {
-	rec, err := decodeRecord(c.Rec)
+func stampOf(r *store.Record) writeReply {
+	return writeReply{Version: uint64(r.Version), Epoch: uint64(r.Epoch), Created: uint64(r.Created)}
+}
+
+// retried refuses the write of rec with whyDone when the committed copy is rec's request's: a retry of a write that
+// landed (store.Retried), which the writer answers as done rather than applying it twice.
+func (s *pstore) retried(rec *store.Record) error {
+	cur, err := s.lookup(rec.Kind, rec.ID)
 	if err != nil {
-		return nil, refuse(whyBad, "%v", err)
+		return err
 	}
+	if cur != nil && store.Retried(rec, cur.Head()) {
+		return refuse(whyDone, "%s %s was written by this request", rec.Kind, rec.ID)
+	}
+	return nil
+}
+
+// txUniques is what the earlier writes of a transaction did to unique values: the values they claimed (by record id)
+// and those they released. A later write is checked against the committed copy as they leave it.
+type txUniques struct {
+	claimed  map[string]string // value -> id of the record of the transaction claiming it
+	released map[string]bool
+}
+
+// prepareTx checks and stamps an opTx: every write of partition p, in order, each as prepareWrite would, with unique
+// values checked as the earlier writes leave them. A transaction one of whose records is its request's already was
+// applied (whyDone): every record of a transaction carries its one request id. A deletion of what is no longer live
+// writes nothing (as a deletion of its own: writePartitioned), and the rest goes ahead. It returns the records to write
+// and the stamp of every op, in order (a deletion skipped: zero).
+func (s *pstore) prepareTx(p int, c *change) ([]*store.Record, []writeReply, error) {
+	if len(c.Ops) == 0 {
+		return nil, nil, refuse(whyBad, "an empty transaction")
+	}
+	recs := make([]*store.Record, len(c.Ops))
+	seen := map[string]bool{}
+	for i, op := range c.Ops {
+		rec, err := decodeRecord(op.Rec)
+		if err != nil {
+			return nil, nil, refuse(whyBad, "%v", err)
+		}
+		k := string(rec.Kind) + "/" + rec.ID
+		if seen[k] {
+			return nil, nil, refuse(whyBad, "%s written twice in one transaction", k)
+		}
+		seen[k] = true
+		if err := s.retried(rec); err != nil {
+			return nil, nil, err
+		}
+		recs[i] = rec
+	}
+	tu := &txUniques{claimed: map[string]string{}, released: map[string]bool{}}
+	var write []*store.Record
+	stamps := make([]writeReply, len(c.Ops))
+	for i, op := range c.Ops {
+		if op.Mode == modeBlind {
+			cur, err := s.lookup(recs[i].Kind, recs[i].ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if cur == nil || !cur.Live(time.Now()) {
+				continue
+			}
+		}
+		if err := s.prepareWrite(p, op.Mode, op.Expect, recs[i], tu); err != nil {
+			return nil, nil, err
+		}
+		write, stamps[i] = append(write, recs[i]), stampOf(recs[i])
+	}
+	if len(write) == 0 {
+		return nil, nil, refuse(whyNothing, "nothing to write")
+	}
+	return write, stamps, nil
+}
+
+// prepareWrite checks and stamps rec, one record write in mode against the committed copy: the version compare of a
+// compare-and-swap, a live write over a tombstone, the unique values within the partition (as the earlier writes of
+// a transaction tu leave them; nil: a write of its own).
+func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Record, tu *txUniques) error {
 	if localOnly(rec.Kind) {
-		return nil, refuse(whyBad, "%s records stay on the node that writes them", rec.Kind)
+		return refuse(whyBad, "%s records stay on the node that writes them", rec.Kind)
 	}
 	if recPartition(rec) != p {
-		return nil, refuse(whyBad, "%s %s belongs to partition %d, not %d", rec.Kind, rec.ID, recPartition(rec), p)
+		return refuse(whyBad, "%s %s belongs to partition %d, not %d", rec.Kind, rec.ID, recPartition(rec), p)
 	}
 	cur, err := s.lookup(rec.Kind, rec.ID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if cur != nil && cur.Partition != rec.Partition {
-		return nil, refuse(whyBad, "%s %s is in another partition (a record never moves)", rec.Kind, rec.ID)
+		return refuse(whyBad, "%s %s is in another partition (a record never moves)", rec.Kind, rec.ID)
 	}
 	live := cur != nil && cur.Live(time.Now())
-	switch c.Mode {
+	switch mode {
 	case modeMatch:
 		switch {
-		case c.Expect == 0 && live:
-			return nil, refuse(whyStale, "%s %s exists", rec.Kind, rec.ID)
-		case c.Expect != 0 && !live:
-			return nil, refuse(whyNotFound, "%s %s does not exist", rec.Kind, rec.ID)
-		case c.Expect != 0 && cur.Version != hlc.Timestamp(c.Expect):
-			return nil, refuse(whyStale, "%s %s changed", rec.Kind, rec.ID)
+		case expect == 0 && live:
+			return refuse(whyStale, "%s %s exists", rec.Kind, rec.ID)
+		case expect != 0 && !live:
+			return refuse(whyNotFound, "%s %s does not exist", rec.Kind, rec.ID)
+		case expect != 0 && cur.Version != hlc.Timestamp(expect):
+			return refuse(whyStale, "%s %s changed", rec.Kind, rec.ID)
 		}
 	case modeUpsert:
 		if cur != nil && cur.Deleted {
-			return nil, refuse(whyDeleted, "%s %s was deleted", rec.Kind, rec.ID)
+			return refuse(whyDeleted, "%s %s was deleted", rec.Kind, rec.ID)
 		}
 	case modeBlind:
 		if !live {
-			return nil, refuse(whyNothing, "%s %s is not there", rec.Kind, rec.ID)
+			return refuse(whyNothing, "%s %s is not there", rec.Kind, rec.ID)
 		}
 	}
 	rec.Version = nextVersion(cur)
@@ -512,21 +615,43 @@ func (s *pstore) prepareWrite(p int, c *change) (*store.Record, error) {
 		}
 	}
 	if err := store.StampLocal(rec, head, !live); err != nil {
-		return nil, refuse(whyDeleted, "%v", err)
+		return refuse(whyDeleted, "%v", err)
 	}
 	if !rec.Deleted {
 		for _, u := range rec.Unique {
 			if model.GlobalUnique(rec.Kind, u) {
-				return nil, refuse(whyBad, "%s %s lists the global value %q (it is reserved, not indexed)", rec.Kind, rec.ID, u)
+				return refuse(whyBad, "%s %s lists the global value %q (it is reserved, not indexed)", rec.Kind, rec.ID, u)
 			}
-			if h, err := s.inner.GetByUnique(s.n.ctx, rec.Kind, u); err == nil && h.ID != rec.ID {
-				return nil, refuse(whyConflict, "%q is in use", u)
-			} else if err != nil && !errors.Is(err, store.ErrNotFound) {
-				return nil, err
+			if tu != nil {
+				if id, ok := tu.claimed[u]; ok && id != rec.ID {
+					return refuse(whyConflict, "%q is in use", u)
+				}
+			}
+			h, err := s.inner.GetByUnique(s.n.ctx, rec.Kind, u)
+			switch {
+			case err == nil && h.ID != rec.ID && (tu == nil || !tu.released[u]):
+				return refuse(whyConflict, "%q is in use", u)
+			case err != nil && !errors.Is(err, store.ErrNotFound):
+				return err
 			}
 		}
 	}
-	return rec, nil
+	if tu != nil {
+		if live {
+			for _, u := range cur.Unique {
+				if rec.Deleted || !slices.Contains(rec.Unique, u) {
+					tu.released[u] = true
+				}
+			}
+		}
+		if !rec.Deleted {
+			for _, u := range rec.Unique {
+				tu.claimed[u] = rec.ID
+				delete(tu.released, u)
+			}
+		}
+	}
+	return nil
 }
 
 // reservation returns the stored reservation record id (live) and its holder.
@@ -677,9 +802,10 @@ type exportRec struct {
 }
 
 // exportEnd follows the end marker of a catch-up stream: the purge point of the source's copy, read after the records
-// (so never below the snapshot's). A purge is a write, but a catch-up carries records, not writes: a node that missed
-// the purge write and imports incrementally would keep the tombstones the others removed, so it purges to this point
-// itself (Import). A stream from a node of an earlier release ends at the marker: no purge is applied then.
+// (so never below the snapshot's: nothing lowers a purge point). A purge is a write, but a catch-up carries records, not
+// writes: a node that missed the purge write would keep the tombstones the others removed, and one that copies the
+// partition whole would not know which of them its source had purged, so it purges to this point itself (Import). A
+// stream without it is cut short.
 type exportEnd struct {
 	Purged uint64
 }
@@ -842,35 +968,36 @@ func (s *pstore) Import(p int, r io.Reader, upTo partition.Pos, full bool) error
 		s.n.applied(recs)
 		return nil
 	}
-	// finish ends the import. An incremental one first purges to the source's purge point, if it is above this node's: the
-	// source's purge writes are not in the stream, and a node that missed one would keep the tombstones the others
-	// removed. (A full copy raised the purge point itself.) The purge comes before the final step: a crash between the two
-	// repeats the catch-up, which finds the purge done; after it, nothing would remind the node.
+	// finish ends the import, full or not, by purging to the source's purge point or this node's, whichever is higher,
+	// first: the source's purge writes are not in the stream, so a node that missed one would keep the tombstones the
+	// others removed, and the records may bring tombstones at or below this node's own point (a point it took from an
+	// earlier stream, ahead of its position). A purge point is only ever one a purge write set, never a position (a full
+	// copy does not raise it to its own: the nodes that applied the purges keep the tombstones above them, and a node
+	// that catches up from this one would purge to that position too), so every node at the same position holds the
+	// same tombstones. The batches go first (a full copy's reset too), so that the purge reaches the tombstones they
+	// bring, and the purge comes before the final step: a crash between the two repeats the catch-up, which finds the
+	// purge done; after it, nothing would remind the node.
 	finish := func() error {
 		tb, err := readFrame(br)
-		if err != nil && err != io.EOF {
+		if err != nil {
 			return fmt.Errorf("cluster: catch-up stream of partition %d ended early: %w", p, err)
 		}
 		var end exportEnd
-		if err == nil {
-			if err := decodeMsg(tb, &end); err != nil {
-				return err
-			}
+		if err := decodeMsg(tb, &end); err != nil {
+			return err
 		}
-		if !full && end.Purged > 0 {
-			ps, err := s.pst.PartitionState(s.n.ctx, p)
-			if err != nil {
-				return err
-			}
-			if end.Purged > ps.Purged {
-				if len(batch) > 0 {
-					if err := apply(false); err != nil {
-						return err
-					}
-				}
-				if _, err := s.pst.PurgePartition(s.n.ctx, p, end.Purged+1); err != nil {
+		ps, err := s.pst.PartitionState(s.n.ctx, p)
+		if err != nil {
+			return err
+		}
+		if pt := max(end.Purged, ps.Purged); pt > 0 {
+			if len(batch) > 0 || first {
+				if err := apply(false); err != nil {
 					return err
 				}
+			}
+			if _, err := s.pst.PurgePartition(s.n.ctx, p, pt+1); err != nil {
+				return err
 			}
 		}
 		return apply(true)

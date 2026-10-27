@@ -19,10 +19,11 @@ type change struct {
 }
 
 // audited is how every audited change of the service is made: it runs write (the store write that is the change) and
-// records the change's audit event by how it ended. Written, the event; ended with an unknown outcome (store.ErrUnconfirmed,
-// ErrOutcomeUnknown: the change was sent and the node deciding it was lost before it answered; the next owner settles
-// it, made once or never), the same event with outcome "unknown", so a change that did take effect is never missing
-// from the audit log; any other error records nothing (nothing was changed). It returns write's error as it is.
+// records the change's audit event by how it ended. Written, the event; unavailable with the store's mark that it may
+// have been applied (store.ErrUnconfirmed: the store could not settle its outcome before its deadline, a long outage),
+// the same event with outcome "unknown", so a change that did take effect is never missing from the audit log; any
+// other error records nothing (nothing was changed). It returns write's error as it is. What a change ends goes in its
+// own transaction (writeUser), never in a follow-up that the outcome decides.
 //
 // detail is read once write has returned, so write may add to it what only the written change knows (the side effects
 // that followed it, a count). A change that is several events (a group's fields and members) or several writes uses
@@ -52,11 +53,6 @@ func (s *Service) auditOutcome(ctx context.Context, a *Actor, err error, events 
 		s.Audit(ctx, a, e.org, e.action, e.target, e.detail)
 	}
 }
-
-// landed reports whether the write that ended with err may have taken effect: it did, or its outcome is not known.
-// What follows a change from the writes of the change itself (ending sessions, dropping links) is done for both: a
-// retry of one that did land finds nothing to change, so would never do it.
-func landed(err error) bool { return err == nil || outcomeUnknown(err) }
 
 // outcomeUnknown reports whether err leaves a write's outcome unknown: it may have landed, or land yet.
 func outcomeUnknown(err error) bool {

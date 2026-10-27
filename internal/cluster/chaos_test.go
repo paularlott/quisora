@@ -191,6 +191,13 @@ func (o chaosOp) String() string {
 	if o.killed {
 		s += "(killed)"
 	}
+	if o.out == outRefused && o.err != nil { // what refused it (a refusal is a claim that nothing changed)
+		e := o.err.Error()
+		if len(e) > 120 {
+			e = e[:120]
+		}
+		s += "(" + e + ")"
+	}
 	return s
 }
 
@@ -671,7 +678,8 @@ func (w *chaosWorker) write(rec *chaosRec, op *chaosOp, prefer int, fn func(nd *
 	out := outAck
 	switch {
 	case err == nil:
-	case killed, errors.Is(err, store.ErrUnconfirmed), errors.Is(err, service.ErrOutcomeUnknown):
+	case killed, errors.Is(err, store.ErrUnconfirmed), errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, errUnsettled):
+		// (a write the store could not settle before its deadline is store.ErrUnavailable: it may have been applied)
 		out = outUnknown
 	default:
 		out = outRefused
@@ -1526,17 +1534,21 @@ func (h *chaosHarness) quiesce() {
 func (h *chaosHarness) compareExports() (diffs, tombstones []string, err error) {
 	sums := make([][partitions]map[string]string, len(h.c.nodes))
 	pos := make([][partitions]uint64, len(h.c.nodes))
+	purged := make([][partitions]uint64, len(h.c.nodes)) // each node's purge point: a tombstone held by some only is told by it
 	for i, tn := range h.c.nodes {
 		ps, ok := tn.st().Inner().(store.PartitionStore)
 		if !ok {
 			return nil, nil, errors.New("not a partition store")
 		}
 		for p := range partitions {
+			if st, err := ps.PartitionState(bg, p); err == nil {
+				purged[i][p] = st.Purged
+			}
 			m := map[string]string{}
 			err := ps.ExportPartition(bg, p, 0, func(at store.PartitionPos) error { pos[i][p] = at.Seq; return nil },
 				func(r store.PartitionRecord) error {
 					sum := sha256.Sum256(r.Data)
-					m[string(r.Kind)+"/"+r.ID] = fmt.Sprintf("v%d del=%v data=%x", r.Version, r.Deleted, sum[:6])
+					m[string(r.Kind)+"/"+r.ID] = fmt.Sprintf("v%d del=%v data=%x seq=%d", r.Version, r.Deleted, sum[:6], r.Seq)
 					return nil
 				})
 			if err != nil {
@@ -1552,7 +1564,8 @@ func (h *chaosHarness) compareExports() (diffs, tombstones []string, err error) 
 			}
 			add := func(tombstone bool, format string, args ...any) {
 				if tombstone {
-					tombstones = append(tombstones, fmt.Sprintf(format, args...))
+					tombstones = append(tombstones, fmt.Sprintf(format, args...)+
+						fmt.Sprintf(" (purged below: node 0 %d, node %d %d)", purged[0][p]+1, i, purged[i][p]+1))
 				} else {
 					diffs = append(diffs, fmt.Sprintf(format, args...))
 				}
@@ -2132,8 +2145,8 @@ func TestChaosPurgeReachesANodeThatMissedIt(t *testing.T) {
 		})
 	}
 	tombstone(ids[0])
-	past := time.Now().Add(testRetention) // at which time the first tombstone is past the retention
-	tombstone(ids[1])                     // and this one is not: the purge point is its sequence, which node 1 has reached
+	past := time.Now().Add(tombstoneKeep(testRetention)) // at which time the first tombstone is past the retention
+	tombstone(ids[1])                                    // and this one is not: the purge point is its sequence, which node 1 has reached
 	waitFor(t, 15*time.Second, "every node at the same position", func() bool { return committedEqual(c.nodes) })
 
 	// node 1 misses the purge write itself
@@ -2153,4 +2166,67 @@ func TestChaosPurgeReachesANodeThatMissedIt(t *testing.T) {
 		t.Fatalf("node 1 caught up past the purge (position %d, purge point %d) and still holds the tombstone the others purged",
 			st.Committed.Seq, st.Purged)
 	}
+}
+
+// A node that copies a partition whole (it was behind the purge point) takes the purge point of the nodes that applied
+// the purge, never its copy's position: at the same position every node holds the same tombstones. Found by
+// TestChaosSoak: a full copy raised its purge point to the position it copied, keeping its source's tombstones below
+// it; the node then purged them at its next start (which finishes a purge a crash cut short), and a node that caught up
+// from it purged to that position too, while the third kept them, for good.
+func TestChaosFullCopyTakesThePurgePoint(t *testing.T) {
+	eachLocalBackend(t, func(t *testing.T, b backend) {
+		var fs faults
+		c := newTCluster(t, 3, fs.over(b))
+		c.opts = shortRetention
+		c.startAll()
+		c.waitReady()
+		org := c.orgOwnedBy(0)
+		p := partitionNum(org)
+		ids := writeN(t, c.nodes[0], org, 6)
+		c.waitHas(ids[5])
+
+		// node 1 misses the deletions and the purge, so it falls below the purge point and copies the partition whole
+		c.lagBehind(1, true)
+		tombstone := func(id string) {
+			t.Helper()
+			if err := c.nodes[0].st().Put(bg, store.Tombstone(dataKind, id)); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, 15*time.Second, "the tombstone on nodes 0 and 2", func() bool {
+				return tombstoned(c.nodes[0], id) && tombstoned(c.nodes[2], id)
+			})
+		}
+		tombstone(ids[0])
+		past := time.Now().Add(tombstoneKeep(testRetention)) // at which time the first tombstone is past the retention
+		tombstone(ids[1])                                    // and this one is not: the copy brings it, and every node keeps it
+		purgeAll(c, past)
+		waitFor(t, 15*time.Second, "the old tombstone purged on nodes 0 and 2", func() bool {
+			return gone(c.nodes[0], ids[0]) && gone(c.nodes[2], ids[0])
+		})
+		c.lagBehind(1, false)
+		waitFor(t, 20*time.Second, "node 1 at the position of the others", func() bool { return committedEqual(c.nodes) })
+		if fs.of(c.nodes[1]).fullImports.Load() == 0 {
+			t.Fatal("test set-up: node 1 must have copied the partition whole")
+		}
+
+		same := func(when string) {
+			t.Helper()
+			want, _ := c.nodes[0].n.pst.pst.PartitionState(bg, p)
+			for i, tn := range c.nodes {
+				st, _ := tn.n.pst.pst.PartitionState(bg, p)
+				if st.Purged != want.Purged {
+					t.Fatalf("%s: node %d's purge point is %d, node 0's %d (position %d)", when, i, st.Purged, want.Purged,
+						st.Committed.Seq)
+				}
+				if !gone(tn, ids[0]) || !tombstoned(tn, ids[1]) {
+					t.Fatalf("%s: node %d holds the purged tombstone (%v) or lacks the young one (%v)", when, i,
+						!gone(tn, ids[0]), !tombstoned(tn, ids[1]))
+				}
+			}
+		}
+		same("after the copy")
+		c.restart(1) // its start finishes any purge a crash cut short: there is none
+		c.waitReady()
+		same("after node 1 restarted")
+	})
 }

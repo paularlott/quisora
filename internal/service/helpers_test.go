@@ -149,6 +149,21 @@ func (e *env) sessionLive(s *model.Session) bool {
 	return err == nil && e.svc.SessionCurrent(e.ctx, got.OrgID, got.Stamp)
 }
 
+// sessionCounts reports whether the session s of userID still signs them in (service.SessionUsable, on the account as
+// it is now: a user gone, disabled or in a new session epoch counts it for nothing).
+func (e *env) sessionCounts(s *model.Session, userID string) bool {
+	got, err := e.svc.Sessions.Get(e.ctx, s.ID)
+	if err != nil {
+		return false
+	}
+	u, err := e.svc.Users.Get(e.ctx, userID)
+	if err != nil {
+		return false
+	}
+	ok, err := e.svc.SessionUsable(e.ctx, got, u)
+	return err == nil && ok
+}
+
 func (e *env) grantLive(g *model.Grant) bool {
 	got, err := e.svc.Grants.Get(e.ctx, g.ID)
 	return err == nil && e.svc.SessionCurrent(e.ctx, got.OrgID, got.Stamp)

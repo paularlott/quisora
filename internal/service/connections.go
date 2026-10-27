@@ -192,18 +192,19 @@ func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID
 	ended := 0
 	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, gone []model.Credential) (string, map[string]string) {
 		return selfOr(a, u, "account.passkey.delete", "user.passkey.remove"), map[string]string{"name": gone[0].(*model.Passkey).Name}
-	}, func(u *model.User, gone []model.Credential, detail map[string]string) error {
-		// The passkey is gone; the sessions it signed in end after it, best effort, and a failure there is recorded
-		// with the removal (and returned: the caller says the sign-outs did not all happen), not hidden by it.
-		var serr error
-		ended, serr = s.EndPasskeySessions(ctx, u.ID, gone[0].GetMeta().ID, keepSession)
-		detail["sessions_ended"] = strconv.Itoa(ended)
-		if serr != nil {
-			detail["sessions_result"] = "incomplete"
-			detail["error"] = serr.Error()
+	}, func(u *model.User, gone []model.Credential, detail map[string]string) ([]store.Op, error) {
+		// The sessions the passkey signed in, and their refresh grants, end in the transaction that removes it.
+		ids, ops, err := s.passkeySessionEnds(ctx, u.ID, gone[0].GetMeta().ID, keepSession)
+		if err != nil {
+			return nil, err
 		}
-		return serr
+		ended = len(ids)
+		detail["sessions_ended"] = strconv.Itoa(ended)
+		return ops, nil
 	})
+	if err != nil {
+		ended = 0
+	}
 	return ended, err
 }
 
@@ -252,19 +253,18 @@ func (c *Creds) Ways(u *model.User) *Ways {
 
 // UserWays returns u's ways in, from this node's copies.
 func (s *Service) UserWays(ctx context.Context, u *model.User) (*Ways, error) {
-	c, err := s.UserCreds(ctx, u, false)
+	c, err := s.UserCreds(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	return c.Ways(u), nil
 }
 
-// UserCreds reads u's credentials. With fresh, every record (passkeys, links, providers) is read from the owners'
-// copies — u must have been read so too (FreshUser) — so a removal, a disabled key or a provider turned off that was
-// committed anywhere is seen, even before it reaches this node. (A credential added elsewhere that has not
-// reached this node is missed: what counts can only be too little, which refuses a removal rather than allowing a
-// wrong one.)
-func (s *Service) UserCreds(ctx context.Context, u *model.User, fresh bool) (*Creds, error) {
+// UserCreds reads u's credentials: their passkeys and provider links that count (model.User.Counts; links only to
+// providers that still exist), as this node holds them (the store's bound: a copy current within StaleAfter, or a
+// refusal). A removal decided on them is a compare-and-swap of u, so one decided on copies another removal has since
+// changed is refused and decided again.
+func (s *Service) UserCreds(ctx context.Context, u *model.User) (*Creds, error) {
 	pks, err := s.Passkeys.All(ctx, u.ID)
 	if err != nil {
 		return nil, mapStore(err)
@@ -272,14 +272,6 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User, fresh bool) (*Cr
 	links, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
 		return nil, mapStore(err)
-	}
-	if fresh {
-		if pks, err = freshCopies(ctx, s, model.KindPasskey, pks); err != nil {
-			return nil, err
-		}
-		if links, err = freshCopies(ctx, s, model.KindIdentity, links); err != nil {
-			return nil, err
-		}
 	}
 	c := &Creds{ProviderOn: map[string]bool{}}
 	c.Passkeys = slices.DeleteFunc(pks, func(p *model.Passkey) bool { return !u.Counts(p) })
@@ -294,44 +286,12 @@ func (s *Service) UserCreds(ctx context.Context, u *model.User, fresh bool) (*Cr
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if fresh {
-		if provs, err = freshCopies(ctx, s, model.KindProvider, provs); err != nil {
-			return nil, err
-		}
-	}
 	exists := map[string]bool{}
 	for _, p := range provs {
 		exists[p.ID], c.ProviderOn[p.ID] = true, p.Enabled
 	}
 	c.Links = slices.DeleteFunc(links, func(i *model.Identity) bool { return !exists[i.ProviderID] }) // a deleted provider: the sweep removes the link
 	return c, nil
-}
-
-// freshCopies replaces this node's copies es with the owners' (freshMany), leaving out those the owners no longer hold.
-func freshCopies[T any, PT interface {
-	*T
-	model.Entity
-}](ctx context.Context, s *Service, kind model.Kind, es []PT) ([]PT, error) {
-	if len(es) == 0 {
-		return es, nil
-	}
-	recs, err := s.freshMany(ctx, kind, es[0].Index().Partition, ids(es)) // (a user's records: one organization)
-	if err != nil {
-		return nil, err
-	}
-	out := es[:0]
-	for _, e := range es {
-		r := recs[e.GetMeta().ID]
-		if r == nil {
-			continue
-		}
-		v := PT(new(T))
-		if err := store.Decode(r, v); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, nil
 }
 
 // ids returns the ids of es.
@@ -356,7 +316,7 @@ func (s *Service) CurrentPasskeys(ctx context.Context, u *model.User) ([]*model.
 // CurrentIdentities returns u's links to sign-in providers that count (to a provider that still exists, on or off):
 // what every listing of connected providers shows.
 func (s *Service) CurrentIdentities(ctx context.Context, u *model.User) ([]*model.Identity, error) {
-	c, err := s.UserCreds(ctx, u, false)
+	c, err := s.UserCreds(ctx, u)
 	if err != nil {
 		return nil, err
 	}
@@ -430,17 +390,17 @@ func (s *Service) MFARequired(ctx context.Context, u *model.User) bool {
 // write), clears the authenticator app, drops the recovery codes with the last second factor and moves the security
 // generation on (what is in flight for the account ends). Two removals at once, on any nodes, however long either
 // stalls, cannot both commit on the copy they decided on: the second is refused (store.ErrStale), decides again on
-// the account as the first left it, and so never takes the last way in. The records are deleted after the commit, as
-// tidying (the orphan sweep removes any left).
+// the account as the first left it, and so never takes the last way in. The credentials' records are deleted in the
+// same transaction (writeUser).
 //
 // The removal is audited (audited) as the event says (what it is called, and its detail, from the account and the
-// credentials taken); after, when given, follows the commit and tidying with what the removal sets going (ending the
-// sessions of a passkey), may add to that detail what it found, and its error is returned once the event is recorded.
+// credentials taken); also, when given, returns what the removal ends with it (the sessions a passkey signed in), as
+// writes of the same transaction, and may add to the detail what it found.
 func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 	event func(u *model.User, gone []model.Credential) (action string, detail map[string]string),
-	after func(u *model.User, gone []model.Credential, detail map[string]string) error) error {
+	also func(u *model.User, gone []model.Credential, detail map[string]string) ([]store.Op, error)) error {
 	for attempt := 0; ; attempt++ {
-		u, err := s.FreshUser(ctx, userID)
+		u, err := s.getUser(ctx, userID)
 		if err != nil {
 			return err
 		}
@@ -452,7 +412,7 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 				return err
 			}
 		}
-		c, err := s.UserCreds(ctx, u, true)
+		c, err := s.UserCreds(ctx, u)
 		if err != nil {
 			return err
 		}
@@ -496,31 +456,20 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		if detail == nil {
 			detail = map[string]string{}
 		}
-		var afterErr error
-		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
-			// What follows the removal is done whenever it may have landed (landed): a retry of one that did finds
-			// nothing to remove, so would never end the sessions it signed in.
-			err := s.Users.Update(ctx, u)
-			if !landed(err) {
+		var extra []store.Op
+		if also != nil {
+			if extra, err = also(u, gone, detail); err != nil {
 				return err
 			}
-			for _, g := range gone { // tidying: they count for nothing already
-				if err := s.Store.Put(ctx, store.Tombstone(g.Kind(), g.GetMeta().ID)); err != nil {
-					s.Log.Warn("a removed credential's record is left to the orphan sweep", "user", u.ID, "id", g.GetMeta().ID, "error", err)
-				}
-			}
-			if after != nil {
-				afterErr = after(u, gone, detail)
-			}
-			return err
-		})
+		}
+		for _, g := range gone {
+			extra = append(extra, store.Op{Rec: store.Tombstone(g.Kind(), g.GetMeta().ID)})
+		}
+		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error { return s.writeUser(ctx, u, extra) })
 		if errors.Is(err, store.ErrStale) && attempt < 7 {
 			continue // changed meanwhile (another removal, perhaps): decided again on the newer copy
 		}
-		if err != nil {
-			return mapStore(err)
-		}
-		return afterErr
+		return mapStore(err)
 	}
 }
 

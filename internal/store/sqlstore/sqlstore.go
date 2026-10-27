@@ -2,12 +2,16 @@
 //
 // Layout: one table per kind with the columns id, version, origin, deleted, scope, expires, uniq, data plus one
 // typed column per schema field (and part, pnum and pseq: the record's partition key and its partition stamp, see
-// partition.go); a (kind, value) -> id table for unique values; a table of per-partition protocol state; and a table
+// partition.go; and req, the id of the request that wrote the record, which settles a commit whose connection was lost); a (kind, value) -> id table for unique values; a table of per-partition protocol state; and a table
 // holding the database's identity (FeedID). Versions are stored as BIGINT (an HLC timestamp stays below 2^63
 // for centuries); times are stored as unix microseconds (0 = unset), expiry as nullable unix microseconds.
 //
-// Each write is one transaction, and several processes may write one database (a shared server): Put, CompareAndPut and
-// unique values stay correct through row locks and constraints (and retried deadlocks). Nothing is serialised in the
+// Each write (a Put, CompareAndPut or Tx) is one transaction on a server database (the server groups the commits of its
+// connections); on SQLite the writes that arrive while a commit is syncing share the next one (commit.go). Several
+// processes may write one server database (a shared server): they and unique values stay correct through row locks and
+// constraints (and retried deadlocks). A failure that
+// says the database cannot serve now (a lost connection, a busy or locked database, a Galera node out of sync) is
+// store.ErrUnavailable; a commit lost with its connection is settled by reading the record back (write.go, settle). Nothing is serialised in the
 // process: concurrent writes, those of different partitions included, run at the database's own concurrency.
 //
 // Limits: on MySQL and MariaDB string fields are VARCHAR(255), ids and scopes VARCHAR(191), unique values
@@ -58,6 +62,7 @@ type Store struct {
 	rdb    *sql.DB // readers (same pool as wdb except on SQLite)
 	wdb    *sql.DB // writes
 	rc, wc *stmtCache
+	gc     *committer   // SQLite: groups the writes that arrive together into one commit
 	feedID atomic.Value // string: the database's identity (store.Store.FeedID)
 	tables map[model.Kind]*table
 
@@ -112,7 +117,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			}
 			var conn driver.Connector
 			if conn, err = mysql.NewConnector(mc); err == nil {
-				s.useServerPool(sql.OpenDB(conn), cfg)
+				s.useServerPool(sql.OpenDB(readCommitted{conn}), cfg)
 			}
 		}
 	}
@@ -134,6 +139,21 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	}
 	s.feedID.Store(feed)
 	return s, nil
+}
+
+// readCommitted sets every new MySQL or MariaDB connection to READ COMMITTED, the isolation of the write transactions.
+type readCommitted struct{ driver.Connector }
+
+func (c readCommitted) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.(driver.ExecerContext).ExecContext(ctx, "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED", nil); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (s *Store) useServerPool(db *sql.DB, cfg Config) {
@@ -186,6 +206,7 @@ func (s *Store) openSQLite(ctx context.Context, cfg Config) error {
 	r.SetMaxIdleConns(n)
 	s.wdb, s.rdb = w, r
 	s.wc, s.rc = newStmtCache(w), newStmtCache(r)
+	s.startCommitter()
 	return nil
 }
 
@@ -197,6 +218,9 @@ func sqliteDSN(dsn string, writer bool) string {
 	// last commits to a power cut: a password change, a revocation, a rotated signing key).
 	q.Add("_pragma", "synchronous(FULL)")
 	q.Add("_pragma", "foreign_keys(0)")
+	// Read the database file through a memory map (up to 1 GiB of it) instead of pread calls into the 2 MiB page cache: a
+	// read of a database larger than the cache is 1.3x faster, and a listing 1.2x (400k records, 215 MB, from the OS cache).
+	q.Add("_pragma", "mmap_size(1073741824)")
 	if writer {
 		q.Add("_txlock", "immediate")
 	} else {
@@ -215,6 +239,9 @@ func (s *Store) FeedID() string { return s.feedID.Load().(string) }
 // Close closes the connection pools.
 func (s *Store) Close() error {
 	var errs []error
+	if s.gc != nil {
+		s.gc.stop()
+	}
 	for _, c := range []*stmtCache{s.rc, s.wc} {
 		if c != nil {
 			c.close()

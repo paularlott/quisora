@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -25,13 +27,20 @@ var (
 	// update (made from a copy read before the deletion arrived) must not bring it back. A record is created again
 	// only with CompareAndPut(expect 0), which starts a new generation (see Record.Epoch). It matches ErrNotFound.
 	ErrDeleted = fmt.Errorf("%w (deleted)", ErrNotFound)
-	// ErrNotWritable is returned by a write refused because this node cannot know that its data is current (it is
-	// catching up, resynchronising, or cut off from the majority of its cluster), or because no owner or majority could
-	// be reached for it. Nothing was written.
-	ErrNotWritable = errors.New("store: this node does not accept writes now")
-	// ErrUnconfirmed is returned by a write whose outcome is not known: it was sent to the owner of its partition, and
-	// the owner was lost, or a reply timed out, after replication may have begun. It may or may not have been committed;
-	// the next owner settles it, committed once or never.
+	// ErrUnavailable is the one "try again" answer of every store: it cannot complete the request now (a database or
+	// connection that failed, a database that refuses service, a lock or busy timeout; in a cluster, a node that cannot
+	// vouch for its copy, or a write whose outcome could not be settled within its deadline). A write may have been
+	// applied by an earlier attempt; retrying it is safe (Record.Req).
+	ErrUnavailable = errors.New("store: unavailable now, try again shortly")
+	// ErrNotWritable is ErrUnavailable, by its earlier name.
+	ErrNotWritable = ErrUnavailable
+	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, or (in a
+	// gossip cluster) writes in more than one partition or of node-local kinds. Nothing was written.
+	ErrBadTx = errors.New("store: invalid transaction")
+	// ErrUnconfirmed marks an ErrUnavailable whose write may have been applied: the store could not settle its outcome
+	// before its deadline (a commit whose connection was lost and could not be read back; in a cluster, a write whose
+	// owner did not answer for longer than the settling). It is the one thing a caller may tell from a plain
+	// ErrUnavailable, and only to record the change as of unknown outcome (the audit log); retrying is safe either way.
 	ErrUnconfirmed = errors.New("store: write not confirmed by a majority of the cluster")
 )
 
@@ -48,7 +57,11 @@ type Record struct {
 	// tombstones.
 	Created hlc.Timestamp
 	Origin  string // id of the node that minted Version
-	Deleted bool   // tombstone: invisible to Get/GetByUnique/List/Count, kept until purged
+	// Req is the id of the request that wrote this version (NewReq; set by the store when the writer sets none): a
+	// retry of that request finds it stored and is answered as done (Retried). Kept by every write path, partition
+	// writes, exports and imports included.
+	Req     string
+	Deleted bool // tombstone: invisible to Get/GetByUnique/List/Count, kept until purged
 	Scope   string
 	// Partition is the record's partition key (model.Index.Partition): "" for global data. Stored and returned by every
 	// backend with the record; a tombstone keeps it (the writer of a tombstone sets it from the record it deletes).
@@ -70,11 +83,13 @@ type Head struct {
 	Version, Epoch, Created hlc.Timestamp
 	Deleted                 bool
 	Origin                  string
+	Req                     string
 }
 
 // Head returns the record's version metadata.
 func (r *Record) Head() *Head {
-	return &Head{Kind: r.Kind, Version: r.Version, Epoch: r.Epoch, Created: r.Created, Deleted: r.Deleted, Origin: r.Origin}
+	return &Head{Kind: r.Kind, Version: r.Version, Epoch: r.Epoch, Created: r.Created, Deleted: r.Deleted, Origin: r.Origin,
+		Req: r.Req}
 }
 
 // Filter is a condition on a schema field: equality (Op ""), or one of the operators below.
@@ -152,12 +167,83 @@ type ListResult struct {
 	Total   int
 }
 
+// Op is one write of a transaction (Store.Tx): rec (a tombstone when rec.Deleted), as Put, or with Match as
+// CompareAndPut(rec, Expect).
+type Op struct {
+	Rec    *Record
+	Match  bool
+	Expect hlc.Timestamp
+}
+
+// NewReq returns a new request id (Record.Req): a random prefix of this process and a count, unique without a random
+// draw per write (a write's ids are made on its hot path).
+func NewReq() string { return reqPrefix + strconv.FormatUint(reqCount.Add(1), 36) }
+
+var (
+	reqPrefix = model.NewID() + "/"
+	reqCount  atomic.Uint64
+)
+
+// EnsureReq gives rec a request id for the write being made when its writer set none, and returns what takes that id
+// off again, to be called when the write returns (deferred): an id the store made is this write's own, so a record its
+// writer changes and writes again is another request, not a retry of this one (Retried would answer it as done and
+// write nothing). An id the writer set is kept: writing it again is a retry. Every write path calls it first.
+func EnsureReq(rec *Record) (done func()) {
+	if rec.Req != "" {
+		return func() {}
+	}
+	rec.Req = NewReq()
+	return func() { rec.Req = "" }
+}
+
+// TxReq is EnsureReq for the records of a transaction (Store.Tx): the first op's id, its writer's or one the store
+// makes, on every op that has none; the returned function takes off those the store set.
+func TxReq(ops []Op) (done func()) {
+	first := ops[0].Rec.Req
+	if first == "" {
+		first = NewReq()
+	}
+	var set []*Record
+	for _, op := range ops {
+		if op.Rec.Req == "" {
+			op.Rec.Req = first
+			set = append(set, op.Rec)
+		}
+	}
+	return func() {
+		for _, r := range set {
+			r.Req = ""
+		}
+	}
+}
+
+// Retried reports whether old, the record stored, was written by rec's request: a retry of a write that was applied.
+// The store then writes nothing and answers success, with rec taking the stored version (Settle).
+func Retried(rec *Record, old *Head) bool { return old != nil && rec.Req != "" && old.Req == rec.Req }
+
+// Settle gives rec the version, epoch and creation of old, the stored record its request wrote (Retried).
+func Settle(rec *Record, old *Head) {
+	rec.Version, rec.Epoch, rec.Created = old.Version, old.Epoch, old.Created
+}
+
+// StampWrite gives rec the version of a write made now over the stored record old (nil: nothing stored): from Clock,
+// and newer than old's whatever the clocks (the store orders writes; a caller's version is not used).
+func StampWrite(rec *Record, old *Head) {
+	if old != nil {
+		Witness(old.Version)
+	}
+	rec.Version = Clock.Now()
+	if old != nil && rec.Version <= old.Version {
+		rec.Version = old.Version + 1
+	}
+}
+
 // StampLocal sets rec.Epoch and rec.Created for a local write of rec over the stored record old (nil: nothing
 // stored, not even a tombstone) and refuses a live write that would replace a tombstone (ErrDeleted), unless create
 // (CompareAndPut with expect 0) or the kind is node-local (KindEphemeral). A live write over a live record continues
 // its generation; a create over nothing starts generation 0; a create over a tombstone starts a generation whose
 // epoch is that tombstone's version (the deletion this writer has seen). A deletion has none. Backends call it inside
-// the write transaction, after their version checks.
+// the write transaction, after StampWrite.
 func StampLocal(rec *Record, old *Head, create bool) error {
 	switch {
 	case rec.Deleted:
@@ -183,10 +269,12 @@ type Store interface {
 	Get(ctx context.Context, kind model.Kind, id string) (*Record, error)
 	// GetByUnique returns the live record of kind holding the unique value.
 	GetByUnique(ctx context.Context, kind model.Kind, value string) (*Record, error)
-	// Put writes rec (or a tombstone when rec.Deleted). It fails with ErrStale unless rec.Version is newer than the
-	// stored version, with ErrDeleted when a live rec would replace a tombstone (except KindEphemeral), and with
-	// ErrConflict if another live record of the kind holds one of rec.Unique. Unique values the record no longer
-	// lists are released. It sets rec.Epoch and rec.Created (StampLocal).
+	// Put writes rec (or a tombstone when rec.Deleted), whatever version is stored. The store stamps rec.Version
+	// (StampWrite: newer than the stored one; the caller's is not used), and a request id for the write when the caller
+	// set none (EnsureReq; taken off rec again when it returns). It fails with
+	// ErrDeleted when a live rec would replace a tombstone (except KindEphemeral), and with ErrConflict if another live
+	// record of the kind holds one of rec.Unique. Unique values the record no longer lists are released. It sets
+	// rec.Epoch and rec.Created (StampLocal). A retry (Retried) is answered as done.
 	Put(ctx context.Context, rec *Record) error
 	// PutReplicated applies a record as it is (its Version, Epoch and Created are kept, nothing is stamped) unless one
 	// of the same kind and id is stored, a tombstone included, with the same or a higher version (applied is false).
@@ -200,9 +288,18 @@ type Store interface {
 	Lookup(ctx context.Context, kind model.Kind, id string) (*Record, error)
 	// CompareAndPut writes rec only if the stored live record's version equals expect (ErrStale otherwise). With
 	// expect == 0 it succeeds only when there is no live record (create; over a tombstone this starts a new
-	// generation, which needs rec.Version newer than the tombstone). ErrNotFound if expect != 0 and there is no
-	// live record. Also fails with ErrConflict like Put. It sets rec.Epoch and rec.Created (StampLocal).
+	// generation). ErrNotFound if expect != 0 and there is no live record. Also fails with ErrConflict like Put. It
+	// stamps rec.Version and rec.Req and sets rec.Epoch and rec.Created as Put does. A retry (Retried) is answered as
+	// done, whatever expect.
 	CompareAndPut(ctx context.Context, rec *Record, expect hlc.Timestamp) error
+	// Tx applies ops all or nothing, in one transaction: each as Put (or CompareAndPut, with Op.Match) would, with the
+	// same refusals and stamps; the first refusal is returned and nothing is written. Unique values are checked across
+	// the ops too, against the state the earlier ops leave (two claiming one value conflict; a value one op releases a
+	// later op may claim). Records must be distinct, and there must be some (ErrBadTx otherwise). The records share one
+	// request id: the first op's, or one the store makes, on every op without one (TxReq). A transaction
+	// whose request is found stored (Retried, on any of its records) was applied: it is answered as done, each record
+	// taking its stored version (Settle).
+	Tx(ctx context.Context, ops []Op) error
 	// List returns a page of live records.
 	List(ctx context.Context, kind model.Kind, q ListQuery) (*ListResult, error)
 	// Count returns the number of live records of kind in scope ("" = all).

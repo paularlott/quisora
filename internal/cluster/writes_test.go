@@ -3,8 +3,6 @@ package cluster
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +18,6 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
-	"github.com/paularlott/quisora/internal/web"
 )
 
 // A write on any node is committed by the owner of its partition and applied on every node; the writer reads its own
@@ -49,7 +46,8 @@ func TestWriteReplicates(t *testing.T) {
 			// than that still gets there.
 			waitFor(t, 60*time.Second, fmt.Sprintf("node %d to read its own write", i), func() bool { return has(c.nodes[i].st(), rec.ID) })
 			c.waitHas(rec.ID)
-			r, err := c.nodes[(i+1)%3].st().Get(bg, dataKind, rec.ID)
+			var r *store.Record
+			err := asked(func() (err error) { r, err = c.nodes[(i+1)%3].st().Get(bg, dataKind, rec.ID); return err })
 			if err != nil || r.Version != rec.Version || r.Partition != "org1" || string(r.Data) != string(rec.Data) {
 				t.Fatalf("replica %+v (%v), written %+v", r, err, rec)
 			}
@@ -409,10 +407,10 @@ func TestForwardedSlowWriteIsConfirmed(t *testing.T) {
 }
 
 // A write whose owner does not answer in time after the write reached the followers (its disk stalls longer than the
-// write timeout) is store.ErrUnconfirmed (not ErrNotWritable: it may have been made) and counted, which the service
-// reports as an outcome not known and the API answers with 503. (How the next owner settles it is gossip/partition's
-// TestClusterUnknownWriteIsSettledByTakeover.)
-func TestUnconfirmedWriteEndToEnd(t *testing.T) {
+// write timeout) is counted as unconfirmed and settled inside the store (submitted again with its request id until it
+// is answered): its caller gets the definite answer, and the record is stored once. (How the next owner settles a
+// write whose owner is lost is gossip/partition's TestClusterUnknownWriteIsSettledByTakeover.)
+func TestUnconfirmedWriteIsSettledEndToEnd(t *testing.T) {
 	var fs faults
 	c := newTCluster(t, 3, fs.over(sqliteBackend()))
 	c.opts = func(o *Options) {
@@ -425,18 +423,16 @@ func TestUnconfirmedWriteEndToEnd(t *testing.T) {
 	svc := service.New(config.Default(), c.nodes[0].st(), sealer)
 	slow := fs.of(c.nodes[owner])
 	slow.pendingDelay.Store(int64(3 * time.Second)) // longer than the write timeout
-	_, err := svc.CreateGroup(bg, service.System, org, service.GroupInput{DisplayName: ptrTo("unconfirmed")})
-	slow.pendingDelay.Store(0)
-	// (the service keeps the store's error as text: store.ErrUnconfirmed, not store.ErrNotWritable)
-	if !errors.Is(err, service.ErrOutcomeUnknown) || !strings.Contains(err.Error(), store.ErrUnconfirmed.Error()) {
-		t.Fatalf("a write its owner did not answer: %v, want store.ErrUnconfirmed", err)
+	go func() { time.Sleep(4 * time.Second); slow.pendingDelay.Store(0) }()
+	g, err := svc.CreateGroup(bg, service.System, org, service.GroupInput{DisplayName: ptrTo("unconfirmed")})
+	if err != nil {
+		t.Fatalf("a write its owner did not answer in time is settled by the store: %v", err)
 	}
-	w := httptest.NewRecorder()
-	web.WriteError(w, err)
-	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
-		t.Fatalf("the API's answer to a write whose outcome is not known: %d %v", w.Code, w.Header())
+	groups, _, err := svc.Groups.List(bg, store.ListQuery{Scope: org})
+	if err != nil || len(groups) != 1 || groups[0].ID != g.ID {
+		t.Fatalf("the settled write is stored once: %d groups, %v", len(groups), err)
 	}
-	if n := c.nodes[0].n.Status().Unconfirmed; n != 1 {
-		t.Fatalf("unconfirmed count %d", n)
+	if n := c.nodes[0].n.Status().Unconfirmed; n < 1 {
+		t.Fatalf("unconfirmed count %d: the write was not left unanswered by its owner", n)
 	}
 }

@@ -109,17 +109,24 @@ func (s *Service) emailActor(ctx context.Context, a *Actor, u *model.User) (self
 // modifyUser re-reads and updates a user until the write is not stale. A change f makes to what signs the account in
 // (securityState: the primary address made primary or verified, say) moves the security generation on with it.
 func (s *Service) modifyUser(ctx context.Context, id string, f func(u *model.User) error) (*model.User, error) {
+	return s.modifyUserWith(ctx, id, func(u *model.User) ([]store.Op, error) { return nil, f(u) })
+}
+
+// modifyUserWith is modifyUser for a change that goes with other writes (f returns them): they are written in the
+// one transaction with the user (writeUser).
+func (s *Service) modifyUserWith(ctx context.Context, id string, f func(u *model.User) ([]store.Op, error)) (*model.User, error) {
 	for range 4 {
 		u, err := s.Users.Get(ctx, id)
 		if err != nil {
 			return nil, mapStore(err)
 		}
 		was := stateOf(u)
-		if err := f(u); err != nil {
+		also, err := f(u)
+		if err != nil {
 			return nil, err
 		}
 		noteSecurity(was, u)
-		err = s.Users.Update(ctx, u)
+		err = s.writeUser(ctx, u, also)
 		switch {
 		case err == nil:
 			return u, nil

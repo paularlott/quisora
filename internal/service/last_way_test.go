@@ -57,22 +57,6 @@ func TestLastWayGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("key_disabled_in_the_quorum_copy_is_not_a_way_in", func(t *testing.T) {
-		e := newEnv(t)
-		u := e.user(e.primary.ID, "quorum-disabled-key", model.RoleUser)
-		working, cloned := e.passkey(u, "working"), e.passkey(u, "cloned")
-		newer := *cloned
-		newer.Disabled = true
-		rec, err := store.Encode(&newer)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e.svc.Store = newerOnQuorum(e.svc.Store, rec)
-		if err := self(e, u, working); !errors.Is(err, service.ErrConflict) {
-			t.Fatalf("self-removal counted a key disabled in the quorum's copy as another way in: %v", err)
-		}
-	})
-
 	t.Run("both_read_before_either_commits", func(t *testing.T) {
 		// Two removals that both start from a snapshot with two usable passkeys: one goes, the other is refused.
 		e := newEnv(t)

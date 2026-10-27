@@ -249,10 +249,19 @@ must exist.
 
 | Backend            | Use                                                            | Settings                                                                                         |
 | ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `badgerdb` (default) | One node, or each node of a gossip cluster. Embedded, in `<data-dir>/badgerdb`. | `storage.badgerdb.sync_writes` (default true), `encryption_key`                |
+| `badgerdb` (default) | One node, or each node of a gossip cluster. Embedded, in `<data-dir>/badgerdb`. | `storage.badgerdb.sync_writes` (default true), `sync_interval_ms`, `encryption_key` |
 | `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go, in `<data-dir>/quisora.db`. | none                                                                   |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
 | `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
+
+**Durability and write speed (one BadgerDB node).** With `sync_writes = true` (the default) every acknowledged write is
+on disk; concurrent writes share one sync, so a fast disk (an NVMe drive with power-loss protection) loses little to
+it. On a disk whose sync is slow (most cloud volumes, around a millisecond or more), `sync_writes = false` with
+`sync_interval_ms = 100` acknowledges writes from memory and syncs every 100 ms: measured at 6 to 25 times the write
+throughput at 16 to 64 writers on such a disk, and around 1.2 to 1.9 times on a fast local SSD. A crash of the process
+loses nothing; a power cut or a kernel panic loses up to the interval of acknowledged writes. A gossip node refuses it
+(its acknowledged writes must survive a power cut). For PostgreSQL and MySQL the same trade is the server's own setting
+(`synchronous_commit = off`, `innodb_flush_log_at_trx_commit = 2`), not Quisora's.
 
 ```bash
 # PostgreSQL (connection strings carry the password: environment or config file, not flags)

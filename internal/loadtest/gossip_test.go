@@ -3,6 +3,7 @@ package loadtest_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -98,6 +99,9 @@ func TestSeedIntoAGossipNodeIsCopiedByTheOthers(t *testing.T) {
 				continue // audit events stay on the node that recorded them (checked below)
 			}
 			c, err := n.Store().Count(ctx, k, "")
+			if errors.Is(err, store.ErrUnavailable) {
+				return nil // a node not yet current on every partition refuses a count across them: asked again
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,6 +110,9 @@ func TestSeedIntoAGossipNodeIsCopiedByTheOthers(t *testing.T) {
 		return out
 	}
 	want := counts(nodes[0])
+	for until := time.Now().Add(30 * time.Second); want == nil && time.Now().Before(until); want = counts(nodes[0]) {
+		time.Sleep(100 * time.Millisecond)
+	}
 	if want[model.KindUser] < 3*15 || want[model.KindOrg] < 3 || want[model.KindGrant] < 6 {
 		t.Fatalf("the seeded node holds %v", want)
 	}

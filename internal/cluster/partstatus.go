@@ -40,6 +40,11 @@ func (n *Node) readable(ctx context.Context, p int) error {
 }
 
 // readableWithin is readable, waiting at most wait (0: not at all) for a copy that is behind to catch up.
+//
+// A read that cannot tell its partition (p < 0: an id that is not here and does not name its partition, a listing scoped
+// by something other than an organization) is answered only while every partition could be: what it would find, or
+// what it lacks, may be in any of them. That is one look at every partition's status, and a wait only for those
+// behind, all within the one wait.
 func (n *Node) readableWithin(ctx context.Context, p int, wait time.Duration) error {
 	pm := n.manager()
 	if pm == nil || pm.Resyncing() {
@@ -51,34 +56,42 @@ func (n *Node) readableWithin(ctx context.Context, p int, wait time.Duration) er
 	}
 	if n.pst != nil {
 		// A full import of a partition has begun here and not finished: its reset removed records, so no read of it is
-		// true, lag detection or not. A read that cannot tell its partition (p < 0: an id that is not there, whose
-		// partition is not known) might be of that one, and is refused too.
+		// true, lag detection or not.
 		if p >= 0 {
 			if n.pst.isImporting(p) {
 				return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrNotWritable, p)
 			}
-		} else {
-			for q := range partitions {
-				if n.pst.isImporting(q) {
-					return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrNotWritable, q)
-				}
-			}
+		} else if q, ok := n.pst.anyImporting(); ok {
+			return fmt.Errorf("%w: partition %d cannot be read on this node: importing", store.ErrNotWritable, q)
 		}
 	}
-	if p < 0 {
-		return nil
+	if p >= 0 {
+		st, err := pm.PartitionStatus(p)
+		if err != nil {
+			return fmt.Errorf("%w: %v", store.ErrNotWritable, err)
+		}
+		return n.partitionReadable(ctx, pm, st, wait)
 	}
-	st, err := pm.PartitionStatus(p)
-	if err != nil {
-		return fmt.Errorf("%w: %v", store.ErrNotWritable, err)
+	deadline := time.Now().Add(wait)
+	for _, st := range pm.Status().Partitions {
+		if err := n.partitionReadable(ctx, pm, st, time.Until(deadline)); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// partitionReadable is readableWithin for one partition whose status is st.
+func (n *Node) partitionReadable(ctx context.Context, pm *partition.Manager, st partition.PartitionStatus, wait time.Duration) error {
+	p := st.Partition
 	if !st.CanRead {
 		return fmt.Errorf("%w: partition %d cannot be read on this node: %s", store.ErrNotWritable, p, unreadableWhy(st))
 	}
 	if st.Committed.Seq >= st.OwnerCommitted.Seq {
 		return nil
 	}
-	if wait > 0 {
+	if wait > 0 && n.waitSlot() {
+		defer n.waitDone()
 		wctx, cancel := context.WithTimeout(ctx, wait)
 		defer cancel()
 		if pm.WaitApplied(wctx, p, st.OwnerCommitted) == nil {

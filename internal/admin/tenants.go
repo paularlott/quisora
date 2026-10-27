@@ -41,6 +41,9 @@ func (m *Module) tenantFor(w http.ResponseWriter, r *http.Request, org *model.Or
 			t, err = m.s.Svc.GetTenant(r.Context(), a, byName.ID)
 		}
 	}
+	if unanswered(w, err) {
+		return nil, false
+	}
 	if err != nil || t.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false

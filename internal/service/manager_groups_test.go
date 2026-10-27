@@ -1,13 +1,11 @@
 package service_test
 
 import (
-	"errors"
 	"slices"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/store"
 )
 
 // A manager adds plain users to groups and takes them out, and does nothing else to a group: no new groups, no
@@ -152,28 +150,5 @@ func TestManagerCannotRemoveAMemberWhoseRankCannotBeRead(t *testing.T) {
 	}
 	if err == nil || !slices.Contains(remaining, u.ID) {
 		t.Fatalf("an unreadable rank did not preserve the privileged membership: result=%v remaining=%v", err, remaining)
-	}
-}
-
-// A manager may change only plain users' memberships. A promotion already held by a quorum counts, even while the
-// serving node's local copy is behind.
-func TestManagerMembershipChangeHonoursAQuorumConfirmedPromotion(t *testing.T) {
-	e := newEnv(t)
-	mgr := e.user(e.primary.ID, "membership-manager", model.RoleManager)
-	u := e.user(e.primary.ID, "promoted-member", model.RoleUser)
-	g := e.group(e.primary.ID, "review-group")
-	newer := *u
-	newer.Role = model.RoleAdmin
-	rec, err := store.Encode(&newer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.svc.Store = newerOnQuorum(e.svc.Store, rec)
-	confirmed, err := e.svc.FreshUser(e.ctx, u.ID)
-	if err != nil || confirmed.Role != model.RoleAdmin {
-		t.Fatalf("quorum fixture: %+v %v", confirmed, err)
-	}
-	if err := e.svc.SetMembership(e.ctx, actor(mgr), g.ID, u.ID, true); !errors.Is(err, service.ErrForbidden) {
-		t.Fatalf("a manager changed the membership of a quorum-confirmed administrator using a stale local rank: %v", err)
 	}
 }

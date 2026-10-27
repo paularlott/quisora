@@ -688,7 +688,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		p.redirectError(w, r, f, "invalid_request_uri", "the request_uri was already used")
 		return
 	}
-	cd := codeData{ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
+	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, Scopes: f.Scopes,
 		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)

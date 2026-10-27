@@ -88,6 +88,10 @@ type Storage struct {
 
 type BadgerDB struct {
 	SyncWrites bool `toml:"sync_writes" flag:"sync-writes" usage:"Sync every BadgerDB write to disk"`
+	// SyncIntervalMs, with sync_writes off, syncs BadgerDB to disk this often: writes are acknowledged from memory, and a
+	// power cut (not a crash of the process) loses up to this long of them. For a single node on a disk whose sync is
+	// slow; never for a gossip node, whose acknowledged writes must survive a power cut.
+	SyncIntervalMs int `toml:"sync_interval_ms" flag:"sync-interval-ms" usage:"With sync_writes = false, sync BadgerDB to disk this often, in milliseconds (0 = leave it to the operating system); a power cut loses up to this long of acknowledged writes"`
 	// EncryptionKey encrypts the BadgerDB files at rest (AES-256). It is not the master key, and a store is created
 	// encrypted or not: an existing store cannot be switched (back up, then restore into a new encrypted one).
 	EncryptionKey string `toml:"encryption_key" flag:"encryption-key" secret:"true" usage:"Base64 32-byte key (quisora genkey) encrypting the BadgerDB files at rest; set when the store is created (empty = not encrypted)"`
@@ -487,6 +491,10 @@ func (c *Config) Validate() error {
 	nonNegative("tokens.key_rotation_days", c.Tokens.KeyRotationDays)
 	nonNegative("tokens.api_token_max_days", c.Tokens.APITokenMaxDays)
 	positive("audit.retention_days", c.Audit.RetentionDays)
+	if b := c.Storage.BadgerDB; b.SyncIntervalMs < 0 || b.SyncIntervalMs > 0 && b.SyncWrites {
+		errs = append(errs, errors.New("storage.badgerdb.sync_interval_ms must be 0 or more, and is only for sync_writes = false "+
+			"(with sync_writes every write is synced)"))
+	}
 	if v := c.Audit.VictoriaLogs; v != "" {
 		if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, fmt.Errorf("audit.victorialogs_url %q must be an http(s) URL such as http://victorialogs:9428", v))
@@ -548,7 +556,8 @@ func (c *Config) Validate() error {
 				"a single node runs without cluster.bind"))
 		}
 		if c.Storage.Backend == "badgerdb" && !c.Storage.BadgerDB.SyncWrites {
-			// A node's promises and the writes it acknowledges must survive a power cut (docs/REPLICATION.md).
+			// A node's promises and the writes it acknowledges must survive a power cut (docs/REPLICATION.md). (So does
+			// sync_interval_ms, which needs sync_writes off.)
 			errs = append(errs, errors.New("storage.badgerdb.sync_writes must be true with cluster.bind: a gossip node's "+
 				"promises and the writes it acknowledges are lost in a power cut otherwise"))
 		}

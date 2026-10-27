@@ -28,6 +28,7 @@ const (
 	ctxSession ctxKey = iota
 	ctxUser
 	ctxActor
+	ctxUnchecked
 )
 
 // trustedProxies are the networks whose X-Forwarded-For is honoured (set at start-up; atomic because every server
@@ -238,10 +239,14 @@ func WithActor(r *http.Request, a *service.Actor) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), ctxActor, a))
 }
 
-// WithSession loads the session (if any) into the request context.
+// WithSession loads the session (if any) into the request context. A session the store refused to check leaves the
+// request signed out and marked (SessionUnchecked).
 func (s *Server) WithSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, u := s.Sessions.Current(r)
+		sess, u, err := s.Sessions.Check(r)
+		if err != nil {
+			r = r.WithContext(context.WithValue(r.Context(), ctxUnchecked, true))
+		}
 		if sess != nil {
 			if ri := service.RequestFrom(r.Context()); ri != nil {
 				ri.SessionID = sess.ID
@@ -255,9 +260,24 @@ func (s *Server) WithSession(next http.Handler) http.Handler {
 	})
 }
 
+// SessionUnchecked reports whether the request's session could not be checked (the store refused): the request is
+// answered 503 rather than taken for signed out.
+func SessionUnchecked(r *http.Request) bool { u, _ := r.Context().Value(ctxUnchecked).(bool); return u }
+
+// WriteUnchecked answers a request whose session could not be checked (SessionUnchecked).
+func WriteUnchecked(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot check your session right now. Please try again shortly."})
+}
+
 // RequirePage requires a signed-in user for an HTML page, redirecting to the sign-in page otherwise.
 func (s *Server) RequirePage(next http.HandlerFunc) http.Handler {
 	return s.WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if SessionUnchecked(r) {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "This server cannot check your session right now. Please try again shortly.", http.StatusServiceUnavailable)
+			return
+		}
 		if User(r) == nil {
 			http.Redirect(w, r, signInFor(r), http.StatusSeeOther)
 			return
@@ -283,6 +303,10 @@ var orgName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 // (X-CSRF-Token) and same-origin request.
 func (s *Server) RequireAPI(next http.HandlerFunc) http.Handler {
 	return s.WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if SessionUnchecked(r) {
+			WriteUnchecked(w)
+			return
+		}
 		if User(r) == nil {
 			WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "Your session has ended. Please sign in again."})
 			return

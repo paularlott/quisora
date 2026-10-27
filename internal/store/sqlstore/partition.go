@@ -113,6 +113,11 @@ func (s *Store) saveState(ctx context.Context, r runner, p int, st *store.Partit
 }
 
 func (s *Store) PartitionState(ctx context.Context, p int) (store.PartitionState, error) {
+	st, err := s.partitionState(ctx, p)
+	return st, unavailable(err)
+}
+
+func (s *Store) partitionState(ctx context.Context, p int) (store.PartitionState, error) {
 	r := s.reader()
 	// The marker first: an import that ends in between shows as still importing (the safe side), never the reverse.
 	rows, err := r.query(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE part = ? AND kind = ?"), p, importActive)
@@ -201,11 +206,11 @@ func (s *Store) partitionTx(ctx context.Context, unsynced bool, tables []*table,
 			return tx.Commit()
 		}()
 		if err == nil || attempt >= maxAttempts || !s.d.retryable(err) || ctx.Err() != nil {
-			return err
+			return unavailable(err)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return unavailable(ctx.Err())
 		case <-time.After(time.Duration(1+rand.IntN(3*min(attempt, 10))) * time.Millisecond):
 		}
 	}
@@ -326,6 +331,23 @@ func (r *rowPlus) Scan(dest ...any) error { return r.rows.Scan(append(dest, &r.s
 
 func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, start func(store.PartitionPos) error,
 	fn func(store.PartitionRecord) error) error {
+	// An error of start or fn is the caller's (a stream to a peer that broke, say), not the database's: it is returned as it is.
+	var callerErr error
+	err := s.exportPartition(ctx, p, afterSeq, func(pos store.PartitionPos) error {
+		callerErr = start(pos)
+		return callerErr
+	}, func(rec store.PartitionRecord) error {
+		callerErr = fn(rec)
+		return callerErr
+	})
+	if callerErr != nil {
+		return err
+	}
+	return unavailable(err)
+}
+
+func (s *Store) exportPartition(ctx context.Context, p int, afterSeq uint64, start func(store.PartitionPos) error,
+	fn func(store.PartitionRecord) error) error {
 	if afterSeq > store.MaxPartitionSeq {
 		return fmt.Errorf("store: sequence %d out of range", afterSeq)
 	}
@@ -437,7 +459,7 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 	if err != nil {
 		return err
 	}
-	// The batch and, with the Final one, the committed position (a full import also raises the purge point and ends).
+	// The batch and, with the Final one, the committed position (and a full import ends).
 	return s.partitionTx(ctx, true, tables, func(r runner) error {
 		st, err := s.lockState(ctx, r, p)
 		if err != nil {
@@ -459,7 +481,6 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 			if _, err := r.exec(ctx, s.d.bind("DELETE FROM "+importTable+" WHERE part = ?"), p); err != nil {
 				return err
 			}
-			st.Purged = max(st.Purged, upTo.Seq)
 		}
 		return s.commitState(ctx, r, p, &st, upTo)
 	})
@@ -572,6 +593,19 @@ func (s *Store) PurgePartition(ctx context.Context, p int, beforeSeq uint64) (in
 }
 
 func (s *Store) PartitionTombstones(ctx context.Context, p int, afterSeq, upTo uint64, fn func(uint64, hlc.Timestamp) error) error {
+	// An error of fn is the caller's, not the database's: it is returned as it is.
+	var callerErr error
+	err := s.partitionTombstones(ctx, p, afterSeq, upTo, func(seq uint64, v hlc.Timestamp) error {
+		callerErr = fn(seq, v)
+		return callerErr
+	})
+	if callerErr != nil {
+		return err
+	}
+	return unavailable(err)
+}
+
+func (s *Store) partitionTombstones(ctx context.Context, p int, afterSeq, upTo uint64, fn func(uint64, hlc.Timestamp) error) error {
 	if afterSeq > store.MaxPartitionSeq || upTo > store.MaxPartitionSeq {
 		return fmt.Errorf("store: sequence out of range")
 	}

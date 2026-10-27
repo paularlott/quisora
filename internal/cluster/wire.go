@@ -98,11 +98,13 @@ type wireRecord struct {
 	// Partition is the record's partition key (store.Record.Partition); a tombstone carries it too, and its scope
 	// (the change hooks need it: which organization's administrators, which user's pages).
 	Partition string
+	// Req is the request that wrote the record (store.Record.Req). Last, so records encoded before it decode.
+	Req string
 }
 
 func encodeRecord(r *store.Record) ([]byte, error) {
 	w := wireRecord{Kind: string(r.Kind), ID: r.ID, Version: uint64(r.Version), Origin: r.Origin, Deleted: r.Deleted,
-		Epoch: uint64(r.Epoch), Scope: r.Scope, Partition: r.Partition}
+		Epoch: uint64(r.Epoch), Scope: r.Scope, Partition: r.Partition, Req: r.Req}
 	if !r.Deleted {
 		w.Unique, w.Data, w.Created = r.Unique, r.Data, uint64(r.Created)
 		if !r.Expires.IsZero() {
@@ -147,7 +149,7 @@ func decodeRecord(b []byte) (*store.Record, error) {
 	}
 	r := &store.Record{Kind: model.Kind(w.Kind), ID: w.ID, Version: hlc.Timestamp(w.Version), Origin: w.Origin,
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
-		Created: hlc.Timestamp(w.Created), Partition: w.Partition}
+		Created: hlc.Timestamp(w.Created), Partition: w.Partition, Req: w.Req}
 	if !r.Deleted && (r.Epoch >= r.Version || r.Created > r.Version) || r.Deleted && r.Epoch > r.Version {
 		// a generation cannot start at or after its own version (a tombstone's may be its own version): malformed
 		// or forged

@@ -101,6 +101,9 @@ func (b userBody) input() service.UserInput {
 // userFor loads the {id} user, which must belong to org.
 func (m *Module) userFor(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor) (*model.User, bool) {
 	u, err := m.s.Svc.GetUser(r.Context(), a, r.PathValue("id"))
+	if unanswered(w, err) {
+		return nil, false
+	}
 	if err != nil || u.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false
@@ -482,6 +485,9 @@ func (m *Module) revokeUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := m.s.Svc.APITokens.Get(r.Context(), r.PathValue("token"))
+	if unanswered(w, err) {
+		return
+	}
 	if err != nil || t.UserID != u.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return

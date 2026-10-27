@@ -1,7 +1,6 @@
 package service_test
 
 import (
-	"fmt"
 	"slices"
 	"testing"
 
@@ -102,46 +101,5 @@ func TestUserGroupsRecheckMatchesTheGroupVersionItAuthorizes(t *testing.T) {
 	}
 	if holdsTag(r.groups, g, "admin") {
 		t.Fatalf("the user received a privilege they never held: %+v", r.groups)
-	}
-}
-
-// A quorum read that settles a user's membership in a group stands while the group is at the change it was read
-// against: groups where other members changed since leave the user's membership at an older change, they are read
-// together in one round, and the next lookup reads nothing again. A later change of one group is read afresh.
-func TestUserGroupsRemembersQuorumDecisions(t *testing.T) {
-	e := newEnv(t)
-	org := e.org("quorum-memory")
-	u := e.user(org.ID, "member", model.RoleUser)
-	other := e.user(org.ID, "other", model.RoleUser)
-	const groups = 12
-	var gs []*model.Group
-	for i := range groups {
-		g := e.group(org.ID, fmt.Sprintf("Group %02d", i), u)
-		// a change that does not name the user: their membership record stays at an older change
-		if err := e.svc.SetMembership(e.ctx, service.System, g.ID, other.ID, true); err != nil {
-			t.Fatal(err)
-		}
-		gs = append(gs, g)
-	}
-	quorum := newerOnQuorum(e.svc.Store)
-	e.svc.Store = quorum
-	if got, err := e.svc.UserGroups(e.ctx, u); err != nil || len(got) != groups {
-		t.Fatalf("first: %d groups, %v", len(got), err)
-	}
-	if n := quorum.calls.Load(); n != 1 { // one round: the memberships to read again, read together
-		t.Fatalf("%d quorum reads for the first lookup, want 1", n)
-	}
-	if got, err := e.svc.UserGroups(e.ctx, u); err != nil || len(got) != groups {
-		t.Fatalf("second: %d groups, %v", len(got), err)
-	}
-	if n := quorum.calls.Load(); n != 1 {
-		t.Fatalf("the second lookup read the same memberships again: %d quorum reads", n)
-	}
-	// The user leaves one group: the group moves to a later change, and the answer follows it.
-	if err := e.svc.SetMembership(e.ctx, service.System, gs[0].ID, u.ID, false); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := e.svc.UserGroups(e.ctx, u); err != nil || len(got) != groups-1 {
-		t.Fatalf("after leaving one: %d groups, %v", len(got), err)
 	}
 }

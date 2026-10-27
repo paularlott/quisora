@@ -63,8 +63,6 @@ type UserInput struct {
 	// never by users themselves: see setLinked); the user's own unverified addresses are kept as they are. Nil leaves
 	// them unchanged.
 	LinkedEmails *[]string `json:"-"`
-	// ProvisionedBy is the sign-in provider making the account at a first sign-in (creation only).
-	ProvisionedBy string `json:"-"`
 	// IfVersion, when set, applies the update only to the user as read at that version (a read-modify-write, a SCIM
 	// If-Match): a user changed since is ErrStale, and nothing is written.
 	IfVersion hlc.Timestamp `json:"-"`
@@ -410,6 +408,14 @@ func (s *Service) ListUsersTagged(ctx context.Context, a *Actor, orgID string, q
 
 // CreateUser creates a user in orgID.
 func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in UserInput) (*model.User, error) {
+	return s.CreateUserLinked(ctx, a, orgID, in, nil)
+}
+
+// CreateUserLinked is CreateUser for an account made with its link to a sign-in provider (auto-provisioning at a first
+// sign-in): link makes the link of the new user, and both are written in one transaction, so there is never an
+// account without its way in, nor a link without its account. nil makes none.
+func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, in UserInput,
+	link func(u *model.User) *model.Identity) (*model.User, error) {
 	if !s.canManageUsers(a, orgID) {
 		return nil, ErrForbidden
 	}
@@ -430,7 +436,7 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if in.Password != nil && a != System {
 		return nil, Invalid("password", "passwords are set by the user through their invitation link")
 	}
-	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true, ProvisionedBy: in.ProvisionedBy}
+	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true}
 	if in.Email == nil || strings.TrimSpace(*in.Email) == "" {
 		return nil, Invalid("email", "is required")
 	}
@@ -462,7 +468,25 @@ func (s *Service) CreateUser(ctx context.Context, a *Actor, orgID string, in Use
 	if imported != "" {
 		detail["password"] = "imported " + imported
 	}
-	if err := s.audited(ctx, a, orgID, "user.create", u.Username, detail, func() error { return s.Users.Create(ctx, u) }); err != nil {
+	write := func() error { return s.Users.Create(ctx, u) }
+	if link != nil {
+		write = func() error {
+			ur, err := store.Encode(u)
+			if err != nil {
+				return err
+			}
+			lr, err := store.Encode(link(u))
+			if err != nil {
+				return err
+			}
+			if err := s.Users.S.Tx(ctx, []store.Op{{Rec: ur, Match: true}, {Rec: lr, Match: true}}); err != nil {
+				return err
+			}
+			u.Version = ur.Version
+			return nil
+		}
+	}
+	if err := s.audited(ctx, a, orgID, "user.create", u.Username, detail, write); err != nil {
 		return nil, s.userConflict(ctx, err, u)
 	}
 	return u, nil
@@ -607,9 +631,13 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if a == System && u.Role == model.RoleSuperAdmin && CurbsAdmin(u, in) {
 		return nil, errSparesSuperAdmins
 	}
+	var also []store.Op
 	roleDone := func(context.Context, *Actor, error) {}
 	if in.Role != nil {
-		roleDone = s.applyRole(u, *in.Role)
+		var err error
+		if also, roleDone, err = s.applyRole(ctx, u, *in.Role); err != nil {
+			return nil, err
+		}
 	}
 	statusChange := in.Active != nil && *in.Active != u.Active
 	reason := ""
@@ -641,17 +669,18 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		}
 	}
 	addChanges(detail, was, u)
+	// Disabling, an end date that has passed, or a password set by someone else ends the account's sessions and refresh
+	// grants (not the actor's own, changing their own account) in this write: a new session epoch, so they stop counting
+	// at the commit. Removing their records after it is tidying (and tells the applications: back-channel logout).
+	endsSessions := (in.Active != nil && !*in.Active || in.Password != nil || in.ValidUntil != nil && !u.Enabled(time.Now())) &&
+		a.UserID != u.ID
+	if endsSessions {
+		u.SessionEpoch = NewCredEpoch()
+	}
 	err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
-		err := s.Users.Update(ctx, u)
+		err := s.writeUser(ctx, u, also)
 		roleDone(ctx, a, err)
-		if !landed(err) {
-			return err
-		}
-		// From here the change is in effect (perhaps not yet confirmed by a peer, or its outcome unknown): what follows
-		// from it happens anyway.
-		if in.Active != nil && !*in.Active || in.Password != nil || in.ValidUntil != nil && !u.Enabled(time.Now()) {
-			// Disabling, an end date that has passed, or a password reset ends existing sessions and refresh grants
-			// (except the actor's own). A failure is logged and noted in the audit entry; the change itself stands.
+		if err == nil && endsSessions {
 			if sessErr := s.endUserSessions(ctx, u.ID, a); sessErr != nil {
 				detail["sessions"] = "not all ended: " + sessErr.Error()
 			}
@@ -774,18 +803,17 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// read on a node that has not seen the user's promotion to administrator yet, so the rank rules above did not
 	// apply) is refused, instead of deleting an administrator unchecked.
 	err = s.audited(ctx, a, u.OrgID, "user.delete", u.Username, nil, func() error { return s.Users.DeleteIf(ctx, u.ID, u.Version) })
-	if !landed(err) {
-		// Refused (a newer copy), or not written: the user still exists; a retry decides.
+	if err != nil {
 		return mapStore(err)
 	}
-	// The user is gone (or may be: an unknown outcome is followed through, as a retry of a delete that did land finds
-	// no user and would never do this), and with it everything that was theirs: every session, grant, token, passkey or
-	// link stands on its user, so none counts any more, and the orphan sweep removes their records (sweep.go). The
-	// applications are told (back-channel logout), and the users they managed get no manager. Their memberships stand
-	// on them too: every reader of a group's members leaves out those whose user is gone (memberIDs).
+	// The user is gone, and with it everything that was theirs: every session, grant, token, passkey or link stands on
+	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go), as it clears the
+	// manager of the users they managed (a deletion whose outcome was not known is followed by the sweep alone). The
+	// applications are told (back-channel logout), and their reports get no manager. Their memberships stand on them
+	// too: every reader of a group's members leaves out those whose user is gone (memberIDs).
 	s.sessionsEnding(ctx, u.ID, nil)
 	s.clearManagerOf(ctx, u)
-	return mapStore(err)
+	return nil
 }
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap
@@ -1024,32 +1052,38 @@ func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) 
 	return n, nil
 }
 
-// dropEmailLinks removes the provider links a newly promoted manager or administrator did not make themselves: links
-// made automatically by email address (and links of unknown origin). Privileged accounts are never linked by email
-// (upstream.ErrPrivileged), so a promotion must not keep one made before. Links the user connected while signed in,
-// and the link of the provider that created the account, stay.
-func (s *Service) dropEmailLinks(ctx context.Context, a *Actor, u *model.User) {
+// emailLinks returns u's links to sign-in providers that nobody chose: made by email address, or of unknown origin
+// (applyRole deletes them when u becomes privileged).
+func (s *Service) emailLinks(ctx context.Context, u *model.User) ([]*model.Identity, error) {
 	ids, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
-		s.Log.Warn("a promoted account's links made by email address could not be read: they are left", "user", u.ID, "error", err)
-		return
+		return nil, mapStore(err)
 	}
-	for _, id := range ids {
-		if id.Via != "email" && id.Via != "" {
-			continue
-		}
-		if err := s.audited(ctx, a, u.OrgID, "identity.unlink", u.Username, map[string]string{"provider": id.ProviderID,
-			"reason": "promoted to " + string(u.Role)}, func() error { return s.Identities.Delete(ctx, id.ID) }); err != nil {
-			s.Log.Warn("a promoted account's link made by email address could not be removed: it is left", "user", u.ID,
-				"identity", id.ID, "error", err)
-		}
+	return slices.DeleteFunc(ids, func(id *model.Identity) bool { return id.Via != "email" && id.Via != "" }), nil
+}
+
+// writeUser writes u, the copy read at its version (a compare-and-swap, as Users.Update), and the writes that go with
+// the change (also: the records it ends) in one transaction: they take effect together or not at all.
+func (s *Service) writeUser(ctx context.Context, u *model.User, also []store.Op) error {
+	if len(also) == 0 {
+		return s.Users.Update(ctx, u)
 	}
+	expect := u.Version
+	rec, err := store.Encode(u)
+	if err == nil {
+		err = s.Users.S.Tx(ctx, append([]store.Op{{Rec: rec, Match: true, Expect: expect}}, also...))
+	}
+	if err != nil {
+		u.Version = expect
+		return err
+	}
+	u.Version = rec.Version
+	return nil
 }
 
 // setManager sets u's manager: another user of the same organization, and never one who reports to u (directly or
-// further down), which would make a loop. "" clears it. The chain is read from the owners' copies (FreshUser), so a
-// change confirmed on another node is seen, and bounded (maxManagerChain). Two changes at once on two nodes can still
-// make a loop (a reporting line is directory data only; the walk above is bounded, so a loop harms nothing).
+// further down), which would make a loop. "" clears it. The chain is read as the store answers (current within its
+// bound), and bounded (maxManagerChain). Two changes at once on two nodes can still make a loop (a reporting line is directory data only; the walk above is bounded, so a loop harms nothing).
 func (s *Service) setManager(ctx context.Context, u *model.User, id string) error {
 	if id == "" {
 		u.Work.ManagerID = ""
@@ -1061,7 +1095,7 @@ func (s *Service) setManager(ctx context.Context, u *model.User, id string) erro
 	if id == u.Work.ManagerID {
 		return nil // unchanged
 	}
-	m, err := s.FreshUserIn(ctx, u.OrgID, id)
+	m, err := s.getUser(ctx, id)
 	if errors.Is(err, ErrUnavailable) {
 		return err
 	}
@@ -1072,7 +1106,7 @@ func (s *Service) setManager(ctx context.Context, u *model.User, id string) erro
 		if next == u.ID || n == maxManagerChain {
 			return Invalid("work.manager_id", "that person reports to this user")
 		}
-		up, err := s.FreshUserIn(ctx, u.OrgID, next)
+		up, err := s.getUser(ctx, next)
 		if errors.Is(err, ErrUnavailable) {
 			return err
 		}
@@ -1187,6 +1221,37 @@ func ptrBool(b bool) *bool { return &b }
 // field: the disabled accounts are few, so both are served from a small index set, where a filter on "active" would
 // read the whole organization (model.Field: an indexed bool marks a small set).
 func ActiveFilter(active bool) store.Filter { return store.Filter{Field: "inactive", Value: !active} }
+
+// passkeySessionEnds returns the sessions passkeyID signed in for userID (but keepSession) and the deletions that end
+// them with their refresh grants, for a transaction; the applications are told first (back-channel logout).
+func (s *Service) passkeySessionEnds(ctx context.Context, userID, passkeyID, keepSession string) ([]string, []store.Op, error) {
+	sessions, err := s.Sessions.All(ctx, userID)
+	if err != nil {
+		return nil, nil, mapStore(err)
+	}
+	var ids []string
+	var ops []store.Op
+	for _, ss := range sessions {
+		if ss.Passkey == passkeyID && ss.ID != keepSession {
+			ids = append(ids, ss.ID)
+			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindSession, ss.ID)})
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	grants, err := s.Grants.All(ctx, userID)
+	if err != nil {
+		return nil, nil, mapStore(err)
+	}
+	for _, g := range grants {
+		if slices.Contains(ids, g.SessionID) {
+			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindGrant, g.ID)})
+		}
+	}
+	s.sessionsEnding(ctx, userID, ids)
+	return ids, ops, nil
+}
 
 // EndPasskeySessions ends every session that was signed in with the passkey (and the refresh grants made in them),
 // telling the applications (back-channel logout). Used when a passkey turns out to be compromised: whoever holds the

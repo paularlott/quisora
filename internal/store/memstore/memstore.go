@@ -125,20 +125,120 @@ func (s *Store) conflict(rec *store.Record) bool {
 	return false
 }
 
-func (s *Store) Put(_ context.Context, rec *store.Record) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// apply is one write, Put (match false) or CompareAndPut(rec, expect) (match true); the lock must be held. A retry
+// (the stored record carries rec's request id) is answered as done whatever the expectation; the store stamps the
+// version, so the caller's is neither compared nor used.
+func (s *Store) apply(rec *store.Record, match bool, expect hlc.Timestamp) error {
 	old := s.records[key{rec.Kind, rec.ID}]
-	if old != nil && old.rec.Version >= rec.Version {
-		return store.ErrStale
+	if store.Retried(rec, headOf(old)) {
+		store.Settle(rec, old.rec.Head())
+		return nil
 	}
-	if err := store.StampLocal(rec, headOf(old), false); err != nil {
+	if match {
+		if expect == 0 && live(old) {
+			return store.ErrStale
+		}
+		if expect != 0 {
+			if !live(old) {
+				return store.ErrNotFound
+			}
+			if old.rec.Version != expect {
+				return store.ErrStale
+			}
+		}
+	}
+	store.StampWrite(rec, headOf(old))
+	if err := store.StampLocal(rec, headOf(old), match && expect == 0); err != nil {
 		return err
 	}
 	if s.conflict(rec) {
 		return store.ErrConflict
 	}
 	s.write(rec, rec.Unique)
+	return nil
+}
+
+func (s *Store) Put(_ context.Context, rec *store.Record) error {
+	defer store.EnsureReq(rec)()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.apply(rec, false, 0)
+}
+
+// Tx applies ops all or nothing under one lock: each as apply does, in order, so a later op sees what the earlier ones
+// leave (a unique value one releases another may claim). A refusal puts back every record and unique entry the ops
+// touched.
+func (s *Store) Tx(_ context.Context, ops []store.Op) error {
+	if len(ops) == 0 {
+		return store.ErrBadTx
+	}
+	seen := map[key]bool{}
+	for _, op := range ops {
+		k := key{op.Rec.Kind, op.Rec.ID}
+		if seen[k] {
+			return store.ErrBadTx
+		}
+		seen[k] = true
+	}
+	defer store.TxReq(ops)()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	retried := false
+	for _, op := range ops {
+		retried = retried || store.Retried(op.Rec, headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]))
+	}
+	if retried { // the whole transaction was applied: every record it wrote takes its stored version
+		for _, op := range ops {
+			if h := headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]); h != nil && h.Req == op.Rec.Req {
+				store.Settle(op.Rec, h)
+			}
+		}
+		return nil
+	}
+	// What a refusal must put back: the entries the ops replace, and the unique index under every value they touch.
+	oldRecs := map[key]*entry{}
+	oldUnique := map[key]*string{}
+	save := func(k key) {
+		if _, ok := oldUnique[k]; ok {
+			return
+		}
+		if id, ok := s.unique[k]; ok {
+			oldUnique[k] = &id
+		} else {
+			oldUnique[k] = nil
+		}
+	}
+	for _, op := range ops {
+		k := key{op.Rec.Kind, op.Rec.ID}
+		oldRecs[k] = s.records[k]
+		if e := s.records[k]; e != nil {
+			for u := range e.indexed {
+				save(key{k.kind, u})
+			}
+		}
+		for _, u := range op.Rec.Unique {
+			save(key{k.kind, u})
+		}
+	}
+	for _, op := range ops {
+		if err := s.apply(op.Rec, op.Match, op.Expect); err != nil {
+			for k, e := range oldRecs {
+				if e == nil {
+					delete(s.records, k)
+				} else {
+					s.records[k] = e
+				}
+			}
+			for k, id := range oldUnique {
+				if id == nil {
+					delete(s.unique, k)
+				} else {
+					s.unique[k] = *id
+				}
+			}
+			return err
+		}
+	}
 	return nil
 }
 
@@ -195,32 +295,10 @@ func (s *Store) putReplicated(rec *store.Record) (bool, error) {
 }
 
 func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	defer store.EnsureReq(rec)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old := s.records[key{rec.Kind, rec.ID}]
-	if expect == 0 {
-		if live(old) {
-			return store.ErrStale
-		}
-		if old != nil && old.rec.Version >= rec.Version {
-			return store.ErrStale
-		}
-	} else {
-		if !live(old) {
-			return store.ErrNotFound
-		}
-		if old.rec.Version != expect || rec.Version <= expect {
-			return store.ErrStale
-		}
-	}
-	if err := store.StampLocal(rec, headOf(old), expect == 0); err != nil {
-		return err
-	}
-	if s.conflict(rec) {
-		return store.ErrConflict
-	}
-	s.write(rec, rec.Unique)
-	return nil
+	return s.apply(rec, true, expect)
 }
 
 func (s *Store) List(_ context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {

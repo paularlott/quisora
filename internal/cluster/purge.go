@@ -7,6 +7,7 @@ import (
 
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/gossip/partition"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Tombstones are kept for the retention (Options.TombstoneRetention) so that a node that was away a while catches up by
@@ -67,6 +68,11 @@ func (n *Node) purgePartition(ctx context.Context, p int, now time.Time) (busy b
 	return false, err
 }
 
+// tombstoneKeep is how long a tombstone is kept with the retention (purgePoint).
+func tombstoneKeep(retention time.Duration) time.Duration {
+	return max(retention, settleWait+store.MaxSkew)
+}
+
 // purgePoint chooses the sequence number below which tombstones of p are purged: that of the oldest tombstone younger
 // than the retention (none: everything committed so far). ok is false when no tombstone lies below it. It reads the
 // partition's tombstones only (store.PartitionStore.PartitionTombstones, from an index of them), never its records,
@@ -83,9 +89,13 @@ func (n *Node) purgePoint(ctx context.Context, p int, now time.Time) (before uin
 	if err != nil {
 		return 0, false, false, err
 	}
-	var youngest, oldest uint64 // the lowest sequence number of a tombstone younger than the retention, and of an older one
+	// A tombstone is kept for the retention, and never for less than a write's settling and the clocks' skew past it:
+	// a deletion retried while it settles (submit) is recognised by the request id on the tombstone it wrote
+	// (store.Retried), which a purge would take away, leaving its retry refused as "not found" though it was made.
+	keep := tombstoneKeep(n.opt.TombstoneRetention)
+	var youngest, oldest uint64 // the lowest sequence number of a tombstone younger than keep, and of an older one
 	err = n.pst.pst.PartitionTombstones(ctx, p, ps.Purged, ps.Committed.Seq, func(seq uint64, version hlc.Timestamp) error {
-		if now.Sub(version.Time()) < n.opt.TombstoneRetention {
+		if now.Sub(version.Time()) < keep {
 			if youngest == 0 || seq < youngest {
 				youngest = seq
 			}

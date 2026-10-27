@@ -33,36 +33,55 @@ type stored struct {
 	epoch   hlc.Timestamp
 	created hlc.Timestamp
 	origin  string
+	req     string
 	deleted bool
 	expires sql.NullInt64
 	uniq    []string
 }
 
+// head returns the row's version metadata (nil for no row).
 func (o *stored) head() *store.Head {
-	return &store.Head{Kind: o.kind, Version: o.version, Epoch: o.epoch, Created: o.created, Deleted: o.deleted, Origin: o.origin}
+	if o == nil {
+		return nil
+	}
+	return &store.Head{Kind: o.kind, Version: o.version, Epoch: o.epoch, Created: o.created, Deleted: o.deleted, Origin: o.origin,
+		Req: o.req}
 }
 
 func (o *stored) live(now int64) bool {
 	return !o.deleted && (!o.expires.Valid || o.expires.Int64 > now)
 }
 
+// op is one write of a transaction: Put (modePut), CompareAndPut (modeCAS, expecting expect) or PutReplicated
+// (modeReplicated, always alone). old is the row the transaction found, loaded inside it.
+type op struct {
+	t      *table
+	rec    *store.Record
+	m      mode
+	expect hlc.Timestamp
+	old    *stored
+}
+
 func (s *Store) Put(ctx context.Context, rec *store.Record) error {
-	_, err := s.apply(ctx, modePut, rec, 0)
-	return err
+	return s.write(ctx, modePut, rec, 0)
 }
 
 func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
-	_, err := s.apply(ctx, modeCAS, rec, expect)
+	return s.write(ctx, modeCAS, rec, expect)
+}
+
+// write runs one Put or CompareAndPut: a transaction of one write.
+func (s *Store) write(ctx context.Context, m mode, rec *store.Record, expect hlc.Timestamp) error {
+	t, err := s.table(rec.Kind)
+	if err != nil {
+		return err
+	}
+	defer store.EnsureReq(rec)()
+	_, err = s.apply(ctx, []op{{t: t, rec: rec, m: m, expect: expect}})
 	return err
 }
 
 func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
-	return s.apply(ctx, modeReplicated, rec, 0)
-}
-
-// apply runs one write, retrying deadlocks and lost insert races. Each write is its own transaction: grouping
-// several into one (as the Badger engine does) would break the lock order below across processes.
-func (s *Store) apply(ctx context.Context, m mode, rec *store.Record, expect hlc.Timestamp) (bool, error) {
 	t, err := s.table(rec.Kind)
 	if err != nil {
 		return false, err
@@ -70,79 +89,210 @@ func (s *Store) apply(ctx context.Context, m mode, rec *store.Record, expect hlc
 	if rec.Version > math.MaxInt64 {
 		return false, fmt.Errorf("sqlstore: version %d out of range", rec.Version)
 	}
-	s.warm(ctx, t)
+	return s.apply(ctx, []op{{t: t, rec: rec, m: modeReplicated}})
+}
+
+// Tx applies ops all or nothing, in one SQL transaction (store.Store).
+func (s *Store) Tx(ctx context.Context, ops []store.Op) error {
+	type key struct {
+		kind model.Kind
+		id   string
+	}
+	seen := make(map[key]bool, len(ops))
+	list := make([]op, len(ops))
+	for i, o := range ops {
+		if o.Rec == nil || seen[key{o.Rec.Kind, o.Rec.ID}] {
+			return store.ErrBadTx
+		}
+		seen[key{o.Rec.Kind, o.Rec.ID}] = true
+		t, err := s.table(o.Rec.Kind)
+		if err != nil {
+			return err
+		}
+		list[i] = op{t: t, rec: o.Rec, m: modePut}
+		if o.Match {
+			list[i].m, list[i].expect = modeCAS, o.Expect
+		}
+	}
+	if len(ops) == 0 {
+		return store.ErrBadTx
+	}
+	defer store.TxReq(ops)()
+	_, err := s.apply(ctx, list)
+	return err
+}
+
+// apply runs ops as one transaction, retrying deadlocks and lost insert races. On a server database each call is its own
+// transaction: grouping several calls into one would break the lock order below across processes (and the server
+// groups the commits itself). A failure that says the store cannot serve now is ErrUnavailable.
+func (s *Store) apply(ctx context.Context, ops []op) (bool, error) {
+	for _, o := range ops {
+		s.warm(ctx, o.t)
+	}
 	for attempt := 1; ; attempt++ {
-		applied, err := s.applyOnce(ctx, t, m, rec, expect)
+		applied, err := s.applyOnce(ctx, ops)
 		if err == nil || attempt >= maxAttempts || !s.d.retryable(err) || ctx.Err() != nil {
-			return applied, err
+			return applied, unavailable(err)
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, unavailable(ctx.Err())
 		case <-time.After(time.Duration(1+rand.IntN(3*min(attempt, 10))) * time.Millisecond):
 		}
 	}
 }
 
+// txOptions are the options of a write transaction: read committed, which MySQL and MariaDB get from their connections
+// (readCommitted), where asking per transaction would cost the driver a round trip (SET TRANSACTION) before each BEGIN.
 func (s *Store) txOptions() *sql.TxOptions {
-	if s.d.name == "sqlite" {
-		return nil
+	if s.d.isPG() {
+		return &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 	}
-	return &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	return nil
 }
 
-func (s *Store) applyOnce(ctx context.Context, t *table, m mode, rec *store.Record, expect hlc.Timestamp) (bool, error) {
+// applyOnce runs ops in one transaction and reports whether they were all written (a replicated record that is not newer
+// than the stored one is not). On SQLite the transaction is shared with the writes that arrive meanwhile (committer).
+func (s *Store) applyOnce(ctx context.Context, ops []op) (bool, error) {
+	if s.gc != nil {
+		return s.gc.submit(ctx, ops)
+	}
 	tx, err := s.wdb.BeginTx(ctx, s.txOptions())
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	r := runner{c: s.wc, tx: tx}
-	now := time.Now().UnixMicro()
-
-	old, err := loadStored(ctx, r, t, rec.ID)
+	written, err := s.applyIn(ctx, runner{c: s.wc, tx: tx}, ops)
 	if err != nil {
 		return false, err
 	}
-	switch m {
-	case modePut:
-		if old != nil && old.version >= rec.Version {
-			return false, store.ErrStale
-		}
-		if err := old.stamp(rec, false); err != nil {
+	if err := tx.Commit(); err != nil {
+		return s.settle(ctx, ops, err)
+	}
+	return written, nil
+}
+
+// applyIn stages and writes ops in the transaction of r, which the caller commits, and reports whether they were all
+// written.
+func (s *Store) applyIn(ctx context.Context, r runner, ops []op) (bool, error) {
+	now := time.Now().UnixMicro()
+	retried := false
+	for i := range ops {
+		o := &ops[i]
+		var err error
+		if o.old, err = loadStored(ctx, r, o.t, o.rec.ID); err != nil {
 			return false, err
 		}
-	case modeCAS:
-		live := old != nil && old.live(now)
-		if expect == 0 {
-			if live || (old != nil && old.version >= rec.Version) {
-				return false, store.ErrStale
-			}
-		} else {
-			if !live {
-				return false, store.ErrNotFound
-			}
-			if old.version != expect || rec.Version <= expect {
-				return false, store.ErrStale
+		retried = retried || (o.m != modeReplicated && store.Retried(o.rec, o.old.head()))
+	}
+	if retried { // an earlier attempt applied this request: nothing is written, and the records take what is stored
+		for _, o := range ops {
+			if h := o.old.head(); h != nil && h.Req == o.rec.Req {
+				store.Settle(o.rec, h)
 			}
 		}
-		if err := old.stamp(rec, expect == 0); err != nil {
+		return true, nil
+	}
+	written := true
+	for i := range ops {
+		o := &ops[i]
+		ok, err := o.stage(now)
+		if err != nil {
 			return false, err
 		}
-	case modeReplicated:
-		if old != nil && old.version >= rec.Version {
+		if !ok {
+			written = false
+			continue
+		}
+		if err := s.writeRow(ctx, r, o.t, o.m, o.rec, o.old, pstamp{}, now); err != nil {
+			return false, err
+		}
+	}
+	return written, nil
+}
+
+// stage decides the write over the row o found: refused (an error), not to be made (a replicated record that is not
+// newer), or stamped and ready to write. Unique values are not looked at here: writeRow claims them as the transaction
+// goes, so a later write of a transaction meets the values the earlier ones left.
+func (o *op) stage(now int64) (bool, error) {
+	if o.m == modeReplicated {
+		if o.old != nil && o.old.version >= o.rec.Version {
 			return false, nil
 		}
-		store.Witness(rec.Version)
+		store.Witness(o.rec.Version)
+		return true, nil
 	}
+	create := o.m == modeCAS && o.expect == 0
+	if o.m == modeCAS {
+		live := o.old != nil && o.old.live(now)
+		switch {
+		case create && live:
+			return false, store.ErrStale
+		case !create && !live:
+			return false, store.ErrNotFound
+		case !create && o.old.version != o.expect:
+			return false, store.ErrStale
+		}
+	}
+	store.StampWrite(o.rec, o.old.head())
+	return true, store.StampLocal(o.rec, o.old.head(), create)
+}
 
-	if err := s.writeRow(ctx, r, t, m, rec, old, pstamp{}, now); err != nil {
-		return false, err
+// settle answers a transaction whose commit failed. When the connection was lost the commit may have landed: the records
+// are read back (on another connection, the failed one being discarded) and if one carries a request of the
+// transaction it was applied (ErrUnavailable is the answer when none does, or the database cannot be read: the caller
+// retries, and a retry is recognised by its request id). Any other failure means nothing was committed.
+func (s *Store) settle(ctx context.Context, ops []op, cause error) (bool, error) {
+	if classify(cause) != failLost || ops[0].m == modeReplicated { // (a replicated record has no request to find)
+		return false, cause
 	}
-	if err := tx.Commit(); err != nil {
-		return false, err
+	// The caller's context may be what ended: the answer is still wanted, within a bound of its own.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleWait)
+	defer cancel()
+	for {
+		heads, err := s.readHeads(ctx, ops)
+		if err == nil {
+			applied := false
+			for i, h := range heads {
+				if h != nil && h.Req == ops[i].rec.Req {
+					store.Settle(ops[i].rec, h)
+					applied = true
+				}
+			}
+			if applied {
+				return true, nil
+			}
+			// (not there now; a server may still be finishing the commit the connection lost: not known either way)
+			return false, fmt.Errorf("%w: %w", store.ErrUnconfirmed, cause)
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("%w: %w", store.ErrUnconfirmed, cause)
+		case <-time.After(settleRetry):
+		}
 	}
-	return true, nil
+}
+
+// How long settle tries to read the records back, and how often.
+const (
+	settleWait  = 3 * time.Second
+	settleRetry = 100 * time.Millisecond
+)
+
+// readHeads reads the stored version metadata of the records of ops (nil for a record that is not stored).
+func (s *Store) readHeads(ctx context.Context, ops []op) ([]*store.Head, error) {
+	heads := make([]*store.Head, len(ops))
+	for i, o := range ops {
+		rec, err := o.t.scan(s.reader().queryRow(ctx, o.t.lookup, o.rec.ID))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, err
+		default:
+			heads[i] = rec.Head()
+		}
+	}
+	return heads, nil
 }
 
 // writeRow stores rec over the stored row old (nil: none), inside the transaction of r, after the checks of its mode:
@@ -187,19 +337,11 @@ func (s *Store) writeRow(ctx context.Context, r runner, t *table, m mode, rec *s
 	return err
 }
 
-// stamp applies store.StampLocal for a local write of rec over o (nil: nothing stored).
-func (o *stored) stamp(rec *store.Record, create bool) error {
-	if o == nil {
-		return store.StampLocal(rec, nil, create)
-	}
-	return store.StampLocal(rec, o.head(), create)
-}
-
 func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, error) {
 	var o stored
 	var v, epoch, created int64
 	var uniq sql.NullString
-	err := r.queryRow(ctx, t.meta, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created)
+	err := r.queryRow(ctx, t.meta, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created, &o.req)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -265,6 +407,10 @@ func (s *Store) claim(ctx context.Context, r runner, t *table, m mode, rec *stor
 
 // Wipe deletes every record and unique value and gives the store a new identity (FeedID), all in one transaction.
 func (s *Store) Wipe(ctx context.Context) error {
+	return unavailable(s.wipe(ctx))
+}
+
+func (s *Store) wipe(ctx context.Context) error {
 	tx, err := s.wdb.BeginTx(ctx, s.txOptions())
 	if err != nil {
 		return err

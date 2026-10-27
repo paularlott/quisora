@@ -118,6 +118,9 @@ func (e *Env) Session(u *model.User) (*http.Client, string) {
 // SessionAMR is Session with the given sign-in methods (amr), e.g. pwd+otp+mfa for an administration console session.
 func (e *Env) SessionAMR(u *model.User, amr []string) (*http.Client, string) {
 	e.T.Helper()
+	if cur, err := e.Svc.Users.Get(context.Background(), u.ID); err == nil {
+		u = cur // as a sign-in does: the account as it is now (its session epoch)
+	}
 	org, _ := e.Svc.Orgs.Get(context.Background(), u.OrgID)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, e.URL+"/", nil)

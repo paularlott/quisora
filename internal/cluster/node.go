@@ -258,6 +258,11 @@ type Node struct {
 	// staleAfter is the partition protocol's StaleAfter (newManager): how long this node waits to have caught up with
 	// a refusal (Store.awaitRefused).
 	staleAfter atomic.Int64
+	// waiting holds a place for each request waiting in the store (waitSlot): at most maxWaiting at once.
+	waiting chan struct{}
+	// loseReply, set by tests only, makes a write that landed report an unknown outcome when it returns true (the
+	// reply lost), for the settling to settle.
+	loseReply func() bool
 	// tcpDeadline is the gossip transport's TCPDeadline (checked against the partition protocol's need: newManager).
 	tcpDeadline time.Duration
 
@@ -278,7 +283,8 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 		return nil, ErrClockBeforeEpoch
 	}
 	opt.defaults()
-	n := &Node{cfg: cfg, opt: opt, log: opt.Log.WithGroup("cluster"), dir: cfg.Server.DataDir}
+	n := &Node{cfg: cfg, opt: opt, log: opt.Log.WithGroup("cluster"), dir: cfg.Server.DataDir,
+		waiting: make(chan struct{}, maxWaiting)}
 	n.ctx, n.cancel = context.WithCancel(context.Background())
 	if n.dir != "" {
 		if err := os.MkdirAll(n.dir, 0o700); err != nil {

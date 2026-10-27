@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,8 +49,8 @@ func TestUnknownKindIsRejectedByEveryOperation(t *testing.T) {
 func TestVersionBeyondInt64IsRefused(t *testing.T) {
 	s, _ := openSQLite(t)
 	rec := record(model.KindLink, "a", time.Time{})
-	rec.Version = 1 << 63
-	if err := s.Put(context.Background(), rec); err == nil || !strings.Contains(err.Error(), "out of range") {
+	rec.Version = 1 << 63 // a replicated record keeps its version; Put and CompareAndPut stamp their own
+	if _, err := s.PutReplicated(context.Background(), rec); err == nil || !strings.Contains(err.Error(), "out of range") {
 		t.Fatalf("version beyond int64: %v", err)
 	}
 }
@@ -242,4 +244,97 @@ func TestCorruptUniqueValuesAreAnError(t *testing.T) {
 	if err := s.Put(ctx, record(model.KindLink, "a", time.Time{})); err == nil {
 		t.Fatal("overwrite of a record with corrupt unique values succeeded")
 	}
+}
+
+// The request id comes back from every read, and is kept by the write paths that take a record as it is.
+func TestRequestIDIsReadEverywhere(t *testing.T) {
+	s, _ := openSQLite(t)
+	ctx := context.Background()
+	a := record(model.KindLink, "a", time.Time{}, "u/a")
+	a.Req = "set-by-put"
+	if err := s.Put(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+
+	b := record(model.KindLink, "b", time.Time{}, "u/b")
+	b.Req = "set-by-writer"
+	if applied, err := s.PutReplicated(ctx, b); err != nil || !applied {
+		t.Fatalf("PutReplicated: %v %v", applied, err)
+	}
+	c := record(model.KindLink, "c", time.Time{})
+	if applied, err := s.PutReplicated(ctx, c); err != nil || !applied {
+		t.Fatalf("PutReplicated: %v %v", applied, err)
+	}
+	if c.Req != "" {
+		t.Fatalf("PutReplicated gave a request id: %q", c.Req)
+	}
+	want := map[string]string{"a": a.Req, "b": "set-by-writer", "c": ""}
+	for id, req := range want {
+		for name, read := range map[string]func() (*store.Record, error){
+			"Get":    func() (*store.Record, error) { return s.Get(ctx, model.KindLink, id) },
+			"Lookup": func() (*store.Record, error) { return s.Lookup(ctx, model.KindLink, id) },
+		} {
+			if r, err := read(); err != nil || r.Req != req {
+				t.Fatalf("%s of %s: %q %v, want %q", name, id, r.Req, err, req)
+			}
+		}
+	}
+	if r, err := s.GetByUnique(ctx, model.KindLink, "u/a"); err != nil || r.Req != a.Req {
+		t.Fatalf("GetByUnique: %+v %v", r, err)
+	}
+	many, err := s.GetMany(ctx, model.KindLink, []string{"b", "a"})
+	if err != nil || len(many) != 2 || many[0].Req != "set-by-writer" || many[1].Req != a.Req {
+		t.Fatalf("GetMany: %+v %v", many, err)
+	}
+	res, err := s.List(ctx, model.KindLink, store.ListQuery{Scope: "sc"})
+	if err != nil || len(res.Records) != 3 || res.Records[0].Req != a.Req {
+		t.Fatalf("List: %+v %v", res, err)
+	}
+	snap, err := s.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Close()
+	if res, err := snap.List(ctx, model.KindLink, store.ListQuery{Scope: "sc"}); err != nil || res.Records[1].Req != "set-by-writer" {
+		t.Fatalf("snapshot List: %+v %v", res, err)
+	}
+}
+
+// Transactions racing for one unique value: exactly one wins, the others are refused whole (nothing of theirs is
+// stored), and a deadlock between them is retried, not reported.
+func TestConcurrentTransactionsOnOneUniqueValue(t *testing.T) {
+	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
+		s, _ := openTest(t, d.name, d.env, 0)
+		defer s.Close()
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var won, conflicts atomic.Int32
+		for i := range 16 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a := record(model.KindLink, fmt.Sprintf("a%d", i), time.Time{}, "u/shared")
+				b := record(model.KindLink, fmt.Sprintf("b%d", i), time.Time{}, fmt.Sprintf("u/own%d", i))
+				ops := []store.Op{{Rec: a, Match: true}, {Rec: b, Match: true}}
+				if i%2 == 1 {
+					ops[0], ops[1] = ops[1], ops[0]
+				}
+				switch err := s.Tx(ctx, ops); {
+				case err == nil:
+					won.Add(1)
+				case errors.Is(err, store.ErrConflict):
+					conflicts.Add(1)
+				default:
+					t.Error(err)
+				}
+			}()
+		}
+		wg.Wait()
+		if won.Load() != 1 || conflicts.Load() != 15 {
+			t.Fatalf("won %d, conflicts %d", won.Load(), conflicts.Load())
+		}
+		if n, err := s.Count(ctx, model.KindLink, "sc"); err != nil || n != 2 {
+			t.Fatalf("%d records stored, want the winner's two: %v", n, err)
+		}
+	})
 }

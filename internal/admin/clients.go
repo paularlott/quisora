@@ -11,6 +11,9 @@ import (
 
 func (m *Module) clientFor(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor) (*model.Client, bool) {
 	c, err := m.s.Svc.GetClient(r.Context(), a, r.PathValue("id"))
+	if unanswered(w, err) {
+		return nil, false
+	}
 	if err != nil || c.OrgID != org.ID {
 		web.WriteError(w, service.ErrNotFound)
 		return nil, false

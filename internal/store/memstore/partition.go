@@ -179,7 +179,6 @@ func (s *Store) ImportPartition(_ context.Context, p int, recs []store.Partition
 		}
 		if step.Full {
 			st.importing = false
-			st.purged = max(st.purged, upTo.Seq)
 		}
 		st.committed = upTo
 		return nil

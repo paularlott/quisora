@@ -558,8 +558,9 @@ func (s landsUnconfirmed) CompareAndPut(ctx context.Context, r *store.Record, ex
 }
 
 // A code exchange that failed on our side once its grant may be stored puts the code back for the retry; the retry
-// that succeeds removes that grant (nobody holds its tokens), so only the grant it hands out is left.
-func TestCodeExchangeRetryRemovesTheGrantItAbandoned(t *testing.T) {
+// makes the same grant (its id comes with the code) and issues its tokens from the one already stored: one grant, and
+// its refresh token works.
+func TestCodeExchangeRetryMakesTheSameGrant(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
@@ -570,12 +571,15 @@ func TestCodeExchangeRetryRemovesTheGrantItAbandoned(t *testing.T) {
 	h.env.Svc.Grants.S = landsUnconfirmed{good}
 	expectUnavailable(t, "unconfirmed grant", h.exchangeCode(cl, secret, code, v))
 	h.env.Svc.Grants.S = good
-	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
+	r := h.exchangeCode(cl, secret, code, v)
+	if r.status != 200 {
 		t.Fatalf("retry: %d %v", r.status, r.m)
 	}
-	h.env.Svc.WaitBackground()
 	grants, err := h.env.Svc.Store.List(context.Background(), model.KindGrant, store.ListQuery{})
 	if err != nil || len(grants.Records) != 1 {
-		t.Fatalf("grants left: %v %v", grants, err)
+		t.Fatalf("grants: %v %v", grants, err)
+	}
+	if rt := r.str("refresh_token"); rt == "" || h.refreshWith(cl, secret, rt).status != 200 {
+		t.Fatalf("the refresh token of the grant the retry found: %q", rt)
 	}
 }

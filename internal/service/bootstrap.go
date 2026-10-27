@@ -83,11 +83,11 @@ func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User
 
 var errExists = errors.New("already exists")
 
-// createBootstrap writes e with id and the bootstrap version, only when no record with that id exists.
+// createBootstrap writes e with id only when no record with that id exists (a create: the store refuses it over one).
 func (s *Service) createBootstrap(ctx context.Context, e model.Entity, id string, now time.Time) error {
 	m := e.GetMeta()
-	m.ID, m.Created, m.Updated, m.Version = id, now, now, model.BootstrapVersion
-	rec, err := store.EncodeAsIs(e)
+	m.ID, m.Created, m.Updated = id, now, now
+	rec, err := store.Encode(e)
 	if err != nil {
 		return err
 	}
@@ -100,5 +100,6 @@ func (s *Service) createBootstrap(ctx context.Context, e model.Entity, id string
 		}
 		return mapStore(err)
 	}
+	m.Version = rec.Version // as the store stamped it: the caller's next compare-and-swap is on it
 	return nil
 }

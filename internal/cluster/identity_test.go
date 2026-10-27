@@ -16,7 +16,11 @@ import (
 
 func holdsAll(tn *tnode, ids []string) bool { return allHold([]*tnode{tn}, ids) }
 
+// countAll counts the records of dataKind in s's database (a node that refuses to serve still holds them).
 func countAll(s store.Store) int {
+	if cs, ok := s.(*Store); ok {
+		s = cs.inner
+	}
 	n, _ := s.Count(bg, dataKind, "")
 	return n
 }

@@ -29,8 +29,7 @@ type Store struct {
 }
 
 var (
-	_ store.Store           = (*Store)(nil)
-	_ store.PartitionReader = (*Store)(nil)
+	_ store.Store = (*Store)(nil)
 )
 
 // Inner returns the wrapped store.
@@ -59,6 +58,12 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 		case errors.Is(err, store.ErrNotFound):
 			if hp, ok := partitionHint(kind, id); ok {
 				return hp, nil
+			}
+			// A record expired or deleted here still names its partition; only one never received does not (any).
+			if id != "" {
+				if old, lerr := s.inner.Lookup(ctx, kind, id); lerr == nil {
+					return recPartition(old), nil
+				}
 			}
 			return -1, nil
 		}
@@ -134,8 +139,10 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if err != nil || s.n.gc == nil || localOnly(kind) {
 		return recs, err
 	}
-	if err := s.n.readable(ctx, -1); err != nil {
-		return nil, err
+	if len(recs) < len(ids) { // a miss may be in any partition (gated)
+		if err := s.n.readable(ctx, -1); err != nil {
+			return nil, err
+		}
 	}
 	// As gated: a partition found behind is waited for, and then everything is read again.
 	waited := false
@@ -201,6 +208,11 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 
 // snapshotOf is Snapshot of sn, the wrapped store, in a gossip cluster.
 func (s *Store) snapshotOf(ctx context.Context, sn store.Snapshotter) (store.Reader, error) {
+	// Every partition must be readable here (none importing, behind or diverged): a snapshot is of one committed
+	// point of all of them, or refused.
+	if err := s.n.readableWithin(ctx, -1, 0); err != nil {
+		return nil, err
+	}
 	refused := func(p int) error {
 		return fmt.Errorf("%w: partition %d is being copied whole to this node; try again once it has finished", store.ErrNotWritable, p)
 	}
@@ -235,12 +247,8 @@ func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, err
 }
 
 func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
-	// Listings are not gated, except of the kinds held only in the global partition: a node that cannot vouch for it
-	// must not answer with organizations or signing keys the majority has changed (a key it revoked, in the JWKS).
-	if s.n.gc != nil && globalOnly(kind) {
-		if err := s.n.readable(ctx, globalPartition); err != nil {
-			return nil, err
-		}
+	if err := store.ValidateQuery(kind, q); err != nil { // a query that is wrong is wrong on any copy
+		return nil, err
 	}
 	if err := s.gatedScope(ctx, kind, q.Scope); err != nil {
 		return nil, err
@@ -248,20 +256,34 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 	return s.inner.List(ctx, kind, q)
 }
 
-// gatedScope passes a listing or count of the records of kind in scope through the staleness gate when the scope is an
-// organization (users, groups, memberships, tenants, access entries, applications and providers are scoped by their
-// organization, which is their partition): a node that trails that partition must not answer "none" or a short list
-// to a caller that decides on it (deleting a non-empty organization). Other scopes (a user's credentials) and
-// unscoped listings are not gated: their partition is not known from the scope.
+// gatedScope passes a listing or count of the records of kind in scope through the staleness gate: a node that trails
+// a partition must not answer "none" or a short list to a caller that decides on it (deleting a non-empty
+// organization, ending a user's sessions). The kinds held only in the global partition need it readable; a scope that
+// is an organization (users, groups, memberships, tenants, access entries, applications and providers are scoped by
+// their organization, which is their partition) needs that partition; any other listing (a user's credentials and
+// sessions, an unscoped one) may hold records of any partition, and needs every one (readable, p < 0). Node-local kinds
+// are exempt.
 func (s *Store) gatedScope(ctx context.Context, kind model.Kind, scope string) error {
-	if s.n.gc == nil || scope == "" {
+	switch {
+	case s.n.gc == nil || localOnly(kind):
 		return nil
+	case globalOnly(kind):
+		return s.n.readable(ctx, globalPartition)
 	}
 	switch kind {
 	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindClient, model.KindProvider:
-		return s.n.readable(ctx, partitionNum(scope))
+		if scope != "" {
+			return s.n.readable(ctx, partitionNum(scope))
+		}
+	default:
+		// A user's records (sessions, grants, credentials, tokens) are scoped by the user and in the user's partition.
+		if scope != "" {
+			if u, err := s.inner.Lookup(ctx, model.KindUser, scope); err == nil {
+				return s.n.readable(ctx, recPartition(u))
+			}
+		}
 	}
-	return nil
+	return s.n.readable(ctx, -1)
 }
 
 // globalOnly reports whether every record of kind is in the global partition (model: an empty partition key).
@@ -284,6 +306,7 @@ func (s *Store) Close() error { return s.inner.Close() }
 
 // write runs one write of rec.
 func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect uint64) error {
+	defer store.EnsureReq(rec)() // before the first attempt: every retry of the write carries the same request id
 	if s.n.gc == nil || localOnly(rec.Kind) {
 		return s.writeLocal(ctx, rec, mode, expect)
 	}
@@ -382,32 +405,39 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 			}
 		}
 	}
+	provisional(rec)
 	b, err := encodeRecord(rec)
 	if err != nil {
 		return err
 	}
 	p := recPartition(rec)
 	res, err := s.submit(ctx, p, &change{Op: opWrite, Mode: mode, Expect: expect, Rec: b})
-	if err != nil {
+	switch {
+	case isDone(err): // a retry of this request's write, which landed (submit settled it)
+		if err := s.settleDone(ctx, []*store.Record{rec}); err != nil {
+			return err
+		}
+	case err != nil:
 		var re *partition.RefusedError
 		if errors.As(err, &re) && re.Code == whyNothing {
 			return nil // deleted already
 		}
 		behind := s.awaitRefused(ctx, p, err)
-		if !errors.Is(err, store.ErrUnconfirmed) { // (an unknown outcome may be a write that took effect: keep its claims)
+		if !errors.Is(err, errUnsettled) { // (a write not settled may have taken effect: keep its claims)
 			s.releaseAll(ctx, rec, claimed)
 		}
 		if behind != nil {
 			return behind
 		}
 		return storeErr(err)
+	default:
+		var rep writeReply
+		if err := decodeMsg(res.Reply, &rep); err != nil {
+			return err
+		}
+		rec.Version, rec.Epoch, rec.Created = hlc.Timestamp(rep.Version), hlc.Timestamp(rep.Epoch), hlc.Timestamp(rep.Created)
+		s.waitWritten(ctx, p, res.Pos)
 	}
-	var rep writeReply
-	if err := decodeMsg(res.Reply, &rep); err != nil {
-		return err
-	}
-	rec.Version, rec.Epoch, rec.Created = hlc.Timestamp(rep.Version), hlc.Timestamp(rep.Epoch), hlc.Timestamp(rep.Created)
-	s.waitWritten(ctx, p, res.Pos)
 	for _, g := range globalsOf(old) {
 		if !slices.Contains(globals, g) {
 			s.release(ctx, rec.Kind, rec.ID, g)
@@ -428,7 +458,8 @@ func (s *Store) lookup(ctx context.Context, kind model.Kind, id string) (*store.
 // submit sends a change to the owner of partition p and counts the outcome. The error is the library's. A write is
 // seen through whatever the caller does (a client that disconnects does not leave a write half done): the library
 // bounds it with its own write timeout.
-func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result, error) {
+// submitOnce writes change c to partition p once (submit settles its outcome).
+func (s *Store) submitOnce(ctx context.Context, p int, c *change) (partition.Result, error) {
 	n := s.n
 	b, err := encodeMsg(c)
 	if err != nil {
@@ -439,6 +470,9 @@ func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result,
 		return partition.Result{}, partition.ErrUnavailable
 	}
 	res, err := pm.Write(context.WithoutCancel(ctx), p, b)
+	if err == nil && n.loseReply != nil && n.loseReply() {
+		err = fmt.Errorf("%w: the reply was lost (a test)", partition.ErrUnknown) // the write landed
+	}
 	switch {
 	case err == nil:
 		n.stats.writes.Add(1)
@@ -565,7 +599,7 @@ func storeErr(err error) error {
 			return store.ErrNotFound
 		}
 		return fmt.Errorf("cluster: the write was refused: %w", err)
-	case errors.Is(err, store.ErrUnconfirmed):
+	case errors.Is(err, store.ErrUnavailable):
 		return err
 	}
 	return fmt.Errorf("%w: %v", store.ErrNotWritable, err)
@@ -591,7 +625,7 @@ func partitionHint(kind model.Kind, id string) (int, bool) {
 // committed before the call is reflected (partition.Manager.Read). The ids are grouped by partition from this node's
 // copy of each record (a record never changes partition); an id this node does not hold is asked of every partition's
 // owner (FreshIn, which is told the partition, asks one). Tombstones are returned too (Deleted). Without gossip (a single
-// node, or a shared database, which is the only copy) it is a local read. It implements store.QuorumReader.
+// node, or a shared database, which is the only copy) it is a local read.
 func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*store.Record, error) {
 	out := map[string]*store.Record{}
 	if len(ids) == 0 {
@@ -623,7 +657,7 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 
 // FreshIn is Fresh for records that are all in the partition of partitionKey (store.Record.Partition: an organization's
 // id for its data): the owner of that one partition is asked, wherever this node holds the records or not. A key of ""
-// means the caller does not know it (or the records are global): Fresh. It implements store.PartitionReader.
+// means the caller does not know it (or the records are global): Fresh.
 //
 // The hint is the caller's: an id the hinted partition does not hold, but that this node holds in another partition,
 // is read from that one's owner too. Absence is never concluded from the wrong partition (a caller that finds a record

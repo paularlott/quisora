@@ -21,6 +21,7 @@ func TestOpenAcceptsEveryOptionCombination(t *testing.T) {
 		{Compression: "none"},
 		{InMemory: true},
 		{NoSync: true, Group: GroupOptions{Disabled: true}, GCInterval: time.Hour},
+		{NoSync: true, SyncInterval: time.Millisecond},
 		{BlockCacheMB: 8, IndexCacheMB: 8, ValueLogFileSizeMB: 16},
 		{Logger: quietLogger{}},
 	} {
@@ -196,4 +197,34 @@ func TestWipeRestoresFormatMarker(t *testing.T) {
 		t.Fatalf("reopen after a wipe: %v", err)
 	}
 	s.Close()
+}
+
+// With NoSync and a SyncInterval the store syncs in the background while it is written, and closes (stopping the
+// sync) with everything written there to read again.
+func TestSyncIntervalStoreKeepsItsWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := OpenBadger(ctx, dir, BadgerOptions{NoSync: true, SyncInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 200 {
+		if err := s.Put(ctx, record(model.KindLink, "id"+strconv.Itoa(i), time.Time{})); err != nil {
+			t.Fatal(err)
+		}
+		if i%50 == 0 {
+			time.Sleep(3 * time.Millisecond) // let a sync run between writes
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenBadger(ctx, dir, BadgerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if n, err := s.Count(ctx, model.KindLink, "sc"); err != nil || n != 200 {
+		t.Fatalf("count after reopen: %d %v", n, err)
+	}
 }

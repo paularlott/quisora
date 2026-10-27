@@ -218,9 +218,11 @@ func TestWholeClusterRestart(t *testing.T) {
 		g := genesisOf(c.nodes[0])
 		c.restartAll(nil)
 		c.waitReady()
-		if !allHold(c.nodes, ids) || !sameData(c.nodes) {
-			t.Fatal("data lost across a whole-cluster restart")
-		}
+		// (a read that cannot tell its partition is refused until every partition's owner is heard again: a refusal is
+		// not a loss, so the check waits for answers)
+		waitFor(t, 10*time.Second, "every record on every node after a whole-cluster restart", func() bool {
+			return allHold(c.nodes, ids) && sameData(c.nodes)
+		})
 		for i, tn := range c.nodes {
 			if tn.n.Status().Resyncing || tn.n.ForcedStart() != "" {
 				t.Fatalf("a node needed a resync or a force-start: %+v", tn.n.Status())
