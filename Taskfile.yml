@@ -133,13 +133,18 @@ tasks:
         --log-level debug
 
   test:
-    desc: Vet and run every Go test with the race detector (set the QUISORA_TEST_* variables for database servers)
+    desc: "The everyday loop: vet, and every Go test with the race detector but the cluster package's (task test-cluster): the store drivers' conformance suite and every layer above them (set the QUISORA_TEST_* variables for database servers)"
     cmds:
       - go vet ./...
-      - go vet -tags onepassword ./...      # the build with 1Password service accounts compiles too
-      - go test -race ./...
-      - go test -tags onepassword ./internal/secrets/
-      - go test -race -tags faults ./internal/cluster/   # the tests that inject lost replies (not built into a release)
+      - go test -race $(go list ./... | grep -v /internal/cluster)
+
+  test-cluster:
+    desc: "The cluster package with the race detector (one test after another, the slow part), the store conformance suite against cluster.Store (every store keeps the same promises), and the tests that use fault hooks and counters (-tags faults, not built into a release)"
+    cmds:
+      - go vet -tags faults ./...
+      - QUISORA_CONFORMANCE=1 go test -race -timeout 60m ./internal/cluster/
+      # only the tests of the files built with the tag (//go:build faults): name a new one here
+      - QUISORA_CONFORMANCE=1 go test -race -timeout 60m -tags faults -run 'TestConformanceLostReplies|TestOverwrittenWriteWithALostReplyIsUnknownNotStale|TestPartitionSyncMode|TestImportTooBigForOneTransaction|TestBusyPartitionStateWritesNeverConflict|TestConcurrentPartitionCommitsOnSharedCountersSucceed' ./internal/cluster/ ./internal/store/kvstore/ ./internal/store/sqlstore/
 
   cover:
     desc: Statement coverage of the production code across packages; fails below the floor in scripts/coverage-floor
@@ -156,6 +161,9 @@ tasks:
     desc: "Release gate: vet and every Go test with the race detector, the cluster chaos soak, production coverage at or above its floor, the OpenAPI lint, known vulnerabilities in the Go code and modules (govulncheck) and in the web dependencies (npm audit, high and above, less the accepted ones in web/audit.mjs)"
     cmds:
       - task: test
+      - task: test-cluster
+      - go vet -tags onepassword ./...      # the build with 1Password service accounts compiles too
+      - go test -tags onepassword ./internal/secrets/
       - task: chaos
       - task: cover
       - task: apidocs-lint
@@ -180,7 +188,8 @@ tasks:
     desc: Run every Go test against every storage backend
     deps: [test-dbs]
     cmds:
-      - eval "$(scripts/test-dbs.sh env)" && go test -race ./...
+      - eval "$(scripts/test-dbs.sh env)" && go test -race $(go list ./... | grep -v /internal/cluster)
+      - task: test-cluster
 
   test-ui:
     desc: Accessibility (axe, WCAG 2.2 AA) and keyboard tests in Chromium

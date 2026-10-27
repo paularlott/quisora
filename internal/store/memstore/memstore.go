@@ -3,7 +3,9 @@ package memstore
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -32,6 +34,15 @@ type Store struct {
 	records map[key]*entry
 	unique  map[key]string // (kind, unique value) -> id
 	parts   map[int]*partState
+	closed  atomic.Bool
+}
+
+// open refuses every call once the store is closed (store.Store: ErrUnavailable).
+func (s *Store) open() error {
+	if s.closed.Load() {
+		return fmt.Errorf("%w: %w", store.ErrUnavailable, store.ErrClosed)
+	}
+	return nil
 }
 
 // New returns an empty store.
@@ -43,6 +54,9 @@ func New() *Store {
 func clone(r *store.Record) *store.Record {
 	store.Witness(r.Version)
 	c := *r
+	if !c.Expires.IsZero() {
+		c.Expires = c.Expires.UTC().Truncate(time.Microsecond) // (store.Record: to the microsecond, in UTC)
+	}
 	return &c
 }
 
@@ -55,6 +69,9 @@ func (s *Store) FeedID() string {
 }
 
 func (s *Store) Get(_ context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.records[key{kind, id}]
@@ -65,6 +82,9 @@ func (s *Store) Get(_ context.Context, kind model.Kind, id string) (*store.Recor
 }
 
 func (s *Store) GetByUnique(_ context.Context, kind model.Kind, value string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	id, ok := s.unique[key{kind, value}]
@@ -147,6 +167,14 @@ func (s *Store) apply(rec *store.Record, match bool, expect hlc.Timestamp) error
 			}
 		}
 	}
+	if rec.Deleted && !live(old) {
+		return nil // nothing to delete: nothing is written (store.Store.Put)
+	}
+	if old != nil {
+		if err := store.CheckMove(rec, true, old.rec.Partition); err != nil {
+			return err
+		}
+	}
 	store.StampWrite(rec, headOf(old))
 	if err := store.StampLocal(rec, headOf(old), match && expect == 0); err != nil {
 		return err
@@ -158,7 +186,16 @@ func (s *Store) apply(rec *store.Record, match bool, expect hlc.Timestamp) error
 	return nil
 }
 
-func (s *Store) Put(_ context.Context, rec *store.Record) (err error) {
+func (s *Store) Put(ctx context.Context, rec *store.Record) (err error) {
+	if err := s.open(); err != nil {
+		return err
+	}
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	defer store.EnsureReq(rec, &err)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,9 +205,18 @@ func (s *Store) Put(_ context.Context, rec *store.Record) (err error) {
 // Tx applies ops all or nothing under one lock: each as apply does, in order, so a later op sees what the earlier ones
 // leave (a unique value one releases another may claim). A refusal puts back every record and unique entry the ops
 // touched.
-func (s *Store) Tx(_ context.Context, ops []store.Op) (err error) {
+func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
+	if err := s.open(); err != nil {
+		return err
+	}
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
 	if len(ops) == 0 {
 		return store.ErrBadTx
+	}
+	if err := store.CheckTx(ops); err != nil {
+		return err
 	}
 	seen := map[key]bool{}
 	for _, op := range ops {
@@ -251,6 +297,9 @@ func headOf(e *entry) *store.Head {
 
 // Lookup returns the stored record whatever its state (store.Store).
 func (s *Store) Lookup(_ context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.records[key{kind, id}]
@@ -260,7 +309,13 @@ func (s *Store) Lookup(_ context.Context, kind model.Kind, id string) (*store.Re
 	return clone(e.rec), nil
 }
 
-func (s *Store) PutReplicated(_ context.Context, rec *store.Record) (bool, error) {
+func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	if err := store.Ended(ctx); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putReplicated(rec)
@@ -268,7 +323,13 @@ func (s *Store) PutReplicated(_ context.Context, rec *store.Record) (bool, error
 
 // PutReplicatedBatch applies recs under one lock acquisition (store.BatchReplicator); a record refused with an error
 // stops the batch (the ones before it stay applied here; the caller gives up on an error).
-func (s *Store) PutReplicatedBatch(_ context.Context, recs []*store.Record) ([]bool, error) {
+func (s *Store) PutReplicatedBatch(ctx context.Context, recs []*store.Record) ([]bool, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	if err := store.Ended(ctx); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	applied := make([]bool, len(recs))
@@ -294,7 +355,16 @@ func (s *Store) putReplicated(rec *store.Record) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.Timestamp) (err error) {
+func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) (err error) {
+	if err := s.open(); err != nil {
+		return err
+	}
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	defer store.EnsureReq(rec, &err)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -302,6 +372,9 @@ func (s *Store) CompareAndPut(_ context.Context, rec *store.Record, expect hlc.T
 }
 
 func (s *Store) List(_ context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	if err := store.ValidateQuery(kind, q); err != nil {
 		return nil, err
 	}
@@ -318,6 +391,9 @@ func (s *Store) List(_ context.Context, kind model.Kind, q store.ListQuery) (*st
 }
 
 func (s *Store) Count(_ context.Context, kind model.Kind, scope string) (int, error) {
+	if err := s.open(); err != nil {
+		return 0, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	n := 0
@@ -331,6 +407,9 @@ func (s *Store) Count(_ context.Context, kind model.Kind, scope string) (int, er
 }
 
 func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
+	if err := s.open(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -350,7 +429,10 @@ func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Ti
 	return n, nil
 }
 
-func (s *Store) Close() error { return nil }
+func (s *Store) Close() error {
+	s.closed.Store(true)
+	return nil
+}
 
 var _ store.PartitionStore = (*Store)(nil)
 

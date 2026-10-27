@@ -179,10 +179,6 @@ func (s *Store) beginWrite(ctx context.Context, unsynced bool) (tx *sql.Tx, fini
 	return tx, func() {}, nil
 }
 
-// partitionTxHook, when set (tests), is called inside every partition write transaction before its work, with whether the
-// transaction commits unsynced.
-var partitionTxHook func(ctx context.Context, tx *sql.Tx, unsynced bool)
-
 // partitionTx runs fn in one write transaction and commits it, running it again on a deadlock or a lost race as apply
 // does. tables are the kinds fn writes (their statements are prepared before the transaction begins).
 func (s *Store) partitionTx(ctx context.Context, unsynced bool, tables []*table, fn func(r runner) error) error {
@@ -197,9 +193,7 @@ func (s *Store) partitionTx(ctx context.Context, unsynced bool, tables []*table,
 			}
 			defer finish()
 			defer tx.Rollback()
-			if partitionTxHook != nil {
-				partitionTxHook(ctx, tx, unsynced)
-			}
+			partitionTxStarted(ctx, tx, unsynced) // (tests: faults.go)
 			if err := fn(runner{c: s.wc, tx: tx}); err != nil {
 				return err
 			}
@@ -346,6 +340,60 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	return unavailable(err)
 }
 
+// importUnfinished reports whether partition p, at committed position committed, holds an import that has not finished,
+// in r's view: a row above the committed position (an incremental import cut short: the rows below may lack what it
+// overwrote), or a full import's marker (its reset removes rows before the position moves, leaving nothing above it).
+// Exports and snapshots both refuse such a view.
+func (s *Store) importUnfinished(ctx context.Context, r runner, p int, committed uint64) (bool, error) {
+	exists := func(q string, args ...any) (bool, error) {
+		rows, err := r.query(ctx, q, args...)
+		if err != nil {
+			return false, err
+		}
+		found := rows.Next()
+		rows.Close()
+		return found, rows.Err()
+	}
+	for _, k := range model.Kinds() {
+		if above, err := exists(s.tables[k].aboveSQL, p, int64(committed)); err != nil || above {
+			return above, err
+		}
+	}
+	return exists(s.d.bind("SELECT 1 FROM "+importTable+" WHERE part = ? AND kind = ?"), p, importActive)
+}
+
+// anyImportUnfinished reports whether any partition holds an import that has not finished, in r's view
+// (importUnfinished).
+func (s *Store) anyImportUnfinished(ctx context.Context, r runner) (bool, error) {
+	rows, err := r.query(ctx, "SELECT part FROM "+partTable)
+	if err != nil {
+		return false, err
+	}
+	var parts []int
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return false, err
+		}
+		parts = append(parts, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, p := range parts {
+		st, err := s.readState(ctx, r, p, false)
+		if err != nil {
+			return false, err
+		}
+		if unfinished, err := s.importUnfinished(ctx, r, p, st.Committed.Seq); err != nil || unfinished {
+			return unfinished, err
+		}
+	}
+	return false, nil
+}
+
 func (s *Store) exportPartition(ctx context.Context, p int, afterSeq uint64, start func(store.PartitionPos) error,
 	fn func(store.PartitionRecord) error) error {
 	if afterSeq > store.MaxPartitionSeq {
@@ -370,32 +418,9 @@ func (s *Store) exportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	if !store.ExportAllowed(st.Purged, afterSeq) {
 		return store.ErrPartitionPurged
 	}
-	// A row above the committed position is an import that did not finish: the rows below may lack what it overwrote.
-	for _, k := range model.Kinds() {
-		rows, err := r.query(ctx, s.tables[k].aboveSQL, p, int64(st.Committed.Seq))
-		if err != nil {
-			return err
-		}
-		above := rows.Next()
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		if above {
-			return store.ErrImportUnfinished
-		}
-	}
-	// So is a full import's marker: its reset removes rows before the position moves, leaving nothing above it.
-	rows, err := r.query(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE part = ? AND kind = ?"), p, importActive)
-	if err != nil {
+	if unfinished, err := s.importUnfinished(ctx, r, p, st.Committed.Seq); err != nil {
 		return err
-	}
-	active := rows.Next()
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if active {
+	} else if unfinished {
 		return store.ErrImportUnfinished
 	}
 	if err := start(st.Committed); err != nil {

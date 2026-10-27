@@ -124,9 +124,9 @@ func (s *Service) apiTokenStamp(ctx context.Context, orgID string) (model.SignOu
 // request, an authorization code or device sign-in redeemed from it): unexpired, its user enabled, made in the
 // account's session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of the account's
 // sign-in), not ended by an emergency sign-out (its stamp), and, signed in with a passkey, that passkey still the
-// user's: a session stands on the passkey it was signed in with, so removing it ends the session wherever and whenever
-// it was made (a sign-in verified before the removal and finished after it, a session the removal's listing did not
-// see yet). u must be the session's user, as recently read. An error is a read that failed (the sign-out counters, the
+// user's and still able to sign in (model.Passkey.Usable: not disabled by a detected clone): a session stands on the
+// passkey it was signed in with, so removing or disabling it ends the session wherever and whenever it was made (a
+// sign-in verified before the removal and finished after it, a session the removal's listing did not see yet). u must be the session's user, as recently read. An error is a read that failed (the sign-out counters, the
 // passkey): no verdict (the caller answers 503), never "ended".
 func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) (bool, error) {
 	if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
@@ -147,11 +147,72 @@ func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *mod
 		if err != nil {
 			return false, mapStore(err)
 		}
-		if pk.UserID != u.ID {
+		if pk.UserID != u.ID || !pk.Usable() {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// CreateSessionGrant writes g, a refresh grant carrying on session sess, in one transaction with a write of sess
+// unchanged that holds only while sess is as it was read (its version): the grant is made only while the session it
+// was checked on stands as checked, and a revocation of the session that listed its grants before (EndSession) finds
+// the session changed and lists them again, so no grant outlives a revocation that reported success. ErrStale: the
+// grant exists already (an earlier attempt of the same exchange made it), or the session changed since it was read
+// (read it and check it again).
+func (s *Service) CreateSessionGrant(ctx context.Context, g *model.Grant, sess *model.Session) error {
+	if g.SessionID != sess.ID || g.OrgID != sess.OrgID {
+		return fmt.Errorf("%w: a grant of another session", ErrInvalid)
+	}
+	expect := sess.Version // (Encode stamps a new one)
+	gr, err := store.Encode(g)
+	if err == nil {
+		var sr *store.Record
+		if sr, err = store.Encode(sess); err == nil {
+			if err = s.Grants.S.Tx(ctx, []store.Op{{Rec: gr, Match: true}, {Rec: sr, Match: true, Expect: expect}}); err == nil {
+				g.Version, sess.Version = gr.Version, sr.Version
+				return nil
+			}
+		}
+	}
+	g.Version, sess.Version = 0, expect
+	return err
+}
+
+// EndSession ends session sess with its refresh grants: the grants first, then the session, only while it is as read
+// (its version). A grant made meanwhile changed the session in the same transaction (CreateSessionGrant), so the
+// deletion is refused as stale, and the session is read and its grants listed again: none is left behind by a
+// revocation that reports success. Every deletion is attempted even when one fails (a session a compromised passkey
+// signed in ends whatever its grants do), and the failures are returned together; ended says whether the session itself
+// ended (a session already gone is no failure).
+func (s *Service) EndSession(ctx context.Context, sess *model.Session) (ended bool, err error) {
+	for attempt := 0; ; attempt++ {
+		var errs []error
+		grants, err := s.Grants.All(ctx, sess.UserID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list refresh grants: %w", mapStore(err)))
+		}
+		for _, g := range grants {
+			if g.SessionID == sess.ID {
+				if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
+					errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
+				}
+			}
+		}
+		err = s.Sessions.DeleteIf(ctx, sess.ID, sess.Version)
+		if err == nil || errors.Is(err, store.ErrNotFound) {
+			return true, errors.Join(errs...)
+		}
+		if !errors.Is(err, store.ErrStale) || attempt == 4 {
+			return false, errors.Join(append(errs, fmt.Errorf("end session: %w", mapStore(err)))...)
+		}
+		// Changed since it was read (a grant made, a sign-in noted): read it again, and its grants.
+		if sess, err = s.Sessions.Get(ctx, sess.ID); errors.Is(err, store.ErrNotFound) {
+			return true, errors.Join(errs...)
+		} else if err != nil {
+			return false, errors.Join(append(errs, fmt.Errorf("end session: %w", mapStore(err)))...)
+		}
+	}
 }
 
 // UserUsable is the one test of whether a user may be signed in or act (a browser session, a refresh grant, an access

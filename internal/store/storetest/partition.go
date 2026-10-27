@@ -43,7 +43,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ExportRefusedWhileAnImportIsUnfinished", testPartExportUnfinished},
 		{"ImportFullInBatches", testPartImportFullBatches},
 		{"ExportRefusedAfterAFullImportReset", testPartExportAfterReset},
-		{"SnapshotRefusedWhileAFullImportIsUnfinished", testPartSnapshotUnfinished},
+		{"SnapshotRefusedWhileAnImportIsUnfinished", testPartSnapshotUnfinished},
 		{"ImportFullRestartedAtTheSamePosition", testPartImportFullSamePosition},
 		{"Purge", testPartPurge},
 		{"Tombstones", testPartTombstones},
@@ -1476,6 +1476,25 @@ func testPartSnapshotUnfinished(t *testing.T, f Factory) {
 	must(t, ps.ImportPartition(ctx, 87, []store.PartitionRecord{{Record: c, Seq: 1}}, pos(2, 5), store.ImportStep{Full: true, Final: true}))
 	if err := snap(); err != nil {
 		t.Fatalf("a snapshot once the import has finished: %v", err)
+	}
+
+	// An incremental import cut short leaves records above the committed position and no marker: a snapshot would hold
+	// half of what the source committed in one write (a changed record next to one the same write changed and the import
+	// did not reach yet). So does one into a partition that has never committed anything.
+	for i, base := range []uint64{1, 0} {
+		p := 88 + i
+		if base > 0 {
+			must(t, ps.ApplyPartition(ctx, p, []*store.Record{urec(t, "osn", fmt.Sprintf("sn-i%d", i))}, pos(1, base)))
+		}
+		r := urec(t, "osn", fmt.Sprintf("sn-j%d", i))
+		must(t, ps.ImportPartition(ctx, p, []store.PartitionRecord{{Record: r, Seq: base + 2}}, pos(2, base+3), store.ImportStep{}))
+		if err := snap(); !errors.Is(err, store.ErrUnavailable) {
+			t.Fatalf("a snapshot while an incremental import is unfinished (committed %d): %v, want ErrUnavailable", base, err)
+		}
+		must(t, ps.ImportPartition(ctx, p, nil, pos(2, base+3), store.ImportStep{Final: true}))
+		if err := snap(); err != nil {
+			t.Fatalf("a snapshot once the incremental import has finished: %v", err)
+		}
 	}
 }
 

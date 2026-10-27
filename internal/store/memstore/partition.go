@@ -39,6 +39,9 @@ func (st *partState) view() store.PartitionState {
 }
 
 func (s *Store) PartitionState(_ context.Context, p int) (store.PartitionState, error) {
+	if err := s.open(); err != nil {
+		return store.PartitionState{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if st := s.parts[p]; st != nil {
@@ -48,6 +51,9 @@ func (s *Store) PartitionState(_ context.Context, p int) (store.PartitionState, 
 }
 
 func (s *Store) SetPartitionPromised(_ context.Context, p int, e store.PartitionEpoch) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.part(p)
@@ -59,6 +65,9 @@ func (s *Store) SetPartitionPromised(_ context.Context, p int, e store.Partition
 }
 
 func (s *Store) SetPartitionPending(_ context.Context, p int, seq uint64, pending []byte) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.part(p)
@@ -95,6 +104,9 @@ func (s *Store) putPartition(rec *store.Record, p int, seq uint64) {
 }
 
 func (s *Store) ApplyPartition(_ context.Context, p int, recs []*store.Record, committed store.PartitionPos) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	if err := store.CheckApply(p, committed); err != nil {
 		return err
 	}
@@ -113,19 +125,22 @@ func (s *Store) ApplyPartition(_ context.Context, p int, recs []*store.Record, c
 
 func (s *Store) ExportPartition(_ context.Context, p int, afterSeq uint64, start func(store.PartitionPos) error,
 	fn func(store.PartitionRecord) error) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	s.mu.RLock()
 	var pos store.PartitionPos
 	var out []store.PartitionRecord
 	st := s.parts[p]
 	if st != nil {
 		pos = st.committed
+		if !store.ExportAllowed(st.purged, afterSeq) { // (first, as every store answers it)
+			s.mu.RUnlock()
+			return store.ErrPartitionPurged
+		}
 		if st.importing { // a full import not finished: its reset has emptied the partition, its batches are not all in
 			s.mu.RUnlock()
 			return store.ErrImportUnfinished
-		}
-		if !store.ExportAllowed(st.purged, afterSeq) {
-			s.mu.RUnlock()
-			return store.ErrPartitionPurged
 		}
 	}
 	for _, e := range s.records {
@@ -151,6 +166,9 @@ func (s *Store) ExportPartition(_ context.Context, p int, afterSeq uint64, start
 }
 
 func (s *Store) ImportPartition(_ context.Context, p int, recs []store.PartitionRecord, upTo store.PartitionPos, step store.ImportStep) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	if err := store.CheckImport(p, recs, upTo); err != nil {
 		return err
 	}
@@ -192,6 +210,9 @@ func (s *Store) ImportPartition(_ context.Context, p int, recs []store.Partition
 }
 
 func (s *Store) PurgePartition(_ context.Context, p int, beforeSeq uint64) (int, error) {
+	if err := s.open(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -207,6 +228,9 @@ func (s *Store) PurgePartition(_ context.Context, p int, beforeSeq uint64) (int,
 }
 
 func (s *Store) PartitionTombstones(_ context.Context, p int, afterSeq, upTo uint64, fn func(uint64, hlc.Timestamp) error) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	type tomb struct {
 		seq     uint64
 		version hlc.Timestamp

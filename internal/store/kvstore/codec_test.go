@@ -105,7 +105,7 @@ func TestRecordRoundTripKeepsAllFieldTypes(t *testing.T) {
 	}
 	out := st.rec
 	if out.ID != in.ID || out.Kind != in.Kind || out.Version != in.Version || out.Epoch != in.Epoch || out.Created != in.Created ||
-		out.Origin != "n" || out.Scope != "o" || string(out.Data) != "data" || !out.Expires.Equal(at) || len(out.Unique) != 2 {
+		out.Origin != "n" || out.Scope != "o" || string(out.Data) != "data" || !out.Expires.Equal(at.Truncate(time.Microsecond)) || len(out.Unique) != 2 {
 		t.Fatalf("round trip: %+v", out)
 	}
 	want := map[string]any{"s": "str", "b": true, "t": at, "i": int64(7), "i32": int64(8), "i64": int64(9), "u32": int64(10), "u64": int64(11), "nil": nil}
@@ -169,7 +169,7 @@ func referenceDecode(b []byte) (*stored, error) {
 		Deleted: w.Deleted, Scope: w.Scope, Unique: w.Unique, Data: w.Data, Epoch: hlc.Timestamp(w.Epoch),
 		Created: hlc.Timestamp(w.Created), Partition: w.Partition, Req: w.Req}
 	if w.Expires != 0 {
-		r.Expires = time.Unix(0, w.Expires)
+		r.Expires = time.UnixMicro(w.Expires / 1000).UTC()
 	}
 	if len(w.Fields) > 0 {
 		r.Fields = make(map[string]any, len(w.Fields))

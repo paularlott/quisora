@@ -66,6 +66,7 @@ const (
 	whyNothing  = "nothing"  // nothing to do (a deletion of what is not there, a purge with nothing to purge)
 	whyDone     = "done"     // the write's request is stored already: a retry of a write that landed (store.Retried)
 	whyBad      = "bad"      // malformed or in the wrong partition: a bug, never expected
+	whyMoved    = "moved"    // a write that would change a record's partition key (store.ErrBadRecord)
 	whyLarge    = "large"    // read: the reply would not fit one message; ask for fewer records
 )
 
@@ -584,7 +585,7 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 		return err
 	}
 	if cur != nil && cur.Partition != rec.Partition {
-		return refuse(whyBad, "%s %s is in another partition (a record never moves)", rec.Kind, rec.ID)
+		return refuse(whyMoved, "%s %s is in another partition (a record never moves)", rec.Kind, rec.ID)
 	}
 	live := cur != nil && cur.Live(time.Now())
 	switch mode {
@@ -614,7 +615,8 @@ func (s *pstore) prepareWrite(p int, mode uint8, expect uint64, rec *store.Recor
 			rec.Scope = cur.Scope // a tombstone carries it for the change hooks on every node
 		}
 	}
-	if err := store.StampLocal(rec, head, !live); err != nil {
+	// (a create is CompareAndPut's with no live record: a Put over an expired record continues its generation)
+	if err := store.StampLocal(rec, head, mode == modeMatch && expect == 0); err != nil {
 		return refuse(whyDeleted, "%v", err)
 	}
 	if !rec.Deleted {

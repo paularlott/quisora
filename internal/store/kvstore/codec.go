@@ -146,7 +146,7 @@ func decodeRecord(b []byte) (*stored, error) {
 	}
 	rec.Data = r.bin()
 	if ns := r.int(); ns != 0 {
-		rec.Expires = time.Unix(0, ns)
+		rec.Expires = time.UnixMicro(ns / 1000).UTC() // (store.Record: to the microsecond, in UTC)
 	}
 	rec.Epoch, rec.Created = hlc.Timestamp(r.int()), hlc.Timestamp(r.int())
 	rec.Partition = r.str()

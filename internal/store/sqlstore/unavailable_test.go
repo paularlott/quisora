@@ -65,6 +65,8 @@ func TestClassifyTransientErrors(t *testing.T) {
 		"net timeout":      timeout,
 		"deadline":         context.DeadlineExceeded,
 		"wrapped deadline": fmt.Errorf("query: %w", context.DeadlineExceeded),
+		"canceled":         context.Canceled, // (store.Store: a call failed by its ended context is ErrUnavailable)
+		"conn done":        sql.ErrConnDone,
 		"pg 08006":         &pgconn.PgError{Code: "08006"},
 		"pg 08001":         &pgconn.PgError{Code: "08001"},
 		"pg admin":         &pgconn.PgError{Code: "57P01"},
@@ -87,13 +89,12 @@ func TestClassifyTransientErrors(t *testing.T) {
 		"my lock wait":     &mysql.MySQLError{Number: 1205},
 		"my too many":      &mysql.MySQLError{Number: 1040},
 		"sqlite busy":      sqliteBusy(t),
+		"closed":           errors.New("sql: database is closed"),
 	}
 	other := map[string]error{
 		"nil":             nil,
 		"plain":           errors.New("x"),
 		"no rows":         sql.ErrNoRows,
-		"canceled":        context.Canceled,
-		"closed":          errors.New("sql: database is closed"),
 		"pg duplicate":    &pgconn.PgError{Code: "23505"},
 		"pg no table":     &pgconn.PgError{Code: "42P01"},
 		"my duplicate":    &mysql.MySQLError{Number: 1062},
@@ -136,7 +137,8 @@ func TestClassifyTransientErrors(t *testing.T) {
 	}
 }
 
-// A closed store and a canceled caller are real errors; a database call that ran out of time is "unavailable".
+// A database call that ran out of time, and any call to a closed store, is "unavailable" (store.Store: the same in every
+// store).
 func TestUnavailableAtTheBoundary(t *testing.T) {
 	s, _ := openSQLite(t)
 	ctx := context.Background()
@@ -153,7 +155,7 @@ func TestUnavailableAtTheBoundary(t *testing.T) {
 		"Put": s.Put(ctx, record(model.KindLink, "a", time.Time{})),
 		"Tx":  s.Tx(ctx, []store.Op{{Rec: record(model.KindLink, "a", time.Time{})}}),
 	} {
-		if err == nil || errors.Is(err, store.ErrUnavailable) {
+		if !errors.Is(err, store.ErrUnavailable) {
 			t.Errorf("%s on a closed store: %v", n, err)
 		}
 	}

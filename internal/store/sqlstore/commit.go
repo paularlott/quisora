@@ -2,10 +2,11 @@ package sqlstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Group commit (SQLite).
@@ -37,7 +38,7 @@ const (
 	rollbackSQL  = "ROLLBACK TO qsr_write"
 )
 
-var errStoreClosed = errors.New("sqlstore: the store is closed")
+var errStoreClosed = fmt.Errorf("%w: %w", store.ErrUnavailable, store.ErrClosed)
 
 type write struct {
 	ctx   context.Context

@@ -391,11 +391,7 @@ func (s *Service) UsersByVerifiedEmail(ctx context.Context, orgID string, addres
 		if err != nil {
 			return nil, err
 		}
-		ok := strings.EqualFold(u.Email, addr) && u.EmailVerified
-		if l, found := u.LinkedEmail(addr); found && l.Verified {
-			ok = true
-		}
-		if ok && !seen[u.ID] {
+		if u.HasVerifiedEmail(addr) && !seen[u.ID] {
 			seen[u.ID] = true
 			out = append(out, u)
 		}

@@ -75,7 +75,7 @@ func newTable(d *dialect, kind model.Kind) *table {
 	// A scalar subquery, not a join: SQLite re-prepares a joined statement at every step (6x slower than the two lookups).
 	t.byUnique = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = (SELECT id FROM " + uniqueTable +
 		" WHERE kind = ? AND value = ?) AND deleted = FALSE AND (expires IS NULL OR expires > ?)")
-	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v, req FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
+	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v, req, part FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
 	t.lookup = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = ?")
 	t.insert = d.bind("INSERT INTO " + t.name + " (" + wcols + ") VALUES (" + marks + ")")
 	t.exportSQL = d.bind("SELECT " + t.cols + ", pseq FROM " + t.name + " WHERE pnum = ? AND pseq > ? AND pseq <= ? ORDER BY pseq")

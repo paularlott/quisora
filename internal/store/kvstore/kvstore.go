@@ -60,7 +60,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -297,21 +296,29 @@ func (s *Store) Close() error { return s.eng.Close() }
 
 // Snapshot returns a read-only, point-in-time view of the whole store (store.Snapshotter): on Badger one read
 // transaction, so a backup taken through it is consistent. Close the view when done.
-func (s *Store) Snapshot(context.Context) (store.Reader, error) {
+func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 	e, ok := s.eng.(*badgerEngine)
 	if !ok {
 		return nil, store.ErrNoSnapshot
 	}
+	if e.db.IsClosed() {
+		return nil, engineErr(errStoreClosed)
+	}
 	t := e.db.NewTransaction(false)
-	if importing(t) {
+	switch unfinished, err := unfinishedImport(ctx, t); {
+	case err != nil:
+		t.Discard()
+		return nil, err
+	case unfinished:
 		t.Discard()
 		return nil, errSnapshotImporting
 	}
 	return &Store{eng: &badgerSnapshot{t: t}, feedID: s.FeedID()}, nil
 }
 
-// errSnapshotImporting refuses a snapshot whose view holds a partition part-way through a full import (Snapshotter).
-var errSnapshotImporting = fmt.Errorf("%w: a partition is part-way through a full import; try again once it has finished", store.ErrUnavailable)
+// errSnapshotImporting refuses a snapshot whose view holds a partition part-way through an import, full or not
+// (Snapshotter).
+var errSnapshotImporting = fmt.Errorf("%w: a partition is part-way through an import; try again once it has finished", store.ErrUnavailable)
 
 // ---- keys ----
 
@@ -926,6 +933,14 @@ func putTx(tx txn, rec *store.Record, match bool, expect hlc.Timestamp) error {
 			}
 		}
 	}
+	if rec.Deleted && !live(old) {
+		return nil // nothing to delete: nothing is written (store.Store.Put)
+	}
+	if old != nil {
+		if err := store.CheckMove(rec, true, old.rec.Partition); err != nil {
+			return err
+		}
+	}
 	if old == nil {
 		store.StampWrite(rec, nil)
 	} else {
@@ -944,11 +959,23 @@ func putTx(tx txn, rec *store.Record, match bool, expect hlc.Timestamp) error {
 }
 
 func (s *Store) Put(ctx context.Context, rec *store.Record) (err error) {
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	defer store.EnsureReq(rec, &err)()
 	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, false, 0) })
 }
 
 func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) (err error) {
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	defer store.EnsureReq(rec, &err)()
 	return s.write(ctx, rec.Kind, rec.ID, func(tx txn) error { return putTx(tx, rec, true, expect) })
 }
@@ -959,6 +986,12 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if len(ops) == 0 {
 		return store.ErrBadTx
+	}
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckTx(ops); err != nil {
+		return err
 	}
 	seen := make(map[[2]string]bool, len(ops))
 	for _, op := range ops {
@@ -997,6 +1030,9 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 }
 
 func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	if err := store.Ended(ctx); err != nil {
+		return false, err
+	}
 	var applied bool
 	store.Witness(rec.Version)
 	err := s.write(ctx, rec.Kind, rec.ID, func(tx txn) (err error) {
@@ -1709,9 +1745,6 @@ func (s *Store) purgeIndex(ctx context.Context, bucket, to string, due func(*sto
 	}
 }
 
-// retryConflicts counts the transactions retried after a conflict (tests).
-var retryConflicts atomic.Int64
-
 // retry runs fn until it stops reporting a conflict; used by engines.
 func retry(ctx context.Context, attempt func() error) error {
 	var err error
@@ -1719,7 +1752,7 @@ func retry(ctx context.Context, attempt func() error) error {
 		if err = attempt(); !errors.Is(err, errConflict) {
 			return err
 		}
-		retryConflicts.Add(1)
+		noteRetryConflict()
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}

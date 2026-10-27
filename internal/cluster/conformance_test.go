@@ -174,7 +174,58 @@ func conformClusterWith(tb testing.TB, size int, b backend, opts func(*Options))
 // noClose is a node's store whose Close does nothing: the cluster harness stops the node.
 type noClose struct{ *Store }
 
-func (noClose) Close() error { return nil }
+// Close closes the store as its callers see it; the node, which the test cluster stops, keeps its wrapped store.
+func (s noClose) Close() error {
+	s.closed.Store(true)
+	return nil
+}
+
+// unavailableFor bounds how long a conformance read waits out store.ErrUnavailable, the store's one "try again" answer:
+// a node under the race detector, with every other package's tests running, can miss its majority's heartbeats for
+// longer than StaleAfter, and then refuses to vouch for its copy for a moment ("has not heard from a majority
+// lately"). The suite checks the answers a store gives, not when; a read still refused after this fails its case. A
+// read of a closed store, or with an ended context, is answered at once (testClosed, testEndedContext).
+const unavailableFor = 15 * time.Second
+
+func retried[T any](ctx context.Context, read func() (T, error)) (T, error) {
+	deadline := time.Now().Add(unavailableFor)
+	for {
+		v, err := read()
+		if !errors.Is(err, store.ErrUnavailable) || errors.Is(err, store.ErrClosed) || ctx.Err() != nil ||
+			time.Now().After(deadline) {
+			return v, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (s noClose) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	return retried(ctx, func() (*store.Record, error) { return s.Store.Get(ctx, kind, id) })
+}
+
+func (s noClose) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
+	return retried(ctx, func() (*store.Record, error) { return s.Store.GetByUnique(ctx, kind, value) })
+}
+
+func (s noClose) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	return retried(ctx, func() (*store.Record, error) { return s.Store.Lookup(ctx, kind, id) })
+}
+
+func (s noClose) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	return retried(ctx, func() ([]*store.Record, error) { return s.Store.GetMany(ctx, kind, ids) })
+}
+
+func (s noClose) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	return retried(ctx, func() (*store.ListResult, error) { return s.Store.List(ctx, kind, q) })
+}
+
+func (s noClose) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
+	return retried(ctx, func() (int, error) { return s.Store.Count(ctx, kind, scope) })
+}
+
+func (s noClose) Snapshot(ctx context.Context) (store.Reader, error) {
+	return retried(ctx, func() (store.Reader, error) { return s.Store.Snapshot(ctx) })
+}
 
 // split writes through node 0 and reads through node 1, each read once StaleAfter (and a margin for the test's
 // timers) has passed since the last write ended.
@@ -188,6 +239,12 @@ type split struct {
 func newSplit(c *tcluster) *split {
 	return &split{noClose: noClose{c.nodes[0].st()}, r: c.nodes[1].st(),
 		bound: time.Duration(c.nodes[1].n.staleAfter.Load()) + 100*time.Millisecond}
+}
+
+// Close closes both nodes' stores as the callers see them.
+func (s *split) Close() error {
+	s.r.closed.Store(true)
+	return s.noClose.Close()
 }
 
 func (s *split) wrote(err error) error {
@@ -212,13 +269,14 @@ func (s *split) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 
 func (s *split) Tx(ctx context.Context, ops []store.Op) error { return s.wrote(s.noClose.Tx(ctx, ops)) }
 
-// reader is the node a read of kind is made on: node 1, but the writer for a node-local kind.
-func (s *split) reader(kind model.Kind) *Store {
+// reader is the node a read of kind is made on: node 1, but the writer for a node-local kind (both waiting out a
+// moment's ErrUnavailable, as noClose does).
+func (s *split) reader(kind model.Kind) noClose {
 	if localOnly(kind) {
-		return s.Store
+		return s.noClose
 	}
 	s.settle()
-	return s.r
+	return noClose{s.r}
 }
 
 func (s *split) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
@@ -247,5 +305,5 @@ func (s *split) Count(ctx context.Context, kind model.Kind, scope string) (int, 
 
 func (s *split) Snapshot(ctx context.Context) (store.Reader, error) {
 	s.settle()
-	return s.r.Snapshot(ctx)
+	return noClose{s.r}.Snapshot(ctx)
 }

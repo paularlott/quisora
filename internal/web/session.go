@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -375,10 +374,9 @@ func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	return sess, err
 }
 
-// Delete ends a session by id, with its refresh grants. Every deletion is attempted even when one fails, and the
-// failures are returned together: a grant made with offline_access outlives its session, so one left behind keeps
-// refreshing after a sign-out that reported success. (A grant without it dies with the session, grantLive; a
-// deletion applied here but not yet confirmed by a peer is no failure.)
+// Delete ends a session by id, with its refresh grants (service.EndSession): a grant made with offline_access outlives
+// its session, so one left behind would keep refreshing after a sign-out that reported success, and one an exchange
+// makes while the session ends is found too. (A grant without it dies with the session, grantLive.)
 func (m *Sessions) Delete(ctx context.Context, id string) error {
 	s, err := m.svc.Sessions.Get(ctx, id)
 	if err != nil {
@@ -386,23 +384,8 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 	}
 	m.Evict(id, "")
 	m.svc.SessionsEnding(ctx, s.UserID, id)
-	var errs []error
-	grants, err := m.svc.Grants.All(ctx, s.UserID)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list refresh grants: %w", err))
-	}
-	for _, g := range grants {
-		if g.SessionID == id {
-			if err := m.svc.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
-				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, err))
-			}
-		}
-	}
-	if err := m.svc.Sessions.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) &&
-		!errors.Is(err, context.Canceled) {
-		errs = append(errs, fmt.Errorf("end session: %w", err))
-	}
-	return errors.Join(errs...)
+	_, err = m.svc.EndSession(ctx, s)
+	return err
 }
 
 // SessionHandle is the opaque name a session is shown and ended by (a session's id is its secret's key, so it is never

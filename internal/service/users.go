@@ -1283,10 +1283,11 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, kee
 	if err != nil {
 		return 0, mapStore(err)
 	}
+	var ending []*model.Session
 	var ids []string
 	for _, ss := range sessions {
 		if ss.Passkey == passkeyID && ss.ID != keepSession {
-			ids = append(ids, ss.ID)
+			ending, ids = append(ending, ss), append(ids, ss.ID)
 		}
 	}
 	if len(ids) == 0 {
@@ -1294,24 +1295,15 @@ func (s *Service) EndPasskeySessions(ctx context.Context, userID, passkeyID, kee
 	}
 	s.sessionsEnding(ctx, userID, ids)
 	var errs []error
-	grants, err := s.Grants.All(ctx, userID)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list refresh grants: %w", mapStore(err)))
-	}
-	for _, g := range grants {
-		if slices.Contains(ids, g.SessionID) {
-			if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
-				errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
-			}
-		}
-	}
 	n := 0
-	for _, id := range ids {
-		if err := s.Sessions.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) {
-			errs = append(errs, fmt.Errorf("end session %s: %w", id, mapStore(err)))
-			continue
+	for _, ss := range ending {
+		ended, err := s.EndSession(ctx, ss)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("end session %s: %w", ss.ID, err))
 		}
-		n++
+		if ended {
+			n++
+		}
 	}
 	return n, errors.Join(errs...)
 }

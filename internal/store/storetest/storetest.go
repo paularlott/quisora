@@ -51,7 +51,16 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"FailedWriteLeavesTheRecord", testFailedWriteLeavesRecord},
 		{"Unique", testUnique},
 		{"UniqueReleasedOnChange", testUniqueReleased},
+		{"UniqueOfAnyLength", testUniqueLong},
+		{"Limits", testLimits},
 		{"Tombstone", testTombstone},
+		{"DeleteNotLive", testDeleteNotLive},
+		{"PutOverExpired", testPutOverExpired},
+		{"RecordNeverMoves", testRecordNeverMoves},
+		{"TxRefusesGlobalUnique", testTxGlobalUnique},
+		{"EndedContext", testEndedContext},
+		{"Closed", testClosed},
+		{"ExpiresToTheMicrosecond", testExpiresPrecision},
 		{"Create", testCreate},
 		{"CompareAndPut", testCompareAndPut},
 		{"Expiry", testExpiry},
@@ -233,6 +242,72 @@ func testUniqueReleased(t *testing.T, s store.Store) {
 	}
 }
 
+// A unique value of any length is indexed whole: two long values that share a long prefix are different values, and
+// each finds its record.
+func testUniqueLong(t *testing.T, s store.Store) {
+	tb := store.NewTable[model.Identity](s)
+	prefix := strings.Repeat("l", 600)
+	ident := func(subject string) *model.Identity {
+		return &model.Identity{UserID: "u-" + subject[len(subject)-1:], OrgID: "org1", ProviderID: "p1", Subject: subject}
+	}
+	a, b := ident(prefix+"a"), ident(prefix+"b")
+	must(t, tb.Put(ctx, a))
+	must(t, tb.Put(ctx, b))
+	for _, i := range []*model.Identity{a, b} {
+		got, err := tb.GetByUnique(ctx, model.IdentityKey("p1", i.Subject))
+		if err != nil || got.ID != i.ID {
+			t.Fatalf("a long unique value: %v %v", got, err)
+		}
+	}
+	clash := ident(prefix + "a")
+	if err := tb.Put(ctx, clash); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("a clash on a long unique value: want ErrConflict, got %v", err)
+	}
+	a.Subject = "short"
+	must(t, tb.Put(ctx, a))
+	must(t, tb.Put(ctx, clash)) // released
+}
+
+// Every store takes the same records: an id or scope of MaxIDLength characters, a string field of MaxFieldLength (a
+// Words field of model.MaxTagsText), and refuses one longer with ErrBadRecord, writing nothing.
+func testLimits(t *testing.T, s store.Store) {
+	tb := users(s)
+	at := newUser("org1", "limits")
+	at.ID = strings.Repeat("i", store.MaxIDLength)
+	at.GivenName = strings.Repeat("é", store.MaxFieldLength)
+	tags := make([]string, model.MaxTags)
+	for i := range tags {
+		tags[i] = fmt.Sprintf("t%02d%s", i, strings.Repeat("x", 61))
+	}
+	at.Tags = tags
+	must(t, tb.Put(ctx, at))
+	got, err := tb.Get(ctx, at.ID)
+	must(t, err)
+	if got.GivenName != at.GivenName || len(got.Tags) != model.MaxTags {
+		t.Fatalf("a record at the limits came back changed")
+	}
+	for name, change := range map[string]func(u *model.User){
+		"id":    func(u *model.User) { u.ID = strings.Repeat("i", store.MaxIDLength+1) },
+		"field": func(u *model.User) { u.GivenName = strings.Repeat("é", store.MaxFieldLength+1) },
+	} {
+		u := newUser("org1", "over-"+name)
+		change(u)
+		if err := tb.Put(ctx, u); !errors.Is(err, store.ErrBadRecord) {
+			t.Fatalf("a record over the %s limit: want ErrBadRecord, got %v", name, err)
+		}
+		if err := tb.Create(ctx, u); !errors.Is(err, store.ErrBadRecord) {
+			t.Fatalf("a record over the %s limit, created: want ErrBadRecord, got %v", name, err)
+		}
+		r, _ := store.Encode(u)
+		if err := s.Tx(ctx, []store.Op{{Rec: r}}); !errors.Is(err, store.ErrBadRecord) {
+			t.Fatalf("a record over the %s limit, in a Tx: want ErrBadRecord, got %v", name, err)
+		}
+		if _, err := tb.GetByUnique(ctx, model.UserUsernameKey("org1", "over-"+name)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a refused record was written: %v", err)
+		}
+	}
+}
+
 func testTombstone(t *testing.T, s store.Store) {
 	tb := users(s)
 	u := newUser("org1", "frank")
@@ -256,8 +331,203 @@ func testTombstone(t *testing.T, s store.Store) {
 	if err := s.Put(ctx, old); !errors.Is(err, store.ErrDeleted) {
 		t.Fatalf("live write over a tombstone: want ErrDeleted, got %v", err)
 	}
-	// Deleting a record that never existed is allowed (tombstone for replication).
-	must(t, s.Put(ctx, store.Tombstone(model.KindUser, "never")))
+	// A tombstone keeps the partition key of the record it deleted.
+	if r, err := s.Lookup(ctx, model.KindUser, u.ID); err != nil || !r.Deleted || r.Partition != u.OrgID {
+		t.Fatalf("the tombstone: %+v %v, want its record's partition %q", r, err, u.OrgID)
+	}
+}
+
+// A Put over an expired record continues its generation (its Epoch and Created are kept), as over a live one; only a
+// create (CompareAndPut with expect 0) starts a new one.
+func testPutOverExpired(t *testing.T, s store.Store) {
+	u := newUser("org1", "lapsed")
+	r, err := store.Encode(u)
+	must(t, err)
+	r.Expires = time.Now().Add(-time.Minute)
+	must(t, s.Put(ctx, r))
+	first, err := s.Lookup(ctx, model.KindUser, u.ID)
+	must(t, err)
+	put, err := store.Encode(u)
+	must(t, err)
+	must(t, s.Put(ctx, put))
+	if put.Created != first.Created || put.Epoch != first.Epoch {
+		t.Fatalf("a put over an expired record: created %d epoch %d, want %d %d (its generation)", put.Created, put.Epoch,
+			first.Created, first.Epoch)
+	}
+	r2, err := store.Encode(newUser("org1", "lapsed2"))
+	must(t, err)
+	r2.Expires = time.Now().Add(-time.Minute)
+	must(t, s.Put(ctx, r2))
+	created, err := store.EncodeAsIs(&model.User{Meta: model.Meta{ID: r2.ID}, OrgID: "org1", Username: "lapsed2"})
+	must(t, err)
+	must(t, s.CompareAndPut(ctx, created, 0))
+	if created.Created != created.Version {
+		t.Fatalf("a create over an expired record: created %d, want its own version %d (a new generation)", created.Created, created.Version)
+	}
+}
+
+// A record never changes its partition key: a write that would is refused (ErrBadRecord), whatever the store, and its
+// tombstone keeps the key.
+func testRecordNeverMoves(t *testing.T, s store.Store) {
+	u := newUser("org1", "stays")
+	must(t, users(s).Put(ctx, u))
+	moved := *u
+	moved.OrgID = "org2"
+	r, err := store.Encode(&moved)
+	must(t, err)
+	if err := s.Put(ctx, r); !errors.Is(err, store.ErrBadRecord) {
+		t.Fatalf("a write moving a record to another partition: want ErrBadRecord, got %v", err)
+	}
+	if err := s.Tx(ctx, []store.Op{{Rec: r}}); !errors.Is(err, store.ErrBadRecord) {
+		t.Fatalf("a transaction moving a record to another partition: want ErrBadRecord, got %v", err)
+	}
+	got, err := users(s).Get(ctx, u.ID)
+	must(t, err)
+	if got.OrgID != "org1" {
+		t.Fatalf("the record moved: %q", got.OrgID)
+	}
+}
+
+// A transaction may not write a value unique across organizations (a record holding one is written alone): ErrBadTx,
+// whatever the store.
+func testTxGlobalUnique(t *testing.T, s store.Store) {
+	pk := &model.Passkey{UserID: "u1", OrgID: "org1", Name: "key", CredentialID: []byte("cred-tx")}
+	r, err := store.Encode(pk)
+	must(t, err)
+	if err := s.Tx(ctx, []store.Op{{Rec: r}}); !errors.Is(err, store.ErrBadTx) {
+		t.Fatalf("a transaction writing a passkey: want ErrBadTx, got %v", err)
+	}
+	must(t, s.Put(ctx, r)) // alone, it is written
+}
+
+// A write whose context has ended before it begins is refused with ErrUnavailable and writes nothing, whatever the
+// store; a read may complete, and fails, if it fails, with ErrUnavailable.
+func testEndedContext(t *testing.T, s store.Store) {
+	tb := users(s)
+	keep := newUser("org1", "kept")
+	must(t, tb.Put(ctx, keep))
+	for name, c := range map[string]context.Context{"cancelled": cancelled(), "past its deadline": pastDeadline()} {
+		u := newUser("org1", "ended-"+strings.ReplaceAll(name, " ", "-"))
+		r, err := store.Encode(u)
+		must(t, err)
+		for op, write := range map[string]func() error{
+			"put":    func() error { return s.Put(c, r) },
+			"create": func() error { return s.CompareAndPut(c, r, 0) },
+			"tx":     func() error { return s.Tx(c, []store.Op{{Rec: r}}) },
+		} {
+			if err := write(); !errors.Is(err, store.ErrUnavailable) {
+				t.Fatalf("%s with a context %s: want ErrUnavailable, got %v", op, name, err)
+			}
+		}
+		if _, err := s.Lookup(ctx, model.KindUser, u.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a write with a context %s was written: %v", name, err)
+		}
+		if _, err := s.Get(c, model.KindUser, keep.ID); err != nil && !errors.Is(err, store.ErrUnavailable) {
+			t.Fatalf("a read with a context %s: want it answered or ErrUnavailable, got %v", name, err)
+		}
+		if _, err := s.List(c, model.KindUser, store.ListQuery{Scope: "org1"}); err != nil && !errors.Is(err, store.ErrUnavailable) {
+			t.Fatalf("a listing with a context %s: want it answered or ErrUnavailable, got %v", name, err)
+		}
+	}
+}
+
+// A closed store answers every call with ErrUnavailable, whatever the store (and closing it again is harmless).
+func testClosed(t *testing.T, s store.Store) {
+	u := newUser("org1", "closing")
+	must(t, users(s).Put(ctx, u))
+	must(t, s.Close())
+	r, err := store.Encode(newUser("org1", "after-close"))
+	must(t, err)
+	for name, call := range map[string]func() error{
+		"get": func() error { _, err := s.Get(ctx, model.KindUser, u.ID); return err },
+		"unique": func() error {
+			_, err := s.GetByUnique(ctx, model.KindUser, model.UserUsernameKey("org1", "closing"))
+			return err
+		},
+		"lookup": func() error { _, err := s.Lookup(ctx, model.KindUser, u.ID); return err },
+		"list":   func() error { _, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org1"}); return err },
+		"count":  func() error { _, err := s.Count(ctx, model.KindUser, "org1"); return err },
+		"put":    func() error { return s.Put(ctx, r) },
+		"create": func() error { return s.CompareAndPut(ctx, r, 0) },
+		"tx":     func() error { return s.Tx(ctx, []store.Op{{Rec: r}}) },
+		"snapshot": func() error {
+			sn, ok := s.(store.Snapshotter)
+			if !ok {
+				return store.ErrUnavailable
+			}
+			v, err := sn.Snapshot(ctx)
+			if err == nil {
+				v.Close()
+			}
+			if errors.Is(err, store.ErrNoSnapshot) {
+				return store.ErrUnavailable
+			}
+			return err
+		},
+	} {
+		if err := call(); !errors.Is(err, store.ErrUnavailable) {
+			t.Errorf("%s on a closed store: want ErrUnavailable, got %v", name, err)
+		}
+	}
+}
+
+// An expiry comes back to the microsecond, in UTC, whatever the store and whatever zone it was written in.
+func testExpiresPrecision(t *testing.T, s store.Store) {
+	at := time.Date(2099, 1, 2, 3, 4, 5, 123456789, time.FixedZone("x", 3600))
+	r, err := store.Encode(newUser("org1", "expiring"))
+	must(t, err)
+	r.Expires = at
+	must(t, s.Put(ctx, r))
+	got, err := s.Get(ctx, model.KindUser, r.ID)
+	must(t, err)
+	if want := at.UTC().Truncate(time.Microsecond); !got.Expires.Equal(want) || got.Expires.Location() != time.UTC ||
+		got.Expires.Nanosecond() != want.Nanosecond() {
+		t.Fatalf("expires %v, want %v", got.Expires, want)
+	}
+}
+
+func cancelled() context.Context {
+	c, cancel := context.WithCancel(context.Background())
+	cancel()
+	return c
+}
+
+func pastDeadline() context.Context {
+	c, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	_ = cancel // (ended already; released with the test)
+	return c
+}
+
+// A deletion of a record that is not live (none stored, deleted, or expired) writes nothing and succeeds, whatever the
+// store: a later live write of the same id is a write like any other, not one over a tombstone. One expecting a version
+// finds nothing (ErrNotFound).
+func testDeleteNotLive(t *testing.T, s store.Store) {
+	tb := users(s)
+	gone := newUser("org1", "expired")
+	r, err := store.Encode(gone)
+	must(t, err)
+	r.Expires = time.Now().Add(-time.Minute)
+	must(t, s.Put(ctx, r))
+	for _, id := range []string{"never", gone.ID} {
+		for name, del := range map[string]func() error{
+			"put":    func() error { return s.Put(ctx, store.Tombstone(model.KindUser, id)) },
+			"create": func() error { return s.CompareAndPut(ctx, store.Tombstone(model.KindUser, id), 0) },
+			"tx":     func() error { return s.Tx(ctx, []store.Op{{Rec: store.Tombstone(model.KindUser, id)}}) },
+		} {
+			if err := del(); err != nil {
+				t.Fatalf("%s: a deletion of %s, not live: %v", name, id, err)
+			}
+			if got, err := s.Lookup(ctx, model.KindUser, id); err == nil && got.Deleted {
+				t.Fatalf("%s: a deletion of %s, not live, wrote a tombstone", name, id)
+			}
+		}
+		if err := tb.DeleteIf(ctx, id, 1); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a deletion expecting a version of %s, not live: want ErrNotFound, got %v", id, err)
+		}
+	}
+	again := newUser("org1", "never-again")
+	again.ID = "never"
+	must(t, tb.Put(ctx, again)) // no tombstone stands in its way
 }
 
 func testCreate(t *testing.T, s store.Store) {
@@ -704,6 +974,9 @@ func testListAfter(t *testing.T, s store.Store) {
 	for page := 0; ; page++ {
 		res, err := s.List(ctx, model.KindAudit, store.ListQuery{Scope: "org1", After: after, Limit: 10})
 		must(t, err)
+		if page == 0 && res.Total != len(ids) {
+			t.Fatalf("an after-page's total is %d, want every match (%d)", res.Total, len(ids))
+		}
 		if len(res.Records) == 0 {
 			break
 		}
@@ -1161,10 +1434,14 @@ func testPurge(t *testing.T, s store.Store) {
 	}
 	n, err = s.Purge(ctx, time.Now().Add(time.Minute), time.Now()) // margin: an earlier test may have moved the clock ahead
 	must(t, err)
-	if n != 2 {
-		t.Fatalf("purged %d want 2", n)
+	// The expired record goes; the tombstone goes too, unless the store purges its tombstones itself (store.Store).
+	_, terr := s.Lookup(ctx, model.KindUser, a.ID)
+	switch {
+	case n == 2 && errors.Is(terr, store.ErrNotFound):
+	case n == 1 && terr == nil:
+	default:
+		t.Fatalf("purged %d (the tombstone: %v), want the expired record and perhaps the tombstone", n, terr)
 	}
-	// A purged tombstone no longer blocks an older replicated write (the cluster layer guards that case).
 	if _, err := st.Get(ctx, keep.ID); err != nil {
 		t.Fatal("live record purged")
 	}

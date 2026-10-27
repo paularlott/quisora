@@ -115,7 +115,7 @@ func TestPrepareRefusalCodes(t *testing.T) {
 	// a record never moves
 	moved := newRec("r1", "")
 	moved.Partition = "org-other"
-	if got := prepare(t, n, partitionNum("org-other"), writeChange(t, moved, modeUpsert, 0)); got != whyBad {
+	if got := prepare(t, n, partitionNum("org-other"), writeChange(t, moved, modeUpsert, 0)); got != whyMoved {
 		t.Errorf("a record that changes partition: %q", got)
 	}
 	// a global value is reserved, never listed by a record

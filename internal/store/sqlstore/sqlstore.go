@@ -14,8 +14,8 @@
 // store.ErrUnavailable; a commit lost with its connection is settled by reading the record back (write.go, settle). Nothing is serialised in the
 // process: concurrent writes, those of different partitions included, run at the database's own concurrency.
 //
-// Limits: on MySQL and MariaDB string fields are VARCHAR(255), ids and scopes VARCHAR(191), unique values
-// VARCHAR(512) (utf8mb4, NO PAD binary collation); longer values are rejected by the server. MySQL needs 8.0.13+
+// Limits: on MySQL and MariaDB string fields are VARCHAR(255), ids and scopes VARCHAR(191) (utf8mb4, NO PAD binary
+// collation); longer values are rejected by the server. Unique values of any length are indexed (uniqueKey). MySQL needs 8.0.13+
 // (functional indexes for case-insensitive sorting); MariaDB sorts strings with a filesort inside the scope.
 // SQLite's LOWER folds ASCII only: there strings are folded by quisora_lower (strings.ToLower) instead, which only
 // this program defines, so other SQLite tools can read a Quisora SQLite file but cannot change its indexed tables.

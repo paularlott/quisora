@@ -25,8 +25,11 @@ import (
 //
 // Durability, as the protocol needs it (partition/store.go, "Durability"): SetPartitionPromised and SetPartitionPending
 // are durable when they return, and make everything applied or imported before them durable too (a database's log is
-// ordered; each backend says how). ApplyPartition, ImportPartition and PurgePartition are atomic, and need not be
-// durable when they return.
+// ordered; each backend says how). ApplyPartition and ImportPartition are atomic (a large import in batches, as
+// ImportStep says), and need not be durable when they return. PurgePartition moves the purge point atomically, and
+// removes the tombstones below it in the same transaction or, where a partition's may not fit one (Badger), in batches
+// after it: a crash part-way then leaves some below the point, which the next purge of the partition removes (and
+// which no export after the point shows).
 type PartitionStore interface {
 	// PartitionState returns the stored state of partition p (the zero state for a partition never written).
 	PartitionState(ctx context.Context, p int) (PartitionState, error)

@@ -14,6 +14,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // BadgerOptions tunes the Badger engine; the zero value is a sensible production default.
@@ -198,9 +199,23 @@ func (e *badgerEngine) Close() error {
 	return err
 }
 
+// engineErr answers what the engine cannot do now as the store's one "try again" (store.Store: a closed database, a
+// context that ended, are store.ErrUnavailable); anything else is returned as it is.
+func engineErr(err error) error {
+	switch {
+	case err == nil || errors.Is(err, store.ErrUnavailable):
+		return err
+	case errors.Is(err, badger.ErrDBClosed):
+		return fmt.Errorf("%w: %w: %w", store.ErrUnavailable, store.ErrClosed, err)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %w", store.ErrUnavailable, err)
+	}
+	return err
+}
+
 func (e *badgerEngine) Get(_ context.Context, key string) ([]byte, error) {
 	var out []byte
-	err := e.db.View(func(t *badger.Txn) error {
+	err := e.view(func(t *badger.Txn) error {
 		var err error
 		out, err = getVal(t, key)
 		return err
@@ -213,7 +228,7 @@ func (e *badgerEngine) View(_ context.Context, fn func(get func(key string) ([]b
 }
 
 // view runs fn in a read transaction.
-func (e *badgerEngine) view(fn func(t *badger.Txn) error) error { return e.db.View(fn) }
+func (e *badgerEngine) view(fn func(t *badger.Txn) error) error { return engineErr(e.db.View(fn)) }
 
 func getVal(t *badger.Txn, key string) ([]byte, error) {
 	it, err := t.Get([]byte(key))
@@ -390,6 +405,45 @@ func importing(t *badger.Txn) bool {
 	return it.Valid()
 }
 
+// unfinishedImport reports whether t's view holds an import that has not finished in any partition (importUnfinished):
+// a full import's marker, or a partition whose sequence index has a record above its committed position. It looks at
+// every partition with a sequence index, one seek each.
+func unfinishedImport(ctx context.Context, t *badger.Txn) (bool, error) {
+	if importing(t) {
+		return true, nil
+	}
+	eng := &badgerSnapshot{t: t}
+	const prefix = "ps/"
+	o := badger.DefaultIteratorOptions
+	o.Prefix, o.PrefetchValues = []byte(prefix), false
+	it := t.NewIterator(o)
+	defer it.Close()
+	for it.Rewind(); it.Valid(); {
+		rest := it.Item().Key()[len(prefix):]
+		i := bytes.IndexByte(rest, '/')
+		if i < 0 {
+			return false, fmt.Errorf("kvstore: corrupt partition index key %q", it.Item().Key())
+		}
+		p, err := strconv.Atoi(string(rest[:i]))
+		if err != nil {
+			return false, fmt.Errorf("kvstore: corrupt partition index key %q", it.Item().Key())
+		}
+		b, err := eng.Get(ctx, pstateKey(p))
+		if err != nil {
+			return false, err
+		}
+		st, err := decodeState(b)
+		if err != nil {
+			return false, err
+		}
+		if unfinished, err := importUnfinished(ctx, eng, p, st.Committed.Seq); err != nil || unfinished {
+			return unfinished, err
+		}
+		it.Seek(append([]byte(memberStr(psBucket(uint32(p)), "")), 0xff)) // the next partition's index
+	}
+	return false, nil
+}
+
 type badgerSnapshot struct {
 	t *badger.Txn
 }
@@ -422,11 +476,14 @@ func (e *badgerEngine) Group(ctx context.Context, kind, id string, fn func(tx tx
 	if e.gc == nil {
 		return e.Update(ctx, fn)
 	}
-	return e.gc.submit(ctx, route(kind, id), fn)
+	return engineErr(e.gc.submit(ctx, route(kind, id), fn))
 }
 
 func (e *badgerEngine) Update(ctx context.Context, fn func(tx txn) error) error {
-	return retry(ctx, func() error {
+	if e.db.IsClosed() {
+		return engineErr(badger.ErrDBClosed)
+	}
+	return engineErr(retry(ctx, func() error {
 		b := e.newBatch()
 		b.begin()
 		if err := fn(b); err != nil {
@@ -434,7 +491,7 @@ func (e *badgerEngine) Update(ctx context.Context, fn func(tx txn) error) error 
 			return err
 		}
 		return b.commit()
-	})
+	}))
 }
 
 // bwrite is a buffered write: a value (nil for an ordered-set member without expiry) or a deletion.

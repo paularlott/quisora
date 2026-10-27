@@ -24,8 +24,8 @@ type faultStore struct {
 	store.Store
 	getKind    model.Kind                       // Get of a record of this kind fails
 	listKind   model.Kind                       // List of this kind fails
-	deleteKind model.Kind                       // deleting (a tombstone Put) a record of this kind fails
-	cas        func(r *store.Record) error      // CompareAndPut of a record answers cas(r) when it is not nil
+	deleteKind model.Kind                       // deleting (a tombstone, put or compared) a record of this kind fails
+	cas        func(r *store.Record) error      // a compared write (CompareAndPut, or one in a Tx) of a record answers cas(r) when it is not nil
 	afterGet   func(kind model.Kind, id string) // runs after every Get, as the store answers
 	gets       atomic.Int64
 	lists      atomic.Int64
@@ -84,12 +84,29 @@ func (s *faultStore) Put(ctx context.Context, r *store.Record) error {
 }
 
 func (s *faultStore) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Deleted && r.Kind == s.deleteKind {
+		return errFault
+	}
 	if s.cas != nil {
 		if err := s.cas(r); err != nil {
 			return err
 		}
 	}
 	return s.Store.CompareAndPut(ctx, r, expect)
+}
+
+func (s *faultStore) Tx(ctx context.Context, ops []store.Op) error {
+	for _, op := range ops {
+		if op.Rec.Deleted && op.Rec.Kind == s.deleteKind {
+			return errFault
+		}
+		if s.cas != nil && op.Match {
+			if err := s.cas(op.Rec); err != nil {
+				return err
+			}
+		}
+	}
+	return s.Store.Tx(ctx, ops)
 }
 
 func expectUnavailable(t testing.TB, what string, r tokResp) {

@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
@@ -226,6 +225,19 @@ func (s *Store) readView() (engine, func()) {
 	return s.eng, func() {}
 }
 
+// importUnfinished reports whether partition p, at committed position committed, holds an import that has not finished,
+// in eng's view: a record above the committed position (an incremental import cut short: the records below may lack what
+// it overwrote; the index is in sequence order, so the first member from there tells), or a full import's marker (its
+// reset removes records before the position moves, leaving nothing above it). Exports and snapshots both refuse such a
+// view.
+func importUnfinished(ctx context.Context, eng engine, p int, committed uint64) (bool, error) {
+	if above, err := eng.Range(ctx, psBucket(uint32(p)), psFrom(committed), "\xff", 1); err != nil || len(above) > 0 {
+		return len(above) > 0, err
+	}
+	active, err := eng.Get(ctx, importActiveKey(p))
+	return active != nil, err
+}
+
 // psMember parses a member of the partition sequence index.
 func psMember(m string) (seq uint64, kind model.Kind, id string, err error) {
 	parts := strings.SplitN(m, "/", 3)
@@ -256,17 +268,9 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 		return store.ErrPartitionPurged
 	}
 	bucket := psBucket(uint32(p))
-	// A record above the committed position (the index is in sequence order, so the first member from there tells) is an
-	// import that did not finish: the records below may lack what it overwrote.
-	if above, err := eng.Range(ctx, bucket, psFrom(st.Committed.Seq), "\xff", 1); err != nil {
+	if unfinished, err := importUnfinished(ctx, eng, p, st.Committed.Seq); err != nil {
 		return err
-	} else if len(above) > 0 {
-		return store.ErrImportUnfinished
-	}
-	// So is a full import's marker: its reset removes records before the position moves, leaving nothing above it.
-	if active, err := eng.Get(ctx, importActiveKey(p)); err != nil {
-		return err
-	} else if active != nil {
+	} else if unfinished {
 		return store.ErrImportUnfinished
 	}
 	if err := start(st.Committed); err != nil {
@@ -310,9 +314,6 @@ func (s *Store) ExportPartition(ctx context.Context, p int, afterSeq uint64, sta
 		from = members[len(members)-1] + "\x00"
 	}
 }
-
-// importFallbacks counts batches that did not fit one transaction (tests).
-var importFallbacks atomic.Int64
 
 // importActiveKey is the key of the marker that a full import of p is in progress: the First call sets it, in the
 // transaction that checks the position, before anything is removed, and the transaction that commits the final position
@@ -359,7 +360,7 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 	if isTxnTooBig(err) {
 		// Too big for one Badger transaction: the records in as many as it takes, the position after them (so a crash
 		// leaves the old position, and repeating the import completes it).
-		importFallbacks.Add(1)
+		noteImportFallback()
 		for size := batchGroup; ; {
 			err = s.importChunks(ctx, size, recs, put)
 			if !isTxnTooBig(err) || size == 1 {

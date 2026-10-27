@@ -263,19 +263,27 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	// The grant is the session's authorization carried on: only a session that still signs the user in (not ended by
 	// a password reset, a reset of the account's sign-in or an emergency sign-out, service.SessionUsable) gives one,
 	// and the grant takes the session's epoch and sign-out stamp, never the current ones, so a code redeemed after its
-	// session ended cannot renew what that session lost.
-	sess, err := p.svc.Sessions.Get(ctx, cd.SessionID)
-	if err != nil && !gone(err) {
-		return nil, "", serverError(unavailable(err))
-	}
-	usable := false
-	if err == nil {
-		if usable, err = p.svc.SessionUsable(ctx, sess, u); err != nil {
-			return nil, "", serverError(unavailable(err)) // not known to have ended: the client retries
+	// session ended cannot renew what that session lost. The grant is written only while the session is as checked
+	// here (service.CreateSessionGrant), so a revocation of it that is under way meanwhile ends the grant too.
+	session := func() (*model.Session, *oauthError) {
+		sess, err := p.svc.Sessions.Get(ctx, cd.SessionID)
+		if err != nil && !gone(err) {
+			return nil, serverError(unavailable(err))
 		}
+		usable := false
+		if err == nil {
+			if usable, err = p.svc.SessionUsable(ctx, sess, u); err != nil {
+				return nil, serverError(unavailable(err)) // not known to have ended: the client retries
+			}
+		}
+		if !usable {
+			return nil, oerr("invalid_grant", "the user's session has ended")
+		}
+		return sess, nil
 	}
-	if !usable {
-		return nil, "", oerr("invalid_grant", "the user's session has ended")
+	sess, oe := session()
+	if oe != nil {
+		return nil, "", oe
 	}
 	org, err := p.org(ctx, cd.OrgID)
 	if err != nil {
@@ -304,16 +312,32 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		g.ID = model.NewID()
 	}
 	p.svc.NewGrantKey(g) // the key is sealed bound to the id
-	if err := p.svc.Grants.Create(ctx, g); errors.Is(err, store.ErrStale) {
-		// Made by an earlier attempt of this exchange, which failed on our side after it (only the code names the id):
-		// its tokens are issued now, from it.
-		made, gerr := p.svc.Grants.Get(ctx, g.ID)
-		if gerr != nil || made.ClientID != c.ID || made.SessionID != cd.SessionID {
-			return nil, "", serverError(unavailable(fmt.Errorf("the grant of this code: %v", gerr)))
+	for attempt := 0; ; attempt++ {
+		err := p.svc.CreateSessionGrant(ctx, g, sess)
+		if err == nil {
+			break
 		}
-		g = made
-	} else if err != nil {
-		return nil, "", serverError(err)
+		if !errors.Is(err, store.ErrStale) {
+			return nil, "", serverError(err)
+		}
+		made, gerr := p.svc.Grants.Get(ctx, g.ID)
+		if gerr == nil {
+			// Made by an earlier attempt of this exchange, which failed on our side after it (only the code names the
+			// id): its tokens are issued now, from it.
+			if made.ClientID != c.ID || made.SessionID != cd.SessionID {
+				return nil, "", serverError(unavailable(errors.New("the grant of this code is another's")))
+			}
+			g = made
+			break
+		}
+		if !gone(gerr) || attempt == 2 {
+			return nil, "", serverError(unavailable(fmt.Errorf("the grant of this code: %v", err)))
+		}
+		// The session changed since it was checked (a sign-in noted on it, a revocation under way): check it again.
+		if sess, oe = session(); oe != nil {
+			return nil, "", oe
+		}
+		g.Epoch, g.Stamp = sess.Epoch, sess.Stamp
 	}
 	detail := map[string]string{"grant": g.ID, "user_id": u.ID, "scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID}
 	if via != "" {

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -24,8 +25,17 @@ import (
 // sharing one database) a write goes to the wrapped store, and the change hooks (and, for nodes sharing a database,
 // the notices) run after it.
 type Store struct {
-	n     *Node
-	inner store.Store
+	n      *Node
+	inner  store.Store
+	closed atomic.Bool
+}
+
+// open refuses every call once the store is closed (store.Store: ErrUnavailable), whatever node it would reach.
+func (s *Store) open() error {
+	if s.closed.Load() {
+		return fmt.Errorf("%w: %w", store.ErrUnavailable, store.ErrClosed)
+	}
+	return nil
 }
 
 var (
@@ -38,6 +48,9 @@ func (s *Store) Inner() store.Store { return s.inner }
 // Get returns the live record kind/id from this node's copy; in a gossip cluster, only while this node can vouch for the
 // copy of the record's partition (the staleness gate, partstatus.go: store.ErrUnavailable otherwise).
 func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Get(ctx, kind, id) })
 }
 
@@ -97,6 +110,9 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 // (model.GlobalUnique) is reserved, not indexed, in a gossip cluster: the reservation names the record that holds it.
 // Both reads pass the staleness gate (Get).
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	if s.n.gc == nil || !model.GlobalUnique(kind, value) {
 		return s.gated(ctx, kind, "", func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
 	}
@@ -125,6 +141,9 @@ func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) 
 // cannot know that its data is current refuses (store.ErrUnavailable, see Node.allowWrite); a write whose outcome is
 // not known (the owner was lost mid-write) is store.ErrUnconfirmed.
 func (s *Store) Put(ctx context.Context, rec *store.Record) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	return s.write(ctx, rec, modeUpsert, 0)
 }
 
@@ -132,12 +151,18 @@ func (s *Store) Put(ctx context.Context, rec *store.Record) error {
 // record's partition makes the comparison, so a write based on a copy that another node has changed meanwhile fails
 // with store.ErrStale everywhere and the caller retries from fresh data.
 func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	return s.write(ctx, rec, modeMatch, uint64(expect))
 }
 
 // GetMany reads several records in one round trip of the wrapped store (store.MultiGetter), or one by one. In a gossip
 // cluster it is refused (the staleness gate, Get) when a record found is in a partition this node cannot read now.
 func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	before := s.n.applies.Load()
 	recs, err := store.GetMany(ctx, s.inner, kind, ids)
 	if err != nil || s.n.gc == nil || localOnly(kind) {
@@ -183,16 +208,27 @@ func recPartitions(recs []*store.Record) map[int]struct{} {
 	return ps
 }
 
-// ListDue lists the records due from the wrapped store's due index (store.DueLister), or ErrNoDueIndex.
+// ListDue lists the records due from the wrapped store's due index (store.DueLister), or ErrNoDueIndex, through the
+// staleness gate as an unscoped listing of kind is (gatedScope).
 func (s *Store) ListDue(ctx context.Context, kind model.Kind, before time.Time, limit int) ([]*store.Record, error) {
-	if dl, ok := s.inner.(store.DueLister); ok {
-		return dl.ListDue(ctx, kind, before, limit)
+	if err := s.open(); err != nil {
+		return nil, err
 	}
-	return nil, store.ErrNoDueIndex
+	dl, ok := s.inner.(store.DueLister)
+	if !ok {
+		return nil, store.ErrNoDueIndex
+	}
+	if err := s.gatedScope(ctx, kind, ""); err != nil {
+		return nil, err
+	}
+	return dl.ListDue(ctx, kind, before, limit)
 }
 
 // Lookup returns the stored record whatever its state (store.Store), through the staleness gate (Get).
 func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Lookup(ctx, kind, id) })
 }
 
@@ -201,6 +237,9 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 // first: a backup of it would be complete and verifiable, and miss that partition's records. That is when one is
 // importing as the snapshot is asked for, or one began meanwhile (the view may be after its reset).
 func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	sn, ok := s.inner.(store.Snapshotter)
 	if !ok {
 		return nil, store.ErrNoSnapshot
@@ -226,6 +265,9 @@ func (s *Store) snapshotOf(ctx context.Context, sn store.Snapshotter) (store.Rea
 // through partition writes only (a restore is made before the node starts, and then seeds its partitions: see
 // StartNewCluster). Without gossip it applies locally and runs the hooks.
 func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
 	if s.n.gc != nil {
 		return false, errors.New("cluster: a gossip cluster's records arrive through its partitions")
 	}
@@ -237,6 +279,9 @@ func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, err
 }
 
 func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	if err := store.ValidateQuery(kind, q); err != nil { // a query that is wrong is wrong on any copy
 		return nil, err
 	}
@@ -280,6 +325,9 @@ func (s *Store) gatedScope(ctx context.Context, kind model.Kind, scope string) e
 func globalOnly(kind model.Kind) bool { return kind == model.KindOrg || kind == model.KindKey }
 
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
+	if err := s.open(); err != nil {
+		return 0, err
+	}
 	if err := s.gatedScope(ctx, kind, scope); err != nil {
 		return 0, err
 	}
@@ -288,14 +336,32 @@ func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, 
 
 func (s *Store) FeedID() string { return s.inner.FeedID() }
 
+// Purge removes from this node's copy what expired before expiredBefore, and, without gossip, the tombstones written
+// before tombstonesBefore. A gossip cluster's tombstones are its partitions' (a node catching up by sequence needs
+// them): their owners purge them, as writes every node applies (purgeTombstones), and Purge leaves them alone.
 func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error) {
+	if err := s.open(); err != nil {
+		return 0, err
+	}
+	if s.n.gc != nil {
+		tombstonesBefore = time.Time{}
+	}
 	return s.inner.Purge(ctx, tombstonesBefore, expiredBefore)
 }
 
-func (s *Store) Close() error { return s.inner.Close() }
+func (s *Store) Close() error {
+	s.closed.Store(true)
+	return s.inner.Close()
+}
 
 // write runs one write of rec.
 func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect uint64) (err error) {
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	// Before the first attempt: every retry of the write carries the same request id, and a failed write leaves the
 	// caller's record as it was passed (store.EnsureReq). One that succeeded keeps its unique values as passed: the
 	// global ones are reserved, not stored with it (writePartitioned).
@@ -353,8 +419,8 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		return err
 	}
 	rec.Origin = n.id
-	if rec.Deleted && mode == modeUpsert {
-		mode = modeBlind
+	if rec.Deleted && (mode == modeUpsert || mode == modeMatch && expect == 0) {
+		mode = modeBlind // a deletion of a record that is not live writes nothing (store.Store.Put)
 	}
 	old, err := s.lookup(ctx, rec.Kind, rec.ID)
 	if err != nil {
@@ -377,6 +443,9 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 			return nil // nothing to delete
 		}
 		rec.Partition, rec.Scope = old.Partition, old.Scope
+	} else if err := store.CheckMove(rec, old != nil, partitionOf(old)); err != nil {
+		// (the owner refuses it too, when its copy holds the record; this node holds the writes it made itself)
+		return err
 	}
 	var globals, claimed []string
 	if !rec.Deleted && globalKind(rec.Kind) {
@@ -443,6 +512,14 @@ func (s *Store) writePartitioned(ctx context.Context, rec *store.Record, mode ui
 		}
 	}
 	return nil
+}
+
+// partitionOf is r's partition key ("" for nil).
+func partitionOf(r *store.Record) string {
+	if r == nil {
+		return ""
+	}
+	return r.Partition
 }
 
 // lookup returns the record of kind and id this node holds in any state, or nil.
@@ -596,6 +673,8 @@ func storeErr(err error) error {
 			return store.ErrDeleted
 		case whyNotFound:
 			return store.ErrNotFound
+		case whyMoved:
+			return fmt.Errorf("%w: %s", store.ErrBadRecord, re.Msg)
 		}
 		return fmt.Errorf("cluster: the write was refused: %w", err)
 	case errors.Is(err, store.ErrUnavailable):
@@ -626,6 +705,9 @@ func partitionHint(kind model.Kind, id string) (int, bool) {
 // owner (FreshIn, which is told the partition, asks one). Tombstones are returned too (Deleted). Without gossip (a single
 // node, or a shared database, which is the only copy) it is a local read.
 func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[string]*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	out := map[string]*store.Record{}
 	if len(ids) == 0 {
 		return out, nil
@@ -662,6 +744,9 @@ func (s *Store) Fresh(ctx context.Context, kind model.Kind, ids []string) (map[s
 // is read from that one's owner too. Absence is never concluded from the wrong partition (a caller that finds a record
 // absent may delete what depends on it).
 func (s *Store) FreshIn(ctx context.Context, kind model.Kind, partitionKey string, ids []string) (map[string]*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	if partitionKey == "" || s.n.gc == nil {
 		return s.Fresh(ctx, kind, ids)
 	}

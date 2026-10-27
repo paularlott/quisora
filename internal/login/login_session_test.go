@@ -25,6 +25,13 @@ func (s failSessionDeletes) Put(ctx context.Context, r *store.Record) error {
 	return s.Store.Put(ctx, r)
 }
 
+func (s failSessionDeletes) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
+	if r.Kind == model.KindSession && r.Deleted {
+		return errors.New("injected: session deletion failed")
+	}
+	return s.Store.CompareAndPut(ctx, r, expect)
+}
+
 // A sign-out whose session deletion fails is not answered "signed out" (the session still works for whoever else
 // holds its cookie, and a refresh grant of it keeps refreshing) and no plain logout is audited: 503, and the audit
 // entry says the sign-out is incomplete.

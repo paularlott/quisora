@@ -285,6 +285,16 @@ func (u *User) FullName() string {
 	return u.Email
 }
 
+// HasVerifiedEmail reports whether addr is a verified address of u: its primary address, verified, or a verified linked
+// one.
+func (u *User) HasVerifiedEmail(addr string) bool {
+	if strings.EqualFold(u.Email, addr) && u.EmailVerified {
+		return true
+	}
+	l, found := u.LinkedEmail(addr)
+	return found && l.Verified
+}
+
 func (u *User) LinkedEmail(addr string) (LinkedEmail, bool) {
 	for _, l := range u.LinkedEmails {
 		if strings.EqualFold(l.Address, addr) {

@@ -16,7 +16,10 @@ import (
 
 var (
 	ErrNotFound = errors.New("store: not found")
-	// ErrConflict is returned by Put when a unique value is held by another live record of the same kind.
+	// ErrConflict is returned by Put when a unique value is held by another live record of the same kind. A value
+	// unique across organizations (model.GlobalUnique) may also be answered with it for a short while (at most a
+	// minute) after the record that held it gave it up, or after a write of it whose outcome was not known: a gossip
+	// cluster reserves such a value with a write of its own, released after the record's.
 	ErrConflict = errors.New("store: unique value already in use")
 	// ErrStale is returned by Put when the stored record is at the same or a newer version, and by CompareAndPut
 	// when the stored version is not the expected one.
@@ -32,9 +35,15 @@ var (
 	// vouch for its copy, or a write whose outcome could not be settled within its deadline). A write may have been
 	// applied by an earlier attempt; retrying it is safe (Record.Req).
 	ErrUnavailable = errors.New("store: unavailable now, try again shortly")
-	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, or (in a
+	// ErrBadTx is returned by Tx for a transaction it cannot take: no writes, one record written twice, a record listing
+	// a value unique across organizations (model.GlobalUnique: such a record is written alone, every store), or (in a
 	// gossip cluster) writes in more than one partition or of node-local kinds. Nothing was written.
 	ErrBadTx = errors.New("store: invalid transaction")
+	// ErrBadRecord is returned for a record no store may hold: an id, scope, partition key or string field longer than
+	// the limits (limits.go: the same in every store), or a write that would change a stored record's partition key (a
+	// record never moves: a gossip cluster tells once the node the write is made on, or the new partition's owner, holds
+	// the record, which a caller's own earlier writes always are). Nothing was written.
+	ErrBadRecord = errors.New("store: invalid record")
 	// ErrUnconfirmed marks an ErrUnavailable whose write may have been applied: the store could not settle its outcome
 	// before its deadline (a commit whose connection was lost and could not be read back; in a cluster, a write whose
 	// owner did not answer for longer than the settling). It is the one thing a caller may tell from a plain
@@ -62,12 +71,13 @@ type Record struct {
 	Deleted bool // tombstone: invisible to Get/GetByUnique/List/Count, kept until purged
 	Scope   string
 	// Partition is the record's partition key (model.Index.Partition): "" for global data. Stored and returned by every
-	// backend with the record; a tombstone keeps it (the writer of a tombstone sets it from the record it deletes).
+	// backend with the record; a tombstone keeps it (the store fills it in from the record it deletes when the writer
+	// left it empty).
 	Partition string
 	Unique    []string       // unique values, unique within Kind
 	Fields    map[string]any // queryable values for the kind's schema (string, int64, bool, time.Time)
 	Data      []byte         // msgpack of the entity; nil for tombstones
-	Expires   time.Time      // zero = never; an expired record behaves as if it does not exist
+	Expires   time.Time      // zero = never; an expired record behaves as if it does not exist; kept to the microsecond, returned in UTC
 }
 
 // Live reports whether the record is visible at now.
@@ -150,7 +160,7 @@ type ListQuery struct {
 	Offset  int
 	Limit   int
 	// After pages by key instead of offset: only records with an ID greater than After, in ID order. It needs an
-	// ID-ordered ascending query (no Sort, not Desc) and ignores Offset; Total is then the page length. Records
+	// ID-ordered ascending query (no Sort, not Desc) and ignores Offset; Total still counts every match. Records
 	// created or deleted between pages cannot shift later pages, so a scan of a live store sees every record that
 	// existed throughout it.
 	After string
@@ -285,13 +295,33 @@ func StampLocal(rec *Record, old *Head, create bool) error {
 	return nil
 }
 
+// Ended refuses a write whose context has ended before it begins (ErrUnavailable, wrapping the context's error):
+// every store checks it first, and writes nothing then.
+func Ended(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return nil
+}
+
+// ErrClosed is the cause of the ErrUnavailable a closed store answers every call with.
+var ErrClosed = errors.New("store: closed")
+
 // Store is implemented by every backend. All methods are safe for concurrent use.
+//
+// Ended contexts and closed stores, the same in every store: a write (Put, CompareAndPut, Tx, PutReplicated) whose
+// context has ended before it begins is refused with ErrUnavailable and writes nothing (Ended). A call that fails
+// because its context ended while it ran, or because the store is closed, fails with ErrUnavailable (wrapping the
+// cause): a write may then have been applied, as for any ErrUnavailable, and retrying it is safe. A read may complete
+// whatever its context.
 type Store interface {
 	// Get returns a live record.
 	Get(ctx context.Context, kind model.Kind, id string) (*Record, error)
 	// GetByUnique returns the live record of kind holding the unique value.
 	GetByUnique(ctx context.Context, kind model.Kind, value string) (*Record, error)
-	// Put writes rec (or a tombstone when rec.Deleted), whatever version is stored. The store stamps rec.Version
+	// Put writes rec (or a tombstone when rec.Deleted), whatever version is stored. A deletion of a record that is not
+	// live (none stored, a tombstone, or expired) writes nothing and succeeds; a tombstone keeps the partition key of the
+	// record it deletes (filled in from it when rec.Partition is empty). The store stamps rec.Version
 	// (StampWrite: newer than the stored one; the caller's is not used), and a request id for the write when the caller
 	// set none (EnsureReq; taken off rec again when it returns). It fails with
 	// ErrDeleted when a live rec would replace a tombstone (except KindEphemeral), and with ErrConflict if another live
@@ -310,7 +340,8 @@ type Store interface {
 	Lookup(ctx context.Context, kind model.Kind, id string) (*Record, error)
 	// CompareAndPut writes rec only if the stored live record's version equals expect (ErrStale otherwise). With
 	// expect == 0 it succeeds only when there is no live record (create; over a tombstone this starts a new
-	// generation). ErrNotFound if expect != 0 and there is no live record. Also fails with ErrConflict like Put. It
+	// generation; a deletion with expect == 0 is Put's). ErrNotFound if expect != 0 and there is no live record. Also
+	// fails with ErrConflict like Put. It
 	// stamps rec.Version and rec.Req and sets rec.Epoch and rec.Created as Put does. A retry (Retried) is answered as
 	// done, whatever expect.
 	CompareAndPut(ctx context.Context, rec *Record, expect hlc.Timestamp) error
@@ -329,8 +360,11 @@ type Store interface {
 	// FeedID identifies this database: random, created with it and persisted, so a wiped, replaced or restored database
 	// has another. (The name is historical: no store keeps a change feed any more.)
 	FeedID() string
-	// Purge permanently removes tombstones last written before `tombstonesBefore` and records that expired before
-	// `expiredBefore`. Returns how many records were removed.
+	// Purge permanently removes from this store's copy (each node of a gossip cluster purges its own) records that
+	// expired before `expiredBefore`, and tombstones last written before
+	// `tombstonesBefore`, except where a store purges its tombstones itself (a gossip cluster's partitions, on their own
+	// schedule): it then leaves them. It never removes a live record, nor a tombstone written since tombstonesBefore.
+	// Returns how many records were removed.
 	Purge(ctx context.Context, tombstonesBefore, expiredBefore time.Time) (int, error)
 	// Close releases resources.
 	Close() error

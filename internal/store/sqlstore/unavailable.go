@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 
 	"github.com/paularlott/quisora/internal/store"
 )
+
+// errDBClosed is what database/sql answers once the database was closed.
+const errDBClosed = "sql: database is closed"
 
 // failure is what a database error says about the operation that met it.
 type failure int
@@ -36,9 +40,12 @@ func classify(err error) failure {
 	switch {
 	case errors.Is(err, driver.ErrBadConn), errors.Is(err, mysql.ErrInvalidConn), errors.Is(err, pgconn.ErrConnClosed),
 		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, os.ErrDeadlineExceeded),
-		errors.Is(err, context.DeadlineExceeded), errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNREFUSED),
-		errors.Is(err, syscall.EPIPE), pgconn.Timeout(err):
+		errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), errors.Is(err, sql.ErrConnDone),
+		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, syscall.EPIPE),
+		pgconn.Timeout(err):
 		return failLost
+	case strings.HasSuffix(err.Error(), errDBClosed): // (the one match by message: database/sql exports no error for it)
+		return failRetry // a closed store: nothing was done (store.Store: ErrUnavailable)
 	}
 	var ne net.Error // dial, read and write errors, timeouts, DNS
 	if errors.As(err, &ne) {

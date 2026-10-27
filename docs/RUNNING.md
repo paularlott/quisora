@@ -611,9 +611,10 @@ A backup is encrypted with a password (AES-256-GCM, the key derived by argon2id)
 master key exposure does not open old backups, and a stolen backup needs its password. Keep the password apart from
 the backups.
 
-A backup is refused (try again shortly) while the database holds a partition part-way through being copied whole to
-the node, whether the server is running or not: the copy emptied the partition first, and a backup of it would be
-complete, verifiable and short.
+A backup is refused (try again shortly) while the database holds a partition part-way through a copy from another
+node, whether the server is running or not: a copy of a whole partition empties it first, and a catch-up cut short has
+changed some of a write's records and not yet the others, so a backup of either would verify and restore without being
+data the cluster ever held.
 
 Back up a running server (any backend; the token is a super admin's API token with the `backup` scope):
 

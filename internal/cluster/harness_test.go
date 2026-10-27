@@ -420,12 +420,13 @@ func newTCluster(t testing.TB, size int, mk backend) *tcluster {
 	return c
 }
 
-// started is a started, ready three-node cluster on b.
+// started is a started, ready three-node cluster on b, with every partition's owner heard on every node.
 func started(t *testing.T, b backend) *tcluster {
 	t.Helper()
 	c := newTCluster(t, 3, b)
 	c.startAll()
 	c.waitReady()
+	c.waitOwners() // (ready is not every partition's owner heard on every node: a write before that may be refused)
 	return c
 }
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -550,8 +549,8 @@ func (h *harness) resetCredentialsWithFailingCleanup() {
 // confirmed the write).
 type landsUnconfirmed struct{ store.Store }
 
-func (s landsUnconfirmed) CompareAndPut(ctx context.Context, r *store.Record, expect hlc.Timestamp) error {
-	if err := s.Store.CompareAndPut(ctx, r, expect); err != nil || r.Kind != model.KindGrant {
+func (s landsUnconfirmed) Tx(ctx context.Context, ops []store.Op) error {
+	if err := s.Store.Tx(ctx, ops); err != nil || ops[0].Rec.Kind != model.KindGrant {
 		return err
 	}
 	return store.ErrUnconfirmed

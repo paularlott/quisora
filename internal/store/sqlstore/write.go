@@ -2,12 +2,15 @@ package sqlstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
@@ -37,6 +40,7 @@ type stored struct {
 	deleted bool
 	expires sql.NullInt64
 	uniq    []string
+	part    string
 }
 
 // head returns the row's version metadata (nil for no row).
@@ -72,6 +76,12 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 
 // write runs one Put or CompareAndPut: a transaction of one write.
 func (s *Store) write(ctx context.Context, m mode, rec *store.Record, expect hlc.Timestamp) (err error) {
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckRecord(rec); err != nil {
+		return err
+	}
 	t, err := s.table(rec.Kind)
 	if err != nil {
 		return err
@@ -82,6 +92,9 @@ func (s *Store) write(ctx context.Context, m mode, rec *store.Record, expect hlc
 }
 
 func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	if err := store.Ended(ctx); err != nil {
+		return false, err
+	}
 	t, err := s.table(rec.Kind)
 	if err != nil {
 		return false, err
@@ -94,6 +107,12 @@ func (s *Store) PutReplicated(ctx context.Context, rec *store.Record) (bool, err
 
 // Tx applies ops all or nothing, in one SQL transaction (store.Store).
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckTx(ops); err != nil {
+		return err
+	}
 	type key struct {
 		kind model.Kind
 		id   string
@@ -234,6 +253,14 @@ func (o *op) stage(now int64) (bool, error) {
 			return false, store.ErrStale
 		}
 	}
+	if o.rec.Deleted && (o.old == nil || !o.old.live(now)) {
+		return false, nil // nothing to delete: nothing is written (store.Store.Put)
+	}
+	if o.old != nil {
+		if err := store.CheckMove(o.rec, true, o.old.part); err != nil {
+			return false, err
+		}
+	}
 	store.StampWrite(o.rec, o.old.head())
 	return true, store.StampLocal(o.rec, o.old.head(), create)
 }
@@ -314,7 +341,7 @@ func (s *Store) writeRow(ctx context.Context, r runner, t *table, m mode, rec *s
 		slices.Sort(olds)
 		for _, u := range olds {
 			if !slices.Contains(want, u) {
-				if _, err := r.exec(ctx, s.releaseSQL(), t.kind, u, rec.ID); err != nil {
+				if _, err := r.exec(ctx, s.releaseSQL(), t.kind, uniqueKey(u), rec.ID); err != nil {
 					return err
 				}
 			}
@@ -341,7 +368,7 @@ func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, er
 	var o stored
 	var v, epoch, created int64
 	var uniq sql.NullString
-	err := r.queryRow(ctx, t.meta, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created, &o.req)
+	err := r.queryRow(ctx, t.meta, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created, &o.req, &o.part)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -358,6 +385,20 @@ func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, er
 
 func (s *Store) releaseSQL() string { return s.releaseQ }
 
+// maxUniqueKey is the width of the unique table's value column (VARCHAR(512) on MySQL and MariaDB).
+const maxUniqueKey = 512
+
+// uniqueKey is how unique value u is kept in the unique table: as itself, or, longer than the column (or looking like a
+// hash), as "#" and its SHA-256, so a value of any length is indexed whole on every dialect (the same value always gives
+// the same key; the record keeps the value itself).
+func uniqueKey(u string) string {
+	if len(u) <= maxUniqueKey && !strings.HasPrefix(u, "#") {
+		return u
+	}
+	h := sha256.Sum256([]byte(u))
+	return "#" + base64.RawURLEncoding.EncodeToString(h[:])
+}
+
 // warm prepares the statements a write to t uses, outside any transaction.
 func (s *Store) warm(ctx context.Context, t *table) {
 	for _, q := range []string{t.meta, t.insert, t.update, t.uInsert, t.uHolder, t.uSteal, s.releaseQ} {
@@ -370,6 +411,8 @@ func (s *Store) warm(ctx context.Context, t *table) {
 // (that record keeps its data and loses the index entry), so every node applying the same write ends the same.
 func (s *Store) claim(ctx context.Context, r runner, t *table, m mode, rec *store.Record, u string, now int64) error {
 	insert, holder, steal := t.uInsert, t.uHolder, t.uSteal
+	shown := u
+	u = uniqueKey(u)
 	for range 5 {
 		res, err := r.exec(ctx, insert, t.kind, u, rec.ID)
 		if err != nil {
@@ -402,7 +445,7 @@ func (s *Store) claim(ctx context.Context, r runner, t *table, m mode, rec *stor
 			return nil
 		}
 	}
-	return fmt.Errorf("sqlstore: unique value %q is contended", u)
+	return fmt.Errorf("%w: unique value %q is contended", store.ErrUnavailable, shown)
 }
 
 // Wipe deletes every record and unique value and gives the store a new identity (FeedID), all in one transaction.

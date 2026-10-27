@@ -402,3 +402,37 @@ func TestSessionMadeAfterItsPasskeyWasRemovedIsNotUsable(t *testing.T) {
 		t.Fatal("a session of another way in ended with the passkey")
 	}
 }
+
+// A session made with a passkey that a detected clone disabled meanwhile (a sign-in verified before the clone was seen,
+// finished after) does not sign its user in, nor does one made before.
+func TestSessionOfADisabledPasskeyIsNotUsable(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	u := e.user(org.ID, "pk", model.RoleUser)
+	pk := e.passkey(u, "cloned")
+	usable := func(s *model.Session) bool {
+		t.Helper()
+		ok, err := e.svc.SessionUsable(e.ctx, s, e.fresh(u))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	before, plain := e.session(u), e.session(u)
+	before.Passkey = pk.ID
+	if !usable(before) {
+		t.Fatal("control: the session should be usable")
+	}
+	pk.Disabled = true
+	if err := e.svc.Passkeys.Update(e.ctx, pk); err != nil {
+		t.Fatal(err)
+	}
+	after := e.session(u) // the in-flight sign-in's session, made after the passkey was disabled
+	after.Passkey = pk.ID
+	if usable(after) || usable(before) {
+		t.Fatal("a session of a disabled passkey signs its user in")
+	}
+	if !usable(plain) {
+		t.Fatal("a session of another way in ended with the passkey")
+	}
+}

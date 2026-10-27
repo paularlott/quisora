@@ -512,7 +512,7 @@ func TestReadWaitingForCatchUpAnswersTheCaughtUpCopy(t *testing.T) {
 
 // A backup is refused while a partition is being copied whole to the node (its reset emptied it): the snapshot may hold
 // the partition empty, and still verify. (One that begins as the snapshot is taken is the backend's to refuse: its view
-// holds the import's marker, storetest's SnapshotRefusedWhileAFullImportIsUnfinished.)
+// holds the import's marker, storetest.s SnapshotRefusedWhileAnImportIsUnfinished.)
 func TestBackupSnapshotRefusedDuringAFullImport(t *testing.T) {
 	c := started(t, badgerBackend())
 	n := c.nodes[0].n

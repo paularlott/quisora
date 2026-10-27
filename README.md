@@ -160,7 +160,8 @@ retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
 ## Development
 
 ```bash
-task test         # go vet + all tests with the race detector
+task test         # go vet + every test with the race detector, but the cluster package's (the everyday loop)
+task test-cluster # the cluster package, the conformance suite against it, and the -tags faults tests (slow)
 task test-all     # also against PostgreSQL, MySQL and MariaDB in Docker
 task test-ui      # accessibility (axe) and keyboard tests in Chromium
 task bench        # Go benchmarks

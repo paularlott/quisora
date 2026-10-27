@@ -93,7 +93,7 @@ func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) 
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	rec, err := t.scan(s.reader().queryRow(ctx, t.byUnique, string(kind), value, time.Now().UnixMicro()))
+	rec, err := t.scan(s.reader().queryRow(ctx, t.byUnique, string(kind), uniqueKey(value), time.Now().UnixMicro()))
 	return rec, unavailable(notFound(err))
 }
 
@@ -301,15 +301,14 @@ func (s *Store) Snapshot(ctx context.Context) (store.Reader, error) {
 		_ = tx.Rollback()
 		return nil, unavailable(err)
 	}
-	// A view holding a partition part-way through a full import is refused (store.Snapshotter).
-	var one int
-	switch err := tx.QueryRowContext(ctx, s.d.bind("SELECT 1 FROM "+importTable+" WHERE kind = ? LIMIT 1"), importActive).Scan(&one); {
-	case err == nil:
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("%w: a partition is part-way through a full import; try again once it has finished", store.ErrUnavailable)
-	case !errors.Is(err, sql.ErrNoRows):
+	// A view holding a partition part-way through an import, full or not, is refused (store.Snapshotter).
+	switch unfinished, err := s.anyImportUnfinished(ctx, runner{c: s.rc, tx: tx}); {
+	case err != nil:
 		_ = tx.Rollback()
 		return nil, unavailable(err)
+	case unfinished:
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("%w: a partition is part-way through an import; try again once it has finished", store.ErrUnavailable)
 	}
 	return &snapshot{s: s, tx: tx}, nil
 }

@@ -59,6 +59,9 @@ var (
 	ErrDomain          = errors.New("upstream: email domain is not allowed")
 	ErrExists          = errors.New("upstream: an account with this email address already exists")
 	ErrDisabled        = errors.New("upstream: provider or account is disabled")
+
+	// errNoLongerMatches: the account found by a verified address no longer has it as the link is written.
+	errNoLongerMatches = errors.New("upstream: the account no longer has the address")
 )
 
 // Claims are the identity facts taken from the provider.
@@ -431,8 +434,12 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	// A new way into an existing account, as connecting a provider from the account page: what is in flight for the
 	// account (sign-in steps, enrolment, links) ends (the security generation), in the write that makes the link, and
 	// only while the account is enabled and not privileged as that write finds it (a promotion committed meanwhile is
-	// seen: service.LinkExisting).
+	// seen: service.LinkExisting), and only while one of the addresses the provider verified is still a verified address
+	// of the account as that write finds it (an address changed meanwhile is not the account's to be signed in by).
 	u, err := s.Svc.LinkExisting(ctx, users[0].ID, func(u *model.User) error {
+		if !slices.ContainsFunc(addrs, u.HasVerifiedEmail) {
+			return errNoLongerMatches
+		}
 		if !u.Enabled(time.Now()) {
 			return ErrDisabled
 		}
@@ -446,6 +453,9 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 		}
 		return nil
 	}, func(u *model.User) *model.Identity { return model.NewIdentity(u, p, c.Subject, c.Email, "email") })
+	if errors.Is(err, errNoLongerMatches) {
+		return nil, nil // as if no account had matched
+	}
 	if err != nil {
 		return nil, err
 	}

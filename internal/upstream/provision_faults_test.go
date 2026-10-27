@@ -127,3 +127,53 @@ func TestLinkByEmailSeesAPromotionCommittedMeanwhile(t *testing.T) {
 		t.Fatalf("role %v", got.Role)
 	}
 }
+
+// readdressFirst changes the address of the user of the first transaction that links an identity, just before it runs:
+// an address corrected between the account's lookup by its verified address and the link.
+type readdressFirst struct {
+	store.Store
+	svc  *service.Service
+	done atomic.Bool
+}
+
+func (f *readdressFirst) Tx(ctx context.Context, ops []store.Op) error {
+	for _, op := range ops {
+		if op.Rec.Kind != model.KindIdentity || !f.done.CompareAndSwap(false, true) {
+			continue
+		}
+		var id model.Identity
+		if err := store.Decode(op.Rec, &id); err != nil {
+			return err
+		}
+		u, err := f.svc.Users.Get(ctx, id.UserID)
+		if err != nil {
+			return err
+		}
+		u.Email = "pia.new@example.com"
+		if err := f.svc.Users.Update(ctx, u); err != nil {
+			return err
+		}
+	}
+	return f.Store.Tx(ctx, ops)
+}
+
+// A link by email address is made only while the address the provider verified is still a verified address of the
+// account as the link's own write finds it: an address changed after the account was found by it and before the link
+// makes that write stale, and the account, read again, no longer matches: no link is made.
+func TestLinkByEmailSeesAnAddressChangedMeanwhile(t *testing.T) {
+	f := &readdressFirst{Store: memstore.New()}
+	e := setupOn(t, f)
+	f.svc = e.svc
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false) })
+	u := e.mkUser(t, "pia", "pia@example.com", true)
+	res, err := e.signIn(p, std("pia-sub", "pia@example.com"))
+	if !f.done.Load() {
+		t.Fatal("test set-up: the link's transaction was never made")
+	}
+	if err == nil && res.User != nil && res.User.ID == u.ID {
+		t.Fatal("signed in to an account by an address it no longer has")
+	}
+	if _, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(p.ID, "pia-sub")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an identity was made for an address the account no longer has: %v", err)
+	}
+}

@@ -141,9 +141,18 @@ func (s *Store) settleDone(ctx context.Context, recs []*store.Record) error {
 // is replicated, and hold no value unique across organizations (a reservation is a write of another partition): the
 // transaction is one partition write, settled like any other. Otherwise (no gossip) it is the wrapped store's.
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
+	if err := s.open(); err != nil {
+		return err
+	}
 	n := s.n
 	if len(ops) == 0 {
 		return store.ErrBadTx
+	}
+	if err := store.Ended(ctx); err != nil {
+		return err
+	}
+	if err := store.CheckTx(ops); err != nil {
+		return err
 	}
 	defer store.TxReq(ops, &err)() // (a failed transaction leaves the callers' records as they were passed)
 	for _, op := range ops {
@@ -170,6 +179,14 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	p := -1
 	c := &change{Op: opTx}
 	var recs []*store.Record
+	// The values unique across organizations that records of the transaction held and no longer hold (a deleted
+	// tenant's, a passkey's): their reservations are released once it is applied, as a write of its own releases them
+	// (writePartitioned).
+	type held struct {
+		rec *store.Record
+		g   string
+	}
+	var release []held
 	for _, op := range ops {
 		rec := op.Rec
 		if localOnly(rec.Kind) {
@@ -192,13 +209,29 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 				continue // nothing to delete, as for a deletion of its own (writePartitioned)
 			}
 			rec.Partition, rec.Scope = fresh.Partition, fresh.Scope
-			if !op.Match {
+			if !op.Match || op.Expect == 0 {
 				mode = modeBlind
 			}
-		} else if globalKind(rec.Kind) {
-			for _, u := range rec.Unique {
-				if model.GlobalUnique(rec.Kind, u) {
-					return fmt.Errorf("%w: %s %s holds a value unique across organizations", store.ErrBadTx, rec.Kind, rec.ID)
+			for _, g := range globalsOf(fresh) {
+				release = append(release, held{rec, g})
+			}
+		} else {
+			old, err := s.lookup(ctx, rec.Kind, rec.ID)
+			if err != nil {
+				return err
+			}
+			if err := store.CheckMove(rec, old != nil, partitionOf(old)); err != nil {
+				return err // (as for a write of its own: writePartitioned)
+			}
+			if globalKind(rec.Kind) {
+				// (it lists no value unique across organizations: store.CheckTx refused that)
+				if old == nil {
+					if old, err = s.lookupOrFresh(ctx, rec.Kind, rec.ID); err != nil {
+						return err
+					}
+				}
+				for _, g := range globalsOf(old) {
+					release = append(release, held{rec, g})
 				}
 			}
 		}
@@ -222,7 +255,13 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	res, err := s.submit(ctx, p, c)
 	switch {
 	case isDone(err):
-		return s.settleDone(ctx, recs)
+		if err := s.settleDone(ctx, recs); err != nil {
+			return err
+		}
+		for _, h := range release {
+			s.release(ctx, h.rec.Kind, h.rec.ID, h.g)
+		}
+		return nil
 	case err != nil:
 		var re *partition.RefusedError
 		switch {
@@ -244,9 +283,15 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		return fmt.Errorf("cluster: a transaction of %d writes was answered with %d stamps", len(recs), len(rep.Stamps))
 	}
 	for i, st := range rep.Stamps {
+		if st.Version == 0 {
+			continue // a deletion of a record that was not live: nothing was written (store.Store.Put)
+		}
 		recs[i].Version, recs[i].Epoch, recs[i].Created = hlc.Timestamp(st.Version), hlc.Timestamp(st.Epoch), hlc.Timestamp(st.Created)
 	}
 	s.waitWritten(ctx, p, res.Pos)
+	for _, h := range release {
+		s.release(ctx, h.rec.Kind, h.rec.ID, h.g)
+	}
 	return nil
 }
 
