@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,10 +18,10 @@ func (h *harness) unknownCode(c *model.Client, secret string, i int) tokResp {
 }
 
 // Token requests of a confidential client that fail on what they present (unknown codes here) are counted against that
-// client alone: past its limit it is refused before anything is looked up or recorded, as "try again in a minute",
-// not as invalid_grant (which would make it drop tokens that are good); a backend failing for thousands of users is
-// not capped by what an address may fail, and no other client behind its address is throttled. Requests that succeed
-// do not count.
+// client and grant type alone: past its limit it is refused that grant type before anything is looked up or recorded,
+// as "try again in a minute", not as invalid_grant (which would make it drop tokens that are good); a backend failing
+// for thousands of users is not capped by what an address may fail, and no other client behind its address is
+// throttled. Requests that succeed do not count.
 func TestFailedTokenRequestsAreThrottledPerClient(t *testing.T) {
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
@@ -45,8 +44,10 @@ func TestFailedTokenRequestsAreThrottledPerClient(t *testing.T) {
 	if x.hdr.Get("Retry-After") == "" {
 		t.Errorf("no Retry-After: %v", x.hdr)
 	}
-	// the client is refused whatever it presents now, a good refresh token included, and keeps the token
-	expectErr(t, h.refreshWith(cl, secret, rt), http.StatusTooManyRequests, "temporarily_unavailable")
+	// the client is refused that grant type whatever it presents now, and keeps the others
+	if x := h.refreshWith(cl, secret, rt); x.status != 200 {
+		t.Errorf("a good refresh token while its code exchanges are refused: %d %v", x.status, x.m)
+	}
 	// other clients behind the same address are not: a confidential one, and a public one
 	if x := h.refreshWith(other, otherSecret, "unknown"); x.status != 400 || x.m["error"] != "invalid_grant" {
 		t.Errorf("another confidential client from the same address: %d %v", x.status, x.m)
@@ -59,10 +60,26 @@ func TestFailedTokenRequestsAreThrottledPerClient(t *testing.T) {
 	}
 }
 
+// After an organization's sessions are revoked, a backend's stale refresh tokens fail by the thousand; that must not
+// stop the same client's code exchanges, which the users signing back in need at that very moment.
+func TestRefreshFailuresDoNotBlockCodeExchanges(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	for i := range tokenFailuresPerClientMin {
+		if x := h.refreshWith(cl, secret, "stale-"+strconv.Itoa(i)); x.status != 400 || x.m["error"] != "invalid_grant" {
+			t.Fatalf("refresh %d: %d %v", i, x.status, x.m)
+		}
+	}
+	expectErr(t, h.refreshWith(cl, secret, "stale"), http.StatusTooManyRequests, "temporarily_unavailable")
+	if x, _ := h.login(cl, secret, nil); x.status != 200 {
+		t.Fatalf("a code exchange after %d refresh failures: %d %v", tokenFailuresPerClientMin, x.status, x.m)
+	}
+}
+
 // A public client is admitted by its client_id alone, so anyone can fail as it: its failures count against the address,
-// and past the limit the address is refused before anything is looked at (as "try again", not as invalid_grant or
-// invalid_client, which would make a public client drop tokens that are good). The failures of client authentication
-// count in the same counter, and a request costs one counter read of it, not two.
+// and past the limit the address is refused (as "try again", not as invalid_grant or invalid_client, which would make
+// a public client drop tokens that are good). The failures of client authentication count in the same counter, and a
+// request costs one counter read of it, not two.
 func TestFailedTokenRequestsOfAPublicClientAreThrottledByAddress(t *testing.T) {
 	h := setup(t, nil)
 	pub := h.publicClient(nil)
@@ -86,8 +103,38 @@ func TestFailedTokenRequestsOfAPublicClientAreThrottledByAddress(t *testing.T) {
 	if x.hdr.Get("Retry-After") == "" {
 		t.Errorf("no Retry-After: %v", x.hdr)
 	}
-	// anyone can name a public client, so nothing from the address is looked at now, a client's good credentials included
+	// a client that is named without its credentials is refused too, an unknown one and one with the wrong secret
 	cl, secret := h.newClient(nil)
+	expectErr(t, h.token(url.Values{"grant_type": {"client_credentials"}}, &model.Client{ID: "nobody"}, "x"), http.StatusTooManyRequests, "temporarily_unavailable")
+	expectErr(t, h.token(url.Values{"grant_type": {"client_credentials"}}, cl, "wrong"), http.StatusTooManyRequests, "temporarily_unavailable")
+	// but a confidential client that proves its secret is not: its failures are its own, and the address's other
+	// clients (every public client's invalid_grants after a revocation, behind one NAT) must not keep it from its users
+	expectErr(t, h.unknownCode(cl, secret, 0), 400, "invalid_grant")
+	if o, _ := h.login(cl, secret, nil); o.status != 200 {
+		t.Errorf("a confidential client's code exchange from an address whose public clients fail: %d %v", o.status, o.m)
+	}
+}
+
+// An address that has failed far more than failuresPerIPMin (made-up client ids, wrong secrets) is refused without
+// anything being looked up, a client's right credentials included: each unknown id would cost a store read.
+func TestFailuresPerAddressAreBounded(t *testing.T) {
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	good := h.env.Svc.Clients.S
+	counted := &faultStore{Store: good}
+	h.env.Svc.Clients.S = counted
+	t.Cleanup(func() { h.env.Svc.Clients.S = good })
+	ctx := t.Context()
+	if _, err := h.env.Server.Eph.Incr(ctx, nsRateOIDC, "fail-ip|127.0.0.1", failuresPerIPMax-2, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		expectErr(t, h.token(url.Values{"grant_type": {"client_credentials"}}, &model.Client{ID: "nobody-" + strconv.Itoa(i)}, "x"),
+			http.StatusTooManyRequests, "temporarily_unavailable")
+	}
+	if n := counted.gets.Load(); n > 2 {
+		t.Errorf("%d store reads for unknown client ids past the address's ceiling, want at most the 2 under it", n)
+	}
 	expectErr(t, h.unknownCode(cl, secret, 0), http.StatusTooManyRequests, "temporarily_unavailable")
 }
 
@@ -115,21 +162,17 @@ func TestPushedAuthorizationRequestsAreLimitedPerClient(t *testing.T) {
 	}
 }
 
-// A public client's pushes are small, and counted per address and per organization (the bound that holds however
-// many addresses push): they are the pushes anyone can make, each held in memory until it is used.
-func TestPublicPushedAuthorizationRequestsAreBounded(t *testing.T) {
+// A public client's pushes are counted per address (the proofs one address may have recorded) and by nothing shared:
+// the organization's other public clients, and other addresses, are not held back by them.
+func TestPublicPushedAuthorizationRequestsAreLimitedByAddress(t *testing.T) {
 	h := setup(t, nil)
 	pub := h.publicClient(nil)
 	_, ch := pkce()
 	if r := h.push(pub, "", authzQuery(pub, ch, nil)); r.status != 201 {
 		t.Fatalf("a public client's push: %d %v", r.status, r.m)
 	}
-	big := authzQuery(pub, ch, url.Values{"x_padding": {strings.Repeat("x", parPublicMaxParams)}})
-	if r := h.push(pub, "", big); r.status != 400 || r.m["error"] != "invalid_request" {
-		t.Fatalf("a public client's push over the size limit: %d %v", r.status, r.m)
-	}
-	// the address: one more than its budget (two were made above)
-	for range parPublicPerIPMin - 2 {
+	// one more than the address's budget (one was made above)
+	for range parPublicPerIPMin - 1 {
 		expectErr(t, h.push(pub, "", url.Values{"request_uri": {"urn:x"}}), 400, "invalid_request")
 	}
 	x := h.push(pub, "", url.Values{"request_uri": {"urn:x"}})
@@ -137,17 +180,10 @@ func TestPublicPushedAuthorizationRequestsAreBounded(t *testing.T) {
 	if x.hdr.Get("Retry-After") == "" {
 		t.Errorf("no Retry-After: %v", x.hdr)
 	}
-	// the organization: whatever the address, once its public clients have pushed their share
-	h2 := setup(t, nil)
-	pub2 := h2.publicClient(nil)
-	if _, err := h2.env.Server.Eph.Incr(t.Context(), nsRateOIDC, "par-org|"+pub2.OrgID, parPublicPerOrgMin, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	expectErr(t, h2.push(pub2, "", url.Values{"request_uri": {"urn:x"}}), http.StatusTooManyRequests, "temporarily_unavailable")
-	// a confidential client of the organization is not held back by what public clients pushed
-	cl, secret := h2.newClient(nil)
-	if r := h2.push(cl, secret, authzQuery(cl, ch, nil)); r.status != 201 {
-		t.Errorf("a confidential client after the organization's public budget is spent: %d %v", r.status, r.m)
+	// a confidential client is not held back by what public clients pushed
+	cl, secret := h.newClient(nil)
+	if r := h.push(cl, secret, authzQuery(cl, ch, nil)); r.status != 201 {
+		t.Errorf("a confidential client after an address's public budget is spent: %d %v", r.status, r.m)
 	}
 }
 

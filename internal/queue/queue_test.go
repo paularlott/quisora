@@ -158,7 +158,7 @@ func TestCaps(t *testing.T) {
 }
 
 // A key's share is given back by every way an item leaves the queue: delivered, given up on, and discarded at its
-// horizon; the caps count what the store holds, so they cannot drift to refuse a key for good.
+// horizon (the store no longer holds it), so the caps cannot drift to refuse a key for good.
 func TestCapsFollowTheStore(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		st, _ := b.open(t)
@@ -185,6 +185,10 @@ func TestCapsFollowTheStore(t *testing.T) {
 			if err := q.items.Update(ctx, it); err != nil {
 				t.Fatal(err)
 			}
+		}
+		pass(q, ctx) // discarded, not delivered
+		if s.count() != 2 {
+			t.Fatalf("delivered %d, want only the first two", s.count())
 		}
 		refill("after the horizon")
 		if q.Queued() != 2 {
@@ -260,10 +264,7 @@ func TestEndedItemsArePurged(t *testing.T) {
 		if lo, hi := before.Add(time.Second+time.Minute+time.Hour+discardMargin), time.Now().Add(time.Second+time.Minute+time.Hour+discardMargin); it.Expires.Before(lo.Add(-time.Millisecond)) || it.Expires.After(hi.Add(time.Millisecond)) {
 			t.Fatalf("expires %v, want past the last retry by %v", it.Expires, discardMargin)
 		}
-		it.Next = time.Now()
-		if err := q.items.Update(ctx, it); err != nil {
-			t.Fatal(err)
-		}
+		elapse(q)
 		pass(q, ctx)
 		if s.count() != 1 || q.Queued() != 0 {
 			t.Fatalf("delivered %d, queued %d", s.count(), q.Queued())

@@ -106,7 +106,7 @@ func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model
 	if err != nil {
 		return err
 	}
-	msg.To = u.Email
+	msg.To, msg.OrgID = u.Email, u.OrgID
 	return m.Send(ctx, msg)
 }
 
@@ -117,7 +117,7 @@ func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.O
 	if err != nil {
 		return err
 	}
-	msg.To = u.Email
+	msg.To, msg.OrgID, msg.Expires = u.Email, u.OrgID, time.Now().Add(ttl)
 	return m.Send(ctx, msg)
 }
 
@@ -127,7 +127,7 @@ func (m *Mailer) renderTo(ctx context.Context, to string, u *model.User, org *mo
 	if err != nil {
 		return err
 	}
-	msg.To = to
+	msg.To, msg.OrgID, msg.Expires = to, u.OrgID, time.Now().Add(ttl)
 	return m.Send(ctx, msg)
 }
 

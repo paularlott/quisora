@@ -54,8 +54,10 @@ case "${1:-up}" in
 up)
 	run quisora-test-postgres "${PG_PORT}:5432" paularlott/knot-postgres:18 -e POSTGRES_PASSWORD="$PASS" -- \
 		-c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200
-	run quisora-test-mysql "${MYSQL_PORT}:3306" paularlott/knot-mysql:9.7 -e MYSQL_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2
-	run quisora-test-mariadb "${MARIADB_PORT}:3306" paularlott/knot-mariadb:11.8 -e MARIADB_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2
+	# max_connections: the cluster tests run several nodes' stores at once (each pool up to 32 connections), more than
+	# the servers' default 151 allows.
+	run quisora-test-mysql "${MYSQL_PORT}:3306" paularlott/knot-mysql:9.7 -e MYSQL_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2 --max-connections=500
+	run quisora-test-mariadb "${MARIADB_PORT}:3306" paularlott/knot-mariadb:11.8 -e MARIADB_ROOT_PASSWORD="$PASS" -- --innodb-flush-log-at-trx-commit=2 --max-connections=500
 	wait_for quisora-test-postgres "pg_isready -U postgres -h 127.0.0.1"
 	wait_for quisora-test-mysql "mysqladmin ping -h 127.0.0.1 -uroot -p${PASS}"
 	wait_for quisora-test-mariadb "mariadb-admin ping -h 127.0.0.1 -uroot -p${PASS} || mysqladmin ping -h 127.0.0.1 -uroot -p${PASS}"

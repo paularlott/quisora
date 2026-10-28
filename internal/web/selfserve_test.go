@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
@@ -190,5 +191,58 @@ func TestInProcessRequestsDoNotInheritTheCallersIdentity(t *testing.T) {
 	}
 	if got, want := get("/o/x/inherit"), "anonymous false false"; got != want {
 		t.Fatalf("through WithSession: %q, want %q", got, want)
+	}
+}
+
+// saturatedRoutes make a request that holds the only in-flight slot (limits.max_in_flight = 1) call the server's own
+// organization address through the self transport, and the server's address from outside.
+type saturatedRoutes struct {
+	t       *testing.T
+	outside func() *http.Client
+	url     string
+}
+
+func (m *saturatedRoutes) Register(s *web.Server) {
+	self := s.SelfTransport(nil)
+	s.Mux.HandleFunc("GET /o/x/inner", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("inner")) })
+	s.Mux.HandleFunc("GET /o/x/outer", func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, s.Cfg.Server.PublicURL+"/o/x/inner", nil)
+		res, err := self.RoundTrip(req)
+		if err != nil {
+			m.t.Error(err)
+			return
+		}
+		res.Body.Close()
+		out, err := m.outside().Get(m.url + "/o/x/inner")
+		if err != nil {
+			m.t.Error(err)
+			return
+		}
+		out.Body.Close()
+		w.Header().Set("X-Inner", strconv.Itoa(res.StatusCode))
+		w.Header().Set("X-Outside", strconv.Itoa(out.StatusCode))
+	})
+}
+
+// A request the server makes to itself is not counted against the in-flight limit a second time: the request it was made
+// for holds a slot already (the self transport's handler is a chain of its own, with a counter of its own), so at the
+// limit an in-process request (a sign-in through an organization provider) is still served, while requests from outside
+// are shed as ever.
+func TestInProcessRequestsAreNotShedAtSaturation(t *testing.T) {
+	m := &saturatedRoutes{t: t}
+	e := webtest.New(t, webtest.Options{
+		Configure: func(c *config.Config) { c.Limits.MaxInFlight = 1 },
+		Modules:   func(*web.Server) []web.Module { return []web.Module{m} }})
+	m.outside, m.url = e.Client, e.URL
+	res, err := e.Client().Get(e.URL + "/o/x/outer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if got := res.Header.Get("X-Inner"); got != "200" {
+		t.Errorf("an in-process request while the server is at its in-flight limit: %s, want 200", got)
+	}
+	if got := res.Header.Get("X-Outside"); got != "503" {
+		t.Errorf("a request from outside at the limit: %s, want 503 (shed)", got)
 	}
 }

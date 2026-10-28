@@ -62,8 +62,12 @@ and crashes. Only that node sends them; nothing else reads them. They are never 
 each node's are in its own database, and on a shared database every node holds its own there, apart from the others'.
 A node that is gone for good leaves its items unsent: each is discarded (it expires, and the purge removes it) a day
 after its last retry would have been, by when it is worth nothing (its retries are over, and an invitation it carries
-lasts 7 days). Each node's caps (10,000 emails; 10,000 logouts, 2,500 of one organization) and gauges count its own
-items only.
+lasts 7 days). Each node's caps (10,000 emails and 10,000 logouts, 2,500 of each of one organization) and gauges count
+its own items only. Being the only node that writes its items, a node keeps an index of them in memory, read from the
+store once at start: choosing what to send next and checking the caps cost no reads of the store, however many sent
+items it still holds until its purge. A message or logout that was sent but whose end the store did not record (a
+full disk, a database turned read-only) is not sent again: the node records its end again every minute until the
+store takes it (only a restart before then sends it once more).
 
 ### TLS certificates
 
@@ -431,6 +435,14 @@ How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator
   survive a power cut, and a gossip node refuses to start with it off.
 - **Keep the data directory with the database**: it holds the node's id (or set `cluster.node_id`) and `cluster-state.json`
   (whether the database can be trusted), and a node that finds another node's database refuses to serve (it never wipes it).
+- **Every node has its own id**: a data directory or machine image copied to a second node carries the first's `node_id`
+  (so does one `cluster.node_id` in a configuration both read), and the two would each deliver every queued email and
+  logout and share the per-organization caps. Delete `node_id` from the copy (a new one is made at its start) or set
+  `cluster.node_id`. Nodes that share one database without gossip notice: each keeps a record of its id in the database,
+  renewed every 10 seconds, and a node that finds its id held by another running node refuses to start (after waiting
+  up to 40 seconds for the record of a node that was killed to run out) or, already running, reports itself not ready
+  until that has passed. A node that shuts down cleanly releases its id at once. A gossip node does not use the record:
+  each has its own database (queued items are in it), and a database two gossip nodes share is refused (above).
 - **Clocks** must be in sync (NTP); more than 5 s apart is a broken node, and gossip refuses packets more than two minutes off
   the receiver's clock. ([Clocks](REPLICATION.md#clocks))
 - **Open the gossip port** (`cluster.bind`, TCP and UDP) between the nodes only: the partition protocol's messages (writes, promises,
@@ -788,8 +800,14 @@ When the master keys change (a start with new keys, or a reload) each node re-se
 before it reports that key, so a rotation reported complete leaves no queued message needing the old key. A message
 sealed under a key that is not configured (one removed too early, or a node that was down during the rotation started
 without it) is kept and logged, and sent once that key is put back in `previous_master_keys`. Each node holds at most
-10,000 messages; past that, new ones are refused with an error. Watch `quisora_mail_queued`: growing means SMTP is not
-taking mail.
+10,000 messages, of which one organization may have 2,500; past that, new ones (of that organization) are refused with
+an error. Messages go out 8 at a time, at most 2 of them for one organization, each over a connection of its own: an
+organization's burst (thousands of invitations, or password resets asked for address after address) fills only its
+share, and the other organizations' messages go out beside its backlog rather than behind it. All organizations share
+the one SMTP server, though: when it is slow or down every organization's mail waits alike. A message whose sign-in
+code or link has expired by the time its turn comes is dropped, not sent (`mail not sent: what it carries expired while
+it was queued`), so mail SMTP takes again after an outage is what still works. Watch `quisora_mail_queued`: growing
+means SMTP is not taking mail.
 
 ## Health and monitoring
 
@@ -798,9 +816,10 @@ taking mail.
   counts of writes whose outcome is unknown, refusals and clock skew.
 - `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
-- Short-lived sign-in state (flows, codes, pushed requests, challenges) is held in each node's memory up to
+- Short-lived sign-in state (flows, codes, challenges) is held in each node's memory up to
   `limits.ephemeral_mb` (default 1024 MiB); past it, requests that would add to it get 503 until expiries make room.
-  Rate-limit counters are never refused. With a shared database this state lives in the database instead.
+  Rate-limit counters are never refused. With a shared database this state lives in the database instead. A pushed
+  authorization request (PAR) holds nothing: its request_uri carries the request, sealed (docs/oauth/par.md).
 
 ### Metrics
 

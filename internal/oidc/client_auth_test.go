@@ -111,7 +111,9 @@ func TestClientAuthFailureLimit(t *testing.T) {
 	})
 
 	// Making up a new client id for every attempt does not get a fresh budget forever: past the address ceiling every
-	// attempt from that address is refused, a real client's included.
+	// attempt from that address is refused, a wrong secret of a real client's included; one that proves its secret is
+	// not (a confidential client's failures are its own, and behind a shared address other clients' must not keep it
+	// from its users).
 	t.Run("new client ids per address", func(t *testing.T) {
 		h := setup(t, nil)
 		cl, secret := h.newClient(nil)
@@ -125,8 +127,11 @@ func TestClientAuthFailureLimit(t *testing.T) {
 		if r.status != 429 || r.str("error") != "temporarily_unavailable" { // "try again": not a verdict on a client's credentials
 			t.Fatalf("past the address ceiling: %d %v", r.status, r.m)
 		}
-		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 429 {
-			t.Errorf("real client from the same address past the ceiling: %d", r.status)
+		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {"wrong"}}, "", ""); r.status != 429 {
+			t.Errorf("real client's wrong secret from the same address past the ceiling: %d", r.status)
+		}
+		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+			t.Errorf("real client's right secret from the same address past the ceiling: %d", r.status)
 		}
 	})
 

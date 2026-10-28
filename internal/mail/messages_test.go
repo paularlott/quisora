@@ -84,4 +84,8 @@ func TestSendSignInCode(t *testing.T) {
 	if !strings.Contains(msg.Text, "493021") || !strings.Contains(msg.HTML, "493021") || !strings.Contains(msg.Text, "10 minutes") {
 		t.Fatalf("%+v", msg)
 	}
+	// It is queued as its organization's, and is not sent once the code has expired.
+	if msg.OrgID != org.ID || time.Until(msg.Expires) < 9*time.Minute || time.Until(msg.Expires) > 10*time.Minute {
+		t.Fatalf("organization %q, expires %v: want %q, in 10 minutes", msg.OrgID, msg.Expires, org.ID)
+	}
 }

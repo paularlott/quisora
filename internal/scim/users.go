@@ -156,21 +156,6 @@ func (rq *request) groupsValue(groups []*model.Group) []any {
 	return gs
 }
 
-// groupIndex maps user id -> groups of the org, for rendering users. Each user's groups are read from their own
-// memberships (an index read, then the groups by id), so the cost follows the users listed, not the number of groups
-// of the organization.
-func (rq *request) groupIndex(users []*model.User) (map[string][]*model.Group, error) {
-	idx := make(map[string][]*model.Group, len(users))
-	for _, u := range users {
-		gs, err := rq.m.srv.Svc.UserGroups(rq.ctx, u)
-		if err != nil {
-			return nil, err
-		}
-		idx[u.ID] = gs
-	}
-	return idx, nil
-}
-
 func str(m map[string]any, key string) (string, bool, *Error) {
 	v := getCI(m, key)
 	switch t := v.(type) {
@@ -795,7 +780,7 @@ func (rq *request) listUsers() {
 		var idx map[string][]*model.Group
 		if needGroups {
 			var err error
-			if idx, err = rq.groupIndex(users); err != nil {
+			if idx, err = rq.m.srv.Svc.UserGroupsOf(rq.ctx, users); err != nil {
 				return nil, err
 			}
 		}
@@ -894,7 +879,7 @@ func (rq *request) listUsers() {
 	for _, it := range page {
 		pageUsers = append(pageUsers, byID[it["id"].(string)])
 	}
-	idx, err := rq.groupIndex(pageUsers)
+	idx, err := rq.m.srv.Svc.UserGroupsOf(rq.ctx, pageUsers)
 	if err != nil {
 		rq.fail(err)
 		return

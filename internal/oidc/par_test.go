@@ -2,10 +2,12 @@ package oidc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,6 @@ import (
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/web"
 )
 
 // push posts an authorization request to the PAR endpoint as client c (secret "" for a public client).
@@ -119,16 +120,12 @@ func TestPushedAuthorizationRequestValidation(t *testing.T) {
 	if r := h.push(cl, "", authzQuery(cl, ch, nil)); r.status != 401 {
 		t.Errorf("confidential client without a secret: %d %v", r.status, r.m)
 	}
-	// the stored request holds no client credentials
+	// the request_uri holds no client credentials
 	r := h.push(cl, secret, authzQuery(cl, ch, nil))
-	raw, err := h.env.Server.Eph.Get(context.Background(), nsPAR, strings.TrimPrefix(r.str("request_uri"), parURNPrefix))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pr pushedRequest
-	_ = json.Unmarshal(raw, &pr)
-	if pr.ClientID != cl.ID || strings.Contains(pr.Params, "client_secret") || strings.Contains(pr.Params, secret) {
-		t.Fatalf("stored: %+v", pr)
+	q, _, _, err := h.p.loadPushed(context.Background(), cl.OrgID, cl.ID, r.str("request_uri"))
+	if err != nil || q.Get("client_id") != cl.ID || q.Has("client_secret") || strings.Contains(q.Encode(), secret) ||
+		strings.Contains(r.str("request_uri"), secret) {
+		t.Fatalf("pushed: %v %v", q, err)
 	}
 }
 
@@ -286,52 +283,58 @@ func TestPushedRequestTooLarge(t *testing.T) {
 	}
 }
 
+// A request_uri whose use cannot be looked up is not answered as an invalid one: the store failed, and the page says to
+// try again. When its use cannot be recorded at the decision, no code is issued.
 func TestPushedRequestStoreFailures(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
 	_, ch := pkce()
-	// a push that cannot be stored
-	h.useEph(func(op, ns string) error {
-		if op == "new" && ns == nsPAR {
-			return ephemeral.ErrFull
-		}
-		return nil
-	})
-	expectUnavailable(t, "par full", h.push(cl, secret, authzQuery(cl, ch, nil)))
-	h.useEph(func(op, ns string) error {
-		if op == "new" && ns == nsPAR {
-			return errors.New("boom")
-		}
-		return nil
-	})
-	if r := h.push(cl, secret, authzQuery(cl, ch, nil)); r.status != 500 {
-		t.Fatalf("%d %v", r.status, r.m)
+	c, _ := h.session(h.user)
+	uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
+	good := h.env.Svc.Replays.S
+	h.env.Svc.Replays.S = failReads(good, model.KindReplay)
+	resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
+	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Please try again") {
+		t.Fatalf("use not readable: %d %.80s", resp.StatusCode, pg)
+	}
+	h.env.Svc.Replays.S = failCAS(good, model.KindReplay, func() error { return errFault })
+	if u := h.authorize(c, pushedQuery(cl, uri)); u.Query().Get("code") != "" {
+		t.Fatalf("a code was issued although its request_uri could not be recorded as used: %s", u)
+	}
+	h.env.Svc.Replays.S = good
+	if u := h.authorize(c, pushedQuery(cl, uri)); u.Query().Get("code") == "" {
+		t.Fatalf("the request_uri after the store recovered: %s", u)
 	}
 }
 
-// A request_uri that names nothing usable (no client or id, an id too long, a record that is not a pushed request, one
-// whose parameters cannot be read) is answered with the error page, never a redirect.
+// A request_uri that is not one of ours for that client (no client, nothing after the prefix, not encoded, sealed
+// for another client or organization, tampered with, expired, or holding parameters that cannot be read) is answered
+// with the error page, never a redirect.
 func TestPushedRequestURIRefusals(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	cl, _ := h.newClient(nil)
+	cl, secret := h.newClient(nil)
 	c, _ := h.session(h.user)
-	ctx := context.Background()
-	put := func(v []byte) string {
-		id, err := h.env.Server.Eph.New(ctx, nsPAR, v, time.Minute)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
+	_, ch := pkce()
+	uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
+	seal := func(binding string, pr pushedRequest) string {
+		b, _ := json.Marshal(pr)
+		return parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte(h.env.Svc.Sealer.SealFor(binding, b)))
 	}
-	unparsable, _ := json.Marshal(pushedRequest{Org: cl.OrgID, ClientID: cl.ID, Params: "a=%zz"})
+	own := parBinding(cl.OrgID, cl.ID)
+	live := time.Now().Add(time.Minute).Unix()
 	for name, tc := range map[string]struct{ client, requestURI string }{
-		"no client":         {"", parURNPrefix + "x"},
+		"no client":         {"", uri},
 		"no id":             {cl.ID, parURNPrefix},
-		"long id":           {cl.ID, parURNPrefix + strings.Repeat("i", 201)},
-		"not json":          {cl.ID, parURNPrefix + put([]byte("not json"))},
-		"unparsable params": {cl.ID, parURNPrefix + put(unparsable)},
+		"not encoded":       {cl.ID, parURNPrefix + "!!!"},
+		"not sealed":        {cl.ID, parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte("v3:x:y"))},
+		"tampered":          {cl.ID, uri[:len(uri)-2] + "AA"},
+		"another client":    {cl.ID, seal(parBinding(cl.OrgID, "other"), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
+		"another org":       {cl.ID, seal(parBinding("another-org", cl.ID), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
+		"expired":           {cl.ID, seal(own, pushedRequest{ID: "a", Expires: time.Now().Add(-time.Second).Unix(), Params: "client_id=" + cl.ID})},
+		"no id inside":      {cl.ID, seal(own, pushedRequest{Expires: live, Params: "client_id=" + cl.ID})},
+		"unparsable params": {cl.ID, seal(own, pushedRequest{ID: "a", Expires: live, Params: "a=%zz"})},
 	} {
 		resp := h.get(c, orgBase+"/oauth/authorize?"+url.Values{"client_id": {tc.client}, "request_uri": {tc.requestURI}}.Encode())
 		if pg := body(resp); resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" ||
@@ -339,49 +342,76 @@ func TestPushedRequestURIRefusals(t *testing.T) {
 			t.Errorf("%s: %d %.80s", name, resp.StatusCode, pg)
 		}
 	}
-	// what is gone or unreadable counts as used up: the first visit and the decision both treat it so
-	if !h.p.startPushed(ctx, "gone") || !h.p.startPushed(ctx, put([]byte("not json"))) {
-		t.Fatal("startPushed of a missing or unreadable request is not used")
-	}
-	if h.p.usePushed(ctx, "gone") || h.p.usePushed(ctx, put([]byte("not json"))) {
-		t.Fatal("usePushed of a missing or unreadable request")
+	// the one that was pushed still works
+	if u := h.authorize(c, pushedQuery(cl, uri)); u.Query().Get("code") == "" {
+		t.Fatalf("control: %s", u)
 	}
 }
 
-// Two browsers reach the consent screen with one pushed request; the second to decide finds it used.
-
-func TestPushedRequestNotResurrectedByDelayedFirstVisit(t *testing.T) {
+// A push stores nothing, so what anyone may push cannot use up the node's short-lived state or an organization's
+// share of it: a flood of public pushes from many addresses leaves the ephemeral store as it was (but for the
+// per-address counters), all of them are answered, and another public client's sign-in is not held back.
+func TestPublicPushesHoldNothing(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	local := ephemeral.NewLocal("pushed-request")
-	defer local.Close()
-	// the first read of the request holds after it has its snapshot, while another browser starts and finishes the
-	// authorization
-	g := newGate(t)
-	p := &Provider{s: &web.Server{Eph: faultEph{Store: local, after: func(op, ns string) {
-		if op == "get" && ns == nsPAR {
-			g.hold()
+	h := setup(t, nil)
+	pub := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(true) })
+	victim := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(true) })
+	local, ok := h.env.Server.Eph.(*ephemeral.Local)
+	if !ok {
+		t.Fatalf("the test server's ephemeral store is %T", h.env.Server.Eph)
+	}
+	_, ch := pkce()
+	pad := strings.Repeat("x", 3000) // a push of about 3.5 KB: a public client's largest before pushes held nothing was 4 KB
+	pushFrom := func(c *model.Client, ip string) (int, string) {
+		f := authzQuery(c, ch, url.Values{"x_padding": {pad}})
+		req := httptest.NewRequest(http.MethodPost, orgBase+"/oauth/par", strings.NewReader(f.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = ip + ":4000"
+		rec := httptest.NewRecorder()
+		h.env.Server.Handler().ServeHTTP(rec, req)
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		uri, _ := m["request_uri"].(string)
+		return rec.Code, uri
+	}
+	const pushes = 1500 // more than an organization's former budget of 600 a minute
+	before := local.Used()
+	for i := range pushes {
+		if code, _ := pushFrom(pub, "10."+strconv.Itoa(i/250)+"."+strconv.Itoa(i%250)+".1"); code != http.StatusCreated {
+			t.Fatalf("push %d: %d", i, code)
 		}
-	}}}}
-	raw, _ := json.Marshal(pushedRequest{Org: "org", ClientID: "client", Params: "client_id=client&response_type=code"})
-	id, err := local.New(ctx, nsPAR, raw, time.Minute)
-	if err != nil {
-		t.Fatal(err)
 	}
-	loaded := make(chan error, 1)
-	go func() { _, _, _, err := p.loadPushed(ctx, "org", "client", parURNPrefix+id); loaded <- err }()
-	g.waitHeld(t)
-	if _, _, used, err := p.loadPushed(ctx, "org", "client", parURNPrefix+id); err != nil || used {
-		t.Fatalf("second visit: used=%v err=%v", used, err)
+	// what remains is a counter per address; a stored push would be the size of its parameters or more
+	if grown := local.Used() - before; grown > pushes*512 {
+		t.Fatalf("%d pushes grew the ephemeral store by %d bytes: a push holds something", pushes, grown)
 	}
-	if !p.usePushed(ctx, id) {
-		t.Fatal("first completion refused")
+	// the organization's other public client signs in as ever
+	code, uri := pushFrom(victim, "192.0.2.9")
+	if code != http.StatusCreated {
+		t.Fatalf("another public client's push after the flood: %d", code)
 	}
-	g.open()
-	if err := <-loaded; err != nil {
-		t.Fatal(err)
+	c, _ := h.session(h.user)
+	if u := h.authorize(c, pushedQuery(victim, uri)); u.Query().Get("code") == "" {
+		t.Fatalf("another public client's sign-in after the flood: %s", u)
 	}
-	if p.usePushed(ctx, id) {
-		t.Fatal("consumed PAR request resurrected by delayed first-visit write; another authorization code can be issued")
+}
+
+// A request_uri is used up once, on every node: a request decided from it records its id (nothing before).
+func TestPushedRequestIsRecordedOnlyWhenDecided(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	_, ch := pkce()
+	uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
+	ctx := context.Background()
+	_, id, used, err := h.p.loadPushed(ctx, cl.OrgID, cl.ID, uri)
+	if err != nil || used {
+		t.Fatalf("before: used=%v err=%v", used, err)
+	}
+	if !h.p.usePushed(ctx, id) || h.p.usePushed(ctx, id) {
+		t.Fatal("a request_uri is used once")
+	}
+	if _, _, used, err := h.p.loadPushed(ctx, cl.OrgID, cl.ID, uri); err != nil || !used {
+		t.Fatalf("after: used=%v err=%v", used, err)
 	}
 }

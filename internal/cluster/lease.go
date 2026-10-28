@@ -37,11 +37,12 @@ var (
 )
 
 type lease struct {
-	st    *store.Table[model.Ephemeral, *model.Ephemeral]
-	self  string
-	until atomic.Int64  // unix nanos until which this node holds the lease (0: not held)
-	ok    atomic.Int64  // unix nanos of the last tick that reached the database
-	token atomic.Uint64 // fencing token of the tenure this node holds: the lease record's Created (0: none)
+	st       *store.Table[model.Ephemeral, *model.Ephemeral]
+	self     string
+	instance string        // random per process: tells this process from another one started with the same node id
+	until    atomic.Int64  // unix nanos until which this node holds the lease (0: not held)
+	ok       atomic.Int64  // unix nanos of the last tick that reached the database
+	token    atomic.Uint64 // fencing token of the tenure this node holds: the lease record's Created (0: none)
 }
 
 // reachable reports whether the database answered a lease tick recently.
@@ -148,6 +149,93 @@ func (n *Node) fenced(ctx context.Context) error {
 	return fmt.Errorf("%w: housekeeping has passed to another node", store.ErrUnavailable)
 }
 
+// A node id is the owner of the queued work and of the caps in a shared database, so two running nodes with one id
+// (a cloned data directory or image, or one cluster.node_id in a configuration both nodes read) would each deliver every
+// queued item and share the caps, and nothing else tells them apart. Each node therefore keeps a record per node id
+// naming its process (a random token made at its start) and renewed with the lease, and a node that finds its id held
+// by another process refuses to start, or, once running, to serve. A gossip node keeps no such record: its database is
+// its own (nothing in it is shared with a node of the same id unless the database itself is, which checkOwner
+// refuses), and its queued items live in that database; a standalone node's database file admits one process.
+const nodeIDPrefix = "node/"
+
+// ErrNodeIDInUse is returned by Start when another running process holds this node's id on the shared database.
+var ErrNodeIDInUse = errors.New("cluster: node id in use by another running node")
+
+// holdID registers this process as the holder of the node id, or renews that, and reports whether another process
+// holds it (a claim that loses a race counts as held: the next call tells).
+func (l *lease) holdID(ctx context.Context) (taken bool, err error) {
+	id := nodeIDPrefix + l.self
+	expires := time.Now().Add(leaseTTL)
+	e, err := l.st.Get(ctx, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound): // free, or the holder's record ran out
+		err = l.st.Create(ctx, &model.Ephemeral{Meta: model.Meta{ID: id}, Value: []byte(l.instance), Expires: expires})
+	case err != nil:
+	case string(e.Value) != l.instance:
+		return true, nil
+	default:
+		e.Expires = expires
+		err = l.st.Update(ctx, e)
+	}
+	if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	return false, err
+}
+
+// awaitID registers the node id at start. A process that stopped without releasing it (a crash, a kill) leaves its
+// record to run out, so a node that finds its id held waits for that, as long as the record takes to expire; a holder
+// that is running renews it meanwhile, and the wait ends in ErrNodeIDInUse. A database that does not answer is not
+// the start's to refuse: runLease tries again.
+func (n *Node) awaitID(ctx context.Context) error {
+	deadline := time.Now().Add(leaseTTL + leaseRenew)
+	for {
+		taken, err := n.lease.holdID(ctx)
+		if err != nil {
+			n.log.WithError(err).Warn("node id registration")
+			return nil
+		}
+		if !taken {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: %s (a cloned data directory or image, or one cluster.node_id used by two nodes: give each node its own id)", ErrNodeIDInUse, n.id)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(idPoll):
+		}
+	}
+}
+
+// idPoll is how often a node waiting for its id to be free looks again.
+const idPoll = 250 * time.Millisecond
+
+// checkID is awaitID for a running node: another process holding its id stops it serving (as checkOwner does) until
+// that has passed.
+func (n *Node) checkID(ctx context.Context) {
+	switch taken, err := n.lease.holdID(ctx); {
+	case err != nil:
+		n.log.WithError(err).Warn("node id registration")
+	case taken:
+		why := "another running node uses this node's id (" + n.id + "): a cloned data directory or image, or one cluster.node_id used by two nodes; give each node its own id"
+		if n.foreign.Swap(&why) == nil {
+			n.log.Error("refusing to serve", "reason", why)
+		}
+	default:
+		n.ownerOK()
+	}
+}
+
+// releaseID gives the node id up on shutdown so that a restart does not wait for the record to run out.
+func (l *lease) releaseID(ctx context.Context) {
+	id := nodeIDPrefix + l.self
+	if e, err := l.st.Get(ctx, id); err == nil && string(e.Value) == l.instance {
+		_ = l.st.S.CompareAndPut(ctx, store.Tombstone(model.KindEphemeral, id), e.Version)
+	}
+}
+
 // release gives the lease up on shutdown so another node takes over at once.
 func (l *lease) release(ctx context.Context) {
 	if l.until.Swap(0) == 0 {
@@ -167,10 +255,12 @@ func (n *Node) runLease() {
 			n.log.WithError(err).Warn("housekeeping lease")
 		}
 		n.checkNoGossip(n.ctx)
+		n.checkID(n.ctx)
 		select {
 		case <-n.ctx.Done():
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			n.lease.release(ctx)
+			n.lease.releaseID(ctx)
 			cancel()
 			return
 		case <-t.C:

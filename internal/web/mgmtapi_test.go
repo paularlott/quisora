@@ -166,10 +166,16 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 }
 
 // Failed bearer authentications are counted per organization named in the path as well as per address: one tenant's
-// bad token does not stop another tenant's valid one from the same address, and made-up organization names do not
-// give a guesser a fresh budget each (the address ceiling).
+// bad token does not stop another tenant's valid one from the same address, however many tenants fail from it. An
+// organization that does not exist is answered 404 before any token is looked at, so made-up names cost nothing and
+// need no ceiling of their own.
 func TestManagementBearerLimitIsPerOrganization(t *testing.T) {
 	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
+	org := func(name string) {
+		if _, err := env.Svc.CreateOrg(context.Background(), service.System, service.OrgInput{Name: &name}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	do := func(org, token string) int {
 		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/orgs/"+org+"/probe", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -180,6 +186,8 @@ func TestManagementBearerLimitIsPerOrganization(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
+	org("acme")
+	org("initech")
 	for range web.BearerFailuresPerOrgMin {
 		do("acme", "nope")
 	}
@@ -189,13 +197,23 @@ func TestManagementBearerLimitIsPerOrganization(t *testing.T) {
 	if got := do("initech", "admin"); got != 200 {
 		t.Errorf("valid token for another organization from the same address: %d, want 200", got)
 	}
-	for i := range web.BearerFailuresPerIPMin / web.BearerFailuresPerOrgMin {
+	for i := range 10 { // ten tenants with expired tokens behind one provisioning service's address
+		name := "tenant-" + strconv.Itoa(i)
+		org(name)
 		for range web.BearerFailuresPerOrgMin {
-			do("made-up-"+strconv.Itoa(i), "nope")
+			do(name, "nope")
 		}
 	}
-	if got := do("initech", "admin"); got != http.StatusTooManyRequests {
-		t.Errorf("valid token from an address past the ceiling: %d, want 429", got)
+	if got := do("initech", "admin"); got != 200 {
+		t.Errorf("valid token for an organization from an address where ten others failed: %d, want 200", got)
+	}
+	for i := range 3 * web.BearerFailuresPerOrgMin {
+		if got := do("made-up-"+strconv.Itoa(i), "nope"); got != http.StatusNotFound {
+			t.Fatalf("an organization that does not exist: %d, want 404 before the token is looked at", got)
+		}
+	}
+	if got := do("initech", "admin"); got != 200 {
+		t.Errorf("valid token after requests for made-up organizations: %d, want 200", got)
 	}
 }
 

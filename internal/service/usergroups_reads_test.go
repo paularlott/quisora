@@ -6,6 +6,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 type userGroupsResult struct {
@@ -101,5 +102,51 @@ func TestUserGroupsRecheckMatchesTheGroupVersionItAuthorizes(t *testing.T) {
 	}
 	if holdsTag(r.groups, g, "admin") {
 		t.Fatalf("the user received a privilege they never held: %+v", r.groups)
+	}
+}
+
+// The groups of several users are what each user's own lookup returns, including a group change committed but not yet
+// written to the memberships (a pending add), and the organization's groups with pending changes are read once for
+// all of them, not once per user.
+func TestUserGroupsOfSeveralUsersMatchesEachUsersOwn(t *testing.T) {
+	b := newBrokenMembership(t, "bulk-groups", false)
+	e := b.e
+	if err := <-b.addBoth(); err != nil {
+		t.Fatal(err) // committed, with the second user's membership still to be written
+	}
+	third := e.user(b.first.OrgID, "third", model.RoleUser)
+	other := e.group(b.first.OrgID, "Other", third)
+	loner := e.user(b.first.OrgID, "loner", model.RoleUser)
+	pendingReads := 0
+	e.svc.Groups.S = &faultStore{Store: e.svc.Store, beforeList: func(kind model.Kind, q store.ListQuery) error {
+		if kind == model.KindGroup && len(q.Filters) == 1 && q.Filters[0].Field == "pending" {
+			pendingReads++
+		}
+		return nil
+	}}
+	users := []*model.User{b.first, b.second, third, loner}
+	got, err := e.svc.UserGroupsOf(e.ctx, users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingReads != 1 {
+		t.Errorf("the pending groups were read %d times for %d users, want once", pendingReads, len(users))
+	}
+	ids := func(gs []*model.Group) []string {
+		out := []string{}
+		for _, g := range gs {
+			out = append(out, g.ID)
+		}
+		return out
+	}
+	want := map[string][]string{b.first.ID: {b.g.ID}, b.second.ID: {b.g.ID}, third.ID: {other.ID}, loner.ID: {}}
+	for _, u := range users {
+		own, err := e.svc.UserGroups(e.ctx, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(ids(got[u.ID]), ids(own)) || !slices.Equal(ids(own), want[u.ID]) {
+			t.Errorf("%s: groups of several %v, of their own %v, want %v", u.Username, ids(got[u.ID]), ids(own), want[u.ID])
+		}
 	}
 }

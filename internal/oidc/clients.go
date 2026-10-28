@@ -192,10 +192,19 @@ const clientAuthFailuresPerMin = 30
 // client is admitted by its client_id alone, and such a request still costs: a DPoP proof is recorded once used (a
 // write the cluster replicates) and an unknown code is marked against a redemption in progress (short-lived memory).
 // Ten clients' worth of authentication failures, so a shared address is only refused when it is plainly guessing.
-// Past it the address is refused before anything is looked at for the rest of the minute. One counter, read once per
-// request here (the token endpoint only adds to it). The failures of a confidential client that proved its secret
-// are not counted here but against that client alone (tokenFailuresPerClientMin).
+// Past it the address is refused for the rest of the minute, public clients and unauthenticated attempts alike; a
+// confidential client that proves its secret is not (see authenticateClient), because its failures are its own
+// (tokenFailuresPerClientMin) and behind a shared address (an office, a carrier's NAT) other clients' failures, such
+// as every public client's invalid_grants after a revocation, must not keep it from its users. One counter, read once
+// per request here (the token endpoint only adds to it).
 const failuresPerIPMin = 10 * clientAuthFailuresPerMin
+
+// failuresPerIPMax is the most an address may fail in a minute before nothing from it is looked at, not even to see
+// whether it authenticates as a confidential client: every failed authentication of an unknown or wrong client costs
+// a store read, and past failuresPerIPMin they are refused but still read. It is the bound on those reads, far above
+// what a shared address fails when public clients' tokens go stale together (those are refused, and no longer counted,
+// once past failuresPerIPMin).
+const failuresPerIPMax = 10 * failuresPerIPMin
 
 // failIPKey is the counter of failuresPerIPMin for r's address.
 func failIPKey(r *http.Request) string { return "fail-ip|" + web.RateKeyIP(r) }
@@ -223,15 +232,22 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if n >= clientAuthFailuresPerMin {
 		return nil, limited
 	}
-	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute)
+	failedIP, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute)
 	if err != nil {
 		return nil, serverError(unavailable(err))
 	}
-	if n >= failuresPerIPMin {
+	if failedIP >= failuresPerIPMax {
 		return nil, ipLimited
 	}
 	ce, e := p.checkClient(r, allowPublic)
-	if e == nil || e.code != "invalid_client" {
+	if e == nil {
+		// Only a confidential client that has proved its secret is let through an address that has failed too much.
+		if failedIP >= failuresPerIPMin && ce.c.Public() {
+			return nil, ipLimited
+		}
+		return ce, nil
+	}
+	if e.code != "invalid_client" {
 		return ce, e
 	}
 	// The authentication has already failed: if counting the failure fails too, the caller still gets that

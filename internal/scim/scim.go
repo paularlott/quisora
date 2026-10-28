@@ -248,7 +248,21 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, e := m.authenticate(r, segs[0])
+	// The organization the path names (none for Organizations) comes first: an unknown one is answered before any token
+	// is looked at, and is what the failure limits count for. The same answer as for one that is not the caller's, so
+	// org names cannot be probed with a token.
+	var org *model.Org
+	if segs[0] != "Organizations" {
+		var err error
+		if org, err = m.srv.Svc.OrgByName(rq.ctx, segs[0]); errors.Is(err, service.ErrNotFound) {
+			writeError(w, notFound("Organization"))
+			return
+		} else if err != nil {
+			writeError(w, m.fromService(err))
+			return
+		}
+	}
+	actor, e := m.authenticate(r, org)
 	if e != nil {
 		writeError(w, e)
 		return
@@ -261,9 +275,7 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request) {
 		rq.organizations(segs[1:])
 		return
 	}
-	org, err := m.srv.Svc.OrgByName(rq.ctx, segs[0])
-	if err != nil || (!actor.IsSuper() && actor.OrgID != org.ID) {
-		// The same answer for "does not exist" and "not yours", so org names cannot be probed.
+	if !actor.IsSuper() && actor.OrgID != org.ID {
 		writeError(w, notFound("Organization"))
 		return
 	}
@@ -340,7 +352,7 @@ func bearerToken(r *http.Request) (tok, scheme string) {
 // authenticate resolves the bearer token to an actor holding the scim scope. Failed authentications count against the
 // address and the organization the path names, org (web.BearerFailuresPerOrgMin, shared with the management API), so
 // one tenant's bad token does not block the others'; a refusal of an authenticated actor is audited.
-func (m *Module) authenticate(r *http.Request, org string) (*service.Actor, *Error) {
+func (m *Module) authenticate(r *http.Request, org *model.Org) (*service.Actor, *Error) {
 	tok, scheme := bearerToken(r)
 	if tok == "" {
 		return nil, errf(401, "", "A bearer token is required")

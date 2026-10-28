@@ -45,14 +45,16 @@ type codeData struct {
 	GrantID string `json:"g,omitempty"`
 }
 
-// tokenFailuresPerClientMin bounds the token requests per confidential client and minute that fail on what they
-// present (an invalid_grant or a refused DPoP proof, as for failuresPerIPMin). Such a client proved its secret, so
-// the failures are its own and throttle only it: a backend that refreshes for thousands of users after an
+// tokenFailuresPerClientMin bounds the token requests per confidential client, grant type and minute that fail on what
+// they present (an invalid_grant or a refused DPoP proof, as for failuresPerIPMin). Such a client proved its secret,
+// so the failures are its own and throttle only it: a backend that refreshes for thousands of users after an
 // organization's sessions were revoked gets invalid_grant for each, and must not lock out other clients behind the
 // same address. They still cost (see failuresPerIPMin), so a client that keeps failing is held back, at ten times the
 // budget of an address anyone can name a client from. Counted per client, not per client and address: its failures
-// cost the same from wherever they come, and the limit then holds however many addresses it is served from. Past the
-// limit the client is refused before any of that for the rest of the minute. Successful requests and the DPoP nonce
+// cost the same from wherever they come, and the limit then holds however many addresses it is served from. Counted
+// per grant type too: after such a revocation the backend's stale refresh tokens fail by the thousand, and that must
+// not stop the code exchanges of the users signing back in, which is when they must work. Past the limit the client
+// is refused that grant type before any of that for the rest of the minute. Successful requests and the DPoP nonce
 // round trip do not count.
 const tokenFailuresPerClientMin = 3000
 
@@ -90,13 +92,13 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	// address (read by authenticateClient above). A confidential client's count against itself.
 	failKey := failIPKey(r)
 	if !ce.c.Public() {
-		failKey = "token-fail|" + ce.c.ID
+		failKey = "token-fail|" + ce.c.ID + "|" + gt
 		if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, failKey, 0, time.Minute); err != nil {
 			writeOAuthError(w, serverError(unavailable(err))) // refused, but as "try again": the limit was not reached
 			return
 		} else if n >= tokenFailuresPerClientMin {
 			writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
-				desc: "too many failed token requests from this client; try again in a minute", retry: true})
+				desc: "too many failed token requests of this grant type from this client; try again in a minute", retry: true})
 			return
 		}
 	}

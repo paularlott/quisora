@@ -39,6 +39,12 @@ type Message struct {
 	Subject string
 	Text    string
 	HTML    string
+	// OrgID is the organization the message is sent for: its share of the queue and of the senders (none: the
+	// server's own mail, which has a share of its own).
+	OrgID string `json:",omitempty"`
+	// Expires is when what the message carries (a sign-in code, a single-use link) stops working: one still queued
+	// then is dropped, not sent (zero: never).
+	Expires time.Time `json:",omitzero"`
 }
 
 // Transport delivers a message once: SMTP in the server, a capturing one in tests.
@@ -67,6 +73,19 @@ type Mailer struct {
 // store, so this only stops a flood of messages SMTP cannot take from filling it.
 const QueueSize = 10000
 
+// The queue is shared fairly between organizations. Each holds at most queueOrgMax messages of it, a quarter, so one
+// organization's burst (invitations to thousands of users, or someone asking for password resets of address after
+// address) fills its own share, refused past it, and four at once are needed to refuse everyone's mail; at the rate
+// the senders keep up (below) a full share is sent within minutes. Messages go out by sendWorkers at once, of which
+// one organization has at most sendPerOrg, so the others' resets and sign-in codes go out beside its backlog rather
+// than behind it. All organizations share one SMTP server, though: when it is slow or down, every organization's mail
+// waits alike, and the fairness only keeps a burst of one from holding back the others.
+const (
+	queueOrgMax = QueueSize / 4
+	sendWorkers = 8
+	sendPerOrg  = 2
+)
+
 // DefaultBackoff are the delays between delivery attempts; a message is given up on (and logged) after the last.
 var DefaultBackoff = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 
@@ -80,7 +99,16 @@ func New(cfg *config.Config, log logger.Logger, st store.Store, node string, sea
 	m := &Mailer{Cfg: cfg, Log: log}
 	m.q = queue.Open(queue.Options[Message]{
 		Name: "mail", Log: log, Store: st, Node: node, Sealer: sealer, Binding: "mail/queue", Backoff: backoff,
-		Max: QueueSize, Deliver: tr.Deliver,
+		Max: QueueSize, MaxPerKey: queueOrgMax, Workers: sendWorkers, PerKey: sendPerOrg,
+		Key: func(msg Message) string { return msg.OrgID },
+		Deliver: func(ctx context.Context, msg Message) error {
+			if !msg.Expires.IsZero() && !time.Now().Before(msg.Expires) {
+				// Sent now, it would only cost a slot of SMTP ahead of mail that still works.
+				log.Warn("mail not sent: what it carries expired while it was queued", "to", msg.To, "subject", msg.Subject)
+				return nil
+			}
+			return tr.Deliver(ctx, msg)
+		},
 		Failed: func(msg Message, attempt int, retry time.Duration, err error) {
 			if retry == 0 {
 				log.Error("mail delivery failed, giving up", "to", msg.To, "subject", msg.Subject, "error", err)
@@ -111,7 +139,7 @@ func (m *Mailer) Send(_ context.Context, msg Message) error {
 	}
 	if err := m.q.Add(msg, 0, 0); err != nil {
 		if errors.Is(err, queue.ErrFull) {
-			m.Log.Error("mail queue full, refusing message", "to", msg.To, "subject", msg.Subject)
+			m.Log.Error("mail queue full, refusing message", "to", msg.To, "subject", msg.Subject, "organization", msg.OrgID)
 		} else {
 			m.Log.Error("mail queue: message not queued", "to", msg.To, "error", err)
 		}

@@ -128,11 +128,11 @@ func TestAccessTokenStoreFailureIsUnavailable(t *testing.T) {
 	e.verify = func(r *http.Request, scheme, tok string) (*service.Actor, error) {
 		return nil, fmt.Errorf("%w: the client could not be read", service.ErrUnavailable)
 	}
-	if r := e.do("GET", "/scim/v2/Users", "jwt-for-entra", nil); r.Status != http.StatusServiceUnavailable {
+	if r := e.do("GET", "/scim/v2/acme/Users", "jwt-for-entra", nil); r.Status != http.StatusServiceUnavailable {
 		t.Fatalf("store failure while checking an access token: %d %s", r.Status, r.Raw)
 	}
 	e.verify = func(r *http.Request, scheme, tok string) (*service.Actor, error) { return nil, service.ErrBadToken }
-	if r := e.do("GET", "/scim/v2/Users", "jwt-for-entra", nil); r.Status != http.StatusUnauthorized {
+	if r := e.do("GET", "/scim/v2/acme/Users", "jwt-for-entra", nil); r.Status != http.StatusUnauthorized {
 		t.Fatalf("control: a bad token: %d %s", r.Status, r.Raw)
 	}
 }
@@ -153,8 +153,9 @@ func TestBearerFailuresAreRateLimited(t *testing.T) {
 }
 
 // One organization's bad token, retried from an address shared with other tenants (an identity provider's provisioning
-// egress), does not stop another organization's valid token from that address; the per-organization budget alone
-// would not bound made-up organization names, so the address has a ceiling too.
+// egress), does not stop another organization's valid token from that address, however many organizations fail from
+// it: only the budget of each organization counts. Made-up organization names are answered 404 before any token is
+// looked at, and cost nothing.
 func TestBearerFailuresAreCountedPerOrganization(t *testing.T) {
 	e := newEnv(t)
 	for range web.BearerFailuresPerOrgMin {
@@ -163,15 +164,22 @@ func TestBearerFailuresAreCountedPerOrganization(t *testing.T) {
 	if r := e.do("GET", "/scim/v2/"+e.orgA.Name+"/Users", e.admA, nil); r.Status != 429 {
 		t.Fatalf("valid token of the organization whose budget is spent: %d %s", r.Status, r.Raw)
 	}
-	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 200 {
-		t.Fatalf("valid token of another organization from the same address: %d %s", r.Status, r.Raw)
-	}
-	for i := range web.BearerFailuresPerIPMin / web.BearerFailuresPerOrgMin {
+	for i := range 10 { // ten tenants with expired tokens
+		name := fmt.Sprintf("tenant-%d", i)
+		e.org(name)
 		for range web.BearerFailuresPerOrgMin {
-			e.do("GET", fmt.Sprintf("/scim/v2/made-up-%d/Users", i), "qsr_nosuch_secret", nil)
+			e.do("GET", "/scim/v2/"+name+"/Users", "qsr_nosuch_secret", nil)
 		}
 	}
-	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 429 {
-		t.Fatalf("valid token from an address past the ceiling: %d %s", r.Status, r.Raw)
+	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 200 {
+		t.Fatalf("valid token of another organization from an address where ten others failed: %d %s", r.Status, r.Raw)
+	}
+	for i := range 3 * web.BearerFailuresPerOrgMin {
+		if r := e.do("GET", fmt.Sprintf("/scim/v2/made-up-%d/Users", i), "qsr_nosuch_secret", nil); r.Status != 404 {
+			t.Fatalf("unknown organization %d: %d %s, want 404 before the token is looked at", i, r.Status, r.Raw)
+		}
+	}
+	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 200 {
+		t.Fatalf("valid token after requests for made-up organizations: %d %s", r.Status, r.Raw)
 	}
 }

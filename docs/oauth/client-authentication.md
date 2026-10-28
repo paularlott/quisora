@@ -38,13 +38,17 @@ first-party clients are rotated by super admins only.
 any client), every attempt is refused for the rest of the minute, the right secret included, and the client's
 organization gets an `oauth.client_auth.limited` audit event. The address's 300 are also spent by a public client's
 token requests that fail on what they present (an unknown or used code or refresh token, a refused DPoP proof): anyone
-can name a public client, so past them every request from the address gets `429 temporarily_unavailable` with
-`Retry-After`.
+can name a public client, so past them every request from the address that is not a confidential client proving its
+secret gets `429 temporarily_unavailable` with `Retry-After`. A confidential client that authenticates is not held
+back by what others behind its address have failed (an office or a carrier's shared address after a revocation); its
+own limits apply. From an address that has failed 3,000 times in a minute (guessing client ids or secrets) nothing is
+looked at, the right secret included.
 
 **Failing token requests of a confidential client** (`invalid_grant`, `invalid_dpop_proof`) are counted against that
-client alone, whatever its address: after 3,000 a minute it gets `429 temporarily_unavailable` with `Retry-After` for
-the rest of the minute. A backend that refreshes tokens for thousands of users whose sessions were just revoked is
-held back only itself, and other clients behind the same address are not.
+client and grant type alone, whatever its address: after 3,000 a minute of one grant type it gets `429
+temporarily_unavailable` with `Retry-After` for that grant type for the rest of the minute. A backend that refreshes
+tokens for thousands of users whose sessions were just revoked is held back only itself, its users' code exchanges still
+work, and other clients behind the same address are not held back.
 
 ## Private key JWT
 

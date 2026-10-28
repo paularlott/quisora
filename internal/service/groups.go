@@ -644,75 +644,116 @@ func (s *Service) clientMayAffectMembers(ctx context.Context, a *Actor, g *model
 }
 
 // UserGroups returns the groups a user belongs to (no permission check: used to build tokens, SCIM and admin
-// views), each group as it is at a moment when the user is a member of it: a result never pairs a membership with a
-// group from another moment (a user removed from a group that was given a tag in the same change must not get the
-// tag, nor one re-added after a change that took a tag away keep it). Each group is matched with the user's
-// membership by the group's change numbers (memberAt); the user's memberships and the groups with pending changes
-// are read from this node, and fresh reads settle what they cannot.
+// views): UserGroupsOf for one user.
 func (s *Service) UserGroups(ctx context.Context, u *model.User) ([]*model.Group, error) {
-	ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+	by, err := s.UserGroupsOf(ctx, []*model.User{u})
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, err
 	}
-	mine := make(map[string]*model.Member, len(ms))
-	ids := make([]string, 0, len(ms))
-	for _, m := range ms {
-		mine[m.GroupID] = m
-		ids = append(ids, m.GroupID)
+	return by[u.ID], nil
+}
+
+// UserGroupsOf returns the groups each of the users, all of one organization, belong to, by user id (no permission
+// check; a user in no group has an empty entry). Each group is as it is at a moment when the user is a member of it: a
+// result never pairs a membership with a group from another moment (a user removed from a group that was given a tag
+// in the same change must not get the tag, nor one re-added after a change that took a tag away keep it). Each group
+// is matched with the user's membership by the group's change numbers (membersAt); the users' memberships and the
+// groups with pending changes are read from this node, and fresh reads settle what they cannot. A page of users costs
+// one read of the memberships per user (the store has no index read for several users at once), one of the pending
+// groups and one of the groups, however many users there are: the groups are shared among the users, not read again
+// for each.
+func (s *Service) UserGroupsOf(ctx context.Context, users []*model.User) (map[string][]*model.Group, error) {
+	out := make(map[string][]*model.Group, len(users))
+	if len(users) == 0 {
+		return out, nil
 	}
-	pending, _, err := s.Groups.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "pending", Value: true}}})
+	orgID := users[0].OrgID
+	mine := make(map[string]map[string]*model.Member, len(users)) // by user id, then group id
+	want := make(map[string][]string, len(users))                 // the ids of each user's groups
+	var ids []string
+	for _, u := range users {
+		ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		mine[u.ID] = make(map[string]*model.Member, len(ms))
+		for _, m := range ms {
+			mine[u.ID][m.GroupID] = m
+			want[u.ID] = append(want[u.ID], m.GroupID)
+			ids = append(ids, m.GroupID)
+		}
+	}
+	pending, _, err := s.Groups.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "pending", Value: true}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}
 	for _, g := range pending {
-		if member, decided := g.PendingMember(u.ID); decided && member && mine[g.ID] == nil {
-			ids = append(ids, g.ID)
+		for _, u := range users {
+			if member, decided := g.PendingMember(u.ID); decided && member && mine[u.ID][g.ID] == nil {
+				want[u.ID] = append(want[u.ID], g.ID)
+				ids = append(ids, g.ID)
+			}
 		}
 	}
 	slices.Sort(ids)
-	gs, err := s.Groups.GetMany(ctx, ids)
+	gs, err := s.Groups.GetMany(ctx, slices.Compact(ids))
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	return s.membersAt(ctx, u.ID, gs, mine)
+	byID := make(map[string]*model.Group, len(gs))
+	for _, g := range gs {
+		byID[g.ID] = g
+	}
+	var open []*memberPair
+	for _, u := range users {
+		out[u.ID] = []*model.Group{}
+		for _, id := range slices.Compact(slices.Sorted(slices.Values(want[u.ID]))) {
+			if g := byID[id]; g != nil {
+				open = append(open, &memberPair{userID: u.ID, g: g, m: mine[u.ID][id]})
+			}
+		}
+	}
+	if err := s.membersAt(ctx, open, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-// membersAt returns the groups of gs the user is a member of, each as it is at a moment it says so, starting from
-// copies of the groups and of the user's memberships (mine, by group id). A group's changes are numbered (Group.Seq);
-// a membership record carries the number of the change that last wrote it, and a change is materialized (its
-// membership records written and confirmed) before it leaves the group's pending log. So, for each group: its
-// pending log decides the user's membership in the group as read; a membership written by the group's latest change
-// matches it; a membership read through the owners after the group, written by a change no later than the group's latest,
-// is the membership as of that group (a later change of the user's membership would have written a later number);
-// and one written by a later change than the group's means the group read is older, and the group is read again from
-// the owner. The reads a round needs are made together: one fresh read of the memberships to read again, one of the
-// groups.
-func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Group, mine map[string]*model.Member) ([]*model.Group, error) {
-	type pair struct {
-		g     *model.Group
-		m     *model.Member
-		fresh bool // m was read through the owners after g
-	}
-	open := make([]*pair, 0, len(gs))
-	for _, g := range gs {
-		open = append(open, &pair{g: g, m: mine[g.ID]})
-	}
-	out := []*model.Group{}
+// memberPair is one user's membership in one group as membersAt settles it.
+type memberPair struct {
+	userID string
+	g      *model.Group
+	m      *model.Member
+	fresh  bool // m was read through the owners after g
+	gone   bool // g was deleted since it was read
+}
+
+// membersAt settles each pair of open into out (by user id): the group is added to the user's groups when the user is
+// a member of it, as the group is at a moment it says so. A group's changes are numbered (Group.Seq); a membership
+// record carries the number of the change that last wrote it, and a change is materialized (its membership records
+// written and confirmed) before it leaves the group's pending log. So, for each pair: the group's pending log decides
+// the user's membership in the group as read; a membership written by the group's latest change matches it; a
+// membership read through the owners after the group, written by a change no later than the group's latest, is the
+// membership as of that group (a later change of the user's membership would have written a later number); and one
+// written by a later change than the group's means the group read is older, and the group is read again from the
+// owner. The reads a round needs are made together, for all the pairs: one fresh read of the memberships to read
+// again, one of the groups. Each user's groups come out in id order.
+func (s *Service) membersAt(ctx context.Context, open []*memberPair, out map[string][]*model.Group) error {
 	for range 8 {
-		var readM, readG []*pair
+		var readM, readG []*memberPair
 		next := open[:0]
 		for _, p := range open {
-			if member, decided := p.g.PendingMember(userID); decided {
+			if member, decided := p.g.PendingMember(p.userID); decided {
 				if member {
-					out = append(out, p.g)
+					out[p.userID] = append(out[p.userID], p.g)
 				}
 				continue
 			}
-			key := model.MemberID(p.g.ID, userID)
+			key := model.MemberID(p.g.ID, p.userID)
 			if c, ok := s.members.confirmed(key); ok && c.seq == p.g.Seq {
 				// decided by a fresh read against this very change of the group before: still so
 				if c.active {
-					out = append(out, p.g)
+					out[p.userID] = append(out[p.userID], p.g)
 				}
 				continue
 			}
@@ -724,7 +765,7 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 			case seq == p.g.Seq && p.m != nil, seq < p.g.Seq && p.fresh, seq == 0 && p.g.Seq == 0:
 				active := p.m != nil && p.m.Active()
 				if active {
-					out = append(out, p.g)
+					out[p.userID] = append(out[p.userID], p.g)
 				}
 				if p.fresh {
 					s.members.confirm(key, p.g.Seq, active)
@@ -739,52 +780,51 @@ func (s *Service) membersAt(ctx context.Context, userID string, gs []*model.Grou
 		}
 		open = next
 		if len(open) == 0 {
-			slices.SortFunc(out, func(a, b *model.Group) int { return strings.Compare(a.ID, b.ID) })
-			return out, nil
+			for _, gs := range out {
+				slices.SortFunc(gs, func(a, b *model.Group) int { return strings.Compare(a.ID, b.ID) })
+			}
+			return nil
 		}
 		ids := make([]string, len(readM))
 		for i, p := range readM {
-			ids[i] = model.MemberID(p.g.ID, userID)
+			ids[i] = model.MemberID(p.g.ID, p.userID)
 		}
 		recs, err := s.getMany(ctx, model.KindMember, ids)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, p := range readM {
 			p.m, p.fresh = nil, true
-			if r, ok := recs[model.MemberID(p.g.ID, userID)]; ok {
+			if r, ok := recs[model.MemberID(p.g.ID, p.userID)]; ok {
 				m := &model.Member{}
 				if err := store.Decode(r, m); err != nil {
-					return nil, err
+					return err
 				}
 				p.m = m
 			}
 		}
-		ids = make([]string, len(readG))
-		for i, p := range readG {
-			ids[i] = p.g.ID
+		ids = ids[:0]
+		for _, p := range readG {
+			ids = append(ids, p.g.ID)
 		}
-		if recs, err = s.getMany(ctx, model.KindGroup, ids); err != nil {
-			return nil, err
+		if recs, err = s.getMany(ctx, model.KindGroup, dedupe(ids)); err != nil {
+			return err
 		}
-		kept := open[:0]
-		for _, p := range open {
-			if slices.Contains(readG, p) {
-				r, ok := recs[p.g.ID]
-				if !ok {
-					continue // deleted since
-				}
-				g := &model.Group{}
-				if err := store.Decode(r, g); err != nil {
-					return nil, err
-				}
-				p.g, p.fresh = g, false
+		for _, p := range readG {
+			r, ok := recs[p.g.ID]
+			if !ok {
+				p.gone = true // deleted since
+				continue
 			}
-			kept = append(kept, p)
+			g := &model.Group{}
+			if err := store.Decode(r, g); err != nil {
+				return err
+			}
+			p.g, p.fresh = g, false
 		}
-		open = kept
+		open = slices.DeleteFunc(open, func(p *memberPair) bool { return p.gone })
 	}
-	return nil, fmt.Errorf("%w: the user's groups keep changing", ErrUnavailable)
+	return fmt.Errorf("%w: the user's groups keep changing", ErrUnavailable)
 }
 
 // confirmedMembers remembers what fresh reads of memberships decided (membersAt), against the group change they were

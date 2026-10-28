@@ -312,8 +312,13 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	pushedUsed := false
 	if pushed {
 		pq, id, used, err := p.loadPushed(r.Context(), org.ID, q.Get("client_id"), q.Get("request_uri"))
-		if err != nil {
+		if errors.Is(err, errPushed) {
 			p.invalidRequestURI(w, r)
+			return
+		}
+		if err != nil { // the store could not say whether it was used: not an invalid request_uri
+			p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
+				"This request cannot be completed at the moment. Try again in a moment.")
 			return
 		}
 		q, dup, pushedID, pushedUsed = pq, repeated(pq), id, used

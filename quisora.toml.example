@@ -39,7 +39,7 @@ backend = "badgerdb"                      # badgerdb, sqlite, postgres, mysql or
 # encryption_key = ""                     # `quisora genkey`: encrypt the files at rest; set when the store is created
 # [storage.postgres]
 # dsn = "postgres://quisora:secret@db:5432/quisora?sslmode=verify-full"
-# max_open_conns = 0                      # 0 = the driver's default (also for mysql and mariadb)
+# max_open_conns = 0                      # 0 = 32 per node (also for mysql and mariadb); keep nodes × this under the server's max_connections
 # max_idle_conns = 0
 # ca_file = ""                            # PEM of a private CA the server's certificate is verified against
 # [storage.mysql]

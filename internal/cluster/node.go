@@ -313,7 +313,7 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 	if cfg.Cluster.Bind == "" {
 		if cfg.SharedStorage() {
 			n.shared = ephemeral.NewShared(st)
-			n.lease = &lease{st: store.NewTable[model.Ephemeral](st), self: n.id}
+			n.lease = &lease{st: store.NewTable[model.Ephemeral](st), self: n.id, instance: uuid.NewString()}
 			if cfg.Cluster.Notify.Bind != "" {
 				if err := n.buildNotify(); err != nil {
 					n.eph.local.Close()
@@ -648,9 +648,14 @@ func resolve(host string) []net.IP {
 // Start starts the gossip cluster, joins the configured peers and starts the partition protocol. It fails when
 // another member uses the same ephemeral prefix.
 func (n *Node) Start(ctx context.Context) error {
+	var err error
 	if n.gc == nil {
 		if n.lease != nil {
 			n.startedOnce.Do(func() {
+				if err = n.awaitID(ctx); err != nil {
+					n.Close()
+					return
+				}
 				if err := n.lease.tick(ctx); err != nil {
 					n.log.WithError(err).Warn("housekeeping lease")
 				}
@@ -662,9 +667,8 @@ func (n *Node) Start(ctx context.Context) error {
 				}
 			})
 		}
-		return nil
+		return err
 	}
-	var err error
 	n.startedOnce.Do(func() { err = n.start(ctx) })
 	return err
 }

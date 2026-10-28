@@ -22,7 +22,7 @@ curl -s "$ISSUER/oauth/par" -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_
 ```
 
 ```json
-{"request_uri": "urn:ietf:params:oauth:request_uri:a1.mR3x…", "expires_in": 60}
+{"request_uri": "urn:ietf:params:oauth:request_uri:djM6a…", "expires_in": 60}
 ```
 
 The answer is `201 Created`. Anything wrong with the request is answered here, as an OAuth error
@@ -31,7 +31,7 @@ The answer is `201 Created`. Anything wrong with the request is answered here, a
 ## 2. Send the browser with the reference
 
 ```bash
-echo "$ISSUER/oauth/authorize?client_id=$CLIENT_ID&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Aa1.mR3x…"
+echo "$ISSUER/oauth/authorize?client_id=$CLIENT_ID&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3AdjM6a…"
 ```
 
 Only `client_id` and `request_uri`: any other parameter in the URL is ignored, the pushed ones count. The rest is the
@@ -40,8 +40,13 @@ tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
 
 ## The request_uri
 
-- **60 seconds** to start: the browser must reach the organization's `/oauth/authorize` within a minute of the push. Once it has, the
-  request lasts as long as any sign-in flow, so a user who takes their time signing in is fine.
+The request_uri is the request itself, sealed with the server's key (encrypted and authenticated), so Quisora keeps
+nothing for a push. It is about twice as long as the request, and goes in a URL the browser sends: a real request is
+about 1 KB, and one over 8 KB is refused.
+
+- **60 seconds** to start: the browser must reach the organization's `/oauth/authorize` within a minute of the push. The
+  sign-in it starts then lasts as long as any sign-in flow, so a user who takes their time signing in is fine, but the
+  authorization URL itself is no longer good after the minute.
 - **Once.** It is used up when the request is decided (a code is issued, or the user denies or cancels), not on its
   first visit, so reloading the sign-in page works. Presented again after that, it goes back to the application as
   `invalid_request_uri`.
@@ -52,9 +57,8 @@ tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
 
 A push is counted after the client has authenticated. A confidential client (secret or private key JWT) may push 1,800 a
 minute, whatever its address and whatever other clients push; past that it gets `429 temporarily_unavailable` with
-`Retry-After`, and its request may be up to 16 KB. A public client is admitted by its `client_id` alone, so anyone can
-push as it: its pushes are limited to 60 a minute per address and 600 a minute per organization, and may be up to 4 KB.
-Each push is kept in memory until it is used, which is why the public limits are small.
+`Retry-After`. A public client is admitted by its `client_id` alone, so anyone can push as it: it may push 60 a minute
+per address, and nothing it pushes is held by Quisora, so no one can use up another client's or organization's share.
 
 ## Requiring it
 

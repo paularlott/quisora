@@ -176,6 +176,16 @@ func pass[T any](q *Queue[T], ctx context.Context) time.Time {
 	return q.dispatch(ctx)
 }
 
+// elapse makes every item waiting due now, as if its wait (a retry's delay, a store's failure) were over.
+func elapse[T any](q *Queue[T]) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := time.Now()
+	for _, e := range q.waiting {
+		e.next = now
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -301,7 +311,7 @@ func (g *gate) next(t *testing.T) string {
 }
 
 // faulty is a store that refuses, while refuse is set, the rewrites of queued items (CompareAndPut: a re-seal, a
-// retry, an end) and, while blind is set, their listings: a store that fails.
+// retry, an end) and, while blind is set, their reads: a store that fails.
 type faulty struct {
 	store.Store
 	refuse, blind atomic.Bool
@@ -319,6 +329,13 @@ func (s *faulty) List(ctx context.Context, kind model.Kind, q store.ListQuery) (
 		return nil, fmt.Errorf("%w: refused by the test", store.ErrUnavailable)
 	}
 	return s.Store.List(ctx, kind, q)
+}
+
+func (s *faulty) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindQueue && s.blind.Load() {
+		return nil, fmt.Errorf("%w: refused by the test", store.ErrUnavailable)
+	}
+	return s.Store.Get(ctx, kind, id)
 }
 
 // reads is a store that counts the queued items it reads (listed or got): what the scheduler costs.
@@ -340,4 +357,67 @@ func (s *reads) Get(ctx context.Context, kind model.Kind, id string) (*store.Rec
 		s.n.Add(1)
 	}
 	return s.Store.Get(ctx, kind, id)
+}
+
+// ops is a store that counts its calls on queued items: every one, and the listings and counts among them (whose cost
+// grows with what the store holds of the queue, expired items too).
+type ops struct {
+	store.Store
+	all, scans atomic.Int64
+}
+
+func (s *ops) count(kind model.Kind, scan bool) {
+	if kind == model.KindQueue {
+		s.all.Add(1)
+		if scan {
+			s.scans.Add(1)
+		}
+	}
+}
+
+func (s *ops) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	s.count(kind, false)
+	return s.Store.Get(ctx, kind, id)
+}
+
+func (s *ops) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	s.count(rec.Kind, false)
+	return s.Store.CompareAndPut(ctx, rec, expect)
+}
+
+func (s *ops) Put(ctx context.Context, rec *store.Record) error {
+	s.count(rec.Kind, false)
+	return s.Store.Put(ctx, rec)
+}
+
+func (s *ops) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	s.count(kind, true)
+	return s.Store.List(ctx, kind, q)
+}
+
+func (s *ops) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {
+	s.count(kind, true)
+	return s.Store.Count(ctx, kind, scope)
+}
+
+// slow is a store whose reads of queued items (listings and gets) take 300 ms each while slow is set.
+type slow struct {
+	store.Store
+	slow atomic.Bool
+}
+
+func (s *slow) wait(kind model.Kind) {
+	if kind == model.KindQueue && s.slow.Load() {
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func (s *slow) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	s.wait(kind)
+	return s.Store.Get(ctx, kind, id)
+}
+
+func (s *slow) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	s.wait(kind)
+	return s.Store.List(ctx, kind, q)
 }

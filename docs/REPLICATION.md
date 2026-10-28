@@ -339,7 +339,8 @@ partition's (epoch, sequence), never from clocks**. A new version of a record is
 - Node-local state (`KindEphemeral`: leases, markers, short-lived sign-in state) is never replicated.
 - **Queued items** (`KindQueue`: emails waiting for SMTP, back-channel logouts waiting to be retried) are each node's
   own, in every mode: an item's scope names the node that queued it (its `node_id`, made at its first start and kept in
-  its data directory, or `cluster.node_id`), and only that node lists, counts, re-seals or delivers it. With gossip they
+  its data directory, or `cluster.node_id`), and only that node reads, re-seals or delivers it (it lists them once at
+start, into an index in memory that its own writes keep from then on). With gossip they
   are local writes like audit events (always allowed, never part of a partition write, an export, an import, the
   seeding of a new cluster or a backup); a delivered or given-up item is expired at once rather than deleted, since a
   tombstone of a node-local kind is in no partition whose purge would remove it. Each expires at its queue's discard
@@ -924,10 +925,10 @@ new holder's. Between that check and the write itself two housekeepers are harml
 dates are compare-and-swap updates and purging is idempotent. Keep clock skew between the nodes well under 10 s.
 
 **Queued items** (emails, back-channel logout retries) are in the database too, each as the record of the node that
-queued it (its scope names the node): a node lists, counts and delivers its own only, so the nodes never contend for an
-item, nothing is claimed or locked, and no item is delivered by two nodes. Each node's caps (10,000 emails; 10,000
-logouts, 2,500 of one organization) count its own items in the database, so the cluster holds up to that many per
-node. Items survive a node's restart; those of a node that is gone for good are not taken over by another node (it
+queued it (its scope names the node): a node reads and delivers its own only, so the nodes never contend for an
+item, nothing is claimed or locked, and no item is delivered by two nodes. Each node's caps (10,000 emails and 10,000
+logouts, 2,500 of each of one organization) count its own items in the database (in memory: it is the only writer of
+them), so the cluster holds up to that many per node. Items survive a node's restart; those of a node that is gone for good are not taken over by another node (it
 may come back, and would send them again): they are discarded at their horizon, a day past their last retry, when
 they would have been given up anyway, and the purge removes them. Queued items are not change notices
 (`cluster.notify`) either.

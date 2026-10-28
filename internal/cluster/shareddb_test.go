@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -284,15 +285,30 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 	if err := a.st.Put(bg, gone); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, "b hears of both", func() bool { mu.Lock(); defer mu.Unlock(); return len(got[b]) >= 2 })
+	// Notices are gossiped: they may arrive in either order, and a node hears of other writes too (its id's lease
+	// renewed, say), so what a node heard of these two records is compared as a set. (Under mu.)
+	of := func(n *Node, ids ...string) []string {
+		var out []string
+		for _, g := range got[n] {
+			for _, id := range ids {
+				if strings.Contains(g, ":"+id+":") {
+					out = append(out, g)
+				}
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	waitFor(t, 5*time.Second, "b hears of both", func() bool { mu.Lock(); defer mu.Unlock(); return len(of(b, rec.ID, gone.ID)) >= 2 })
 	mu.Lock()
 	defer mu.Unlock()
 	want := []string{string(dataKind) + ":" + rec.ID + ":org1:remote", "user:" + gone.ID + ":org1:deleted:remote"}
-	if len(got[b]) != 2 || got[b][0] != want[0] || got[b][1] != want[1] {
-		t.Errorf("b got %v, want %v", got[b], want)
+	slices.Sort(want)
+	if g := of(b, rec.ID, gone.ID); !slices.Equal(g, want) {
+		t.Errorf("b got %v, want %v", g, want)
 	}
-	if len(got[a]) != 2 || got[a][0] != string(dataKind)+":"+rec.ID+":org1:local" {
-		t.Errorf("a (the writer) got %v", got[a])
+	if g := of(a, rec.ID, gone.ID); len(g) != 2 || !slices.Contains(g, string(dataKind)+":"+rec.ID+":org1:local") {
+		t.Errorf("a (the writer) got %v", g)
 	}
 
 	// a real deletion (store.Tombstone: no scope) still tells both nodes' hooks the scope of what it removed
@@ -300,13 +316,15 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 	if err := a.st.Put(bg, store.Tombstone(rec.Kind, rec.ID)); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, "b hears of the deletion", func() bool { mu.Lock(); defer mu.Unlock(); return len(got[b]) >= 3 })
+	deleted := string(dataKind) + ":" + rec.ID + ":org1:deleted:"
+	waitFor(t, 5*time.Second, "b hears of the deletion", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(got[b], deleted+"remote")
+	})
 	mu.Lock()
-	if g := got[b][2]; g != string(dataKind)+":"+rec.ID+":org1:deleted:remote" {
-		t.Errorf("b got %q for the deletion", g)
-	}
-	if g := got[a][2]; g != string(dataKind)+":"+rec.ID+":org1:deleted:local" {
-		t.Errorf("a got %q for its deletion", g)
+	if !slices.Contains(got[a], deleted+"local") {
+		t.Errorf("a got %v, no local notice of its deletion", got[a])
 	}
 
 	// without cluster.notify: no notice gossip

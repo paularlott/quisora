@@ -26,3 +26,16 @@ func (s *Service) UseOnce(ctx context.Context, key string, expires time.Time) (b
 	}
 	return false, mapStore(err)
 }
+
+// Used reports whether UseOnce has recorded the single-use value key and still holds it, without recording it.
+func (s *Service) Used(ctx context.Context, key string) (bool, error) {
+	sum := sha256.Sum256([]byte(key))
+	_, err := s.Replays.Get(ctx, base64.RawURLEncoding.EncodeToString(sum[:]))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, store.ErrNotFound):
+		return false, nil
+	}
+	return false, mapStore(err)
+}

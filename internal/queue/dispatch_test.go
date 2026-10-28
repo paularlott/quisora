@@ -321,3 +321,57 @@ func TestBlockedBacklogIsNotReadAgain(t *testing.T) {
 		waitFor(t, func() bool { return q.Queued() == backlog }) // the last one ends when its delivery returns
 	})
 }
+
+// What an item costs the store does not grow with the items it has ended, which the store keeps (expired) until its
+// purge: an Add is one write, a delivery a read and a write, and neither lists or counts the queue (whose cost grows
+// with every item the store holds of it, expired ones too).
+func TestStoreCallsDoNotGrowWithEndedItems(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		const ended = 1000
+		inner, _ := b.open(t)
+		st := &ops{Store: inner}
+		s := &sink{}
+		o := options(t, st, s.deliver)
+		o.Max, o.MaxPerKey, o.Key, o.Workers, o.PerKey = 2*ended, ended, keyOf, 8, 2
+		q := start(t, o)
+		one := func(it string) (all, scans int64, took time.Duration) {
+			t.Helper()
+			all0, scans0, n, start := st.all.Load(), st.scans.Load(), s.count(), time.Now()
+			addAll(t, q, it)
+			waitFor(t, func() bool { return s.count() == n+1 && q.Queued() == 0 })
+			return st.all.Load() - all0, st.scans.Load() - scans0, time.Since(start)
+		}
+		firstAll, firstScans, firstTook := one("A first")
+		for i := range ended {
+			addAll(t, q, fmt.Sprintf("%c%d", 'A'+i%4, i))
+		}
+		waitFor(t, func() bool { return s.count() == ended+1 && q.Queued() == 0 })
+		all, scans, took := one("B last")
+		t.Logf("one item: %d store calls, %d listings or counts, %v; after %d ended: %d, %d, %v", firstAll, firstScans,
+			firstTook, ended, all, scans, took)
+		if firstScans != 0 || scans != 0 || all != 3 || firstAll != 3 {
+			t.Fatalf("an item cost %d store calls (%d listings or counts), %d after %d ended (%d): want 3 (an add, a "+
+				"read, an end) and none", firstAll, firstScans, all, ended, scans)
+		}
+	})
+}
+
+// A request's Add does not wait for the scheduler, whatever the store takes to answer the scheduler's reads.
+func TestAddDoesNotWaitForAPass(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		inner, _ := b.open(t)
+		st := &slow{Store: inner}
+		s := &sink{}
+		q := start(t, options(t, st, s.deliver))
+		st.slow.Store(true)
+		addAll(t, q, "A1")                // the scheduler reads the queue, slowly
+		time.Sleep(50 * time.Millisecond) // (and is reading it now)
+		begin := time.Now()
+		addAll(t, q, "B1")
+		if took := time.Since(begin); took > 150*time.Millisecond {
+			t.Fatalf("an Add took %v: it waited for the scheduler's reads", took)
+		}
+		st.slow.Store(false)
+		waitFor(t, func() bool { return s.count() == 2 })
+	})
+}
