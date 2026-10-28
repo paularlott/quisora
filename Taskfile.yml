@@ -105,11 +105,12 @@ tasks:
       - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev --master-key "{{.DEV_MASTER_KEY}}"'
 
   run-server:
-    desc: "Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at 192.168.8.110:1025. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
+    desc: "Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
     deps: [build-1password]
     vars:
       PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
       LISTEN: '{{.DEV_LISTEN | default "localhost:8443"}}'
+      SMTP_HOST: '{{.DEV_SMTP_HOST | default "localhost"}}'
     cmds:
       - mkdir -p ./data/dev
       - >-
@@ -124,7 +125,7 @@ tasks:
         --listen {{.LISTEN | default "127.0.0.1:8443"}}
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --data-dir ./data/dev
-        --smtp-host 192.168.8.110
+        --smtp-host {{.SMTP_HOST | default "localhost"}}
         --smtp-port 1025
         --smtp-tls none
         --smtp-from "Quisora <quisora@example.com>"

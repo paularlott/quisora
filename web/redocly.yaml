@@ -13,6 +13,8 @@ rules:
   no-ambiguous-paths: off
   # The SCIM discovery endpoints are public and always answer.
   operation-4xx-response: off
+  # DELETE /scim/v2/Organizations/{id} is documented as always refused (403), so it has no 2XX response.
+  operation-2xx-response: off
 
 # No usage reports to Redocly: builds run on machines without internet access.
 telemetry: off
