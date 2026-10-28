@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
@@ -44,6 +45,14 @@ type codeData struct {
 	// our side and is retried makes the same grant, and finds it made (userGrant), never a second one.
 	GrantID string `json:"g,omitempty"`
 }
+
+// tokenFailuresPerIPMin bounds the token requests per IP address and minute that fail on what they present (an
+// invalid_grant: an unknown, used or expired code, refresh token or device code; a DPoP proof refused). A public client
+// is admitted by its client_id alone, and such a request still costs: a DPoP proof is recorded once used (a write the
+// cluster replicates) and an unknown code is marked against a redemption in progress (short-lived memory). Past the
+// limit the address is refused before any of that for the rest of the minute. Successful requests and the DPoP nonce
+// round trip do not count; clients that work never fail this often from one address.
+const tokenFailuresPerIPMin = 300
 
 func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
@@ -75,8 +84,18 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
 		return
 	}
+	failKey := "token-fail|" + web.RateKeyIP(r)
+	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, failKey, 0, time.Minute); err != nil {
+		writeOAuthError(w, serverError(unavailable(err))) // refused, but as "try again": the limit was not reached
+		return
+	} else if n >= tokenFailuresPerIPMin {
+		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+			desc: "too many failed token requests from this address; try again in a minute", retry: true})
+		return
+	}
 	jkt, e := p.tokenProof(r, ce.c)
 	if e != nil {
+		p.tokenFailed(r, failKey, e)
 		writeOAuthError(w, e)
 		return
 	}
@@ -98,10 +117,19 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
 	}
 	if oe != nil {
+		p.tokenFailed(r, failKey, oe)
 		writeOAuthError(w, oe)
 		return
 	}
 	writeTokens(w, tr)
+}
+
+// tokenFailed counts a token request that failed on what it presented against its address (tokenFailuresPerIPMin).
+// The request fails whatever the counter answers.
+func (p *Provider) tokenFailed(r *http.Request, failKey string, e *oauthError) {
+	if e.code == "invalid_grant" || e.code == "invalid_dpop_proof" {
+		_, _ = p.s.Eph.Incr(context.WithoutCancel(r.Context()), nsRateOIDC, failKey, 1, time.Minute)
+	}
 }
 
 func serverError(err error) *oauthError {
@@ -180,7 +208,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 			// first, then the grant is looked for; the first use records its grant, then looks for the mark (both
 			// under the code's id, on one node, in order): whichever comes second sees the other, so a replay racing
 			// the first use's grant still ends it.
-			_ = p.s.Eph.Set(ctx, nsReplayed, code, []byte{1}, usedTTL)
+			_ = p.s.Eph.Set(ctx, nsReplayed, code, []byte{1}, replayMarkTTL)
 			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
 				// The replay is refused either way; whether the grant could be ended is recorded as it happened.
 				rerr := p.revokeGrant(ctx, string(gid))
@@ -285,7 +313,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if oe != nil {
 		return nil, "", oe
 	}
-	org, err := p.org(ctx, cd.OrgID)
+	org, err := p.svc.Org(ctx, cd.OrgID)
 	if err != nil {
 		if !gone(err) {
 			return nil, "", serverError(unavailable(err))
@@ -411,10 +439,10 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 // the grant alive on a copy read just before), and emptied when the deletion fails: the grant is still in the
 // store, and the retry must find it there to end it, not answer 200 to a cached "nothing to revoke".
 func (p *Provider) revokeGrant(ctx context.Context, id string) error {
-	p.grants.put(id, grantState{})
+	p.grants.Put(id, grantState{})
 	err := p.svc.Grants.Delete(context.WithoutCancel(ctx), id)
 	if err != nil {
-		p.grants.del(id)
+		p.grants.Del(id)
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
 		return unavailable(err)
 	}
@@ -583,7 +611,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		}
 		return nil, invalid
 	}
-	org, err := p.org(ctx, g.OrgID)
+	org, err := p.svc.Org(ctx, g.OrgID)
 	if err != nil {
 		if !gone(err) {
 			return nil, serverError(unavailable(err))
@@ -662,7 +690,10 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			// rotation, say): the refresh goes ahead on the new copy.
 			fresh, ferr := p.svc.Grants.Get(ctx, g.ID)
 			if ferr != nil {
-				return nil, invalid
+				if gone(ferr) {
+					return nil, invalid
+				}
+				return nil, serverError(unavailable(ferr)) // not known to be revoked: the client keeps the token and retries
 			}
 			// The token was rotated moments ago elsewhere: a store that answers stale answers reads with the copy that
 			// made it stale, so fresh is the grant as it is now, and a retry is judged on it as in the first case above:
@@ -730,7 +761,7 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	if !subset(res, c.Resources) {
 		return nil, oerr("invalid_target", "the resource is not registered for this client")
 	}
-	org, err := p.org(ctx, c.OrgID)
+	org, err := p.svc.Org(ctx, c.OrgID)
 	if err != nil {
 		if !gone(err) {
 			return nil, serverError(unavailable(err))

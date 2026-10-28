@@ -632,7 +632,7 @@ func (h *harness) setOrg(s model.OrgSettings) {
 	if _, err := h.env.Svc.UpdateOrg(context.Background(), h.admin, h.env.Primary.ID, service.OrgInput{Settings: &s}); err != nil {
 		h.t.Fatal(err)
 	}
-	h.p.InvalidateOrg(h.env.Primary.ID)
+	h.env.Svc.InvalidateOrgs()
 }
 
 // auditEvents returns the stored audit events of one action.

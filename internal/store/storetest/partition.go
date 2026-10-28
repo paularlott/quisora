@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ImportRoundTrip", testPartImportRoundTrip},
 		{"ImportInvalid", testPartImportInvalid},
 		{"ImportFull", testPartImportFull},
+		{"ImportFullReleasesLongUnique", testPartImportFullLongUnique},
 		{"ExportStartsWithThePosition", testPartExportStart},
 		{"ImportInBatches", testPartImportBatches},
 		{"ExportRefusedWhileAnImportIsUnfinished", testPartExportUnfinished},
@@ -53,6 +55,29 @@ func RunPartition(t *testing.T, f Factory) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { tc.fn(t, f) })
+	}
+}
+
+// A full import's reset removes the partition's records and releases their unique values, however long (a long one is
+// indexed by its hash): the value then finds nothing, even once the copy brings a record with the removed one's id.
+func testPartImportFullLongUnique(t *testing.T, f Factory) {
+	s := f(t)
+	defer s.Close()
+	ps := pstore(t, s)
+	link := func(hash string) *store.Record {
+		r, err := store.Encode(&model.LinkToken{Meta: model.Meta{ID: "invite-u1"}, OrgID: "olong", UserID: "u1",
+			TokenHash: hash, Expires: time.Now().Add(time.Hour)})
+		must(t, err)
+		return r
+	}
+	old, next := strings.Repeat("o", 600), strings.Repeat("n", 600)
+	must(t, ps.ApplyPartition(ctx, 62, []*store.Record{link(old)}, pos(1, 1)))
+	must(t, ps.ImportPartition(ctx, 62, []store.PartitionRecord{{Record: link(next), Seq: 2}}, pos(2, 2), whole))
+	if _, err := s.GetByUnique(ctx, model.KindLink, model.LinkTokenKey(old)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the removed link's token: %v, want ErrNotFound (nil: it finds the imported link)", err)
+	}
+	if got, err := s.GetByUnique(ctx, model.KindLink, model.LinkTokenKey(next)); err != nil || got.ID != "invite-u1" {
+		t.Fatalf("the imported link's token: %v %v", got, err)
 	}
 }
 

@@ -89,10 +89,10 @@ func (p *Provider) recordClient(ctx context.Context, id string) (*clientEntry, e
 
 // loadClient reads a client's record through the cache.
 func (p *Provider) loadClient(ctx context.Context, id string) (*clientEntry, error) {
-	if e, ok := p.clients.get(id); ok {
+	if e, ok := p.clients.Get(id); ok {
 		return e, nil
 	}
-	tok := p.clients.token(id)
+	tok := p.clients.Token(id)
 	c, err := p.svc.Clients.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -103,14 +103,14 @@ func (p *Provider) loadClient(ctx context.Context, id string) (*clientEntry, err
 			e.keys = parseKeys(jwks)
 		}
 	}
-	p.clients.putIf(id, e, tok)
+	p.clients.PutIf(id, e, tok)
 	return e, nil
 }
 
 // standing returns e if its application still stands on its organization: one of a deleted organization is unknown (the
 // orphan sweep removes its record later).
 func (p *Provider) standing(ctx context.Context, e *clientEntry) (*clientEntry, error) {
-	if _, err := p.org(ctx, e.c.OrgID); err != nil {
+	if _, err := p.svc.Org(ctx, e.c.OrgID); err != nil {
 		if gone(err) {
 			return nil, store.ErrNotFound
 		}

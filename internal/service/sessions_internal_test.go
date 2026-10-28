@@ -12,6 +12,7 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
+	"github.com/paularlott/quisora/internal/ttlcache"
 )
 
 // pacedSweepFixture is an organization whose sessions an emergency sign-out ended: a sweep has them to delete.
@@ -150,9 +151,13 @@ func (f *failingOrgs) Get(ctx context.Context, k model.Kind, id string) (*store.
 	return f.Store.Get(ctx, k, id)
 }
 
-// Sign-out counters are served from the cache within signOutCacheTTL; past it they are read again, and a store that
-// cannot answer fails the check (503): counters an emergency sign-out may have moved are never served past the bound.
+// Sign-out counters are served from the organization cache within its bound; past it they are read again, and a store
+// that cannot answer fails the check (503): counters an emergency sign-out may have moved are never served past the
+// bound. (The cache's bound is shortened here; the server's is orgTTL.)
 func TestSignOutCountersStaleBound(t *testing.T) {
+	if orgTTL > 5*time.Second {
+		t.Fatalf("organizations are cached for %v, more than the 5s bound", orgTTL)
+	}
 	ctx := context.Background()
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
 	st := &failingOrgs{Store: memstore.New()}
@@ -166,68 +171,91 @@ func TestSignOutCountersStaleBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const bound = time.Second
+	s.orgCache = ttlcache.New[*model.Org](bound, 10)
 	if _, err := s.SessionStamp(ctx, p.ID); err != nil { // read and cached
 		t.Fatal(err)
 	}
 	st.fail = true
-	age := func(d time.Duration) {
-		s.signOut.mu.Lock()
-		co := s.signOut.orgs[p.ID]
-		co.fetched = time.Now().Add(-d)
-		s.signOut.orgs[p.ID] = co
-		s.signOut.fetched = time.Now().Add(-d)
-		s.signOut.mu.Unlock()
-	}
 	if _, err := s.SessionStamp(ctx, p.ID); err != nil {
 		t.Fatalf("counters within the cache's bound: %v", err)
 	}
-	age(signOutCacheTTL + time.Second) // due for a refresh, which fails
+	time.Sleep(bound) // due for a refresh, which fails
 	if _, err := s.SessionStamp(ctx, p.ID); err == nil {
-		t.Fatal("counters past signOutCacheTTL served while the store could not be read")
+		t.Fatal("counters past the cache's bound served while the store could not be read")
 	}
 }
 
-// The cache holds the organizations read lately, not every one ever read: once a generation is older than any entry
-// is of use, the next read starts a new one and the generation before it goes.
-func TestSignOutCacheKeepsRecentOrganizationsOnly(t *testing.T) {
+// An emergency sign-out pulled on another node counts here within the cache's bound, though this node is not told of it.
+// (The bound is shortened here; the server's is orgTTL.)
+func TestSignOutCountsElsewhereWithinTheBound(t *testing.T) {
 	ctx := context.Background()
-	s := newInternalService(t, memstore.New())
+	st := memstore.New()
+	s := newInternalService(t, st)
 	if _, _, err := s.Bootstrap(ctx, "root@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
-	for _, name := range []string{"one", "two", "three"} {
-		o, err := s.CreateOrg(ctx, System, OrgInput{Name: &name})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, o.ID)
+	other := New(s.Cfg, st, s.Sealer) // a second node over the same data, which hears of no change
+	const bound = time.Second
+	other.orgCache = ttlcache.New[*model.Org](bound, 10)
+	stamp, err := other.SessionStamp(ctx, model.PrimaryOrgID) // a session made before the pull, its counters cached
+	if err != nil {
+		t.Fatal(err)
 	}
-	read := func(id string) {
-		t.Helper()
-		if _, err := s.SessionStamp(ctx, id); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.SignOutServer(ctx, System, SignOutOptions{Reason: "x"}); err != nil {
+		t.Fatal(err)
 	}
-	age := func() {
-		s.signOut.mu.Lock()
-		s.signOut.genAt = s.signOut.genAt.Add(-2 * signOutGeneration)
-		s.signOut.mu.Unlock()
+	time.Sleep(bound)
+	if other.SessionCurrent(ctx, model.PrimaryOrgID, stamp) {
+		t.Fatal("past the cache's bound, the other node still accepts a session the server-wide sign-out ended")
 	}
-	s.InvalidateSignOut()
-	read(ids[0])
-	age()
-	read(ids[1]) // a new generation: ids[0] moves to the one before
-	if _, ok := s.signOut.prev[ids[0]]; !ok {
-		t.Fatal("the previous generation was dropped at once")
+}
+
+// Whether a user may act reads the organization through its cache: organizations are in the cluster's global
+// partition, and every session check, token check and refresh asks, so while that partition cannot be read (its owner
+// changing) users of every organization go on within the cache's bound instead of all getting "try again". Past the
+// bound the read fails closed; a deleted organization still stops its users.
+func TestUserUsableReadsTheOrganizationThroughItsCache(t *testing.T) {
+	ctx := context.Background()
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	st := &failingOrgs{Store: memstore.New()}
+	cfg := config.Default()
+	cfg.Limits.PasswordWorkers = 1
+	s := New(cfg, st, sealer)
+	admin, _, err := s.Bootstrap(ctx, "root@example.com")
+	if err != nil {
+		t.Fatal(err)
 	}
-	age()
-	read(ids[2]) // and another: ids[0] goes
-	s.signOut.mu.Lock()
-	defer s.signOut.mu.Unlock()
-	_, inOrgs := s.signOut.orgs[ids[0]]
-	_, inPrev := s.signOut.prev[ids[0]]
-	if inOrgs || inPrev || len(s.signOut.orgs)+len(s.signOut.prev) != 2 {
-		t.Fatalf("held: %d now, %d before", len(s.signOut.orgs), len(s.signOut.prev))
+	const bound = time.Second
+	s.orgCache = ttlcache.New[*model.Org](bound, 10)
+	if ok, err := s.UserUsable(ctx, admin); !ok || err != nil { // read and cached
+		t.Fatalf("usable: %v %v", ok, err)
+	}
+	st.fail = true
+	if ok, err := s.UserUsable(ctx, admin); !ok || err != nil {
+		t.Fatalf("within the cache's bound, the organization unreadable: %v %v", ok, err)
+	}
+	time.Sleep(bound)
+	if ok, err := s.UserUsable(ctx, admin); ok || err == nil {
+		t.Fatalf("past the bound, the organization unreadable: %v %v, want an error", ok, err)
+	}
+	st.fail = false
+	name, given, email := "gone", "Pat", "pat@example.com"
+	org, err := s.CreateOrg(ctx, System, OrgInput{Name: &name, DisplayName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.CreateUser(ctx, System, org.ID, UserInput{Username: &given, GivenName: &given, Email: &email})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.UserUsable(ctx, u); !ok {
+		t.Fatal("a user of a live organization is not usable")
+	}
+	if err := s.DeleteOrg(ctx, System, org.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UserUsable(ctx, u); ok || err != nil {
+		t.Fatalf("a user of a deleted organization: %v %v", ok, err)
 	}
 }

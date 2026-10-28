@@ -82,7 +82,7 @@ func TestTokenExchangeByResourceServer(t *testing.T) {
 		t.Fatal("revoke refresh")
 	}
 	h.p.InvalidateGrant(subject["gid"].(string))
-	if _, err := h.p.VerifyAccessToken(context.Background(), x.str("access_token")); err == nil {
+	if _, err := h.p.verifyAccessToken(context.Background(), x.str("access_token")); err == nil {
 		t.Fatal("exchanged token outlived its grant")
 	}
 }
@@ -160,7 +160,7 @@ func TestTokenExchangeRules(t *testing.T) {
 
 	// the user must have access to the exchanging client
 	h.env.Svc.UpdateUser(ctx, h.admin, h.user.ID, service.UserInput{Active: ptr(false)})
-	h.p.users.clear()
+	h.p.users.Clear()
 	if x := h.exchange(app, asecret, at, nil); x.m["error"] != "invalid_grant" {
 		t.Fatalf("disabled user: %v", x.m)
 	}
@@ -185,5 +185,41 @@ func TestActDepthLimit(t *testing.T) {
 	}
 	if actDepth([]byte(`"x"`)) != -1 {
 		t.Fatal("non-object act")
+	}
+}
+
+// A DPoP-bound subject token keeps its constraint: it is exchanged only with a proof of its own key, and the new token
+// is bound to that key. Without this, an API that was sent the token (in its audience, or able to introspect the
+// organization) could trade it for a bearer token.
+func TestTokenExchangeKeepsDPoPBinding(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	app, secret := h.newClient(withExchange)
+	k := newDPoPKey(t, AlgES256)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, app, ch, nil)
+	tokenProof := func(k dpopKey) string { return h.proof(k, "POST", orgBase+"/oauth/token", nil) }
+	r := h.tokenDPoP(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback},
+		"code_verifier": {v}}, app, secret, tokenProof(k))
+	if r.status != 200 || r.str("token_type") != "DPoP" {
+		t.Fatalf("bound sign-in: %d %v", r.status, r.m)
+	}
+	at := r.str("access_token")
+	form := url.Values{"grant_type": {service.GrantTokenExchange}, "subject_token": {at}, "subject_token_type": {tokenTypeAccess}}
+
+	// a bearer request, or a proof of another key, does not get a token
+	for name, proof := range map[string]string{"no proof": "", "other key": tokenProof(newDPoPKey(t, AlgEdDSA))} {
+		if x := h.tokenDPoP(form, app, secret, proof); x.status != 400 || x.m["error"] != "invalid_grant" || x.str("access_token") != "" {
+			t.Errorf("%s: %d %v", name, x.status, x.m)
+		}
+	}
+	// a proof of its key does, and the new token is bound to that key
+	x := h.tokenDPoP(form, app, secret, tokenProof(k))
+	if x.status != 200 || x.str("token_type") != "DPoP" {
+		t.Fatalf("exchange with the key: %d %v", x.status, x.m)
+	}
+	if cnf, _ := claimsOf(t, x.str("access_token"))["cnf"].(map[string]any); cnf["jkt"] != k.jkt {
+		t.Fatalf("exchanged token's cnf: %v", claimsOf(t, x.str("access_token")))
 	}
 }

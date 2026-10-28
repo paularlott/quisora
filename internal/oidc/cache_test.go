@@ -9,30 +9,8 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/ttlcache"
 )
-
-// A fill that began before an eviction must not be stored after it: the copy it read may be the one the eviction was
-// for, and would be served until it expired.
-func TestTTLCacheFillBeforeEvictionIsNotStored(t *testing.T) {
-	t.Parallel()
-	c := newTTLCache[int](time.Hour, 10)
-	tok := c.token("k")
-	c.del("k") // the eviction lands while the store is being read
-	c.putIf("k", 1, tok)
-	if _, ok := c.get("k"); ok {
-		t.Fatal("a fill that began before the eviction was stored")
-	}
-	c.putIf("k", 2, c.token("k")) // a fill that began after it is
-	if v, ok := c.get("k"); !ok || v != 2 {
-		t.Fatalf("fill after the eviction: %v %v", v, ok)
-	}
-	tok = c.token("k")
-	c.clear()
-	c.putIf("k", 3, tok)
-	if _, ok := c.get("k"); ok {
-		t.Fatal("a fill that began before a clear was stored")
-	}
-}
 
 func TestProviderCachesDoNotKeepAFillThatRacedAnEviction(t *testing.T) {
 	t.Parallel()
@@ -49,7 +27,7 @@ func TestProviderCachesDoNotKeepAFillThatRacedAnEviction(t *testing.T) {
 		id    string
 	}{
 		{"user", users, h.p.InvalidateUser, func() error { _, err := h.p.user(ctx, h.user.ID); return err }, h.user.ID},
-		{"organization", orgs, h.p.InvalidateOrg, func() error { _, err := h.p.org(ctx, h.env.Primary.ID); return err }, h.env.Primary.ID},
+		{"organization", orgs, func(string) { h.env.Svc.InvalidateOrgs() }, func() error { _, err := h.p.svc.Org(ctx, h.env.Primary.ID); return err }, h.env.Primary.ID},
 		{"client", clients, h.p.InvalidateClient, func() error { _, err := h.p.client(ctx, cl.OrgID, cl.ID); return err }, cl.ID},
 	}
 	for _, tc := range cases {
@@ -81,7 +59,7 @@ func TestProviderCachesDoNotKeepAFillThatRacedAnEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.p.InvalidateClient("")
-	if _, ok := h.p.clients.get(cl.ID); ok {
+	if _, ok := h.p.clients.Get(cl.ID); ok {
 		t.Fatal("clients not cleared")
 	}
 }
@@ -95,13 +73,13 @@ func TestVerifiedTokenCache(t *testing.T) {
 	r, _ := h.login(cl, secret, nil)
 	at := r.str("access_token")
 	ctx := context.Background()
-	if _, err := h.p.VerifyAccessToken(ctx, at); err != nil {
+	if _, err := h.p.verifyAccessToken(ctx, at); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, ok := h.p.verified.get(tokenKey(at), time.Now()); !ok {
 		t.Fatal("a verified token was not cached")
 	}
-	if _, err := h.p.VerifyAccessToken(ctx, at); err != nil {
+	if _, err := h.p.verifyAccessToken(ctx, at); err != nil {
 		t.Fatalf("from the cache: %v", err)
 	}
 	// one byte off (in the signature): a different token, verified in full and refused
@@ -111,7 +89,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 	} else {
 		b[len(b)-2] = 'A'
 	}
-	if _, err := h.p.VerifyAccessToken(ctx, string(b)); err == nil {
+	if _, err := h.p.verifyAccessToken(ctx, string(b)); err == nil {
 		t.Fatal("a tampered token was accepted")
 	}
 	// the user disabled: refused although the token is cached
@@ -120,7 +98,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.p.InvalidateUser(h.user.ID) // as the change hook does
-	if _, err := h.p.VerifyAccessToken(ctx, at); err == nil {
+	if _, err := h.p.verifyAccessToken(ctx, at); err == nil {
 		t.Fatal("a cached token of a disabled user was accepted")
 	}
 	// enabled again, then its grant revoked: refused
@@ -131,7 +109,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 	h.p.InvalidateUser(h.user.ID)
 	r2, _ := h.login(cl, secret, nil)
 	at2 := r2.str("access_token")
-	if _, err := h.p.VerifyAccessToken(ctx, at2); err != nil {
+	if _, err := h.p.verifyAccessToken(ctx, at2); err != nil {
 		t.Fatal(err)
 	}
 	gid, _ := claimsOf(t, at2)["gid"].(string)
@@ -139,7 +117,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 		t.Fatalf("revoke: %d", rv.status)
 	}
 	h.p.InvalidateGrant(gid)
-	if _, err := h.p.VerifyAccessToken(ctx, at2); err == nil {
+	if _, err := h.p.verifyAccessToken(ctx, at2); err == nil {
 		t.Fatal("a cached token of a revoked grant was accepted")
 	}
 	// keys reloaded: the cache starts again
@@ -234,49 +212,13 @@ func TestVerifiedCacheBounds(t *testing.T) {
 	}
 }
 
-// The cache holds at most two generations of max entries, serves the newest value of a key, and never an expired one.
-func TestTTLCacheBounds(t *testing.T) {
-	t.Parallel()
-	c := newTTLCache[int](time.Hour, 4)
-	for i := range 20 {
-		c.put(string(rune('a'+i)), i)
-	}
-	if n := len(c.m) + len(c.old); n > 8 {
-		t.Fatalf("holds %d entries, more than two generations of 4", n)
-	}
-	if v, ok := c.get(string(rune('a' + 19))); !ok || v != 19 {
-		t.Fatal("newest entry lost")
-	}
-	if _, ok := c.get("a"); ok {
-		t.Fatal("an entry of a dropped generation served")
-	}
-	c.put("t", 100) // "t" was in a generation: the new value replaces it wherever it was
-	if v, _ := c.get("t"); v != 100 {
-		t.Fatalf("stale value %d", v)
-	}
-	c.del("t")
-	if _, ok := c.get("t"); ok {
-		t.Fatal("deleted entry served")
-	}
-	// expired entries are never served, in either generation
-	d := newTTLCache[int](-time.Minute, 3) // a negative lifetime: every entry is born expired
-	d.put("x", 1)
-	if _, ok := d.get("x"); ok {
-		t.Fatal("expired entry served")
-	}
-	d.clear()
-	if len(d.m) != 0 || len(d.old) != 0 {
-		t.Fatal("clear left entries")
-	}
-}
-
 // An evicted tenant is read again.
 func TestInvalidateTenantEvictsItsEntry(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	h.p.tenants.put("t1", &model.Tenant{})
+	h.p.tenants.Put("t1", &model.Tenant{})
 	h.p.InvalidateTenant("t1")
-	if _, ok := h.p.tenants.get("t1"); ok {
+	if _, ok := h.p.tenants.Get("t1"); ok {
 		t.Fatal("the tenant stayed cached")
 	}
 }
@@ -285,7 +227,12 @@ func TestInvalidateTenantEvictsItsEntry(t *testing.T) {
 // is answered unavailable, never as if the client were fine or invalid.
 func TestClientCacheBoundedByItsTTL(t *testing.T) {
 	t.Parallel()
+	if cacheTTL > 5*time.Second {
+		t.Fatalf("clients are cached for %v, more than the 5s bound", cacheTTL)
+	}
 	h := setup(t, nil)
+	const bound = time.Second // shortened here, so the test need not wait for cacheTTL
+	h.p.clients = ttlcache.New[*clientEntry](bound, 10)
 	cl, secret := h.newClient(nil)
 	form := url.Values{"grant_type": {"client_credentials"}}
 	if r := h.token(form, cl, secret); r.status != 200 {
@@ -297,14 +244,6 @@ func TestClientCacheBoundedByItsTTL(t *testing.T) {
 	if r := h.token(form, cl, secret); r.status != 200 {
 		t.Fatalf("control: the cached client should serve within its bound: %d %v", r.status, r.m)
 	}
-	h.p.clients.mu.Lock()
-	if h.p.clients.ttl > 5*time.Second {
-		t.Errorf("clients are cached for %v, more than the 5s bound", h.p.clients.ttl)
-	}
-	for k, it := range h.p.clients.m { // (the bound passed)
-		it.exp = time.Now().UnixNano() - 1
-		h.p.clients.m[k] = it
-	}
-	h.p.clients.mu.Unlock()
+	time.Sleep(bound) // the bound passes
 	expectUnavailable(t, "cached client past its bound, the store refusing", h.token(form, cl, secret))
 }

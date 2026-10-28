@@ -14,6 +14,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/scim"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
 )
@@ -43,10 +44,13 @@ type env struct {
 
 func ptr[T any](v T) *T { return &v }
 
-func newEnv(t testing.TB) *env {
+func newEnv(t testing.TB) *env { return newEnvStore(t, nil) }
+
+// newEnvStore is newEnv over st (nil: an in-memory store).
+func newEnvStore(t testing.TB, st store.Store) *env {
 	t.Helper()
 	e := &env{t: t, ctx: context.Background(), users: map[string]*model.User{}}
-	e.Env = webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module {
+	e.Env = webtest.New(t, webtest.Options{Store: st, Modules: func(*web.Server) []web.Module {
 		return []web.Module{&scim.Module{TokenVerifier: func(r *http.Request, scheme, b string) (*service.Actor, error) {
 			if e.verify != nil {
 				return e.verify(r, scheme, b)

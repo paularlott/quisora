@@ -205,7 +205,7 @@ func (p *Provider) groupInfo(ctx context.Context, u *model.User) groupEntry {
 // groupsRead is groupInfo with the read's failure instead of an empty answer.
 func (p *Provider) groupsRead(ctx context.Context, u *model.User) (groupEntry, error) {
 	gen := p.membershipGen(u.OrgID)
-	if e, ok := p.groups.get(u.ID); ok && e.gen == gen {
+	if e, ok := p.groups.Get(u.ID); ok && e.gen == gen {
 		return e, nil
 	}
 	gs, err := p.svc.UserGroups(ctx, u)
@@ -221,7 +221,7 @@ func (p *Provider) groupsRead(ctx context.Context, u *model.User) (groupEntry, e
 	}
 	slices.Sort(e.names)
 	e.tags = model.MergeTags(lists...)
-	p.groups.put(u.ID, e)
+	p.groups.Put(u.ID, e)
 	return e, nil
 }
 

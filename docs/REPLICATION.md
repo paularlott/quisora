@@ -233,7 +233,14 @@ partitions.
   keeps failing), the partition has not diverged here, and the node is not copying its data (resync). Otherwise the
   single-record reads of the cluster store (`Get`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrUnavailable`
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
-  the cluster for longer than that bound and a cache's 5 s, however long it stays behind; the other nodes serve it. A node's own audit events and short-lived state are
+  the cluster for longer than that bound and a cache's 5 s, however long it stays behind; the other nodes serve it. A
+  read that finds nothing is gated the same way, on the partition the record would be in: the one its key names (an
+  organization's name: the global partition; a username, email, external id, group, tenant or provider name: the
+  organization id the value starts with, `model.UniquePartition`; a lock or replay id: its own), or the one of a copy
+  this node holds in any state (a record expired or deleted here, which never moves). So an unknown username at sign-in
+  answers "not found" while another organization's partition is between owners. Only a miss whose key names no
+  partition (an id never received here, a link token, a provider identity or a passkey credential) needs every partition
+  readable, since what it lacks may be in any. A node's own audit events and short-lived state are
   not in a partition and are exempt. Listings and counts are not
   gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
   the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
@@ -342,7 +349,10 @@ hour (reading only the tombstones, from an index every backend keeps of them by 
 long reads as a catch-up export: a node serves at most four at once, so a scan that finds none free waits for the next
 round), chooses a sequence number below which every tombstone is older than the retention, and writes "purge below
 sequence N"; every node purges the same tombstones at the same position, whatever its clock (`pstore.Commit`
-purges first, then applies, so a crash between the two is repeated harmlessly). A node whose committed position is
+purges first, then applies, so a crash between the two is repeated harmlessly). A node's database records the purge
+point first and then removes the tombstones below it in batches, each a short transaction of its own (so a partition
+with many never holds the database's writer, or its locks, for the whole purge); a crash part-way leaves some below the
+point, which no export after the point shows and the next purge removes. A node whose committed position is
 below a partition's purge point cannot catch up by sequence and **copies the partition whole**, which replaces its data
 (a record deleted meanwhile does not come back). So the retention is a matter of cost, never of safety. Records that
 expired are removed by every node from its own copy.

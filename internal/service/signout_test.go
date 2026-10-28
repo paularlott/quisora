@@ -197,7 +197,7 @@ func TestSignOutOtherNode(t *testing.T) {
 	if _, err := e.svc.SignOutOrg(e.ctx, actor(admin), acme.ID, service.SignOutOptions{Reason: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	other.InvalidateSignOut() // what the cluster's change notice does
+	other.InvalidateOrgs() // what the cluster's change notice does
 	if other.SessionCurrent(e.ctx, s.OrgID, s.Stamp) {
 		t.Error("the other node still accepts the session")
 	}

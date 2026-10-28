@@ -20,21 +20,6 @@ func (m *Mailer) SetService(svc *service.Service) { m.Svc = svc }
 
 var errNoService = errors.New("mail: link tokens are not configured")
 
-// SendInvite issues a fresh invitation for u (earlier unused invitations stop working) and emails the link.
-func (m *Mailer) SendInvite(ctx context.Context, u *model.User, org *model.Org) error {
-	if m.Svc == nil {
-		return errNoService
-	}
-	if u.Email == "" {
-		return errors.New("mail: user has no email address")
-	}
-	link, expires, err := m.Svc.CreateInvite(ctx, service.System, u.ID)
-	if err != nil {
-		return err
-	}
-	return m.SendInviteLink(ctx, u, org, link, expires)
-}
-
 // SendInviteLink emails an invitation URL that was issued already (service.CreateInvite): "generate a new invite and
 // email it" is CreateInvite as the acting admin followed by this.
 func (m *Mailer) SendInviteLink(ctx context.Context, u *model.User, org *model.Org, link string, expires time.Time) error {
@@ -116,10 +101,7 @@ func (m *Mailer) SendVerifyAddress(ctx context.Context, u *model.User, org *mode
 // SendRecoveryUsed tells u that one of their recovery codes was used to sign in, and how many are left: someone who
 // got hold of the codes is noticed at their first use.
 func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model.Org, left int) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Link: m.Cfg.Server.PublicURL + web.OrgPath(u.OrgID, "/account"), Left: strconv.Itoa(left)}
-	if org != nil {
-		d.Org = org.DisplayName
-	}
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Link: m.Cfg.Server.PublicURL + web.OrgPath(u.OrgID, "/account"), Left: strconv.Itoa(left)}
 	msg, err := recoveryTpl.render(d)
 	if err != nil {
 		return err
@@ -130,10 +112,7 @@ func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model
 
 // SendSignInCode emails u the one-time code that finishes a sign-in as its second factor, valid for ttl.
 func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.Org, code string, ttl time.Duration) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Code: code, Expires: humanTTL(ttl)}
-	if org != nil {
-		d.Org = org.DisplayName
-	}
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Code: code, Expires: humanTTL(ttl)}
 	msg, err := codeTpl.render(d)
 	if err != nil {
 		return err
@@ -143,10 +122,7 @@ func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.O
 }
 
 func (m *Mailer) renderTo(ctx context.Context, to string, u *model.User, org *model.Org, t *tpl, link string, ttl time.Duration) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Link: link, Expires: humanTTL(ttl)}
-	if org != nil {
-		d.Org = org.DisplayName
-	}
+	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Link: link, Expires: humanTTL(ttl)}
 	msg, err := t.render(d)
 	if err != nil {
 		return err

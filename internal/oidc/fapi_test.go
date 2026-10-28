@@ -48,7 +48,7 @@ func TestPS256ClientKeysAndIDTokens(t *testing.T) {
 	if key == nil || key.alg != AlgPS256 || pj.Verify(key.pub) != nil {
 		t.Fatal("PS256 ID token does not verify with its published key")
 	}
-	if _, err := h.p.VerifyAccessToken(context.Background(), r.str("access_token")); err != nil {
+	if _, err := h.p.verifyAccessToken(context.Background(), r.str("access_token")); err != nil {
 		t.Fatalf("PS256 access token: %v", err)
 	}
 	jwks := body(h.get(h.http, orgBase+"/oauth/jwks"))

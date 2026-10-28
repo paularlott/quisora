@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -39,85 +37,22 @@ func setSessionCookie(w http.ResponseWriter, s *model.Session, raw string) {
 
 type ctxOrgKey struct{}
 
-// sessionOrgsKey holds the ids of the organizations whose session a request may present, in order (sessionOrgs).
-type sessionOrgsKey struct{}
-
 // InOrg serves next for the organization its path names ({org}: an id or a name): Org(r) is that organization, and the
 // request's session is its session only. An organization that does not exist is not found; one that cannot be read
 // now is unavailable (503), never "not found".
 func (s *Server) InOrg(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		org, err := s.orgs.get(r.Context(), s.Svc, r.PathValue("org"))
+		org, err := s.Svc.OrgByRef(r.Context(), r.PathValue("org"))
 		switch {
 		case errors.Is(err, service.ErrNotFound):
 			http.NotFound(w, r)
 			return
 		case err != nil:
-			w.Header().Set("Retry-After", "5")
-			http.Error(w, "This server cannot serve this organization right now. Please try again shortly.",
-				http.StatusServiceUnavailable)
+			writeUnavailable(w, r.URL.Path, "This server cannot serve this organization right now. Please try again shortly.")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ctxOrgKey{}, org)
-		ctx = context.WithValue(ctx, sessionOrgsKey{}, []string{org.ID})
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxOrgKey{}, org)))
 	})
-}
-
-// orgTTL bounds how long a change made on another node (which this one may not hear of: a shared database) can take
-// to count here, as the OIDC provider's caches do; a change this node hears of counts at once (InvalidateOrgs).
-const orgTTL = 5 * time.Second
-
-// orgCache keeps the organizations InOrg resolved, by their id and their name exactly as stored. Every request under
-// /o/<org> resolves one, and a store read may wait for the writes in flight (BadgerDB's read timestamp): uncached,
-// the discovery and token endpoints queue behind every sign-in. Only those two forms are kept, so it is bounded by the
-// number of organizations (twice) however a client spells a name (a name is matched in any case and Unicode form:
-// every spelling would be an entry of its own); another spelling is read from the store each time. It is emptied
-// whenever any organization changes, which is rare.
-type orgCache struct {
-	mu  sync.RWMutex
-	m   map[string]orgEntry
-	gen uint64 // bumped by every clear (mu): a read that began before one is not stored after it
-}
-
-type orgEntry struct {
-	org *model.Org
-	exp time.Time
-}
-
-func (c *orgCache) get(ctx context.Context, svc *service.Service, ref string) (*model.Org, error) {
-	c.mu.RLock()
-	e, ok := c.m[ref]
-	gen := c.gen
-	c.mu.RUnlock()
-	if ok && time.Now().Before(e.exp) {
-		return e.org, nil
-	}
-	org, err := svc.OrgByRef(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	if ref != org.ID && ref != org.Name {
-		return org, nil
-	}
-	c.mu.Lock()
-	if c.gen == gen {
-		if c.m == nil {
-			c.m = map[string]orgEntry{}
-		}
-		c.m[ref] = orgEntry{org: org, exp: time.Now().Add(orgTTL)}
-	}
-	c.mu.Unlock()
-	return org, nil
-}
-
-// InvalidateOrgs forgets every organization InOrg resolved: call it when one changes (its name may have gone to
-// another, so the whole cache goes).
-func (s *Server) InvalidateOrgs() {
-	s.orgs.mu.Lock()
-	s.orgs.gen++
-	clear(s.orgs.m)
-	s.orgs.mu.Unlock()
 }
 
 // Org returns the organization of the request's path (InOrg), or nil outside one.
@@ -130,17 +65,20 @@ func Org(r *http.Request) *model.Org {
 const maxConsoleSessions = 8
 
 // lastOrgCookie names the organization of the browser's latest sign-in (set with every session cookie): the console
-// acts as the person who signed in last, as it did when a browser held one session at a time.
+// acts as the person who signed in last, as it did when a browser held one session at a time, unless that person
+// cannot use the console (Sessions.Check).
 const lastOrgCookie = "__Host-quisora_last_org"
 
 // sessionOrgs returns the organizations whose session the request may present, in the order they are tried. Under
 // /o/<org> it is that organization's only (InOrg). Elsewhere (the console and the management API, which are the
 // server's) it is the organization of the browser's latest sign-in, then the organization the path administers
 // ({org}), then the primary organization, whose administrators administer the server, then any other organization the
-// browser holds a session of: whichever session is used, what its user may do is the service's to decide.
-func (m *Sessions) sessionOrgs(r *http.Request) []string {
-	if ids, ok := r.Context().Value(sessionOrgsKey{}).([]string); ok {
-		return ids
+// browser holds a session of. Sessions.Check prefers, in this order, the first session whose user can use the console;
+// what that user may then do is the service's to decide. The error is the store's refusal to resolve {org}: skipping
+// that organization would let the request act as another session than the one meant.
+func (m *Sessions) sessionOrgs(r *http.Request) ([]string, error) {
+	if org := Org(r); org != nil {
+		return []string{org.ID}, nil
 	}
 	var ids []string
 	add := func(id string) {
@@ -152,8 +90,11 @@ func (m *Sessions) sessionOrgs(r *http.Request) []string {
 		add(c.Value)
 	}
 	if ref := r.PathValue("org"); ref != "" {
-		if o, err := m.svc.OrgByRef(r.Context(), ref); err == nil {
+		switch o, err := m.svc.OrgByRef(r.Context(), ref); {
+		case err == nil:
 			add(o.ID)
+		case !errors.Is(err, service.ErrNotFound):
+			return nil, err
 		}
 	}
 	add(model.PrimaryOrgID)
@@ -162,5 +103,5 @@ func (m *Sessions) sessionOrgs(r *http.Request) []string {
 			add(id)
 		}
 	}
-	return ids
+	return ids, nil
 }

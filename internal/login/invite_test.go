@@ -390,9 +390,7 @@ func TestInviteMailLinkWorksThroughTheModule(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
 	u, _ := e.invitee(t, org, "newbie")
-	if err := e.Mailer.SendInvite(context.Background(), u, org); err != nil {
-		t.Fatal(err)
-	}
+	e.mailInvite(t, u, org)
 	m := e.nextMail(t)
 	link := linkPath(t, m)
 	if !strings.HasPrefix(link, web.OrgPath(org.ID, "/invite?token=")) || !strings.Contains(m.Text, "invited") || !strings.Contains(m.Text, "7 days") {
@@ -418,9 +416,7 @@ func TestEmailedInvitationVerifiesAddress(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := e.Mailer.SendInvite(ctx, u, org); err != nil {
-			t.Fatal(err)
-		}
+		e.mailInvite(t, u, org)
 		link := linkPath(t, e.nextMail(t))
 		if change {
 			other := "elsewhere@acme.test"

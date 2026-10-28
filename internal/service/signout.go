@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -19,92 +18,19 @@ import (
 // (SignOutCurrent). A sweep then deletes what was ended and tells applications (back-channel logout); it is only
 // cleanup, so it runs in the background.
 
-// signOutCacheTTL bounds how long a node trusts the counters it read: a change made elsewhere counts here within it,
-// whatever the store; an organization change this node hears of evicts them at once (InvalidateSignOut).
-const signOutCacheTTL = 5 * time.Second
-
-// signOutCache holds the counters last read. Organizations are kept in two generations: orgs, and prev, the orgs of
-// the generation before (signOutGeneration), so only the
-// organizations read lately are held, never every one ever read.
-type signOutCache struct {
-	mu      sync.Mutex
-	orgs    map[string]cachedCounters
-	prev    map[string]cachedCounters
-	genAt   time.Time // when orgs began
-	server  model.SignOutCounters
-	hasSrv  bool
-	fetched time.Time // of server
-	// gen moves on with every InvalidateSignOut: a read made before it, finished after, is not stored (it may hold
-	// counters from before the change that invalidated).
-	gen uint64
-}
-
-type cachedCounters struct {
-	c       model.SignOutCounters
-	fetched time.Time
-}
-
-// InvalidateSignOut drops the cached sign-out counters (an organization changed, here or on another node).
-func (s *Service) InvalidateSignOut() {
-	s.signOut.mu.Lock()
-	s.signOut.orgs, s.signOut.prev = nil, nil
-	s.signOut.hasSrv = false
-	s.signOut.gen++
-	s.signOut.mu.Unlock()
-}
-
-// signOutCounters returns the organization's and the server's counters, from the cache when fresh (signOutCacheTTL);
-// otherwise as the store answers now, or its error (the caller answers 503): the store reads current data or refuses,
-// and counters an emergency sign-out may have moved are never served past the cache's own bound.
-//
-// signOutGeneration is how long a generation of cached organizations lasts: an organization not read again within two
-// of them is dropped, so only those read lately are held.
-const signOutGeneration = 30 * time.Second
-
+// signOutCounters returns the organization's counters and the server's (the primary organization's ServerSignOut) as
+// Org reads them: no older than its bound (orgTTL), or the store's error, which the caller answers as no verdict (503):
+// counters an emergency sign-out may have moved are never served past that bound, nor guessed.
 func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, server model.SignOutCounters, err error) {
-	now := time.Now()
-	c := &s.signOut
-	c.mu.Lock()
-	co, okOrg := c.orgs[orgID]
-	if !okOrg {
-		co, okOrg = c.prev[orgID]
+	o, err := s.Org(ctx, orgID)
+	if err != nil {
+		return org, server, err
 	}
-	srv, okSrv := c.server, c.hasSrv
-	srvAt := c.fetched
-	gen := c.gen
-	c.mu.Unlock()
-	if !okOrg || now.Sub(co.fetched) > signOutCacheTTL {
-		o, gerr := s.Orgs.Get(ctx, orgID)
-		switch {
-		case gerr == nil:
-			co = cachedCounters{c: o.SignOut, fetched: now}
-			c.mu.Lock()
-			if c.gen == gen {
-				if c.orgs == nil || now.Sub(c.genAt) > signOutGeneration {
-					c.prev, c.orgs, c.genAt = c.orgs, map[string]cachedCounters{}, now
-				}
-				c.orgs[orgID] = co
-			}
-			c.mu.Unlock()
-		default:
-			return org, server, gerr
-		}
+	p, err := s.Org(ctx, model.PrimaryOrgID)
+	if err != nil {
+		return org, server, err
 	}
-	if !okSrv || now.Sub(srvAt) > signOutCacheTTL {
-		p, perr := s.PrimaryOrg(ctx)
-		switch {
-		case perr == nil:
-			srv = p.ServerSignOut
-			c.mu.Lock()
-			if c.gen == gen {
-				c.server, c.hasSrv, c.fetched = srv, true, now
-			}
-			c.mu.Unlock()
-		default:
-			return org, server, perr
-		}
-	}
-	return co.c, srv, nil
+	return o.SignOut, p.ServerSignOut, nil
 }
 
 // SessionStamp is the stamp for a session or refresh grant made now in orgID.
@@ -242,15 +168,20 @@ func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*mo
 // or API token): enabled (active, within its dates) and its organization still there. Deleting an organization (or a
 // user) deletes that one record: everything that belonged to it stops counting at once, as it stands on its parent,
 // and the orphan sweep removes the records later (sweep.go). An error is a read that failed: no verdict.
+//
+// The organization is read through its cache (Org): this runs on every authenticated request, and organizations are
+// in the cluster's one global partition, so an uncached read would make every session check, token check and refresh
+// of every organization wait on that partition, and fail while it changes owner. A deletion counts at once on the node
+// that made it (the cache is cleared) and within the cache's 5 s elsewhere.
 func (s *Service) UserUsable(ctx context.Context, u *model.User) (bool, error) {
 	if !u.Enabled(time.Now()) {
 		return false, nil
 	}
-	if _, err := s.Orgs.Get(ctx, u.OrgID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+	if _, err := s.Org(ctx, u.OrgID); err != nil {
+		if errors.Is(err, ErrNotFound) {
 			return false, nil
 		}
-		return false, mapStore(err)
+		return false, err
 	}
 	return true, nil
 }
@@ -351,7 +282,9 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 		}
 		break
 	}
-	s.InvalidateSignOut()
+	// The lever counts on this node at once; the other nodes hear of the change (InvalidateOrgs), or count it within
+	// orgTTL whatever.
+	s.InvalidateOrgs()
 	// Whoever pulled it keeps the session they did it from.
 	if opt.KeepSession != "" {
 		if sess, err := s.Sessions.Get(ctx, opt.KeepSession); err == nil {

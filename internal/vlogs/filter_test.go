@@ -37,3 +37,11 @@ func TestFilterConditions(t *testing.T) {
 		}
 	}
 }
+
+// The exact actor and target the service asks for (to find what a reader may not see) are escaped equality conditions.
+func TestFilterActorAndTarget(t *testing.T) {
+	f := Filter(service.AuditQuery{Actor: `a" | delete`, Target: "root@example.com"})
+	if !strings.Contains(f, `actor:="a\" | delete"`) || !strings.Contains(f, `target:="root@example.com"`) {
+		t.Fatalf("filter %s", f)
+	}
+}

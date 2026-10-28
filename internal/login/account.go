@@ -266,8 +266,7 @@ func (m *Module) sendVerify(w http.ResponseWriter, r *http.Request, a acct) {
 			writeErr(w, http.StatusTooManyRequests, "Too many verification emails. Try again later.", "")
 			return
 		}
-		org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-		if err := m.Mail.SendVerify(ctx, u, org); err != nil {
+		if err := m.Mail.SendVerify(ctx, u, web.Org(r)); err != nil {
 			m.internalError(w, r, "send verification", err)
 			return
 		}
@@ -292,8 +291,7 @@ func (m *Module) mailAddress(w http.ResponseWriter, r *http.Request, u *model.Us
 		writeErr(w, http.StatusTooManyRequests, "Too many verification emails. Try again later.", "")
 		return false
 	}
-	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err := m.Mail.SendVerifyAddress(ctx, u, org, address); err != nil {
+	if err := m.Mail.SendVerifyAddress(ctx, u, web.Org(r), address); err != nil {
 		if errors.Is(err, service.ErrNotFound) || errors.Is(err, service.ErrConflict) {
 			web.WriteError(w, err)
 		} else {
@@ -813,17 +811,10 @@ func (m *Module) renamePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	p.Name = name
 	if err := m.s.Svc.Passkeys.Update(r.Context(), p); err != nil {
-		web.WriteError(w, mapStoreErr(err))
+		web.WriteError(w, err)
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, toPasskeyItem(p))
-}
-
-func mapStoreErr(err error) error {
-	if errors.Is(err, store.ErrStale) {
-		return service.ErrStale
-	}
-	return err
 }
 
 func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
@@ -836,7 +827,7 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 	// it signed in, the recovery codes with the last second factor), keeping the session doing it.
 	ended, err := m.s.Svc.RemovePasskey(service.SelfService(ctx), a.actor, a.u.ID, p.ID, a.sess.ID)
 	if err != nil && ended == 0 {
-		web.WriteError(w, mapStoreErr(err))
+		web.WriteError(w, err)
 		return
 	}
 	m.afterCredentialChange(ctx, a)
@@ -1019,7 +1010,7 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	// The commit (service.SetTOTP): a compare-and-swap on the version just read, so a factor set meanwhile (from
 	// another browser, or at a sign-in) is never overwritten unseen.
 	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
-		web.WriteError(w, mapStoreErr(err))
+		web.WriteError(w, err)
 		return
 	}
 	_ = m.s.Eph.Delete(ctx, nsPending, a.sess.ID)
@@ -1064,7 +1055,7 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	// Removed as any is (service.RemoveTOTP: not your last second factor where one is required; the recovery codes
 	// go with the last second factor).
 	if err := m.s.Svc.RemoveTOTP(service.SelfService(ctx), a.actor, a.u.ID); err != nil {
-		web.WriteError(w, mapStoreErr(err))
+		web.WriteError(w, err)
 		return
 	}
 	m.afterCredentialChange(ctx, a)

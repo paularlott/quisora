@@ -554,7 +554,13 @@ func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
 // proceed decides what the browser needs next: sign in, re-authenticate, consent, or an authorization code.
 func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f *flow, c *model.Client) {
 	ctx := r.Context()
-	sess, user := p.s.Sessions.Current(r)
+	// A session the store could not check is not "signed out": prompt=none would answer login_required for a user who
+	// is signed in, and any other request would send them to sign in again over a session that may well exist.
+	sess, user, err := p.s.Sessions.Check(r)
+	if err != nil {
+		p.redirectError(w, r, f, "temporarily_unavailable", "the session could not be checked right now")
+		return
+	}
 	none := f.has("none")
 	tenant, terr := p.clientTenant(ctx, c)
 	if terr != nil {
@@ -590,7 +596,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		signIn(false)
 		return
 	}
-	org, err := p.org(ctx, user.OrgID)
+	org, err := p.svc.Org(ctx, user.OrgID)
 	if err != nil {
 		p.message(w, r, http.StatusBadRequest, "Unavailable", "Your organization is not available", "")
 		return

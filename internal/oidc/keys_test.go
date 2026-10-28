@@ -107,7 +107,7 @@ func TestForcedKeyRotation(t *testing.T) {
 	if kid := headerOf(t, after.str("access_token"))["kid"]; kid == oldKID {
 		t.Fatal("the old key still signs after a forced rotation")
 	}
-	if _, err := h.p.VerifyAccessToken(ctx, before.str("access_token")); err != nil {
+	if _, err := h.p.verifyAccessToken(ctx, before.str("access_token")); err != nil {
 		t.Fatalf("token signed by the previous key: %v", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestRemoveSigningKey(t *testing.T) {
 		if err := h.p.RotateKeys(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.p.VerifyAccessToken(ctx, at); err != nil {
+		if _, err := h.p.verifyAccessToken(ctx, at); err != nil {
 			t.Fatalf("a rotation alone stopped the old key's token: %v", err)
 		}
 		if err := h.p.RemoveKey(ctx, "no-such-key"); !errors.Is(err, service.ErrNotFound) {
@@ -340,7 +340,7 @@ func TestRemoveSigningKey(t *testing.T) {
 		if err := h.p.RemoveKey(ctx, old); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.p.VerifyAccessToken(ctx, at); err == nil {
+		if _, err := h.p.verifyAccessToken(ctx, at); err == nil {
 			t.Error("the removed key's token still verifies")
 		}
 		if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {

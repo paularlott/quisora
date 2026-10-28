@@ -68,7 +68,7 @@ The new token's claims:
 
 | Parameter | |
 | --- | --- |
-| `subject_token` | The user's access token, issued by this Quisora. Not a refresh token, not a client credentials token. A DPoP-bound token is accepted without a proof of its key: the service exchanging it received it from the user's application and acts for the user, and it holds none of that application's keys. The new token is bound to the exchanging client's own DPoP key when it sends a proof. |
+| `subject_token` | The user's access token, issued by this Quisora. Not a refresh token, not a client credentials token. A DPoP-bound token (`cnf.jkt`) stays bound: it is exchanged only with a [DPoP proof](dpop.md) made with its own key, and the new token is bound to that key. A service that was merely sent the token holds no such key and cannot exchange it. An unbound token gets a token bound to the exchanging client's own DPoP key when the request carries a proof. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` (or `…:jwt`). |
 | `resource` or `audience` | The APIs the new token is for: only those registered on the calling client. |
 | `scope` | Optional: at most the subject token's scopes that the calling client also has. Without it, all of those. `offline_access` is dropped. |
@@ -96,6 +96,7 @@ asked for it.
 | --- | --- |
 | `invalid_grant`: *the subject token is invalid, expired or revoked* | It is not a valid access token from this server, or the user's sign-in has ended. |
 | `invalid_grant`: *the subject token was not issued for this client* | The calling client is not in the token's `aud` and cannot introspect the organization's tokens. |
+| `invalid_grant`: *the subject token is bound to a DPoP key* | A DPoP-bound subject token exchanged without a proof, or with a proof made with another key. |
 | `invalid_grant`: *the subject token must be a user's token* | A client credentials token cannot be exchanged. |
 | `invalid_grant`: *the user has no access to this application* | The user cannot use the calling client. |
 | `invalid_target` | A `resource` or `audience` not registered on the calling client. |

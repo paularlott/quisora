@@ -22,9 +22,7 @@ var errFault = errors.New("fault: store operation failed")
 // faultStore wraps a record store and fails what its fields select; a zero field lets the operation through.
 type faultStore struct {
 	store.Store
-	getKind    model.Kind // Get of a record of this kind fails (after the first getPass of them)
-	getPass    int64      // the first Gets of getKind that go through
-	getSeen    atomic.Int64
+	getKind    model.Kind                       // Get of a record of this kind fails
 	listKind   model.Kind                       // List of this kind fails
 	deleteKind model.Kind                       // deleting (a tombstone, put or compared) a record of this kind fails
 	cas        func(r *store.Record) error      // a compared write (CompareAndPut, or one in a Tx) of a record answers cas(r) when it is not nil
@@ -36,12 +34,6 @@ type faultStore struct {
 // failReads fails every Get of one kind (an access entry, a grant, a session, an organization ...).
 func failReads(s store.Store, kind model.Kind) *faultStore {
 	return &faultStore{Store: s, getKind: kind}
-}
-
-// failReadsAfter is failReads that lets the first pass reads of the kind through: the one an endpoint makes of the
-// organization it is under (web.Server.InOrg), before the handler's own reads.
-func failReadsAfter(s store.Store, kind model.Kind, pass int64) *faultStore {
-	return &faultStore{Store: s, getKind: kind, getPass: pass}
 }
 
 // failLists fails every List of one kind (a user's memberships).
@@ -65,7 +57,7 @@ func failCAS(s store.Store, kind model.Kind, err func() error) *faultStore {
 }
 
 func (s *faultStore) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	if kind == s.getKind && s.getSeen.Add(1) > s.getPass {
+	if kind == s.getKind {
 		return nil, errFault
 	}
 	r, err := s.Store.Get(ctx, kind, id)

@@ -458,3 +458,32 @@ func TestResumeAndConsentRefuseUnknownOrStaleFlows(t *testing.T) {
 		t.Errorf("consent with a broken body: %v %v", r, err)
 	}
 }
+
+// A session the store cannot check is not "signed out": prompt=none is answered temporarily_unavailable, not
+// login_required (the user is signed in), and nobody is sent to sign in over a session that may exist. Once the store
+// answers, the same session gets its code.
+func TestAuthorizeWhenTheSessionCannotBeCheckedAsksToRetry(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, _ := h.newClient(nil)
+	_, ch := pkce()
+	c, _ := h.session(h.user)
+	pu, _ := url.Parse(h.env.URL)
+	for _, ck := range c.Jar.Cookies(pu) {
+		if strings.HasPrefix(ck.Name, web.SessionCookieFor("")) {
+			h.env.Server.Sessions.Evict(web.SessionID(ck.Value), "") // the cached copy would answer without the store
+		}
+	}
+	good := h.env.Svc.Sessions.S
+	h.env.Svc.Sessions.S = sessionReadsRefused{good}
+	for _, prompt := range []string{"none", ""} {
+		u := h.authorize(c, authzQuery(cl, ch, url.Values{"prompt": {prompt}}))
+		if u.Host != "rp.example" || u.Query().Get("error") != "temporarily_unavailable" {
+			t.Fatalf("prompt=%q with an unreadable session: %s", prompt, u)
+		}
+	}
+	h.env.Svc.Sessions.S = good
+	if u := h.authorize(c, authzQuery(cl, ch, url.Values{"prompt": {"none"}})); u.Query().Get("code") == "" {
+		t.Fatalf("prompt=none once the store answers: %s", u)
+	}
+}

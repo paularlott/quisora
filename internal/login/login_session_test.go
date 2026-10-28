@@ -368,12 +368,18 @@ func (s orgsRefused) List(ctx context.Context, kind model.Kind, q store.ListQuer
 // is incorrect": the organization exists, this node just cannot vouch for it at the moment.
 func TestSignInWhenTheOrganizationCannotBeReadAsksToRetry(t *testing.T) {
 	e := newEnv(t, nil)
-	e.member(t)
+	org, err := e.Svc.Org(context.Background(), e.member(t).OrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	b := e.browser(t)
 	good := e.Svc.Orgs.S
 	e.Svc.Orgs.S = orgsRefused{good}
+	// Not read lately (a copy read within the cache's bound would answer for it): the path names it by name, which
+	// orgsRefused lets through, so the sign-in itself meets the refusal.
+	e.Svc.InvalidateOrgs()
 	body := map[string]any{"email": "member@example.com", "password": userPassword}
-	res, out := b.do("POST", "/api-internal/login/password", body, nil)
+	res, out := b.do("POST", "/o/"+org.Name+"/api-internal/login/password", body, nil)
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("sign-in with the organization unreadable: %d %v, want 503", res.StatusCode, out)
 	}

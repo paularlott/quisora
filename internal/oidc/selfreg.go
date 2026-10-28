@@ -71,7 +71,7 @@ func (p *Provider) appClient(ctx context.Context, r *http.Request, orgID, id str
 		fresh, rerr := p.readMetadata(ctx, r, orgID, id, false)
 		if fresh != nil {
 			if c, err := p.svc.RefreshMetadataClient(ctx, fresh); err == nil {
-				p.clients.del(c.ID)
+				p.clients.Del(c.ID)
 				return &clientEntry{c: c}, nil
 			}
 		}

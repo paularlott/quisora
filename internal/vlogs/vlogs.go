@@ -523,6 +523,12 @@ func Filter(q service.AuditQuery) string {
 	if q.Outcome != "" {
 		b.WriteString(` outcome:=` + strconv.Quote(q.Outcome))
 	}
+	if q.Actor != "" {
+		b.WriteString(` actor:=` + strconv.Quote(q.Actor))
+	}
+	if q.Target != "" {
+		b.WriteString(` target:=` + strconv.Quote(q.Target))
+	}
 	if s := strings.TrimSpace(q.Search); s != "" {
 		re := strconv.Quote("(?i)" + regexp.QuoteMeta(s))
 		fmt.Fprintf(&b, ` (actor:~%s or target:~%s or ip:~%s)`, re, re, re)

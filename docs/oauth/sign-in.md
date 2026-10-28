@@ -214,8 +214,14 @@ redirect URI) with your `state`.
 to it whenever one of its users' sessions ends: sign-out, a session revoked, a password reset, an account disabled
 or deleted, an emergency sign-out. The application ends its own session for that `sid` or `sub`. A logout your
 application does not take (unreachable, or answering with an error) is retried after 5 s, 30 s, 5 min, 15 min and
-1 h, then given up on and logged; the retries wait on disk, so a restart does not lose them. Answer quickly and
-idempotently: the same logout can arrive twice.
+1 h, then given up on and logged; the retries wait on disk, so a restart does not lose them. Organizations do not
+hold each other up: each has its own share of the senders (8 at a time) and of the queue (2,500 logouts), and the
+senders serve the organizations in turn, so an application that is slow or never answers delays only the notices of
+its own organization. A logout that finds its organization's share full goes straight to the retry queue instead.
+The retry queue is fair the same way: it sends 8 at a time, at most 2 of them for one organization, so retries to an
+application that never answers hold back only the retries of its own organization (a retry pass lasts as long as its
+slowest attempt, 8 s at most).
+Answer quickly and idempotently: the same logout can arrive twice.
 
 ## Tokens for an API (resource indicators)
 

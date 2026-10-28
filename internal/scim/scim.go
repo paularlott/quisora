@@ -127,15 +127,15 @@ func (m *Module) fromService(err error) *Error {
 		return errf(409, "", "The resource was changed by someone else, retry the request")
 	case errors.Is(err, service.ErrTooLarge):
 		// RFC 7644 §3.12: 413, the request is larger than the server processes; the client splits it.
-		return errf(413, "", "%s", capitalise(err.Error()))
+		return errf(413, "", "%s", web.Capitalise(err.Error()))
 	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
-		return errf(409, "", "%s", capitalise(err.Error()))
+		return errf(409, "", "%s", web.Capitalise(err.Error()))
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		// Sent, but the node that decides it was lost before it answered: a retry of a create would find the resource
 		// (409), so the client is told to read it back rather than to treat this as a failure of its own.
 		return errf(503, "", "The change may or may not have been made (the cluster lost the node that decides it); read the resource back before retrying")
-	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
+	case service.IsUnavailable(err):
 		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):
 		return badValue("%s", err.Error())
@@ -144,13 +144,6 @@ func (m *Module) fromService(err error) *Error {
 		m.srv.Log.Error("scim", "error", err)
 	}
 	return errf(500, "", "Internal error")
-}
-
-func capitalise(s string) string {
-	if s == "" || s[0] < 'a' || s[0] > 'z' {
-		return s
-	}
-	return string(s[0]-32) + s[1:]
 }
 
 type errorBody struct {
@@ -207,13 +200,17 @@ func (rq *request) fail(err error) {
 	writeError(rq.w, rq.m.fromService(err))
 }
 
-// unseenUsers returns the ids of the org's users the caller does not see in full.
-func (rq *request) unseenUsers() map[string]bool {
+// unseenUsers returns the ids of the org's users the caller does not see in full. When they cannot be read it fails
+// (and tries again next time), as it must not guess: an empty set would show the hidden users.
+func (rq *request) unseenUsers() (map[string]bool, error) {
 	if !rq.loaded {
-		rq.unseen, _ = rq.m.srv.Svc.NotSeenInFull(rq.ctx, rq.actor, rq.org.ID)
-		rq.loaded = true
+		unseen, err := rq.m.srv.Svc.NotSeenInFull(rq.ctx, rq.actor, rq.org.ID)
+		if err != nil {
+			return nil, err
+		}
+		rq.unseen, rq.loaded = unseen, true
 	}
-	return rq.unseen
+	return rq.unseen, nil
 }
 
 // location is the absolute URL of a resource of this org.

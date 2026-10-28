@@ -305,12 +305,12 @@ func TestCodeKeptWhenRedemptionFails(t *testing.T) {
 		"code_verifier": {v}}
 	users := h.env.Svc.Users.S
 	h.env.Svc.Users.S = failReads(users, model.KindUser)
-	h.p.users.clear()
+	h.p.users.Clear()
 	if r := h.token(form, cl, secret); r.status != 503 {
 		t.Fatalf("with the user unreadable: %d %v", r.status, r.m)
 	}
 	h.env.Svc.Users.S = users
-	h.p.users.clear()
+	h.p.users.Clear()
 	if r := h.token(form, cl, secret); r.status != 200 {
 		t.Fatalf("the retry: %d %v", r.status, r.m)
 	}
@@ -371,7 +371,7 @@ func TestClientCredentials(t *testing.T) {
 		t.Fatalf("scim scope missing: %v", r.m)
 	}
 	// verified by the provider's resource-server helper
-	cl2, err := h.p.VerifyAccessToken(context.Background(), r.str("access_token"))
+	cl2, err := h.p.verifyAccessToken(context.Background(), r.str("access_token"))
 	if err != nil || !cl2.HasScope("scim") {
 		t.Fatal(err)
 	}
@@ -381,12 +381,12 @@ func TestClientCredentials(t *testing.T) {
 	if r2 := h.token(url.Values{"grant_type": {"client_credentials"}}, cl, secret); r2.status != 401 {
 		t.Fatalf("disabled client: %d", r2.status)
 	}
-	if _, err := h.p.VerifyAccessToken(context.Background(), h.token(url.Values{"grant_type": {"client_credentials"}}, sc, ssecret).str("access_token")); err != nil {
+	if _, err := h.p.verifyAccessToken(context.Background(), h.token(url.Values{"grant_type": {"client_credentials"}}, sc, ssecret).str("access_token")); err != nil {
 		t.Fatal(err)
 	}
 	h.env.Svc.UpdateClient(context.Background(), h.admin, sc.ID, service.ClientInput{Enabled: ptr(false)})
 	h.p.InvalidateClient(sc.ID)
-	if _, err := h.p.VerifyAccessToken(context.Background(), r.str("access_token")); err == nil {
+	if _, err := h.p.verifyAccessToken(context.Background(), r.str("access_token")); err == nil {
 		t.Fatal("token of a disabled client verified")
 	}
 }

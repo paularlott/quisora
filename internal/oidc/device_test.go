@@ -477,12 +477,12 @@ func TestDeviceApprovalKeptWhenIssueFails(t *testing.T) {
 	}
 	users := h.env.Svc.Users.S
 	h.env.Svc.Users.S = failReads(users, model.KindUser)
-	h.p.users.clear()
+	h.p.users.Clear()
 	if r := h.pollDevice(cl, deviceCode); r.status != 503 {
 		t.Fatalf("with the user unreadable: %d %v", r.status, r.m)
 	}
 	h.env.Svc.Users.S = users
-	h.p.users.clear()
+	h.p.users.Clear()
 	if r := h.pollDevice(cl, deviceCode); r.status != 200 || r.str("access_token") == "" {
 		t.Fatalf("the next poll: %d %v", r.status, r.m)
 	}

@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 func TestLogoutWithBackchannel(t *testing.T) {
@@ -261,5 +264,52 @@ func TestLogoutRequestRefusals(t *testing.T) {
 	h.p.InvalidateClient(cl.ID)
 	if st := status(url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}}); st != 400 {
 		t.Errorf("disabled client: %d", st)
+	}
+}
+
+// sessionReadsRefused refuses every session read, as a node that cannot vouch for the session partition does.
+type sessionReadsRefused struct{ store.Store }
+
+func (s sessionReadsRefused) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindSession {
+		return nil, store.ErrUnavailable
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// A sign-out of a session the store cannot check is answered 503, not sent on to the relying party's signed-out page
+// as though there were nothing to end (the session may be alive), and the confirmation's request is kept for the
+// retry.
+func TestLogoutWhenTheSessionCannotBeCheckedAsksToRetry(t *testing.T) {
+	h := setup(t, nil)
+	cl, _ := h.newClient(func(in *service.ClientInput) { in.PostLogoutURIs = &[]string{"https://rp.example/bye"} })
+	c, csrf := h.session(h.user)
+	logoutURL := orgBase + "/oauth/logout?" + url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}}.Encode()
+	page := body(h.get(c, logoutURL)) // the confirmation page, with its request
+	id := regexpValue(page, "id")
+	if id == "" {
+		t.Fatalf("no confirmation page: %.200s", page)
+	}
+	pu, _ := url.Parse(h.env.URL)
+	for _, ck := range c.Jar.Cookies(pu) {
+		if strings.HasPrefix(ck.Name, web.SessionCookieFor("")) {
+			h.env.Server.Sessions.Evict(web.SessionID(ck.Value), "") // the cached copy would answer without the store
+		}
+	}
+	good := h.env.Svc.Sessions.S
+	h.env.Svc.Sessions.S = sessionReadsRefused{good}
+	if resp := h.get(c, logoutURL); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("sign-out with an unreadable session: %d, want 503", resp.StatusCode)
+	}
+	form := url.Values{"id": {id}, "csrf": {csrf}}.Encode()
+	if resp := h.confirmLogout(c, form); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("confirmed sign-out with an unreadable session: %d, want 503", resp.StatusCode)
+	}
+	h.env.Svc.Sessions.S = good
+	if resp := h.confirmLogout(c, form); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "https://rp.example/bye" {
+		t.Fatalf("confirmed sign-out once the store answers: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if _, sess := h.env.Server.Sessions.Current(reqWithCookies(h, c)); sess != nil {
+		t.Fatal("session survived")
 	}
 }

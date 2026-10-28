@@ -229,7 +229,7 @@ func (p *Provider) setDPoPNonce(w http.ResponseWriter) {
 	w.Header().Set("DPoP-Nonce", p.dpopNonce(time.Now()))
 }
 
-// VerifyRequestToken is VerifyAccessToken for a token presented with the given authorization scheme ("Bearer" or
+// VerifyRequestToken is verifyAccessToken for a token presented with the given authorization scheme ("Bearer" or
 // "DPoP") in request r: a DPoP-bound token is accepted only with the DPoP scheme and a proof of its key for this
 // request, and the DPoP scheme only with a bound token. A failed proof is ErrDPoPProof. A request to an organization's
 // endpoint (web.Org) takes that organization's tokens only.
@@ -239,7 +239,7 @@ func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Cla
 	if org := web.Org(r); org != nil {
 		cl, err = p.verifyIn(r.Context(), org.ID, tok)
 	} else {
-		cl, err = p.VerifyAccessToken(r.Context(), tok)
+		cl, err = p.verifyAccessToken(r.Context(), tok)
 	}
 	if err != nil {
 		return nil, err

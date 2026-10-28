@@ -74,6 +74,33 @@ func TestUpstreamOIDCSignIn(t *testing.T) {
 	}
 }
 
+// A guest a provider created at its first sign-in, once promoted to a manager, no longer signs in through that
+// provider: the provider's side controls that link, and the account has no second factor yet, so whoever held the
+// provider's account could otherwise enrol their own second factor and act as the manager.
+func TestPromotedGuestCannotSignInThroughItsProvider(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	p := u.oidcProvider(t, nil)
+	if res := u.browser(t).via(t, u, p, "acme", "", claims("sub-1", "pat@corp.example")); !strings.Contains(res.Header.Get("Location"), "/account") {
+		t.Fatalf("first sign-in: %q", res.Header.Get("Location"))
+	}
+	guest, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Svc.UpdateUser(ctx, service.System, guest.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	b := u.browser(t)
+	res := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
+	if b.hasSession() || strings.Contains(res.Header.Get("Location"), "/account") {
+		t.Fatalf("the promoted guest signed in through the provider: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	if ids, err := u.Svc.Identities.All(ctx, guest.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("links after the promotion: %v %v", ids, err)
+	}
+}
+
 func TestUpstreamHostileNext(t *testing.T) {
 	u := newUpEnv(t, nil)
 	p := u.oidcProvider(t, nil)

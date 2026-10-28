@@ -138,8 +138,8 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "That code is incorrect. Check the time on your device and try again.", "code")
 		return
 	}
-	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+	if err := m.useTicket(ctx, in.Ticket); err != nil {
+		ticketFailed(w, err)
 		return
 	}
 	// The commit: a compare-and-swap on the version of the user enrolTicket read and validated this request (no
@@ -229,8 +229,8 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, "The passkey could not be registered. Try again.", "")
 		return
 	}
-	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+	if err := m.useTicket(ctx, in.Ticket); err != nil {
+		ticketFailed(w, err)
 		return
 	}
 	pk, err := m.Passkeys.StoreRegistration(ctx, u, reg)

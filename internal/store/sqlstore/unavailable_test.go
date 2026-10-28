@@ -79,11 +79,18 @@ func TestClassifyTransientErrors(t *testing.T) {
 		"my lost":          &mysql.MySQLError{Number: 2013},
 		"my shutdown":      &mysql.MySQLError{Number: 1053},
 		"my killed":        &mysql.MySQLError{Number: 1927},
+		"my commit error":  &mysql.MySQLError{Number: 1180},
 	}
 	retry := map[string]error{
 		"pg serialization": &pgconn.PgError{Code: "40001"},
 		"pg deadlock":      &pgconn.PgError{Code: "40P01"},
 		"pg too many":      &pgconn.PgError{Code: "53300"},
+		"pg read-only":     &pgconn.PgError{Code: "25006"},
+		"pg stmt timeout":  &pgconn.PgError{Code: "57014"},
+		"pg lock timeout":  &pgconn.PgError{Code: "55P03"},
+		"my max exec time": &mysql.MySQLError{Number: 3024},
+		"maria stmt time":  &mysql.MySQLError{Number: 1969},
+		"my gr rollback":   &mysql.MySQLError{Number: 3101},
 		"my galera":        &mysql.MySQLError{Number: 1047, Message: "WSREP has not yet prepared node for application use"},
 		"my deadlock":      &mysql.MySQLError{Number: 1213},
 		"my lock wait":     &mysql.MySQLError{Number: 1205},
@@ -428,5 +435,42 @@ func TestLostCommitIsSettled(t *testing.T) {
 				t.Fatalf("a refused commit left a record: %v", err)
 			}
 		})
+	})
+}
+
+// A server turned read-only (a primary demoted by a failover) answers a write ErrUnavailable, and the connection to it
+// is closed: the next write dials again (to the new primary) instead of failing on that connection until it expires.
+func TestReadOnlyServerConnectionIsDropped(t *testing.T) {
+	forEachDialect(t, dialects[1:], func(t *testing.T, d testDialect) {
+		ctx := context.Background()
+		s, _ := openTest(t, d.name, d.env, 1) // one connection: the one made read-only
+		defer s.Close()
+		readOnly, connID := "SET SESSION TRANSACTION READ ONLY", "SELECT CONNECTION_ID()"
+		if s.d.isPG() {
+			readOnly, connID = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", "SELECT pg_backend_pid()"
+		}
+		conn := func() (id int64) {
+			t.Helper()
+			if err := s.wdb.QueryRowContext(ctx, connID).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			return id
+		}
+		if err := s.Put(ctx, record(model.KindLink, "before", time.Time{})); err != nil { // (the statements it prepares are kept)
+			t.Fatal(err)
+		}
+		if _, err := s.wdb.ExecContext(ctx, readOnly); err != nil {
+			t.Fatal(err)
+		}
+		was := conn()
+		if err := s.Put(ctx, record(model.KindLink, "ro", time.Time{})); !errors.Is(err, store.ErrUnavailable) {
+			t.Fatalf("a write on a read-only server: want ErrUnavailable, got %v", err)
+		}
+		if now := conn(); now == was {
+			t.Fatal("the read-only connection was kept")
+		}
+		if err := s.Put(ctx, record(model.KindLink, "ro", time.Time{})); err != nil {
+			t.Fatalf("the next write: %v", err)
+		}
 	})
 }

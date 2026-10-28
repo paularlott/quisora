@@ -4,6 +4,10 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,6 +56,55 @@ func TestMetricsEndpoint(t *testing.T) {
 		"quisora_ready 1", "quisora_writable 1", "quisora_build_info{version=", "quisora_audit_events_total"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+// The metrics table of docs/RUNNING.md names every metric a node serves, and only those: the test starts a node with
+// everything that adds metrics of its own (VictoriaLogs, email) and compares what /metrics serves with the table.
+func TestMetricsDocumented(t *testing.T) {
+	vl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer vl.Close()
+	_, hc, base := startAppWith(t, "sqlite", func(c *config.Config) {
+		c.Metrics.Token = "scrape-secret"
+		c.Audit.VictoriaLogs = vl.URL
+		c.Mail.SMTPHost, c.Mail.SMTPPort, c.Mail.TLS = "127.0.0.1", 1, "none" // (nothing is sent)
+	})
+	req, _ := http.NewRequest("GET", base+"/metrics", nil)
+	req.Header.Set("Authorization", "Bearer scrape-secret")
+	r, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	var served []string
+	for _, m := range regexp.MustCompile(`(?m)^# TYPE (\S+) `).FindAllStringSubmatch(string(body), -1) {
+		served = append(served, m[1])
+	}
+
+	doc, err := os.ReadFile("../../docs/RUNNING.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := string(doc)[strings.Index(string(doc), "### Metrics"):]
+	section = section[:strings.Index(section, "Alerts worth having")]
+	var documented []string
+	for _, line := range strings.Split(section, "\n") {
+		if cells := strings.Split(line, "|"); len(cells) > 2 && strings.Contains(cells[1], "`quisora_") {
+			for _, m := range regexp.MustCompile("`(quisora_[a-z0-9_]+)").FindAllStringSubmatch(cells[1], -1) {
+				documented = append(documented, m[1])
+			}
+		}
+	}
+	for _, name := range served {
+		if !slices.Contains(documented, name) {
+			t.Errorf("%s is served but not in the metrics table of docs/RUNNING.md", name)
+		}
+	}
+	for _, name := range documented {
+		if !slices.Contains(served, name) {
+			t.Errorf("%s is in the metrics table of docs/RUNNING.md but not served", name)
 		}
 	}
 }

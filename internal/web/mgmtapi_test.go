@@ -20,7 +20,7 @@ type probe struct{}
 
 func (probe) Register(s *web.Server) {
 	s.Mux.Handle("POST /api/probe", s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
-		web.WriteJSON(w, 200, map[string]string{"actor": web.Actor(r).Name, "version": web.APIVersion(r)})
+		web.WriteJSON(w, 200, map[string]string{"actor": web.Actor(r).Name})
 	}))
 	s.Bearer = func(ctx context.Context, r *http.Request, tok string) (*service.Actor, error) {
 		switch tok {

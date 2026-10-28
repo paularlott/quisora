@@ -93,8 +93,10 @@ func TestPurgeTombstones(t *testing.T) {
 			}
 		}
 
-		purgeAll(c, past)
+		// Housekeeping purges every interval and a pass is idempotent, so a pass whose write the cluster could not take
+		// (a busy machine, an owner moving) is followed by another: so here.
 		waitFor(t, 15*time.Second, "the old tombstones purged everywhere", func() bool {
+			purgeAll(c, past)
 			for _, tn := range c.nodes {
 				for _, id := range ids[:3] {
 					if !gone(tn, id) {

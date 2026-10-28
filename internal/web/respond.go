@@ -43,27 +43,28 @@ func WriteError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusNotFound, ErrorBody{Error: "Not found."})
 	case errors.Is(err, service.ErrConflict):
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: "That already exists."})
-	case errors.Is(err, service.ErrStale):
+	case errors.Is(err, service.ErrStale), errors.Is(err, store.ErrStale): // (a raw store error too)
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: "Someone else changed this. Reload and try again."})
 	case errors.Is(err, service.ErrTooLarge):
-		WriteJSON(w, http.StatusRequestEntityTooLarge, ErrorBody{Error: capitalise(err.Error()) + "."})
+		WriteJSON(w, http.StatusRequestEntityTooLarge, ErrorBody{Error: Capitalise(err.Error()) + "."})
 	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
 		errors.Is(err, service.ErrTenantInUse):
-		WriteJSON(w, http.StatusConflict, ErrorBody{Error: capitalise(err.Error()) + "."})
+		WriteJSON(w, http.StatusConflict, ErrorBody{Error: Capitalise(err.Error()) + "."})
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server lost contact with the part of the cluster that decides this change before it answered, so the change may or may not have been made. Check, then try again."})
-	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
+	case service.IsUnavailable(err):
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot make changes right now (it cannot reach enough of its cluster). Nothing was changed; please try again shortly."})
 	case errors.Is(err, service.ErrInvalid):
-		WriteJSON(w, http.StatusUnprocessableEntity, ErrorBody{Error: capitalise(err.Error())})
+		WriteJSON(w, http.StatusUnprocessableEntity, ErrorBody{Error: Capitalise(err.Error())})
 	default:
 		WriteJSON(w, http.StatusInternalServerError, ErrorBody{Error: "Something went wrong. Please try again."})
 	}
 }
 
-func capitalise(s string) string {
+// Capitalise upper-cases the first letter of an error message (Go error strings start lower-case) for showing it.
+func Capitalise(s string) string {
 	if s == "" {
 		return s
 	}

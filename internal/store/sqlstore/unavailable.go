@@ -22,6 +22,9 @@ import (
 // errDBClosed is what database/sql answers once the database was closed.
 const errDBClosed = "sql: database is closed"
 
+// pgReadOnly is Postgres's read_only_sql_transaction: a write on a server that is (now) a standby.
+const pgReadOnly = "25006"
+
 // failure is what a database error says about the operation that met it.
 type failure int
 
@@ -57,7 +60,10 @@ func classify(err error) failure {
 		case strings.HasPrefix(pg.Code, "08"), // connection exception
 			pg.Code == "57P01", pg.Code == "57P02", pg.Code == "57P03": // admin shutdown, crash shutdown, cannot connect now
 			return failLost
-		case pg.Code == "40001", pg.Code == "40P01", pg.Code == "53300": // serialization failure, deadlock, too many connections
+		case pg.Code == "40001", pg.Code == "40P01", pg.Code == "53300", // serialization failure, deadlock, too many connections
+			pg.Code == pgReadOnly, // a server turned standby by a failover (its connection is closed: Open)
+			pg.Code == "57014",    // statement timeout (a commit is never cancelled once it has begun to commit)
+			pg.Code == "55P03":    // lock timeout
 			return failRetry
 		}
 		return failOther
@@ -65,12 +71,16 @@ func classify(err error) failure {
 	var my *mysql.MySQLError
 	if errors.As(err, &my) {
 		switch my.Number {
-		case 1053, 1152, 1158, 1159, 1160, 1161, 1927, 2002, 2003, 2006, 2013, 4031:
+		case 1053, 1152, 1158, 1159, 1160, 1161, 1927, 2002, 2003, 2006, 2013, 4031, 1180:
 			// shutdown in progress, aborted connection, network read/write errors and timeouts, connection killed, can't connect,
-			// server gone away, lost connection, inactive client disconnected
+			// server gone away, lost connection, inactive client disconnected; an engine error during COMMIT (the
+			// transaction may have been prepared, and a recovery may still commit it)
 			return failLost
-		case 1040, 1047, 1205, 1213:
-			// too many connections; Galera "WSREP has not yet prepared node for application use"; lock wait timeout; deadlock
+		case 1040, 1047, 1205, 1213, 3024, 1969, 3101:
+			// too many connections; Galera "WSREP has not yet prepared node for application use"; lock wait timeout; deadlock;
+			// MySQL's and MariaDB's statement time limits; a commit Group Replication rolled back (a conflict)
+			// (A server turned read-only, 1290, 1792 or 1836, never gets here: the driver closes the connection and answers
+			// driver.ErrBadConn, Open.)
 			return failRetry
 		}
 		return failOther

@@ -3997,6 +3997,9 @@ components:
             google, github, microsoft and organization"
         link_by_email:
           type: boolean
+          description: "on a first sign-in, link the one existing user whose verified email matches the provider's. Default
+            on, except for organization, where it is off: the source organization's managers can mark any address
+            verified, so turning it on trusts them with this organization's users"
         name:
           type: string
           description: button label; on create, empty means the type's name (Google, Microsoft…)

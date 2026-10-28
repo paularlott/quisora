@@ -60,8 +60,8 @@ func TestTokensStopWhen(t *testing.T) {
 			if m := h.introspect(other, osecret, at); m["active"] != false {
 				t.Errorf("introspection: %v", m)
 			}
-			if _, err := h.p.VerifyAccessToken(context.Background(), at); err == nil {
-				t.Error("VerifyAccessToken accepted the token")
+			if _, err := h.p.verifyAccessToken(context.Background(), at); err == nil {
+				t.Error("verifyAccessToken accepted the token")
 			}
 			if x := h.refreshWith(cl, secret, rt); x.status != tc.refreshStatus {
 				t.Errorf("refresh: %d %v, want %d", x.status, x.m, tc.refreshStatus)
@@ -101,8 +101,7 @@ func TestClientOfDeletedOrgUnknown(t *testing.T) {
 	if err := h.env.Svc.DeleteOrg(ctx, service.System, org.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	h.p.InvalidateOrg(org.ID) // as the change feed does
-	h.env.Server.InvalidateOrgs()
+	h.env.Svc.InvalidateOrgs() // as the change feed does
 	if _, err := h.env.Svc.Clients.Get(ctx, c.ID); err != nil {
 		t.Fatalf("the record is the sweep's to remove: %v", err)
 	}

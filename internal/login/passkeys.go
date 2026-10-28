@@ -8,7 +8,6 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -120,7 +119,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, passkey.ErrChallenge):
 			writeErr(w, http.StatusUnauthorized, "That sign-in has expired. Try again.", "")
 			return
-		case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
+		case service.IsUnavailable(err):
 			unavailableResponse(w)
 			return
 		}
@@ -148,9 +147,16 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	if tid := res.Extra["ticket"]; tid != "" {
 		// Second factor after a verified password: the ticket must still bind to the account the passkey just
 		// signed in (ticketCurrent; u was read by the ceremony a moment ago).
-		t, ok := m.getTicket(ctx, tid, "passkey", "totp")
-		if !ok || !m.ticketCurrent(ctx, t, u) || !m.useTicket(ctx, tid) {
-			writeErr(w, http.StatusUnauthorized, msgExpired, "")
+		t, err := m.getTicket(ctx, tid, "passkey", "totp")
+		if err == nil {
+			err = m.ticketCurrent(ctx, t, u)
+		}
+		if err != nil {
+			ticketFailed(w, err)
+			return
+		}
+		if err := m.useTicket(ctx, tid); err != nil {
+			ticketFailed(w, err)
 			return
 		}
 		amr = append(append(append([]string{}, t.AMR...), amr...), "mfa")

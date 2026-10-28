@@ -15,10 +15,16 @@
 // process: concurrent writes, those of different partitions included, run at the database's own concurrency.
 //
 // Limits: on MySQL and MariaDB string fields are VARCHAR(255), ids and scopes VARCHAR(191) (utf8mb4, NO PAD binary
-// collation); longer values are rejected by the server. Unique values of any length are indexed (uniqueKey). MySQL needs 8.0.13+
-// (functional indexes for case-insensitive sorting); MariaDB sorts strings with a filesort inside the scope.
+// collation); longer values are rejected by the server. Unique values of any length are indexed (uniqueKey). MySQL needs 8.0.17+
+// (the utf8mb4_0900_bin collation; functional indexes for case-insensitive sorting came in 8.0.13); MariaDB sorts strings
+// with a filesort inside the scope.
 // SQLite's LOWER folds ASCII only: there strings are folded by quisora_lower (strings.ToLower) instead, which only
 // this program defines, so other SQLite tools can read a Quisora SQLite file but cannot change its indexed tables.
+//
+// Bounds: no statement runs unbounded. Every connection is opened with a time limit on a statement and on a lock wait
+// (statementTimeout, lockTimeout), so a runaway query or a lock held by a stuck client fails the statement with
+// store.ErrUnavailable instead of holding the connection (on SQLite, the one writer) indefinitely; and the long
+// operations (purges, the reset of a full import, a partition's export) run as many short statements.
 package sqlstore
 
 import (
@@ -32,6 +38,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,10 +46,22 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib" // also registers the "pgx" database/sql driver
 	_ "modernc.org/sqlite"           // registers the "sqlite" database/sql driver
 
 	"github.com/paularlott/quisora/internal/model"
+)
+
+// The bounds on one statement, set on every connection Open makes unless a server's DSN sets the same parameter. Every
+// statement this store runs is short: a read of a record or a page, the writes of one transaction, a batch of a purge or
+// an import, take milliseconds, and a count or a search over a large scope well under a second. So the bounds are
+// generous for the work, and short enough that a request (with its client waiting) fails over to "unavailable" rather
+// than queueing behind a stuck statement for minutes. A lock wait is bounded below the statement because the locks this
+// store takes are held by transactions of milliseconds: five seconds of waiting means the holder is stuck.
+const (
+	statementTimeout = 10 * time.Second // PostgreSQL statement_timeout, MySQL max_execution_time (SELECTs), MariaDB max_statement_time
+	lockTimeout      = 5 * time.Second  // PostgreSQL lock_timeout, MySQL and MariaDB innodb_lock_wait_timeout, SQLite busy_timeout
 )
 
 // Config selects and tunes the database.
@@ -99,6 +118,16 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 					}
 				}
 			}
+			// A primary demoted by a failover refuses every write on the connections already open to it: such a
+			// connection is closed (as pgx closes one on a FATAL error), so the pool dials again, through the DSN's
+			// address, to whichever server is the primary now.
+			fatal := pc.OnPgError
+			pc.OnPgError = func(c *pgconn.PgConn, e *pgconn.PgError) bool {
+				return e.Code != pgReadOnly && (fatal == nil || fatal(c, e))
+			}
+			// The bounds go in the startup message, so every connection has them from its first statement.
+			setDefault(pc.RuntimeParams, "statement_timeout", strconv.FormatInt(statementTimeout.Milliseconds(), 10))
+			setDefault(pc.RuntimeParams, "lock_timeout", strconv.FormatInt(lockTimeout.Milliseconds(), 10))
 			s.useServerPool(stdlib.OpenDB(*pc), cfg)
 		}
 	default:
@@ -106,6 +135,21 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		if mc, err = mysql.ParseDSN(cfg.DSN); err == nil {
 			mc.Collation = "utf8mb4_bin"
 			mc.InterpolateParams = false
+			// A primary demoted by a failover refuses every write on the connections already open to it: the driver
+			// closes such a connection and answers driver.ErrBadConn, so the pool dials again, through the DSN's
+			// address, to whichever server is the primary now (database/sql retries a lone statement there itself).
+			mc.RejectReadOnly = true
+			// The bounds are set by the driver as each connection opens (one SET of every parameter). MySQL bounds only a
+			// SELECT's time (max_execution_time, in milliseconds); MariaDB every statement's (max_statement_time, seconds).
+			if mc.Params == nil {
+				mc.Params = map[string]string{}
+			}
+			if d.name == "mysql" {
+				setDefault(mc.Params, "max_execution_time", strconv.FormatInt(statementTimeout.Milliseconds(), 10))
+			} else {
+				setDefault(mc.Params, "max_statement_time", strconv.Itoa(int(statementTimeout.Seconds())))
+			}
+			setDefault(mc.Params, "innodb_lock_wait_timeout", strconv.Itoa(int(lockTimeout.Seconds())))
 			if cfg.RootCAs != nil && mc.Net != "unix" {
 				switch {
 				case mc.TLS == nil: // no tls in the DSN: a CA file asks for verified TLS
@@ -139,6 +183,13 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	}
 	s.feedID.Store(feed)
 	return s, nil
+}
+
+// setDefault sets params[key] unless it is set: a parameter the DSN gives is the operator's, and is kept.
+func setDefault(params map[string]string, key, value string) {
+	if _, set := params[key]; !set {
+		params[key] = value
+	}
 }
 
 // readCommitted sets every new MySQL or MariaDB connection to READ COMMITTED, the isolation of the write transactions.
@@ -212,7 +263,7 @@ func (s *Store) openSQLite(ctx context.Context, cfg Config) error {
 
 func sqliteDSN(dsn string, writer bool) string {
 	q := url.Values{}
-	q.Add("_pragma", "busy_timeout(10000)")
+	q.Add("_pragma", "busy_timeout("+strconv.FormatInt(lockTimeout.Milliseconds(), 10)+")")
 	q.Add("_pragma", "journal_mode(WAL)")
 	// FULL: a commit is on disk when it returns, as with BadgerDB's sync_writes (NORMAL in WAL mode can lose the
 	// last commits to a power cut: a password change, a revocation, a rotated signing key).

@@ -68,7 +68,7 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 }
 
-// idle returns a queue whose worker is not started: the tests drive deliverOne, deliverDue and the file helpers
+// idle returns a queue whose worker is not started: the tests drive deliverDue and the file helpers
 // themselves, so nothing races them.
 func idle[T any](dir string, o Options[T]) *Queue[T] {
 	o.Log = logger.NewNullLogger()

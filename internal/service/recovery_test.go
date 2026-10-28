@@ -68,29 +68,6 @@ func TestRecoveryCodes(t *testing.T) {
 		t.Fatalf("new set: %v %d", ok, left)
 	}
 
-	// the last second factor removed: the codes go with it (a factor added later must not bring them back)
-	u.TOTPSecret = ""
-	_ = e.svc.Users.Update(e.ctx, u)
-	if err := e.svc.DropRecoveryCodes(e.ctx, u.ID); err != nil {
-		t.Fatal(err)
-	}
-	u, _ = e.svc.Users.Get(e.ctx, u.ID)
-	if left, _ := e.svc.RecoveryCodesLeft(e.ctx, u); left != 0 || len(u.RecoveryCodes) != 0 {
-		t.Fatal("codes kept without a second factor")
-	}
-	u.TOTPSecret = "sealed-secret"
-	_ = e.svc.Users.Update(e.ctx, u)
-	if fresh, err = e.svc.CreateRecoveryCodes(e.ctx, service.System, u); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.svc.DropRecoveryCodes(e.ctx, u.ID); err != nil { // with a factor: nothing happens
-		t.Fatal(err)
-	}
-	u, _ = e.svc.Users.Get(e.ctx, u.ID)
-	if left, _ := e.svc.RecoveryCodesLeft(e.ctx, u); left != 10 {
-		t.Fatalf("codes dropped although a factor is left: %d", left)
-	}
-
 	// an invitation or a lock-out starts the account afresh: no codes
 	if err := e.svc.ResetCredentials(e.ctx, u.ID); err != nil {
 		t.Fatal(err)
@@ -118,20 +95,11 @@ func TestRemovingTheLastSecondFactorDropsRecoveryCodes(t *testing.T) {
 	if len(c.audited(c.a.ID, "account.recovery_codes.create")) != 1 {
 		t.Error("creation not audited")
 	}
-	if err := c.svc.DropRecoveryCodes(c.ctx, u.ID); err != nil || len(c.fresh(c.aUser).RecoveryCodes) == 0 {
-		t.Fatalf("dropped while a factor remains: %v", err)
-	}
 	if err := c.svc.RemoveTOTP(c.ctx, actor(c.aAdmin), u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.fresh(c.aUser); len(got.RecoveryCodes) != 0 || got.RecoveryCreated != nil {
 		t.Error("recovery codes outlived the last second factor")
-	}
-	if err := c.svc.DropRecoveryCodes(c.ctx, u.ID); err != nil {
-		t.Errorf("dropping none: %v", err)
-	}
-	if err := c.svc.DropRecoveryCodes(c.ctx, "nobody"); !errors.Is(err, service.ErrNotFound) {
-		t.Errorf("unknown user: %v", err)
 	}
 
 	// With a passkey as the second factor the codes stay while the passkey does.

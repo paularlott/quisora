@@ -42,7 +42,7 @@ func TestVerifyAccessTokenRefusals(t *testing.T) {
 	h := setup(t, nil)
 	cl, _ := h.newClient(nil)
 	ctx := context.Background()
-	if _, err := h.p.VerifyAccessToken(ctx, h.forgeAccess(cl, nil)); err != nil {
+	if _, err := h.p.verifyAccessToken(ctx, h.forgeAccess(cl, nil)); err != nil {
 		t.Fatalf("control: %v", err)
 	}
 	for name, tok := range map[string]string{
@@ -59,7 +59,7 @@ func TestVerifyAccessTokenRefusals(t *testing.T) {
 		"unknown app":   h.forgeAccess(cl, func(m map[string]any) { m["client_id"] = "nosuchclient" }),
 		"revoked grant": h.forgeAccess(cl, func(m map[string]any) { m["gid"] = "nosuchgrant" }),
 	} {
-		if _, err := h.p.VerifyAccessToken(ctx, tok); err == nil {
+		if _, err := h.p.verifyAccessToken(ctx, tok); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -84,7 +84,7 @@ func TestVerifyAccessTokenRefusals(t *testing.T) {
 		return tok
 	}
 	for _, kid := range []string{"nokey", real.rec.ID} {
-		if _, err := h.p.VerifyAccessToken(ctx, fake(kid)); err == nil {
+		if _, err := h.p.verifyAccessToken(ctx, fake(kid)); err == nil {
 			t.Errorf("kid %s: accepted", kid)
 		}
 	}

@@ -316,8 +316,7 @@ func (a *App) evict(rec *store.Record) {
 	case model.KindUser:
 		a.Server.Sessions.Evict("", rec.ID)
 	case model.KindOrg:
-		a.Server.InvalidateOrgs()
-		a.Server.Svc.InvalidateSignOut() // its emergency sign-out counters may have moved
+		a.Server.Svc.InvalidateOrgs() // its name, settings or emergency sign-out counters may have moved
 	}
 	for _, fn := range a.onChange {
 		fn(rec)

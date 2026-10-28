@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	// sessionCacheTTL bounds how long a node trusts a cached session: a change made elsewhere counts here within it,
+	// whatever the store; one this node hears of (Evict) counts at once.
 	sessionCacheTTL   = 5 * time.Second
 	lastSeenThrottle  = 5 * time.Minute
 	sessionCacheLimit = 100_000
@@ -34,14 +36,11 @@ type cachedSession struct {
 // Sessions creates, looks up and ends browser sessions. Lookups are cached per node for a short time; Evict is
 // called when this node hears that a session or user record changed.
 type Sessions struct {
-	// CacheTTL bounds how long a node trusts a cached session (default 5s): a change made elsewhere counts here within
-	// it, whatever the store; one this node hears of (Evict) counts at once.
-	CacheTTL time.Duration
-	svc      *service.Service
-	mu       sync.RWMutex
-	cache    map[string]*cachedSession
-	byUser   map[string]map[string]struct{} // user id -> cached session ids, so evicting a user is O(their sessions)
-	swept    time.Time                      // when entries past CacheTTL were last dropped (mu)
+	svc    *service.Service
+	mu     sync.RWMutex
+	cache  map[string]*cachedSession
+	byUser map[string]map[string]struct{} // user id -> cached session ids, so evicting a user is O(their sessions)
+	swept  time.Time                      // when entries past sessionCacheTTL were last dropped (mu)
 	// gens: a fill that began before an eviction is not stored after it (evictgen). Keys: the session id, and "u:" and
 	// the user id for evictions of a user.
 	gens     evictgen.Gens
@@ -49,7 +48,7 @@ type Sessions struct {
 }
 
 func NewSessions(svc *service.Service) *Sessions {
-	return &Sessions{CacheTTL: sessionCacheTTL, svc: svc, cache: map[string]*cachedSession{}, byUser: map[string]map[string]struct{}{}}
+	return &Sessions{svc: svc, cache: map[string]*cachedSession{}, byUser: map[string]map[string]struct{}{}}
 }
 
 // Evict drops a cached session (by session id) — and, given a user id, every cached session of that user.
@@ -136,23 +135,37 @@ func (m *Sessions) Current(r *http.Request) (*model.Session, *model.User) {
 //
 // The session is the first valid one of the organizations the request may present a session of (sessionOrgs), each
 // from its own cookie (SessionCookieFor), and of that organization: a cookie never stands for a session of another.
+// Where there are several (the console), the first whose user can use the console (a manager or above) wins, and only
+// when none can does the first valid one: a super admin who also signed in as a guest of another organization, last,
+// must not be shut out of the console by that guest session. A session that cannot be checked ends the search
+// unchecked, never passes to the next cookie: the request would act as an identity the browser did not mean.
 func (m *Sessions) Check(r *http.Request) (*model.Session, *model.User, error) {
-	var failed error
-	for _, org := range m.sessionOrgs(r) {
+	orgs, err := m.sessionOrgs(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	var first *model.Session
+	var firstUser *model.User
+	for _, org := range orgs {
 		c, err := r.Cookie(SessionCookieFor(org))
 		if err != nil || len(c.Value) < 20 || len(c.Value) > 100 {
 			continue
 		}
 		s, u, err := m.lookup(r.Context(), SessionID(c.Value))
+		if err != nil {
+			return nil, nil, err
+		}
 		if s == nil || !cookieMatches(s, c.Value) || s.OrgID != org {
-			if err != nil && failed == nil {
-				failed = err
-			}
 			continue
 		}
-		return s, u, nil
+		if u.Role.Privileged() {
+			return s, u, nil
+		}
+		if first == nil {
+			first, firstUser = s, u
+		}
 	}
-	return nil, nil, failed
+	return first, firstUser, nil
 }
 
 // cookieMatches checks the secret part of an upgraded session's cookie ("<id>.<secret>"); a session never upgraded
@@ -250,10 +263,10 @@ func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *mode
 	// An emergency sign-out ends a session whose stamp is no longer current (service/signout.go). A cached copy may
 	// predate the session's re-stamping (the one the lever was pulled from is kept), so it is read again before
 	// being refused.
-	if cs != nil && now.Sub(cs.fetched) <= m.CacheTTL && !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
+	if cs != nil && now.Sub(cs.fetched) <= sessionCacheTTL && !m.svc.SessionCurrent(ctx, cs.sess.OrgID, cs.sess.Stamp) {
 		cs = nil
 	}
-	if cs == nil || now.Sub(cs.fetched) > m.CacheTTL {
+	if cs == nil || now.Sub(cs.fetched) > sessionCacheTTL {
 		sessTok := m.gens.Token(id)
 		s, err := m.svc.Sessions.Get(ctx, id)
 		if err != nil {
@@ -280,7 +293,7 @@ func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *mode
 // refused keeps err only when it is the store's refusal (store.ErrUnavailable): anything else (the session or user
 // gone, a record that does not decode) is no session.
 func refused(err error) error {
-	if errors.Is(err, store.ErrUnavailable) || errors.Is(err, service.ErrUnavailable) {
+	if service.IsUnavailable(err) {
 		return err
 	}
 	return nil
@@ -296,12 +309,12 @@ func (m *Sessions) fill(id string, cs *cachedSession, sessTok, userTok uint64) {
 	if !m.gens.Valid(id, sessTok) || !m.gens.Valid("u:"+u.ID, userTok) {
 		return
 	}
-	if now.Sub(m.swept) > m.CacheTTL {
-		// Entries past CacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
+	if now.Sub(m.swept) > sessionCacheTTL {
+		// Entries past sessionCacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
 		// use, not sessionCacheLimit of them.
 		m.swept = now
 		for k, c := range m.cache {
-			if now.Sub(c.fetched) > m.CacheTTL {
+			if now.Sub(c.fetched) > sessionCacheTTL {
 				m.drop(k)
 			}
 		}
@@ -357,10 +370,19 @@ func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
 // it) that could not be deleted still works for whoever holds it, so the caller tells the user the sign-out did not
 // finish rather than that they are signed out. The cookie then stays while the session record does: the user is
 // told to try again, and the retry needs it to find the session to end (a cookie cleared over a session left alive
-// would leave it, and its grants, running until they expire with no way to end them from this browser).
+// would leave it, and its grants, running until they expire with no way to end them from this browser). The same goes
+// for a session the store would not say anything about (Check's error): it may well exist, so the cookie stays and the
+// error is returned, instead of reporting a sign-out of nothing.
 func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Request) (*model.Session, error) {
-	sess, _ := m.Current(r)
-	org := m.sessionOrgs(r)[0]
+	sess, _, err := m.Check(r)
+	if err != nil {
+		return nil, err
+	}
+	orgs, err := m.sessionOrgs(r)
+	if err != nil {
+		return nil, err
+	}
+	org := orgs[0]
 	if sess != nil {
 		org = sess.OrgID
 	}
@@ -372,7 +394,7 @@ func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		clear()
 		return nil, nil
 	}
-	err := m.Delete(ctx, sess.ID)
+	err = m.Delete(ctx, sess.ID)
 	if err == nil {
 		clear()
 		return sess, nil

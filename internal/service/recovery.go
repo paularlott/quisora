@@ -97,29 +97,6 @@ func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.Us
 	return codes, nil
 }
 
-// DropRecoveryCodes removes userID's recovery codes once the account has no second factor left for them to stand
-// in for (its last authenticator app or passkey removed): a factor added later must not bring old codes back.
-func (s *Service) DropRecoveryCodes(ctx context.Context, userID string) error {
-	for attempt := 0; ; attempt++ {
-		u, err := s.Users.Get(ctx, userID)
-		if err != nil {
-			return mapStore(err)
-		}
-		if len(u.RecoveryCodes) == 0 || u.HasTOTP() {
-			return nil
-		}
-		if n, err := s.UsablePasskeys(ctx, u, ""); err != nil || n > 0 {
-			return err
-		}
-		u.RecoveryCodes, u.RecoveryCreated = nil, nil
-		u.BumpSecurity()
-		err = s.Users.Update(ctx, u)
-		if !errors.Is(err, store.ErrStale) || attempt == 4 {
-			return mapStore(err)
-		}
-	}
-}
-
 // RecoveryCodesLeft is how many of u's recovery codes are unused, and when they were made (nil: none made).
 func (s *Service) RecoveryCodesLeft(ctx context.Context, u *model.User) (int, *time.Time) {
 	if len(u.RecoveryCodes) == 0 {

@@ -79,13 +79,20 @@ func TestTemplatesAndLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	sendInvite := func() error {
+		link, exp, err := m.Svc.CreateInvite(ctx, service.System, u.ID)
+		if err != nil {
+			return err
+		}
+		return m.SendInviteLink(ctx, u, org, link, exp)
+	}
 	for _, tc := range []struct {
 		purpose string
 		send    func() error
 		subject string
 		path    string
 	}{
-		{service.LinkInvite, func() error { return m.SendInvite(ctx, u, org) }, "invited to Acme ID", "/o/" + org.ID + "/invite?token="},
+		{service.LinkInvite, sendInvite, "invited to Acme ID", "/o/" + org.ID + "/invite?token="},
 		{service.LinkReset, func() error { return m.SendReset(ctx, u, org) }, "Reset your Acme ID password", "/o/" + org.ID + "/reset?token="},
 		{service.LinkVerify, func() error { return m.SendVerify(ctx, u, org) }, "Confirm your email", "/o/" + org.ID + "/verify-email?token="},
 	} {
@@ -140,10 +147,7 @@ func TestTemplatesAndLinks(t *testing.T) {
 	if err := m.SendReset(ctx, &model.User{Meta: model.Meta{ID: "x"}}, org); err == nil {
 		t.Fatal("user without email accepted")
 	}
-	if err := m.SendInvite(ctx, &model.User{}, nil); err == nil {
-		t.Fatal("invite for a user without an address accepted")
-	}
-	if err := m.SendInviteLink(ctx, &model.User{}, nil, "https://x/invite?token=t", time.Now().Add(time.Hour)); err == nil {
+	if err := m.SendInviteLink(ctx, &model.User{}, org, "https://x/invite?token=t", time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("invite link for a user without an address accepted")
 	}
 	if err := m.Send(ctx, Message{To: "not an address"}); err == nil {
@@ -178,7 +182,11 @@ func TestSendInviteLinkAndExpiry(t *testing.T) {
 		t.Fatalf("invite mail: %s", msg.Text)
 	}
 	// Mailing a new invitation revokes the one issued before.
-	if err := m.SendInvite(ctx, u, org); err != nil {
+	link2, exp2, err := m.Svc.CreateInvite(ctx, service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SendInviteLink(ctx, u, org, link2, exp2); err != nil {
 		t.Fatal(err)
 	}
 	cap.wait(t)

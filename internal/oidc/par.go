@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // Pushed authorization requests (RFC 9126). The client posts the parameters of an authorization request to
@@ -48,6 +49,19 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	p.corsActual(w, r)
 	p.setDPoPNonce(w)
+	// Counted first, as authorization requests are (authorizePerIPMin, a budget of its own): a public client pushes
+	// with its client_id alone, and each push holds up to parMaxParams of the request for parTTL and may record a
+	// DPoP proof (a replicated write).
+	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "par|"+web.RateKeyIP(r), 1, time.Minute)
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
+	if n > authorizePerIPMin {
+		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+			desc: "too many pushed authorization requests from this address; try again in a minute", retry: true})
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))

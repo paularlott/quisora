@@ -21,6 +21,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/ttlcache"
 )
 
 var (
@@ -73,6 +74,12 @@ func mapStore(err error) error {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return err
+}
+
+// IsUnavailable reports whether err is the store's or the service's "try again": a read or write that could not be
+// made now, not an answer about the thing asked for.
+func IsUnavailable(err error) bool {
+	return errors.Is(err, ErrUnavailable) || errors.Is(err, store.ErrUnavailable)
 }
 
 // Actor is who is making a request.
@@ -170,9 +177,9 @@ type Service struct {
 
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 
-	signOut       signOutCache   // emergency sign-out counters (signout.go)
-	bg            sync.WaitGroup // Background work
-	tokenTouching sync.Map       // ids of API tokens whose last use is being recorded (touchAPIToken)
+	orgCache      *ttlcache.Cache[*model.Org] // organizations by id and by name (Org, OrgByRef)
+	bg            sync.WaitGroup              // Background work
+	tokenTouching sync.Map                    // ids of API tokens whose last use is being recorded (touchAPIToken)
 
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.
@@ -222,6 +229,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		SignIns:    store.NewTable[model.SignIn](s),
 		Locks:      store.NewTable[model.Lock](s),
 		Replays:    store.NewTable[model.Replay](s),
+		orgCache:   ttlcache.New[*model.Org](orgTTL, 20_000),
 	}
 }
 

@@ -71,10 +71,10 @@ func TestRefreshFailsClosedOnStoreReadFailures(t *testing.T) {
 
 	users := h.env.Svc.Users.S
 	h.env.Svc.Users.S = failReads(users, model.KindUser)
-	h.p.users.clear()
+	h.p.users.Clear()
 	expectUnavailable(t, "refresh with unreadable user", h.refreshWith(cl, secret, rt))
 	h.env.Svc.Users.S = users
-	h.p.users.clear()
+	h.p.users.Clear()
 
 	if r := h.refreshWith(cl, secret, rt); r.status != 200 {
 		t.Fatalf("refresh once the store answers again: %d %v", r.status, r.m)
@@ -188,15 +188,17 @@ func TestRevocationFailureIsReportedAndNotAudited(t *testing.T) {
 	}
 }
 
-// A code exchange that cannot read what it depends on (the user's session, the sign-out counters) or write the grant
+// A code exchange that cannot read what it depends on (the user's session, its organization and sign-out counters) or write the grant
 // it creates answers 503, not "the user's session has ended" or a refusal the client takes as final.
 func TestCodeExchangeFailsClosedOnStoreFailures(t *testing.T) {
 	t.Parallel()
 	for name, fault := range map[string]func(h *harness){
 		"session unreadable": func(h *harness) { h.env.Svc.Sessions.S = failReads(h.env.Svc.Sessions.S, model.KindSession) },
-		"sign-out counters unreadable": func(h *harness) {
-			h.env.Svc.InvalidateSignOut()
-			h.env.Svc.Orgs.S = failReadsAfter(h.env.Svc.Orgs.S, model.KindOrg, 1) // the endpoint's own lookup goes through
+		// The organization, which carries the sign-out counters, unreadable and not cached (it is read once per request
+		// and kept up to 5 s, so once that has run out): the endpoint cannot even be resolved, and says "try again".
+		"organization unreadable": func(h *harness) {
+			h.env.Svc.InvalidateOrgs()
+			h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
 		},
 		"grant not writable": func(h *harness) {
 			h.env.Svc.Grants.S = failCAS(h.env.Svc.Grants.S, model.KindGrant, func() error { return store.ErrUnavailable })
@@ -286,8 +288,8 @@ func TestAuthorizeFailsClosedOnStoreFailures(t *testing.T) {
 		c, _ := h.session(h.user)
 		_, ch := pkce()
 		h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
-		h.p.orgs.clear()
-		h.p.clients.clear()
+		h.env.Svc.InvalidateOrgs()
+		h.p.clients.Clear()
 		resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
 		if body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Location") != "" {
 			t.Fatalf("unreadable organization: %d %q", resp.StatusCode, resp.Header.Get("Location"))
@@ -420,7 +422,7 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		h, cl, _, _ := login(t)
 		h.env.Svc.Clients.S = failReads(h.env.Svc.Clients.S, model.KindClient)
 		h.p.InvalidateClient(cl.ID)
-		if _, err := h.p.VerifyAccessToken(t.Context(), h.forgeAccess(cl, nil)); !isUnavailable(err) {
+		if _, err := h.p.verifyAccessToken(t.Context(), h.forgeAccess(cl, nil)); !isUnavailable(err) {
 			t.Fatalf("client read: %v", err)
 		}
 	})
@@ -428,8 +430,8 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		h, _, _, r := login(t)
 		at := r.str("access_token")
 		h.env.Svc.Users.S = failReads(h.env.Svc.Users.S, model.KindUser)
-		h.p.users.clear()
-		if _, err := h.p.VerifyAccessToken(t.Context(), at); !isUnavailable(err) {
+		h.p.users.Clear()
+		if _, err := h.p.verifyAccessToken(t.Context(), at); !isUnavailable(err) {
 			t.Fatalf("user read: %v", err)
 		}
 		ui := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
@@ -442,7 +444,7 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		at := r.str("access_token")
 		h.env.Svc.Grants.S = failReads(h.env.Svc.Grants.S, model.KindGrant)
 		h.p.InvalidateGrant(claimsOf(t, at)["gid"].(string))
-		if _, err := h.p.VerifyAccessToken(t.Context(), at); !isUnavailable(err) {
+		if _, err := h.p.verifyAccessToken(t.Context(), at); !isUnavailable(err) {
 			t.Fatalf("grant read: %v", err)
 		}
 		// revocation and introspection cannot decide either
@@ -455,9 +457,9 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 	t.Run("organization", func(t *testing.T) {
 		h, _, _, r := login(t)
 		h.env.Svc.Orgs.S = failReads(h.env.Svc.Orgs.S, model.KindOrg)
-		h.p.orgs.clear()
-		h.p.users.clear()
-		if _, err := h.p.VerifyAccessToken(t.Context(), r.str("access_token")); !isUnavailable(err) {
+		h.env.Svc.InvalidateOrgs()
+		h.p.users.Clear()
+		if _, err := h.p.verifyAccessToken(t.Context(), r.str("access_token")); !isUnavailable(err) {
 			t.Fatalf("org read: %v", err)
 		}
 	})
@@ -466,7 +468,7 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		app, secret := h.newClient(withExchange)
 		r, _ := h.login(app, secret, url.Values{"scope": {"openid profile email api"}})
 		h.env.Svc.Users.S = failReads(h.env.Svc.Users.S, model.KindUser)
-		h.p.users.clear()
+		h.p.users.Clear()
 		expectUnavailable(t, "exchange", h.exchange(app, secret, r.str("access_token"), nil))
 	})
 }
@@ -486,7 +488,7 @@ func TestOutstandingAuthorizationEndsWithSessionEpoch(t *testing.T) {
 		h.resetCredentialsWithFailingCleanup()
 		r := h.exchangeCode(cl, secret, code, verifier)
 		if r.status == 200 {
-			_, verifyErr := h.p.VerifyAccessToken(ctx, r.str("access_token"))
+			_, verifyErr := h.p.verifyAccessToken(ctx, r.str("access_token"))
 			refreshed := h.refreshWith(cl, secret, r.str("refresh_token"))
 			t.Fatalf("authorization from a passed session epoch issued new tokens: access verification=%v refresh status=%d", verifyErr, refreshed.status)
 		}
@@ -504,7 +506,7 @@ func TestOutstandingAuthorizationEndsWithSessionEpoch(t *testing.T) {
 		}
 		r := h.exchangeCode(cl, secret, code, verifier)
 		if r.status == 200 {
-			_, verifyErr := h.p.VerifyAccessToken(ctx, r.str("access_token"))
+			_, verifyErr := h.p.verifyAccessToken(ctx, r.str("access_token"))
 			t.Fatalf("authorization from a signed-out session issued tokens with current counters: access verification=%v", verifyErr)
 		}
 		tokenErr(t, r, 400, "invalid_grant")

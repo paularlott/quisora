@@ -41,10 +41,10 @@ func (n *Node) readable(ctx context.Context, p int) error {
 
 // readableWithin is readable, waiting at most wait (0: not at all) for a copy that is behind to catch up.
 //
-// A read that cannot tell its partition (p < 0: an id that is not here and does not name its partition, a listing scoped
-// by something other than an organization) is answered only while every partition could be: what it would find, or
-// what it lacks, may be in any of them. That is one look at every partition's status, and a wait only for those
-// behind, all within the one wait.
+// A read that cannot tell its partition (p < 0: an id that is not here and does not name its partition, a unique value
+// that names none, a listing scoped by something other than an organization) is answered only while every partition
+// could be: what it would find, or what it lacks, may be in any of them. That is one look at every partition's status,
+// and a wait only for those behind, all within the one wait.
 func (n *Node) readableWithin(ctx context.Context, p int, wait time.Duration) error {
 	pm := n.manager()
 	if pm == nil || pm.Resyncing() {

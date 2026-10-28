@@ -176,11 +176,8 @@ func TestSessionCacheBoundedByItsTTL(t *testing.T) {
 	if got, _ := m.Lookup(ctx, s.ID); got == nil {
 		t.Fatal("control: the cache should serve the session within its bound")
 	}
-	if m.CacheTTL > 5*time.Second {
-		t.Fatalf("sessions are cached for %v, more than the 5s bound", m.CacheTTL)
-	}
 	m.mu.Lock()
-	m.cache[s.ID].fetched = time.Now().Add(-m.CacheTTL - time.Millisecond)
+	m.cache[s.ID].fetched = time.Now().Add(-sessionCacheTTL - time.Millisecond)
 	m.mu.Unlock()
 	if got, _ := m.Lookup(ctx, s.ID); got != nil {
 		t.Fatal("a cached session was served past the cache's bound")

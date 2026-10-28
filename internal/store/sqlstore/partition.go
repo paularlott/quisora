@@ -426,30 +426,48 @@ func (s *Store) exportPartition(ctx context.Context, p int, afterSeq uint64, sta
 	if err := start(st.Committed); err != nil {
 		return err
 	}
+	// A page to a statement, each read whole before fn sees it: fn may wait on a slow peer, and a statement left open
+	// meanwhile would run into the statement bound (Open).
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
-		rows, err := r.query(ctx, t.exportSQL, p, int64(afterSeq), int64(st.Committed.Seq))
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			rp := &rowPlus{rows: rows}
-			rec, err := t.scan(rp)
-			if err == nil {
-				err = fn(store.PartitionRecord{Record: rec, Seq: uint64(rp.seq)})
-			}
+		for seq, id := int64(afterSeq), ""; ; {
+			page, err := s.exportPage(ctx, r, t, p, int64(afterSeq), int64(st.Committed.Seq), seq, id)
 			if err != nil {
-				rows.Close()
 				return err
 			}
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
+			for _, rec := range page {
+				if err := fn(rec); err != nil {
+					return err
+				}
+			}
+			if len(page) < batchRows {
+				break
+			}
+			last := page[len(page)-1]
+			seq, id = int64(last.Seq), last.ID
 		}
 	}
 	return nil
+}
+
+// exportPage reads a page of partition p's records of t's kind with a sequence above afterSeq and at most upTo, after
+// (seq, id) in (sequence, id) order.
+func (s *Store) exportPage(ctx context.Context, r runner, t *table, p int, afterSeq, upTo, seq int64, id string) ([]store.PartitionRecord, error) {
+	rows, err := r.query(ctx, t.exportSQL, p, afterSeq, upTo, seq, seq, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var page []store.PartitionRecord
+	for rows.Next() {
+		rp := &rowPlus{rows: rows}
+		rec, err := t.scan(rp)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, store.PartitionRecord{Record: rec, Seq: uint64(rp.seq)})
+	}
+	return page, rows.Err()
 }
 
 // deleteRow removes a row and releases its unique values.
@@ -459,7 +477,7 @@ func (s *Store) deleteRow(ctx context.Context, r runner, t *table, id string) er
 		return err
 	}
 	for _, u := range old.uniq {
-		if _, err := r.exec(ctx, s.releaseSQL(), t.kind, u, id); err != nil {
+		if err := s.release(ctx, r, t, u, id); err != nil {
 			return err
 		}
 	}
@@ -511,8 +529,10 @@ func (s *Store) ImportPartition(ctx context.Context, p int, recs []store.Partiti
 	})
 }
 
-// resetPageSize is how many rows one transaction of the reset that starts a full import removes.
-const resetPageSize = 500
+// batchRows is how many rows one statement or transaction of a long operation takes (a batch of a purge or of the reset
+// that starts a full import, a page of an export), so that each stays short: well inside the statement bounds (Open),
+// and never holding SQLite's one writer, or a server's locks, for long.
+const batchRows = 500
 
 // resetPartition starts a full import: it sets the import marker (refusing, changing nothing, if upTo is not above the
 // committed position), then removes every row of partition p, a page to a transaction, and reports each after its
@@ -534,7 +554,7 @@ func (s *Store) resetPartition(ctx context.Context, p int, upTo store.PartitionP
 	}
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
-		q := s.d.bind("SELECT id FROM " + t.name + " WHERE pnum = ? AND pseq > 0 ORDER BY id LIMIT " + strconv.Itoa(resetPageSize))
+		q := s.d.bind("SELECT id FROM " + t.name + " WHERE pnum = ? AND pseq > 0 ORDER BY id LIMIT " + strconv.Itoa(batchRows))
 		for {
 			var ids []string
 			err := s.partitionTx(ctx, true, []*table{t}, func(r runner) error {
@@ -571,7 +591,7 @@ func (s *Store) resetPartition(ctx context.Context, p int, upTo store.PartitionP
 					removed(k, id)
 				}
 			}
-			if len(ids) < resetPageSize {
+			if len(ids) < batchRows {
 				break
 			}
 		}
@@ -586,35 +606,32 @@ func (s *Store) PurgePartition(ctx context.Context, p int, beforeSeq uint64) (in
 	if beforeSeq > store.MaxPartitionSeq {
 		return 0, fmt.Errorf("store: purge point %d out of range", beforeSeq)
 	}
-	var tables []*table
-	for _, k := range model.Kinds() {
-		tables = append(tables, s.tables[k])
-	}
-	removed := 0
-	err := s.partitionTx(ctx, true, tables, func(r runner) error {
-		removed = 0
+	// The purge point first, in a transaction of its own; then the tombstones below it, a batch to a transaction
+	// (deleteBatches), so that a partition with many never holds the writer or its locks for the whole purge. A crash
+	// part-way leaves some below the point, which no export after the point shows and the next purge removes.
+	err := s.partitionTx(ctx, true, nil, func(r runner) error {
 		st, err := s.lockState(ctx, r, p)
 		if err != nil {
 			return err
 		}
 		if pt := store.PurgePoint(beforeSeq); pt > st.Purged {
 			st.Purged = pt
-			if err := s.saveState(ctx, r, p, &st); err != nil {
-				return err
-			}
-		}
-		for _, t := range tables { // tombstones carry no unique values: a plain delete
-			res, err := r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE pnum = ? AND pseq > 0 AND pseq < ? AND deleted = TRUE"),
-				p, int64(beforeSeq))
-			if err != nil {
-				return err
-			}
-			n, _ := res.RowsAffected()
-			removed += int(n)
+			return s.saveState(ctx, r, p, &st)
 		}
 		return nil
 	})
-	return removed, err
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, k := range model.Kinds() { // tombstones carry no unique values: a plain delete
+		n, err := s.deleteBatches(ctx, s.tables[k], "pnum = ? AND pseq > 0 AND pseq < ? AND deleted = TRUE", p, int64(beforeSeq))
+		removed += n
+		if err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
 }
 
 func (s *Store) PartitionTombstones(ctx context.Context, p int, afterSeq, upTo uint64, fn func(uint64, hlc.Timestamp) error) error {

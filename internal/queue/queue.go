@@ -1,9 +1,10 @@
 // Package queue is a small retry queue on disk: emails waiting for SMTP, back-channel logouts waiting for an
 // application. An item is one file in the queue's directory, sealed with the master key (items carry single-use links
 // and user identifiers) and written durably before Add returns, so it survives a restart or a crash and is delivered
-// by the node once it is back. A worker delivers what is due, oldest first; an item that fails waits for the next
-// delay of Backoff, and after the last one it is given up on (GiveUp). A file is removed once its item is delivered
-// or given up on.
+// by the node once it is back. The queue delivers what is due, oldest first, one item at a time or by a bounded pool
+// of workers (Options.Workers) that keeps one key's items (say, one organization's) from taking them all
+// (Options.PerKey); an item that fails waits for the next delay of Backoff, and after the last one it is given up on
+// (Failed). A file is removed once its item is delivered or given up on.
 //
 // After a master key change the queue is re-sealed with the active key (Reseal) before the node reports that key, so
 // a rotation the cluster reports complete leaves no queued item needing a previous key. An item sealed with a key
@@ -45,15 +46,27 @@ type Options[T any] struct {
 	Deliver func(ctx context.Context, item T) error
 	// Failed is told of each failed delivery (attempt counts them): retry is the delay before the next attempt, or 0
 	// when the item is given up on. Optional (the queue logs nothing of its own about failures).
+	// It is called from the delivering worker, so from several goroutines at once when Workers is more than one.
 	Failed func(item T, attempt int, retry time.Duration, err error)
+	// Workers is the most deliveries at once (0 or 1: one at a time). A slow delivery then holds one worker, not the
+	// whole queue, and each pass of deliveries ends when its slowest does (at most 30 s), so Deliver must be safe to
+	// call from several goroutines.
+	Workers int
+	// Key and PerKey share the workers fairly: no more than PerKey deliveries of items with the same Key at once
+	// (PerKey 0 or no Key: no limit), the rest of that key's due items waiting for the next pass, so a key whose
+	// deliveries are slow (an application that never answers) cannot hold every worker and delay the other keys.
+	Key    func(item T) string
+	PerKey int
 }
 
 // Queue is a retry queue on disk (see the package comment).
 type Queue[T any] struct {
-	o      Options[T]
-	dir    string
-	fileMu sync.Mutex // one change to an item's file at a time: the worker's, or Reseal's
-	// waiting is when the items this worker has read (or retried) are next due, by file, with the file's modification
+	o   Options[T]
+	dir string
+	// fileMu is held for one change to an item's file at a time (a delivery's end, Reseal's rewrite, a purge), never
+	// across a delivery: that takes as long as an application takes to answer.
+	fileMu sync.Mutex
+	// waiting is when the items the workers have read (or retried) are next due, by file, with the file's modification
 	// time then (under fileMu): an item that is not due is not read and opened again on every pass (which would make
 	// each Add cost the whole backlog) unless its file changed since.
 	waiting map[string]waitingItem
@@ -96,7 +109,8 @@ func Open[T any](dir string, o Options[T]) (*Queue[T], error) {
 	return q, nil
 }
 
-// Close stops the worker; items not yet delivered stay queued for the next start.
+// Close stops the worker, cancelling the deliveries in flight (their attempts do not count) and waiting for them; items
+// not yet delivered stay queued for the next start.
 func (q *Queue[T]) Close() {
 	q.once.Do(func() { close(q.stop) })
 	q.wg.Wait()
@@ -326,33 +340,77 @@ func (q *Queue[T]) run() {
 	}
 }
 
-// deliverDue tries every item that is due, and returns when the next waiting one is (zero: none waiting).
+// deliverDue is one pass: it tries every item that is due, by up to Workers at once, and returns when all those
+// deliveries have ended with when the next item waiting is due (zero: none waiting). A pass delivers each file once
+// and passes do not overlap, so an item is never delivered by two workers at once.
 func (q *Queue[T]) deliverDue(ctx context.Context) time.Time {
 	names, err := q.files()
 	if err != nil {
 		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
 		return time.Time{}
 	}
-	var next time.Time
+	var (
+		mu      sync.Mutex // the earliest due time and the deliveries running by key
+		next    time.Time
+		running = map[string]int{}
+		wg      sync.WaitGroup
+		slots   = make(chan struct{}, max(q.o.Workers, 1))
+	)
+	soon := func(t time.Time) { // (under mu)
+		if !t.IsZero() && (next.IsZero() || t.Before(next)) {
+			next = t
+		}
+	}
 	for _, name := range names {
 		if ctx.Err() != nil {
-			return time.Time{}
+			break
 		}
-		if due := q.deliverOne(ctx, name); !due.IsZero() && (next.IsZero() || due.Before(next)) {
-			next = due
+		it, due := q.due(name)
+		if it == nil {
+			mu.Lock()
+			soon(due)
+			mu.Unlock()
+			continue
 		}
+		var key string
+		if q.o.Key != nil {
+			key = q.o.Key(it.Item)
+		}
+		mu.Lock()
+		if q.o.PerKey > 0 && running[key] >= q.o.PerKey {
+			soon(time.Now()) // due, and tried by the next pass, once this key's deliveries have ended
+			mu.Unlock()
+			continue
+		}
+		running[key]++
+		mu.Unlock()
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			due := q.deliver(ctx, name, it)
+			mu.Lock()
+			running[key]--
+			soon(due)
+			mu.Unlock()
+			<-slots
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return time.Time{}
 	}
 	return next
 }
 
-// deliverOne tries one queued item if it is due, and returns when it is next due (zero: no longer queued, cannot be
-// opened yet, or the worker is stopping).
-func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
+// due reads the queued item in file name and returns it if it is due; if not, it returns when it is next due (zero:
+// no longer queued, or cannot be opened yet).
+func (q *Queue[T]) due(name string) (*item[T], time.Time) {
 	q.fileMu.Lock()
 	defer q.fileMu.Unlock()
 	if w, ok := q.waiting[name]; ok && w.next.After(time.Now()) {
 		if fi, err := os.Stat(filepath.Join(q.dir, name)); err == nil && fi.ModTime().Equal(w.mod) {
-			return w.next
+			return nil, w.next
 		}
 	}
 	delete(q.waiting, name)
@@ -362,21 +420,37 @@ func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 		// Gone, or sealed with a key not configured now: kept for when it is (Reseal logs it). Load-bearing: Reseal
 		// counts such items, and that count is what keeps a previous master key from being retired while an item
 		// still needs it (service QueuesStale); dropping them would lose the items and hide the dependency.
-		return time.Time{}
+		return nil, time.Time{}
 	case err != nil:
 		q.o.Log.Error(q.o.Name+": item cannot be read, dropping it", "file", name, "error", err)
 		q.remove(name)
-		return time.Time{}
+		return nil, time.Time{}
 	}
 	if it.Next.After(time.Now()) {
 		q.wait(name, it.Next)
-		return it.Next
+		return nil, it.Next
 	}
+	return it, time.Time{}
+}
+
+// deliver tries the item read from file name and records the outcome, returning when it is next due (zero: delivered
+// or given up on, or the queue is stopping).
+//
+// No lock is held while Deliver runs, so Reseal (and the other workers) go on meanwhile. That is safe because what
+// Reseal changes is only how the file is sealed, never the item: the outcome is then recorded under fileMu, against
+// whatever file is there. A delivered item's file is removed, whether Reseal rewrote it meanwhile or not (a Reseal
+// that finds it gone counts it delivered); a failed one is written again, sealed here with the key active at that
+// moment and under the lock, so a Reseal for a newer key (which runs after the keys changed) either follows this
+// write and rewrites it, or finds it already sealed with the new key. Nothing is lost and nothing delivered twice:
+// only a pass starts a delivery, and the next one starts after this has recorded its outcome.
+func (q *Queue[T]) deliver(ctx context.Context, name string, it *item[T]) time.Time {
 	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-	err = q.o.Deliver(dctx, it.Item)
+	err := q.o.Deliver(dctx, it.Item)
 	dcancel()
 	if err == nil {
+		q.fileMu.Lock()
 		q.remove(name)
+		q.fileMu.Unlock()
 		return time.Time{}
 	}
 	if ctx.Err() != nil { // stopping: the attempt does not count
@@ -391,6 +465,8 @@ func (q *Queue[T]) deliverOne(ctx context.Context, name string) time.Time {
 	if q.o.Failed != nil {
 		q.o.Failed(it.Item, it.Attempt, delay, err)
 	}
+	q.fileMu.Lock()
+	defer q.fileMu.Unlock()
 	if giveUp {
 		q.remove(name)
 		return time.Time{}

@@ -192,7 +192,7 @@ func BenchmarkVerifyAccessToken(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := e.p.VerifyAccessToken(ctx, tok); err != nil {
+			if _, err := e.p.verifyAccessToken(ctx, tok); err != nil {
 				b.Fatal(err)
 			}
 		}

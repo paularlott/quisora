@@ -19,8 +19,9 @@ func versionTag(v hlc.Timestamp) string { return `W/"` + strconv.FormatUint(uint
 
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// userResource renders u. groups is nil when memberships are not wanted.
-func (rq *request) userResource(u *model.User, groups []*model.Group, withGroups bool) map[string]any {
+// userResource renders u. groups is nil when memberships are not wanted. It fails when the manager's visibility cannot
+// be read: the manager is then neither shown nor left out, as a write back of a user without one would clear it.
+func (rq *request) userResource(u *model.User, groups []*model.Group, withGroups bool) (map[string]any, error) {
 	res := map[string]any{
 		"id":       u.ID,
 		"userName": u.Username,
@@ -58,7 +59,11 @@ func (rq *request) userResource(u *model.User, groups []*model.Group, withGroups
 	if withGroups {
 		res["groups"] = rq.groupsValue(groups)
 	}
-	if ent := rq.enterpriseValue(u); len(ent) > 0 {
+	ent, err := rq.enterpriseValue(u)
+	if err != nil {
+		return nil, err
+	}
+	if len(ent) > 0 {
 		schemas = append(schemas, schemaEnterprise)
 		res[schemaEnterprise] = ent
 	}
@@ -76,7 +81,7 @@ func (rq *request) userResource(u *model.User, groups []*model.Group, withGroups
 		"version":      versionTag(u.Version),
 		"location":     rq.location("Users", u.ID),
 	}
-	return res
+	return res, nil
 }
 
 // tagsValue renders tags as a JSON array (never null).
@@ -608,7 +613,12 @@ func (rq *request) getUser(id string) {
 		rq.fail(err)
 		return
 	}
-	rq.respond(http.StatusOK, rq.userResource(u, gs, true), attrs, excl, userSchemas)
+	res, err := rq.userResource(u, gs, true)
+	if err != nil {
+		rq.fail(err)
+		return
+	}
+	rq.respond(http.StatusOK, res, attrs, excl, userSchemas)
 }
 
 func (rq *request) createUser() {
@@ -632,7 +642,12 @@ func (rq *request) createUser() {
 		return
 	}
 	attrs, excl := rq.getParams()
-	rq.respond(http.StatusCreated, rq.userResource(u, nil, true), attrs, excl, userSchemas)
+	res, err := rq.userResource(u, nil, true)
+	if err != nil {
+		rq.fail(err)
+		return
+	}
+	rq.respond(http.StatusCreated, res, attrs, excl, userSchemas)
 }
 
 // updateUser runs a read-modify-write on one user: mutate edits the current SCIM representation (or replaces it) and
@@ -647,7 +662,11 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 		if e := ifMatch(rq.r, versionTag(u.Version)); e != nil {
 			return e
 		}
-		next, e := mutate(rq.userResource(u, nil, false))
+		cur, err := rq.userResource(u, nil, false)
+		if err != nil {
+			return err
+		}
+		next, e := mutate(cur)
 		if e != nil {
 			return e
 		}
@@ -675,7 +694,12 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 	}
 	attrs, excl := rq.getParams()
 	gs, _ := rq.m.srv.Svc.UserGroups(rq.ctx, result)
-	rq.respond(http.StatusOK, rq.userResource(result, gs, true), attrs, excl, userSchemas)
+	res, err := rq.userResource(result, gs, true)
+	if err != nil {
+		rq.fail(err)
+		return
+	}
+	rq.respond(http.StatusOK, res, attrs, excl, userSchemas)
 }
 
 func (rq *request) replaceUser(id string) {
@@ -823,7 +847,10 @@ func (rq *request) listUsers() {
 		}
 		out := make([]map[string]any, len(users))
 		for i, u := range users {
-			out[i] = rq.userResource(u, idx[u.ID], needGroups)
+			var err error
+			if out[i], err = rq.userResource(u, idx[u.ID], needGroups); err != nil {
+				return nil, err
+			}
 		}
 		return out, nil
 	}
@@ -870,8 +897,16 @@ func (rq *request) listUsers() {
 		} else {
 			u, err = svc.Users.GetByUnique(rq.ctx, unique)
 		}
-		if err == nil && u.OrgID == rq.org.ID && svc.Visibility(rq.actor, u) == service.Full {
-			users = []*model.User{u}
+		// Only "not found" is an empty list: any other failure is an error, or a client that is told the user is
+		// missing creates it again.
+		switch {
+		case err == nil:
+			if u.OrgID == rq.org.ID && svc.Visibility(rq.actor, u) == service.Full {
+				users = []*model.User{u}
+			}
+		case !errors.Is(err, store.ErrNotFound):
+			rq.fail(err)
+			return
 		}
 	} else {
 		var err error
@@ -926,7 +961,7 @@ func (rq *request) listUsers() {
 }
 
 // enterpriseValue renders the enterprise extension of u (nil when no work detail other than the title is set).
-func (rq *request) enterpriseValue(u *model.User) map[string]any {
+func (rq *request) enterpriseValue(u *model.User) (map[string]any, error) {
 	w := u.Work
 	out := map[string]any{}
 	for k, v := range map[string]string{"employeeNumber": w.EmployeeNumber, "costCenter": w.CostCenter,
@@ -935,14 +970,20 @@ func (rq *request) enterpriseValue(u *model.User) map[string]any {
 			out[k] = v
 		}
 	}
-	if w.ManagerID != "" && !rq.unseenUsers()[w.ManagerID] { // a manager the caller does not see is not shown
-		m := map[string]any{"value": w.ManagerID, "$ref": rq.location("Users", w.ManagerID)}
-		if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), w.ManagerID); err == nil && mu.OrgID == u.OrgID {
-			m["displayName"] = mu.FullName()
+	if w.ManagerID != "" {
+		unseen, err := rq.unseenUsers()
+		if err != nil {
+			return nil, err
 		}
-		out["manager"] = m
+		if !unseen[w.ManagerID] { // a manager the caller does not see is not shown
+			m := map[string]any{"value": w.ManagerID, "$ref": rq.location("Users", w.ManagerID)}
+			if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), w.ManagerID); err == nil && mu.OrgID == u.OrgID {
+				m["displayName"] = mu.FullName()
+			}
+			out["manager"] = m
+		}
 	}
-	return out
+	return out, nil
 }
 
 // profileInput reads the language, time zone, user type, title and enterprise extension of a SCIM user into in.
@@ -1015,8 +1056,12 @@ func (rq *request) profileInput(res map[string]any, in *service.UserInput, exist
 	}
 	mgr = strings.TrimSpace(mgr)
 	if hasMgr && mgr != "" {
+		unseen, err := rq.unseenUsers()
+		if err != nil {
+			return rq.m.fromService(err)
+		}
 		if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), mgr); err != nil || mu.OrgID != rq.org.ID ||
-			(existing != nil && mu.ID == existing.ID) || rq.unseenUsers()[mu.ID] {
+			(existing != nil && mu.ID == existing.ID) || unseen[mu.ID] {
 			hasMgr, mgr = existing == nil, "" // unknown: unset on create, unchanged on update
 			if existing != nil {
 				mgr, hasMgr = existing.Work.ManagerID, true

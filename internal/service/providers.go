@@ -95,6 +95,7 @@ func providerIssuer(typ, raw, tenant string) (string, error) {
 var orgProviderScopes = []string{"openid", "profile", "email"}
 
 func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider, in ProviderInput) error {
+	wasOrg := p.Type == model.ProviderOrganization
 	if in.Type != nil {
 		if !slices.Contains(model.ProviderTypes, *in.Type) {
 			return Invalid("type", "must be one of "+strings.Join(model.ProviderTypes, ", "))
@@ -138,8 +139,14 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		}
 		p.Scopes = scopes
 	}
+	// The source organization's managers, administrators and SCIM clients can set a user's email address and mark it
+	// verified, so linking a guest by email would let any of them sign in to this organization as its user with that
+	// address. An organization provider therefore starts with linking off; a super admin may switch it on, trusting
+	// the source organization's staff with the addresses they assert.
 	if in.LinkByEmail != nil {
 		p.LinkByEmail = *in.LinkByEmail
+	} else if org && !wasOrg {
+		p.LinkByEmail = false
 	}
 	if in.TrustMFA != nil && *in.TrustMFA != p.TrustMFA {
 		// Trusting a provider's second factor weakens every sign-in through it: a super-admin decision.

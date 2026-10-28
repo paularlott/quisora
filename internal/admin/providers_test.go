@@ -61,7 +61,7 @@ func TestOrganizationProviders(t *testing.T) {
 	want(t, r, 201)
 	if r.str("type") != "organization" || r.str("source_org") != w.other.ID || r.str("name") != "Globex" ||
 		r.str("issuer") != w.env.Cfg.OrgIssuer(w.other.ID) || r.JSON["has_secret"] != true || r.str("client_id") == "" ||
-		r.JSON["auto_provision"] != false || r.JSON["trust_mfa"] != false || strings.Contains(string(r.Raw), "client_secret") {
+		r.JSON["auto_provision"] != false || r.JSON["trust_mfa"] != false || r.JSON["link_by_email"] != false || strings.Contains(string(r.Raw), "client_secret") {
 		t.Fatalf("provider: %s", r.Raw)
 	}
 	id := r.str("id")

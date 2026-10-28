@@ -171,7 +171,7 @@ func TestRequireMFA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.p.InvalidateOrg(h.env.Primary.ID)
+	h.env.Svc.InvalidateOrgs()
 	weak := h.sessionWith(h.user, []string{"pwd"}, time.Now())
 	u := h.authorize(weak, authzQuery(cl, ch, nil))
 	if u.Path != orgBase+"/login" || u.Query().Get("reauth") != "1" {

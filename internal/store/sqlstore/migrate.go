@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -72,6 +73,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("sqlstore: migrate: %w", err)
 	}
 	defer conn.Close()
+	if q := d.unbounded(); q != "" {
+		// The migration runs without the per-statement bounds (Open): building an index over a large table, or waiting
+		// for another process's migration, may rightly take longer. The connection never goes back to the pool so.
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("sqlstore: migrate: %w", err)
+		}
+		defer conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
 
 	var ex execer = conn
 	var finish func(ok bool) error

@@ -25,6 +25,10 @@ import (
 // subject token's scopes and the calling client's, names only resources registered for the calling client, never
 // outlives the subject token, and belongs to the same grant: signing the user out ends it too. No refresh or ID token
 // is issued.
+//
+// A DPoP-bound subject token stays bound (RFC 9449): it is exchanged only with a DPoP proof of the key it is bound to,
+// and the new token is bound to that key too. Otherwise whoever sees the token, such as an API it was sent to, could
+// trade it for a bearer token and drop the constraint.
 const (
 	tokenTypeAccess = "urn:ietf:params:oauth:token-type:access_token"
 	tokenTypeJWT    = "urn:ietf:params:oauth:token-type:jwt"
@@ -56,6 +60,11 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	if cl.Sub == cl.ClientID {
 		return nil, oerr("invalid_grant", "the subject token must be a user's token")
 	}
+	// The same answer as a refresh token bound to a key (token.go): a proof that is itself faulty never gets here, it
+	// fails as invalid_dpop_proof in tokenProof; this is a valid proof (or none) that does not show the key.
+	if cl.Cnf != nil && cl.Cnf.JKT != "" && jkt != cl.Cnf.JKT {
+		return nil, oerr("invalid_grant", "the subject token is bound to a DPoP key: send a DPoP proof made with that key")
+	}
 	if !slices.Contains(cl.Aud, c.ClientID()) && !(c.IntrospectOrg && cl.Org == c.OrgID) {
 		return nil, oerr("invalid_grant", "the subject token was not issued for this client")
 	}
@@ -66,7 +75,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	if err != nil || !u.Enabled(time.Now()) || u.OrgID != c.OrgID {
 		return nil, invalid
 	}
-	org, err := p.org(ctx, u.OrgID)
+	org, err := p.svc.Org(ctx, u.OrgID)
 	if err != nil {
 		if !gone(err) {
 			return nil, serverError(unavailable(err))

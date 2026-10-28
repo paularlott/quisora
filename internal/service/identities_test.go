@@ -7,8 +7,8 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// Promotion to manager or above removes the provider links made automatically by email address; links the user
-// connected themselves, and the provider that created the account, stay.
+// Promotion to manager or above removes every provider link the user did not make themselves from their account page
+// (by email address, by the provider that created the account, by an administrator); a link the user connected stays.
 func TestPromotionDropsEmailLinks(t *testing.T) {
 	e := newEnv(t)
 	o := e.org("acme")
@@ -38,7 +38,7 @@ func TestPromotionDropsEmailLinks(t *testing.T) {
 	for _, id := range ids {
 		kept[id.Via] = true
 	}
-	if len(ids) != 2 || !kept["connect"] || !kept["provision"] {
+	if len(ids) != 1 || !kept["connect"] {
 		t.Fatalf("after promotion: %v", kept)
 	}
 }

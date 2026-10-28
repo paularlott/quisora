@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/mail"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
@@ -112,9 +113,6 @@ func New(s *web.Server, o Options) *Module {
 	client := secure.OutboundClient(s.Cfg.OutboundReach, roots, s.Log)
 	client.Transport = s.SelfTransport(client.Transport)
 	m.Upstream = upstream.New(s.Svc, s.Eph, s.Cfg.Server.PublicURL, client)
-	if m.Mail != nil && m.Mail.Svc == nil {
-		m.Mail.SetService(s.Svc)
-	}
 	return m
 }
 
@@ -372,11 +370,7 @@ func lockKey(u *model.User, org *model.Org, login string) string {
 		return u.ID
 	}
 	h := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(login))))
-	id := ""
-	if org != nil {
-		id = org.ID
-	}
-	return "x:" + id + ":" + base64.RawURLEncoding.EncodeToString(h[:12])
+	return "x:" + org.ID + ":" + base64.RawURLEncoding.EncodeToString(h[:12])
 }
 
 // charge counts an attempt against the lockout counter key before the attempt is checked, and reports open false
@@ -507,11 +501,26 @@ func (m *Module) bind(ctx context.Context, t *ticket, u *model.User) error {
 	return nil
 }
 
-// ticketCurrent reports whether t still binds to u as the account is now: the one it was issued for, enabled, at the
-// same security generation, and not signed out by the emergency lever since. u must be freshly read.
-func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bool {
-	return t.UserID == u.ID && u.Enabled(time.Now()) && u.SecurityGen == t.Gen &&
-		m.s.Svc.SessionCurrent(ctx, u.OrgID, t.Stamp)
+// errTicketGone says a sign-in's ticket is dead: expired, taken, at another step, or no longer bound to its account.
+// Any other error from loading a ticket is a read that failed: no verdict, and the person must not be sent back to
+// sign in again for a store that could not answer (ticketFailed).
+var errTicketGone = errors.New("login: the sign-in has expired")
+
+// ticketCurrent reports whether t still binds to u as the account is now (errTicketGone when it does not): the one it
+// was issued for, enabled, at the same security generation, and not signed out by the emergency lever since. u must be
+// freshly read. A sign-out counter that cannot be read is that error, not "signed out".
+func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) error {
+	if t.UserID != u.ID || !u.Enabled(time.Now()) || u.SecurityGen != t.Gen {
+		return errTicketGone
+	}
+	want, err := m.s.Svc.SessionStamp(ctx, u.OrgID)
+	if err != nil {
+		return err
+	}
+	if !t.Stamp.Current(want) {
+		return errTicketGone
+	}
+	return nil
 }
 
 // ticketUser loads the user and organization of a ticket's sign-in, as they are now, if the ticket still binds to
@@ -520,16 +529,25 @@ func (m *Module) ticketCurrent(ctx context.Context, t *ticket, u *model.User) bo
 // step that commits a change to it (setting a factor) does
 // so with a compare-and-swap on this very version: a change made between this read and that write — another
 // completion of the same sign-in, the owner setting up a factor — makes the write stale, and the step refuses.
-func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, bool) {
+func (m *Module) ticketUser(ctx context.Context, t *ticket) (*model.User, *model.Org, error) {
 	u, err := m.s.Svc.UserByID(ctx, t.UserID)
-	if err != nil || !m.ticketCurrent(ctx, t, u) {
-		return nil, nil, false
+	if errors.Is(err, service.ErrNotFound) {
+		return nil, nil, errTicketGone
+	}
+	if err == nil {
+		err = m.ticketCurrent(ctx, t, u)
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
-	if err != nil {
-		return nil, nil, false
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, errTicketGone
 	}
-	return u, org, true
+	if err != nil {
+		return nil, nil, err
+	}
+	return u, org, nil
 }
 
 const msgExpired = "Your sign-in has expired. Start again."
@@ -540,14 +558,17 @@ const msgExpired = "Your sign-in has expired. Start again."
 // 429 when limited) and the handler returns.
 func (m *Module) step(w http.ResponseWriter, r *http.Request, id string, steps ...string) (*ticket, *model.User, *model.Org, bool) {
 	ctx := r.Context()
-	t, ok := m.getTicket(ctx, id, steps...)
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, msgExpired, "")
-		return nil, nil, nil, false
+	t, err := m.getTicket(ctx, id, steps...)
+	var u *model.User
+	var org *model.Org
+	if err == nil {
+		u, org, err = m.ticketUser(ctx, t)
 	}
-	u, org, ok := m.ticketUser(ctx, t)
-	if !ok || org.ID != web.Org(r).ID {
-		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+	if err == nil && org.ID != web.Org(r).ID {
+		err = errTicketGone
+	}
+	if err != nil {
+		ticketFailed(w, err)
 		return nil, nil, nil, false
 	}
 	if !m.rateLimit(w, r, org.ID, known{userID: u.ID}) {
@@ -561,28 +582,46 @@ func (m *Module) putTicket(ctx context.Context, t *ticket, ttl time.Duration) (s
 	return m.s.Eph.New(ctx, nsTicket, b, ttl)
 }
 
-// getTicket reads a ticket and checks the step; it does not consume it.
-func (m *Module) getTicket(ctx context.Context, id string, steps ...string) (*ticket, bool) {
+// ticketFailed answers a step whose ticket could not be loaded: a dead one (errTicketGone) is 401, as the person has
+// to start again; a read that failed is 503, since the sign-in may well be alive and starting again would not help.
+func ticketFailed(w http.ResponseWriter, err error) {
+	if errors.Is(err, errTicketGone) {
+		writeErr(w, http.StatusUnauthorized, msgExpired, "")
+		return
+	}
+	unavailableResponse(w)
+}
+
+// getTicket reads a ticket and checks the step; it does not consume it. A ticket that is not there, or not at one
+// of the steps, is errTicketGone; any other error is the read failing.
+func (m *Module) getTicket(ctx context.Context, id string, steps ...string) (*ticket, error) {
 	b, err := m.s.Eph.Get(ctx, nsTicket, id)
+	if errors.Is(err, ephemeral.ErrNotFound) {
+		return nil, errTicketGone
+	}
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	var t ticket
 	if json.Unmarshal(b, &t) != nil {
-		return nil, false
+		return nil, errTicketGone
 	}
 	for _, s := range steps {
 		if t.Step == s {
-			return &t, true
+			return &t, nil
 		}
 	}
-	return nil, false
+	return nil, errTicketGone
 }
 
-// useTicket consumes the ticket; only one concurrent caller wins.
-func (m *Module) useTicket(ctx context.Context, id string) bool {
+// useTicket consumes the ticket; only one concurrent caller wins, the others get errTicketGone. A store that cannot
+// answer is its own error (the caller answers "unavailable"), not "expired".
+func (m *Module) useTicket(ctx context.Context, id string) error {
 	_, err := m.s.Eph.Take(ctx, nsTicket, id)
-	return err == nil
+	if errors.Is(err, ephemeral.ErrNotFound) {
+		return errTicketGone // used already (a step replayed or raced) or expired
+	}
+	return err
 }
 
 // attempt counts tries against one ticket and drops it after too many. A counter that cannot be used is an error,
@@ -616,7 +655,13 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 	}
 	amr := opt.AMR
 	upgraded := false
-	if old, _ := m.s.Sessions.Current(r); old != nil {
+	// A session the store could not check is no reason to start another beside it: the one it may be (another user's)
+	// would stay alive, and a same-user sign-in would lose the grants held on it. The sign-in is refused, to be retried.
+	old, _, err := m.s.Sessions.Check(r)
+	if err != nil {
+		return "", err
+	}
+	if old != nil {
 		if old.UserID == u.ID {
 			// The same user signing in again (prompt=login, max_age, a second factor asked for, or simply again):
 			// the session is upgraded in place, keeping the refresh grants other applications hold on it, with a

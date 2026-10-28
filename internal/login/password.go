@@ -80,7 +80,13 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 	}
 	var u *model.User
 	if eff.Password {
-		u, _ = m.s.Svc.FindUserByEmail(ctx, org.ID, login)
+		u, err = m.s.Svc.FindUserByEmail(ctx, org.ID, login)
+		if err != nil && !errors.Is(err, service.ErrNotFound) {
+			// The store could not say whether the account exists: that is no wrong password, so no failure is
+			// audited and no lockout is charged to a person who may well have typed the right one.
+			unavailableResponse(w)
+			return
+		}
 	} // else: treated like an unknown user (generic failure after a dummy hash), so a switched-off org or tenant looks the same
 	key := m.lockKeyFor(r, u, lockKey(u, org, login))
 	n, open, err := m.charge(ctx, key)
@@ -299,8 +305,8 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		m.failed(w, r, n, org, u, u.Username, "totp")
 		return
 	}
-	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+	if err := m.useTicket(ctx, in.Ticket); err != nil {
+		ticketFailed(w, err)
 		return
 	}
 	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
@@ -365,8 +371,8 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		m.failed(w, r, n, org, u, u.Username, "recovery_code")
 		return
 	}
-	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+	if err := m.useTicket(ctx, in.Ticket); err != nil {
+		ticketFailed(w, err)
 		return
 	}
 	m.audit(r, "login.recovery_code", org, u, u.Username, map[string]string{"left": strconv.Itoa(left)})
@@ -415,7 +421,14 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 	}
 	eff, _, err := m.methods(ctx, org, in.Tenant, "")
 	if err == nil && eff.PasswordReset && m.Mail != nil && len(in.Email) <= 256 {
-		if u, err := m.s.Svc.FindUserByEmail(ctx, org.ID, in.Email); err == nil && u.Enabled(time.Now()) && u.PasswordHash != "" {
+		u, err := m.s.Svc.FindUserByEmail(ctx, org.ID, in.Email)
+		if err != nil && !errors.Is(err, service.ErrNotFound) {
+			// "If the address has an account, a link is on its way" must not be said when the store could not look:
+			// no link would come. (An outage is told the same way to every address, so it reveals nothing.)
+			unavailableResponse(w)
+			return
+		}
+		if err == nil && u.Enabled(time.Now()) && u.PasswordHash != "" {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
 			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
 			if n, err := m.s.Eph.Incr(ctx, nsForgot, u.ID, 1, time.Hour); err == nil && n <= 5 {

@@ -14,7 +14,10 @@ import (
 // (writeUser), and finish, which audits them once the write has ended (with its error).
 //
 // What goes with a change in privilege today: a user who becomes a manager or administrator loses the sign-in links
-// nobody chose (emailLinks), as privileged accounts are never linked by email address. They are deleted in the
+// they did not make themselves from their own account page (unchosenLinks: made by email address, by an account
+// created at a provider's first sign-in, or by an administrator), as privileged accounts are never linked by email
+// address or created by a provider, and a provider that an organization administrator controls could otherwise
+// keep the first factor of the account while it has no second one enrolled. They are deleted in the
 // transaction that promotes the user, so no copy of the account is ever privileged and linked by email address at
 // once. Its sessions and refresh grants end too, in the same write: a new session epoch (model.User.SessionEpoch).
 // A session may have met its second factor only through rules for plain users (an upstream provider trusted for it,
@@ -31,7 +34,7 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 		return nil, finish, nil
 	}
 	u.SessionEpoch = NewCredEpoch()
-	links, err := s.emailLinks(ctx, u)
+	links, err := s.unchosenLinks(ctx, u)
 	if err != nil {
 		return nil, nil, err
 	}

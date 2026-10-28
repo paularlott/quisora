@@ -98,6 +98,7 @@ func newEnvModules(t testing.TB, keepIP bool, extra func(*web.Server) []web.Modu
 			if err != nil {
 				t.Fatal(err)
 			}
+			m.SetService(s.Svc)
 			e.Mailer = m
 			// "/step-up" stands for an authorization request that asked for a second factor (acr_values).
 			e.Mod = login.New(s, login.Options{Mail: e.Mailer, StepUp: func(_ context.Context, next string) bool { return next == "/step-up" }})
@@ -122,6 +123,18 @@ func (e *env) client() *http.Client {
 }
 
 func (e *env) mailCount() int { e.mu.Lock(); defer e.mu.Unlock(); return len(e.mails) }
+
+// mailInvite issues an invitation for u and emails it, as an administrator's "send invitation" does.
+func (e *env) mailInvite(t testing.TB, u *model.User, org *model.Org) {
+	t.Helper()
+	link, exp, err := e.Svc.CreateInvite(context.Background(), service.System, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Mailer.SendInviteLink(context.Background(), u, org, link, exp); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func (e *env) nextMail(t testing.TB) mail.Message {
 	t.Helper()
@@ -213,7 +226,7 @@ func (e *env) setSettings(t testing.TB, o *model.Org, mut func(*model.OrgSetting
 	if _, err := e.Svc.UpdateOrg(context.Background(), service.System, o.ID, service.OrgInput{Settings: &s}); err != nil {
 		t.Fatal(err)
 	}
-	e.Server.InvalidateOrgs() // as the change feed does
+	e.Svc.InvalidateOrgs() // as the change feed does
 }
 
 // ---------------------------------------------------------------------------------------------------------------

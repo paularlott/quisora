@@ -104,6 +104,20 @@ func TestUniqueValuesStayInPartition(t *testing.T) {
 			default:
 				t.Errorf("%s unique value %q is not scoped to the organization", e.Kind(), u)
 			}
+			// What UniquePartition says of a value is the partition of the record holding it: a cluster node answers
+			// the value missing from that partition's copy alone.
+			key, ok := UniquePartition(e.Kind(), u)
+			named := e.Kind() == KindOrg || e.Kind() == KindUser || e.Kind() == KindGroup || e.Kind() == KindTenant ||
+				e.Kind() == KindProvider
+			if ok != named || ok && key != ix.Partition {
+				t.Errorf("%s unique value %q: UniquePartition %q %v, want %q %v", e.Kind(), u, key, ok, ix.Partition, named)
+			}
+		}
+	}
+	// A value whose first segment is not an organization's id names no partition.
+	for _, v := range []string{"org1/u/al", "u-al", ""} {
+		if key, ok := UniquePartition(KindUser, v); ok {
+			t.Errorf("UniquePartition(user, %q) = %q, want none", v, key)
 		}
 	}
 }

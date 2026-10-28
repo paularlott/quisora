@@ -47,7 +47,7 @@ func TestOrganizationProviderMakesItsClient(t *testing.T) {
 		!slices.Equal(p.Scopes, []string{"openid", "profile", "email"}) {
 		t.Errorf("provider: %+v", p)
 	}
-	if p.AutoProvision || p.TrustMFA || !p.LinkByEmail || !p.Enabled {
+	if p.AutoProvision || p.TrustMFA || p.LinkByEmail || !p.Enabled {
 		t.Errorf("defaults: auto-provision %v trust-mfa %v link-by-email %v enabled %v", p.AutoProvision, p.TrustMFA, p.LinkByEmail, p.Enabled)
 	}
 	cl, err := c.svc.Clients.Get(c.ctx, p.ClientID)
@@ -67,6 +67,35 @@ func TestOrganizationProviderMakesItsClient(t *testing.T) {
 	}
 	if cl.Created.IsZero() || len(clientsOf(t, c, c.primary.ID)) != 1 || len(clientsOf(t, c, c.a.ID)) != 0 {
 		t.Errorf("clients: primary %d, org-a %d", len(clientsOf(t, c, c.primary.ID)), len(clientsOf(t, c, c.a.ID)))
+	}
+}
+
+// The source organization's managers, administrators and SCIM clients can mark any address they give a user verified,
+// so an organization provider does not link guests to existing users by email unless a super admin turns that on:
+// not on creation, and not when an existing provider becomes one. Other types keep linking by default.
+func TestOrganizationProviderDoesNotLinkByEmailByDefault(t *testing.T) {
+	c := orgProviderEnv(t)
+	other, err := c.svc.CreateProvider(c.ctx, actor(c.super), c.a.ID, goodProvider("Corp"))
+	if err != nil || !other.LinkByEmail {
+		t.Fatalf("an OpenID Connect provider: link-by-email %v, %v", other != nil && other.LinkByEmail, err)
+	}
+	// becoming an organization provider switches it off, as a new one is; switching it on again is the admin's call
+	in := orgProvider(c.primary.ID)
+	made, err := c.svc.UpdateProvider(c.ctx, actor(c.super), other.ID, in)
+	if err != nil || made.LinkByEmail {
+		t.Fatalf("converted: link-by-email %v, %v", made != nil && made.LinkByEmail, err)
+	}
+	if on, err := c.svc.UpdateProvider(c.ctx, actor(c.super), other.ID, service.ProviderInput{LinkByEmail: ptr(true)}); err != nil || !on.LinkByEmail {
+		t.Fatalf("switched on: %v", err)
+	}
+	// an update that says nothing about it leaves the choice alone
+	if kept, err := c.svc.UpdateProvider(c.ctx, actor(c.super), other.ID, service.ProviderInput{Name: ptr("Guests")}); err != nil || !kept.LinkByEmail {
+		t.Fatalf("renamed: %v", err)
+	}
+	explicit := orgProvider(c.primary.ID)
+	explicit.Name, explicit.LinkByEmail = ptr("Trusted"), ptr(true)
+	if p, err := c.svc.CreateProvider(c.ctx, actor(c.super), c.b.ID, explicit); err != nil || !p.LinkByEmail {
+		t.Fatalf("created with link-by-email on: %v", err)
 	}
 }
 

@@ -72,6 +72,23 @@ type Index struct {
 	Partition string
 }
 
+// UniquePartition is the partition key (Index.Partition) of the record of kind k that holds unique value v, when v
+// names it: "" for an organization's name (organizations are global), and the organization's id for the values of
+// users, groups, tenants and providers, which all start with it (UserUsernameKey, GroupNameKey, TenantNameKey, ...). A
+// cluster node answers a value found nowhere from that one partition's copy. ok is false where v does not name the
+// organization (a passkey's, an identity's or a link token's value is scoped by a user, a provider or nothing), or
+// where its first segment is not an id.
+func UniquePartition(k Kind, v string) (key string, ok bool) {
+	switch k {
+	case KindOrg:
+		return "", true
+	case KindUser, KindGroup, KindTenant, KindProvider:
+		org, _, found := strings.Cut(v, "/")
+		return org, found && IsID(org)
+	}
+	return "", false
+}
+
 // Due reports when a housekeeping job must look at a record of kind k with index fields f, and whether it must at
 // all. Backends whose filtered queries read a whole kind index records by it (store.DueLister). Users: an active
 // account with an end date is disabled then (Service.ExpireUsers).

@@ -71,6 +71,32 @@ func (d *dialect) lockClause(of string) string {
 	return "" // sqlite: the single writer already holds the database lock
 }
 
+// deleteLimit is a DELETE of at most n of the rows of table that match where. MySQL and MariaDB take a LIMIT on a
+// DELETE; PostgreSQL and SQLite do not, so there a subquery chooses the rows, locking them (PostgreSQL), which checks a
+// row changed meanwhile against where again before it is chosen.
+func (d *dialect) deleteLimit(table, where string, n int) string {
+	if d.isMySQL() {
+		return "DELETE FROM " + table + " WHERE " + where + " LIMIT " + strconv.Itoa(n)
+	}
+	return "DELETE FROM " + table + " WHERE id IN (SELECT id FROM " + table + " WHERE " + where + " LIMIT " + strconv.Itoa(n) +
+		d.lockClause("") + ")"
+}
+
+// unbounded is the statement that lifts the per-statement bounds (Open) from a connection: the schema migration's,
+// whose DDL (an index built over a large table) and wait for another process's migration may rightly take longer.
+// SQLite has no bound on a statement to lift.
+func (d *dialect) unbounded() string {
+	switch d.name {
+	case "postgres":
+		return "SELECT set_config('statement_timeout', '0', false), set_config('lock_timeout', '0', false)"
+	case "mysql":
+		return "SET SESSION max_execution_time = 0, innodb_lock_wait_timeout = DEFAULT"
+	case "mariadb":
+		return "SET SESSION max_statement_time = 0, innodb_lock_wait_timeout = DEFAULT"
+	}
+	return ""
+}
+
 func (d *dialect) insertIgnore(table, cols, vals string) string {
 	if d.isMySQL() {
 		return "INSERT IGNORE INTO " + table + " (" + cols + ") VALUES (" + vals + ")"
@@ -78,7 +104,8 @@ func (d *dialect) insertIgnore(table, cols, vals string) string {
 	return "INSERT INTO " + table + " (" + cols + ") VALUES (" + vals + ") ON CONFLICT DO NOTHING"
 }
 
-// strCollate is the collation applied to every text column: binary and NO PAD so equality is exact.
+// strCollate is the collation applied to every text column: binary and NO PAD so equality is exact (MySQL's
+// utf8mb4_0900_bin exists from 8.0.17: the oldest MySQL this store runs on).
 func (d *dialect) strCollate() string {
 	switch d.name {
 	case "mysql":
@@ -189,8 +216,10 @@ func (d *dialect) sortIndexExpr(f model.Field) string {
 	return d.sortExpr(f)
 }
 
-// retryable reports whether a failed write transaction should be run again: deadlocks, serialization failures,
-// busy databases and duplicate keys (a concurrent writer created the same row first).
+// retryable reports whether a failed write transaction should be run again: deadlocks, serialization failures and
+// duplicate keys (a concurrent writer created the same row first). A lock wait that ran out its bound (MySQL's
+// innodb_lock_wait_timeout, SQLite's busy timeout, PostgreSQL's lock_timeout: Open) is not: the wait was the retry, and
+// running it again would hold the caller for many times the bound; the caller gets store.ErrUnavailable at once.
 func (d *dialect) retryable(err error) bool {
 	if d.isDuplicate(err) {
 		return true
@@ -200,15 +229,7 @@ func (d *dialect) retryable(err error) bool {
 		return pg.Code == "40001" || pg.Code == "40P01"
 	}
 	var my *mysql.MySQLError
-	if errors.As(err, &my) {
-		return my.Number == 1213 || my.Number == 1205
-	}
-	var sq *sqlite.Error
-	if errors.As(err, &sq) {
-		c := sq.Code() & 0xff
-		return c == 5 || c == 6 // BUSY, LOCKED
-	}
-	return false
+	return errors.As(err, &my) && my.Number == 1213
 }
 
 func (d *dialect) isDuplicate(err error) bool {

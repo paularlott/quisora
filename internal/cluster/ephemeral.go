@@ -163,16 +163,6 @@ func (n *Node) hrw(ns, key string) *member {
 	return best
 }
 
-// OwnerOf returns the node an operation on the ephemeral id (or key) is routed to; local reports whether that is this
-// node, and dead whether the id belongs to a node that gossip has marked dead.
-func (n *Node) OwnerOf(ns, id string) (nodeID string, local, dead bool) {
-	mb, dead := n.route(ns, id)
-	if dead || mb == nil {
-		return "", false, true
-	}
-	return mb.id, mb.id == n.id, false
-}
-
 func (n *Node) route(ns, id string) (mb *member, dead bool) {
 	m := n.mem.Load()
 	if owner := ephemeral.Owner(id); owner != "" {

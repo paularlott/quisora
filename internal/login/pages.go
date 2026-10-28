@@ -93,7 +93,8 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 	d.CanReset = eff.PasswordReset && m.Mail != nil
 	if c, err := r.Cookie(stepCookie); err == nil && q.Get("step") == "1" && c.Value != "" && len(c.Value) < 200 {
 		// only the step a provider sign-in left, for this org
-		if t, ok := m.getTicket(ctx, c.Value, "totp", "passkey", "email_code", "enrol"); ok && t.Provider != "" {
+		// (a ticket that cannot be read is no step to resume: the page is the sign-in form, and the person can start again)
+		if t, err := m.getTicket(ctx, c.Value, "totp", "passkey", "email_code", "enrol"); err == nil && t.Provider != "" {
 			if u, err := m.s.Svc.Users.Get(ctx, t.UserID); err == nil && u.OrgID == org.ID {
 				d.Step, d.Ticket = t.Step, c.Value
 				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step), " ")
@@ -282,6 +283,17 @@ func (m *Module) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	// Back to the organization's sign-in page, so signing in again needs no org picker.
 	dest := orDefault(next, web.OrgPath(org.ID, "/login"))
+	if web.SessionUnchecked(r) {
+		// The store refused to say whether there is a session: that is not "already signed out", and answering so
+		// would leave a live session behind a page that says it ended.
+		if wantsJSON {
+			web.WriteUnchecked(w)
+		} else {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "This server cannot check your session right now. Please try again shortly.", http.StatusServiceUnavailable)
+		}
+		return
+	}
 	if sess == nil { // already signed out
 		if wantsJSON {
 			web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})

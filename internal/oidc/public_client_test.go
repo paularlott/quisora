@@ -11,6 +11,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/ttlcache"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -214,7 +215,12 @@ func TestPublicClientRevokeAndIntrospect(t *testing.T) {
 // (cacheTTL), whatever the store: within the bound they are served, past it read again.
 func TestOriginCacheTTL(t *testing.T) {
 	t.Parallel()
+	if cacheTTL > 5*time.Second {
+		t.Fatalf("origins are cached for %v, more than the 5s bound", cacheTTL)
+	}
 	h := setup(t, nil)
+	const bound = time.Second // shortened here, so the test need not wait for cacheTTL
+	h.p.origins = ttlcache.New[*originSet](bound, 10)
 	h.publicClient(nil)
 	origins := func() *originSet {
 		var set *originSet
@@ -228,13 +234,9 @@ func TestOriginCacheTTL(t *testing.T) {
 	if !first.exact["https://spa.example"] || origins() != first {
 		t.Error("the origins were read again within the bound")
 	}
-	h.p.origins.mu.Lock()
-	it := h.p.origins.m[h.env.Primary.ID]
-	it.exp = time.Now().Add(-time.Second).UnixNano() // aged past cacheTTL
-	h.p.origins.m[h.env.Primary.ID] = it
-	h.p.origins.mu.Unlock()
+	time.Sleep(bound)
 	if origins() == first {
-		t.Errorf("the origins were not read again after %v", cacheTTL)
+		t.Errorf("the origins were not read again after %v", bound)
 	}
 }
 

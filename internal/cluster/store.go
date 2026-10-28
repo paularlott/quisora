@@ -42,25 +42,25 @@ var (
 	_ store.Store = (*Store)(nil)
 )
 
-// Inner returns the wrapped store.
-func (s *Store) Inner() store.Store { return s.inner }
-
 // Get returns the live record kind/id from this node's copy; in a gossip cluster, only while this node can vouch for the
 // copy of the record's partition (the staleness gate, partstatus.go: store.ErrUnavailable otherwise).
 func (s *Store) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Get(ctx, kind, id) })
+	return s.gated(ctx, kind, func() int { return s.idPartition(ctx, kind, id) },
+		func() (*store.Record, error) { return s.inner.Get(ctx, kind, id) })
 }
 
-// gated passes a single-record read of kind/id through the staleness gate: in a gossip cluster a record found is
-// served only while its partition is readable here, and one not found only while the partition its kind and id name,
-// if they name one, is (otherwise, while the node holds its data at all). Node-local kinds are exempt. The partition is
-// known only from what read finds, so read runs first; a copy found behind is waited for (readable) and then read
-// again, since what read returned before the wait is the copy the wait was for. So is one the gate found current
-// only after a change landed here since the read (Node.applies): what read returned may predate that change.
-func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func() (*store.Record, error)) (*store.Record, error) {
+// gated passes a single-record read of kind through the staleness gate: in a gossip cluster a record found is served
+// only while its partition is readable here, and one not found only while the partition miss names is (miss: the
+// partition the record would be in, -1 when that cannot be told: then every partition must be readable, as the record
+// may be in any). A miss in one partition is never answered from another's copy, so a partition between owners refuses
+// the reads of its own records only. Node-local kinds are exempt. The partition is known only from what read finds, so
+// read runs first; a copy found behind is waited for (readable) and then read again, since what read returned before
+// the wait is the copy the wait was for. So is one the gate found current only after a change landed here since the
+// read (Node.applies): what read returned may predate that change.
+func (s *Store) gated(ctx context.Context, kind model.Kind, miss func() int, read func() (*store.Record, error)) (*store.Record, error) {
 	before := s.n.applies.Load()
 	r, err := read()
 	if s.n.gc == nil || localOnly(kind) {
@@ -71,16 +71,7 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 		case err == nil && r != nil:
 			return recPartition(r), nil
 		case errors.Is(err, store.ErrNotFound):
-			if hp, ok := partitionHint(kind, id); ok {
-				return hp, nil
-			}
-			// A record expired or deleted here still names its partition; only one never received does not (any).
-			if id != "" {
-				if old, lerr := s.inner.Lookup(ctx, kind, id); lerr == nil {
-					return recPartition(old), nil
-				}
-			}
-			return -1, nil
+			return miss(), nil
 		}
 		return 0, err
 	}
@@ -106,14 +97,34 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, id string, read func
 	return r, err
 }
 
+// idPartition is the partition of record kind/id as far as this node can tell without finding it live: from its kind
+// and id (partitionHint), or from the copy it holds in any state (a record expired or deleted here still names its
+// partition, and a record never moves). -1: a record never received here, which may be in any partition.
+func (s *Store) idPartition(ctx context.Context, kind model.Kind, id string) int {
+	if hp, ok := partitionHint(kind, id); ok {
+		return hp
+	}
+	if old, err := s.inner.Lookup(ctx, kind, id); err == nil {
+		return recPartition(old)
+	}
+	return -1
+}
+
 // GetByUnique returns the live record of kind holding the unique value, through the staleness gate (Get). A unique
 // value is unique within its kind and organization (model.Index.Unique), so it is indexed in the partition of the
-// record that holds it.
+// record that holds it, which most values name (model.UniquePartition): one found nowhere is answered from that
+// partition's copy, and from every partition's only when the value does not name one.
 func (s *Store) GetByUnique(ctx context.Context, kind model.Kind, value string) (*store.Record, error) {
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	return s.gated(ctx, kind, "", func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
+	miss := func() int {
+		if key, ok := model.UniquePartition(kind, value); ok {
+			return partitionNum(key)
+		}
+		return -1
+	}
+	return s.gated(ctx, kind, miss, func() (*store.Record, error) { return s.inner.GetByUnique(ctx, kind, value) })
 }
 
 // Put writes rec (stamping this node as its Origin), replacing the record: in a gossip cluster the owner of its
@@ -139,7 +150,7 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 }
 
 // GetMany reads several records in one round trip of the wrapped store (store.MultiGetter), or one by one. In a gossip
-// cluster it is refused (the staleness gate, Get) when a record found is in a partition this node cannot read now.
+// cluster it passes the staleness gate as Get does, for every record found and every one missed.
 func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*store.Record, error) {
 	if err := s.open(); err != nil {
 		return nil, err
@@ -149,15 +160,10 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if err != nil || s.n.gc == nil || localOnly(kind) {
 		return recs, err
 	}
-	if len(recs) < len(ids) { // a miss may be in any partition (gated)
-		if err := s.n.readable(ctx, -1); err != nil {
-			return nil, err
-		}
-	}
 	// As gated: a partition found behind is waited for, and then everything is read again; so is a read a change landed
 	// after (checked once the gates are passed).
 	waited := false
-	for p := range recPartitions(recs) {
+	for p := range s.manyPartitions(ctx, kind, ids, recs) {
 		if s.n.readableWithin(ctx, p, 0) == nil {
 			continue
 		}
@@ -172,12 +178,31 @@ func (s *Store) GetMany(ctx context.Context, kind model.Kind, ids []string) ([]*
 	if recs, err = store.GetMany(ctx, s.inner, kind, ids); err != nil {
 		return nil, err
 	}
-	for p := range recPartitions(recs) {
+	for p := range s.manyPartitions(ctx, kind, ids, recs) {
 		if err := s.n.readableWithin(ctx, p, 0); err != nil {
 			return nil, err
 		}
 	}
 	return recs, nil
+}
+
+// manyPartitions is the set of the partitions a GetMany of ids that found recs read: those of the records found, and
+// those of the ids missed (idPartition, -1 among them for one that may be in any).
+func (s *Store) manyPartitions(ctx context.Context, kind model.Kind, ids []string, recs []*store.Record) map[int]struct{} {
+	ps := recPartitions(recs)
+	if len(recs) == len(ids) {
+		return ps
+	}
+	found := make(map[string]bool, len(recs))
+	for _, r := range recs {
+		found[r.ID] = true
+	}
+	for _, id := range ids {
+		if !found[id] {
+			ps[s.idPartition(ctx, kind, id)] = struct{}{}
+		}
+	}
+	return ps
 }
 
 // recPartitions is the set of the partitions of recs.
@@ -210,7 +235,8 @@ func (s *Store) Lookup(ctx context.Context, kind model.Kind, id string) (*store.
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	return s.gated(ctx, kind, id, func() (*store.Record, error) { return s.inner.Lookup(ctx, kind, id) })
+	return s.gated(ctx, kind, func() int { return s.idPartition(ctx, kind, id) },
+		func() (*store.Record, error) { return s.inner.Lookup(ctx, kind, id) })
 }
 
 // Snapshot delegates to the wrapped store when it has point-in-time views (store.Snapshotter). In a gossip cluster it

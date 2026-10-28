@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -337,43 +338,73 @@ func (s *Store) purge(ctx context.Context, tombstonesBefore, expiredBefore time.
 }
 
 func (s *Store) purgeKind(ctx context.Context, t *table, tombVersion, exp int64) (int, error) {
-	r := runner{c: s.wc}
-	total := 0
-	res, err := r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE deleted = TRUE AND pseq = 0 AND version < ?"), tombVersion)
+	total, err := s.deleteBatches(ctx, t, "deleted = TRUE AND pseq = 0 AND version < ?", tombVersion)
+	if err != nil || model.ExpiryOf(t.kind) == model.NeverExpires { // none carries an expiry, and no index finds the expired ones
+		return total, err
+	}
+	// Expired records without unique values go a batch to a statement; the rest release their unique values first.
+	n, err := s.deleteBatches(ctx, t, "expires IS NOT NULL AND expires < ? AND uniq IS NULL", exp)
+	total += n
 	if err != nil {
 		return total, err
 	}
-	n, _ := res.RowsAffected()
-	total += int(n)
-	if model.ExpiryOf(t.kind) == model.NeverExpires { // none carries an expiry, and no index finds the expired ones
-		return total, nil
-	}
-	// Expired records without unique values go in one statement; the rest release their unique values first.
-	res, err = r.exec(ctx, s.d.bind("DELETE FROM "+t.name+" WHERE expires IS NOT NULL AND expires < ? AND uniq IS NULL"), exp)
-	if err != nil {
-		return total, err
-	}
-	n, _ = res.RowsAffected()
-	total += int(n)
+	sel := s.d.bind("SELECT id, uniq FROM " + t.name + " WHERE expires IS NOT NULL AND expires < ? AND uniq IS NOT NULL LIMIT " +
+		strconv.Itoa(batchRows) + s.d.lockClause(""))
+	del := s.d.bind("DELETE FROM " + t.name + " WHERE id = ? AND expires IS NOT NULL AND expires < ?")
+	s.wc.get(ctx, sel)
+	s.wc.get(ctx, del)
 	for {
-		c, err := s.purgeExpiredUnique(ctx, t, exp)
-		total += c
-		if err != nil || c == 0 {
+		var found int
+		err := s.partitionTx(ctx, true, []*table{t}, func(r runner) error {
+			var err error
+			n, found, err = s.purgeExpiredUnique(ctx, r, t, sel, del, exp)
+			return err
+		})
+		if err != nil {
 			return total, err
+		}
+		total += n
+		if found < batchRows {
+			return total, nil
 		}
 	}
 }
 
-func (s *Store) purgeExpiredUnique(ctx context.Context, t *table, exp int64) (int, error) {
-	tx, err := s.wdb.BeginTx(ctx, s.txOptions())
-	if err != nil {
-		return 0, err
+// deleteBatches deletes the rows of t that match where (none of which holds a unique value), batchRows to a
+// transaction, until a batch deletes fewer. A batch is a short transaction of its own, run as a partition write is
+// (partitionTx: run again on a deadlock, and unsynced: a purge a crash undoes is simply done again by the next one), so a
+// large purge never holds SQLite's one writer (which every sign-in waits for), or a server's locks and log, for its
+// whole run; and a cancelled ctx stops it between batches.
+func (s *Store) deleteBatches(ctx context.Context, t *table, where string, args ...any) (int, error) {
+	q := s.d.bind(s.d.deleteLimit(t.name, where, batchRows))
+	s.wc.get(ctx, q) // prepared outside the transactions (runner.stmt)
+	total := 0
+	for {
+		var n int64
+		err := s.partitionTx(ctx, true, nil, func(r runner) error {
+			res, err := r.exec(ctx, q, args...)
+			if err == nil {
+				n, err = res.RowsAffected()
+			}
+			return err
+		})
+		if err != nil {
+			return total, err
+		}
+		total += int(n)
+		if n < batchRows {
+			return total, nil
+		}
 	}
-	defer tx.Rollback()
-	r := runner{c: s.wc, tx: tx}
-	rows, err := r.query(ctx, s.d.bind("SELECT id, uniq FROM "+t.name+" WHERE expires IS NOT NULL AND expires < ? AND uniq IS NOT NULL LIMIT 500"+s.d.lockClause("")), exp)
+}
+
+// purgeExpiredUnique deletes, in the transaction of r, the expired records that sel (the next batchRows of them, locked)
+// finds, each with del, releasing the unique values of those deleted. It returns how many it deleted and how many sel
+// found.
+func (s *Store) purgeExpiredUnique(ctx context.Context, r runner, t *table, sel, del string, exp int64) (int, int, error) {
+	rows, err := r.query(ctx, sel, exp)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	type item struct {
 		id   string
@@ -385,35 +416,34 @@ func (s *Store) purgeExpiredUnique(ctx context.Context, t *table, exp int64) (in
 		var u sql.NullString
 		if err := rows.Scan(&id, &u); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		uniq, err := decodeUnique(u)
 		if err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		items = append(items, item{id, uniq})
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	del := s.d.bind("DELETE FROM " + t.name + " WHERE id = ? AND expires IS NOT NULL AND expires < ?")
 	n := 0
 	for _, it := range items {
 		res, err := r.exec(ctx, del, it.id, exp)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if c, _ := res.RowsAffected(); c == 1 {
 			n++
 			for _, u := range it.uniq {
-				if _, err := r.exec(ctx, s.releaseSQL(), string(t.kind), u, it.id); err != nil {
-					return 0, err
+				if err := s.release(ctx, r, t, u, it.id); err != nil {
+					return 0, 0, err
 				}
 			}
 		}
 	}
-	return n, tx.Commit()
+	return n, len(items), nil
 }

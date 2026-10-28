@@ -2,7 +2,8 @@
 // authorization, token, userinfo, introspection, revocation and logout endpoints, and back-channel logout.
 //
 // Wiring: p := oidc.New(srv); srv.Use(p). The cluster layer calls Invalidate / InvalidateClient / InvalidateUser /
-// InvalidateOrg when the corresponding records change, and the elected leader calls EnsureKeys periodically.
+// InvalidateTenant / InvalidateGrant / InvalidateMembership when the corresponding records change (organizations are
+// the service's: service.Service.InvalidateOrgs), and the elected leader calls EnsureKeys periodically.
 package oidc
 
 import (
@@ -19,12 +20,12 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
-	"github.com/paularlott/quisora/internal/evictgen"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/ttlcache"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -38,6 +39,11 @@ const (
 	nsLogout   = "oauth.logout"
 	flowTTL    = 20 * time.Minute
 	usedTTL    = time.Hour
+	// replayMarkTTL keeps the mark of a code presented after it was taken (nsReplayed) for as long as the redemption
+	// that took it can still be running: that redemption looks for the mark once it has made its grant. A request
+	// runs within the server's write timeout (60 s), so five minutes is ample. Anyone can present an unknown code, so
+	// the mark is kept no longer than that, not usedTTL.
+	replayMarkTTL = 5 * time.Minute
 	// cacheTTL bounds every cache of stored data here (clients, users, organizations, tenants, groups, the public
 	// clients' origins, the signing keys): a change made elsewhere counts here within it, whatever the store; a change
 	// this node hears of (cache eviction hooks) counts at once.
@@ -69,22 +75,23 @@ type Provider struct {
 	lastKIDReload atomic.Int64
 	jwksCache     atomic.Pointer[jwksSnapshot]
 
-	clients *ttlCache[*clientEntry]
-	origins *ttlCache[*originSet] // by organization id: the origins of its public clients (cors.go)
-	users   *ttlCache[*model.User]
-	orgs    *ttlCache[*model.Org]
-	tenants *ttlCache[*model.Tenant]
-	grants  *ttlCache[grantState]
-	groups  *ttlCache[groupEntry]
+	clients *ttlcache.Cache[*clientEntry]
+	origins *ttlcache.Cache[*originSet] // by organization id: the origins of its public clients (cors.go)
+	users   *ttlcache.Cache[*model.User]
+	tenants *ttlcache.Cache[*model.Tenant]
+	grants  *ttlcache.Cache[grantState]
+	groups  *ttlcache.Cache[groupEntry]
 	memGen  sync.Map // org id -> *atomic.Uint64, bumped by InvalidateMembership
 	memAll  atomic.Uint64
 
 	jwksMu    sync.Mutex
 	remoteKey map[string]*remoteJWKS
 
-	bcWG      sync.WaitGroup            // back-channel logouts queued or being sent
-	bcQueue   chan bcTarget             // waiting to be sent (bcQueueMax)
-	bcMu      sync.Mutex                // guards bcWorkers
+	bcWG      sync.WaitGroup            // back-channel logouts queued, being sent or being moved to the retry queue
+	bcMu      sync.Mutex                // guards the fields below up to bcRetry
+	bcOrgs    map[string]*bcOrg         // organizations with logouts queued or being sent, by id
+	bcTurn    []*bcOrg                  // those with logouts queued, in the order the senders serve them
+	bcQueued  int                       // logouts waiting to be sent, of all (at most bcQueueMax)
 	bcWorkers int                       // senders running (at most bcWorkersMax; none while nothing waits)
 	bcRetry   *queue.Queue[LogoutRetry] // failed logouts waiting to be tried again (OpenLogoutQueue; nil: none)
 
@@ -93,9 +100,9 @@ type Provider struct {
 // New builds the provider for server s. Register mounts its routes.
 func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log,
-		clients: newTTLCache[*clientEntry](cacheTTL, 50_000), origins: newTTLCache[*originSet](cacheTTL, 20_000), users: newTTLCache[*model.User](cacheTTL, 200_000),
-		orgs: newTTLCache[*model.Org](cacheTTL, 20_000), tenants: newTTLCache[*model.Tenant](cacheTTL, 20_000), grants: newTTLCache[grantState](grantTTL, 200_000), groups: newTTLCache[groupEntry](cacheTTL, 200_000),
-		remoteKey: map[string]*remoteJWKS{}, bcQueue: make(chan bcTarget, bcQueueMax)}
+		clients: ttlcache.New[*clientEntry](cacheTTL, 50_000), origins: ttlcache.New[*originSet](cacheTTL, 20_000), users: ttlcache.New[*model.User](cacheTTL, 200_000),
+		tenants: ttlcache.New[*model.Tenant](cacheTTL, 20_000), grants: ttlcache.New[grantState](grantTTL, 200_000), groups: ttlcache.New[groupEntry](cacheTTL, 200_000),
+		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}}
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
 	return p
@@ -103,25 +110,22 @@ func New(s *web.Server) *Provider {
 
 // InvalidateClient evicts a cached client ("" = all).
 func (p *Provider) InvalidateClient(id string) {
-	p.origins.clear() // a record id does not say whose organization's origins changed
+	p.origins.Clear() // a record id does not say whose organization's origins changed
 	if id == "" {
-		p.clients.clear()
+		p.clients.Clear()
 		return
 	}
-	p.clients.del(id)
+	p.clients.Del(id)
 }
 
 // InvalidateUser evicts a cached user.
-func (p *Provider) InvalidateUser(id string) { p.users.del(id) }
-
-// InvalidateOrg evicts a cached organization.
-func (p *Provider) InvalidateOrg(id string) { p.orgs.del(id) }
+func (p *Provider) InvalidateUser(id string) { p.users.Del(id) }
 
 // InvalidateTenant evicts a cached tenant.
-func (p *Provider) InvalidateTenant(id string) { p.tenants.del(id) }
+func (p *Provider) InvalidateTenant(id string) { p.tenants.Del(id) }
 
 // InvalidateGrant evicts the cached "grant exists" answer for a grant.
-func (p *Provider) InvalidateGrant(id string) { p.grants.del(id) }
+func (p *Provider) InvalidateGrant(id string) { p.grants.Del(id) }
 
 type groupEntry struct {
 	ids   []string
@@ -157,7 +161,10 @@ func (p *Provider) Wait() {
 	select {
 	case <-done:
 	case <-time.After(bcShutdownWait):
-		p.log.Warn("oidc: back-channel logouts still queued at shutdown were not sent", "queued", len(p.bcQueue))
+		p.bcMu.Lock()
+		queued := p.bcQueued
+		p.bcMu.Unlock()
+		p.log.Warn("oidc: back-channel logouts still queued at shutdown were not sent", "queued", queued)
 	}
 }
 
@@ -235,43 +242,30 @@ func (p *Provider) Register(s *web.Server) {
 // Cached lookups
 
 func (p *Provider) user(ctx context.Context, id string) (*model.User, error) {
-	if u, ok := p.users.get(id); ok {
+	if u, ok := p.users.Get(id); ok {
 		return u, nil
 	}
-	tok := p.users.token(id)
+	tok := p.users.Token(id)
 	u, err := p.svc.Users.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	p.users.putIf(id, u, tok)
+	p.users.PutIf(id, u, tok)
 	return u, nil
-}
-
-func (p *Provider) org(ctx context.Context, id string) (*model.Org, error) {
-	if o, ok := p.orgs.get(id); ok {
-		return o, nil
-	}
-	tok := p.orgs.token(id)
-	o, err := p.svc.Orgs.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	p.orgs.putIf(id, o, tok)
-	return o, nil
 }
 
 // clientTenant is service.ClientTenant through a short cache (a tenant is read on every token request).
 func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Tenant, error) {
-	if t, ok := p.tenants.get(c.TenantID); ok && t.OrgID == c.OrgID {
+	if t, ok := p.tenants.Get(c.TenantID); ok && t.OrgID == c.OrgID {
 		return t, nil
 	}
-	tok := p.tenants.token(c.TenantID)
+	tok := p.tenants.Token(c.TenantID)
 	t, err := p.svc.ClientTenant(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	if t.ID == c.TenantID {
-		p.tenants.putIf(t.ID, t, tok)
+		p.tenants.PutIf(t.ID, t, tok)
 	}
 	return t, nil
 }
@@ -280,9 +274,9 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 // be read (the grant, or the sign-out counters its stamp is compared with): the caller answers 503, never "alive"
 // on a guess nor "ended" for a token that may well be good. Only an answer is cached: a failed read is asked again.
 func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bool, error) {
-	st, ok := p.grants.get(id)
+	st, ok := p.grants.Get(id)
 	if !ok {
-		tok := p.grants.token(id)
+		tok := p.grants.Token(id)
 		g, err := p.svc.Grants.Get(ctx, id)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return false, unavailable(err)
@@ -290,7 +284,7 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 		if err == nil {
 			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
 		}
-		p.grants.putIf(id, st, tok)
+		p.grants.PutIf(id, st, tok)
 	}
 	if !st.alive || !u.SessionHolds(st.epoch) { // (a grant of an ended session epoch: model.User.SessionEpoch)
 		return false, nil
@@ -310,87 +304,6 @@ type grantState struct {
 	org   string
 	stamp model.SignOutStamp
 	epoch uint64 // the session epoch it was granted in
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// TTL cache
-
-type ttlItem[T any] struct {
-	v   T
-	exp int64 // unix nanos
-}
-
-// ttlCache keeps entries for ttl in two generations: puts go to m, and once a ttl period (or when m holds max) m
-// becomes old and the old one is dropped. Everything in old is at least that old, so what is expired goes without a
-// sweep (a sweep would hold the lock, and every reader, for the whole map), and the cache holds at most 2×max.
-type ttlCache[T any] struct {
-	mu      sync.RWMutex
-	m, old  map[string]ttlItem[T]
-	ttl     time.Duration
-	max     int
-	rotated int64 // unix nanos when m was started (mu)
-	gens    evictgen.Gens
-}
-
-func newTTLCache[T any](ttl time.Duration, max int) *ttlCache[T] {
-	return &ttlCache[T]{m: map[string]ttlItem[T]{}, ttl: ttl, max: max, rotated: time.Now().UnixNano()}
-}
-
-func (c *ttlCache[T]) get(k string) (v T, ok bool) {
-	c.mu.RLock()
-	it, found := c.m[k]
-	if !found {
-		it, found = c.old[k]
-	}
-	c.mu.RUnlock()
-	if !found || time.Now().UnixNano() > it.exp {
-		return v, false
-	}
-	return it.v, true
-}
-
-// token is taken before the store is read for a miss of k; putIf puts the copy read only if k was not deleted (or the
-// cache cleared) since, so a fill that began before an eviction cannot store the copy that eviction was for.
-func (c *ttlCache[T]) token(k string) uint64 { return c.gens.Token(k) }
-
-func (c *ttlCache[T]) putIf(k string, v T, tok uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.gens.Valid(k, tok) {
-		c.putLocked(k, v)
-	}
-}
-
-// put stores v whatever happened meanwhile: for a value known to be current (a grant just revoked).
-func (c *ttlCache[T]) put(k string, v T) {
-	c.mu.Lock()
-	c.putLocked(k, v)
-	c.mu.Unlock()
-}
-
-func (c *ttlCache[T]) putLocked(k string, v T) {
-	now := time.Now().UnixNano()
-	if len(c.m) >= c.max || now-c.rotated > int64(c.ttl) {
-		c.old, c.m, c.rotated = c.m, make(map[string]ttlItem[T], len(c.m)), now
-	}
-	delete(c.old, k) // the new value is the only one
-	c.m[k] = ttlItem[T]{v: v, exp: now + int64(c.ttl)}
-}
-
-func (c *ttlCache[T]) del(k string) {
-	c.mu.Lock()
-	c.gens.Bump(k)
-	delete(c.m, k)
-	delete(c.old, k)
-	c.mu.Unlock()
-}
-
-func (c *ttlCache[T]) clear() {
-	c.mu.Lock()
-	c.gens.BumpAll()
-	clear(c.m)
-	c.old = nil
-	c.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------------------------------------------

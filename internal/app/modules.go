@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -33,8 +32,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 			op.InvalidateClient(rec.ID)
 		case model.KindUser:
 			op.InvalidateUser(rec.ID)
-		case model.KindOrg:
-			op.InvalidateOrg(rec.ID)
 		case model.KindTenant:
 			op.InvalidateTenant(rec.ID)
 		case model.KindGrant:
@@ -210,7 +207,7 @@ func (h *housekeepingLog) ok(task string, err error) bool {
 		}
 		return true
 	}
-	if !errors.Is(err, store.ErrUnavailable) && !errors.Is(err, service.ErrUnavailable) {
+	if !service.IsUnavailable(err) {
 		h.log.Error(task, "error", err)
 		return false
 	}

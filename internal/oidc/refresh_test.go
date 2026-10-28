@@ -454,6 +454,22 @@ func TestRefreshWriteConflicts(t *testing.T) {
 			t.Fatalf("audit: %+v", got)
 		}
 	})
+	t.Run("stale and the grant cannot be read again", func(t *testing.T) {
+		rt, _ := fresh()
+		var once atomic.Bool
+		failGrants(t, func() error {
+			if once.CompareAndSwap(false, true) {
+				h.env.Svc.Grants.S = failReads(good, model.KindGrant) // the re-read after this answer
+			}
+			return store.ErrStale
+		})
+		// Not known to be revoked: a 400 would make the client throw away a refresh token that is still good.
+		expectUnavailable(t, "re-read after a stale write", h.refreshWith(cl, secret, rt))
+		h.env.Svc.Grants.S = good
+		if x := h.refreshWith(cl, secret, rt); x.status != 200 {
+			t.Fatalf("the token was lost: %d %v", x.status, x.m)
+		}
+	})
 	t.Run("stale for an unrelated change", func(t *testing.T) {
 		rt, gid := fresh()
 		var once atomic.Bool
@@ -639,4 +655,44 @@ func (s *deleteUnknown) Put(ctx context.Context, r *store.Record) error {
 		return store.ErrUnconfirmed
 	}
 	return err
+}
+
+// Revoking a refresh token that a rotation has replaced ends the grant, as presenting it at the token endpoint does:
+// an attacker who rotated a stolen token must not outlive the revocation the application makes with the token it kept.
+// Another client's token and a forged one revoke nothing.
+func TestRevokeSupersededRefreshToken(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
+	other, otherSecret := h.newClient(func(in *service.ClientInput) { in.RotateRefresh = ptr(true) })
+	r, _ := h.login(cl, secret, url.Values{"scope": {"openid profile offline_access"}})
+	old := r.str("refresh_token")
+	stolen := h.refreshWith(cl, secret, old) // the attacker rotates the stolen token
+	if stolen.status != 200 {
+		t.Fatalf("rotation: %d", stolen.status)
+	}
+	current := stolen.str("refresh_token")
+	parts := strings.Split(old, ".")
+	forged := parts[0] + ".0." + b64.EncodeToString([]byte("forged-mac-forged-mac-forged-mac!"))
+	revoke := func(c *model.Client, secret, tok string) {
+		t.Helper()
+		if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {tok}}, c, secret); x.status != 200 {
+			t.Fatalf("revoke: %d %v", x.status, x.m)
+		}
+	}
+
+	revoke(other, otherSecret, old)
+	revoke(cl, secret, forged)
+	if x := h.refreshWith(cl, secret, current); x.status != 200 {
+		t.Fatalf("the grant ended without an authentic token of its client: %d %v", x.status, x.m)
+	}
+	if n := len(h.auditEvents("oauth.revoke")); n != 0 {
+		t.Fatalf("revocations audited for tokens that revoked nothing: %d", n)
+	}
+
+	revoke(cl, secret, old) // the victim's application, at logout, with the token it kept
+	tokenErr(t, h.refreshWith(cl, secret, current), 400, "invalid_grant")
+	if ev := h.auditEvents("oauth.revoke"); len(ev) != 1 || ev[0].Detail["token"] != "refresh" || ev[0].Detail["superseded"] != "true" {
+		t.Fatalf("oauth.revoke: %+v", ev)
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,10 +197,10 @@ func TestBackchannelOnAppAccessRemoved(t *testing.T) {
 	}
 }
 
-// A sign-out of very many sessions queues their back-channel logouts for a bounded number of senders: it does not
-// start a sender per logout, and what the queue cannot hold is dropped, not kept in memory. A logout that fails on the
-// way (a connection the relying party closed, under load) is retried from the queue on disk: none of those queued is
-// lost.
+// A sign-out of very many sessions queues their back-channel logouts for a bounded number of senders per organization:
+// it does not start a sender per logout, and what the organization's share of the queue cannot hold goes to the retry
+// queue on disk, not memory. A logout that fails on the way (a connection the relying party closed, under load) is
+// retried from there too: none of those queued is lost.
 func TestBackchannelFanOutBounded(t *testing.T) {
 	release := make(chan struct{})
 	var got, inFlight, mostInFlight atomic.Int64
@@ -211,8 +212,11 @@ func TestBackchannelFanOutBounded(t *testing.T) {
 		inFlight.Add(-1)
 		got.Add(1)
 	})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open() // a failure does not leave handlers holding the server
 	h := setup(t, nil)
-	withLogoutBackoff(t, 10*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond)
+	withLogoutBackoff(t, 500*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond)
 	retries, err := h.p.OpenLogoutQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -223,33 +227,96 @@ func TestBackchannelFanOutBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	targets := make([]bcTarget, 2*bcQueueMax)
+	const overflow = 100
+	targets := make([]bcTarget, bcOrgQueueMax+overflow)
 	for i := range targets {
 		targets[i] = bcTarget{client: ce.c, sub: "user", sid: "s"}
 	}
 	h.p.dispatch(targets)
-	// every sender is busy with a request the relying party holds, and no more than the bound are
+	// the organization's senders are all busy with a request the relying party holds, and no more than its share are
 	deadline := time.Now().Add(10 * time.Second)
-	for inFlight.Load() < bcWorkersMax && time.Now().Before(deadline) {
+	for inFlight.Load() < bcOrgWorkersMax && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if q := len(h.p.bcQueue); q > bcQueueMax {
-		t.Fatalf("queue holds %d", q)
+	time.Sleep(50 * time.Millisecond) // for any further sender that should not start
+	h.p.bcMu.Lock()
+	queued := h.p.bcQueued
+	h.p.bcMu.Unlock()
+	if m := mostInFlight.Load(); m != bcOrgWorkersMax {
+		t.Fatalf("up to %d logouts in flight for %d queued, want the organization's %d senders", m, len(targets), bcOrgWorkersMax)
 	}
-	close(release)
+	if queued > bcOrgQueueMax {
+		t.Fatalf("queue holds %d, want at most %d for one organization", queued, bcOrgQueueMax)
+	}
+	// what did not fit is on disk, waiting for its first try
+	for retries.Queued() < overflow && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n := retries.Queued(); n != overflow {
+		t.Fatalf("%d logouts in the retry queue, want the %d that did not fit", n, overflow)
+	}
+	open()
 	h.p.Wait()
 	for retries.Queued() > 0 && time.Now().Before(deadline.Add(20*time.Second)) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if m := mostInFlight.Load(); m != bcWorkersMax {
-		t.Fatalf("up to %d logouts in flight for %d queued, want the %d senders", m, len(targets), bcWorkersMax)
+	// Each logout arrives (a retried one may arrive twice: the first attempt can reach the relying party and still
+	// fail on the way back).
+	if n := got.Load(); n < int64(len(targets)) || n > int64(len(targets)+2*bcWorkersMax) || retries.Queued() > 0 {
+		t.Fatalf("%d logouts sent, want the %d queued; %d waiting to retry", n, len(targets), retries.Queued())
 	}
-	// Each queued logout arrives (a retried one may arrive twice: the first attempt can reach the relying party and
-	// still fail on the way back), plus those that were already being sent.
-	if n := got.Load(); n < int64(bcQueueMax) || n > int64(bcQueueMax+2*bcWorkersMax) || retries.Queued() > 0 {
-		t.Fatalf("%d logouts sent, want the %d queued (plus those already being sent); %d waiting to retry", n,
-			bcQueueMax, retries.Queued())
+}
+
+// An organization whose applications never answer holds only its own share of the senders and of the queue: another
+// organization's logout is sent at once, though the first has far more queued than the queue can hold.
+func TestBackchannelOrganizationsDoNotStarveEachOther(t *testing.T) {
+	release := make(chan struct{})
+	var stuck atomic.Int64
+	tarpit, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		stuck.Add(1)
+		<-release
+	})
+	delivered := make(chan struct{}, 1)
+	fast, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) { delivered <- struct{}{} })
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open() // a failure does not leave handlers holding the server
+	h := setup(t, nil)
+	ctx := context.Background()
+	slow, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(tarpit.URL) })
+	slowEntry, err := h.p.client(ctx, slow.OrgID, slow.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	org2, err := h.env.Svc.CreateOrg(ctx, h.admin, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := h.env.Svc.CreateClient(ctx, h.admin, org2.ID, service.ClientInput{Name: ptr("other"),
+		GrantTypes: &[]string{"client_credentials"}, BackchannelURI: ptr(fast.URL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flood := make([]bcTarget, 2*bcQueueMax)
+	for i := range flood {
+		flood[i] = bcTarget{client: slowEntry.c, sub: "user", sid: "s"}
+	}
+	h.p.dispatch(flood)
+	deadline := time.Now().Add(10 * time.Second)
+	for stuck.Load() < bcOrgWorkersMax && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	h.p.dispatch([]bcTarget{{client: other, sub: "user", sid: "s"}})
+	select {
+	case <-delivered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("another organization's logout was not sent while one organization's applications do not answer")
+	}
+	if n := stuck.Load(); n > bcOrgWorkersMax {
+		t.Fatalf("%d requests to the unresponsive organization's application at once, want at most %d", n, bcOrgWorkersMax)
+	}
+	open()
+	h.p.Wait()
 }
 
 // A logout the relying party refuses is tried again from the retry queue until it is taken or the retries are used up,
@@ -296,7 +363,7 @@ func TestBackchannelRetry(t *testing.T) {
 	h.p.InvalidateClient(disabled.ID)
 	h.p.InvalidateClient(deleted.ID)
 	for _, c := range []*model.Client{disabled, deleted} {
-		if err := retries.Add(LogoutRetry{ClientID: c.ID, Sub: "u", SID: "s"}, 20*time.Millisecond, 1); err != nil {
+		if err := retries.Add(LogoutRetry{OrgID: c.OrgID, ClientID: c.ID, Sub: "u", SID: "s"}, 20*time.Millisecond, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -323,6 +390,84 @@ func TestBackchannelRetry(t *testing.T) {
 	}
 	if retries.Queued() != 0 {
 		t.Errorf("%d logouts still queued", retries.Queued())
+	}
+}
+
+// waitUntil polls cond for up to ten seconds.
+func waitUntil(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met")
+		}
+	}
+}
+
+// One organization whose applications never answer does not hold back another organization's retried logout: it has
+// at most logoutRetryPerOrg of the retry queue's senders, the rest serve the other organizations.
+func TestBackchannelRetrySlowOrgDoesNotDelayAnother(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open() // a failure does not leave handlers holding the server
+	var stuck, mostStuck atomic.Int64
+	silent, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := stuck.Add(1)
+		for m := mostStuck.Load(); n > m && !mostStuck.CompareAndSwap(m, n); m = mostStuck.Load() {
+		}
+		defer stuck.Add(-1)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	answering, answered := newTLSServer(t, func(http.ResponseWriter, *http.Request) {})
+	h := setup(t, nil)
+	dir := t.TempDir()
+	retries, err := h.p.OpenLogoutQueue(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "slow"
+	slow, err := h.env.Svc.CreateOrg(t.Context(), service.System, service.OrgInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := func(uri string) service.ClientInput {
+		return service.ClientInput{Name: ptr("app"), RedirectURIs: &[]string{rpCallback}, BackchannelURI: ptr(uri),
+			GrantTypes: &[]string{"authorization_code"}, Scopes: &[]string{"openid"}, FirstParty: ptr(true)}
+	}
+	stuckClient, _, err := h.env.Svc.CreateClient(t.Context(), h.admin, slow.ID, in(silent.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	okClient, _ := h.newClient(func(i *service.ClientInput) { i.BackchannelURI = ptr(answering.URL) })
+	// the slow organization's retries are older, and more than its share of senders: they would hold them all
+	const due = 200 * time.Millisecond
+	for range 6 {
+		if err := retries.Add(LogoutRetry{OrgID: stuckClient.OrgID, ClientID: stuckClient.ID, Sub: "u", SID: "s"}, due, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := retries.Add(LogoutRetry{OrgID: okClient.OrgID, ClientID: okClient.ID, Sub: "u", SID: "s"}, due, 1); err != nil {
+		t.Fatal(err)
+	}
+	// They are due together, as after a restart (a delivery pass takes what is due when it starts, and these fall due
+	// a few milliseconds apart).
+	retries.Close()
+	time.Sleep(due)
+	if retries, err = h.p.OpenLogoutQueue(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer retries.Close()
+	waitUntil(t, func() bool { return answered.Load() == 1 })
+	if n := stuck.Load(); n != logoutRetryPerOrg {
+		t.Errorf("%d retries held by the application that never answers, want its %d senders", n, logoutRetryPerOrg)
+	}
+	open()
+	waitUntil(t, func() bool { return retries.Queued() == 0 })
+	if m := mostStuck.Load(); m > logoutRetryPerOrg {
+		t.Errorf("up to %d retries at once for one organization, want at most %d", m, logoutRetryPerOrg)
 	}
 }
 

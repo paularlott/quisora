@@ -183,12 +183,14 @@ func TestDialectClassifiesDuplicateAndRetryableErrors(t *testing.T) {
 			t.Errorf("%s: duplicate=%v retryable=%v", n, d.isDuplicate(err), d.retryable(err))
 		}
 	}
-	for n, err := range map[string]error{"pgDead": pgDead, "pgSer": pgSer, "myDead": myDead, "myWait": myWait} {
+	for n, err := range map[string]error{"pgDead": pgDead, "pgSer": pgSer, "myDead": myDead} {
 		if d.isDuplicate(err) || !d.retryable(err) {
 			t.Errorf("%s: duplicate=%v retryable=%v", n, d.isDuplicate(err), d.retryable(err))
 		}
 	}
-	for n, err := range map[string]error{"pgOther": pgOther, "myOther": myOther, "sqMisc": sqMisc, "plain": errors.New("x"), "nil": nil} {
+	// A lock wait that ran out its bound is not run again (retryable): the caller would wait many times the bound.
+	for n, err := range map[string]error{"pgOther": pgOther, "myOther": myOther, "sqMisc": sqMisc, "plain": errors.New("x"), "nil": nil,
+		"myWait": myWait, "pgLockTimeout": &pgconn.PgError{Code: "55P03"}, "sqBusy": sqliteBusy(t)} {
 		if d.isDuplicate(err) || d.retryable(err) {
 			t.Errorf("%s: duplicate=%v retryable=%v", n, d.isDuplicate(err), d.retryable(err))
 		}

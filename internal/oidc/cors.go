@@ -46,10 +46,10 @@ func (s *originSet) allows(origin string) bool {
 // is not kept: the next request reads again.
 func (p *Provider) publicOrigins(r *http.Request) *originSet {
 	orgID := web.Org(r).ID
-	if s, ok := p.origins.get(orgID); ok {
+	if s, ok := p.origins.Get(orgID); ok {
 		return s
 	}
-	tok := p.origins.token(orgID)
+	tok := p.origins.Token(orgID)
 	set := &originSet{exact: map[string]bool{}, loopback: map[string]bool{}}
 	cs, _, err := p.svc.Clients.List(r.Context(), store.ListQuery{Scope: orgID,
 		Filters: []store.Filter{{Field: "auth_method", Value: model.AuthMethodNone}}})
@@ -61,7 +61,7 @@ func (p *Provider) publicOrigins(r *http.Request) *originSet {
 			originsOf(c, set)
 		}
 	}
-	p.origins.putIf(orgID, set, tok)
+	p.origins.PutIf(orgID, set, tok)
 	return set
 }
 

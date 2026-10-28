@@ -14,10 +14,11 @@ import (
 )
 
 // Every path that raises a user to a manager, administrator or super admin ends with the same consequences, because
-// they all change the role through applyRole: the sign-in links nobody chose (made by email address, or of unknown
-// origin) are gone, an audit event says so, and the links the user made themselves stay.
+// they all change the role through applyRole: the sign-in links the user did not make themselves from their own
+// account page (made by email address, by an account a provider created at first sign-in, by an administrator, or of
+// unknown origin) are gone, an audit event says so for each, and the link the user connected stays.
 func TestEveryPromotionDropsEmailLinks(t *testing.T) {
-	// each path makes a user of the primary organization with two links, promotes them and returns them with the
+	// each path makes a user of the primary organization with four links, promotes them and returns them with the
 	// role they should have
 	paths := []struct {
 		name string
@@ -51,22 +52,20 @@ func TestEveryPromotionDropsEmailLinks(t *testing.T) {
 	for _, p := range paths {
 		t.Run(p.name, func(t *testing.T) {
 			e := newEnv(t)
-			var byEmail, byAdmin *model.Identity
+			var byConnect *model.Identity
 			u, want := p.run(e, func(u *model.User) {
 				org := e.fresh(u).OrgID
-				a, err := e.svc.CreateProvider(e.ctx, service.System, org, goodProvider("sso-a"))
+				prov, err := e.svc.CreateProvider(e.ctx, service.System, org, goodProvider("sso"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				b, err := e.svc.CreateProvider(e.ctx, service.System, org, goodProvider("sso-b"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				byEmail = model.NewIdentity(e.fresh(u), a, "s1", u.Email, "email")
-				byAdmin = model.NewIdentity(e.fresh(u), b, "s2", u.Email, "admin")
-				for _, i := range []*model.Identity{byEmail, byAdmin} {
+				for _, via := range []string{"email", "provision", "admin", "connect"} {
+					i := model.NewIdentity(e.fresh(u), prov, "sub-"+via, u.Email, via)
 					if err := e.svc.Identities.Create(e.ctx, i); err != nil {
 						t.Fatal(err)
+					}
+					if via == "connect" {
+						byConnect = i
 					}
 				}
 			})
@@ -77,11 +76,11 @@ func TestEveryPromotionDropsEmailLinks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(left) != 1 || left[0].ID != byAdmin.ID {
-				t.Errorf("after the promotion the links are %d (want only the one the user made)", len(left))
+			if len(left) != 1 || left[0].ID != byConnect.ID {
+				t.Errorf("after the promotion %d links are left (want only the one the user connected)", len(left))
 			}
 			ev := e.audits("identity.unlink")
-			if len(ev) != 1 || ev[0].Detail["reason"] != "promoted to "+string(want) {
+			if len(ev) != 3 || ev[0].Detail["reason"] != "promoted to "+string(want) {
 				t.Errorf("unlink events: %+v", ev)
 			}
 		})

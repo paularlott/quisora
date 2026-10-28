@@ -1459,13 +1459,15 @@ export default function (Alpine) {
         auth0: 'Register this as an allowed callback URL of your Auth0 application.' }[this.form.type] ||
         'Register this as a redirect URI of your client at the provider. Each provider has its own.'
     },
-    // a new provider: the type's own scopes until they are edited
+    // a new provider: the type's own scopes and email linking until they are edited
     typeChanged() {
       if (this.editing) return
       const gh = ['read:user', 'user:email']
       const oidc = ['openid', 'profile', 'email']
       const now = (this.form.scopes || []).join(' ')
       if (now === gh.join(' ') || now === oidc.join(' ')) this.form.scopes = this.form.type === 'github' ? gh : oidc
+      // The source organization's managers can mark any address verified, so guests are not linked by email unless asked.
+      this.form.link_by_email = !this.isOrg
     },
     // Each provider has its own callback address. A new one gets its id now, so the address can be registered with the
     // provider before its client ID and secret are known.

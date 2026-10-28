@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -109,15 +110,49 @@ func (s *Service) OrgByName(ctx context.Context, name string) (*model.Org, error
 	return o, mapStore(err)
 }
 
+// orgTTL bounds how long a change made on another node (which this one may not hear of: a shared database) can take to
+// count here; a change this node hears of counts at once (InvalidateOrgs).
+const orgTTL = 5 * time.Second
+
+// Org returns organization id as read within orgTTL. Every request under /o/<org>, every token issued and every check
+// of a sign-out stamp reads one, and a store read may wait for the writes in flight (BadgerDB's read timestamp):
+// uncached, they would queue behind every sign-in. A read that fails is not kept: the next one asks the store again.
+// The organization returned is shared: it must not be changed.
+func (s *Service) Org(ctx context.Context, id string) (*model.Org, error) {
+	return s.cachedOrg(ctx, id, func() (*model.Org, error) { return s.Orgs.Get(ctx, id) })
+}
+
 // OrgByRef looks up the organization a URL names (public: /o/<org>/...): by id when ref is one (model.IsID), by name
-// otherwise.
+// otherwise, as Org does.
 func (s *Service) OrgByRef(ctx context.Context, ref string) (*model.Org, error) {
 	if model.IsID(ref) {
-		o, err := s.Orgs.Get(ctx, ref)
-		return o, mapStore(err)
+		return s.Org(ctx, ref)
 	}
-	return s.OrgByName(ctx, ref)
+	return s.cachedOrg(ctx, ref, func() (*model.Org, error) { return s.Orgs.GetByUnique(ctx, model.OrgNameKey(ref)) })
 }
+
+// cachedOrg returns the organization ref names from the cache, or read and kept. It is kept under ref only when ref is
+// the organization's id or its name exactly as stored, so the cache is bounded by the number of organizations however a
+// client spells a name (one is matched in any case and Unicode form: every spelling would be an entry of its own);
+// another spelling is read from the store each time.
+func (s *Service) cachedOrg(ctx context.Context, ref string, read func() (*model.Org, error)) (*model.Org, error) {
+	if o, ok := s.orgCache.Get(ref); ok {
+		return o, nil
+	}
+	tok := s.orgCache.Token(ref)
+	o, err := read()
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if ref == o.ID || ref == o.Name {
+		s.orgCache.PutIf(ref, o, tok)
+	}
+	return o, nil
+}
+
+// InvalidateOrgs forgets every organization read (Org, OrgByRef): call it when one changes, here or on another node. All
+// of them go, as a name may have moved from one to another.
+func (s *Service) InvalidateOrgs() { s.orgCache.Clear() }
 
 // ListOrgs lists organizations visible to the actor.
 func (s *Service) ListOrgs(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.Org, int, error) {
@@ -193,7 +228,9 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 		}
 		o.Settings = *in.Settings
 	}
-	if err := s.audited(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o), func() error { return s.Orgs.Update(ctx, o) }); err != nil {
+	err = s.audited(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o), func() error { return s.Orgs.Update(ctx, o) })
+	s.InvalidateOrgs() // the change counts at once here, as it did when this node wrote it (also a write that may have landed)
+	if err != nil {
 		return nil, orgConflict(err)
 	}
 	return o, nil
@@ -225,7 +262,9 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	// is unknown), and the orphan sweep removes their records (sweep.go). No back-channel logout is sent: a user signs
 	// in only to applications of their own organization, and those are deleted with it (their tokens stop working at
 	// once). So the deletion is one write, whatever the organization's size.
-	return mapStore(s.audited(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)}, func() error { return s.Orgs.Delete(ctx, id) }))
+	err = s.audited(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)}, func() error { return s.Orgs.Delete(ctx, id) })
+	s.InvalidateOrgs() // its users stop counting at once here (also after a write that may have landed)
+	return mapStore(err)
 }
 
 // validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the

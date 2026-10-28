@@ -26,16 +26,6 @@ const (
 // web/src/js/lib/api.js and web/openapi/openapi.yaml name them too (tested).
 var APIVersions = []string{APIVersionLatest}
 
-// APIVersion returns the version negotiated for the request (set by RequireManagement).
-func APIVersion(r *http.Request) string {
-	if v, _ := r.Context().Value(ctxAPIVersion).(string); v != "" {
-		return v
-	}
-	return APIVersions[0]
-}
-
-const ctxAPIVersion ctxKey = 100
-
 // BearerFailuresPerIPMin bounds failed bearer-token authentications (management API and SCIM together) per IP
 // address and minute. Tokens cannot be guessed, but every attempt costs store reads: past the limit every bearer
 // request from the address is refused (429) for the rest of the minute, before its token is looked at, the right
@@ -104,7 +94,6 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 			return
 		}
 		w.Header().Set(APIVersionHeader, v)
-		r = r.WithContext(context.WithValue(r.Context(), ctxAPIVersion, v))
 
 		if tok, ok := BearerToken(r); ok {
 			if s.Bearer == nil {

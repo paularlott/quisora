@@ -11,7 +11,6 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
-	"github.com/paularlott/quisora/internal/store"
 )
 
 func isAccessTokenTyp(typ string) bool {
@@ -19,7 +18,7 @@ func isAccessTokenTyp(typ string) bool {
 	return t == "at+jwt" || t == "application/at+jwt"
 }
 
-// VerifyAccessToken validates an access token issued by this provider, for any of its organizations (the issuer says
+// verifyAccessToken validates an access token issued by this provider, for any of its organizations (the issuer says
 // which: verifyIn requires one): signature (kid lookup, algorithm bound to the key), RFC 9068 typ, issuer, expiry, and
 // that the subject is still allowed (user active, refresh grant not
 // revoked and not ended by an emergency sign-out, client enabled). SCIM and other resource servers in this process
@@ -35,7 +34,7 @@ func isAccessTokenTyp(typ string) bool {
 // An error that is service.ErrUnavailable means a read the verdict depends on failed (the client, the user, the
 // grant or the sign-out counters): the token is neither good nor bad, and the caller answers 503, never 401 (which
 // would make the client discard a token that may be good) and never as verified. Every other error is a refusal.
-func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, error) {
+func (p *Provider) verifyAccessToken(ctx context.Context, tok string) (*Claims, error) {
 	now := time.Now()
 	k := tokenKey(tok)
 	cl, kid, alg, cached := p.verified.get(k, now)
@@ -107,11 +106,11 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, tok string) (*Claims, 
 	return cl, nil
 }
 
-// verifyIn is VerifyAccessToken for a token that must be organization orgID's: one issued by another organization is
+// verifyIn is verifyAccessToken for a token that must be organization orgID's: one issued by another organization is
 // no token here, whoever presents it (clients of two organizations may have the same client_id, a metadata document's
 // URL, and users the same names).
 func (p *Provider) verifyIn(ctx context.Context, orgID, tok string) (*Claims, error) {
-	cl, err := p.VerifyAccessToken(ctx, tok)
+	cl, err := p.verifyAccessToken(ctx, tok)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +222,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrDPoPProof):
 		p.dpopChallenge(w, http.StatusUnauthorized, "invalid_dpop_proof")
 		return
-	case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
+	case service.IsUnavailable(err):
 		bearerUnavailable(w, err) // the token could not be checked: not refused, not served
 		return
 	case err != nil && scheme == "DPoP":
@@ -264,7 +263,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	o.str("sub", u.ID)
 	p.profileClaims(r.Context(), o, is, u, cl.UserinfoClaims)
 	if is.has("org") {
-		if org, err := p.org(r.Context(), u.OrgID); err == nil {
+		if org, err := p.svc.Org(r.Context(), u.OrgID); err == nil {
 			o.str("org", org.ID)
 			o.str("org_name", org.Name)
 		}
@@ -388,7 +387,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 		o.strs("aud", t.Audience)
 	}
 	o.str("org", u.OrgID)
-	if org, err := p.org(ctx, u.OrgID); err == nil {
+	if org, err := p.svc.Org(ctx, u.OrgID); err == nil {
 		o.str("org_name", org.Name)
 	}
 	o.str("role", string(u.Role))
@@ -492,11 +491,11 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 
 // introspectRefresh answers for a refresh token; only the client the token was issued to may ask.
 func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, tok string) ([]byte, error) {
-	g, ok, err := p.readRefresh(ctx, caller, tok)
+	g, current, err := p.readRefresh(ctx, caller, tok)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	if g == nil || !current {
 		return inactive, nil
 	}
 	u, live, err := p.grantLive(ctx, g)
@@ -534,27 +533,24 @@ func (p *Provider) introspectRefresh(ctx context.Context, caller *model.Client, 
 	return o.bytes(), nil
 }
 
-// readRefresh loads and authenticates a refresh token's grant without changing anything. ok is false for a token
-// that is not the caller's live, authentic one; an error means the grant could not be read, which is neither.
-func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok string) (*model.Grant, bool, error) {
+// readRefresh loads and authenticates a refresh token's grant without changing anything. The grant is nil for a token
+// that is not an authentic one of the caller's live grant; current says whether it is also the grant's current token
+// (not one an earlier rotation replaced, which still proves that the caller was once given the grant). An error means
+// the grant could not be read, which is neither.
+func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok string) (g *model.Grant, current bool, err error) {
 	pr, ok := parseRefresh(tok)
 	if !ok {
 		return nil, false, nil
 	}
-	g, err := p.svc.Grants.Get(ctx, pr.gid)
+	g, err = p.svc.Grants.Get(ctx, pr.gid)
 	if err != nil && !gone(err) {
 		return nil, false, unavailable(err)
 	}
-	if err != nil || g.ClientID != caller.ID || time.Now().After(g.Expires) {
+	if err != nil || g.ClientID != caller.ID || time.Now().After(g.Expires) || !p.authentic(pr, g) {
 		return nil, false, nil
 	}
-	if !p.authentic(pr, g) {
-		return nil, false, nil
-	}
-	if pr.counted && pr.counter != g.Counter || !pr.counted && g.Counter != 0 {
-		return nil, false, nil
-	}
-	return g, true, nil
+	superseded := pr.counted && pr.counter != g.Counter || !pr.counted && g.Counter != 0
+	return g, !superseded, nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -610,18 +606,25 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	default:
-		g, ok, err := p.readRefresh(ctx, ce.c, tok)
+		// A token an earlier rotation replaced revokes the grant too: whoever holds the current token (an attacker
+		// who rotated a stolen one, say) must not outlive the revocation the client made with the token it kept
+		// (RFC 9700 §4.14: the token family ends, as when the token endpoint is shown an old token).
+		g, current, err := p.readRefresh(ctx, ce.c, tok)
 		if err != nil {
 			writeOAuthError(w, serverError(err))
 			return
 		}
-		if ok {
+		if g != nil {
 			target := g.UserID
 			if u, err := p.user(ctx, g.UserID); err == nil {
 				target = u.Username
 			}
-			if err := p.auditedClient(ctx, ce.c, target, "oauth.revoke", map[string]string{"grant": g.ID, "user_id": g.UserID,
-				"token": "refresh"}, func() error { return p.revokeGrant(ctx, g.ID) }); err != nil {
+			detail := map[string]string{"grant": g.ID, "user_id": g.UserID, "token": "refresh"}
+			if !current {
+				detail["superseded"] = "true"
+			}
+			if err := p.auditedClient(ctx, ce.c, target, "oauth.revoke", detail,
+				func() error { return p.revokeGrant(ctx, g.ID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
 			}

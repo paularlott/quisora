@@ -475,7 +475,7 @@ func (s *Service) FinishLoginAs(ctx context.Context, id string, credential []byt
 			return nil, ErrInactive
 		case errors.Is(err, ErrUnknownCredential):
 			return nil, ErrUnknownCredential
-		case errors.Is(err, service.ErrUnavailable), errors.Is(err, store.ErrUnavailable):
+		case service.IsUnavailable(err):
 			return nil, err // the account could not be read from the cluster: try again, not "wrong passkey"
 		}
 		var unk *protocol.ErrorUnknownCredential

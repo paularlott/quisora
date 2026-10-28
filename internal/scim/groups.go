@@ -1,6 +1,7 @@
 package scim
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"sort"
@@ -60,7 +61,10 @@ func (rq *request) memberIndex(groups []*model.Group) (map[string][]string, erro
 			idx[m.GroupID] = append(idx[m.GroupID], m.UserID)
 		}
 	}
-	unseen := rq.unseenUsers()
+	unseen, err := rq.unseenUsers()
+	if err != nil {
+		return nil, err
+	}
 	for _, g := range groups {
 		ids := service.CommittedMembers(g, idx[g.ID])
 		ids = slices.DeleteFunc(ids, func(id string) bool { return unseen[id] })
@@ -72,8 +76,11 @@ func (rq *request) memberIndex(groups []*model.Group) (map[string][]string, erro
 
 // refs turns user ids into members with display names, read 500 users at a time. A member whose user was deleted
 // is left out: the membership stands on its user, and the orphan sweep removes it later.
-func (rq *request) refs(ids []string) []memberRef {
-	unseen := rq.unseenUsers()
+func (rq *request) refs(ids []string) ([]memberRef, error) {
+	unseen, err := rq.unseenUsers()
+	if err != nil {
+		return nil, err
+	}
 	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return unseen[id] })
 	out := make([]memberRef, 0, len(ids))
 	for chunk := range slices.Chunk(ids, 500) {
@@ -94,7 +101,7 @@ func (rq *request) refs(ids []string) []memberRef {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // memberIDs reads the member ids out of a group resource; the second result tells whether members were given.
@@ -214,7 +221,11 @@ func (rq *request) groupWithMembers(g *model.Group) (map[string]any, error) {
 		return nil, err
 	}
 	sort.Strings(ids)
-	return rq.groupResource(g, rq.refs(ids), true), nil
+	refs, err := rq.refs(ids)
+	if err != nil {
+		return nil, err
+	}
+	return rq.groupResource(g, refs, true), nil
 }
 
 func (rq *request) getGroup(id string) {
@@ -253,14 +264,24 @@ func (rq *request) createGroup() {
 		writeError(rq.w, e)
 		return
 	}
+	// The members' visibility is read before the write, so a failure to read it cannot come after a group was made.
+	if _, err := rq.unseenUsers(); err != nil {
+		rq.fail(err)
+		return
+	}
 	// The group and its first members are one commit: a refused create leaves nothing behind.
 	g, err := rq.m.srv.Svc.CreateGroupWithMembers(rq.ctx, rq.actor, rq.org.ID, in, ids)
 	if err != nil {
 		rq.fail(err)
 		return
 	}
+	refs, err := rq.refs(ids)
+	if err != nil {
+		rq.fail(err)
+		return
+	}
 	attrs, excl := rq.getParams()
-	rq.respond(http.StatusCreated, rq.groupResource(g, rq.refs(ids), true), attrs, excl, groupSchemas)
+	rq.respond(http.StatusCreated, rq.groupResource(g, refs, true), attrs, excl, groupSchemas)
 }
 
 // updateGroup is the read-modify-write for PUT and PATCH. keepMembers says that a missing members list means "no
@@ -282,7 +303,10 @@ func (rq *request) updateGroup(id string, keepMembers bool, mutate func(cur map[
 		if err != nil {
 			return err
 		}
-		unseen := rq.unseenUsers()
+		unseen, err := rq.unseenUsers()
+		if err != nil {
+			return err
+		}
 		refs := make([]memberRef, 0, len(ids))
 		for _, id := range ids {
 			if !unseen[id] {
@@ -427,8 +451,15 @@ func (rq *request) listGroups() {
 		}
 	}
 	if unique != "" {
-		if g, err := svc.Groups.GetByUnique(rq.ctx, unique); err == nil {
+		// Only "not found" is an empty list: any other failure is an error, or a client that is told the group is
+		// missing creates it again.
+		g, err := svc.Groups.GetByUnique(rq.ctx, unique)
+		switch {
+		case err == nil:
 			groups = []*model.Group{g}
+		case !errors.Is(err, store.ErrNotFound):
+			rq.fail(err)
+			return
 		}
 	} else {
 		var err error
@@ -474,12 +505,22 @@ func (rq *request) listGroups() {
 				rq.fail(err)
 				return
 			}
-			it["members"] = rq.groupResource(g, rq.refs(ids), true)["members"]
+			refs, err := rq.refs(ids)
+			if err != nil {
+				rq.fail(err)
+				return
+			}
+			it["members"] = rq.groupResource(g, refs, true)["members"]
 		}
 	} else if allMembers && needMembers {
 		for _, it := range page {
 			ms := idx[it["id"].(string)]
-			it["members"] = rq.groupResource(byID[it["id"].(string)], rq.refs(ms), true)["members"]
+			refs, err := rq.refs(ms)
+			if err != nil {
+				rq.fail(err)
+				return
+			}
+			it["members"] = rq.groupResource(byID[it["id"].(string)], refs, true)["members"]
 		}
 	}
 	rq.listResponse(page, total, p, groupSchemas)

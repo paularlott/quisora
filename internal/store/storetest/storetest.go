@@ -52,6 +52,7 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"Unique", testUnique},
 		{"UniqueReleasedOnChange", testUniqueReleased},
 		{"UniqueOfAnyLength", testUniqueLong},
+		{"LongUniqueReleasedByPurge", testUniqueLongPurged},
 		{"Limits", testLimits},
 		{"Tombstone", testTombstone},
 		{"DeleteNotLive", testDeleteNotLive},
@@ -270,6 +271,29 @@ func testUniqueLong(t *testing.T, s store.Store) {
 	must(t, tb.Put(ctx, huge))
 	if got, err := tb.GetByUnique(ctx, model.IdentityKey("p1", huge.Subject)); err != nil || got.ID != huge.ID {
 		t.Fatalf("a 70 KB unique value: %v %v", got, err)
+	}
+}
+
+// A purged expired record releases its unique values, however long (a long one is indexed by its hash): the value
+// then finds nothing, even once another record takes the purged one's id.
+func testUniqueLongPurged(t *testing.T, s store.Store) {
+	lt := store.NewTable[model.LinkToken](s)
+	old := strings.Repeat("o", 600)
+	link := &model.LinkToken{Meta: model.Meta{ID: "invite-u1"}, OrgID: "org1", UserID: "u1", TokenHash: old,
+		Expires: time.Now().Add(-time.Minute)}
+	must(t, lt.Put(ctx, link))
+	// (A cluster purges each node's copy on its own: the count is the purging node's, and another node may still hold it.)
+	if n, err := s.Purge(ctx, time.Now().Add(-time.Hour), time.Now()); err != nil || n < 1 {
+		t.Fatalf("purged %d (%v), want the expired link", n, err)
+	}
+	next := &model.LinkToken{Meta: model.Meta{ID: link.ID}, OrgID: "org1", UserID: "u1", TokenHash: strings.Repeat("n", 600),
+		Expires: time.Now().Add(time.Hour)}
+	must(t, lt.Put(ctx, next))
+	if _, err := lt.GetByUnique(ctx, model.LinkTokenKey(old)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the purged link's token: %v, want ErrNotFound (nil: it finds the new link)", err)
+	}
+	if got, err := lt.GetByUnique(ctx, model.LinkTokenKey(next.TokenHash)); err != nil || got.ID != next.ID {
+		t.Fatalf("the new link's token: %v %v", got, err)
 	}
 }
 

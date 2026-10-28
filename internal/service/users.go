@@ -1185,14 +1185,16 @@ func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) 
 	return n, nil
 }
 
-// emailLinks returns u's links to sign-in providers that nobody chose: made by email address, or of unknown origin
-// (applyRole deletes them when u becomes privileged).
-func (s *Service) emailLinks(ctx context.Context, u *model.User) ([]*model.Identity, error) {
+// unchosenLinks returns u's links to sign-in providers that u did not make from their own account page: made by email
+// address, by an account created at a provider's first sign-in, by an administrator, or of unknown origin. The side
+// that controls the provider controls such a link, so applyRole deletes them when u becomes privileged. Only a link
+// u connected while signed in ("connect") stays.
+func (s *Service) unchosenLinks(ctx context.Context, u *model.User) ([]*model.Identity, error) {
 	ids, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	return slices.DeleteFunc(ids, func(id *model.Identity) bool { return id.Via != "email" && id.Via != "" }), nil
+	return slices.DeleteFunc(ids, func(id *model.Identity) bool { return id.Via == "connect" }), nil
 }
 
 // writeUser writes u, the copy read at its version (a compare-and-swap, as Users.Update), and the writes that go with

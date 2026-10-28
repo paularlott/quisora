@@ -338,7 +338,7 @@ func (s *Store) writeRow(ctx context.Context, r runner, t *table, m mode, rec *s
 		slices.Sort(olds)
 		for _, u := range olds {
 			if !slices.Contains(want, u) {
-				if _, err := r.exec(ctx, s.releaseSQL(), t.kind, uniqueKey(u), rec.ID); err != nil {
+				if err := s.release(ctx, r, t, u, rec.ID); err != nil {
 					return err
 				}
 			}
@@ -380,7 +380,12 @@ func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, er
 	return &o, nil
 }
 
-func (s *Store) releaseSQL() string { return s.releaseQ }
+// release frees unique value u held by record id of t's kind. Every release goes through here so it matches the row by
+// uniqueKey(u), as claim indexed it: a value released by itself would miss a hashed row and stay claimed.
+func (s *Store) release(ctx context.Context, r runner, t *table, u, id string) error {
+	_, err := r.exec(ctx, s.releaseQ, t.kind, uniqueKey(u), id)
+	return err
+}
 
 // uniqueKey is how unique value u is kept in the unique table (store.UniqueIndexKey: the value column is
 // VARCHAR(512) on MySQL and MariaDB).

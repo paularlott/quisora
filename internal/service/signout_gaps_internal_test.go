@@ -9,8 +9,8 @@ import (
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
-// orgReads is a store whose reads of an organization can fail, or call a hook once the record is read (a change landing
-// while the read is in flight).
+// orgReads is a store whose reads of an organization (by id or by name) can fail, or call a hook once the record is
+// read (a change landing while the read is in flight).
 type orgReads struct {
 	store.Store
 	err   error
@@ -21,18 +21,30 @@ func (o *orgReads) Get(ctx context.Context, k model.Kind, id string) (*store.Rec
 	if k != model.KindOrg {
 		return o.Store.Get(ctx, k, id)
 	}
+	return o.read(func() (*store.Record, error) { return o.Store.Get(ctx, k, id) })
+}
+
+func (o *orgReads) GetByUnique(ctx context.Context, k model.Kind, value string) (*store.Record, error) {
+	if k != model.KindOrg {
+		return o.Store.GetByUnique(ctx, k, value)
+	}
+	return o.read(func() (*store.Record, error) { return o.Store.GetByUnique(ctx, k, value) })
+}
+
+func (o *orgReads) read(get func() (*store.Record, error)) (*store.Record, error) {
 	if o.err != nil {
 		return nil, o.err
 	}
-	r, err := o.Store.Get(ctx, k, id)
+	r, err := get()
 	if o.after != nil {
 		o.after()
 	}
 	return r, err
 }
 
-// Counters read before an invalidation (an organization changed) are not stored when the read ends after it.
-func TestSignOutCountersReadBeforeAnInvalidationAreNotKept(t *testing.T) {
+// An organization read before an invalidation (it changed) is not kept when the read ends after it, by id (the sign-out
+// counters) or by name (an /o/<name> path): it may predate the change, and would answer for it until the cache's bound.
+func TestOrgReadBeforeAnInvalidationIsNotKept(t *testing.T) {
 	ctx := context.Background()
 	st := &orgReads{Store: memstore.New()}
 	s := newInternalService(t, st)
@@ -43,16 +55,19 @@ func TestSignOutCountersReadBeforeAnInvalidationAreNotKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.InvalidateSignOut()
-	st.after = s.InvalidateSignOut // the change lands between the read and the cache fill
-	if _, err := s.SessionStamp(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
-	st.after = nil
-	s.signOut.mu.Lock()
-	defer s.signOut.mu.Unlock()
-	if _, ok := s.signOut.orgs[p.ID]; ok || s.signOut.hasSrv {
-		t.Fatal("counters read before the invalidation were cached after it")
+	for name, read := range map[string]func() error{
+		"sign-out counters": func() error { _, err := s.SessionStamp(ctx, p.ID); return err },
+		"by name":           func() error { _, err := s.OrgByRef(ctx, p.Name); return err },
+	} {
+		st.after = s.InvalidateOrgs // the change lands between the read and the cache fill
+		if err := read(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		st.after, st.err = nil, store.ErrUnavailable
+		if read() == nil {
+			t.Fatalf("%s: what was read before the invalidation was cached after it", name)
+		}
+		st.err = nil
 	}
 }
 

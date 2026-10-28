@@ -274,6 +274,107 @@ func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
 	})
 }
 
+// A read that finds nothing is answered from the copy of the partition the record would be in, when its key names one:
+// while a node cannot read one partition (a catch-up that keeps failing), a username, organization name or id missing
+// from any other partition is not found there (an unknown user signing in elsewhere is told so, not 503), and only a
+// miss in that partition, or one whose key names no partition, is refused.
+func TestMissIsGatedOnItsOwnPartition(t *testing.T) {
+	var fs faults
+	c := newTCluster(t, 3, fs.over(badgerBackend()))
+	c.startAll()
+	c.waitReady()
+	c.waitSettled()
+	// Two organizations (by id, as a unique value names its organization): one in a partition node 1 does not own and
+	// will trail, one in another partition.
+	var trailed, other string
+	for trailed == "" || other == "" {
+		org := model.NewID()
+		switch q := partitionNum(org); {
+		case q == globalPartition:
+		case trailed == "":
+			if c.ownerOf(q) != 1 {
+				trailed = org
+			}
+		case q != partitionNum(trailed):
+			other = org
+		}
+	}
+	p := partitionNum(trailed)
+	replayID := func(in bool) string { // a replay record's partition is its id's (partitionHint)
+		for {
+			if id := model.NewID(); (partitionNum(id) == p) == in {
+				return id
+			}
+		}
+	}
+	missIn, missOut := replayID(true), replayID(false)
+
+	// node 1 misses the next write of the partition, and every catch-up of it fails
+	fs.of(c.nodes[1]).failImport.Store(int64(p) + 1)
+	for _, j := range []int{0, 2} {
+		c.drop(j, 1, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
+	}
+	if err := sessions(c.nodes[0]).Create(bg, newSession(trailed)); err != nil {
+		t.Fatal(err)
+	}
+	st := c.nodes[1].st()
+	waitFor(t, 10*time.Second, "node 1 to refuse the partition it trails", func() bool {
+		_, err := st.Get(bg, model.KindReplay, missIn)
+		return errors.Is(err, store.ErrUnavailable)
+	})
+
+	for what, op := range map[string]func() error{
+		"a username of another organization": func() error {
+			_, err := st.GetByUnique(bg, model.KindUser, model.UserUsernameKey(other, "nobody"))
+			return err
+		},
+		"an organization's name": func() error {
+			_, err := st.GetByUnique(bg, model.KindOrg, model.OrgNameKey("nobody"))
+			return err
+		},
+		"an id of another partition": func() error {
+			_, err := st.Get(bg, model.KindReplay, missOut)
+			return err
+		},
+		"ids of another partition": func() error {
+			if recs, err := st.GetMany(bg, model.KindReplay, []string{missOut}); err != nil || len(recs) > 0 {
+				return fmt.Errorf("%d records, %w", len(recs), err)
+			}
+			return store.ErrNotFound
+		},
+	} {
+		if err := asked(op); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s, on the node trailing partition %d: want not found, got %v", what, p, err)
+		}
+	}
+	for what, op := range map[string]func() error{
+		"a username of the trailed organization": func() error {
+			_, err := st.GetByUnique(bg, model.KindUser, model.UserUsernameKey(trailed, "nobody"))
+			return err
+		},
+		"an id of the trailed partition": func() error {
+			_, err := st.Get(bg, model.KindReplay, missIn)
+			return err
+		},
+		"ids, one of the trailed partition": func() error {
+			_, err := st.GetMany(bg, model.KindReplay, []string{missOut, missIn})
+			return err
+		},
+		"a unique value that names no partition": func() error {
+			_, err := st.GetByUnique(bg, model.KindLink, model.LinkTokenKey("nothing"))
+			return err
+		},
+		"an id that names no partition": func() error {
+			_, err := st.Get(bg, model.KindSession, model.NewID())
+			return err
+		},
+	} {
+		if err := op(); !errors.Is(err, store.ErrUnavailable) {
+			t.Errorf("%s, on the node trailing partition %d: want unavailable, got %v", what, p, err)
+		}
+	}
+}
+
 // A partition that diverged on a node (its copy holds a write the owner does not have: a disk restored wrongly) makes
 // the node not ready, saying so; it serves nothing of that partition, and the other nodes are unaffected.
 func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {

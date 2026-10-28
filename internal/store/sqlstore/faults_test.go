@@ -58,6 +58,9 @@ func TestPartitionSyncMode(t *testing.T) {
 		must(s.ImportPartition(ctx, 1, nil, store.PartitionPos{Seq: 3}, store.ImportStep{First: true, Final: true}))
 		_, err := s.PurgePartition(ctx, 1, 2)
 		must(err)
+		mu.Lock()
+		purged := len(seen) - 3 // the purge's transactions: the purge point's, then its batches (one at least per kind)
+		mu.Unlock()
 		must(s.SetPartitionPromised(ctx, 1, store.PartitionEpoch{Counter: 1}))
 		mu.Lock()
 		got := append([]string(nil), seen...)
@@ -66,7 +69,11 @@ func TestPartitionSyncMode(t *testing.T) {
 		if d.name == "postgres" {
 			off, on = "unsynced:off", "synced:"+got[1][len("synced:"):] // the server's own setting
 		}
-		want := []string{off, on, off, off, on}
+		want := []string{off, on, off}
+		for range purged {
+			want = append(want, off)
+		}
+		want = append(want, on)
 		for i := range want {
 			if i >= len(got) || got[i] != want[i] {
 				t.Fatalf("commit modes: %v, want %v", got, want)

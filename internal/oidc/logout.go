@@ -143,7 +143,13 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 		redirect = u.String()
 	}
 
-	sess, user := p.s.Sessions.Current(r)
+	sess, user, err := p.s.Sessions.Check(r)
+	if err != nil {
+		// The store could not say whether there is a session to end: not "nothing to end", which would send the
+		// browser on to the relying party's signed-out page with the session still alive.
+		p.logoutUnchecked(w, r)
+		return
+	}
 	if sess == nil {
 		// Nothing to end, so nothing to confirm. The redirect needs no id_token_hint: RP-Initiated Logout §2 defines
 		// client_id for exactly this (a post_logout_redirect_uri without a hint), and its only condition on the
@@ -173,6 +179,13 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.finishLogout(w, r, redirect)
+}
+
+// logoutUnchecked answers a sign-out whose session could not be checked: try again.
+func (p *Provider) logoutUnchecked(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "5")
+	p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "You could not be signed out",
+		"This server cannot check your session right now. Please try again shortly.")
 }
 
 func (p *Provider) finishLogout(w http.ResponseWriter, r *http.Request, redirect string) {
@@ -205,6 +218,11 @@ func (p *Provider) handleLogoutConfirm(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
 		p.logoutInvalid(w, r, "")
+		return
+	}
+	if web.SessionUnchecked(r) {
+		// Before the request is taken: the page is submitted again once the store answers.
+		p.logoutUnchecked(w, r)
 		return
 	}
 	sess := web.Session(r)
@@ -241,6 +259,11 @@ type bcTarget struct {
 	client *model.Client
 	sub    string
 	sid    string
+}
+
+// retry is the target as an item of the retry queue.
+func (t bcTarget) retry() LogoutRetry {
+	return LogoutRetry{OrgID: t.client.OrgID, ClientID: t.client.ID, Sub: t.sub, SID: t.sid}
 }
 
 // collect finds the clients that hold a refresh grant on the user's sessions (all of the user's sessions when
@@ -283,7 +306,7 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 		if len(sessionIDs) > 0 && !slices.Contains(sessionIDs, g.SessionID) {
 			continue
 		}
-		p.grants.del(g.ID)
+		p.grants.Del(g.ID)
 		add(g.ClientID, g.SessionID)
 	}
 	return out
@@ -336,7 +359,7 @@ func (p *Provider) BackchannelLogoutClient(ctx context.Context, userID, clientID
 	if grants, err := p.svc.Grants.All(ctx, userID); err == nil {
 		for _, g := range grants {
 			if g.ClientID == clientID {
-				p.grants.put(g.ID, grantState{})
+				p.grants.Put(g.ID, grantState{})
 			}
 		}
 	}
@@ -351,17 +374,30 @@ func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
 
 // Back-channel logouts are sent from a bounded queue by at most bcWorkersMax senders, started as the queue fills and
 // gone when it is empty: an emergency sign-out of a whole server (or a bulk expiry) with hundreds of thousands of
-// sessions queues targets, not goroutines. A logout that finds the queue full is not sent (logged with the count):
-// the sessions and grants end on this server either way; the relying party is only not told at once. A logout the
-// relying party does not take goes to the retry queue on disk (OpenLogoutQueue), tried again after each delay of
-// logoutBackoff, then given up on with a warning (quisora_backchannel_logout_failed_total). Only failures are written
+// sessions queues targets, not goroutines. The queue is fair between organizations: each holds at most
+// bcOrgQueueMax logouts in it and has at most bcOrgWorkersMax being sent, and the senders serve the organizations in
+// turn, so one whose applications answer slowly or never (it costs a sender for the 8 s timeout each time) cannot
+// delay the logouts of the others, only its own. A logout that finds its organization's share (or the whole queue)
+// full goes to the retry queue on disk at once instead (OpenLogoutQueue; without one it is dropped and logged): the
+// sessions and grants end on this server either way, and the relying party is told a little later. A logout the
+// relying party does not take goes to the retry queue on disk too, tried again after each delay of logoutBackoff,
+// then given up on with a warning (quisora_backchannel_logout_failed_total). Only failures and overflow are written
 // to disk, so a burst of logouts that succeed costs no disk writes.
 const (
-	bcWorkersMax   = 32
-	bcQueueMax     = 10_000
-	bcShutdownWait = 10 * time.Second
-	logoutQueueMax = 10_000
+	bcWorkersMax    = 32
+	bcQueueMax      = 10_000
+	bcOrgQueueMax   = 2_500 // of one organization in the queue
+	bcOrgWorkersMax = 8     // senders working for one organization at a time
+	bcShutdownWait  = 10 * time.Second
+	logoutQueueMax  = 10_000
 )
+
+// bcOrg is an organization's share of the back-channel logout queue.
+type bcOrg struct {
+	id      string
+	queue   []bcTarget // waiting, oldest first
+	sending int        // being sent now
+}
 
 // logoutBackoff are the delays before each retry of a failed back-channel logout, the first after the attempt made
 // at once.
@@ -370,10 +406,22 @@ var logoutBackoff = []time.Duration{5 * time.Second, 30 * time.Second, 5 * time.
 // LogoutRetry is a back-channel logout waiting in the retry queue: the client is read again for each attempt (one
 // since disabled, deleted, or without a back-channel URI any more is not told).
 type LogoutRetry struct {
+	OrgID    string `json:"o"` // the client's organization: the retry queue gives each a share of its senders
 	ClientID string `json:"c"`
 	Sub      string `json:"s"`
 	SID      string `json:"i,omitempty"`
 }
+
+// The retry queue sends by logoutRetryWorkers at once, of which one organization has at most logoutRetryPerOrg: an
+// organization whose applications never answer (each retry holds a sender for the 8 s timeout) would otherwise hold
+// the one sender it had, and with it every other organization's retried notices, for hours. Retries are background
+// work, so eight senders are a quarter of the first attempts' bcWorkersMax; two for each organization leave at least
+// six for the others however many applications of one never answer (that organization's own retries then go two per
+// 8 s, and its backlog takes longer, which is its own).
+const (
+	logoutRetryWorkers = 8
+	logoutRetryPerOrg  = 2
+)
 
 // OpenLogoutQueue opens the retry queue of failed back-channel logouts in dir (see dispatch). Without one a failed
 // logout is logged and not retried.
@@ -381,6 +429,7 @@ func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error
 	q, err := queue.Open(dir, queue.Options[LogoutRetry]{
 		Name: "back-channel logout queue", Log: p.log, Sealer: p.svc.Sealer, Binding: "oidc/logout-queue",
 		Backoff: logoutBackoff, Max: logoutQueueMax,
+		Workers: logoutRetryWorkers, PerKey: logoutRetryPerOrg, Key: func(r LogoutRetry) string { return r.OrgID },
 		Deliver: func(ctx context.Context, r LogoutRetry) error {
 			ce, err := p.recordClient(ctx, r.ClientID)
 			if errors.Is(err, store.ErrNotFound) || err == nil && (!ce.c.Enabled || ce.c.BackchannelURI == "") {
@@ -404,53 +453,103 @@ func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error
 }
 
 func (p *Provider) dispatch(targets []bcTarget) {
-	dropped := 0
-	for _, t := range targets {
-		p.bcWG.Add(1)
-		select {
-		case p.bcQueue <- t:
-		default:
-			p.bcWG.Done()
-			dropped++
-		}
-	}
-	if dropped > 0 {
-		p.log.Warn("oidc: back-channel logout queue full: logouts not sent (the sessions ended here all the same)",
-			"dropped", dropped, "queue", bcQueueMax)
-	}
+	var full []bcTarget
 	p.bcMu.Lock()
-	for p.bcWorkers < bcWorkersMax && p.bcWorkers < len(p.bcQueue) {
+	for _, t := range targets {
+		o := p.bcOrgs[t.client.OrgID]
+		if p.bcQueued >= bcQueueMax || o != nil && len(o.queue) >= bcOrgQueueMax {
+			full = append(full, t)
+			continue
+		}
+		if o == nil {
+			o = &bcOrg{id: t.client.OrgID}
+			p.bcOrgs[o.id] = o
+		}
+		if len(o.queue) == 0 {
+			p.bcTurn = append(p.bcTurn, o)
+		}
+		o.queue = append(o.queue, t)
+		p.bcQueued++
+		p.bcWG.Add(1)
+	}
+	for p.bcWorkers < bcWorkersMax && p.bcWorkers < p.bcQueued {
 		p.bcWorkers++
 		go p.bcWorker()
+	}
+	if len(full) > 0 {
+		p.bcWG.Add(1)
+		go p.spill(full)
 	}
 	p.bcMu.Unlock()
 }
 
-// bcWorker sends queued logouts until the queue is empty.
+// spill hands logouts that found the queue full to the retry queue on disk, away from the caller: each is written
+// durably, which takes a while for many.
+func (p *Provider) spill(targets []bcTarget) {
+	defer p.bcWG.Done()
+	lost := 0
+	for _, t := range targets {
+		if p.bcRetry == nil || p.bcRetry.Add(t.retry(), logoutBackoff[0], 0) != nil {
+			lost++
+		}
+	}
+	p.log.Warn("oidc: back-channel logout queue full: logouts sent later from the retry queue, or not at all if that is full too"+
+		" (the sessions ended here all the same)", "logouts", len(targets), "lost", lost, "organization_share", bcOrgQueueMax, "queue", bcQueueMax)
+}
+
+// bcWorker sends queued logouts until none can be sent.
 func (p *Provider) bcWorker() {
 	for {
-		select {
-		case t := <-p.bcQueue:
-			if err := p.sendLogoutToken(t); err != nil {
-				p.retryLogout(t, err)
-			}
-			p.bcWG.Done()
-		default:
-			p.bcMu.Lock()
-			if len(p.bcQueue) == 0 { // checked under bcMu: dispatch starts a sender for anything queued after
-				p.bcWorkers--
-				p.bcMu.Unlock()
-				return
-			}
-			p.bcMu.Unlock()
+		o, t, ok := p.bcNext()
+		if !ok {
+			return
 		}
+		if err := p.sendLogoutToken(t); err != nil {
+			p.retryLogout(t, err)
+		}
+		p.bcDone(o)
+		p.bcWG.Done()
+	}
+}
+
+// bcNext takes the next logout to send: the oldest of the first organization in turn that has no more than its share
+// of senders busy, which then goes to the back of the line. When there is none the sender is no longer counted (one
+// finishing for an organization at its limit takes up its next logout itself).
+func (p *Provider) bcNext() (*bcOrg, bcTarget, bool) {
+	p.bcMu.Lock()
+	defer p.bcMu.Unlock()
+	for i, o := range p.bcTurn {
+		if o.sending >= bcOrgWorkersMax {
+			continue
+		}
+		t := o.queue[0]
+		o.queue = o.queue[1:]
+		o.sending++
+		p.bcQueued--
+		p.bcTurn = slices.Delete(p.bcTurn, i, i+1)
+		if len(o.queue) > 0 {
+			p.bcTurn = append(p.bcTurn, o)
+		}
+		return o, t, true
+	}
+	p.bcWorkers--
+	return nil, bcTarget{}, false
+}
+
+// bcDone ends a logout of o, forgetting the organization when nothing of it is left.
+func (p *Provider) bcDone(o *bcOrg) {
+	p.bcMu.Lock()
+	defer p.bcMu.Unlock()
+	o.sending--
+	if o.sending == 0 && len(o.queue) == 0 {
+		delete(p.bcOrgs, o.id)
 	}
 }
 
 // retryLogout queues a logout that failed for retrying (see dispatch).
 func (p *Provider) retryLogout(t bcTarget, err error) {
 	if p.bcRetry != nil {
-		qerr := p.bcRetry.Add(LogoutRetry{ClientID: t.client.ID, Sub: t.sub, SID: t.sid}, logoutBackoff[0], 1)
+		qerr := p.bcRetry.Add(t.retry(), logoutBackoff[0], 1)
 		if qerr == nil {
 			return
 		}

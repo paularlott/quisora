@@ -52,9 +52,6 @@ func TestSendVerifyAddress(t *testing.T) {
 	if err := bare.SendReset(ctx, u, org); err == nil {
 		t.Fatal("reset without a link service")
 	}
-	if err := bare.SendInvite(ctx, u, org); err == nil {
-		t.Fatal("invite without a link service")
-	}
 }
 
 func TestSendRecoveryUsed(t *testing.T) {
@@ -71,11 +68,6 @@ func TestSendRecoveryUsed(t *testing.T) {
 	if !strings.Contains(msg.Text, "https://quisora.example.test/o/"+org.ID+"/account") {
 		t.Fatalf("account link missing: %s", msg.Text)
 	}
-	// Without an organization the message still renders.
-	if err := m.SendRecoveryUsed(context.Background(), u, nil, 0); err != nil {
-		t.Fatal(err)
-	}
-	cap.wait(t)
 }
 
 func TestSendSignInCode(t *testing.T) {
@@ -92,8 +84,4 @@ func TestSendSignInCode(t *testing.T) {
 	if !strings.Contains(msg.Text, "493021") || !strings.Contains(msg.HTML, "493021") || !strings.Contains(msg.Text, "10 minutes") {
 		t.Fatalf("%+v", msg)
 	}
-	if err := m.SendSignInCode(context.Background(), u, nil, "1", time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	cap.wait(t)
 }

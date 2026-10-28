@@ -34,7 +34,7 @@ func extraModules(s *web.Server, adm *admin.Module) {
 		case model.KindUser:
 			op.InvalidateUser(rec.ID)
 		case model.KindOrg:
-			op.InvalidateOrg(rec.ID)
+			s.Svc.InvalidateOrgs()
 		case model.KindTenant:
 			op.InvalidateTenant(rec.ID)
 		case model.KindGrant:

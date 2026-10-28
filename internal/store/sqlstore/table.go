@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +36,7 @@ type table struct {
 	uInsert, uHolder, uSteal string // unique-table statements for this kind
 
 	aboveSQL  string // one record of one partition with a sequence above ?, if there is one (ExportPartition)
-	exportSQL string // the records of one partition with a sequence above ? and at most ?, in sequence order (ExportPartition)
+	exportSQL string // a page of the records of one partition with a sequence above ? and at most ?, after (sequence ?, id ?), in that order (ExportPartition)
 	tombSQL   string // version and sequence of the tombstones of one partition with a sequence above ? and at most ? (PartitionTombstones)
 	goneSQL   string // id and kind-less metadata of the records of one partition (full import, purge)
 }
@@ -78,8 +79,11 @@ func newTable(d *dialect, kind model.Kind) *table {
 	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v, req, part FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
 	t.lookup = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = ?")
 	t.insert = d.bind("INSERT INTO " + t.name + " (" + wcols + ") VALUES (" + marks + ")")
-	t.exportSQL = d.bind("SELECT " + t.cols + ", pseq FROM " + t.name + " WHERE pnum = ? AND pseq > ? AND pseq <= ? ORDER BY pseq")
-	t.aboveSQL = d.bind("SELECT 1 FROM " + t.name + " WHERE pnum = ? AND pseq > ? LIMIT 1")
+	// Every partition read says pseq > 0 although its bound sequence (never negative) implies it: SQLite uses the partial
+	// index on (pnum, pseq) only for a WHERE clause that implies the index's, and pseq > ? does that only when bound to 0.
+	t.exportSQL = d.bind("SELECT " + t.cols + ", pseq FROM " + t.name + " WHERE pnum = ? AND pseq > 0 AND pseq > ? AND pseq <= ? " +
+		"AND (pseq > ? OR (pseq = ? AND id > ?)) ORDER BY pseq, id LIMIT " + strconv.Itoa(batchRows))
+	t.aboveSQL = d.bind("SELECT 1 FROM " + t.name + " WHERE pnum = ? AND pseq > 0 AND pseq > ? LIMIT 1")
 	t.tombSQL = d.bind("SELECT version, pseq FROM " + t.name + " WHERE pnum = ? AND pseq > 0 AND pseq > ? AND pseq <= ? AND deleted = TRUE")
 	t.goneSQL = d.bind("SELECT id, deleted, pseq FROM " + t.name + " WHERE pnum = ? AND pseq > 0")
 	sets := make([]string, 0, len(cols)-1)

@@ -93,7 +93,8 @@ func (b *browser) hasSessionIn(org *model.Org) bool {
 // acme through "Continue with <primary organization>": the provider's requests to the primary organization are served
 // by the server itself, the user is linked by their verified email, and the session is acme's, from the provider.
 func TestOrganizationProviderSignsGuestsIn(t *testing.T) {
-	g := newGuestEnv(t, nil)
+	// linking by email is the super admin's choice for an organization provider: it is off until turned on
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
 	pat := g.person(t, g.Primary, "pat", "pat@example.com")
 	guest := g.person(t, g.acme, "pat-guest", "pat@example.com")
 
@@ -131,6 +132,30 @@ func TestOrganizationProviderSignsGuestsIn(t *testing.T) {
 	}
 	if b2, done := g.continueAs(t, pat); done != web.OrgPath(g.acme.ID, "/account") || !b2.hasSessionIn(g.acme) {
 		t.Fatalf("second sign-in: %q", done)
+	}
+}
+
+// By default an organization provider does not link by email: the source organization's managers can mark any address
+// verified, so a user of the primary organization with the address of one of acme's users is not signed in as them,
+// whether or not accounts are made automatically (that would clash with the address, as it must).
+func TestOrganizationProviderDoesNotLinkByEmail(t *testing.T) {
+	for name, auto := range map[string]bool{"existing users only": false, "accounts made automatically": true} {
+		t.Run(name, func(t *testing.T) {
+			g := newGuestEnv(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(auto) })
+			victim := g.person(t, g.acme, "victim", "victim@example.com")
+			mallory := g.person(t, g.Primary, "mallory", "victim@example.com") // a manager of the primary organization set it, verified
+
+			b, done := g.continueAs(t, mallory)
+			if !strings.HasPrefix(done, web.OrgPath(g.acme.ID, "/login?")) {
+				t.Fatalf("callback: %q", done)
+			}
+			if b.hasSessionIn(g.acme) || len(sessionsOf(t, g.env, victim)) != 0 {
+				t.Fatal("signed in to acme as its user with that address")
+			}
+			if _, err := g.Svc.Identities.GetByUnique(context.Background(), model.IdentityKey(g.p.ID, mallory.ID)); err == nil {
+				t.Fatal("the primary user was linked to acme's")
+			}
+		})
 	}
 }
 

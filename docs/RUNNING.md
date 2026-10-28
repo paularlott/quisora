@@ -252,7 +252,7 @@ must exist.
 | `badgerdb` (default) | One node, or each node of a gossip cluster. Embedded, in `<data-dir>/badgerdb`. | `storage.badgerdb.sync_writes` (default true), `sync_interval_ms`, `encryption_key` |
 | `sqlite`           | One node, or each node of a gossip cluster. Embedded, pure Go, in `<data-dir>/quisora.db`. | none                                                                   |
 | `postgres`         | A shared database for several nodes, or one node.              | `storage.postgres.dsn`, `max_open_conns`, `max_idle_conns`                                       |
-| `mysql`, `mariadb` | As PostgreSQL.                                                 | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
+| `mysql`, `mariadb` | As PostgreSQL. MySQL 8.0.17 or later (its binary NO PAD collation `utf8mb4_0900_bin`). | `storage.mysql.dsn` / `storage.mariadb.dsn`, connection limits                                   |
 
 Every backend keeps to the same contract, so what one accepts every other accepts. A record's id and scope are at most
 191 characters (the width of a server database's key columns), a string field 255 (the tags field `model.MaxTagsText`);
@@ -283,6 +283,29 @@ quisora serve --storage sqlite --data-dir /var/lib/quisora
 ```
 
 Every backend passes the same store conformance suite. BadgerDB is the fastest; see [Sizing](#sizing).
+
+**Bounds on a statement (SQL backends).** Every connection Quisora opens limits how long one statement may run and how
+long it may wait for a lock:
+
+| Database   | Statement                                     | Lock wait                      |
+| ---------- | --------------------------------------------- | ------------------------------ |
+| PostgreSQL | `statement_timeout` 10 s                      | `lock_timeout` 5 s             |
+| MySQL      | `max_execution_time` 10 s (bounds SELECTs only) | `innodb_lock_wait_timeout` 5 s |
+| MariaDB    | `max_statement_time` 10 s                     | `innodb_lock_wait_timeout` 5 s |
+| SQLite     | none (a cancelled request interrupts its reads) | `busy_timeout` 5 s           |
+
+Every statement Quisora runs is short: a read of a record or a page, the writes of one change, a batch of 500 rows of a
+purge, of a partition's export or of the reset before a partition is copied whole, take milliseconds, and a count or a
+search over a large organization well under a second. Locks are held by transactions of milliseconds. So the bounds
+only stop a runaway query, or a lock held by a stuck client, from holding a connection (on SQLite, the one writer every
+change waits for) indefinitely: the statement fails, and the request that met it answers 503 (try again), without
+retrying a lock wait that has already run out. A server's bounds can be changed in its DSN, which Quisora then leaves
+as they are (PostgreSQL: `?statement_timeout=30000&lock_timeout=10000`, in milliseconds; MySQL:
+`?max_execution_time=30000&innodb_lock_wait_timeout=10`; MariaDB: `?max_statement_time=30&innodb_lock_wait_timeout=10`,
+in seconds). The PostgreSQL bounds are sent when a connection starts: a pooler between Quisora and PostgreSQL must
+accept them (PgBouncer refuses startup parameters it does not track; with them in its `ignore_startup_parameters`, set
+them on the role instead: `ALTER ROLE quisora SET statement_timeout = '10s'`). The schema migration at start-up runs
+without the bounds: building an index over a large table may take longer.
 
 ### TLS to the database
 
@@ -452,8 +475,12 @@ pages read it from one of two places:
 | One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database |
 | Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads              |
 
-Admins see their own organization's events. Super admins also see every organization (`/admin/audit`,
-`GET /api/audit?org=<name>`).
+Admins see their own organization's events, except those that name a super admin as actor or target (a sign-in, a
+change made to one, a super admin's work in the organization): super admins are invisible below them everywhere, so the
+page, its count and its search leave those events out. Super admins also see every organization, and all of it
+(`/admin/audit`, `GET /api/audit?org=<name>`). The same holds when the events are read from VictoriaLogs through
+Quisora; reading them in VictoriaLogs itself is for the operators who run it. An event that names a super admin only in
+its detail (such as a group membership change) is not recognised.
 
 In a gossip cluster with the database trail, an event is on the node that recorded it only: a node that is down, or slow to
 answer (3 s), is missing from a page (the page says how many nodes answered), and a node whose disk is lost takes its events
@@ -766,8 +793,12 @@ endpoint. Every node serves its own.
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
 | `quisora_partitions_owned` | Partitions this node owns (the 64 are shared by the ready nodes) |
-| `quisora_partition_writes_total`, `_writes_refused_total`, `_writes_unknown_total`, `_writes_unavailable_total` | Changes this node made since it started: committed; refused by an owner (a version had moved, a unique value was in use); outcome not known (an owner lost mid-write); no owner or majority found |
-| `quisora_partition_reads_total`, `_reads_failed_total`, `quisora_partition_takeovers_total` | Fresh reads asked of owners and those that failed; partitions this node became the owner of |
+| `quisora_partition_writes_total`, `quisora_partition_writes_refused_total`, `quisora_partition_writes_unknown_total`, `quisora_partition_writes_unavailable_total` | Changes this node made since it started: committed; refused by an owner (a version had moved, a unique value was in use); outcome not known (an owner lost mid-write); no owner or majority found |
+| `quisora_partition_reads_total`, `quisora_partition_reads_failed_total`, `quisora_partition_takeovers_total` | Fresh reads asked of owners and those that failed; partitions this node became the owner of |
+| `quisora_partitions_unreadable` | Partitions this node cannot serve from its copy now (no owner heard, trailing it, diverged): their records answer 503 |
+| `quisora_partitions_importing` | Partitions being copied whole to this node (none of such a partition is served, and a backup is refused, until the copy finishes) |
+| `quisora_partitions_diverged`, `quisora_partition_divergences_total` | Partitions whose copy here holds writes their owner does not have (the node is not ready: resync it); divergences found since the node started |
+| `quisora_partition_lag_seconds{partition}`, `quisora_partition_catching_up{partition}`, `quisora_partition_diverged{partition}` | Per partition: how long this node has trailed a position its owner reported committed (0: not behind); 1 while it catches up; 1 if it diverged |
 | `quisora_master_key_rotation` | 1 while previous master keys are configured |
 | `quisora_build_info{version}`, `quisora_uptime_seconds`, `quisora_goroutines`, `quisora_memory_heap_bytes` | The process |
 
@@ -776,6 +807,9 @@ Alerts worth having:
 - `quisora_ready == 0` or `quisora_writable == 0` for more than a few minutes; `quisora_cluster_alive_nodes <
   quisora_cluster_quorum`; `sum(quisora_partitions_owned) != 64` across the nodes (a partition nobody owns), or a steady
   `rate(quisora_partition_takeovers_total[10m])` (ownership flapping).
+- `quisora_partitions_unreadable > 0` for more than a few minutes (some organizations get 503: a node does not leave the
+  load balancer for it), `quisora_partitions_diverged > 0` (resync the node), or a `quisora_partition_lag_seconds` that
+  keeps growing (a catch-up that keeps failing).
 - `increase(quisora_audit_undelivered_total[5m]) > 0`, or `quisora_audit_spool_bytes` growing: audit events at risk.
 - Bursts of `quisora_audit_events_total{outcome="failure"}`, by action: password guessing (`login.failure`,
   `login.lockout`), floods (`login.limited`, `oauth.client_auth.limited`), stolen tokens (`oauth.refresh.reuse`,

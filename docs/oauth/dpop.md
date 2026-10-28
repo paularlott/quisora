@@ -112,4 +112,5 @@ for your language does all three.
 | `invalid_dpop_proof` | The proof is malformed, signed with an unsupported algorithm, for another method or URL (`htu` is the URL without query or fragment), too old, or used before. |
 | `invalid_dpop_proof`: *this client must send a DPoP proof* | The client has **Require DPoP-bound tokens** and sent no proof. |
 | `invalid_grant`: *the refresh token is bound to a DPoP key* | A public client's refresh token presented without a proof, or with a proof made with another key. |
+| `invalid_grant`: *the subject token is bound to a DPoP key* | A DPoP-bound access token offered to [token exchange](token-exchange.md) without a proof, or with a proof made with another key. The new token is bound to the same key. |
 | `invalid_grant`: *not made with the key the authorization request named* | A code bound with `dpop_jkt` (or a pushed proof) exchanged with another key. |

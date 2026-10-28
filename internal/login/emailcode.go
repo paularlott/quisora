@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -67,8 +68,13 @@ var (
 // sendEmailCode emails u a new code for the sign-in ticketID (the previous one stops working).
 func (m *Module) sendEmailCode(ctx context.Context, ticketID string, u *model.User, org *model.Org) error {
 	var st emailCode
-	if b, err := m.s.Eph.Get(ctx, nsEmailCode, ticketID); err == nil {
+	b, err := m.s.Eph.Get(ctx, nsEmailCode, ticketID)
+	switch {
+	case err == nil:
 		_ = json.Unmarshal(b, &st)
+	case !errors.Is(err, ephemeral.ErrNotFound):
+		// Not knowing how many codes were sent is no leave to send another: it would lift the cap.
+		return err
 	}
 	switch {
 	case st.Sends >= emailSendsPerSignIn:
@@ -82,7 +88,7 @@ func (m *Module) sendEmailCode(ctx context.Context, ticketID string, u *model.Us
 	}
 	code := fmt.Sprintf("%06d", n.Int64())
 	st = emailCode{Hash: codeHash(ticketID, code), Sends: st.Sends + 1, Last: time.Now()}
-	b, _ := json.Marshal(st)
+	b, _ = json.Marshal(st)
 	if err := m.s.Eph.Set(ctx, nsEmailCode, ticketID, b, emailCodeTTL); err != nil {
 		return err
 	}
@@ -92,8 +98,11 @@ func (m *Module) sendEmailCode(ctx context.Context, ticketID string, u *model.Us
 // checkEmailCode reports whether code is the one sent for ticketID, and uses it up when it is.
 func (m *Module) checkEmailCode(ctx context.Context, ticketID, code string) (bool, error) {
 	b, err := m.s.Eph.Get(ctx, nsEmailCode, ticketID)
-	if err != nil {
+	if errors.Is(err, ephemeral.ErrNotFound) {
 		return false, errCodeNotReady
+	}
+	if err != nil { // the store could not say: neither a wrong code nor a missing one
+		return false, err
 	}
 	var st emailCode
 	if json.Unmarshal(b, &st) != nil {
@@ -201,13 +210,17 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "No code has been sent for this sign-in. Ask for one first.", "")
 		return
 	}
+	if err != nil {
+		m.internalError(w, r, "check email code", err)
+		return
+	}
 	if !good {
 		wrong = true
 		m.failed(w, r, n, org, u, u.Username, "email_code")
 		return
 	}
-	if !m.useTicket(ctx, in.Ticket) {
-		writeErr(w, http.StatusUnauthorized, "Your sign-in has expired. Start again.", "")
+	if err := m.useTicket(ctx, in.Ticket); err != nil {
+		ticketFailed(w, err)
 		return
 	}
 	// A one-time code as the second factor (RFC 8176 "otp"), as an authenticator code is.

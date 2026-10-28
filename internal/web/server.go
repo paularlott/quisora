@@ -56,8 +56,7 @@ type Server struct {
 	// Status is the cluster summary /readyz reports (counts only: /readyz is unauthenticated). Nil: none.
 	Status func() any
 
-	skin    *Skin    // ui.skin, or nil
-	orgs    orgCache // the organizations InOrg resolved
+	skin    *Skin // ui.skin, or nil
 	httpSrv *http.Server
 	addr    string
 	certs   *certSource
@@ -151,19 +150,24 @@ func (s *Server) serveGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("Retry-After", "5")
-		w.Header().Set("Cache-Control", "no-store")
-		switch {
-		case strings.HasPrefix(InOrgPath(p), "/oauth/") || strings.HasPrefix(InOrgPath(p), "/.well-known/") ||
-			strings.HasPrefix(p, "/.well-known/"):
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable",
-				"error_description": "this server is not ready to serve; try again shortly"})
-		case APIPath(p) || strings.HasPrefix(p, "/scim/"):
-			WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server is not ready to serve. Please try again shortly."})
-		default:
-			http.Error(w, "This server is not ready to serve. Please try again shortly.", http.StatusServiceUnavailable)
-		}
+		writeUnavailable(w, p, "This server is not ready to serve. Please try again shortly.")
 	})
+}
+
+// writeUnavailable answers 503 "try again" (Retry-After) in the form the path's clients read: an OAuth error for the
+// OAuth endpoints and metadata (temporarily_unavailable), JSON for the APIs and SCIM, text otherwise.
+func writeUnavailable(w http.ResponseWriter, p, msg string) {
+	w.Header().Set("Retry-After", "5")
+	w.Header().Set("Cache-Control", "no-store")
+	switch {
+	case strings.HasPrefix(InOrgPath(p), "/oauth/") || strings.HasPrefix(InOrgPath(p), "/.well-known/") ||
+		strings.HasPrefix(p, "/.well-known/"):
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable", "error_description": msg})
+	case APIPath(p) || strings.HasPrefix(p, "/scim/"):
+		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: msg})
+	default:
+		http.Error(w, msg, http.StatusServiceUnavailable)
+	}
 }
 
 func (s *Server) baseRoutes() {

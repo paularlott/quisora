@@ -525,7 +525,7 @@ func TestAPITokenUnavailableWhenAStoreReadFails(t *testing.T) {
 		}
 		good := e.svc.Orgs.S
 		e.svc.Orgs.S = failingReads(good, model.KindOrg)
-		e.svc.InvalidateSignOut() // the counters read when the token was made must not answer for the store
+		e.svc.InvalidateOrgs() // the counters read when the token was made must not answer for the store
 		_, _, err = e.svc.ValidateAPIToken(e.ctx, plain)
 		if !errors.Is(err, service.ErrUnavailable) || errors.Is(err, service.ErrBadToken) {
 			t.Fatalf("unreadable sign-out counters: %v, want ErrUnavailable", err)
