@@ -53,9 +53,9 @@ func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
 type NodeKeys struct {
 	Active   string   `json:"active_key"`
 	Previous []string `json:"previous_keys"`
-	// QueueStale counts the items of the node's queues on disk (mail, back-channel logouts) still sealed with a
-	// previous key: the previous keys cannot go while any node has one. QueueLost counts those sealed with a key no
-	// longer configured: they need none of the configured keys, and the node gives them up once they are 8 days old.
+	// QueueStale counts the node's queued items (mail, back-channel logouts) still sealed with a previous key: the
+	// previous keys cannot go while any node has one. QueueLost counts those sealed with a key no longer configured:
+	// they need none of the configured keys, and are discarded once their retries are a day over.
 	QueueStale int `json:"queued_items_stale"`
 	QueueLost  int `json:"queued_items_lost"`
 }
@@ -130,7 +130,7 @@ type MasterKeyStatus struct {
 	// those no configured key opens.
 	Stale      int `json:"stale_secrets"`
 	Unopenable int `json:"unopenable_secrets"`
-	// QueueStale counts the items of the nodes' queues on disk still sealed with a previous key (NodeKeys.QueueStale);
+	// QueueStale counts the nodes' queued items still sealed with a previous key (NodeKeys.QueueStale);
 	// QueueLost those sealed with a key no longer configured, which only a warning in Detail mentions
 	// (NodeKeys.QueueLost).
 	QueueStale int `json:"queued_items_stale"`
@@ -207,7 +207,7 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 		sort.Strings(lost)
 		st.Detail += " Warning: " + itoa(st.QueueLost) + " queued messages on " + strings.Join(lost, ", ") + " are " +
 			"sealed with a master key that is not configured: put it back in server.previous_master_keys, or they " +
-			"are given up once they are 8 days old."
+			"are discarded once their retries are a day over."
 	}
 	return st, nil
 }

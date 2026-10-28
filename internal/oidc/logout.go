@@ -378,11 +378,12 @@ func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
 // bcOrgQueueMax logouts in it and has at most bcOrgWorkersMax being sent, and the senders serve the organizations in
 // turn, so one whose applications answer slowly or never (it costs a sender for the 8 s timeout each time) cannot
 // delay the logouts of the others, only its own. A logout that finds its organization's share (or the whole queue)
-// full goes to the retry queue on disk at once instead (OpenLogoutQueue; without one it is dropped and logged): the
-// sessions and grants end on this server either way, and the relying party is told a little later. A logout the
-// relying party does not take goes to the retry queue on disk too, tried again after each delay of logoutBackoff,
-// then given up on with a warning (quisora_backchannel_logout_failed_total). Only failures and overflow are written
-// to disk, so a burst of logouts that succeed costs no disk writes.
+// full goes to this node's durable retry queue at once instead (OpenLogoutQueue; without one, or when that holds
+// logoutRetryOrgMax of the organization's, it is dropped and logged): the sessions and grants end on this server
+// either way, and the relying party is told a little later. A logout the relying party does not take goes to the
+// retry queue too, tried again after each delay of logoutBackoff, then given up on with a warning
+// (quisora_backchannel_logout_failed_total). Only failures and overflow are written to the store, so a burst of
+// logouts that succeed costs no writes.
 const (
 	bcWorkersMax    = 32
 	bcQueueMax      = 10_000
@@ -391,6 +392,13 @@ const (
 	bcShutdownWait  = 10 * time.Second
 	logoutQueueMax  = 10_000
 )
+
+// logoutRetryOrgMax is how many logouts of one organization this node's retry queue holds. An organization whose applications
+// never answer (or an emergency sign-out of a big one) fills its share and then loses only its own further logouts,
+// where one cap for the whole queue would let it take every place and drop the failures of all the others. The share
+// is the size of the in-memory queue's (bcOrgQueueMax), a quarter of the retry queue: four such organizations at once
+// are needed to fill it.
+const logoutRetryOrgMax = bcOrgQueueMax
 
 // bcOrg is an organization's share of the back-channel logout queue.
 type bcOrg struct {
@@ -423,12 +431,12 @@ const (
 	logoutRetryPerOrg  = 2
 )
 
-// OpenLogoutQueue opens the retry queue of failed back-channel logouts in dir (see dispatch). Without one a failed
-// logout is logged and not retried.
-func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error) {
-	q, err := queue.Open(dir, queue.Options[LogoutRetry]{
-		Name: "back-channel logout queue", Log: p.log, Sealer: p.svc.Sealer, Binding: "oidc/logout-queue",
-		Backoff: logoutBackoff, Max: logoutQueueMax,
+// OpenLogoutQueue opens node's retry queue of failed back-channel logouts, in the service's store (see dispatch).
+// Without one a failed logout is logged and not retried.
+func (p *Provider) OpenLogoutQueue(node string) *queue.Queue[LogoutRetry] {
+	q := queue.Open(queue.Options[LogoutRetry]{
+		Name: "logout", Log: p.log, Store: p.svc.Store, Node: node, Sealer: p.svc.Sealer, Binding: "oidc/logout-queue",
+		Backoff: logoutBackoff, Max: logoutQueueMax, MaxPerKey: logoutRetryOrgMax,
 		Workers: logoutRetryWorkers, PerKey: logoutRetryPerOrg, Key: func(r LogoutRetry) string { return r.OrgID },
 		Deliver: func(ctx context.Context, r LogoutRetry) error {
 			ce, err := p.recordClient(ctx, r.ClientID)
@@ -445,11 +453,8 @@ func (p *Provider) OpenLogoutQueue(dir string) (*queue.Queue[LogoutRetry], error
 				p.log.Warn("oidc: back-channel logout failed, giving up", "client", r.ClientID, "attempts", attempt+1, "error", err)
 			}
 		}})
-	if err != nil {
-		return nil, err
-	}
 	p.bcRetry = q
-	return q, nil
+	return q
 }
 
 func (p *Provider) dispatch(targets []bcTarget) {
@@ -483,8 +488,9 @@ func (p *Provider) dispatch(targets []bcTarget) {
 	p.bcMu.Unlock()
 }
 
-// spill hands logouts that found the queue full to the retry queue on disk, away from the caller: each is written
-// durably, which takes a while for many.
+// spill hands logouts that found the queue full to the retry queue, away from the caller: each is written to the
+// store, which takes a while for many. One that finds its organization's share of the retry queue full (or the
+// queue) is lost, counted in the one warning for the whole batch.
 func (p *Provider) spill(targets []bcTarget) {
 	defer p.bcWG.Done()
 	lost := 0
@@ -493,8 +499,10 @@ func (p *Provider) spill(targets []bcTarget) {
 			lost++
 		}
 	}
+	metrics.BackchannelFailed.Add(uint64(lost)) // as retryLogout counts one that could not be queued
 	p.log.Warn("oidc: back-channel logout queue full: logouts sent later from the retry queue, or not at all if that is full too"+
-		" (the sessions ended here all the same)", "logouts", len(targets), "lost", lost, "organization_share", bcOrgQueueMax, "queue", bcQueueMax)
+		" (the sessions ended here all the same)", "logouts", len(targets), "lost", lost, "organization_share", bcOrgQueueMax,
+		"queue", bcQueueMax, "retry_organization_share", logoutRetryOrgMax, "retry_queue", logoutQueueMax)
 }
 
 // bcWorker sends queued logouts until none can be sent.

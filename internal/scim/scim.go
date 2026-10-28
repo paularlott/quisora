@@ -248,7 +248,7 @@ func (m *Module) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, e := m.authenticate(r)
+	actor, e := m.authenticate(r, segs[0])
 	if e != nil {
 		writeError(w, e)
 		return
@@ -337,15 +337,15 @@ func bearerToken(r *http.Request) (tok, scheme string) {
 	return "", ""
 }
 
-// authenticate resolves the bearer token to an actor holding the scim scope. Failed authentications count against
-// the address (web.BearerFailuresPerIPMin, shared with the management API); a refusal of an authenticated actor is
-// audited.
-func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
+// authenticate resolves the bearer token to an actor holding the scim scope. Failed authentications count against the
+// address and the organization the path names, org (web.BearerFailuresPerOrgMin, shared with the management API), so
+// one tenant's bad token does not block the others'; a refusal of an authenticated actor is audited.
+func (m *Module) authenticate(r *http.Request, org string) (*service.Actor, *Error) {
 	tok, scheme := bearerToken(r)
 	if tok == "" {
 		return nil, errf(401, "", "A bearer token is required")
 	}
-	limited, err := m.srv.BearerLimited(r)
+	limited, err := m.srv.BearerLimited(r, org)
 	if err != nil { // the counter failed, not the caller: refused, but retryable
 		return nil, errf(503, "", "The token could not be checked right now; try again shortly")
 	}
@@ -355,7 +355,7 @@ func (m *Module) authenticate(r *http.Request) (*service.Actor, *Error) {
 	actor, e := m.resolve(r, tok, scheme)
 	if e != nil {
 		if e.Status == 401 {
-			m.srv.BearerFailed(r)
+			m.srv.BearerFailed(r, org)
 		}
 		return nil, e
 	}

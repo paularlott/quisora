@@ -133,8 +133,10 @@ var Schemas = map[Kind]Schema{
 	KindEphemeral: {KindEphemeral, nil},
 	KindLink:      {KindLink, nil},
 	KindSignIn:    {KindSignIn, nil},
-	KindLock:      {KindLock, nil},
-	KindReplay:    {KindReplay, nil},
+	KindLock: {KindLock, []Field{
+		{Name: "org_deleted", Type: FieldBool, Index: true}, // deletions of organizations that decided (Lock.Holder)
+	}},
+	KindReplay: {KindReplay, nil},
 	// Audit search covers who and what (actor, target) and where from (ip); the action and outcome are filters.
 	KindAudit: {KindAudit, []Field{
 		{Name: "action", Type: FieldString, Sort: true, SortIndex: true, Index: true}, // action= reads only those events
@@ -147,6 +149,13 @@ var Schemas = map[Kind]Schema{
 		// page leaves out (Audit.SuperAdmin).
 		{Name: "super_admin", Type: FieldBool, Index: true},
 	}},
+	// A node's queue reads its items in the order they come due (due: what it delivers next), and one key's in that
+	// order (slot: an organization's next logouts, when its share of the workers frees up), each a range of a sort
+	// index of the node's own scope, never the whole queue (package queue).
+	KindQueue: {KindQueue, []Field{
+		{Name: "due", Type: FieldTime, Sort: true, SortIndex: true},
+		{Name: "slot", Type: FieldString, Sort: true, SortIndex: true},
+	}},
 }
 
 // Expiry says whether the records of a kind carry an expiry (Index.Expires): the stores keep what only a kind with
@@ -157,14 +166,14 @@ type Expiry int
 const (
 	NeverExpires  Expiry = iota // no record sets an expiry
 	MayExpire                   // some do (a removed member, a token with an end date, a key, a lease)
-	AlwaysExpires               // every one does: audit events, links, replay marks, sessions and grants
+	AlwaysExpires               // every one does: audit events, links, replay marks, sessions, grants and queue items
 )
 
 // expiries is the Expiry of the kinds that are not NeverExpires.
 var expiries = map[Kind]Expiry{
 	KindMember: MayExpire, KindAPIToken: MayExpire, KindKey: MayExpire, KindEphemeral: MayExpire,
 	KindSession: AlwaysExpires, KindGrant: AlwaysExpires, KindLink: AlwaysExpires, KindAudit: AlwaysExpires,
-	KindReplay: AlwaysExpires,
+	KindReplay: AlwaysExpires, KindQueue: AlwaysExpires,
 }
 
 // ExpiryOf is the Expiry of kind k.
@@ -180,7 +189,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral}
+		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral, KindQueue}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -226,6 +235,8 @@ func NewEntity(k Kind) Entity {
 		return &Replay{}
 	case KindEphemeral:
 		return &Ephemeral{}
+	case KindQueue:
+		return &QueueItem{}
 	}
 	return nil
 }

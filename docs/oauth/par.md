@@ -48,6 +48,14 @@ tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
 - **One client.** Only the client that pushed it can use it; with another `client_id`, or once expired, the browser
   gets an error page (nothing in such a request can be trusted to send the browser anywhere).
 
+## Limits
+
+A push is counted after the client has authenticated. A confidential client (secret or private key JWT) may push 1,800 a
+minute, whatever its address and whatever other clients push; past that it gets `429 temporarily_unavailable` with
+`Retry-After`, and its request may be up to 16 KB. A public client is admitted by its `client_id` alone, so anyone can
+push as it: its pushes are limited to 60 a minute per address and 600 a minute per organization, and may be up to 4 KB.
+Each push is kept in memory until it is used, which is why the public limits are small.
+
 ## Requiring it
 
 **Require pushed authorization requests** on the client (`require_pushed_authorization_requests`) refuses its

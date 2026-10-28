@@ -31,11 +31,8 @@ func newMailer(t *testing.T, mut func(*config.Config), tr Transport) *Mailer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(cfg, logger.NewNullLogger(), sealer, tr)
-	if err != nil {
-		t.Fatal(err)
-	}
 	st := memstore.New()
+	m := New(cfg, logger.NewNullLogger(), st, "node-1", sealer, tr)
 	m.SetService(service.New(cfg, st, sealer))
 	t.Cleanup(func() { m.Close(); _ = st.Close() })
 	return m

@@ -428,7 +428,10 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	refuse := func(reason string) (*model.APIToken, *model.User, error) {
 		s.auditRefusal("token|"+t.ID+"|"+reason, func(detail map[string]string) {
 			detail["reason"] = reason
-			s.Audit(ctx, &Actor{Name: "unauthenticated", TokenID: t.ID}, t.OrgID, "apitoken.refused", t.Name, detail)
+			// The token's owner is the event's user: the refusal of a super admin's token is a super admin's event, hidden from
+			// the administrators below them like every other (it names the token and what is wrong with it).
+			owner := s.AuditTargetUser(ctx, t.OrgID, t.UserID)
+			s.auditChange(ctx, &Actor{Name: "unauthenticated", TokenID: t.ID}, change{t.OrgID, "apitoken.refused", t.Name, detail, owner})
 		})
 		return nil, nil, ErrBadToken
 	}

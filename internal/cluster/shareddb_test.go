@@ -430,7 +430,7 @@ func TestHandleNotice(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	n.notice(got[0]) // no notice gossip: nothing to send
-	if noticeWorthy(model.KindEphemeral) || noticeWorthy(model.KindLock) || !noticeWorthy(model.KindUser) {
+	if noticeWorthy(model.KindEphemeral) || noticeWorthy(model.KindLock) || noticeWorthy(model.KindQueue) || !noticeWorthy(model.KindUser) {
 		t.Error("noticeWorthy")
 	}
 }

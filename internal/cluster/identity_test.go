@@ -264,8 +264,8 @@ func TestPrefixCollisionRefusesToStart(t *testing.T) {
 
 // A node that cannot see a majority, or has not caught up, makes no replicated write at all: cut off from the majority
 // (even within cluster.minority_grace) or resynchronising, it refuses data, sessions and their deletions alike; only
-// node-local records are written (short-lived state, and its own audit events, which are never replicated). A refused
-// write is not applied here either.
+// node-local records are written (short-lived state, and its own audit events and queued items, which are never
+// replicated). A refused write is not applied here either.
 func TestNonWritableNodeWritesNothing(t *testing.T) {
 	c := started(t, badgerBackend())
 	ids := writeN(t, c.nodes[0], "org1", 2)
@@ -280,6 +280,14 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 	}
 	eph := func() *store.Record {
 		return &store.Record{Kind: model.KindEphemeral, ID: "e-" + newID(), Version: store.Clock.Now(), Data: []byte("x")}
+	}
+	queued := func() *store.Record {
+		r, err := store.Encode(&model.QueueItem{Meta: model.Meta{ID: newID()}, Queue: "mail", Node: "n", Next: time.Now(),
+			Sealed: "x", Expires: time.Now().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
 	}
 	type try struct {
 		what string
@@ -317,7 +325,8 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 		{"data deletion", tomb(dataKind, ids[1]), false},
 		{"session", sess("s1"), false},
 		{"session deletion", tomb(model.KindSession, "s1"), false},
-		{"audit entry", audit(), true}, // this node's own: never replicated
+		{"audit entry", audit(), true},  // this node's own: never replicated
+		{"queued item", queued(), true}, // the same
 		{"node-local state", eph(), true},
 	})
 	c.heal()
@@ -346,6 +355,7 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 		{"session", sess("s3"), false},
 		{"session deletion", tomb(model.KindSession, "s3"), false},
 		{"audit entry", audit(), true},
+		{"queued item", queued(), true},
 		{"node-local state", eph(), true},
 	})
 	c.heal()

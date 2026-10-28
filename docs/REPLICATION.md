@@ -107,7 +107,7 @@ a fourth node adds a node to lose without letting any more fail. A cluster of tw
 | everything scoped to an organization: users, groups, memberships, tenants, access, clients, providers, passkeys, identities, sessions, grants, API tokens, link tokens, sign-in records | the organization's id | one of 1 to 63, the same for all of an organization's records |
 | organizations, signing keys, and a server-level audit event with no organization | none | 0 |
 | locks, replay values (`KindLock`, `KindReplay`) | the record's own id | spread over 1 to 63 |
-| short-lived state (`KindEphemeral`) and audit events (`KindAudit`) | never replicated: each node's own | none |
+| short-lived state (`KindEphemeral`), audit events (`KindAudit`) and queued items (`KindQueue`) | never replicated: each node's own | none |
 
 An organization's records, and every unique value scoped to it, are therefore in one partition: the owner checks them
 together. A record **never changes partition** (its organization never changes). A busy organization stays on one
@@ -258,7 +258,7 @@ partitions.
   the organization whose cookie it is, so a stale or made-up cookie is "signed out", not 503, while another
   organization's partition is between owners. Only a miss whose key names no partition (an id never received here asked
   without its organization, a link token, a provider identity or a passkey credential) needs every partition readable,
-  since what it lacks may be in any. A node's own audit events and short-lived state are
+  since what it lacks may be in any. A node's own audit events, queued items and short-lived state are
   not in a partition and are exempt. Listings and counts are not
   gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
   the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
@@ -266,13 +266,16 @@ partitions.
   (freshness counts from the last owner heard, within the staleness limit, as between heartbeats); a partition whose owner
   crashed is refused once that limit passes, until its new owner is heard (writes to it fail meanwhile too).
   A node that is cut off from the majority hears no owner, so its partitions are unreadable, and it is not ready.
-- **Readiness follows divergence, not unreadability.** A node is not ready while a partition has diverged on it (only an
-  operator can clear that); `GET /api/cluster` says which and why, and the log has it (a divergence at warn level, once per
-  partition). A partition that is merely unreadable on a node (an owner that cannot be replaced, a catch-up that keeps
-  failing) does not take the node out of rotation: its records answer 503 one by one while every other partition keeps
-  working, and an unreadable partition is usually unreadable on every node, which would otherwise turn the loss of one
-  partition (1/64 of the organizations) into a total outage. `partitions_unreadable` in `GET /api/cluster` and
-  `quisora_partitions_unreadable` stay: alert on them.
+- **Readiness follows divergence, and the global partition; no other unreadability.** A node is not ready while a partition
+  has diverged on it (only an operator can clear that); `GET /api/cluster` says which and why, and the log has it (a
+  divergence at warn level, once per partition). It is also not ready while it cannot read the global partition
+  (organizations and signing keys: it has not heard its owner yet after starting, or trails it), because nearly every
+  request needs it (the organization of the address, the keys of a token): such a node could serve no sign-in or token
+  anyway, so it takes no traffic. Any other partition that is merely unreadable on a node (an owner that cannot be
+  replaced, a catch-up that keeps failing) does not take the node out of rotation: its records answer 503 one by one
+  while every other partition keeps working, and an unreadable partition is usually unreadable on every node, which
+  would otherwise turn the loss of one partition (1/64 of the organizations) into a total outage.
+  `partitions_unreadable` in `GET /api/cluster` and `quisora_partitions_unreadable` stay: alert on them.
 - **Bounded staleness.** A node that cannot see a majority is not ready: `/readyz` says 503 and so does everything else but
   the probes, the token endpoints included, so a node cut off serves no revoked session or disabled account.
 - **Hot records.** A sign-in's stamps (the last sign-in, the last TOTP step) are in a record of their own
@@ -300,7 +303,8 @@ written. The partition's owner prepares the partition's changes one at a time, e
 committed, so it checks the assertion in the partition's order: a write of the asserted record is either before the
 transaction (which it then refuses) or after it, never between the version read and the commit. Transactions that
 only assert one record do not conflict with each other over it (a single database checks the assertion inside its
-transaction: Badger detects a conflict on what the transaction read, a SQL server database share-locks the row,
+transaction: Badger detects a conflict on what the transaction read, a SQL server database share-locks the row (which a multi-primary cluster such as Galera does not enforce between
+its writers: [Shared database](RUNNING.md#shared-database)),
 SQLite has one writer). An assertion names a record that exists (version 0 is refused): a SQL server database has no
 row to lock for one that does not. Its outcome is its transaction's writes': a retried transaction whose writes are
 found stored is answered as done, and a resubmission after a lost reply checks its assertions again as they then
@@ -333,6 +337,14 @@ partition's (epoch, sequence), never from clocks**. A new version of a record is
   its record's). A call whose context has ended (a write: before it begins, and then it writes nothing) and any call to a closed store
   answer `store.ErrUnavailable`.
 - Node-local state (`KindEphemeral`: leases, markers, short-lived sign-in state) is never replicated.
+- **Queued items** (`KindQueue`: emails waiting for SMTP, back-channel logouts waiting to be retried) are each node's
+  own, in every mode: an item's scope names the node that queued it (its `node_id`, made at its first start and kept in
+  its data directory, or `cluster.node_id`), and only that node lists, counts, re-seals or delivers it. With gossip they
+  are local writes like audit events (always allowed, never part of a partition write, an export, an import, the
+  seeding of a new cluster or a backup); a delivered or given-up item is expired at once rather than deleted, since a
+  tombstone of a node-local kind is in no partition whose purge would remove it. Each expires at its queue's discard
+  horizon, a day past its last retry, so the items of a node that is gone for good (or that no configured master key
+  opens) are purged with the expired records.
 - **Audit events** (`KindAudit`), in the database audit mode, are **never replicated**: every node writes the events it
   records to its own database, a local write that needs no owner, no majority and no readiness (a node cut off from the
   others still records its own). They are never part of a partition write, a catch-up export or import, or the seeding of
@@ -504,7 +516,8 @@ With 3 nodes (with 5, read "up to two"):
 | **partition unreadable** | a partition cannot be read here (no owner heard, catch-up failing, being copied whole); `partitions_unreadable` counts them, `partitions_importing` those being copied whole | yes / yes, except that partition's records | all |
 | **misconfigured** | database shared with another gossip node, owned by another node id, mixed with non-gossip nodes, holding records no partition write made, set up apart from the cluster, prefix collision, **size or build disagreement**, clock off | no / no | none |
 
-Only node-local records (`KindEphemeral`) are written on a node that is not ready. A refused write returns
+Only node-local records (`KindEphemeral`, and a node's own audit events and queued items) are written on a node that is
+not ready. A refused write returns
 `store.ErrUnavailable` (HTTP 503) and has no effect anywhere. A node never leads unless it is writable, so
 housekeeping (key rotation, user end dates, orphan sweeps, purges) runs only where the data is current (see
 "Housekeeping" below). The status
@@ -666,9 +679,13 @@ user created before the guard was taken is counted (a deletion that must find th
 whose transaction comes after it asserted a version the taking replaced, or read the taken guard, and is refused, to
 be tried again. So a user is never created, and reported made, in an organization that is about to go. A creation
 writes the guard only to make it (an organization's first user, or the first after a refused deletion) or to open it
-once a deletion's lease has run out, which then makes that deletion's commit fail. A deletion that dies holding the
-guard leaves new users refused until its lease ends (a minute); one that dies after it committed is finished by the
-next deletion. Deleting a user tells the applications at once. Their memberships stand on them:
+once a deletion's lease has run out, which then makes that deletion's commit fail; an open guard is kept while its
+organization exists (the sweep removes it only once the organization is gone), and a refused deletion gives it back
+open. A deletion that dies holding the guard leaves new users refused until its lease ends (a minute). One that dies
+after it committed has decided: housekeeping finishes it within a minute or two (the committed guards are indexed),
+as does the deletion made again, and the guard stays committed for the tombstone retention, so a creation that read
+the organization before it went is refused. A deletion without cascade is refused (not empty) while the organization
+has users, also over a cascading deletion that decided and did not finish. Deleting a user tells the applications at once. Their memberships stand on them:
 every reader of a group's members (lists, counts, SCIM) keeps only members that are users of the organization, by
 merging the member ids with the organization's user ids read from its index a page at a time (no user record is
 read), so a deleted user is never a member, whatever the clean-up has done (a pending addition that materializes
@@ -905,6 +922,15 @@ checks that the lease record still names this node with that token. A node that 
 with a clock so far off that it believes an expired lease is still its own) has its housekeeping writes refused instead of racing the
 new holder's. Between that check and the write itself two housekeepers are harmless: key rotation at worst publishes a spare key, end
 dates are compare-and-swap updates and purging is idempotent. Keep clock skew between the nodes well under 10 s.
+
+**Queued items** (emails, back-channel logout retries) are in the database too, each as the record of the node that
+queued it (its scope names the node): a node lists, counts and delivers its own only, so the nodes never contend for an
+item, nothing is claimed or locked, and no item is delivered by two nodes. Each node's caps (10,000 emails; 10,000
+logouts, 2,500 of one organization) count its own items in the database, so the cluster holds up to that many per
+node. Items survive a node's restart; those of a node that is gone for good are not taken over by another node (it
+may come back, and would send them again): they are discarded at their horizon, a day past their last retry, when
+they would have been given up anyway, and the purge removes them. Queued items are not change notices
+(`cluster.notify`) either.
 
 ## Known limits
 

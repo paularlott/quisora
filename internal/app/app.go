@@ -170,11 +170,8 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	srv.Status = func() any { return readyzStatus(node.Status()) }
 	srv.Site.Clustered = !node.Status().Standalone
 	a.registerMetrics()
-	if c.Mail.Enabled() { // its queue is on disk: messages left by the last run go out now
-		if a.mailer, err = mail.New(c, log, sealer, &mail.SMTP{Cfg: c.Mail}); err != nil {
-			a.Close()
-			return nil, err
-		}
+	if c.Mail.Enabled() { // its queue is this node's, in the store: messages left by the last run go out now
+		a.mailer = mail.New(c, log, a.Store, node.ID(), sealer, &mail.SMTP{Cfg: c.Mail})
 		a.closers = append(a.closers, a.mailer.Close)
 	}
 	// Background work (housekeeping, purges, reports) runs until Close, which cancels it and waits for it: after the
@@ -188,12 +185,9 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	// caches and their onChange hooks) is built. Until the server starts nothing is cached, so nothing is missed.
 	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
 	if a.OIDC != nil {
-		// Back-channel logouts a relying party did not take are retried from disk, also across restarts.
-		q, err := a.OIDC.OpenLogoutQueue(c.DataPath(config.DirLogoutQueue))
-		if err != nil {
-			a.Close()
-			return nil, err
-		}
+		// Back-channel logouts a relying party did not take are retried from this node's queue in the store, also
+		// across restarts.
+		q := a.OIDC.OpenLogoutQueue(node.ID())
 		a.logoutQueue.Store(q)
 		metrics.Default.Gauge("quisora_backchannel_logout_queued", "Back-channel logouts waiting to be retried.",
 			nil, metrics.Value(func() float64 { return float64(q.Queued()) }))
@@ -208,7 +202,6 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	a.background(func() { node.RunPurge(bg, 10*time.Minute) })
 	a.background(func() { a.auditForcedStart(bg) })
 	a.background(func() { a.auditRestore(bg) })
-	a.background(func() { a.purgeLostDaily(bg) })
 	a.closers = append(a.closers, srv.Stop) // the very first: stop taking requests (draining) before anything else
 	return a, nil
 }

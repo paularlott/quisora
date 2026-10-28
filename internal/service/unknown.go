@@ -17,8 +17,9 @@ type outcomeKey struct{}
 type change struct {
 	org, action, target string
 	detail              map[string]string
-	// user is the user the change targets, if it targets one (userChange): the event names them by its username and id
-	// as they are when it is recorded, in place of target.
+	// user is the user the change targets, if it targets one (userChange): the event names them by its id and marks
+	// itself a super admin's when they are one, as they are when it is recorded, and by its username in place of an
+	// empty target (a change to a thing that is theirs, such as an API token, names that thing).
 	user *model.User
 }
 

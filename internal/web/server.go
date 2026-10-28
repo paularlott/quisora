@@ -124,7 +124,7 @@ func (s *Server) Use(mods ...Module) {
 func (s *Server) Handler() http.Handler {
 	// recoverer inside observe: a request that panics is answered 500 and is still logged and counted as one.
 	return requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
-		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, s.serveGate(s.Mux))))))
+		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, limitBody(s.serveGate(s.Mux)))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold

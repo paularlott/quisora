@@ -2,10 +2,12 @@ package login_test
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/service"
@@ -20,8 +22,8 @@ type guestEnv struct {
 	p    *model.Provider
 }
 
-func newGuestEnv(t *testing.T, mut func(*service.ProviderInput)) *guestEnv {
-	e := newEnvModules(t, false, func(s *web.Server) []web.Module { return []web.Module{oidc.New(s)} }, noIPLimit)
+func newGuestEnv(t *testing.T, mut func(*service.ProviderInput), cfg ...func(*config.Config)) *guestEnv {
+	e := newEnvModules(t, false, func(s *web.Server) []web.Module { return []web.Module{oidc.New(s)} }, append(cfg, noIPLimit)...)
 	g := &guestEnv{env: e, acme: e.org(t, "acme", nil)}
 	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &e.Primary.ID}
 	if mut != nil {
@@ -51,9 +53,15 @@ func (g *guestEnv) person(t *testing.T, org *model.Org, name, email string) *mod
 // (reached through the browser, as the provider's redirect leads it) has issued the code.
 func (g *guestEnv) continueAs(t *testing.T, u *model.User) (*browser, string) {
 	t.Helper()
-	b := g.signedIn(t, u)
-	b.base = web.OrgPath(g.acme.ID, "")
-	res, _ := b.get("/login/provider/" + g.p.ID)
+	return g.continueAsVia(t, g.signedIn(t, u), g.acme, g.p)
+}
+
+// continueAsVia is continueAs for the browser b, signed in at the primary organization, and the organization provider
+// p of org.
+func (g *guestEnv) continueAsVia(t *testing.T, b *browser, org *model.Org, p *model.Provider) (*browser, string) {
+	t.Helper()
+	b.base = web.OrgPath(org.ID, "")
+	res, _ := b.get("/login/provider/" + p.ID)
 	if res.StatusCode != 302 {
 		t.Fatalf("provider start: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -72,7 +80,7 @@ func (g *guestEnv) continueAs(t *testing.T, u *model.User) (*browser, string) {
 		t.Fatalf("the provider sent the browser to %q", loc)
 	}
 	back := hop(loc)
-	if !strings.HasPrefix(back, g.Cfg.OrgIssuer(g.acme.ID)+"/login/callback/"+g.p.ID+"?") {
+	if !strings.HasPrefix(back, g.Cfg.OrgIssuer(org.ID)+"/login/callback/"+p.ID+"?") {
 		t.Fatalf("the authorization endpoint sent the browser to %q", back)
 	}
 	return b, hop(back)
@@ -190,5 +198,56 @@ func TestOrganizationProviderCanMakeGuestAccounts(t *testing.T) {
 	guest, err := g.Svc.FindUserByEmail(context.Background(), g.acme.ID, "eve@example.com")
 	if err != nil || guest.Role != model.RoleUser || !guest.EmailVerified || guest.OrgID != g.acme.ID {
 		t.Fatalf("guest: %+v %v", guest, err)
+	}
+}
+
+// fromAddress makes the browser's requests arrive through a trusted proxy (see trustLoopbackProxy) as those of the
+// client at ip.
+func (b *browser) fromAddress(ip string) {
+	base := b.c.Transport
+	b.c.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		r = r.Clone(r.Context())
+		r.Header.Set("X-Forwarded-For", ip)
+		return base.RoundTrip(r)
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func trustLoopbackProxy(c *config.Config) { c.Server.TrustProxy = []string{"127.0.0.1"} }
+
+// The requests an organization provider makes to its source organization are counted as those of the client whose
+// sign-in caused them. Someone who fails the code exchange of one provider over and over (a made-up code at the
+// callback) is refused by the token endpoint's failure limit for their own address, and the sign-ins through another
+// organization's provider, from other addresses, go on: the limit is not one the providers' requests share.
+func TestOrganizationProviderFailuresAreCountedPerClientAddress(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) }, trustLoopbackProxy)
+	beta := g.org(t, "beta", nil)
+	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &g.Primary.ID, LinkByEmail: ptr(true)}
+	pb, err := g.Svc.CreateProvider(context.Background(), service.System, beta.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	guest := g.person(t, beta, "pat-guest", "pat@example.com")
+
+	// Past the limit (300 failures a minute) with room to spare.
+	attacker := g.browserAt(t, g.acme)
+	attacker.fromAddress("198.51.100.7")
+	for range 320 {
+		res, _ := attacker.get("/login/provider/" + g.p.ID)
+		loc, err := url.Parse(res.Header.Get("Location"))
+		if err != nil || res.StatusCode != 302 {
+			t.Fatalf("provider start: %d %v", res.StatusCode, err)
+		}
+		attacker.get("/login/callback/" + g.p.ID + "?code=made-up&state=" + url.QueryEscape(loc.Query().Get("state")))
+	}
+
+	b := g.signedIn(t, pat)
+	b.fromAddress("203.0.113.5")
+	if _, done := g.continueAsVia(t, b, beta, pb); done != web.OrgPath(beta.ID, "/account") || len(sessionsOf(t, g.env, guest)) != 1 {
+		t.Fatalf("a sign-in through beta's provider from another address after the failures: %q", done)
 	}
 }

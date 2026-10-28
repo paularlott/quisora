@@ -2,12 +2,17 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/paularlott/quisora/internal/service"
 )
 
 // SelfTransport returns a RoundTripper that answers the requests this server makes to its own organizations' addresses
@@ -16,7 +21,7 @@ import (
 // requests to its issuer): they must work wherever the server runs, whether or not it can reach its own public
 // address from where it stands (behind a proxy, a load balancer, a NAT without hairpinning), and must not leave the
 // process. Only /o/ paths are served this way: nothing else of the server is something it calls itself, and the
-// requests are made from the loopback address, as a local caller's would be.
+// requests are made from the address of the client whose request caused them (see RoundTrip).
 func (s *Server) SelfTransport(base http.RoundTripper) http.RoundTripper {
 	u, err := url.Parse(s.Cfg.Server.PublicURL)
 	if err != nil {
@@ -31,12 +36,30 @@ type selfTransport struct {
 	handler      func() http.Handler // built on the first request: the server's modules register their routes after this is made
 }
 
+// RoundTrip serves an organization path itself. The request it hands the handler comes from the address of the client
+// whose request caused it (the one in the context, as the request middleware recorded it), because every per-address
+// limit of the endpoints it reaches (failed token requests, client authentication failures, ...) counts by that
+// address: from one shared loopback address, anyone who can start a sign-in through an organization provider could
+// make the upstream requests fail, from a few addresses, and so exhaust the limit that every organization provider's
+// requests share. Work with no request behind it (the refresh checks of the housekeeping) has no client and comes
+// from the loopback address; it is not counted with any client's, and only delays itself when it is refused.
 func (t *selfTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Scheme != t.scheme || strings.ToLower(r.URL.Host) != t.host || !strings.HasPrefix(r.URL.Path, "/o/") {
 		return t.base.RoundTrip(r)
 	}
-	req := r.Clone(r.Context())
-	req.RequestURI, req.RemoteAddr, req.Host = r.URL.RequestURI(), "127.0.0.1:0", r.URL.Host
+	// The request starts from a context of its own: what the outer request's context holds (its session, user and
+	// actor) is that client's identity, and must not be inherited by a request the client's input only caused. Only
+	// its end (cancelled or past its deadline) carries over.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer context.AfterFunc(r.Context(), cancel)()
+	req := r.Clone(ctx)
+	req.RequestURI, req.RemoteAddr, req.Host = r.URL.RequestURI(), originAddr(r), r.URL.Host
+	// The address above is already the client's as trust_proxy resolved it: a forwarding header would let the caller
+	// of this request name another one.
+	for _, h := range []string{"X-Forwarded-For", "X-Real-Ip", "Forwarded"} {
+		req.Header.Del(h)
+	}
 	if r.Body == nil {
 		req.Body = http.NoBody
 	} else {
@@ -45,6 +68,17 @@ func (t *selfTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	rec := &selfResponse{header: http.Header{}}
 	t.handler().ServeHTTP(rec, req)
 	return rec.response(r), nil
+}
+
+// originAddr is the remote address of the in-process request made for r: the client of the request r was made for, or
+// the loopback address when there is none.
+func originAddr(r *http.Request) string {
+	if ri := service.RequestFrom(r.Context()); ri != nil {
+		if a, err := netip.ParseAddr(ri.IP); err == nil {
+			return net.JoinHostPort(a.String(), "0")
+		}
+	}
+	return "127.0.0.1:0"
 }
 
 // selfResponse collects what a handler answers, to give it back as the *http.Response of the request it served. It is

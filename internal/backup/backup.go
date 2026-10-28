@@ -134,10 +134,10 @@ type Options struct {
 	Password string
 }
 
-// skipped reports whether a kind is left out of backups: short-lived sign-in state, cluster locks and single-use
-// values seen are meaningless in a restored store.
+// skipped reports whether a kind is left out of backups: short-lived sign-in state, cluster locks, single-use values
+// seen and a node's queued items (only the node that queued one delivers it) are meaningless in a restored store.
 func skipped(k model.Kind) bool {
-	return k == model.KindEphemeral || k == model.KindLock || k == model.KindReplay
+	return k == model.KindEphemeral || k == model.KindLock || k == model.KindReplay || k == model.KindQueue
 }
 
 // WriteWith streams every live record of st to w, read from a point-in-time view when the backend has one.

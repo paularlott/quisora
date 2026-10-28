@@ -3,158 +3,194 @@ package queue
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 )
 
-func TestPassCorruptItemIsDropped(t *testing.T) {
-	dir := t.TempDir()
-	s := sealer(t, secure.RandomBytes(32))
-	sk := &sink{}
-	q := idle(dir, Options[string]{Sealer: s, Deliver: sk.deliver})
-	name := "00000000000000000001-aa" + ext
-	put(t, dir, name, "garbage")
-	q.queued.Store(1)
-	if next := pass(q, context.Background()); !next.IsZero() {
-		t.Fatalf("next %v", next)
-	}
-	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) || q.Queued() != 0 || sk.n.Load() != 0 {
-		t.Fatalf("corrupt item kept (%v), queued %d, delivered %d", err, q.Queued(), sk.n.Load())
-	}
-	// A sealed value that opens but is not JSON of an item is dropped the same way.
-	put(t, dir, name, s.SealFor("test/queue", []byte("not json")))
-	q.queued.Store(1)
-	pass(q, context.Background())
-	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-		t.Fatalf("non-JSON item kept: %v", err)
-	}
-}
-
-func TestPassStoppingDoesNotCountAttempt(t *testing.T) {
-	dir := t.TempDir()
-	s := sealer(t, secure.RandomBytes(32))
-	var failed int
-	ctx, cancel := context.WithCancel(context.Background())
-	q := idle(dir, Options[string]{Sealer: s, Backoff: []time.Duration{time.Hour},
-		Deliver: func(context.Context, string) error { cancel(); return errors.New("interrupted") },
-		Failed:  func(string, int, time.Duration, error) { failed++ }})
-	if err := q.Add("a", 0, 0); err != nil {
-		t.Fatal(err)
-	}
-	names, _ := q.files()
-	if next := pass(q, ctx); !next.IsZero() {
-		t.Fatalf("next %v", next)
-	}
-	it, err := q.read(names[0])
-	if err != nil || it.Attempt != 0 || failed != 0 {
-		t.Fatalf("attempt %v, failed callbacks %d, err %v", it, failed, err)
-	}
-	// With the context already cancelled the scheduler does not even try.
-	if next := pass(q, ctx); !next.IsZero() {
-		t.Fatalf("next %v", next)
-	}
-}
-
-func TestPassFailureCallbackAndLostRetryWrite(t *testing.T) {
-	dir := t.TempDir()
-	s := sealer(t, secure.RandomBytes(32))
-	var attempts []int
-	var retries []time.Duration
-	lock := false
-	q := idle(dir, Options[string]{Sealer: s, Backoff: []time.Duration{time.Hour, 2 * time.Hour},
-		Deliver: func(context.Context, string) error {
-			if lock { // the disk fails while the delivery is in flight
-				chmod(t, dir, 0o500)
-			}
-			return errors.New("down")
-		},
-		Failed: func(_ string, attempt int, retry time.Duration, _ error) {
-			attempts = append(attempts, attempt)
-			retries = append(retries, retry)
-		}})
-	if err := q.Add("a", 0, 0); err != nil {
-		t.Fatal(err)
-	}
-	name := mustOne(t, q)
-	before := time.Now()
-	next := pass(q, context.Background())
-	if next.Before(before.Add(time.Hour)) || next.After(time.Now().Add(time.Hour)) {
-		t.Fatalf("next retry %v is not an hour away", next)
-	}
-	if it, err := q.read(name); err != nil || it.Attempt != 1 {
-		t.Fatalf("retry not recorded: %+v %v", it, err)
-	}
-
-	// The retry cannot be written: logged, still returned as the next due time, and the file keeps its old state.
-	if os.Geteuid() != 0 {
-		put := func() {
-			it, _ := q.read(name)
-			it.Next = time.Time{}
-			if err := q.write(name, it); err != nil {
+// An item that cannot be read (not sealed, or not an item) is dropped, not delivered.
+func TestCorruptItemIsDropped(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		st, _ := b.open(t)
+		sk := &sink{}
+		q := newQueue(options(t, st, sk.deliver))
+		ctx := context.Background()
+		for _, sealed := range []string{"garbage", q.o.Sealer.SealFor(q.o.Binding, []byte("not json"))} {
+			it := &model.QueueItem{Meta: model.Meta{ID: model.NewID()}, Queue: q.o.Name, Node: q.o.Node,
+				Next: time.Now(), Sealed: sealed, Expires: time.Now().Add(time.Hour)}
+			if err := q.items.Create(ctx, it); err != nil {
 				t.Fatal(err)
 			}
+			q.rescan()
+			if next := pass(q, ctx); !next.IsZero() {
+				t.Fatalf("next %v", next)
+			}
+			if q.Queued() != 0 || sk.n.Load() != 0 {
+				t.Fatalf("%q: queued %d, delivered %d", sealed, q.Queued(), sk.n.Load())
+			}
 		}
-		put()
-		lock = true
-		if next := pass(q, context.Background()); next.IsZero() {
-			t.Fatal("a failed retry write dropped the schedule")
-		}
-		_ = os.Chmod(dir, 0o700)
-		if it, err := q.read(name); err != nil || it.Attempt != 1 {
-			t.Fatalf("file changed despite the failed write: %+v %v", it, err)
-		}
-		lock = false
-	}
-
-	// The last failure gives up: the item is gone and the callback saw retry 0.
-	it, _ := q.read(name)
-	it.Attempt, it.Next = 2, time.Time{}
-	if err := q.write(name, it); err != nil {
-		t.Fatal(err)
-	}
-	if next := pass(q, context.Background()); !next.IsZero() {
-		t.Fatalf("next %v after giving up", next)
-	}
-	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) || q.Queued() != 0 {
-		t.Fatalf("given-up item kept: %v, queued %d", err, q.Queued())
-	}
-	if last := len(retries) - 1; retries[last] != 0 || attempts[last] != 3 || retries[0] != time.Hour || attempts[0] != 1 {
-		t.Fatalf("callbacks: attempts %v retries %v", attempts, retries)
-	}
+	})
 }
 
-func TestPassNotDueAndUnknownKey(t *testing.T) {
-	dir := t.TempDir()
-	lost, key := sealer(t, secure.RandomBytes(32)), sealer(t, secure.RandomBytes(32))
-	sk := &sink{}
-	q := idle(dir, Options[string]{Sealer: lost, Deliver: sk.deliver})
-	if err := q.Add("later", time.Hour, 0); err != nil {
-		t.Fatal(err)
-	}
-	name := mustOne(t, q)
-	if next := pass(q, context.Background()); next.IsZero() || sk.n.Load() != 0 {
-		t.Fatalf("a future item: next %v, delivered %d", next, sk.n.Load())
-	}
-	// The same file under a keyring without its key (a restart with another master key): kept, not delivered, not
-	// dropped.
-	q.o.Sealer, q.waiting = key, nil
-	if next := pass(q, context.Background()); !next.IsZero() || sk.n.Load() != 0 {
-		t.Fatalf("lost-key item: next %v, delivered %d", next, sk.n.Load())
-	}
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		t.Fatalf("lost-key item removed: %v", err)
-	}
-	// A pass reports the earliest due time over several waiting items.
-	q.o.Sealer = lost
-	if err := q.Add("sooner", 30*time.Minute, 0); err != nil {
-		t.Fatal(err)
-	}
-	next := pass(q, context.Background())
-	if next.IsZero() || time.Until(next) > 31*time.Minute {
-		t.Fatalf("earliest due %v", time.Until(next))
-	}
+// A delivery cut short by the queue closing does not count as an attempt; with its context ended the scheduler does
+// not even try.
+func TestStoppingDoesNotCountAttempt(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		st, _ := b.open(t)
+		var failed int
+		ctx, cancel := context.WithCancel(context.Background())
+		o := options(t, st, func(context.Context, string) error { cancel(); return errors.New("interrupted") })
+		o.Backoff, o.Failed = []time.Duration{time.Hour}, func(string, int, time.Duration, error) { failed++ }
+		q := newQueue(o)
+		addAll(t, q, "a")
+		if next := pass(q, ctx); !next.IsZero() {
+			t.Fatalf("next %v", next)
+		}
+		if it := only(t, q); it.Attempt != 0 || failed != 0 {
+			t.Fatalf("attempt %d, failed callbacks %d", it.Attempt, failed)
+		}
+		if next := pass(q, ctx); !next.IsZero() {
+			t.Fatalf("next %v", next)
+		}
+	})
+}
+
+// A failed delivery is told to Failed and waits for its next delay; one whose retry the store does not take keeps its
+// state (and is read again later); the last failure gives the item up.
+func TestFailureCallbackAndLostRetryWrite(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		inner, _ := b.open(t)
+		st := &faulty{Store: inner}
+		var attempts []int
+		var retries []time.Duration
+		var calls atomic.Int32
+		o := options(t, st, func(context.Context, string) error { calls.Add(1); return errors.New("down") })
+		o.Backoff = []time.Duration{time.Hour, 2 * time.Hour}
+		o.Failed = func(_ string, attempt int, retry time.Duration, _ error) {
+			attempts = append(attempts, attempt)
+			retries = append(retries, retry)
+		}
+		q := newQueue(o)
+		ctx := context.Background()
+		addAll(t, q, "a")
+		before := time.Now()
+		next := pass(q, ctx)
+		if next.Before(before.Add(time.Hour-time.Second)) || next.After(time.Now().Add(time.Hour)) {
+			t.Fatalf("next retry %v is not an hour away", next)
+		}
+		if it := only(t, q); it.Attempt != 1 {
+			t.Fatalf("retry not recorded: %+v", it)
+		}
+
+		// The retry cannot be written: the item keeps its state, and is left for the scheduler's next full read, not
+		// delivered again at once.
+		due := func(attempt int) {
+			it := only(t, q)
+			it.Attempt, it.Next = attempt, time.Now()
+			if err := q.items.Update(ctx, it); err != nil {
+				t.Fatal(err)
+			}
+			q.rescan()
+		}
+		due(1)
+		st.refuse.Store(true)
+		was := calls.Load()
+		pass(q, ctx)
+		st.refuse.Store(false)
+		if it := only(t, q); it.Attempt != 1 || it.Next.After(time.Now()) {
+			t.Fatalf("item changed despite the failed write: %+v", it)
+		}
+		pass(q, ctx)
+		if n := calls.Load() - was; n != 1 {
+			t.Fatalf("tried %d times, want once until the queue is read afresh", n)
+		}
+
+		// The last failure gives up: the item is gone and the callback saw retry 0.
+		due(2)
+		if next := pass(q, ctx); !next.IsZero() {
+			t.Fatalf("next %v after giving up", next)
+		}
+		if q.Queued() != 0 {
+			t.Fatalf("given-up item kept: queued %d", q.Queued())
+		}
+		if last := len(retries) - 1; retries[last] != 0 || attempts[last] != 3 || retries[0] != time.Hour || attempts[0] != 1 {
+			t.Fatalf("callbacks: attempts %v retries %v", attempts, retries)
+		}
+	})
+}
+
+// An item not yet due is not delivered, and the pass tells when the earliest is; an item no configured key opens is
+// kept, neither delivered nor dropped, and goes out once its key is configured again.
+func TestNotDueAndUnknownKey(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		st, _ := b.open(t)
+		sk := &sink{}
+		o := options(t, st, sk.deliver)
+		lost := o.Sealer
+		q := newQueue(o)
+		ctx := context.Background()
+		if err := q.Add("later", time.Hour, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Add("sooner", 30*time.Minute, 0); err != nil {
+			t.Fatal(err)
+		}
+		if next := pass(q, ctx); next.IsZero() || time.Until(next) > 31*time.Minute || sk.n.Load() != 0 {
+			t.Fatalf("future items: next %v, delivered %d", next, sk.n.Load())
+		}
+		addAll(t, q, "now")
+		q.o.Sealer = sealer(t, secure.RandomBytes(32)) // a restart with another master key
+		pass(q, ctx)
+		if sk.n.Load() != 0 || q.Queued() != 3 {
+			t.Fatalf("lost-key item: delivered %d, queued %d", sk.n.Load(), q.Queued())
+		}
+		if stale, lost := q.Reseal(); stale != 0 || lost != 3 {
+			t.Fatalf("stale %d lost %d", stale, lost)
+		}
+		q.o.Sealer = lost // its key is back
+		q.Reseal()
+		pass(q, ctx)
+		if sk.count() != 1 || sk.got[0] != "now" {
+			t.Fatalf("delivered %v once its key was back", sk.got)
+		}
+	})
+}
+
+// A failed re-seal leaves the item sealed with the old key, so the old key must stay configured until Reseal reports
+// no failures; once it goes, the item does not open. A queue that cannot be read counts one item more.
+func TestFailedResealKeepsItemOpenableByPreviousKey(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		inner, _ := b.open(t)
+		st := &faulty{Store: inner}
+		oldKey, newKey := secure.RandomBytes(32), secure.RandomBytes(32)
+		ring := sealer(t, oldKey)
+		o := options(t, st, (&sink{}).deliver)
+		o.Sealer = ring
+		q := newQueue(o)
+		if err := q.Add("queued invitation", time.Hour, 0); err != nil {
+			t.Fatal(err)
+		}
+		ring.Replace(sealer(t, newKey, oldKey))
+		st.refuse.Store(true)
+		if stale, _ := q.Reseal(); stale != 1 {
+			t.Fatalf("stale %d", stale)
+		}
+		st.refuse.Store(false)
+		it := only(t, q)
+		if _, err := open(q, it); err != nil {
+			t.Fatal("the old key should still open the item", err)
+		}
+		ring.Replace(sealer(t, newKey))
+		if _, err := open(q, it); !errors.Is(err, secure.ErrUnknownKey) {
+			t.Fatalf("expected the previous key missing, got %v", err)
+		}
+
+		st.blind.Store(true)
+		if stale, _ := q.Reseal(); stale != 1 {
+			t.Fatalf("a queue that cannot be read: stale %d", stale)
+		}
+	})
 }

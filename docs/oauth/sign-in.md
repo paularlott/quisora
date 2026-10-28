@@ -214,13 +214,16 @@ redirect URI) with your `state`.
 to it whenever one of its users' sessions ends: sign-out, a session revoked, a password reset, an account disabled
 or deleted, an emergency sign-out. The application ends its own session for that `sid` or `sub`. A logout your
 application does not take (unreachable, or answering with an error) is retried after 5 s, 30 s, 5 min, 15 min and
-1 h, then given up on and logged; the retries wait on disk, so a restart does not lose them. Organizations do not
+1 h, then given up on and logged; the retries wait in the store, as the node's own, so a restart does not lose them. Organizations do not
 hold each other up: each has its own share of the senders (8 at a time) and of the queue (2,500 logouts), and the
 senders serve the organizations in turn, so an application that is slow or never answers delays only the notices of
 its own organization. A logout that finds its organization's share full goes straight to the retry queue instead.
 The retry queue is fair the same way: it sends 8 at a time, at most 2 of them for one organization, and sends each
 retry as soon as one of those is free, so retries to an application that never answers (8 s each, at most) hold back
-only the retries of its own organization, and a new retry of another one does not wait for them.
+only the retries of its own organization, and a new retry of another one does not wait for them. Each node's retry
+queue holds at most 10,000 logouts, of which one organization may have 2,500: an organization whose applications never answer (or that
+signs out thousands of sessions at once) can only fill its own share, and its logouts beyond it are dropped with a
+warning, while the failures of the other organizations are still queued.
 Answer quickly and idempotently: the same logout can arrive twice.
 
 ## Tokens for an API (resource indicators)

@@ -177,8 +177,6 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 // ---------------------------------------------------------------------------------------------------------------
 // Client authentication
 
-// authenticateClient authenticates the caller of a back-channel endpoint (token, introspect, revoke) with
-// client_secret_basic, client_secret_post or private_key_jwt. There is no "none" method.
 // clientAuthFailuresPerMin bounds failed client authentications per client id and IP address and minute (token,
 // introspection and revocation endpoints together): secrets cannot be guessed anyway, but a flood of attempts (and
 // of private_key_jwt signature checks) costs work. Keyed by client as well as address, so one client's failures do
@@ -187,18 +185,33 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 // (see authenticateClient).
 const clientAuthFailuresPerMin = 30
 
-// clientAuthFailuresPerIPMin bounds failures per IP address and minute whatever client ids are sent: the per-client
-// budget alone resets for every made-up id, and each unknown id costs a store read. Ten clients' worth, so a shared
-// address is only refused when it is plainly guessing.
-const clientAuthFailuresPerIPMin = 10 * clientAuthFailuresPerMin
+// failuresPerIPMin bounds, per IP address and minute, the failed requests that anyone can cause by naming a client: a
+// failed client authentication whatever client id is sent (the per-client budget alone resets for every made-up id,
+// and each unknown id costs a store read), and a token request of a public client that fails on what it presents (an
+// invalid_grant: an unknown, used or expired code, refresh token or device code; a DPoP proof refused). A public
+// client is admitted by its client_id alone, and such a request still costs: a DPoP proof is recorded once used (a
+// write the cluster replicates) and an unknown code is marked against a redemption in progress (short-lived memory).
+// Ten clients' worth of authentication failures, so a shared address is only refused when it is plainly guessing.
+// Past it the address is refused before anything is looked at for the rest of the minute. One counter, read once per
+// request here (the token endpoint only adds to it). The failures of a confidential client that proved its secret
+// are not counted here but against that client alone (tokenFailuresPerClientMin).
+const failuresPerIPMin = 10 * clientAuthFailuresPerMin
 
-// authenticateClient is checkClient with a ceiling on failures.
+// failIPKey is the counter of failuresPerIPMin for r's address.
+func failIPKey(r *http.Request) string { return "fail-ip|" + web.RateKeyIP(r) }
+
+// authenticateClient authenticates the caller of a back-channel endpoint (token, introspect, revoke) with
+// client_secret_basic, client_secret_post or private_key_jwt, or admits a public client by its client_id (token, when
+// allowPublic), under the ceilings on failures above. There is no "none" method.
 func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
-	ip := web.RateKeyIP(r)
-	key := "client-auth|" + authClientID(r) + "|" + ip
-	ipKey := "client-auth-ip|" + ip
+	key := "client-auth|" + authClientID(r) + "|" + web.RateKeyIP(r)
+	ipKey := failIPKey(r)
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
 		desc: "too many failed client authentications; try again in a minute", retry: true}
+	// Refused as "try again", not as invalid_client: a public client that took that for a verdict on its own
+	// credentials would drop tokens that are good.
+	ipLimited := &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+		desc: "too many failed requests from this address; try again in a minute", retry: true}
 	// A counter that cannot be read or updated refuses the request (a limit never fails open) but answers "try again"
 	// (503) rather than "too many failures": nothing tripped, and the valid client must retry, not back off a minute.
 	// Over the limit, every attempt from this client and address is refused, the right secret included, before
@@ -214,8 +227,8 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if err != nil {
 		return nil, serverError(unavailable(err))
 	}
-	if n >= clientAuthFailuresPerIPMin {
-		return nil, limited
+	if n >= failuresPerIPMin {
+		return nil, ipLimited
 	}
 	ce, e := p.checkClient(r, allowPublic)
 	if e == nil || e.code != "invalid_client" {
@@ -227,8 +240,8 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if err != nil {
 		return ce, e
 	}
-	if n > clientAuthFailuresPerIPMin {
-		return nil, limited
+	if n > failuresPerIPMin {
+		return nil, ipLimited
 	}
 	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
 	if err != nil {

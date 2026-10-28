@@ -375,8 +375,11 @@ func TestAuditAndLinks(t *testing.T) {
 	if ix := si.Index(); ix.Scope != "" || ix.Partition != "o" || !Unscoped(KindSignIn) {
 		t.Error("signin index")
 	}
-	if ix := (&Lock{}).Index(); ix.Scope != "" || ix.Fields != nil {
+	if ix := (&Lock{}).Index(); ix.Scope != "" || ix.Fields["org_deleted"] != false {
 		t.Error("lock index")
+	}
+	if ix := (&Lock{Holder: OrgDeleted}).Index(); ix.Fields["org_deleted"] != true {
+		t.Error("a decided organization deletion's guard is not indexed")
 	}
 	if ix := (&Replay{Expires: t0}).Index(); !ix.Expires.Equal(t0) {
 		t.Error("replay index")

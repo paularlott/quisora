@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +20,11 @@ import (
 type probe struct{}
 
 func (probe) Register(s *web.Server) {
-	s.Mux.Handle("POST /api/probe", s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
+	h := s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, 200, map[string]string{"actor": web.Actor(r).Name})
-	}))
+	})
+	s.Mux.Handle("POST /api/probe", h)
+	s.Mux.Handle("POST /api/orgs/{org}/probe", h)
 	s.Bearer = func(ctx context.Context, r *http.Request, tok string) (*service.Actor, error) {
 		switch tok {
 		case "admin":
@@ -143,12 +146,12 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 	if got := <-audit.actions; !strings.Contains(got, "CSRF") {
 		t.Errorf("CSRF refusal audited as %q", got)
 	}
-	for range web.BearerFailuresPerIPMin + 5 { // a store failure is not the caller's: never counted
+	for range web.BearerFailuresPerOrgMin + 5 { // a store failure is not the caller's: never counted
 		if r := do(anon, map[string]string{"Authorization": "Bearer down"}); r.StatusCode != 503 {
 			t.Fatalf("store failure: %d, want 503", r.StatusCode)
 		}
 	}
-	for i := range web.BearerFailuresPerIPMin {
+	for i := range web.BearerFailuresPerOrgMin {
 		if r := do(anon, map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 401 {
 			t.Fatalf("failure %d: %d", i+1, r.StatusCode)
 		}
@@ -159,6 +162,40 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 	}
 	if r := do(sess, nil); r.StatusCode == http.StatusTooManyRequests {
 		t.Error("a session request was limited: only bearer authentication counts")
+	}
+}
+
+// Failed bearer authentications are counted per organization named in the path as well as per address: one tenant's
+// bad token does not stop another tenant's valid one from the same address, and made-up organization names do not
+// give a guesser a fresh budget each (the address ceiling).
+func TestManagementBearerLimitIsPerOrganization(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
+	do := func(org, token string) int {
+		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/orgs/"+org+"/probe", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := env.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for range web.BearerFailuresPerOrgMin {
+		do("acme", "nope")
+	}
+	if got := do("acme", "admin"); got != http.StatusTooManyRequests {
+		t.Errorf("valid token for the organization whose budget is spent: %d, want 429", got)
+	}
+	if got := do("initech", "admin"); got != 200 {
+		t.Errorf("valid token for another organization from the same address: %d, want 200", got)
+	}
+	for i := range web.BearerFailuresPerIPMin / web.BearerFailuresPerOrgMin {
+		for range web.BearerFailuresPerOrgMin {
+			do("made-up-"+strconv.Itoa(i), "nope")
+		}
+	}
+	if got := do("initech", "admin"); got != http.StatusTooManyRequests {
+		t.Errorf("valid token from an address past the ceiling: %d, want 429", got)
 	}
 }
 

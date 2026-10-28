@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"crypto/subtle"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -167,6 +168,25 @@ func recoverer(log logger.Logger, next http.Handler) http.Handler {
 	})
 }
 
+// maxFormBody limits what a form (application/x-www-form-urlencoded) request may send. Every form of this server is a
+// few fields; net/http's own limit for reading one (10 MB) would let each anonymous POST hold that much memory until
+// ReadTimeout.
+const maxFormBody = 64 << 10
+
+// limitBody caps every request body, in one place for all handlers: forms at maxFormBody, anything else (JSON,
+// SCIM) at MaxJSONBody. The server accepts no uploads. A body over the cap fails the handler's read with
+// *http.MaxBytesError.
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := int64(MaxJSONBody)
+		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt == "application/x-www-form-urlencoded" {
+			limit = maxFormBody
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // shed rejects requests with 503 once max are in flight on this node.
 func shed(max int, next http.Handler) http.Handler {
 	if max <= 0 {
@@ -256,23 +276,24 @@ func WithActor(r *http.Request, a *service.Actor) *http.Request {
 }
 
 // WithSession loads the session (if any) into the request context. A session the store refused to check leaves the
-// request signed out and marked (SessionUnchecked).
+// request signed out and marked (SessionUnchecked). The context's session values are set whatever it held before, so a
+// request that arrives with another's identity in its context (an in-process request made for one, see selfTransport)
+// is signed out unless its own cookie names a session.
 func (s *Server) WithSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, u, err := s.Sessions.Check(r)
-		if err != nil {
-			r = r.WithContext(context.WithValue(r.Context(), ctxUnchecked, true))
-		}
+		var actor *service.Actor
 		if sess != nil {
 			if ri := service.RequestFrom(r.Context()); ri != nil {
 				ri.SessionID = sess.ID
 			}
-			ctx := context.WithValue(r.Context(), ctxSession, sess)
-			ctx = context.WithValue(ctx, ctxUser, u)
-			ctx = context.WithValue(ctx, ctxActor, service.ActorForUser(u, ClientIP(r)))
-			r = r.WithContext(ctx)
+			actor = service.ActorForUser(u, ClientIP(r))
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), ctxUnchecked, err != nil)
+		ctx = context.WithValue(ctx, ctxSession, sess)
+		ctx = context.WithValue(ctx, ctxUser, u)
+		ctx = context.WithValue(ctx, ctxActor, actor)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

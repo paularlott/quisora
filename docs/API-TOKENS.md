@@ -45,10 +45,12 @@ disabled or lost the role its scopes need) is audited as `apitoken.refused` in i
 token may not make is audited as `api.request.refused`. Both are recorded at most once a minute per token (or
 caller) and reason on each node, with `suppressed` counting the repeats held back since the last one: a refusal can be
 repeated at will, and must not flood the audit log. Failed bearer authentications (management API and SCIM
-together) are limited to 60 per address and minute: past that, every bearer request from the address gets
-`429 Too Many Requests` with `Retry-After` for the rest of the minute, before its token is looked at. Successful
-requests never count, so a busy integration is not slowed; behind a proxy set `server.trust_proxy`, or every caller
-shares the proxy's address.
+together) are limited to 60 per address and organization (the one the path names) and minute, and to 600 per address
+whatever organizations are named: past that, every bearer request from the address for that organization (or at all)
+gets `429 Too Many Requests` with `Retry-After` for the rest of the minute, before its token is looked at. One
+organization's stale token, retried from the shared addresses of an identity provider's provisioning service, does
+not stop other organizations' provisioning from those addresses. Successful requests never count, so a busy
+integration is not slowed; behind a proxy set `server.trust_proxy`, or every caller shares the proxy's address.
 
 ```bash
 # find a user
@@ -89,6 +91,20 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?filter=userN
 
 A provisioning service that supports OAuth can use a client instead: a confidential client with SCIM provisioning
 turned on gets short-lived tokens with the client credentials grant, and no person's token is involved.
+
+### Listing and filters
+
+A page of `GET /Users` or `GET /Groups` is read from the store and costs the page, however many there are, with the
+exact `totalResults`, when the filter is absent or one of these (alone, or `and`ed for users): for users `active eq`
+and the role of the Quisora extension, for groups `displayName sw`. They can be ordered by `userName`, `displayName`,
+`emails`, `active`, `meta.created` or `id` (groups: `displayName`, `meta.created`, `id`), also descending. Finding one
+resource is as cheap: `id`, `userName`, `externalId` or `emails.value eq` for users, `displayName` or `externalId eq`
+for groups. A group's members are listed in full, so a client that lists many groups should ask for
+`excludedAttributes=members`.
+
+Any other filter or sort is evaluated in memory over the resources the rest of the filter leaves, and a request that
+leaves more than 50,000 is answered `400` with `scimType` `tooMany` (RFC 7644 section 3.4.2.2): narrow it with one of
+the filters above.
 
 ### Where SCIM is lenient
 

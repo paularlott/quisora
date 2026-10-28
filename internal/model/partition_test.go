@@ -31,9 +31,11 @@ func TestPartitionKeyOfEveryKind(t *testing.T) {
 		KindLock:      &Lock{Meta: meta},
 		KindReplay:    &Replay{Meta: meta},
 		KindEphemeral: &Ephemeral{Meta: meta},
+		KindQueue:     &QueueItem{Meta: meta, Queue: "mail", Node: "node-1", Key: org},
 	}
 	want := map[Kind]string{
-		KindOrg: "", KindKey: "", KindEphemeral: "", // global (partition 0); an ephemeral record is never partitioned
+		KindOrg: "", KindKey: "", // global (partition 0)
+		KindEphemeral: "", KindQueue: "", // node-local: never partitioned
 		KindLock: "rec-1", KindReplay: "rec-1", // the record's own ID
 	}
 	for _, k := range Kinds() {

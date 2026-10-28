@@ -1,51 +1,61 @@
-// Package queue is a small retry queue on disk: emails waiting for SMTP, back-channel logouts waiting for an
-// application. An item is one file in the queue's directory, sealed with the master key (items carry single-use links
-// and user identifiers) and written durably before Add returns, so it survives a restart or a crash and is delivered
-// by the node once it is back. The queue delivers what is due, oldest first, one item at a time or by a bounded pool
-// of workers (Options.Workers) that keeps one key's items (say, one organization's) from taking them all
-// (Options.PerKey). A delivery starts as soon as a worker is free and an item is due (just added, retried, or its
-// wait over), so a slow delivery holds its worker and nothing else. An item that fails waits for the next delay of
-// Backoff, and after the last one it is given up on (Failed). A file is removed once its item is delivered or given
-// up on.
+// Package queue is a node's durable retry queue: emails waiting for SMTP, back-channel logouts waiting for an
+// application. An item is a record of the store (model.QueueItem), sealed with the master key (items carry single-use
+// links and user identifiers) and written before Add returns, so it survives a restart or a crash and is delivered by
+// the node once it is back.
+//
+// An item belongs to the node that queued it: its scope names the node (Options.Node), and only that node lists,
+// counts or delivers it. The kind is node-local (never replicated, never backed up); on a database several nodes
+// share, each sees the others' items and never touches them, so nothing is claimed or locked and no item is delivered
+// by two nodes. A node that is gone for good leaves its items behind: each expires at the queue's discard horizon (set
+// by Add: past the point it would have been given up anyway), and the store's purge removes it.
+//
+// The queue delivers what is due, earliest due first (the order items were added, for items not yet retried), by a
+// bounded pool of workers (Options.Workers) that keeps one key's items (say, one organization's) from taking them all
+// (Options.PerKey). A delivery starts as soon as a worker is free and an item is due (just added, retried, or its wait
+// over), so a slow delivery holds its worker and nothing else. An item that fails waits for the next delay of
+// Backoff, and after the last one it is given up on (Failed). A delivered or given-up item is ended by expiring it at
+// once: the store's purge removes it, on every node and backend alike (a tombstone of a node-local kind would wait for
+// a gossip partition's purge, which never covers it).
 //
 // After a master key change the queue is re-sealed with the active key (Reseal) before the node reports that key, so
 // a rotation the cluster reports complete leaves no queued item needing a previous key. An item sealed with a key
-// that is not configured is kept, and delivered once that key is configured again.
+// that is not configured is kept, and delivered once that key is configured again (or discarded at its horizon).
 package queue
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
-	"github.com/paularlott/quisora/internal/durable"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/store"
 )
 
-// ErrFull is returned by Add when the queue holds Max items.
+// ErrFull is returned by Add when this node's items of the queue number Max, or MaxPerKey of the item's key.
 var ErrFull = errors.New("queue: full")
 
-// Options configure a queue. Deliver is required.
+// Options configure a queue. Store, Node, Sealer and Deliver are required.
 type Options[T any] struct {
-	Name    string // in log messages ("mail queue")
-	Log     logger.Logger
+	Name  string // the queue's name: its items' (model.QueueItem.Queue), and in log messages ("mail")
+	Log   logger.Logger
+	Store store.Store
+	// Node is this node's id (cluster.Node.ID): the queue's items are this node's, and only them it counts and delivers.
+	Node    string
 	Sealer  *secure.Sealer
-	Binding string // binds the sealed files to this queue (secure.Sealer.SealFor)
+	Binding string // binds the sealed items to this queue (secure.Sealer.SealFor)
 	// Backoff are the delays after each failed delivery; after the last, the item is given up on.
 	Backoff []time.Duration
-	Max     int // most items held; Add refuses more (ErrFull)
-	Deliver func(ctx context.Context, item T) error
+	Max     int // most items of this node held; Add refuses more (ErrFull)
+	// MaxPerKey is the most items of this node held of one Key (0: no limit besides Max; with no Key, all items have
+	// one key). It keeps one key, an organization whose application never answers, from filling the queue with its
+	// items so that Add refuses (ErrFull) the others'.
+	MaxPerKey int
+	Deliver   func(ctx context.Context, item T) error
 	// Failed is told of each failed delivery (attempt counts them): retry is the delay before the next attempt, or 0
 	// when the item is given up on. Optional (the queue logs nothing of its own about failures).
 	// It is called from the delivering worker, so from several goroutines at once when Workers is more than one.
@@ -62,23 +72,57 @@ type Options[T any] struct {
 	PerKey int
 }
 
-// Queue is a retry queue on disk (see the package comment).
+const (
+	// deliveryTimeout bounds one delivery.
+	deliveryTimeout = 30 * time.Second
+	// discardMargin is how long past its last retry (Add: the discard horizon) an item is kept: for the attempts
+	// themselves and a backlog behind them, and for a master key put back. Past it the item is worth nothing (its
+	// retries are over) and expires, so the items of a node that is gone, or that no key opens, do not linger.
+	discardMargin = 24 * time.Hour
+	// idleCheck is how often the scheduler reads the whole queue afresh, whatever it has learned to skip (dispatch).
+	idleCheck = time.Minute
+	// scanPage is how many items the scheduler reads at a time.
+	scanPage = 100
+	// writeWait bounds the recording of a delivery's outcome, which goes on when the queue is closing.
+	writeWait = 10 * time.Second
+)
+
+// Queue is a node's retry queue in the store (see the package comment).
 type Queue[T any] struct {
-	o   Options[T]
-	dir string
-	// fileMu is held for one change to an item's file at a time (a delivery's end, Reseal's rewrite, a purge), never
-	// across a delivery: that takes as long as an application takes to answer.
-	fileMu sync.Mutex
-	// waiting is when the items the workers have read (or retried) are next due, by file, with the file's modification
-	// time then (under fileMu): an item that is not due is not read and opened again each time the scheduler looks at
-	// the queue (which would make each Add cost the whole backlog) unless its file changed since.
-	waiting map[string]waitingItem
-	queued  atomic.Int64
-	addMu   sync.RWMutex // adds hold it shared from taking their place to writing their file; PurgeLost exclusively
-	// running is the files being delivered now, with their keys (under runMu). Only the scheduler adds to it, so an
-	// item is never delivered twice at once; a delivery leaves it after recording its outcome.
-	runMu      sync.Mutex
-	running    map[string]string
+	o     Options[T]
+	items *store.Table[model.QueueItem, *model.QueueItem]
+	scope string // this node's items of the queue (model.QueueScope)
+	// addMu is held by an Add from its counts to its write, so this node's adds never pass a cap between them, and taken
+	// by Reseal before it reads the queue, so every Add that sealed its item before the keys changed has written it.
+	addMu sync.Mutex
+	// itemMu is held for one change to a stored item at a time (a delivery's outcome, a re-seal), never across a
+	// delivery: that takes as long as an application takes to answer.
+	itemMu sync.Mutex
+	// mu guards the scheduler's state below. It is held by a pass of the scheduler (dispatch) while it reads the queue,
+	// by a delivery's end (its outcome written, and its item leaving running, as one step: a pass never reads an item a
+	// delivery has changed and not yet left, whose place in the queue a store that loads what it lists later than it
+	// lists it would not show consistently), and briefly by an Add.
+	mu sync.Mutex
+	// running is the items being delivered now, by id, with their keys, and perKey how many of each key. Only the
+	// scheduler adds to them, and never an item already running, so an item is never delivered twice at once; a
+	// delivery leaves them as it records its outcome.
+	running map[string]string
+	perKey  map[string]int
+	// floor and behind spare the scheduler what it cannot deliver: every due item before floor that is not running is
+	// one no key opens, one whose outcome was not recorded (unrecorded), or of a key in behind (it was at its PerKey
+	// when the scheduler read past its item, or its item was written due behind the floor). A pass reads the due items
+	// from floor on (atFloor are those due exactly at floor it has read already, by id), and of each key in behind only
+	// its first ones (its range of the slot index), so the backlog of a key at its limit is not read again each time the
+	// scheduler looks at the queue. Reset each idleCheck.
+	floor   time.Time
+	atFloor map[string]bool
+	behind  map[string]bool
+	// unrecorded are the items whose last delivery's outcome the store did not take (deliver): due as they were, they
+	// are not delivered again before the next full read of the queue, rather than at once and again while the store
+	// fails.
+	unrecorded map[string]bool
+	// queued is the last count of this node's items (what Queued reports while the store cannot answer).
+	queued     atomic.Int64
 	deliveries sync.WaitGroup
 	kick       chan struct{} // the scheduler has something new to look at (a buffer of one: a kick is never lost)
 	stop       chan struct{}
@@ -86,39 +130,23 @@ type Queue[T any] struct {
 	once       sync.Once
 }
 
-// item is a queued item as its file holds it (sealed).
-type item[T any] struct {
-	Item    T         `json:"m"`
-	Attempt int       `json:"a"` // failed deliveries so far
-	Next    time.Time `json:"n"` // not before
+func newQueue[T any](o Options[T]) *Queue[T] {
+	return &Queue[T]{o: o, items: store.NewTable[model.QueueItem](o.Store), scope: model.QueueScope(o.Name, o.Node),
+		running: map[string]string{}, perKey: map[string]int{}, behind: map[string]bool{}, unrecorded: map[string]bool{},
+		kick: make(chan struct{}, 1), stop: make(chan struct{})}
 }
 
-const ext = ".item"
-
-func newQueue[T any](dir string, o Options[T]) *Queue[T] {
-	return &Queue[T]{o: o, dir: dir, running: map[string]string{}, kick: make(chan struct{}, 1), stop: make(chan struct{})}
-}
-
-// Open opens (creating) the queue in dir and starts its scheduler, which first delivers whatever a previous run left;
-// call Close to stop it.
-func Open[T any](dir string, o Options[T]) (*Queue[T], error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("%s: %w", o.Name, err)
-	}
-	q := newQueue(dir, o)
-	q.removeTemp()
+// Open opens this node's queue and starts its scheduler, which first delivers whatever a previous run left (re-sealed
+// with the active master key); call Close to stop it.
+func Open[T any](o Options[T]) *Queue[T] {
+	q := newQueue(o)
 	q.Reseal()
-	names, err := q.files()
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", o.Name, err)
-	}
-	q.queued.Store(int64(len(names)))
-	if len(names) > 0 {
-		o.Log.Info(o.Name+": delivering items left from before", "items", len(names))
+	if n := q.Queued(); n > 0 {
+		o.Log.Info(o.Name+" queue: delivering items left from before", "items", n)
 	}
 	q.wg.Add(1)
 	go q.run()
-	return q, nil
+	return q
 }
 
 // Close stops the scheduler, cancelling the deliveries in flight (their attempts do not count) and waiting for them;
@@ -128,28 +156,88 @@ func (q *Queue[T]) Close() {
 	q.wg.Wait()
 }
 
-// Queued returns how many items are waiting.
-func (q *Queue[T]) Queued() int { return int(q.queued.Load()) }
+// Queued returns how many items of this node are waiting (the last count, when the store cannot answer now).
+func (q *Queue[T]) Queued() int {
+	if n, err := q.items.Count(context.Background(), q.scope); err == nil {
+		q.queued.Store(int64(n))
+	}
+	return int(q.queued.Load())
+}
 
 // Add queues it, to be delivered once after (now: at once) having failed attempts deliveries already, and returns
-// once it is on disk.
+// once it is stored. The caps count this node's items in the store (on a shared database, the others' items are
+// theirs: each node holds up to Max of its own).
 func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
-	// The place is taken before the write (given back if it fails), so adds at once never pass Max between them.
-	q.addMu.RLock()
-	defer q.addMu.RUnlock()
-	if q.queued.Add(1) > int64(q.o.Max) {
-		q.queued.Add(-1)
-		return ErrFull
-	}
-	var r [6]byte
-	_, _ = rand.Read(r[:])
-	name := fmt.Sprintf("%020d-%s%s", time.Now().UnixNano(), hex.EncodeToString(r[:]), ext) // oldest first when listed
-	if err := q.write(name, &item[T]{Item: it, Attempt: attempts, Next: time.Now().Add(after)}); err != nil {
-		q.queued.Add(-1)
+	ctx := context.Background()
+	plain, err := json.Marshal(it)
+	if err != nil {
 		return err
 	}
+	key := q.keyOf(it)
+	q.addMu.Lock()
+	defer q.addMu.Unlock()
+	n, err := q.items.Count(ctx, q.scope)
+	if err != nil {
+		return err
+	}
+	if n >= q.o.Max {
+		return ErrFull
+	}
+	if q.o.MaxPerKey > 0 {
+		_, held, err := q.items.List(ctx, q.keyQuery(key, 1))
+		if err != nil {
+			return err
+		}
+		if held >= q.o.MaxPerKey {
+			return ErrFull
+		}
+	}
+	now := time.Now()
+	item := &model.QueueItem{Meta: model.Meta{ID: model.NewID()}, Queue: q.o.Name, Node: q.o.Node, Key: key,
+		Attempt: attempts, Next: now.Add(after), Sealed: q.o.Sealer.SealFor(q.o.Binding, plain),
+		Expires: now.Add(after + q.horizon(attempts))}
+	if err := q.items.Create(ctx, item); err != nil {
+		return err
+	}
+	q.queued.Store(int64(n + 1))
+	q.written(item)
 	q.wake()
 	return nil
+}
+
+// horizon is how long after its first attempt an item that has failed attempts deliveries is kept at most: the
+// delays of its retries, then discardMargin.
+func (q *Queue[T]) horizon(attempts int) time.Duration {
+	d := discardMargin
+	for _, b := range q.o.Backoff[min(attempts, len(q.o.Backoff)):] {
+		d += b
+	}
+	return d
+}
+
+// keyQuery lists the items of key in the order they come due (their range of the slot index), limit at a time.
+func (q *Queue[T]) keyQuery(key string, limit int) store.ListQuery {
+	return store.ListQuery{Scope: q.scope, Sort: "slot", Limit: limit,
+		Filters: []store.Filter{{Field: "slot", Op: store.OpPrefix, Value: model.QueueKeySlots(key)}}}
+}
+
+// keyOf is the key of it: its share of the queue and of the workers (Options.Key; none: all items have the same).
+func (q *Queue[T]) keyOf(it T) string {
+	if q.o.Key == nil {
+		return ""
+	}
+	return q.o.Key(it)
+}
+
+// written tells the scheduler of an item just written due when it is: one due already (a pass may have read past where
+// it now is) puts its key behind the floor, so the next pass reads that key's first items.
+func (q *Queue[T]) written(it *model.QueueItem) {
+	if it.Next.After(time.Now()) {
+		return // due after every pass so far has read: a pass reads it once it is due
+	}
+	q.mu.Lock()
+	q.behind[it.Key] = true
+	q.mu.Unlock()
 }
 
 // wake tells the scheduler to look at the queue again.
@@ -160,180 +248,84 @@ func (q *Queue[T]) wake() {
 	}
 }
 
-// Reseal re-seals every queued item with the active master key, and returns how many are still not sealed with it:
-// stale, those whose rewrite failed (a full or failing disk), which still need the configured previous key they are
-// sealed with: while any is left no previous key may be removed (app.ReloadMasterKeys refuses, and this node reports
-// the rotation unfinished); and lost, those no configured key opens, which need no configured key, so they hold
-// nothing back: they wait for their key to be configured again, and are given up once their links have expired
-// (PurgeLost, the node's daily sweep). Call it after the master keys change, before the node reports its new key
-// (service.ReportMasterKey). An unreadable queue counts as one stale item.
+// rescan makes the next pass read the whole queue again.
+func (q *Queue[T]) rescan() {
+	q.mu.Lock()
+	q.floor, q.atFloor, q.behind, q.unrecorded = time.Time{}, nil, map[string]bool{}, map[string]bool{}
+	q.mu.Unlock()
+}
+
+// Reseal re-seals every item of this node with the active master key, and returns how many are still not sealed with
+// it: stale, those whose rewrite failed (a store that refused it), which still need the configured previous key they
+// are sealed with: while any is left no previous key may be removed (app.ReloadMasterKeys refuses, and this node
+// reports the rotation unfinished); and lost, those no configured key opens, which need no configured key, so they hold
+// nothing back: they wait for their key to be configured again, and are discarded at their horizon (Add). Call it
+// after the master keys change, before the node reports its new key (service.ReportMasterKey). A queue that cannot be
+// read counts one stale item more.
 func (q *Queue[T]) Reseal() (stale, lost int) {
-	q.fileMu.Lock()
-	q.waiting = nil // the keys changed: every item is read afresh (one that needs a key no longer configured waits)
-	q.fileMu.Unlock()
-	names, err := q.files()
-	if err != nil {
-		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
-		return 1, 0
-	}
-	for _, name := range names {
-		switch err := q.reseal(name); {
-		case errors.Is(err, secure.ErrUnknownKey):
-			lost++
-		case err != nil:
+	q.addMu.Lock() // (every Add sealing with the keys before the change has written its item, and is read below)
+	q.addMu.Unlock()
+	ctx := context.Background()
+	for after := ""; ; {
+		page, _, err := q.items.List(ctx, store.ListQuery{Scope: q.scope, After: after, Limit: scanPage})
+		if err != nil {
+			q.o.Log.Error(q.o.Name+" queue: cannot be read", "error", err)
 			stale++
+			break
 		}
+		for _, it := range page {
+			switch err := q.reseal(ctx, it); {
+			case errors.Is(err, secure.ErrUnknownKey):
+				lost++
+			case err != nil:
+				stale++
+			}
+		}
+		if len(page) < scanPage {
+			break
+		}
+		after = page[len(page)-1].ID
 	}
 	if stale > 0 {
-		q.o.Log.Error(q.o.Name+": items not re-sealed with the active master key (a write that failed: it is tried "+
-			"again); their previous key stays needed", "items", stale)
+		q.o.Log.Error(q.o.Name+" queue: items not re-sealed with the active master key (tried again at the node's "+
+			"next key report); their previous key stays needed", "items", stale)
 	}
 	if lost > 0 {
-		q.o.Log.Warn(q.o.Name+": items sealed with a master key that is not configured: put it back in "+
-			"server.previous_master_keys, or they are given up once they are 8 days old", "items", lost)
+		q.o.Log.Warn(q.o.Name+" queue: items sealed with a master key that is not configured: put it back in "+
+			"server.previous_master_keys, or they are discarded once their retries are a day over", "items", lost)
 	}
+	// The keys changed: an item no key opened before may open now, wherever the scheduler last skipped it.
+	q.rescan()
+	q.wake()
 	return stale, lost
 }
 
-func (q *Queue[T]) reseal(name string) error {
-	q.fileMu.Lock()
-	defer q.fileMu.Unlock()
-	b, err := os.ReadFile(filepath.Join(q.dir, name))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil // delivered meanwhile
-	} else if err != nil {
-		return err
-	}
-	sealed, err := q.o.Sealer.Reseal(q.o.Binding, string(b))
-	if err != nil || sealed == string(b) {
-		return err
-	}
-	return q.writeSealed(name, sealed)
-}
-
-// write stores it as name, atomically and durably: a crash or a power loss leaves the old file or the new one, never
-// part of one, and an item accepted is on disk.
-func (q *Queue[T]) write(name string, it *item[T]) error {
-	b, err := json.Marshal(it)
-	if err != nil {
-		return err
-	}
-	return q.writeSealed(name, q.o.Sealer.SealFor(q.o.Binding, b))
-}
-
-func (q *Queue[T]) writeSealed(name, sealed string) error {
-	// Durable before Add returns: "accepted means on disk". The temporary name is hidden, so a listing never takes
-	// it for an item.
-	return durable.WriteFile(filepath.Join(q.dir, "."+name+".tmp"), filepath.Join(q.dir, name), []byte(sealed))
-}
-
-func (q *Queue[T]) read(name string) (*item[T], error) {
-	b, err := os.ReadFile(filepath.Join(q.dir, name))
-	if err != nil {
-		return nil, err
-	}
-	plain, err := q.o.Sealer.OpenFor(q.o.Binding, string(b))
-	if err != nil {
-		return nil, err
-	}
-	var it item[T]
-	return &it, json.Unmarshal(plain, &it)
-}
-
-func (q *Queue[T]) remove(name string) {
-	delete(q.waiting, name)
-	if err := os.Remove(filepath.Join(q.dir, name)); err == nil {
-		q.queued.Add(-1)
-	}
-}
-
-// files lists the queued items, oldest first. Temporary files are an Add writing one (or, at start, a write a crash
-// cut short: removeTemp).
-func (q *Queue[T]) files() ([]string, error) {
-	ents, err := os.ReadDir(q.dir)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, e := range ents {
-		if n := e.Name(); strings.HasSuffix(n, ext) && !strings.HasPrefix(n, ".") && e.Type().IsRegular() {
-			out = append(out, n)
+// reseal re-seals item it with the active master key, as it is stored now: a delivery's outcome recorded since it was
+// read is re-sealed in turn (it changes the item's state, never what is sealed). An item gone meanwhile (delivered) is
+// no failure.
+func (q *Queue[T]) reseal(ctx context.Context, it *model.QueueItem) error {
+	q.itemMu.Lock()
+	defer q.itemMu.Unlock()
+	for {
+		sealed, err := q.o.Sealer.Reseal(q.o.Binding, it.Sealed)
+		if err != nil || sealed == it.Sealed {
+			return err
 		}
-	}
-	return out, nil // (os.ReadDir lists by name: oldest first)
-}
-
-// removeTemp removes the temporary files of writes a crash cut short (their Add reported the failure). Only at
-// start, before anything can be writing one.
-func (q *Queue[T]) removeTemp() {
-	ents, _ := os.ReadDir(q.dir)
-	for _, e := range ents {
-		if n := e.Name(); strings.HasPrefix(n, ".") && strings.HasSuffix(n, ".tmp") {
-			_ = os.Remove(filepath.Join(q.dir, n))
+		it.Sealed = sealed
+		switch err := q.items.Update(ctx, it); {
+		case errors.Is(err, store.ErrNotFound):
+			return nil
+		case !errors.Is(err, store.ErrStale):
+			return err
+		}
+		// Changed since it was read (and not since: itemMu is held): re-seal what it is now.
+		if it, err = q.items.Get(ctx, it.ID); errors.Is(err, store.ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
 		}
 	}
 }
-
-// PurgeLost removes the items no configured master key opens that were queued before before (see the package
-// PurgeLost), one file at a time as the worker changes them, so it runs while the queue does.
-func (q *Queue[T]) PurgeLost(before time.Time) (int, error) {
-	q.fileMu.Lock()
-	defer q.fileMu.Unlock()
-	// Counted again from disk with no add in flight (each holds addMu from taking its place to writing its file), so
-	// every place taken has its file.
-	q.addMu.Lock()
-	defer q.addMu.Unlock()
-	n, err := PurgeLost(q.dir, q.o.Sealer, before)
-	if names, ferr := q.files(); ferr == nil {
-		q.queued.Store(int64(len(names)))
-	}
-	return n, err
-}
-
-// PurgeLost removes from the queue in dir the items no key of sealer opens (sealed with a master key that is not in
-// server.master_key nor server.previous_master_keys) that were queued before before: the time is in the file's name,
-// which retries and re-seals keep. Such items are kept otherwise, to be delivered once their key is configured again;
-// purging them gives them up for good. It returns how many it removed. A queue that is open is purged through it
-// (Queue.PurgeLost); this is for one no worker runs on.
-func PurgeLost(dir string, sealer *secure.Sealer, before time.Time) (int, error) {
-	q := &Queue[struct{}]{dir: dir}
-	names, err := q.files()
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, name := range names {
-		if !queuedBefore(name, before) {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return n, err
-		}
-		if _, err := sealer.OpenFor("", string(b)); !errors.Is(err, secure.ErrUnknownKey) {
-			continue // opened (or not this queue's binding, which is not judged here): not lost
-		}
-		if err := os.Remove(filepath.Join(dir, name)); err != nil {
-			return n, err
-		}
-		n++
-	}
-	return n, nil
-}
-
-// queuedBefore reports whether the item in file name (Add: "<unix nanoseconds>-<random>.item") was queued before t.
-// A name that is not one of those is not judged old.
-func queuedBefore(name string, t time.Time) bool {
-	at, _, ok := strings.Cut(name, "-")
-	ns, err := strconv.ParseInt(at, 10, 64)
-	return ok && err == nil && time.Unix(0, ns).Before(t)
-}
-
-// idleCheck bounds how long the scheduler sleeps: it notices files put there by hand, which nothing else wakes it for.
-const idleCheck = time.Minute
 
 // run is the scheduler. It looks at the queue whenever something may have changed: an item was added, a delivery ended
 // (a worker and a share of its key are free, and a retry is waiting), or the next item waiting came due. It never
@@ -344,7 +336,14 @@ func (q *Queue[T]) run() {
 	defer q.deliveries.Wait() // after the cancel: the deliveries in flight end, then the queue is closed
 	defer cancel()
 	go func() { <-q.stop; cancel() }()
+	read := time.Now()
 	for {
+		if time.Since(read) >= idleCheck {
+			// What the scheduler skips is read again now and then: an item whose outcome could not be recorded (a
+			// store that failed), or one a clock that went back left behind the floor.
+			q.rescan()
+			read = time.Now()
+		}
 		wait := idleCheck
 		if next := q.dispatch(ctx); !next.IsZero() {
 			wait = min(max(time.Until(next), 0), idleCheck)
@@ -361,167 +360,234 @@ func (q *Queue[T]) run() {
 	}
 }
 
-// dispatch starts a delivery for each due item the limits allow, oldest first, and returns when the next item waiting
-// is due (zero: none known). It does not wait for the deliveries: each ends by waking the scheduler, which then fills
-// the worker and key shares it freed. Once the workers are all busy it stops looking (so the next due time is only
-// what it saw), for the end of a delivery makes it look again.
+// dispatch starts a delivery for each due item the limits allow, earliest due first, and returns when the next item
+// waiting is due (zero: none). It does not wait for the deliveries: each ends by waking the scheduler, which then fills
+// the worker and key shares it freed. It reads first the keys behind the floor that have room now (one whose delivery
+// just ended), only as far as their room, then the due items from the floor on, until the workers are all busy.
 func (q *Queue[T]) dispatch(ctx context.Context) time.Time {
-	names, err := q.files()
-	if err != nil {
-		q.o.Log.Error(q.o.Name+": cannot be read", "error", err)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := time.Now()
+	for key := range q.behind {
+		if ctx.Err() != nil || q.free() == 0 {
+			break
+		}
+		if q.room(key) > 0 && q.serveKey(ctx, key, now) {
+			delete(q.behind, key)
+		}
+	}
+	q.scan(ctx, now)
+	if ctx.Err() != nil {
 		return time.Time{}
 	}
-	var next time.Time
-	for _, name := range names {
-		if ctx.Err() != nil {
-			break
-		}
-		due, full := q.consider(ctx, name)
-		if full {
-			break
-		}
-		if !due.IsZero() && (next.IsZero() || due.Before(next)) {
-			next = due
-		}
+	next, _, err := q.items.List(ctx, store.ListQuery{Scope: q.scope, Sort: "due", Limit: 1,
+		Filters: []store.Filter{{Field: "due", Op: store.OpGTE, Value: now}}})
+	if err != nil || len(next) == 0 {
+		return time.Time{}
 	}
-	return next
+	return next[0].Next
 }
 
-// consider starts the delivery of the item in file name if it is due, not being delivered, and there is room for it in
-// the workers and in its key's share; if it is not due it returns when it will be. full reports that every worker is
-// busy.
-//
-// The running check comes before the item is read, and both are under runMu: a delivery leaves running only after
-// recording its outcome, so an item found not running is read as that outcome left it, never delivered again from a
-// stale read. (runMu is held across the read, which is quick; Deliver never runs under it.)
-func (q *Queue[T]) consider(ctx context.Context, name string) (due time.Time, full bool) {
-	q.runMu.Lock()
-	defer q.runMu.Unlock()
-	if len(q.running) >= max(q.o.Workers, 1) {
-		return time.Time{}, true
-	}
-	if _, ok := q.running[name]; ok {
-		return time.Time{}, false
-	}
-	it, due := q.due(name)
-	if it == nil {
-		return due, false
-	}
-	var key string
-	if q.o.Key != nil {
-		key = q.o.Key(it.Item)
-		if q.o.PerKey > 0 && q.perKey(key) >= q.o.PerKey {
-			return time.Time{}, false // tried again when one of the key's deliveries ends
+// serveKey starts the deliveries of key's due items its room allows, from its first (under mu), and reports whether
+// it read all of them: key then has nothing due behind the floor. It reads as many as the key's deliveries running
+// (likely its first) and its room, and twice as many again while that is not enough (items no key opens, or whose
+// outcome was not recorded, are in the way).
+func (q *Queue[T]) serveKey(ctx context.Context, key string, now time.Time) bool {
+	for limit := q.perKey[key] + q.room(key); ; limit *= 2 {
+		page, total, err := q.items.List(ctx, q.keyQuery(key, limit))
+		if err != nil {
+			q.o.Log.Error(q.o.Name+" queue: cannot be read", "error", err)
+			return false
+		}
+		for _, it := range page {
+			if it.Next.After(now) {
+				return true // and the rest of the key's items: they come due after this pass read
+			}
+			if _, ok := q.running[it.ID]; ok { // (or started by the page before)
+				continue
+			}
+			if q.room(key) == 0 {
+				return false
+			}
+			q.consider(ctx, it)
+		}
+		if total <= limit { // (not len(page): a store may list an item and find it gone, past its horizon, as it loads it)
+			return true
 		}
 	}
-	q.running[name] = key
+}
+
+// scan starts the deliveries of the due items from the floor on that the limits allow, in the order they came due,
+// and moves the floor past each item it has read (under mu). An item of a key at its PerKey puts its key behind the
+// floor. Once the workers are all busy it stops, the floor at the last item it read; once it has read every due item,
+// the floor is now, to the millisecond below (a store keeps due times to the millisecond or finer: an item written due
+// after now, which this pass may have missed, is stored due at or after that floor).
+func (q *Queue[T]) scan(ctx context.Context, now time.Time) {
+	for ctx.Err() == nil && q.free() > 0 {
+		filters := []store.Filter{{Field: "due", Op: store.OpLT, Value: now}}
+		if !q.floor.IsZero() {
+			filters = append(filters, store.Filter{Field: "due", Op: store.OpGTE, Value: q.floor})
+		}
+		// The items due at floor that were read are read again, not skipped by an offset: one may have left since (its
+		// delivery ended), and an offset would then skip another.
+		limit := scanPage + len(q.atFloor)
+		page, total, err := q.items.List(ctx, store.ListQuery{Scope: q.scope, Sort: "due", Filters: filters, Limit: limit})
+		if err != nil {
+			q.o.Log.Error(q.o.Name+" queue: cannot be read", "error", err)
+			return
+		}
+		for _, it := range page {
+			if it.Next.Equal(q.floor) && q.atFloor[it.ID] {
+				continue
+			}
+			if q.free() == 0 {
+				return
+			}
+			if !it.Next.Equal(q.floor) {
+				q.floor, q.atFloor = it.Next, nil
+			}
+			if q.atFloor == nil {
+				q.atFloor = map[string]bool{}
+			}
+			q.atFloor[it.ID] = true
+			if _, ok := q.running[it.ID]; ok {
+				continue
+			}
+			if q.room(it.Key) == 0 { // its key's to read again once it has room (serveKey)
+				q.behind[it.Key] = true
+				continue
+			}
+			q.consider(ctx, it)
+		}
+		if f := now.Truncate(time.Millisecond); total <= limit { // (as in serveKey)
+			if f.After(q.floor) {
+				q.floor, q.atFloor = f, nil
+			}
+			return
+		}
+	}
+}
+
+// free is how many workers are free (under mu).
+func (q *Queue[T]) free() int { return max(q.o.Workers, 1) - len(q.running) }
+
+// room is how many more deliveries of key may start now: the free workers, and no more than its PerKey allows (under
+// mu).
+func (q *Queue[T]) room(key string) int {
+	n := q.free()
+	if q.o.Key != nil && q.o.PerKey > 0 {
+		n = min(n, q.o.PerKey-q.perKey[key])
+	}
+	return max(n, 0)
+}
+
+// consider starts the delivery of due item it, which is not running (under mu). An item no configured key opens is
+// left as it is, for when its key is configured again; one that cannot be read at all is dropped; one whose last
+// outcome could not be recorded waits for the next full read of the queue.
+func (q *Queue[T]) consider(ctx context.Context, it *model.QueueItem) {
+	if q.unrecorded[it.ID] {
+		return
+	}
+	var v T
+	plain, err := q.o.Sealer.OpenFor(q.o.Binding, it.Sealed)
+	if err == nil {
+		err = json.Unmarshal(plain, &v)
+	}
+	switch {
+	case errors.Is(err, secure.ErrUnknownKey):
+		// Load-bearing: Reseal counts such items, and that count is what keeps a previous master key from being
+		// retired while an item still needs it (service QueuesStale); dropping them would lose the items and hide the
+		// dependency.
+		return
+	case err != nil:
+		q.o.Log.Error(q.o.Name+" queue: item cannot be read, dropping it", "item", it.ID, "error", err)
+		q.itemMu.Lock()
+		if err := q.end(ctx, it); err != nil {
+			q.o.Log.Error(q.o.Name+" queue: item not dropped", "item", it.ID, "error", err)
+		}
+		q.itemMu.Unlock()
+		return
+	}
+	q.running[it.ID] = it.Key
+	q.perKey[it.Key]++
 	q.deliveries.Add(1)
 	go func() {
 		defer q.deliveries.Done()
-		q.deliver(ctx, name, it)
-		q.runMu.Lock()
-		delete(q.running, name)
-		q.runMu.Unlock()
+		q.deliver(ctx, it, v)
 		q.wake()
 	}()
-	return time.Time{}, false
 }
 
-// perKey counts the deliveries running for key (under runMu).
-func (q *Queue[T]) perKey(key string) (n int) {
-	for _, k := range q.running {
-		if k == key {
-			n++
-		}
-	}
-	return n
-}
-
-// due reads the queued item in file name and returns it if it is due; if not, it returns when it is next due (zero:
-// no longer queued, or cannot be opened yet).
-func (q *Queue[T]) due(name string) (*item[T], time.Time) {
-	q.fileMu.Lock()
-	defer q.fileMu.Unlock()
-	if w, ok := q.waiting[name]; ok && w.next.After(time.Now()) {
-		if fi, err := os.Stat(filepath.Join(q.dir, name)); err == nil && fi.ModTime().Equal(w.mod) {
-			return nil, w.next
-		}
-	}
-	delete(q.waiting, name)
-	it, err := q.read(name)
-	switch {
-	case errors.Is(err, os.ErrNotExist), errors.Is(err, secure.ErrUnknownKey):
-		// Gone, or sealed with a key not configured now: kept for when it is (Reseal logs it). Load-bearing: Reseal
-		// counts such items, and that count is what keeps a previous master key from being retired while an item
-		// still needs it (service QueuesStale); dropping them would lose the items and hide the dependency.
-		return nil, time.Time{}
-	case err != nil:
-		q.o.Log.Error(q.o.Name+": item cannot be read, dropping it", "file", name, "error", err)
-		q.remove(name)
-		return nil, time.Time{}
-	}
-	if it.Next.After(time.Now()) {
-		q.wait(name, it.Next)
-		return nil, it.Next
-	}
-	return it, time.Time{}
-}
-
-// deliver tries the item read from file name and records the outcome.
+// deliver tries item it (holding v), then records the outcome and leaves running, as one step under mu.
 //
-// No lock is held while Deliver runs, so Reseal (and the other workers) go on meanwhile. That is safe because what
-// Reseal changes is only how the file is sealed, never the item: the outcome is then recorded under fileMu, against
-// whatever file is there. A delivered item's file is removed, whether Reseal rewrote it meanwhile or not (a Reseal
-// that finds it gone counts it delivered); a failed one is written again, sealed here with the key active at that
-// moment and under the lock, so a Reseal for a newer key (which runs after the keys changed) either follows this
-// write and rewrites it, or finds it already sealed with the new key. Nothing is lost and nothing delivered twice:
-// only the scheduler starts a delivery, and never of an item still running, which leaves running only after this has
-// recorded its outcome.
-func (q *Queue[T]) deliver(ctx context.Context, name string, it *item[T]) {
-	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-	err := q.o.Deliver(dctx, it.Item)
+// No lock is held while Deliver runs, so Reseal (and the other workers) go on meanwhile. The outcome is then recorded
+// under itemMu on the item as it is stored now: Reseal changes only how it is sealed, so a failed item written back
+// keeps the sealing Reseal gave it, and a Reseal for a newer key (which runs after the keys changed) re-seals it after.
+// A delivery whose outcome cannot be recorded (the store failed) leaves the item as it was, due: it is delivered again
+// once the scheduler reads the whole queue again (idleCheck), not at once (unrecorded).
+func (q *Queue[T]) deliver(ctx context.Context, it *model.QueueItem, v T) {
+	dctx, dcancel := context.WithTimeout(ctx, deliveryTimeout)
+	err := q.o.Deliver(dctx, v)
 	dcancel()
-	if err == nil {
-		q.fileMu.Lock()
-		q.remove(name)
-		q.fileMu.Unlock()
-		return
-	}
-	if ctx.Err() != nil { // stopping: the attempt does not count
-		return
-	}
-	giveUp := it.Attempt >= len(q.o.Backoff)
+	stopping := err != nil && ctx.Err() != nil // the attempt does not count
+	giveUp := err != nil && it.Attempt >= len(q.o.Backoff)
 	var delay time.Duration
-	if !giveUp {
+	if err != nil && !giveUp {
 		delay = q.o.Backoff[it.Attempt]
 	}
-	it.Attempt++
-	if q.o.Failed != nil {
-		q.o.Failed(it.Item, it.Attempt, delay, err)
+	if err != nil && !stopping && q.o.Failed != nil {
+		q.o.Failed(v, it.Attempt+1, delay, err)
 	}
-	q.fileMu.Lock()
-	defer q.fileMu.Unlock()
-	if giveUp {
-		q.remove(name)
+	wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), writeWait)
+	defer wcancel()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.running, it.ID)
+	if q.perKey[it.Key]--; q.perKey[it.Key] <= 0 {
+		delete(q.perKey, it.Key)
+	}
+	if stopping {
 		return
 	}
-	it.Next = time.Now().Add(delay)
-	if err := q.write(name, it); err != nil {
-		q.o.Log.Error(q.o.Name+": retry not recorded", "error", err)
+	retry, err := q.record(wctx, it, err == nil || giveUp, delay)
+	switch {
+	case err != nil:
+		q.o.Log.Error(q.o.Name+" queue: outcome not recorded (the item is delivered again once the queue is read "+
+			"afresh)", "item", it.ID, "error", err)
+		q.unrecorded[it.ID] = true
+	case retry != nil && !retry.Next.After(time.Now()):
+		q.behind[it.Key] = true // due already: a pass may have read past where it now is (written)
 	}
-	q.wait(name, it.Next) // so the scheduler, woken when this delivery ends, finds when the retry is due
 }
 
-type waitingItem struct{ next, mod time.Time }
+// record records the outcome of a delivery of item it (holding itemMu): ended, or failed once more and due again
+// after delay, which it returns.
+func (q *Queue[T]) record(ctx context.Context, it *model.QueueItem, ended bool, delay time.Duration) (*model.QueueItem, error) {
+	q.itemMu.Lock()
+	defer q.itemMu.Unlock()
+	cur, err := q.items.Get(ctx, it.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil // past its horizon meanwhile
+	case err != nil:
+		return nil, err
+	case ended:
+		return nil, q.end(ctx, cur)
+	}
+	cur.Attempt, cur.Next = it.Attempt+1, time.Now().Add(delay)
+	if err := q.items.Update(ctx, cur); err != nil {
+		return nil, err
+	}
+	return cur, nil
+}
 
-// wait records when the item in file name is next due, as the file is now (under fileMu).
-func (q *Queue[T]) wait(name string, next time.Time) {
-	fi, err := os.Stat(filepath.Join(q.dir, name))
-	if err != nil {
-		return
+// end removes item it from the queue (under itemMu): expired at once, it is no longer read, and the store's purge
+// removes it (see the package comment). The expiry is a second ago, not now: a store keeps it rounded up to its
+// precision, and the item must not read as live meanwhile. One gone meanwhile (past its horizon) is no failure.
+func (q *Queue[T]) end(ctx context.Context, it *model.QueueItem) error {
+	it.Expires = time.Now().Add(-time.Second)
+	if err := q.items.Update(ctx, it); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
 	}
-	if q.waiting == nil {
-		q.waiting = map[string]waitingItem{}
-	}
-	q.waiting[name] = waitingItem{next: next, mod: fi.ModTime()}
+	return nil
 }

@@ -28,7 +28,27 @@ const (
 	nsPAR        = "oauth.par"
 	parURNPrefix = "urn:ietf:params:oauth:request_uri:"
 	parTTL       = 60 * time.Second
-	parMaxParams = 16 << 10 // the largest authorization request a push may keep (form-encoded)
+	parMaxParams = 16 << 10 // the largest authorization request a confidential client's push may keep (form-encoded)
+)
+
+// Pushes are counted after the client has authenticated (which has failure limits of its own), and each holds up to
+// the size cap in memory for parTTL (up to flowTTL once the browser has visited it), against the node's ephemeral
+// budget (DefaultBudget, 1 GiB, shared by every organization: past it every code, ticket and challenge on the node
+// answers 503). A confidential client is known and only pushes for its users, so it is counted alone: its worst case
+// is parPerClientMin * parMaxParams = 28 MiB held at a time, under 3% of the budget (a real request is about 1 KiB,
+// so a few MiB), and a busy backend is not capped by anyone else's pushes or by its own address.
+//
+// A public client is admitted by its client_id alone, anyone can push as it, and an attacker has as many addresses
+// as IPv6 prefixes (a /48 has 65,536 /64s): no per-address budget bounds the total. So a public client's pushes are
+// small (parPublicMaxParams, enough for any request without a large claims or authorization_details parameter),
+// counted per address (so one address cannot use up what everyone else may push) and per organization (the bound
+// that holds): parPublicPerOrgMin * parPublicMaxParams = 2.4 MB held for parTTL (47 MB if every one were visited and
+// lasted flowTTL), under 5% of the budget however many addresses push.
+const (
+	parPerClientMin    = 1800
+	parPublicMaxParams = 4 << 10
+	parPublicPerIPMin  = 60
+	parPublicPerOrgMin = 600
 )
 
 // pushedRequest is a pushed authorization request waiting for the browser (ephemeral, ns "oauth.par", single use).
@@ -45,23 +65,16 @@ var errPushed = errors.New("oidc: unknown, used or expired request_uri")
 // clientAuthParams are the form fields of client authentication: not part of the authorization request.
 var clientAuthParams = []string{"client_secret", "client_assertion", "client_assertion_type"}
 
+// parBudget is a count of pushes per minute under key (nsRateOIDC) that may not pass max.
+type parBudget struct {
+	key string
+	max int64
+}
+
 func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	p.corsActual(w, r)
 	p.setDPoPNonce(w)
-	// Counted first, as authorization requests are (authorizePerIPMin, a budget of its own): a public client pushes
-	// with its client_id alone, and each push holds up to parMaxParams of the request for parTTL and may record a
-	// DPoP proof (a replicated write).
-	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "par|"+web.RateKeyIP(r), 1, time.Minute)
-	if err != nil {
-		writeOAuthError(w, serverError(unavailable(err)))
-		return
-	}
-	if n > authorizePerIPMin {
-		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
-			desc: "too many pushed authorization requests from this address; try again in a minute", retry: true})
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, oerr("invalid_request", "the request body could not be read"))
@@ -79,6 +92,25 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	}
 	p.corsRestrict(w, r, ce.c.ClientID())
 	c := ce.c
+	// Counted before anything is held or recorded (a DPoP proof is a replicated write), whatever the push turns out to be.
+	maxParams := parMaxParams
+	budgets := []parBudget{{"par|" + c.ID, parPerClientMin}}
+	if c.Public() {
+		maxParams = parPublicMaxParams
+		budgets = []parBudget{{"par-ip|" + web.RateKeyIP(r), parPublicPerIPMin}, {"par-org|" + c.OrgID, parPublicPerOrgMin}}
+	}
+	for _, b := range budgets {
+		n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, b.key, 1, time.Minute)
+		if err != nil {
+			writeOAuthError(w, serverError(unavailable(err)))
+			return
+		}
+		if n > b.max {
+			writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+				desc: "too many pushed authorization requests; try again in a minute", retry: true})
+			return
+		}
+	}
 	if form.Get("request_uri") != "" {
 		writeOAuthError(w, oerr("invalid_request", "request_uri cannot be pushed"))
 		return
@@ -116,7 +148,7 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	}
 	params.Set("client_id", c.ClientID()) // a client using Basic authentication need not repeat it in the body
 	enc := params.Encode()
-	if len(enc) > parMaxParams { // kept in memory until used: a real request is a fraction of this
+	if len(enc) > maxParams { // kept in memory until used: a real request is a fraction of this
 		writeOAuthError(w, oerr("invalid_request", "the authorization request is too large"))
 		return
 	}

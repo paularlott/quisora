@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -217,10 +219,7 @@ func TestBackchannelFanOutBounded(t *testing.T) {
 	defer open() // a failure does not leave handlers holding the server
 	h := setup(t, nil)
 	withLogoutBackoff(t, 500*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond)
-	retries, err := h.p.OpenLogoutQueue(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	retries := h.p.OpenLogoutQueue("node-1")
 	defer retries.Close()
 	cl, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL) })
 	ce, err := h.p.client(t.Context(), cl.OrgID, cl.ID)
@@ -336,10 +335,7 @@ func TestBackchannelRetry(t *testing.T) {
 	h := setup(t, nil)
 	ctx := context.Background()
 	withLogoutBackoff(t, 5*time.Millisecond, 5*time.Millisecond)
-	retries, err := h.p.OpenLogoutQueue(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	retries := h.p.OpenLogoutQueue("node-1")
 	defer retries.Close()
 	app := func(path string) *model.Client {
 		c, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL + path) })
@@ -423,11 +419,7 @@ func TestBackchannelRetrySlowOrgDoesNotDelayAnother(t *testing.T) {
 	})
 	answering, answered := newTLSServer(t, func(http.ResponseWriter, *http.Request) {})
 	h := setup(t, nil)
-	dir := t.TempDir()
-	retries, err := h.p.OpenLogoutQueue(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	retries := h.p.OpenLogoutQueue("node-1")
 	name := "slow"
 	slow, err := h.env.Svc.CreateOrg(t.Context(), service.System, service.OrgInput{Name: &name})
 	if err != nil {
@@ -456,9 +448,7 @@ func TestBackchannelRetrySlowOrgDoesNotDelayAnother(t *testing.T) {
 	// a few milliseconds apart).
 	retries.Close()
 	time.Sleep(due)
-	if retries, err = h.p.OpenLogoutQueue(dir); err != nil {
-		t.Fatal(err)
-	}
+	retries = h.p.OpenLogoutQueue("node-1")
 	defer retries.Close()
 	waitUntil(t, func() bool { return answered.Load() == 1 })
 	if n := stuck.Load(); n != logoutRetryPerOrg {
@@ -468,6 +458,48 @@ func TestBackchannelRetrySlowOrgDoesNotDelayAnother(t *testing.T) {
 	waitUntil(t, func() bool { return retries.Queued() == 0 })
 	if m := mostStuck.Load(); m > logoutRetryPerOrg {
 		t.Errorf("up to %d retries at once for one organization, want at most %d", m, logoutRetryPerOrg)
+	}
+}
+
+// An organization whose retries fill its share of the retry queue (its applications never answer) loses only its own
+// further logouts: another organization's failed logouts, and ones that overflowed the in-memory queue, are still
+// queued.
+func TestBackchannelRetryShareFullDropsOnlyItsOrganization(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	retries := h.p.OpenLogoutQueue("node-1")
+	defer retries.Close()
+	name := "stuck"
+	org, err := h.env.Svc.CreateOrg(t.Context(), service.System, service.OrgInput{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuckClient, _, err := h.env.Svc.CreateClient(t.Context(), h.admin, org.ID, service.ClientInput{Name: ptr("app"),
+		RedirectURIs: &[]string{rpCallback}, BackchannelURI: ptr("https://rp.example/logout"),
+		GrantTypes: &[]string{"authorization_code"}, Scopes: &[]string{"openid"}, FirstParty: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	okClient, _ := h.newClient(func(i *service.ClientInput) { i.BackchannelURI = ptr("https://rp.example/logout") })
+	for range logoutRetryOrgMax { // waiting for their first retry, long after this test
+		if err := retries.Add(LogoutRetry{OrgID: stuckClient.OrgID, ClientID: stuckClient.ID, Sub: "u"}, time.Hour, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stuck, ok := bcTarget{client: stuckClient, sub: "u2"}, bcTarget{client: okClient, sub: "u2"}
+	failed := metrics.BackchannelFailed.Value()
+	if err := retries.Add(stuck.retry(), time.Hour, 1); !errors.Is(err, queue.ErrFull) {
+		t.Fatalf("a retry of the organization at its share: %v, want queue.ErrFull", err)
+	}
+	h.p.retryLogout(stuck, errors.New("down")) // logged, not queued
+	h.p.retryLogout(ok, errors.New("down"))
+	h.p.bcWG.Add(1)
+	h.p.spill([]bcTarget{stuck, ok}) // an overflow of the in-memory queue: the same
+	if n := retries.Queued(); n != logoutRetryOrgMax+2 {
+		t.Fatalf("%d queued, want the organization's %d and the other's two", n, logoutRetryOrgMax)
+	}
+	if n := metrics.BackchannelFailed.Value() - failed; n < 2 { // (others' tests run at once and may add)
+		t.Fatalf("%d logouts counted as failed, want the organization's two", n)
 	}
 }
 
@@ -552,10 +584,7 @@ func TestBackchannelSendFailures(t *testing.T) {
 	h.env.Svc.Keys.S = keys
 	h.p.Invalidate()
 	// with the retry queue closed, a failure is only logged
-	retries, err := h.p.OpenLogoutQueue(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	retries := h.p.OpenLogoutQueue("node-1")
 	retries.Close()
 	h.p.retryLogout(bcTarget{client: ce.c, sub: "u"}, errors.New("refused"))
 }

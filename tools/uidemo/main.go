@@ -370,6 +370,19 @@ func (p *publishing) CompareAndPut(ctx context.Context, rec *store.Record, expec
 	return err
 }
 
+// Tx publishes the records a transaction wrote (not those it only asserted), as the cluster store's change hook does.
+func (p *publishing) Tx(ctx context.Context, ops []store.Op) error {
+	err := p.Store.Tx(ctx, ops)
+	if err == nil {
+		for _, op := range ops {
+			if !op.Assert {
+				p.publish(op.Rec)
+			}
+		}
+	}
+	return err
+}
+
 func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
 	applied, err := p.Store.PutReplicated(ctx, rec)
 	if applied {

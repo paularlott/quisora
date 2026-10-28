@@ -36,6 +36,9 @@ const (
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
 	// every node of a cluster without gossip sees it. Never backed up or replicated.
 	KindEphemeral Kind = "eph"
+	// KindQueue holds the items of a node's retry queues (QueueItem): emails waiting for SMTP, back-channel logouts
+	// waiting for their application. Node-local: never replicated, backed up or delivered by another node.
+	KindQueue Kind = "queue"
 )
 
 // Meta is embedded in every stored entity.
@@ -68,8 +71,8 @@ type Index struct {
 	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
 	//     other, so they spread over the partitions instead of loading partition 0 (an organization's deletion guard,
 	//     a Lock whose id is the organization's, is so in the organization's partition, with its users);
-	//   - KindEphemeral: "". It is node-local (or shared-database) state that is never replicated by partition, so the
-	//     key is never used.
+	//   - KindEphemeral and KindQueue: "". They are node-local (or shared-database) state that is never replicated by
+	//     partition, so the key is never used.
 	Partition string
 }
 

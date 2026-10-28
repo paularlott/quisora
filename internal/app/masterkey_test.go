@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/cluster/clustertest"
 	"github.com/paularlott/quisora/internal/config"
@@ -18,6 +18,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
@@ -284,43 +285,24 @@ func TestReloadMasterKeysRefusals(t *testing.T) {
 	}
 }
 
-// A reload that drops a key while a queued item (an email waiting to be sent, on this node's disk) is still sealed with
-// it, because it could not be re-sealed (here its file cannot be replaced, as on a full disk), is refused: the item
-// keeps opening. Adding the next key meanwhile is fine.
+// A reload that drops a key while a queued item (an email waiting to be sent) is still sealed with it, because it
+// could not be re-sealed (here the store refuses the rewrite), is refused: the item keeps opening. Adding the next key
+// meanwhile is fine.
 func TestReloadKeepsAKeyAQueuedItemNeeds(t *testing.T) {
 	ctx := context.Background()
 	b64 := base64.StdEncoding.EncodeToString
 	oldKey, newKey := b64(secure.RandomBytes(32)), b64(secure.RandomBytes(32))
 	a, _, _ := startAppWith(t, "badgerdb", func(c *config.Config) { c.Server.MasterKey = oldKey })
-	m, err := mail.New(a.Cfg, logger.NewNullLogger(), a.Svc.Sealer,
+	st := &refusingQueueWrites{Store: a.Store}
+	m := mail.New(a.Cfg, logger.NewNullLogger(), st, a.Node.ID(), a.Svc.Sealer,
 		mail.TransportFunc(func(context.Context, mail.Message) error { return errors.New("SMTP offline") }))
-	if err != nil {
-		t.Fatal(err)
-	}
 	a.mailer = m
 	if err := m.Send(ctx, mail.Message{To: "user@example.test", Subject: "invitation", Text: "single-use link"}); err != nil {
 		m.Close()
 		t.Fatal(err)
 	}
-	m.Close() // accepted message remains on disk, without a racing delivery worker
-	dir := a.Cfg.DataPath(config.DirMailQueue)
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var name string
-	for _, e := range ents {
-		if strings.HasSuffix(e.Name(), ".item") {
-			name = e.Name()
-		}
-	}
-	if name == "" {
-		t.Fatal("missing accepted queue item")
-	}
-	path := filepath.Join(dir, name)
-	if err := os.Mkdir(filepath.Join(dir, "."+name+".tmp"), 0700); err != nil { // (the item's file cannot be replaced)
-		t.Fatal(err)
-	}
+	m.Close() // the accepted message stays queued, without a racing delivery worker
+	st.refuse.Store(true)
 	if err := a.ReloadMasterKeys(ctx, newKey, []string{oldKey}); err != nil {
 		t.Fatalf("adding the next key: %v", err)
 	}
@@ -330,13 +312,27 @@ func TestReloadKeepsAKeyAQueuedItemNeeds(t *testing.T) {
 	if err := a.ReloadMasterKeys(ctx, newKey, nil); err == nil || !strings.Contains(err.Error(), "still need") {
 		t.Fatalf("dropping the key a queued item still needs: %v", err)
 	}
-	ciphertext, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	items, _, err := store.NewTable[model.QueueItem](a.Store).List(ctx, store.ListQuery{
+		Scope: model.QueueScope("mail", a.Node.ID())})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("queued items %d: %v", len(items), err)
 	}
-	if _, err := a.Svc.Sealer.OpenFor("mail/queue", string(ciphertext)); err != nil {
+	if _, err := a.Svc.Sealer.OpenFor("mail/queue", items[0].Sealed); err != nil {
 		t.Fatalf("the queued item no longer opens: %v", err)
 	}
+}
+
+// refusingQueueWrites is a store that refuses the rewrites of queued items once refuse is set (a store that fails).
+type refusingQueueWrites struct {
+	store.Store
+	refuse atomic.Bool
+}
+
+func (s *refusingQueueWrites) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if rec.Kind == model.KindQueue && s.refuse.Load() {
+		return store.ErrUnavailable
+	}
+	return s.Store.CompareAndPut(ctx, rec, expect)
 }
 
 // A node refuses a master key its database was not sealed with: nodes sharing a database must share the key, and a

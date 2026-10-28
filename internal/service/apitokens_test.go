@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -498,6 +499,53 @@ func TestAPITokenRefusalAndUseAudited(t *testing.T) {
 	}
 	if created := sink.of("user.create"); len(created) != 1 || created[0].Detail["token_id"] != tok.ID {
 		t.Fatalf("an action with a token does not name it: %+v", created)
+	}
+}
+
+// What a super admin's API token does and what is refused for it is a super admin's event like their others: an
+// administrator of the primary organization does not see that the token exists, or its name, in the audit log; a super
+// admin sees it all. The refusal of an administrator's own token stays in view of the others.
+func TestAPITokenEventsOfSuperAdminsAreHiddenBelowThem(t *testing.T) {
+	c := newCast(t)
+	sup, padmin := actor(c.super), actor(c.pAdmin)
+	wrongSecret := func(plain string) string {
+		return plain[:len(plain)-1] + map[bool]string{true: "A", false: "B"}[!strings.HasSuffix(plain, "A")]
+	}
+	for name, owner := range map[string]*model.User{"super-token": c.super, "admin-token": c.pAdmin} {
+		tok, plain, err := c.svc.CreateAPIToken(c.ctx, actor(owner), service.APITokenInput{Name: name, Scopes: []string{"admin"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := c.svc.ValidateAPIToken(c.ctx, wrongSecret(plain)); !errors.Is(err, service.ErrBadToken) {
+			t.Fatalf("wrong secret: %v", err)
+		}
+		if _, err := c.svc.UpdateAPIToken(c.ctx, actor(owner), tok.ID, service.APITokenUpdate{Name: ptr(name + "!")}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.svc.DeleteAPIToken(c.ctx, actor(owner), tok.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := func(reader *service.Actor) (names []string) {
+		pg, err := c.svc.ListAudit(c.ctx, reader, c.primary.ID, service.AuditQuery{ActionPrefix: "apitoken.", Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range pg.Items {
+			names = append(names, e.Action+" "+e.Target)
+		}
+		sort.Strings(names)
+		return names
+	}
+	// created, refused, renamed and deleted: four events of each token, the refusal naming the token as it was made
+	if got := strings.Join(seen(sup), ","); got != "apitoken.create admin-token,apitoken.create super-token,"+
+		"apitoken.delete admin-token!,apitoken.delete super-token!,apitoken.refused admin-token,apitoken.refused super-token,"+
+		"apitoken.update admin-token!,apitoken.update super-token!" {
+		t.Errorf("a super admin sees %q", got)
+	}
+	if got := strings.Join(seen(padmin), ","); got != "apitoken.create admin-token,apitoken.delete admin-token!,apitoken.refused admin-token,"+
+		"apitoken.update admin-token!" {
+		t.Errorf("an administrator sees %q", got)
 	}
 }
 

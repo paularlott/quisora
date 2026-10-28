@@ -36,7 +36,15 @@ first-party clients are rotated by super admins only.
 
 **Wrong secrets** are limited: after 30 failures a minute for one client from one address (300 from one address for
 any client), every attempt is refused for the rest of the minute, the right secret included, and the client's
-organization gets an `oauth.client_auth.limited` audit event.
+organization gets an `oauth.client_auth.limited` audit event. The address's 300 are also spent by a public client's
+token requests that fail on what they present (an unknown or used code or refresh token, a refused DPoP proof): anyone
+can name a public client, so past them every request from the address gets `429 temporarily_unavailable` with
+`Retry-After`.
+
+**Failing token requests of a confidential client** (`invalid_grant`, `invalid_dpop_proof`) are counted against that
+client alone, whatever its address: after 3,000 a minute it gets `429 temporarily_unavailable` with `Retry-After` for
+the rest of the minute. A backend that refreshes tokens for thousands of users whose sessions were just revoked is
+held back only itself, and other clients behind the same address are not.
 
 ## Private key JWT
 

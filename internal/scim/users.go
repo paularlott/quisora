@@ -156,69 +156,17 @@ func (rq *request) groupsValue(groups []*model.Group) []any {
 	return gs
 }
 
-// maxProbe bounds the point reads groupIndex spends on (users x groups) before it scans the organization's memberships.
-const maxProbe = 2048
-
-// fewerThanMembers reports whether n point reads are cheaper than scanning the org's memberships.
-func (rq *request) fewerThanMembers(n int) bool {
-	m, err := rq.m.srv.Svc.Store.Count(rq.ctx, model.KindMember, rq.org.ID)
-	return err == nil && n < m
-}
-
-// groupIndex maps user id -> groups of the org, for rendering users. A membership's id is deterministic, so a page
-// of users in an org with a few groups is answered with one key probe per (user, group) pair; rendering a whole
-// organization (or one with very many groups) reads the memberships once instead.
+// groupIndex maps user id -> groups of the org, for rendering users. Each user's groups are read from their own
+// memberships (an index read, then the groups by id), so the cost follows the users listed, not the number of groups
+// of the organization.
 func (rq *request) groupIndex(users []*model.User) (map[string][]*model.Group, error) {
-	svc := rq.m.srv.Svc
-	idx := map[string][]*model.Group{}
-	if len(users) == 0 {
-		return idx, nil
-	}
-	groups, _, err := svc.Groups.List(rq.ctx, store.ListQuery{Scope: rq.org.ID})
-	if err != nil {
-		return nil, err
-	}
-	if len(groups) == 0 {
-		return idx, nil
-	}
-	if probes := len(users) * len(groups); probes <= maxProbe && (probes <= 16 || rq.fewerThanMembers(probes)) {
-		for _, u := range users {
-			for _, g := range groups {
-				if member, decided := g.PendingMember(u.ID); decided { // committed, perhaps not materialized yet
-					if member {
-						idx[u.ID] = append(idx[u.ID], g)
-					}
-					continue
-				}
-				if m, err := svc.Members.Get(rq.ctx, model.MemberID(g.ID, u.ID)); err == nil {
-					if m.Active() {
-						idx[u.ID] = append(idx[u.ID], g)
-					}
-				} else if !errors.Is(err, store.ErrNotFound) {
-					return nil, err
-				}
-			}
+	idx := make(map[string][]*model.Group, len(users))
+	for _, u := range users {
+		gs, err := rq.m.srv.Svc.UserGroups(rq.ctx, u)
+		if err != nil {
+			return nil, err
 		}
-		return idx, nil
-	}
-	byID := make(map[string]*model.Group, len(groups))
-	for _, g := range groups {
-		byID[g.ID] = g
-	}
-	ms, _, err := svc.Members.List(rq.ctx, store.ListQuery{Scope: rq.org.ID})
-	if err != nil {
-		return nil, err
-	}
-	members := map[string][]string{} // group id -> materialized member ids
-	for _, m := range ms {
-		if m.Active() {
-			members[m.GroupID] = append(members[m.GroupID], m.UserID)
-		}
-	}
-	for _, g := range groups {
-		for _, uid := range service.CommittedMembers(g, members[g.ID]) {
-			idx[uid] = append(idx[uid], byID[g.ID])
-		}
+		idx[u.ID] = gs
 	}
 	return idx, nil
 }
@@ -757,7 +705,11 @@ func (rq *request) deleteUser(id string) {
 // Listing
 
 // userSortField maps a SCIM sort attribute to a store sort field when the store can order by it.
-func userSortField(p attrPath) (field string, ok bool) {
+func userSortField(sortBy *attrPath) (field string, ok bool) {
+	if sortBy == nil {
+		return "", true // the store's default order is by id
+	}
+	p := *sortBy
 	if p.Filter != nil || p.URN != "" {
 		return "", false
 	}
@@ -780,10 +732,11 @@ func userSortField(p attrPath) (field string, ok bool) {
 
 // narrow derives what the store can do for the top-level AND conjuncts of the filter: one user by id or by a unique
 // value, or a narrower listing. The full filter is still evaluated in memory afterwards, so this only has to return
-// a superset of the matches.
-func (rq *request) narrow(f node) (id, unique string, q store.ListQuery) {
+// a superset of the matches, unless exact: q is then the whole filter (every conjunct an equality on an indexed
+// field), and the store can order and page the matches and tell their number.
+func (rq *request) narrow(f node) (id, unique string, q store.ListQuery, exact bool) {
 	if f == nil {
-		return
+		return "", "", q, true
 	}
 	for _, c := range conjuncts(f) {
 		cn, ok := c.(*cmpNode)
@@ -825,7 +778,8 @@ func (rq *request) narrow(f node) (id, unique string, q store.ListQuery) {
 			q.Search = s
 		}
 	}
-	return
+	// Each exact conjunct is one filter of q, and nothing else of q is exact.
+	return id, unique, q, id == "" && unique == "" && q.Search == "" && len(q.Filters) == len(conjuncts(f))
 }
 
 func (rq *request) listUsers() {
@@ -855,27 +809,18 @@ func (rq *request) listUsers() {
 		return out, nil
 	}
 
-	// Fast path: no filter, so the store can order and page.
-	if p.filter == nil {
-		field, ok := "", true
-		if p.sortBy != nil {
-			field, ok = userSortField(*p.sortBy)
-		}
-		if ok {
-			if p.count == 0 { // only the total was asked for (of the users the caller sees in full)
-				_, n, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor, store.ListQuery{Limit: 1}))
-				if err != nil {
-					rq.fail(err)
-					return
-				}
-				rq.listResponse(nil, n, p, userSchemas)
-				return
-			}
-			users, total, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor,
-				store.ListQuery{Sort: field, Desc: p.desc, Offset: p.start - 1, Limit: p.count}))
+	id, unique, q, exact := rq.narrow(p.filter)
+	if exact {
+		// The store orders and pages what the filter says (every user, or those with an indexed value), so only the
+		// page is read and rendered, however many users there are. A sort it has no index for is the scan below.
+		if field, ok := userSortField(p.sortBy); ok {
+			users, total, err := svc.ListUsers(rq.ctx, rq.actor, rq.org.ID, service.FullViewQuery(rq.actor, pageQuery(q, p, field)))
 			if err != nil {
 				rq.fail(err)
 				return
+			}
+			if p.count == 0 { // only the total was asked for
+				users = nil
 			}
 			items, err := render(users)
 			if err != nil {
@@ -886,8 +831,6 @@ func (rq *request) listUsers() {
 			return
 		}
 	}
-
-	id, unique, q := rq.narrow(p.filter)
 	var users []*model.User
 	if id != "" || unique != "" {
 		var u *model.User
@@ -909,6 +852,8 @@ func (rq *request) listUsers() {
 			return
 		}
 	} else {
+		// What the store cannot express is evaluated in memory over every user the narrowed listing finds, at most
+		// maxScan of them (RFC 7644 §3.4.2.2: tooMany).
 		var err error
 		var n int
 		q.Limit = maxScan + 1

@@ -26,32 +26,58 @@ const (
 // web/src/js/lib/api.js and web/openapi/openapi.yaml name them too (tested).
 var APIVersions = []string{APIVersionLatest}
 
-// BearerFailuresPerIPMin bounds failed bearer-token authentications (management API and SCIM together) per IP
-// address and minute. Tokens cannot be guessed, but every attempt costs store reads: past the limit every bearer
-// request from the address is refused (429) for the rest of the minute, before its token is looked at, the right
-// one too. Only a failure counts, so a busy integration with a valid token is never slowed. Behind a proxy set
-// server.trust_proxy, or every caller shares the proxy's address.
-const BearerFailuresPerIPMin = 60
+// BearerFailuresPerOrgMin bounds failed bearer-token authentications (management API and SCIM together) per IP
+// address, organization named in the path and minute. Tokens cannot be guessed, but every attempt costs store reads:
+// past the limit every bearer request for that organization from the address is refused (429) for the rest of the
+// minute, before its token is looked at, the right one too. Only a failure counts, so a busy integration with a valid
+// token is never slowed. Counted per organization as well as per address, so one tenant's expired token, retried
+// from the shared egress addresses of an identity provider's provisioning service, does not block every other
+// tenant's provisioning from those addresses. Behind a proxy set server.trust_proxy, or every caller shares the
+// proxy's address.
+const BearerFailuresPerOrgMin = 60
 
-const nsBearer = "web.bearer" // failed bearer authentications per IP address
+// BearerFailuresPerIPMin bounds the failures per address and minute whatever organization is named: the per-
+// organization budget alone resets for every made-up organization, and each attempt costs a token lookup. Ten
+// organizations' worth, so a shared address is only refused when it is plainly guessing.
+const BearerFailuresPerIPMin = 10 * BearerFailuresPerOrgMin
 
-// BearerLimited reports whether r's address has used up its failed bearer authentications for this minute. A counter
-// that cannot be read is an error, not "limited": the caller refuses the request (fail closed) but answers
-// "unavailable", since no limit was reached.
-func (s *Server) BearerLimited(r *http.Request) (bool, error) {
+const nsBearer = "web.bearer" // failed bearer authentications per IP address, and per IP address and organization
+
+// bearerKeys are the counters a bearer request for the organization the path names (org as the path spells it, "" when
+// it names none: such requests share one budget per address) counts in.
+func bearerKeys(r *http.Request, org string) (orgKey, ipKey string) {
+	ip := RateKeyIP(r)
+	return ip + "|" + org[:min(len(org), 128)], ip
+}
+
+// BearerLimited reports whether r's address has used up its failed bearer authentications for org this minute (or
+// altogether). A counter that cannot be read is an error, not "limited": the caller refuses the request (fail closed)
+// but answers "unavailable", since no limit was reached.
+func (s *Server) BearerLimited(r *http.Request, org string) (bool, error) {
 	if s.Eph == nil {
 		return false, nil
 	}
-	n, err := s.Eph.Incr(r.Context(), nsBearer, RateKeyIP(r), 0, time.Minute)
+	orgKey, ipKey := bearerKeys(r, org)
+	n, err := s.Eph.Incr(r.Context(), nsBearer, orgKey, 0, time.Minute)
+	if err != nil || n >= BearerFailuresPerOrgMin {
+		return n >= BearerFailuresPerOrgMin, err
+	}
+	n, err = s.Eph.Incr(r.Context(), nsBearer, ipKey, 0, time.Minute)
 	return n >= BearerFailuresPerIPMin, err
 }
 
-// BearerFailed counts a failed bearer authentication from r's address.
-func (s *Server) BearerFailed(r *http.Request) {
+// BearerFailed counts a failed bearer authentication from r's address for org.
+func (s *Server) BearerFailed(r *http.Request, org string) {
 	if s.Eph == nil {
 		return
 	}
-	n, err := s.Eph.Incr(r.Context(), nsBearer, RateKeyIP(r), 1, time.Minute)
+	orgKey, ipKey := bearerKeys(r, org)
+	n, err := s.Eph.Incr(r.Context(), nsBearer, orgKey, 1, time.Minute)
+	if err == nil && n == BearerFailuresPerOrgMin && s.Log != nil {
+		s.Log.Warn("too many failed bearer-token authentications: refusing the address for the organization for a minute",
+			"ip", ClientIP(r), "org", org, "failures_per_minute", BearerFailuresPerOrgMin)
+	}
+	n, err = s.Eph.Incr(r.Context(), nsBearer, ipKey, 1, time.Minute)
 	if err == nil && n == BearerFailuresPerIPMin && s.Log != nil {
 		s.Log.Warn("too many failed bearer-token authentications: refusing the address for a minute", "ip", ClientIP(r),
 			"failures_per_minute", BearerFailuresPerIPMin)
@@ -100,7 +126,7 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "Bearer tokens are not accepted."})
 				return
 			}
-			limited, err := s.BearerLimited(r)
+			limited, err := s.BearerLimited(r, r.PathValue("org"))
 			if err != nil {
 				w.Header().Set("Retry-After", "5")
 				WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "The token could not be checked right now; try again shortly."})
@@ -116,7 +142,7 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				return
 			}
 			if err != nil || a == nil {
-				s.BearerFailed(r)
+				s.BearerFailed(r, r.PathValue("org"))
 				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "The access token is invalid or has expired."})
 				return

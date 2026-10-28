@@ -42,17 +42,28 @@ share one between nodes or processes.
 | `badgerdb/`          | The store, with `storage.backend = "badgerdb"` (the default).                                          |
 | `quisora.db`         | The store, with `storage.backend = "sqlite"`.                                                          |
 | `tls/`               | The self-signed certificate, when `server.tls_cert` is not set.                                        |
-| `mailqueue/`         | Email waiting to be sent or retried, one file per message, sealed with the master key ([Email](#email)). |
 | `auditspool/`        | Audit events VictoriaLogs has not taken yet, with `audit.victorialogs_url` set ([Spool](#spool)).       |
-| `logoutqueue/`       | Back-channel logouts an application did not take, waiting to be retried, sealed with the master key.  |
-| `node_id`, `cluster-state.json`, markers | The node's identity and cluster bookkeeping: whether its database's partition state can be trusted, which data set it holds (its genesis: trusted only for the database it was saved for), whether it has formed in its cluster, a forced start not yet audited (`cluster-state.json`); the one-shot markers `force-start` and `restore-incomplete`; `restore-audit.json` (restores not yet in the audit log). |
+| `node_id`, `cluster-state.json`, markers | The node's identity (made at its first start in every mode, unless `cluster.node_id` sets it: its queued emails and back-channel logouts are its own by it, [Queued work](#queued-work)) and cluster bookkeeping: whether its database's partition state can be trusted, which data set it holds (its genesis: trusted only for the database it was saved for), whether it has formed in its cluster, a forced start not yet audited (`cluster-state.json`); the one-shot markers `force-start` and `restore-incomplete`; `restore-audit.json` (restores not yet in the audit log). |
 
 Nothing else is written there. In particular a gossip node does not spool what it sends another node that is catching up:
-the stream goes from the database to the other node's database with no file in between (an older build left `export-*.tmp`
-files here after a crash; a node deletes them at start).
+the stream goes from the database to the other node's database with no file in between (an `export-*.tmp` file here is left by an older build
+that crashed during a catch-up: nothing reads or deletes it, and it can be removed by hand).
 
 Backups do not need the data directory (they come from the store: [Backup and restore](#backup-and-restore)), but
-restoring a node without it gives it a new identity, and email or audit events still queued in it are lost.
+restoring a node without it gives it a new identity, and audit events still spooled in it are lost; so are the emails
+and back-channel logouts its store holds queued for it (they are its own by its id: no other node, nor the node under
+its new id, sends them).
+
+### Queued work
+
+Email ([Email](#email)) and the back-channel logouts an application did not take are queued in the store, as records of
+the node that queued them: sealed with the master key, written before the request answers, and kept across restarts
+and crashes. Only that node sends them; nothing else reads them. They are never backed up or replicated: with gossip
+each node's are in its own database, and on a shared database every node holds its own there, apart from the others'.
+A node that is gone for good leaves its items unsent: each is discarded (it expires, and the purge removes it) a day
+after its last retry would have been, by when it is worth nothing (its retries are over, and an invitation it carries
+lasts 7 days). Each node's caps (10,000 emails; 10,000 logouts, 2,500 of one organization) and gauges count its own
+items only.
 
 ### TLS certificates
 
@@ -222,17 +233,17 @@ a node started with only the old key refuses to start.
 - If the old key was exposed, so is everything it ever sealed: a copy of the database or a backup from before the
   rotation can be opened with it. Rotating the master key does not change the secrets themselves. Also rotate the
   signing keys (**Signing keys → Rotate now**), the sign-in providers' client secrets (at each provider, then in
-  Quisora), revoke the relying parties' refresh tokens, and have users with an authenticator app set it up again.
+  Quisora), end the relying parties' refresh tokens (a rotation keeps them working: the emergency sign-out, `quisora
+  sign-out --all`, ends every session and refresh grant), and have users with an authenticator app set it up again.
 - A secret that no configured key opens (the old key removed before the rotation completed, or a damaged value) is
   logged at error level (`secrets that no configured master key opens`); put the missing key back in
   `previous_master_keys`.
-- Queued emails and back-channel logouts are sealed too, and re-sealed by their node. One sealed with a key that is no
-  longer configured (removed too early) stays queued, to be delivered once its key is back: the node logs `items
-  sealed with a master key that is not configured`, and `GET /api/master-key` counts them (`queued_items_lost`) with a
-  warning in its `detail`. They need none of the configured keys, so they do not hold the rotation back. Each node
-  gives them up once they are more than 8 days old (a daily sweep): by then every link they carry has expired (an
-  invitation lasts 7 days) and their retries would have ended, so they are worthless even if the key comes back. A
-  sweep that removed any is recorded in the audit log (`queue.purge_lost`, with how many and `queued_before`).
+- Queued emails and back-channel logouts ([Queued work](#queued-work)) are sealed too, and re-sealed by their node
+  (each node its own). One sealed with a key that is no longer configured (removed too early) stays queued, to be
+  delivered once its key is back: the node logs `items sealed with a master key that is not configured`, and `GET
+  /api/master-key` counts them (`queued_items_lost`) with a warning in its `detail`. They need none of the configured
+  keys, so they do not hold the rotation back. They are discarded a day after their last retry would have been, as
+  every queued item is: by then they are worthless even if the key comes back.
 
 ## The primary organization
 
@@ -356,7 +367,14 @@ empty (that is the replicated mode below).
 - **Without it**, a node learns of another's change when its cache expires, within 5 seconds (a disabled user or a
   revoked client keeps working that long on the other nodes), and its pages do not follow other nodes' changes live.
 - Every node has the same `server.master_key`. A node with a different key refuses to start.
-- High availability is the database's: run it as your own HA cluster.
+- High availability is the database's: run it as your own HA cluster, with **one writer at a time**: every Quisora
+  node writes to the same primary (PostgreSQL, MySQL or MariaDB, with a standby taking over on failure). A
+  multi-primary cluster (MariaDB or MySQL **Galera**, or any setup that certifies only the rows a transaction writes)
+  must be used the same way, with every Quisora node writing to one of its nodes (a proxy such as HAProxy or ProxySQL
+  that sends all writes to one) and the others standing by. Quisora relies on a transaction's shared-locked read (it
+  keeps an organization that is being deleted from gaining a user at the same moment): Galera certifies only a
+  transaction's writes, so such a read does not stop a write on another node, and both commit. `wsrep_sync_wait` does
+  not change that: it makes a read wait for the cluster, it locks nothing.
 
 ```bash
 quisora serve --public-url https://id.example.com --master-key "$KEY" \
@@ -515,7 +533,7 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `org.primary` |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
 | API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
@@ -634,8 +652,8 @@ docker run --rm -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_UR
 docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 quisora
 ```
 
-- The container's data directory is `/data`: mount a volume there; it holds the store (BadgerDB or SQLite), the mail
-  queue and the audit spool.
+- The container's data directory is `/data`: mount a volume there; it holds the store (BadgerDB or SQLite), the node's
+  id and the audit spool.
 - `quisora healthcheck` is the container health check (liveness, `/healthz`). Don't restart a node for being unready:
   a cluster node catching up is alive. `quisora healthcheck --ready` checks `/readyz`.
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
@@ -762,15 +780,16 @@ Until the first release, formats change in place. From then on:
 With `mail.smtp_host` set, invitations, password resets and address confirmations are emailed. Without it nothing is
 emailed: administrators share invitation links themselves, and there is no self-service password reset.
 
-Email is queued on disk, in `<data-dir>/mailqueue`, before the request that sends it answers: one file per message,
+Email is queued in the store before the request that sends it answers, as the sending node's own ([Queued work](#queued-work)),
 sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30
 and 120 minutes, then given up and logged (`mail delivery failed, giving up`). A restart, or a crash, keeps the queue:
-the node sends what is left when it is back. When the master keys change (a start with new keys, or a reload) each
-node re-seals its own queue with the active key before it reports that key, so a rotation reported complete leaves
-no queued message needing the old key. A message sealed under a key that is not configured (one removed too early,
-or a node that was down during the rotation started without it) is kept and logged, and sent once that key is put
-back in `previous_master_keys`. The queue holds at most 10,000 messages; past that, new ones are refused with an
-error. Watch `quisora_mail_queued`: growing means SMTP is not taking mail.
+the node sends what is left when it is back (a message whose sending was cut short by the crash may go out twice).
+When the master keys change (a start with new keys, or a reload) each node re-seals its own queue with the active key
+before it reports that key, so a rotation reported complete leaves no queued message needing the old key. A message
+sealed under a key that is not configured (one removed too early, or a node that was down during the rotation started
+without it) is kept and logged, and sent once that key is put back in `previous_master_keys`. Each node holds at most
+10,000 messages; past that, new ones are refused with an error. Watch `quisora_mail_queued`: growing means SMTP is not
+taking mail.
 
 ## Health and monitoring
 
@@ -797,9 +816,9 @@ endpoint. Every node serves its own.
 | `quisora_audit_events_total{action,outcome}` | Every audit event: `login.failure`, `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `oauth.client_auth.limited`, `passkey.clone` and the rest ([what is recorded](#what-is-recorded)) |
 | `quisora_audit_undelivered_total` | Audit events VictoriaLogs will never receive |
 | `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
-| `quisora_mail_queued` | Emails waiting to be sent |
-| `quisora_backchannel_logout_queued` | Back-channel logouts waiting to be retried (growing: an application is not taking them) |
-| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry |
+| `quisora_mail_queued` | Emails this node has waiting to be sent |
+| `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
+| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, or dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped) |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
 | `quisora_partitions_owned` | Partitions this node owns (the 64 are shared by the ready nodes) |
@@ -824,7 +843,7 @@ Alerts worth having:
 - Bursts of `quisora_audit_events_total{outcome="failure"}`, by action: password guessing (`login.failure`,
   `login.lockout`), floods (`login.limited`, `oauth.client_auth.limited`), stolen tokens (`oauth.refresh.reuse`,
   `oauth.code.replay`), a cloned passkey (`passkey.clone`).
-- Any `quisora_audit_events_total{action=~"keys.rotate|org.primary|cluster.force_start|backup.download|backup.restore"}`:
+- Any `quisora_audit_events_total{action=~"keys.rotate|cluster.force_start|backup.download|backup.restore"}`:
   rare, privileged events someone should know about.
 - `rate(quisora_http_shed_total[5m]) > 0`: the node is overloaded.
 

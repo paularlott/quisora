@@ -88,16 +88,13 @@ func newEnvModules(t testing.TB, keepIP bool, extra func(*web.Server) []web.Modu
 			}
 		},
 		Modules: func(s *web.Server) []web.Module {
-			m, err := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Sealer, mail.TransportFunc(func(_ context.Context, m mail.Message) error {
+			m := mail.New(s.Cfg, logger.NewNullLogger(), s.Svc.Store, "node-1", s.Svc.Sealer, mail.TransportFunc(func(_ context.Context, m mail.Message) error {
 				e.mu.Lock()
 				e.mails = append(e.mails, m)
 				e.mu.Unlock()
 				e.mailCh <- m
 				return nil
 			}))
-			if err != nil {
-				t.Fatal(err)
-			}
 			m.SetService(s.Svc)
 			e.Mailer = m
 			// "/step-up" stands for an authorization request that asked for a second factor (acr_values).

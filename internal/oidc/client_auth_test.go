@@ -115,14 +115,14 @@ func TestClientAuthFailureLimit(t *testing.T) {
 	t.Run("new client ids per address", func(t *testing.T) {
 		h := setup(t, nil)
 		cl, secret := h.newClient(nil)
-		for i := 0; i < clientAuthFailuresPerIPMin; i++ {
+		for i := 0; i < failuresPerIPMin; i++ {
 			if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("made-up-%d", i)},
 				"client_secret": {"x"}}, "", ""); r.status != 401 {
 				t.Fatalf("attempt %d: %d", i, r.status)
 			}
 		}
 		r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"made-up-last"}, "client_secret": {"x"}}, "", "")
-		if r.status != 429 || r.str("error") != "invalid_client" {
+		if r.status != 429 || r.str("error") != "temporarily_unavailable" { // "try again": not a verdict on a client's credentials
 			t.Fatalf("past the address ceiling: %d %v", r.status, r.m)
 		}
 		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 429 {

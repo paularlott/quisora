@@ -27,9 +27,10 @@ type noticeMsg struct {
 	D bool   // deleted
 }
 
-// noticeWorthy: the kinds whose changes other nodes care about (not short-lived state, nor the housekeeping lease).
+// noticeWorthy: the kinds whose changes other nodes care about (not short-lived state, the housekeeping lease, nor a
+// node's own queued items).
 func noticeWorthy(k model.Kind) bool {
-	return k != model.KindEphemeral && k != model.KindLock && k != model.KindReplay
+	return k != model.KindEphemeral && k != model.KindLock && k != model.KindReplay && k != model.KindQueue
 }
 
 // buildNotify sets up the notice gossip (cluster.notify) of a node sharing its database.

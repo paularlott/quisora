@@ -416,6 +416,63 @@ func (rq *request) deleteGroup(id string) {
 	rq.w.WriteHeader(http.StatusNoContent)
 }
 
+// groupSortField maps a SCIM sort attribute to a store sort field when the store can order groups by it.
+func groupSortField(sortBy *attrPath) (field string, ok bool) {
+	if sortBy == nil {
+		return "", true // the store's default order is by id
+	}
+	p := *sortBy
+	if p.Filter != nil || p.URN != "" {
+		return "", false
+	}
+	switch strings.ToLower(p.Name + "." + p.Sub) {
+	case "displayname.":
+		return "display_name", true
+	case "meta.created":
+		return "created", true
+	case "id.":
+		return "", true
+	}
+	return "", false
+}
+
+// narrowGroups derives what the store can do for the top-level AND conjuncts of the filter: one group by a unique
+// value (its name or external id), or a listing narrowed by name prefix. The full filter is still evaluated in memory
+// afterwards, so this only has to return a superset of the matches, unless exact: q is then the whole filter, and the
+// store can order and page the matches and tell their number.
+func (rq *request) narrowGroups(f node) (unique string, q store.ListQuery, exact bool) {
+	if f == nil {
+		return "", q, true
+	}
+	exactConjuncts := 0
+	for _, c := range conjuncts(f) {
+		cn, ok := c.(*cmpNode)
+		if !ok || cn.path.Filter != nil || cn.path.URN != "" || cn.path.Sub != "" {
+			continue
+		}
+		s, isStr := cn.val.(string)
+		if !isStr || s == "" {
+			continue
+		}
+		switch strings.ToLower(cn.path.Name) {
+		case "displayname":
+			if cn.op == "eq" {
+				unique = model.GroupNameKey(rq.org.ID, s)
+			} else if cn.op == "sw" && q.Search == "" {
+				// The store's search is a prefix match on the name, the only field of a group it looks at: it is
+				// "sw" itself.
+				q.Search = s
+				exactConjuncts++
+			}
+		case "externalid":
+			if cn.op == "eq" {
+				unique = model.GroupExternalIDKey(rq.org.ID, s)
+			}
+		}
+	}
+	return unique, q, unique == "" && exactConjuncts == len(conjuncts(f))
+}
+
 func (rq *request) listGroups() {
 	p, e := rq.listParams()
 	if e != nil {
@@ -423,33 +480,36 @@ func (rq *request) listGroups() {
 		return
 	}
 	svc := rq.m.srv.Svc
-	q := store.ListQuery{}
-	var groups []*model.Group
-	unique := ""
-	if p.filter != nil {
-		for _, c := range conjuncts(p.filter) {
-			cn, ok := c.(*cmpNode)
-			if !ok || cn.path.Filter != nil || cn.path.URN != "" || cn.path.Sub != "" {
-				continue
+	needMembers := wantsAttr(p, "members")
+	unique, q, exact := rq.narrowGroups(p.filter)
+	if field, ok := groupSortField(p.sortBy); exact && ok {
+		// The store orders and pages what the filter says (every group, or those whose name starts with a value), so
+		// only the page is read and rendered, with the members of its groups when they are asked for, however many
+		// groups there are. Any other filter or sort is the scan below.
+		groups, total, err := svc.ListGroups(rq.ctx, rq.actor, rq.org.ID, pageQuery(q, p, field))
+		if err != nil {
+			rq.fail(err)
+			return
+		}
+		if p.count == 0 { // only the total was asked for
+			groups = nil
+		}
+		items := make([]map[string]any, len(groups))
+		for i, g := range groups {
+			if needMembers {
+				items[i], err = rq.groupWithMembers(g)
+			} else {
+				items[i] = rq.groupResource(g, nil, false)
 			}
-			s, isStr := cn.val.(string)
-			if !isStr || s == "" {
-				continue
-			}
-			switch strings.ToLower(cn.path.Name) {
-			case "displayname":
-				if cn.op == "eq" {
-					unique = model.GroupNameKey(rq.org.ID, s)
-				} else if cn.op == "sw" { // the store's search is a prefix match: it narrows "sw" only (the filter decides)
-					q.Search = s
-				}
-			case "externalid":
-				if cn.op == "eq" {
-					unique = model.GroupExternalIDKey(rq.org.ID, s)
-				}
+			if err != nil {
+				rq.fail(err)
+				return
 			}
 		}
+		rq.listResponse(items, total, p, groupSchemas)
+		return
 	}
+	var groups []*model.Group
 	if unique != "" {
 		// Only "not found" is an empty list: any other failure is an error, or a client that is told the group is
 		// missing creates it again.
@@ -462,6 +522,8 @@ func (rq *request) listGroups() {
 			return
 		}
 	} else {
+		// What the store cannot express is evaluated in memory over every group the narrowed listing finds, at most
+		// maxScan of them (RFC 7644 §3.4.2.2: tooMany).
 		var err error
 		var n int
 		q.Limit = maxScan + 1
@@ -474,7 +536,6 @@ func (rq *request) listGroups() {
 			return
 		}
 	}
-	needMembers := wantsAttr(p, "members")
 	// Members are read for every group only when the filter or sort looks at them; otherwise just for the page.
 	allMembers := (p.filter != nil && referencesAttr(p.filter, "members")) ||
 		(p.sortBy != nil && strings.EqualFold(p.sortBy.Name, "members"))
@@ -499,18 +560,12 @@ func (rq *request) listGroups() {
 	page, total := selectItems(items, p, groupSchemas)
 	if needMembers && !allMembers {
 		for _, it := range page {
-			g := byID[it["id"].(string)]
-			ids, err := svc.GroupMembers(rq.ctx, rq.actor, g.ID)
+			full, err := rq.groupWithMembers(byID[it["id"].(string)])
 			if err != nil {
 				rq.fail(err)
 				return
 			}
-			refs, err := rq.refs(ids)
-			if err != nil {
-				rq.fail(err)
-				return
-			}
-			it["members"] = rq.groupResource(g, refs, true)["members"]
+			it["members"] = full["members"]
 		}
 	} else if allMembers && needMembers {
 		for _, it := range page {

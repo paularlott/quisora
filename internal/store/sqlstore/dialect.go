@@ -73,6 +73,9 @@ func (d *dialect) lockClause(of string) string {
 
 // shareClause is appended to a SELECT of a row that must not change until the transaction ends, while other
 // transactions may read it so too (a transaction's assertion). MariaDB knows only the older form, which MySQL keeps.
+// PostgreSQL's FOR SHARE, not FOR KEY SHARE: KEY SHARE lets an UPDATE that leaves the key alone (FOR NO KEY UPDATE)
+// through, so the asserted row could change before the transaction commits; it stays out of the way today only because
+// every writer here reads the row FOR UPDATE first (lockClause), which no assertion should depend on.
 func (d *dialect) shareClause() string {
 	switch {
 	case d.isPG():

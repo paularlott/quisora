@@ -7,9 +7,9 @@ import (
 	"slices"
 )
 
-// resealQueues re-seals this node's queues on disk (mail, back-channel logouts) with the active master key and
-// returns how many of their items still need a previous key, and how many one that is not configured
-// (queue.Queue.Reseal; service.Service.QueuesStale reports both with this node's keys).
+// resealQueues re-seals this node's queued items (mail, back-channel logouts) with the active master key and returns
+// how many of them still need a previous key, and how many one that is not configured (queue.Queue.Reseal;
+// service.Service.QueuesStale reports both with this node's keys).
 func (a *App) resealQueues() (stale, lost int) {
 	if a.mailer != nil {
 		stale, lost = a.mailer.Reseal()
@@ -60,7 +60,7 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {
 		return err
 	}
-	// The queues are on this node's disk, where the leader's re-seal does not reach: they are re-sealed here, with the
+	// The queued items are this node's own, which the leader's re-seal does not reach: they are re-sealed here, with the
 	// active key before a key is dropped (an item that could not be moved off a key being dropped refuses the
 	// reload: it would be lost) and with the new one before this node reports it (one left behind keeps the rotation
 	// reported unfinished: service.Service.QueuesStale).

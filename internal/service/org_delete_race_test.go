@@ -187,14 +187,7 @@ func TestDeleteOrgThatFailedPartWay(t *testing.T) {
 
 	// Decided, and the organization record not deleted: closed to new users until the deletion is made again.
 	empty := e.org("empty")
-	fs := f.Store.(*faultStore)
-	var failed atomic.Bool
-	fs.beforePut = func(r *store.Record) error {
-		if r.Kind == model.KindOrg && r.Deleted && failed.CompareAndSwap(false, true) {
-			return store.ErrUnavailable
-		}
-		return nil
-	}
+	failOrgDeletion(f)
 	if err := e.svc.DeleteOrg(e.ctx, service.System, empty.ID, false); !service.IsUnavailable(err) {
 		t.Fatalf("the deletion whose last write failed: %v", err)
 	}
@@ -237,4 +230,101 @@ func checkOrgDeleteOutcome(t *testing.T, e *env, orgID string, created *model.Us
 // newUserInput is what a new user named name is created with.
 func newUserInput(name string) service.UserInput {
 	return service.UserInput{Username: &name, GivenName: &name, Email: ptr(name + "@example.com")}
+}
+
+// failOrgDeletion makes the next deletion of an organization record through f fail (a store outage), and only that.
+func failOrgDeletion(f *afterUserCount) {
+	var failed atomic.Bool
+	f.Store.(*faultStore).beforePut = func(r *store.Record) error {
+		if r.Kind == model.KindOrg && r.Deleted && failed.CompareAndSwap(false, true) {
+			return store.ErrUnavailable
+		}
+		return nil
+	}
+}
+
+// A deletion that decided and whose last write (the organization record's) failed does not leave its organization
+// refusing new users until someone deletes it again: housekeeping finishes it.
+func TestDecidedOrgDeletionIsFinishedByHousekeeping(t *testing.T) {
+	f := &afterUserCount{Store: &faultStore{Store: memstore.New()}}
+	t.Cleanup(func() { _ = f.Close() })
+	e := newEnvOn(t, f)
+	org := e.org("stuck")
+	failOrgDeletion(f)
+	if err := e.svc.DeleteOrg(e.ctx, service.System, org.ID, false); !service.IsUnavailable(err) {
+		t.Fatalf("the deletion whose last write failed: %v", err)
+	}
+	if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, newUserInput("refused")); !errors.Is(err, service.ErrStale) {
+		t.Fatalf("a creation after the deletion decided: %v", err)
+	}
+	if n, err := e.svc.FinishOrgDeletions(e.ctx, time.Hour); err != nil || n != 0 {
+		t.Fatalf("a deletion within its grace was finished: %d %v", n, err)
+	}
+	if n, err := e.svc.FinishOrgDeletions(e.ctx, 0); err != nil || n != 1 {
+		t.Fatalf("finishing the decided deletion: %d %v", n, err)
+	}
+	if _, err := e.svc.Orgs.Get(e.ctx, org.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the organization is still there: %v", err)
+	}
+	if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, newUserInput("late")); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("a creation in the deleted organization: %v", err)
+	}
+	if n, err := e.svc.FinishOrgDeletions(e.ctx, 0); err != nil || n != 0 {
+		t.Fatalf("a finished deletion was finished again: %d %v", n, err)
+	}
+}
+
+// A cascading deletion that decided and did not finish is not finished by a deletion without cascade while the
+// organization has users: that one is refused (not empty), and the users are not left without their organization by
+// it.
+func TestNonCascadeDeletionAfterAnUnfinishedCascadeIsRefused(t *testing.T) {
+	f := &afterUserCount{Store: &faultStore{Store: memstore.New()}}
+	t.Cleanup(func() { _ = f.Close() })
+	e := newEnvOn(t, f)
+	org := e.org("peopled")
+	if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, newUserInput("member")); err != nil {
+		t.Fatal(err)
+	}
+	failOrgDeletion(f)
+	if err := e.svc.DeleteOrg(e.ctx, service.System, org.ID, true); !service.IsUnavailable(err) {
+		t.Fatalf("the cascading deletion whose last write failed: %v", err)
+	}
+	if err := e.svc.DeleteOrg(e.ctx, service.System, org.ID, false); !errors.Is(err, service.ErrNotEmpty) {
+		t.Fatalf("a deletion without cascade of the organization with a user: %v", err)
+	}
+	if _, err := e.svc.Orgs.Get(e.ctx, org.ID); err != nil {
+		t.Fatalf("the organization: %v", err)
+	}
+	if err := e.svc.DeleteOrg(e.ctx, service.System, org.ID, true); err != nil {
+		t.Fatalf("the cascading deletion made again: %v", err)
+	}
+}
+
+// The sweep keeps an organization's open deletion guard while the organization exists, whatever its age, so its
+// creations of users go on asserting it without writing it; it removes the guard once the organization is gone.
+func TestSweepKeepsTheOpenGuardOfAnOrganization(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("kept")
+	if _, err := e.svc.CreateUser(e.ctx, service.System, org.ID, newUserInput("first")); err != nil {
+		t.Fatal(err)
+	}
+	g, err := e.svc.Locks.Get(e.ctx, org.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := e.svc.Locks.Get(e.ctx, org.ID); err != nil || kept.Version != g.Version {
+		t.Fatalf("the open guard of an organization that exists was swept or written: %+v %v", kept, err)
+	}
+	if err := e.svc.Orgs.Delete(e.ctx, org.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Locks.Get(e.ctx, org.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the open guard of a deleted organization: %v", err)
+	}
 }

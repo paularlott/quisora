@@ -91,6 +91,8 @@ func owners(e model.Entity) []ownerRef {
 		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.Grant:
 		return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindClient, id: v.ClientID}}
+	case *model.Lock: // an organization's open deletion guard (SweepOrphans judges every other lock by its lease)
+		return []ownerRef{{kind: model.KindOrg, id: v.ID}}
 	}
 	return nil
 }
@@ -118,7 +120,10 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 		if store.Decode(r, e) != nil {
 			continue
 		}
-		if l, ok := e.(*model.Lock); ok { // judged by its lease alone
+		// A lock is judged by its lease, except an organization's open deletion guard (no holder: see orgDeleting),
+		// which is kept while its organization exists: the organization's creations of users assert it, and would
+		// otherwise have to write it again (and those in flight try again).
+		if l, ok := e.(*model.Lock); ok && l.Holder != "" {
 			if now.Sub(l.Until) > lockRetention && s.Locks.DeleteIf(ctx, l.ID, l.Version) == nil {
 				removed++
 			}

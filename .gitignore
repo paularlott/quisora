@@ -5,6 +5,7 @@
 *.prof
 *.pprof
 coverage.*
+/uidemo
 
 # Web: dependencies, the built assets (`task webassets`; the binary embeds them, the Dockerfile builds them) and
 # browser-test output. The placeholder keeps web/dist present so the Go packages compile before a build.

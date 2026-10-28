@@ -7,7 +7,9 @@ build chose something the design left open, REPLICATION.md says what.
 
 ## Why
 
-Shared-database mode (one database server, Galera, or a primary with replicas) is functionally where we want it.
+Shared-database mode (one database server, or a primary with replicas or a standby; Galera only with every Quisora node
+writing to the same Galera node, as a transaction's assertion is a share-locked read that Galera does not enforce across
+writers, see RUNNING.md, Shared database) is functionally where we want it.
 Gossip mode, where each node has its own database, is where the serious bugs keep coming from. Its write path is
 leaderless: any node writes any record through a quorum compare-and-swap (prepare, commit, abort across a majority),
 with HLC versions and last-writer-wins. That spreads consistency logic over every write, and the last review rounds

@@ -53,7 +53,7 @@ type Metrics struct {
 type Server struct {
 	Listen               string   `toml:"listen" flag:"listen" usage:"HTTPS listen address (there is no plain-HTTP listener)"`
 	PublicURL            string   `toml:"public_url" flag:"public-url" usage:"Public base URL and OIDC issuer, https://host[:port], identical on every node (default https://localhost:<port>)"`
-	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory: everything this node keeps on disk (embedded database, self-signed certificate, mail queue, audit spool, cluster state)"`
+	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory: everything this node keeps on disk (embedded database, self-signed certificate, audit spool, node id, cluster state)"`
 	TLSCert              string   `toml:"tls_cert" flag:"tls-cert" usage:"TLS certificate (PEM); without it a self-signed certificate is generated in <data-dir>/tls"`
 	TLSKey               string   `toml:"tls_key" flag:"tls-key" usage:"TLS private key (PEM)"`
 	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
@@ -201,12 +201,10 @@ type Log struct {
 // The layout of server.data_dir: everything a node keeps on disk lives under it, so one setting (one volume, one
 // backup exclusion, one permission check) covers it all. Each node of a cluster has its own.
 const (
-	DirBadgerDB    = "badgerdb"    // storage.backend badgerdb
-	FileSQLite     = "quisora.db"  // storage.backend sqlite
-	DirTLS         = "tls"         // the self-signed certificate, when no tls_cert is configured
-	DirMailQueue   = "mailqueue"   // outgoing email waiting for (re)delivery, sealed with the master key
-	DirLogoutQueue = "logoutqueue" // back-channel logouts waiting to be retried, sealed with the master key
-	DirAuditSpool  = "auditspool"  // audit events VictoriaLogs has not taken yet
+	DirBadgerDB   = "badgerdb"   // storage.backend badgerdb
+	FileSQLite    = "quisora.db" // storage.backend sqlite
+	DirTLS        = "tls"        // the self-signed certificate, when no tls_cert is configured
+	DirAuditSpool = "auditspool" // audit events VictoriaLogs has not taken yet
 )
 
 // DataPath is name inside server.data_dir.

@@ -25,8 +25,8 @@ node refuses to start without it), because a node's promises and the writes it a
 must be on disk when it answers (RUNNING.md, [Choosing a store](RUNNING.md#replicated-gossip)). And **a node writes no
 export files**: another node's catch-up is streamed from the database as it is read and never spooled to the data
 directory, so nothing a node holds sits outside the store's own encryption at rest (BadgerDB's `encryption_key`, or the
-encrypted volume). An older build left `export-*.tmp` files there when it crashed during a catch-up; a node deletes them
-at start.
+encrypted volume). An older build left `export-*.tmp` files there when it crashed during a catch-up; this one neither reads nor
+deletes them, so remove any that remain by hand.
 
 Accepted: usernames, email addresses and external ids are unique within an organization, so a manager or
 administrator creating or editing a user learns that a value is taken even when the account holding it is one they do
@@ -103,13 +103,17 @@ stop verifying here at once, and in applications once they fetch the key set aga
 through their refresh tokens: nobody is signed out. Without the removal they keep working until they expire.
 
 **The master key may be exposed.** [Rotate it](RUNNING.md#rotating-the-master-key) and remove the old key as soon as the
-re-seal is done; relying parties' refresh tokens from before then stop working and their users sign in again. Treat
-the backups made with the old key as exposed only if their passwords may be too: a backup's encryption does not use
-the master key.
+re-seal is done. A rotation re-seals what the key seals without changing it: sessions and relying parties' refresh
+tokens keep working (each grant's key is re-sealed, not replaced), and so does any refresh token that whoever holds a
+copy of the database from before the rotation, and the old key, makes from it. So pull the [emergency sign-out](emergency-sign-out.md) for every
+organization too (`quisora sign-out --all`, with `--api-tokens`: it ends every session and refresh grant), rotate the
+signing keys (above), and have users with an authenticator app set it up again; the list under
+[the rotation](RUNNING.md#rotating-the-master-key) has the rest. Treat the backups made with the old key as exposed only if their
+passwords may be too: a backup's encryption does not use the master key.
 
 **A backup or the database leaked.** Password hashes and secrets are sealed with the master key: without it they are
 of no use, and there is nothing to guess passwords against offline. If the master key may have leaked as well, the
-hashes are argon2id: rotate the master key, and reset passwords if you cannot rule out offline guessing of weak ones.
+hashes are argon2id: do everything under the master key above, and reset passwords if you cannot rule out offline guessing of weak ones.
 
 **`cluster.key` leaked.** Anyone on the network path can read and inject gossip. Rotate it on every node while the
 cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and
@@ -172,7 +176,8 @@ bootstrap`), so there is no command to move it. `quisora force-start`, which mak
 node copy its data from fewer nodes than a majority, is recorded as `cluster.force_start` by `command:force-start`.
 Whoever runs any of these commands holds the master key (or the node's data directory), and with it everything the server protects: keep the
 configuration and the key as protected as the break-glass step they enable. A user who is only locked out by failed
-attempts needs nothing: the lock ends after `limits.lockout_minutes` (default 15).
+attempts needs nothing: the count of failures is a fixed window that starts at the first failure, so the lock ends
+`limits.lockout_minutes` (default 15) after that one, not after the failure that tripped it.
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
 `oauth.client_auth.limited`, `api.request.refused`; any `apitoken.refused` with reason `wrong secret`,

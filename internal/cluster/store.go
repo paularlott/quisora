@@ -393,10 +393,13 @@ func (s *Store) write(ctx context.Context, rec *store.Record, mode uint8, expect
 	return s.writePartitioned(ctx, rec, mode, expect)
 }
 
-// localOnly reports whether records of kind k stay on the node that writes them in a gossip cluster: short-lived state
-// and audit events (an audit page asks every node: AuditQuery). They are local writes, never part of a partition write,
-// an export, an import or the seeding of a new cluster.
-func localOnly(k model.Kind) bool { return k == model.KindEphemeral || k == model.KindAudit }
+// localOnly reports whether records of kind k stay on the node that writes them in a gossip cluster: short-lived state,
+// audit events (an audit page asks every node: AuditQuery) and the node's queued items (package queue: only the node
+// that queued an item delivers it). They are local writes, never part of a partition write, an export, an import or
+// the seeding of a new cluster.
+func localOnly(k model.Kind) bool {
+	return k == model.KindEphemeral || k == model.KindAudit || k == model.KindQueue
+}
 
 // writeLocal is a write to the wrapped store alone: standalone, nodes sharing a database (where the notices tell the
 // others), and the node-local kinds (localOnly), which every node keeps for itself.

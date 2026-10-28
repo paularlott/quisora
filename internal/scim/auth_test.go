@@ -141,7 +141,7 @@ func TestAccessTokenStoreFailureIsUnavailable(t *testing.T) {
 // SCIM request from it is refused before its token is looked at, the right one too.
 func TestBearerFailuresAreRateLimited(t *testing.T) {
 	e := newEnv(t)
-	for i := range web.BearerFailuresPerIPMin {
+	for i := range web.BearerFailuresPerOrgMin {
 		if r := e.do("GET", "/scim/v2/acme/Users", "qsr_nosuch_secret", nil); r.Status != 401 {
 			t.Fatalf("failure %d: %d %s", i+1, r.Status, r.Raw)
 		}
@@ -149,5 +149,29 @@ func TestBearerFailuresAreRateLimited(t *testing.T) {
 	r := e.do("GET", "/scim/v2/acme/Users", e.admA, nil)
 	if r.Status != 429 || r.Header.Get("Retry-After") == "" {
 		t.Fatalf("valid token after the limit: %d %s", r.Status, r.Raw)
+	}
+}
+
+// One organization's bad token, retried from an address shared with other tenants (an identity provider's provisioning
+// egress), does not stop another organization's valid token from that address; the per-organization budget alone
+// would not bound made-up organization names, so the address has a ceiling too.
+func TestBearerFailuresAreCountedPerOrganization(t *testing.T) {
+	e := newEnv(t)
+	for range web.BearerFailuresPerOrgMin {
+		e.do("GET", "/scim/v2/"+e.orgA.Name+"/Users", "qsr_nosuch_secret", nil)
+	}
+	if r := e.do("GET", "/scim/v2/"+e.orgA.Name+"/Users", e.admA, nil); r.Status != 429 {
+		t.Fatalf("valid token of the organization whose budget is spent: %d %s", r.Status, r.Raw)
+	}
+	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 200 {
+		t.Fatalf("valid token of another organization from the same address: %d %s", r.Status, r.Raw)
+	}
+	for i := range web.BearerFailuresPerIPMin / web.BearerFailuresPerOrgMin {
+		for range web.BearerFailuresPerOrgMin {
+			e.do("GET", fmt.Sprintf("/scim/v2/made-up-%d/Users", i), "qsr_nosuch_secret", nil)
+		}
+	}
+	if r := e.do("GET", "/scim/v2/"+e.orgB.Name+"/Users", e.admB, nil); r.Status != 429 {
+		t.Fatalf("valid token from an address past the ceiling: %d %s", r.Status, r.Raw)
 	}
 }

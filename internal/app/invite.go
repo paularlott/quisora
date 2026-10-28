@@ -114,11 +114,11 @@ func Bootstrap(ctx context.Context, c *config.Config, log logger.Logger) (user, 
 	return u.Email, link, nil
 }
 
-// storeEmpty reports whether st holds no records (node-local short-lived state and the node's own audit events aside: a
-// gossip node records those whether it holds a data set or not).
+// storeEmpty reports whether st holds no records (node-local short-lived state, the node's own audit events and its
+// queued items aside: a gossip node records those whether it holds a data set or not).
 func storeEmpty(ctx context.Context, st store.Store) (bool, error) {
 	for _, k := range model.Kinds() {
-		if k == model.KindEphemeral || k == model.KindAudit {
+		if k == model.KindEphemeral || k == model.KindAudit || k == model.KindQueue {
 			continue
 		}
 		n, err := st.Count(ctx, k, "")

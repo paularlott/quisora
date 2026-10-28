@@ -3,6 +3,8 @@ package scim
 import (
 	"sort"
 	"strings"
+
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // project applies attributes / excludedAttributes to a resource. id and schemas are always returned.
@@ -171,6 +173,13 @@ func excludePath(out map[string]any, p attrPath, sch *schemaSet) {
 		}
 		dst[k] = arr
 	}
+}
+
+// pageQuery is q ordered by the store field (descending when the request says so) and cut to the page p asks for. A
+// request for no resources (only the total) reads one: a limit of 0 means no limit.
+func pageQuery(q store.ListQuery, p *listParams, field string) store.ListQuery {
+	q.Sort, q.Desc, q.Offset, q.Limit = field, p.desc, p.start-1, max(p.count, 1)
+	return q
 }
 
 // ---------------------------------------------------------------------------------------------------------------

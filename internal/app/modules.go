@@ -134,6 +134,11 @@ func modules(ctx context.Context, a *App) []web.Module {
 			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); hk.ok("finishing group changes", err) && n > 0 {
 				a.Log.Info("group changes left unfinished by their writer were finished", "count", n)
 			}
+			// A deletion of an organization that decided and whose last write did not land (a store outage) is
+			// finished here: the organization refuses new users until it is.
+			if n, err := a.Svc.FinishOrgDeletions(ctx, service.OrgDeletionGrace); hk.ok("finishing organization deletions", err) && n > 0 {
+				a.Log.Info("organization deletions left unfinished were finished", "count", n)
+			}
 			// Records whose owner is gone (what a deleted organization, user, group, tenant or provider owned: they
 			// stopped counting at its deletion) are found a batch a minute: a pass over every record of the kinds that
 			// do not expire takes about a day at five million users.

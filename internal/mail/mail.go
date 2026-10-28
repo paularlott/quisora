@@ -1,5 +1,6 @@
 // Package mail sends the transactional emails (invitation, password reset, address verification): SMTP with
-// STARTTLS or implicit TLS, a queue on disk with retries, and durable single-use links from the service.
+// STARTTLS or implicit TLS, a durable queue with retries (package queue), and durable single-use links from the
+// service.
 //
 // Without an SMTP host there is no mailer at all: nothing is emailed, and administrators share invitation links
 // themselves (see app.modules).
@@ -29,6 +30,7 @@ import (
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Message is one outgoing email.
@@ -49,9 +51,9 @@ type TransportFunc func(ctx context.Context, m Message) error
 
 func (f TransportFunc) Deliver(ctx context.Context, m Message) error { return f(ctx, m) }
 
-// Mailer queues messages and delivers them with retries. The queue is on disk, in <data-dir>/mailqueue (package
-// queue): a message is written before Send returns, survives a restart or a crash, is sealed with the master key (the
-// messages carry single-use invitation and reset links) and is re-sealed after a master key change (Reseal).
+// Mailer queues messages and delivers them with retries. The queue is this node's, in the store (package queue): a
+// message is written before Send returns, survives a restart or a crash, is sealed with the master key (the messages
+// carry single-use invitation and reset links) and is re-sealed after a master key change (Reseal).
 type Mailer struct {
 	Cfg *config.Config
 	Log logger.Logger
@@ -61,24 +63,24 @@ type Mailer struct {
 	q *queue.Queue[Message]
 }
 
-// QueueSize bounds the queue; when it is full, new messages are refused (and logged). The queue is on disk, so this
-// only stops a flood of messages SMTP cannot take from filling it.
+// QueueSize bounds this node's queue; when it is full, new messages are refused (and logged). The queue is in the
+// store, so this only stops a flood of messages SMTP cannot take from filling it.
 const QueueSize = 10000
 
 // DefaultBackoff are the delays between delivery attempts; a message is given up on (and logged) after the last.
 var DefaultBackoff = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 
-// New builds a mailer on the queue in cfg's data directory (made if missing) and starts its delivery worker, which
-// first delivers whatever a previous run left queued through tr; call Close to stop it. backoff replaces
-// DefaultBackoff when given.
-func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer, tr Transport, backoff ...time.Duration) (*Mailer, error) {
+// New builds a mailer on node's mail queue in st and starts its delivery worker, which first delivers whatever a
+// previous run of the node left queued through tr; call Close to stop it. backoff replaces DefaultBackoff when given.
+func New(cfg *config.Config, log logger.Logger, st store.Store, node string, sealer *secure.Sealer, tr Transport,
+	backoff ...time.Duration) *Mailer {
 	if len(backoff) == 0 {
 		backoff = DefaultBackoff
 	}
 	m := &Mailer{Cfg: cfg, Log: log}
-	q, err := queue.Open(cfg.DataPath(config.DirMailQueue), queue.Options[Message]{
-		Name: "mail queue", Log: log, Sealer: sealer, Binding: "mail/queue", Backoff: backoff, Max: QueueSize,
-		Deliver: tr.Deliver,
+	m.q = queue.Open(queue.Options[Message]{
+		Name: "mail", Log: log, Store: st, Node: node, Sealer: sealer, Binding: "mail/queue", Backoff: backoff,
+		Max: QueueSize, Deliver: tr.Deliver,
 		Failed: func(msg Message, attempt int, retry time.Duration, err error) {
 			if retry == 0 {
 				log.Error("mail delivery failed, giving up", "to", msg.To, "subject", msg.Subject, "error", err)
@@ -86,11 +88,7 @@ func New(cfg *config.Config, log logger.Logger, sealer *secure.Sealer, tr Transp
 				log.Warn("mail delivery failed, will retry", "to", msg.To, "attempt", attempt, "in", retry, "error", err)
 			}
 		}})
-	if err != nil {
-		return nil, err
-	}
-	m.q = q
-	return m, nil
+	return m
 }
 
 // Close stops the worker; messages not yet delivered stay queued for the next start.
@@ -103,14 +101,10 @@ func (m *Mailer) Queued() int { return m.q.Queued() }
 // how many need one that is not configured (queue.Queue.Reseal).
 func (m *Mailer) Reseal() (stale, lost int) { return m.q.Reseal() }
 
-// PurgeLost removes the queued messages no configured master key opens that were queued before before
-// (queue.Queue.PurgeLost).
-func (m *Mailer) PurgeLost(before time.Time) (int, error) { return m.q.PurgeLost(before) }
-
 // ErrQueueFull is returned when the queue is full.
 var ErrQueueFull = queue.ErrFull
 
-// Send queues msg for delivery and returns once it is on disk.
+// Send queues msg for delivery and returns once it is stored.
 func (m *Mailer) Send(_ context.Context, msg Message) error {
 	if _, err := mail.ParseAddress(msg.To); err != nil {
 		return fmt.Errorf("mail: bad recipient: %w", err)

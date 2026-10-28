@@ -184,7 +184,7 @@ type Service struct {
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.
 	OnSessionsEnding func(ctx context.Context, userID string, sessionIDs []string)
-	// QueuesStale, when set, re-seals this node's queues on disk and returns how many of their items still need a
+	// QueuesStale, when set, re-seals this node's queued items and returns how many of them still need a
 	// previous master key (reported with the node's keys, ReportMasterKey: they keep the rotation unfinished), and how
 	// many need one that is not configured (reported as a warning: they hold nothing back).
 	QueuesStale func() (stale, lost int)
@@ -334,7 +334,10 @@ func (s *Service) auditEvent(ctx context.Context, a *Actor, c change) (*model.Au
 	super := a.UserID != "" && a.Role == model.RoleSuperAdmin
 	targetID := ""
 	if c.user != nil { // read now, not when the change was described: its write may have given the user its id
-		target, targetID = c.user.Username, c.user.ID
+		targetID = c.user.ID
+		if target == "" {
+			target = c.user.Username
+		}
 		super = super || c.user.Role == model.RoleSuperAdmin
 	}
 	// Queryable audit fields are stored in VARCHAR(255) columns on MySQL/MariaDB.

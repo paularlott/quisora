@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -1167,8 +1168,14 @@ type Lock struct {
 	Until  time.Time `msgpack:"ut" json:"until"`
 }
 
-func (l *Lock) Kind() Kind   { return KindLock }
-func (l *Lock) Index() Index { return Index{Partition: l.ID} }
+// OrgDeleted is the Holder of an organization's deletion guard once its deletion has decided (service.DeleteOrg). Such
+// guards are indexed (org_deleted), so housekeeping finds a deletion that decided and did not finish.
+const OrgDeleted = "org.deleted"
+
+func (l *Lock) Kind() Kind { return KindLock }
+func (l *Lock) Index() Index {
+	return Index{Partition: l.ID, Fields: map[string]any{"org_deleted": l.Holder == OrgDeleted}}
+}
 
 // Replay records that a single-use value (a client assertion's or a DPoP proof's jti) was used, until it expires:
 // creating it again is refused while it lives. It is written with a compare-and-swap its owner decides, so in a cluster it is committed on a majority
@@ -1194,6 +1201,41 @@ type Ephemeral struct {
 func (e *Ephemeral) Kind() Kind     { return KindEphemeral }
 func (e *Ephemeral) Index() Index   { return Index{Expires: e.Expires} }
 func (e *Ephemeral) GetMeta() *Meta { return &e.Meta }
+
+// QueueItem is an item of a node's retry queue (package queue): an email waiting for SMTP, a back-channel logout
+// waiting for its application. Only the node that queued it reads, counts or delivers it (its scope names the node),
+// so the nodes sharing a database never contend for one, and a node that is gone leaves its items to expire: Expires
+// is the queue's discard horizon, past the point the item would have been given up anyway.
+type QueueItem struct {
+	Meta
+	Queue string `msgpack:"q"`  // the queue's name ("mail", "logout")
+	Node  string `msgpack:"nd"` // the id of the node that queued it
+	// Key is the item's fairness key (an organization's id): its share of the queue and of the workers.
+	Key     string    `msgpack:"k,omitempty"`
+	Attempt int       `msgpack:"a,omitempty"` // failed deliveries so far
+	Next    time.Time `msgpack:"n"`           // not to be delivered before
+	// Sealed is the item itself, sealed with the master key (it carries single-use links and user identifiers).
+	Sealed  string    `msgpack:"s"`
+	Expires time.Time `msgpack:"ex"`
+}
+
+// QueueScope is the scope of node's items of queue: every listing and count of a queue is of one node's items.
+func QueueScope(queue, node string) string { return queue + "/" + node }
+
+// QueueSlot is the slot of an item of key next due at next: the key (hex, so no key is a prefix of another's slots)
+// then the due time, so one key's items are a range of the slot index (QueueKeySlots) in the order they come due.
+func QueueSlot(key string, next time.Time) string {
+	return QueueKeySlots(key) + strconv.FormatInt(max(next.UnixMilli(), 0)+1e15, 10)[1:]
+}
+
+// QueueKeySlots is the prefix of the slots of key's items.
+func QueueKeySlots(key string) string { return hex.EncodeToString([]byte(key)) + "/" }
+
+func (q *QueueItem) Kind() Kind { return KindQueue }
+func (q *QueueItem) Index() Index {
+	return Index{Scope: QueueScope(q.Queue, q.Node), Fields: map[string]any{"due": q.Next, "slot": QueueSlot(q.Key, q.Next)},
+		Expires: q.Expires}
+}
 
 // validUntilField is the indexed end date: the zero time when there is none (the "expiring" field tells them apart).
 func validUntilField(t *time.Time) time.Time {

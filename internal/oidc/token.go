@@ -19,7 +19,6 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
-	"github.com/paularlott/quisora/internal/web"
 )
 
 // userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
@@ -46,13 +45,16 @@ type codeData struct {
 	GrantID string `json:"g,omitempty"`
 }
 
-// tokenFailuresPerIPMin bounds the token requests per IP address and minute that fail on what they present (an
-// invalid_grant: an unknown, used or expired code, refresh token or device code; a DPoP proof refused). A public client
-// is admitted by its client_id alone, and such a request still costs: a DPoP proof is recorded once used (a write the
-// cluster replicates) and an unknown code is marked against a redemption in progress (short-lived memory). Past the
-// limit the address is refused before any of that for the rest of the minute. Successful requests and the DPoP nonce
-// round trip do not count; clients that work never fail this often from one address.
-const tokenFailuresPerIPMin = 300
+// tokenFailuresPerClientMin bounds the token requests per confidential client and minute that fail on what they
+// present (an invalid_grant or a refused DPoP proof, as for failuresPerIPMin). Such a client proved its secret, so
+// the failures are its own and throttle only it: a backend that refreshes for thousands of users after an
+// organization's sessions were revoked gets invalid_grant for each, and must not lock out other clients behind the
+// same address. They still cost (see failuresPerIPMin), so a client that keeps failing is held back, at ten times the
+// budget of an address anyone can name a client from. Counted per client, not per client and address: its failures
+// cost the same from wherever they come, and the limit then holds however many addresses it is served from. Past the
+// limit the client is refused before any of that for the rest of the minute. Successful requests and the DPoP nonce
+// round trip do not count.
+const tokenFailuresPerClientMin = 3000
 
 func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
@@ -84,14 +86,19 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("unauthorized_client", "the client may not use this grant type"))
 		return
 	}
-	failKey := "token-fail|" + web.RateKeyIP(r)
-	if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, failKey, 0, time.Minute); err != nil {
-		writeOAuthError(w, serverError(unavailable(err))) // refused, but as "try again": the limit was not reached
-		return
-	} else if n >= tokenFailuresPerIPMin {
-		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
-			desc: "too many failed token requests from this address; try again in a minute", retry: true})
-		return
+	// A public client is admitted by its client_id alone, so anyone can fail as it: its failures count against the
+	// address (read by authenticateClient above). A confidential client's count against itself.
+	failKey := failIPKey(r)
+	if !ce.c.Public() {
+		failKey = "token-fail|" + ce.c.ID
+		if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, failKey, 0, time.Minute); err != nil {
+			writeOAuthError(w, serverError(unavailable(err))) // refused, but as "try again": the limit was not reached
+			return
+		} else if n >= tokenFailuresPerClientMin {
+			writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+				desc: "too many failed token requests from this client; try again in a minute", retry: true})
+			return
+		}
 	}
 	jkt, e := p.tokenProof(r, ce.c)
 	if e != nil {
@@ -124,8 +131,8 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	writeTokens(w, tr)
 }
 
-// tokenFailed counts a token request that failed on what it presented against its address (tokenFailuresPerIPMin).
-// The request fails whatever the counter answers.
+// tokenFailed counts a token request that failed on what it presented in failKey (the address of a public client, the
+// confidential client itself). The request fails whatever the counter answers.
 func (p *Provider) tokenFailed(r *http.Request, failKey string, e *oauthError) {
 	if e.code == "invalid_grant" || e.code == "invalid_dpop_proof" {
 		_, _ = p.s.Eph.Incr(context.WithoutCancel(r.Context()), nsRateOIDC, failKey, 1, time.Minute)

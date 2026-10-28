@@ -1176,11 +1176,11 @@ func (n *Node) refusal() string {
 
 // allowWrite decides whether a local write may be made now. In a gossip cluster only a node that is ready and sees a
 // majority writes (Writable): catching up after a start, resynchronising or cut off from the majority it writes
-// nothing that replicates — not even sign-outs. Short-lived state, and in a gossip cluster audit events (localOnly), are
-// node-local and always allowed. A refused write has no effect anywhere (store.ErrUnavailable).
+// nothing that replicates — not even sign-outs. Short-lived state, and in a gossip cluster audit events and queued items
+// (localOnly), are node-local and always allowed. A refused write has no effect anywhere (store.ErrUnavailable).
 func (n *Node) allowWrite(ctx context.Context, rec *store.Record) error {
 	if rec.Kind == model.KindEphemeral || (n.gc != nil && localOnly(rec.Kind)) {
-		return nil // node-local: a node records its own audit events whatever its state
+		return nil // node-local: a node records its own audit events and queues its own items whatever its state
 	}
 	if err := n.fenced(ctx); err != nil {
 		return err
