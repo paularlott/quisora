@@ -96,7 +96,7 @@ func (s *Service) readAuditStore(ctx context.Context, q AuditQuery) (AuditPage, 
 	return AuditPage{Items: items, Total: total, Nodes: 1, Answered: 1, Source: "store"}, nil
 }
 
-// AuditListQuery is the store query of an audit page. Created times break ties by id (UUIDv7: time ordered).
+// AuditListQuery is the store query of an audit page. Created times break ties by id (model.NewID: time ordered).
 func AuditListQuery(q AuditQuery) store.ListQuery {
 	lq := store.ListQuery{Scope: q.Org, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Offset: q.Offset, Limit: q.Limit}
 	if !q.From.IsZero() {

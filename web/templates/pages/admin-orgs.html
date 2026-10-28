@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
+<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-public="{{.Site.PublicURL}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">Administration</p>
@@ -31,6 +31,7 @@
             <td class="num" x-text="row.usersText"></td>
             <td x-text="row.createdText"></td>
             <td class="actions">
+              {{template "copy-row" (dict "value" "signInUrl" "what" "sign-in link" "label" "copySignInLabel")}}
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" x-show="row.notPrimary" @click="remove">{{template "icon" "trash"}}</button>
             </td>

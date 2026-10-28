@@ -10,6 +10,7 @@ import (
 
 	"github.com/paularlott/gossip"
 	"github.com/paularlott/gossip/partition"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -154,7 +155,7 @@ func testSizeMismatchStopsOnlyTheMinority(t *testing.T, c *tcluster) {
 		}
 		return true
 	})
-	putRetrying(t, c.nodes[0], newRec(newID(), ""))
+	putRetrying(t, c.nodes[0], newRec(model.NewID(), ""))
 	odd.nodes.Store(3)
 	odd.gc.LocalMetadata().SetInt(metaSize, 3)
 	c.waitReady()
@@ -228,7 +229,7 @@ func testUnpublishedCompatNotJudged(t *testing.T, c *tcluster) {
 // data (an organization itself) is in partition 0.
 func TestPartitionNumbersAreStable(t *testing.T) {
 	for key, want := range map[string]int{"": 0, "org1": 60, "a": 62, "acme": 39,
-		"0198f0e0-0000-7000-8000-000000000001": 56, "tenant/res/https://a.example.com": 57} {
+		"034nmRmWuXazwvCcdrmRxu": 3, "tenant/res/https://a.example.com": 57} {
 		if got := partitionNum(key); got != want {
 			t.Errorf("partition of %q: %d, want %d", key, got, want)
 		}
@@ -303,5 +304,5 @@ func testRestartManagerFailureLeavesNoManager(t *testing.T, c *tcluster) {
 	}
 	managerStart.Store(nil)
 	c.waitReady()
-	putRetrying(t, c.nodes[0], newRec(newID(), ""))
+	putRetrying(t, c.nodes[0], newRec(model.NewID(), ""))
 }

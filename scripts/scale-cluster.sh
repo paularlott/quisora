@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 3-node replicated BadgerDB cluster on localhost: seed node 1, start nodes 2 and 3 empty, time their catch-up, then run
-# load round-robin across all three nodes.
+# 3-node replicated BadgerDB cluster on localhost: seed node 1, start it with nodes 2 and 3 empty, time until each serves
+# the seeded data, then run load round-robin across all three nodes.
 #
 #   scripts/scale-cluster.sh WORKDIR [orgs] [duration]
 #
@@ -29,7 +29,8 @@ backend = "badgerdb"
 bind = "127.0.0.1:$((BASE + 10 + n))"
 advertise = "127.0.0.1:$((BASE + 10 + n))"
 key = "$CKEY"
-$([ "$n" != 1 ] && echo "peers = [\"127.0.0.1:$((BASE + 11))\"]")
+peers = ["127.0.0.1:$((BASE + 11))", "127.0.0.1:$((BASE + 12))", "127.0.0.1:$((BASE + 13))"]
+size = 3
 [limits]
 login_per_ip_min = 0
 max_in_flight = 8192
@@ -44,12 +45,9 @@ trap 'kill "${PIDS[@]}" 2>/dev/null || true' EXIT
 say() { echo "$*" | tee -a "$WORK/summary.txt"; }
 : >"$WORK/summary.txt"
 
-# Seed node 1 offline (sync writes off, as for the single-node seeds).
-sed 's/^backend = "badgerdb"/backend = "badgerdb"\n[storage.badgerdb]\nsync_writes = false/' "$WORK/node1.toml" >"$WORK/node1-seed.toml"
-QUISORA_LOADTEST=1 "$LOADTEST" -c "$WORK/node1-seed.toml" seed --orgs "$ORGS" --users 1000 --data "$WORK/seed.json" | tee "$WORK/seed.out" | tail -3
-
-"$QUISORA" -c "$WORK/node1.toml" serve >"$WORK/node1.log" 2>&1 & PIDS+=($!)
-for _ in $(seq 1 120); do curl -sk "$PUBLIC/readyz" >/dev/null 2>&1 && break; sleep 0.5; done
+# Seed node 1 offline with its own settings (a gossip node keeps sync writes on): the seeded records become the first
+# writes of their partitions, which nodes 2 and 3 copy.
+QUISORA_LOADTEST=1 "$LOADTEST" -c "$WORK/node1.toml" seed --orgs "$ORGS" --users 1000 --data "$WORK/seed.json" | tee "$WORK/seed.out" | tail -3
 
 LAST=$(python3 - "$WORK/seed.json" <<'PY'
 import json, sys
@@ -59,35 +57,33 @@ PY
 LASTCLIENT=$(python3 - "$WORK/seed.json" <<'PY'
 import json, sys
 g = json.load(open(sys.argv[1]))["grants"][-1]
-print(g["client_id"] + " " + g["client_secret"], end="")
+print(g["org"] + " " + g["client_id"] + " " + g["client_secret"], end="")
 PY
 )
-read -r CID CSEC <<<"$LASTCLIENT"
+read -r LASTORG CID CSEC <<<"$LASTCLIENT"
 
 have_last() { # url -> 0 when the last seeded refresh token works there
-	curl -sk -o /dev/null -w '%{http_code}' -d "grant_type=refresh_token&client_id=$CID&client_secret=$CSEC&refresh_token=$LAST" "$1/oauth/token" | grep -q 200
+	curl -sk -o /dev/null -w '%{http_code}' -d "grant_type=refresh_token&client_id=$CID&client_secret=$CSEC&refresh_token=$LAST" "$1/o/$LASTORG/oauth/token" | grep -q 200
 }
-have_last "$PUBLIC" && say "node 1 serves the seeded data" || { say "node 1 cannot refresh the last grant"; exit 1; }
-
+# All three start together: a write needs two of the three nodes, so node 1 cannot serve on its own.
 T0=$(python3 -c 'import time; print(time.time())')
-"$QUISORA" -c "$WORK/node2.toml" serve >"$WORK/node2.log" 2>&1 & PIDS+=($!)
-"$QUISORA" -c "$WORK/node3.toml" serve >"$WORK/node3.log" 2>&1 & PIDS+=($!)
+for n in 1 2 3; do "$QUISORA" -c "$WORK/node$n.toml" serve >"$WORK/node$n.log" 2>&1 & PIDS+=($!); done
 declare -A DONE
 for _ in $(seq 1 7200); do
-	for n in 2 3; do
+	for n in 1 2 3; do
 		[ -n "${DONE[$n]:-}" ] && continue
 		if have_last "https://127.0.0.1:$((BASE + n))"; then
 			DONE[$n]=$(python3 -c "import time; print(round(time.time()-$T0,1))")
 			say "node $n converged (last grant readable) after ${DONE[$n]} s"
 		fi
 	done
-	[ -n "${DONE[2]:-}" ] && [ -n "${DONE[3]:-}" ] && break
+	[ -n "${DONE[1]:-}" ] && [ -n "${DONE[2]:-}" ] && [ -n "${DONE[3]:-}" ] && break
 	sleep 0.5
 done
 sleep 10 # let the tail of the feed drain, then verify user counts
 for n in 1 2 3; do
 	tok=$(python3 -c "import json; print(json.load(open('$WORK/seed.json'))['api_token'])")
-	for o in org-00001 org-00250 org-00500; do
+	for o in $(printf 'org-%05d ' 1 $(((ORGS + 1) / 2)) "$ORGS"); do
 		t=$(curl -sk -H "Authorization: Bearer $tok" -H 'Api-Version: 2026-10-20' "https://127.0.0.1:$((BASE + n))/api/orgs/$o/users?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total"))')
 		say "node $n $o users: $t"
 	done

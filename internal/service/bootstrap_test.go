@@ -15,7 +15,7 @@ import (
 
 // Many nodes bootstrapping one database at once make one primary organization, one first super admin and one
 // invitation; a renamed primary organization is not made again; an organization left without its admin (a crash
-// between the steps) gets one on the next start.
+// between the steps) gets one on the next run; every bootstrap of a new store makes ids of its own.
 func TestBootstrapOnce(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
@@ -64,17 +64,24 @@ func TestBootstrapOnce(t *testing.T) {
 	if u, _, err := service.New(cfg, st, sealer).Bootstrap(ctx, "other@example.com"); err != nil || u != nil {
 		t.Fatalf("bootstrap after a rename made %v (%v)", u, err)
 	}
-	// a bootstrap that stopped after the organization (no admin yet) is completed by the next run
+	// a bootstrap that stopped after the organization (no tenant, no admin yet) is completed by the next run
 	st2 := memstore.New()
 	half := service.New(cfg, st2, sealer)
-	o2 := &model.Org{Meta: model.Meta{ID: model.PrimaryOrgID}, Name: "primary", Settings: model.DefaultOrgSettings()}
+	o2 := &model.Org{Name: "primary", Settings: model.DefaultOrgSettings(), Primary: true}
 	if err := half.Orgs.Create(ctx, o2); err != nil {
 		t.Fatal(err)
 	}
-	if u, link, err := half.Bootstrap(ctx, "root@example.com"); err != nil || u == nil || link == "" {
+	if u, link, err := half.Bootstrap(ctx, "root@example.com"); err != nil || u == nil || link == "" || u.OrgID != o2.ID {
 		t.Fatalf("missing first admin not made: %v %v", u, err)
 	}
-	if _, err := st.Get(ctx, model.KindTenant, model.PrimaryTenantID); err != nil {
+	if _, err := half.DefaultTenant(ctx, o2.ID); err != nil {
 		t.Fatalf("default tenant: %v", err)
+	}
+	// Each install's primary organization has an id of its own, made at its bootstrap: never a fixed one.
+	if orgs[0].ID == o2.ID || !model.IsID(orgs[0].ID) {
+		t.Fatalf("two bootstraps made the primary organization %s and %s", orgs[0].ID, o2.ID)
+	}
+	if u, _, err := service.New(cfg, memstore.New(), sealer).Bootstrap(ctx, "root@example.com"); err != nil || u.OrgID == orgs[0].ID || u.ID == supers[0].ID {
+		t.Fatalf("a third bootstrap: %v %v", u, err)
 	}
 }

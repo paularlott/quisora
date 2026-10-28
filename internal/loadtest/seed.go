@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
@@ -20,15 +19,15 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
-// baseMs is the millisecond timestamp (2025-01-01) that deterministic UUIDv7-shaped ids count up from, so the
-// seeded records sort in creation order like real ones.
+// baseMs is the millisecond timestamp (2025-01-01) that deterministic ids count up from, so the seeded records sort in
+// creation order like real ones.
 const baseMs = 1735689600000
 
-// detID returns a deterministic UUIDv7-shaped id: a 48-bit "timestamp" of baseMs + org<<20 + local (so ids sort by
-// organization, then creation order) and 74 bits derived from label.
-func detID(label string, org, local int) string {
+// detBytes returns the 16 bytes of a deterministic id, shaped as model.NewID's: a 48-bit "timestamp" of baseMs +
+// org<<20 + local (so ids sort by organization, then creation order) and 74 bits derived from label.
+func detBytes(label string, org, local int) [16]byte {
 	h := sha256.Sum256([]byte(label))
-	var u uuid.UUID
+	var u [16]byte
 	copy(u[:], h[:16])
 	ms := uint64(baseMs) + uint64(org)<<20 + uint64(local)
 	var t [8]byte
@@ -36,8 +35,11 @@ func detID(label string, org, local int) string {
 	copy(u[0:6], t[2:8])
 	u[6] = 0x70 | u[6]&0x0f
 	u[8] = 0x80 | u[8]&0x3f
-	return u.String()
+	return u
 }
+
+// detID returns a deterministic id (detBytes).
+func detID(label string, org, local int) string { return model.FormatID(detBytes(label, org, local)) }
 
 func orgID(i int) string { return detID("org|"+OrgName(i), i, 1<<20-1) }
 
@@ -46,7 +48,7 @@ func (o *SeedOptions) groupID(org, g int) string {
 }
 
 func (o *SeedOptions) clientID(org, c int) string {
-	return model.ClientIDFromUUID(uuid.MustParse(detID(fmt.Sprintf("client|%d|%d", org, c), org, o.Users+o.Groups+c)))
+	return model.ClientIDPrefix + model.FormatID(detBytes(fmt.Sprintf("client|%d|%d", org, c), org, o.Users+o.Groups+c))
 }
 
 // seededTenants are the tenants every seeded org gets, in creation order.

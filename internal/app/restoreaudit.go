@@ -59,16 +59,17 @@ func (a *App) auditRestore(ctx context.Context) {
 	}
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	for !a.Node.Writable() {
+	var org string
+	for {
+		var err error
+		if org, err = a.Svc.PrimaryOrgID(ctx); err == nil && a.Node.Writable() {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-	}
-	org := model.PrimaryOrgID
-	if o, err := a.Svc.PrimaryOrg(ctx); err == nil {
-		org = o.ID
 	}
 	for _, n := range notes {
 		detail := map[string]string{"file": n.File, "records": strconv.Itoa(n.Records), "at": n.At.Format(time.RFC3339),

@@ -206,10 +206,25 @@ func safeNext(org *model.Org, next string) string {
 	if slices.ContainsFunc(strings.Split(u.Path, "/"), func(seg string) bool { return seg == "." || seg == ".." }) {
 		return ""
 	}
-	if !inSpace(u.Path, web.OrgPath(org.ID, "")) && !inSpace(strings.ToLower(u.Path), web.OrgPath(org.Name, "")) && !inSpace(u.Path, "/admin") {
+	if !inOrgSpace(org, u.Path) && !inSpace(u.Path, "/admin") {
 		return ""
 	}
 	return next
+}
+
+// inOrgSpace reports whether path is in org's space, /o/<ref> or below it, where ref names org as service.OrgByRef
+// reads it: by its id, exactly, when ref is an id, else by its name in any case. Ids are case-sensitive: another
+// organization's id, folded to lower case, may spell this one's name.
+func inOrgSpace(org *model.Org, path string) bool {
+	rest, ok := strings.CutPrefix(path, web.OrgPath("", ""))
+	if !ok {
+		return false
+	}
+	ref, _, _ := strings.Cut(rest, "/")
+	if model.IsID(ref) {
+		return ref == org.ID
+	}
+	return strings.ToLower(ref) == org.Name
 }
 
 // inSpace reports whether path is root or below it (root has no trailing slash).

@@ -53,7 +53,11 @@ func forceAuditService(t *testing.T, st store.Store) *service.Service {
 	}
 	c := config.Default()
 	c.Server.DataDir = t.TempDir()
-	return service.New(c, st, sealer)
+	svc := service.New(c, st, sealer)
+	if err := svc.Orgs.Create(context.Background(), &model.Org{Name: "primary", Primary: true}); err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
 
 func forceStartEvents(t *testing.T, svc *service.Service) int {
@@ -101,5 +105,17 @@ func TestForcedStartClearedOnlyOnceAudited(t *testing.T) {
 	auditForcedStart(ctx, node, forceAuditService(t, memstore.New()), 10*time.Millisecond)
 	if node.audited.Load() != 0 {
 		t.Fatal("cleared while the node was never writable")
+	}
+
+	// writable, but no primary organization known (not set up, or not copied yet): nothing written, not cleared
+	node = &fakeForceNode{}
+	node.writable.Store(true)
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	empty := service.New(config.Default(), memstore.New(), sealer)
+	auditForcedStart(ctx, node, empty, 10*time.Millisecond)
+	if node.audited.Load() != 0 || forceStartEvents(t, empty) != 0 {
+		t.Fatal("cleared with no primary organization to record it in")
 	}
 }

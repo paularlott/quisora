@@ -69,7 +69,7 @@ func BenchmarkTokenRefreshStatic(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if code, _ := e.call(orgBase+"/oauth/token", form, false); code != 200 {
+			if code, _ := e.call(e.orgBase+"/oauth/token", form, false); code != 200 {
 				b.Fatal(code)
 			}
 		}
@@ -84,7 +84,7 @@ func BenchmarkTokenRefreshStaticBasicAuth(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if code, _ := e.call(orgBase+"/oauth/token", form, true); code != 200 {
+			if code, _ := e.call(e.orgBase+"/oauth/token", form, true); code != 200 {
 				b.Fatal(code)
 			}
 		}
@@ -98,7 +98,7 @@ func BenchmarkTokenRefreshRotating(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		rt := e.newGrant(b, true) // one token chain per goroutine: a chain is inherently serial
 		for pb.Next() {
-			code, body := e.call(orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt},
+			code, body := e.call(e.orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt},
 				"client_id": {e.cl.ID}, "client_secret": {e.secret}}, false)
 			if code != 200 {
 				b.Fatal(code, string(body))
@@ -119,7 +119,7 @@ func BenchmarkTokenClientCredentials(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if code, _ := e.call(orgBase+"/oauth/token", form, false); code != 200 {
+			if code, _ := e.call(e.orgBase+"/oauth/token", form, false); code != 200 {
 				b.Fatal(code)
 			}
 		}
@@ -148,7 +148,7 @@ func BenchmarkTokenCodeExchange(b *testing.B) {
 			b.StopTimer()
 			code, _ := e.p.s.Eph.New(ctx, nsCode, cd, time.Minute)
 			b.StartTimer()
-			status, body := e.call(orgBase+"/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code},
+			status, body := e.call(e.orgBase+"/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code},
 				"redirect_uri": {rpCallback}, "code_verifier": {verifier}, "client_id": {e.cl.ID}, "client_secret": {e.secret}}, false)
 			if status != 200 {
 				b.Fatal(status, string(body))
@@ -175,7 +175,7 @@ func BenchmarkIntrospection(b *testing.B) {
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					if code, body := e.call(orgBase+"/oauth/introspect", form, false); code != 200 || !strings.Contains(string(body), `"active":true`) {
+					if code, body := e.call(e.orgBase+"/oauth/introspect", form, false); code != 200 || !strings.Contains(string(body), `"active":true`) {
 						b.Fatal(code, string(body))
 					}
 				}
@@ -221,14 +221,14 @@ func BenchmarkTokenRefreshWithGroups(b *testing.B) {
 		b.Fatal(err)
 	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {e.cl.ID}, "client_secret": {e.secret}}
-	if code, body := e.call(orgBase+"/oauth/token", form, false); code != 200 {
+	if code, body := e.call(e.orgBase+"/oauth/token", form, false); code != 200 {
 		b.Fatal(code, string(body))
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if code, _ := e.call(orgBase+"/oauth/token", form, false); code != 200 {
+			if code, _ := e.call(e.orgBase+"/oauth/token", form, false); code != 200 {
 				b.Fatal(code)
 			}
 		}
@@ -252,7 +252,7 @@ func BenchmarkTokenEndpointDiskBadger(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	h := e.Server.Handler()
+	h, base := e.Server.Handler(), web.OrgPath(e.Primary.ID, "")
 	call := func(path string, form url.Values) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -262,7 +262,7 @@ func BenchmarkTokenEndpointDiskBadger(b *testing.B) {
 		return rec
 	}
 	form := url.Values{"grant_type": {"client_credentials"}}
-	first := call(orgBase+"/oauth/token", form)
+	first := call(base+"/oauth/token", form)
 	if first.Code != 200 {
 		b.Fatalf("%d %s", first.Code, first.Body)
 	}
@@ -289,9 +289,9 @@ func BenchmarkTokenEndpointDiskBadger(b *testing.B) {
 	}
 	for _, name := range []string{"ClientCredentials", "Introspection", "RefreshStatic"} {
 		b.Run(name, func(b *testing.B) {
-			path, values := orgBase+"/oauth/token", form
+			path, values := base+"/oauth/token", form
 			if name == "Introspection" {
-				path, values = orgBase+"/oauth/introspect", url.Values{"token": {tok.Access}}
+				path, values = base+"/oauth/introspect", url.Values{"token": {tok.Access}}
 			}
 			if name == "RefreshStatic" {
 				values = url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}}

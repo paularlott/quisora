@@ -2,8 +2,8 @@
 
 Quisora is an OpenID Connect provider and OAuth 2 authorization server. Applications sign users in through it, APIs
 check the tokens it issues, and services get tokens of their own. Each organization is its own authorization server,
-with an issuer of its own: your server's public address followed by `/o/` and the organization's id (a UUID, for
-example `https://id.example.com/o/00000000-0000-7000-8000-000000000001` for the primary organization), and every
+with an issuer of its own: your server's public address followed by `/o/` and the organization's id (22 characters,
+for example `https://id.example.com/o/034nmRmWuXazwvCcdrmRxu`), and every
 endpoint is under it. Any certified OpenID Connect library works: give it the organization's issuer and it reads the
 rest from discovery:
 

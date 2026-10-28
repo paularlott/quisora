@@ -112,7 +112,7 @@ func TestLogout(t *testing.T) {
 	csrf := metaRe.FindStringSubmatch(body)[1]
 
 	// POST without the CSRF token is refused and the session survives.
-	req, _ := http.NewRequest("POST", e.URL+primaryBase+"/logout", nil)
+	req, _ := http.NewRequest("POST", e.URL+e.primaryBase()+"/logout", nil)
 	req.Header.Set("Accept", "application/json")
 	res2, err := b.c.Do(req)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestLogout(t *testing.T) {
 		t.Fatal("unauthenticated POST /logout ended the session")
 	}
 	// Cross-site POST refused.
-	req, _ = http.NewRequest("POST", e.URL+primaryBase+"/logout", nil)
+	req, _ = http.NewRequest("POST", e.URL+e.primaryBase()+"/logout", nil)
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Origin", "https://evil.example")
 	res2, _ = b.c.Do(req)
@@ -136,7 +136,7 @@ func TestLogout(t *testing.T) {
 	}
 
 	// fetch-style POST ends the session and answers JSON; hostile or missing next falls back to the org's sign-in page.
-	for next, want := range map[string]string{primaryBase + "/bye": primaryBase + "/bye", "/bye": primaryBase + "/login", "//evil.example": primaryBase + "/login", "": primaryBase + "/login"} {
+	for next, want := range map[string]string{e.primaryBase() + "/bye": e.primaryBase() + "/bye", "/bye": e.primaryBase() + "/login", "//evil.example": e.primaryBase() + "/login", "": e.primaryBase() + "/login"} {
 		b2 := e.browser(t)
 		b2.login("primary", "member", userPassword)
 		page, body := b2.get("/logout")
@@ -161,13 +161,13 @@ func TestLogout(t *testing.T) {
 	b3.login("primary", "member", userPassword)
 	_, body = b3.get("/logout")
 	tok := metaRe.FindStringSubmatch(body)[1]
-	res3, err := b3.c.PostForm(e.URL+primaryBase+"/logout", url.Values{"csrf": {tok}, "next": {primaryBase + "/farewell"}})
+	res3, err := b3.c.PostForm(e.URL+e.primaryBase()+"/logout", url.Values{"csrf": {tok}, "next": {e.primaryBase() + "/farewell"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	io.Copy(io.Discard, res3.Body)
 	res3.Body.Close()
-	if res3.StatusCode != 303 || res3.Header.Get("Location") != primaryBase+"/farewell" {
+	if res3.StatusCode != 303 || res3.Header.Get("Location") != e.primaryBase()+"/farewell" {
 		t.Fatalf("form logout: %d %q", res3.StatusCode, res3.Header.Get("Location"))
 	}
 	if res, _ := b3.get("/account"); res.StatusCode != 303 {
@@ -176,7 +176,7 @@ func TestLogout(t *testing.T) {
 	// form post with a bad token fails
 	b4 := e.browser(t)
 	b4.login("primary", "member", userPassword)
-	res4, _ := b4.c.PostForm(e.URL+primaryBase+"/logout", url.Values{"csrf": {"nope"}})
+	res4, _ := b4.c.PostForm(e.URL+e.primaryBase()+"/logout", url.Values{"csrf": {"nope"}})
 	res4.Body.Close()
 	if res4.StatusCode != 403 {
 		t.Fatalf("form logout with bad token: %d", res4.StatusCode)
@@ -302,7 +302,7 @@ func (b *browser) cookie() string {
 
 func (b *browser) setCookie(v string) {
 	u, _ := url.Parse(b.e.URL)
-	b.c.Jar.SetCookies(u, []*http.Cookie{{Name: web.SessionCookieFor(model.PrimaryOrgID), Value: v, Path: "/", Secure: true}})
+	b.c.Jar.SetCookies(u, []*http.Cookie{{Name: web.SessionCookieFor(b.e.Primary.ID), Value: v, Path: "/", Secure: true}})
 }
 
 type failSessionCreates struct{ store.Store }

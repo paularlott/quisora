@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -18,8 +17,8 @@ var domainRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[
 
 // ProviderInput is the editable part of an upstream sign-in provider.
 type ProviderInput struct {
-	// ID may be chosen by the caller on create (a UUID), so the provider's callback address can be registered with the
-	// provider before its client ID and secret exist. Ignored on update.
+	// ID may be chosen by the caller on create (an id as model.NewID makes them), so the provider's callback address
+	// can be registered with the provider before its client ID and secret exist. Ignored on update.
 	ID             *string   `json:"id"`
 	Type           *string   `json:"type"`
 	Name           *string   `json:"name"`
@@ -339,9 +338,8 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 	}
 	id := model.NewID()
 	if in.ID != nil && *in.ID != "" {
-		u, err := uuid.Parse(*in.ID)
-		if err != nil || u.String() != *in.ID {
-			return nil, Invalid("id", "must be a UUID in lower case, such as 0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b")
+		if !model.IsID(*in.ID) {
+			return nil, Invalid("id", "must be an id: 22 letters and digits, such as 034nmRmWuXazwvCcdrmRxu")
 		}
 		if _, err := s.Providers.Get(ctx, *in.ID); err == nil {
 			return nil, &conflictErr{Invalid("id", "a provider with this id already exists")}

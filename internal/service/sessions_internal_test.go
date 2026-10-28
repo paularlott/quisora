@@ -198,7 +198,11 @@ func TestSignOutCountsElsewhereWithinTheBound(t *testing.T) {
 	other := New(s.Cfg, st, s.Sealer) // a second node over the same data, which hears of no change
 	const bound = time.Second
 	other.orgCache = ttlcache.New[*model.Org](bound, 10)
-	stamp, err := other.SessionStamp(ctx, model.PrimaryOrgID) // a session made before the pull, its counters cached
+	primary, err := other.PrimaryOrgID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := other.SessionStamp(ctx, primary) // a session made before the pull, its counters cached
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +210,7 @@ func TestSignOutCountsElsewhereWithinTheBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(bound)
-	if other.SessionCurrent(ctx, model.PrimaryOrgID, stamp) {
+	if other.SessionCurrent(ctx, primary, stamp) {
 		t.Fatal("past the cache's bound, the other node still accepts a session the server-wide sign-out ended")
 	}
 }

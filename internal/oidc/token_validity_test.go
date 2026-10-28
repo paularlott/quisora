@@ -50,11 +50,11 @@ func TestTokensStopWhen(t *testing.T) {
 			other, osecret := h.newClient(func(in *service.ClientInput) { in.Name = ptr("other") })
 			r, _ := h.login(cl, secret, nil)
 			at, rt := r.str("access_token"), r.str("refresh_token")
-			if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 200 {
+			if resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 200 {
 				t.Fatalf("userinfo before: %d", resp.StatusCode)
 			}
 			tc.stop(h, cl)
-			if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
+			if resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at); resp.StatusCode != 401 {
 				t.Errorf("userinfo: %d", resp.StatusCode)
 			}
 			if m := h.introspect(other, osecret, at); m["active"] != false {
@@ -73,7 +73,7 @@ func TestTokensStopWhen(t *testing.T) {
 			}
 			if tc.signInAgain {
 				r, _ = h.login(cl, secret, nil)
-				if resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token")); resp.StatusCode != 200 {
+				if resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token")); resp.StatusCode != 200 {
 					t.Errorf("userinfo after signing in again: %d", resp.StatusCode)
 				}
 			}

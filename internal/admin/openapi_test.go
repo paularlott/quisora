@@ -279,7 +279,8 @@ func TestOpenAPIMatchesModel(t *testing.T) {
 			Parameters map[string]openAPIParam `json:"parameters"`
 			Schemas    map[string]struct {
 				Properties map[string]struct {
-					Enum []string `json:"enum"`
+					Enum    []string `json:"enum"`
+					Pattern string   `json:"pattern"`
 				} `json:"properties"`
 			} `json:"schemas"`
 		} `json:"components"`
@@ -301,6 +302,20 @@ func TestOpenAPIMatchesModel(t *testing.T) {
 		strings.Repeat("a", 63), strings.Repeat("a", 64), "", "x.y"} {
 		if re.MatchString(name) != model.ValidOrgName(name) {
 			t.Errorf("organization name %q: pattern says %v, model.ValidOrgName %v", name, re.MatchString(name), model.ValidOrgName(name))
+		}
+	}
+	// A provider's chosen id: the pattern accepts what model.IsID does, but for the values above 2^128-1 that start
+	// with 7 (a regular expression comparing with the largest id would be unreadable; the server refuses them).
+	pat := doc.Comps.Schemas["ProviderInput"].Properties["id"].Pattern
+	idRe, err := regexp.Compile(pat)
+	if err != nil || pat == "" {
+		t.Fatalf("ProviderInput id pattern %q: %v", pat, err)
+	}
+	id := model.NewID()
+	for _, s := range []string{id, "0000000000000000000000", "7n42DGM5Tflk9n8mt7Fhc7", "8000000000000000000000",
+		"zzzzzzzzzzzzzzzzzzzzzz", id[:21], id + "0", id[:10] + "-" + id[11:], id[:10] + "_" + id[11:], id[:10] + "." + id[11:], "acme", ""} {
+		if idRe.MatchString(s) != model.IsID(s) {
+			t.Errorf("id %q: pattern says %v, model.IsID %v", s, idRe.MatchString(s), model.IsID(s))
 		}
 	}
 }

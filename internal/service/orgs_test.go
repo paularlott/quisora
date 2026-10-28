@@ -32,7 +32,7 @@ func TestOrgValidation(t *testing.T) {
 		t.Errorf("negative lifetime on create: %v", err)
 	}
 	o, err := c.svc.CreateOrg(c.ctx, actor(c.super), service.OrgInput{Name: ptr("defaults"), DisplayName: ptr("  Pretty  ")})
-	if err != nil || o.DisplayName != "Pretty" || !o.Settings.PasswordLogin || o.Primary() {
+	if err != nil || o.DisplayName != "Pretty" || !o.Settings.PasswordLogin || o.Primary {
 		t.Errorf("defaults: %v %+v", err, o)
 	}
 	o2, _ := c.svc.CreateOrg(c.ctx, actor(c.super), service.OrgInput{Name: ptr("nodisp")})
@@ -127,7 +127,7 @@ func TestOrgSettingsLimits(t *testing.T) {
 func TestPrimaryOrgRules(t *testing.T) {
 	c := newCast(t)
 	p, err := c.svc.PrimaryOrg(c.ctx)
-	if err != nil || p.ID != c.primary.ID || !p.Primary() {
+	if err != nil || p.ID != c.primary.ID || !p.Primary {
 		t.Fatalf("primary: %v", err)
 	}
 	// Never deletable, with or without cascade.
@@ -138,7 +138,7 @@ func TestPrimaryOrgRules(t *testing.T) {
 	}
 	// Renamable, and stays primary.
 	got, err := c.svc.UpdateOrg(c.ctx, actor(c.super), c.primary.ID, service.OrgInput{Name: ptr("home")})
-	if err != nil || !got.Primary() || got.Name != "home" {
+	if err != nil || !got.Primary || got.Name != "home" {
 		t.Fatalf("rename primary: %v %+v", err, got)
 	}
 	p, _ = c.svc.PrimaryOrg(c.ctx)
@@ -149,7 +149,7 @@ func TestPrimaryOrgRules(t *testing.T) {
 	all, _, _ := c.svc.Orgs.List(c.ctx, store.ListQuery{})
 	n := 0
 	for _, o := range all {
-		if o.Primary() {
+		if o.Primary {
 			n++
 		}
 	}

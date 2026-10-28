@@ -338,10 +338,8 @@ func (p *Provider) createKey(ctx context.Context, alg string, notBefore time.Tim
 	}
 	k := &model.SigningKey{Meta: model.Meta{ID: id}, Alg: alg, PrivateKey: p.svc.Sealer.SealFor(service.SigningKeyBinding(id), der), PublicJWK: jb,
 		NotBefore: notBefore.UTC(), RetireAt: retire.UTC(), Expires: retire.Add(p.maxTokenTTL() + 5*time.Minute).UTC()}
-	org := model.PrimaryOrgID
-	if o, err := p.svc.PrimaryOrg(ctx); err == nil {
-		org = o.ID
-	}
+	// The primary organization's audit log, or the server's (no organization) on a server not set up yet.
+	org, _ := p.svc.PrimaryOrgID(ctx)
 	if err := p.svc.Audited(ctx, service.System, org, "keys.create", id, map[string]string{"alg": alg,
 		"not_before": k.NotBefore.Format(time.RFC3339), "retire_at": k.RetireAt.Format(time.RFC3339)},
 		func() error { return p.svc.Keys.Create(ctx, k) }); err != nil {

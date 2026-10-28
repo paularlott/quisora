@@ -16,6 +16,22 @@ import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TE
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
 
+// newId makes an id as the server does (model.NewID): the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, the
+// version and variant bits, random bits) read as one big-endian number and written in base 62 (digits, then upper,
+// then lower case letters: ASCII order), left-padded with '0' to 22 characters.
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+function newId() {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  for (let i = 5, ms = Date.now(); i >= 0; i--, ms = Math.floor(ms / 256)) b[i] = ms % 256
+  b[6] = 0x70 | (b[6] & 0x0f)
+  b[8] = 0x80 | (b[8] & 0x3f)
+  let v = 0n
+  for (const x of b) v = (v << 8n) | BigInt(x)
+  let out = ''
+  for (let i = 0; i < 22; i++, v /= 62n) out = BASE62[Number(v % 62n)] + out
+  return out
+}
+
 // aboutUser: may a live event concern this user? Their own record, a membership of theirs or one of their own records
 // (sessions, passkeys...: the event names its owner) does; another user's does not; an event naming nobody (a foreign
 // or unknown scope, a group, a client) might, so it counts.
@@ -539,7 +555,7 @@ function tenantDialogMixin(Alpine) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Client dialogs (create / edit / secret shown once); used on the tenant page.
+// Client dialogs (create / edit / the client's details, its secret shown once); used on the tenant page.
 const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange'
 const DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code'
 const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials', TOKEN_EXCHANGE, DEVICE_CODE]
@@ -587,7 +603,7 @@ function clientDialogMixin(Alpine) {
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
     get usesDevice() { return (this.form.grant_types || []).includes(DEVICE_CODE) },
-    editingClient: null, apiBase: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
+    editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
       const locked = !this.canScim && !!(c.scim || c.first_party) // SCIM and first-party clients: super admins only
@@ -662,24 +678,29 @@ function clientDialogMixin(Alpine) {
       if (!res) return
       this.closeDlg('client-dialog')
       const moved = !!edit && res.tenant_id !== this.tenantId
-      if (res.secret) this.showSecret(res.secret, res.name, 'Client created')
+      if (!edit) this.showClient(res, 'Client created')
       else if (moved) toast(`Client “${res.name}” moved to ${this.tenantName(res.tenant_id) || 'another tenant'} and left this list.`)
       else toast('Client saved.')
       await this.afterClientSaved(res, moved)
     },
-    showSecret(secret, name, title) {
-      this.secret = secret
-      this.secretClient = name
+    // The dialog of what the application is configured with: client ID and issuer, and the secret (shown once) of a
+    // confidential client (c.secret; a public client has none).
+    showClient(c, title) {
+      this.clientId = c.id
+      this.secret = c.secret || ''
+      this.secretClient = c.name
       this.secretTitle = title
       this.$nextTick(() => this.openDlg('secret-dialog'))
     },
+    get hasSecret() { return this.secret !== '' },
+    get secretDone() { return this.hasSecret ? 'I have stored it' : 'Done' },
     async rotateClient(c) {
       const yes = await confirmAction(Alpine, { title: 'Rotate client secret?', message: `Issue a new secret for “${c.name}”?`,
         detail: 'The current secret stops working immediately. Update every application that uses it.', confirmLabel: 'Rotate secret', danger: true })
       if (!yes) return
       try {
         const res = await post(`${this.apiBase}/clients/${enc(c.id)}/secret`)
-        this.showSecret(res.secret, c.name, 'New client secret')
+        this.showClient({ id: c.id, name: c.name, secret: res.secret }, 'New client secret')
       } catch (e) { toast(e.message, 'error') }
     },
     async removeClient(c) {
@@ -872,15 +893,17 @@ export default function (Alpine) {
   accessComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
   Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), {
-    editing: null, base: '', defaults: { ttl: 0, idle: 0 },
+    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 },
     init() {
       this.base = this.$el.dataset.base
+      this.publicUrl = this.$el.dataset.public
       this.defaults = { ttl: Math.round(Number(this.$el.dataset.ttl) / 3600), idle: Math.round(Number(this.$el.dataset.idle) / 60) }
       this.initTable()
     },
     transform(o) {
       return { ...o, usersText: o.users === undefined ? '—' : String(o.users), createdText: fmtDate(o.created),
         href: `${this.base}/${enc(o.name)}/users`, editLabel: 'Edit ' + o.display_name, deleteLabel: 'Delete ' + o.display_name,
+        signInUrl: `${this.publicUrl}/o/${o.name}/login`, copySignInLabel: 'Copy sign-in link for ' + o.display_name,
         notPrimary: !o.primary }
     },
     get isEdit() { return this.editing !== null },
@@ -1324,6 +1347,7 @@ export default function (Alpine) {
       this.tenantId = d.tenant
       this.titleText = d.title
       this.canScim = d.canScim === '1'
+      this.issuer = d.issuer
       this.scope = { tenant: this.tenantId }
       this.initTable()
       this._tlive = liveRunner(() => this.refreshTenant(true))
@@ -1484,7 +1508,7 @@ export default function (Alpine) {
       const opener = ev.currentTarget
       await this.loadOrgs()
       this.editing = null
-      this.newId = crypto.randomUUID()
+      this.newId = newId()
       this.resetForm(this.toForm({ type: 'oidc', name: '', scopes: ['openid', 'profile', 'email'], enabled: true }))
       this.resetChipText()
       this.openDlg('provider-dialog', opener)

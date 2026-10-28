@@ -4,6 +4,8 @@ import { signIn, apiCall, uniq, axe, fmt } from './helpers.mjs'
 
 const A = '/admin/orgs/acme'
 const API = '/api/orgs/acme'
+// An id (model.NewID): 22 base-62 digits.
+const ID_RE = '[0-9A-Za-z]{22}'
 
 // A click on the backdrop, well outside the dialog panel.
 async function clickOutside(page) { await page.mouse.click(8, 8) }
@@ -85,7 +87,7 @@ test('providers: each has its own callback URL, shown in the list and the dialog
   await page.goto(`${A}/providers`, { waitUntil: 'load' })
   await page.waitForSelector('tbody tr')
   const first = (await apiCall(page, 'GET', `${API}/providers?sort=name`)).items[0]
-  expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/o/[0-9a-f-]{36}/login/callback/' + first.id + '$'))
+  expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/o/' + ID_RE + '/login/callback/' + first.id + '$'))
   const row = page.getByRole('row', { name: new RegExp(first.name) })
   await expect(row).toContainText(first.callback_url)
   await row.getByRole('button', { name: 'Copy callback URL of ' + first.name }).click()
@@ -95,7 +97,7 @@ test('providers: each has its own callback URL, shown in the list and the dialog
   await page.getByRole('button', { name: 'New provider' }).click()
   const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
   const shown = (await dlg.locator('#callback-url-dlg').innerText()).trim()
-  expect(shown).toMatch(/\/o\/[0-9a-f-]{36}\/login\/callback\/[0-9a-f-]{36}$/)
+  expect(shown).toMatch(new RegExp('/o/' + ID_RE + '/login/callback/' + ID_RE + '$'))
   await dlg.getByRole('button', { name: /Copy/ }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown)
   const name = uniq('CB')

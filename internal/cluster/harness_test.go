@@ -749,12 +749,10 @@ func newRec(id, uniq string) *store.Record {
 
 // newOrgRec is a new record of dataKind in the partition of the organization org.
 func newOrgRec(org string) *store.Record {
-	r := newRec(newID(), "")
+	r := newRec(model.NewID(), "")
 	r.Scope, r.Partition = org, org
 	return r
 }
-
-func newID() string { return uuid.Must(uuid.NewV7()).String() }
 
 // has reports whether the database behind s holds the live record id: what the node holds, whether or not it can vouch
 // for it now (a node's cluster store refuses the reads of a partition it cannot read: the staleness gate).
@@ -809,7 +807,7 @@ func (c *tcluster) waitVersion(t *testing.T, kind model.Kind, id string, v hlc.T
 	})
 }
 
-// writeN writes n records of org with ids newID() through tn and returns the ids.
+// writeN writes n records of org with ids model.NewID() through tn and returns the ids.
 func writeN(t testing.TB, tn *tnode, org string, n int) []string {
 	t.Helper()
 	ids := make([]string, n)

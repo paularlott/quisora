@@ -388,6 +388,7 @@
     .table tbody tr.row-live > * { animation: none; background-color: color-mix(in srgb, var(--accent-solid) 12%, transparent); }
   }
   .kv { display: grid; gap: 0.9rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+  .kv-wide { grid-template-columns: 1fr; } /* one per row: long values */
   .kv dt { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
   .kv dd { margin: 0.15rem 0 0; font-weight: 600; }
   .kv-stats dd { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }

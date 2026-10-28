@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
@@ -90,7 +91,7 @@ func TestClockReadings(t *testing.T) {
 
 func TestCheckSkewWarnsOncePerOrigin(t *testing.T) {
 	n, _ := hnode(t)
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	rec.Origin = "far-ahead-node"
 	rec.Version = hlc.FromTime(time.Now().Add(2 * time.Hour))
 	n.checkSkew(rec)
@@ -118,7 +119,7 @@ func TestClockGuards(t *testing.T) {
 	}
 	defer n.Close()
 	before := store.SkewRefused()
-	far := newRec(newID(), "")
+	far := newRec(model.NewID(), "")
 	far.Version = hlc.FromTime(time.Now().Add(time.Hour))
 	if _, err := n.st.inner.PutReplicated(bg, far); err != nil { // (the backend follows versions: store.Witness)
 		t.Fatal(err)

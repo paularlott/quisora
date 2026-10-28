@@ -39,7 +39,7 @@ func TestWriteReplicates(t *testing.T) {
 			})
 		}
 		for i := range c.nodes {
-			rec := newRec(newID(), "")
+			rec := newRec(model.NewID(), "")
 			putRetrying(t, c.nodes[i], rec)
 			// Put returns once this node has applied the write, within a bound (applyWait: the write is committed
 			// whether or not this node has seen it in time, which a loaded machine can delay): a node that is slower
@@ -68,7 +68,7 @@ func TestWritesReturnTheStoresErrors(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		c := started(t, b)
 		s0, s1 := c.nodes[0].st(), c.nodes[1].st()
-		rec := newRec(newID(), "ident-1")
+		rec := newRec(model.NewID(), "ident-1")
 		if err := s0.CompareAndPut(bg, rec, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -80,10 +80,10 @@ func TestWritesReturnTheStoresErrors(t *testing.T) {
 		if err := s1.CompareAndPut(bg, again, rec.Version+12345); !errors.Is(err, store.ErrStale) {
 			t.Fatalf("an update of another version: %v", err)
 		}
-		if err := s1.CompareAndPut(bg, newRec(newID(), ""), 5); !errors.Is(err, store.ErrNotFound) {
+		if err := s1.CompareAndPut(bg, newRec(model.NewID(), ""), 5); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("an update of nothing: %v", err)
 		}
-		if err := s1.CompareAndPut(bg, newRec(newID(), "ident-1"), 0); !errors.Is(err, store.ErrConflict) {
+		if err := s1.CompareAndPut(bg, newRec(model.NewID(), "ident-1"), 0); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("a unique value in use: %v", err)
 		}
 		before := rec.Version
@@ -122,14 +122,14 @@ func TestWritesReturnTheStoresErrors(t *testing.T) {
 			t.Fatalf("an update over a tombstone: %v", err)
 		}
 		// Its unique value is free again, and the id can be created anew.
-		if err := s1.CompareAndPut(bg, newRec(newID(), "ident-1"), 0); err != nil {
+		if err := s1.CompareAndPut(bg, newRec(model.NewID(), "ident-1"), 0); err != nil {
 			t.Fatalf("the unique value of a deleted record: %v", err)
 		}
 		if err := s0.CompareAndPut(bg, newRec(rec.ID, ""), 0); err != nil {
 			t.Fatalf("a create over a tombstone: %v", err)
 		}
 		// Deleting what is not there changes nothing; a conditional deletion of another version is stale.
-		if err := s0.Put(bg, store.Tombstone(dataKind, newID())); err != nil {
+		if err := s0.Put(bg, store.Tombstone(dataKind, model.NewID())); err != nil {
 			t.Fatalf("a deletion of nothing: %v", err)
 		}
 		cur, _ := s0.Get(bg, dataKind, rec.ID)
@@ -280,7 +280,7 @@ func testConcurrentUniqueClaims(t *testing.T, c *tcluster) {
 // The change hooks of a deletion get the scope and partition key of the record it deleted, on every node (a tombstone
 // stores neither, and the hooks say which organization's administrators and which user's pages to tell).
 func testTombstoneHooksCarryTheScope(t *testing.T, c *tcluster) {
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	rec.Scope = "user-1"
 	got := make(chan *store.Record, 3)
 	for _, tn := range c.nodes {
@@ -349,14 +349,14 @@ func testReplayRefusedWhicheverNodeStopsServing(t *testing.T, c *tcluster) {
 // record from outside its partitions (PutReplicated): what it holds arrives through partition writes alone.
 func TestWriteFromANodeThatIsNotReady(t *testing.T) {
 	n, _ := gnode(t) // built, not started: not ready
-	err := n.Store().Put(bg, newRec(newID(), ""))
+	err := n.Store().Put(bg, newRec(model.NewID(), ""))
 	if !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("%v", err)
 	}
 	if _, err := n.Store().Fresh(bg, dataKind, []string{"x"}); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a fresh read on a node that is not ready: %v", err)
 	}
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	if applied, err := n.Store().PutReplicated(bg, rec); applied || err == nil || !strings.Contains(err.Error(), "partitions") {
 		t.Fatalf("a record applied on a gossip node outside its partitions: %v %v", applied, err)
 	}

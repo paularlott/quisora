@@ -27,9 +27,18 @@ func TestOrgNames(t *testing.T) {
 	}
 	// "o" is the organizations' address space; a name never looks like an id (/o/<id or name>)
 	for _, n := range []string{"", "Acme", "-a", "a-", "a_b", "admin", "api", "docs", strings.Repeat("a", 64), "a b", "o",
-		PrimaryOrgID, NewID()} {
+		NewID()} {
 		if ValidOrgName(n) {
 			t.Errorf("%q accepted", n)
+		}
+	}
+	// An id of only lower-case letters and digits has a name's shape: it is still refused, as an id.
+	for _, n := range []string{"0abcdefghijklmnopqrstu", "1a0b1c2d3e4f5g6h7i8j9k", "000000000000000000000k"} {
+		if !IsID(n) || !orgNameRe.MatchString(n) {
+			t.Fatalf("setup: %q is not both an id and of a name's shape", n)
+		}
+		if ValidOrgName(n) {
+			t.Errorf("id %q accepted as a name", n)
 		}
 	}
 	if OrgNameKey(" ACME ") != "acme" {
@@ -41,8 +50,10 @@ func TestOrgNames(t *testing.T) {
 	if ix.Scope != "" || !slices.Equal(ix.Unique, []string{"acme"}) {
 		t.Errorf("org index %+v", ix)
 	}
-	if o.Primary() || !(&Org{Meta: Meta{ID: PrimaryOrgID}}).Primary() {
-		t.Error("only the organization with the fixed id is primary")
+	// The primary organization alone claims PrimaryOrgKey, which no name can be.
+	o.Primary = true
+	if ix := o.Index(); !slices.Equal(ix.Unique, []string{"acme", PrimaryOrgKey}) || ValidOrgName(PrimaryOrgKey) {
+		t.Errorf("primary org index %+v", ix)
 	}
 	if d := DefaultOrgSettings(); !d.PasswordLogin || !d.PasswordReset || !d.PasskeyLogin || d.RequireMFA {
 		t.Errorf("defaults %+v", d)

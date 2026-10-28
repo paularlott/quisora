@@ -174,13 +174,14 @@ func TestStreamEndsWhenSessionEnds(t *testing.T) {
 	old := recheckEvery
 	recheckEvery = 50 * time.Millisecond
 	t.Cleanup(func() { recheckEvery = old })
-	for name, path := range map[string]string{
-		"console": web.EventsPath + "?org=primary",
-		"account": web.OrgPath(model.PrimaryOrgID, web.AccountEventsPath),
+	for name, path := range map[string]func(primary string) string{
+		"console": func(string) string { return web.EventsPath + "?org=primary" },
+		"account": func(primary string) string { return web.OrgPath(primary, web.AccountEventsPath) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			hub := NewHub()
 			env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
+			path := path(env.Primary.ID)
 			c, _ := env.ConsoleSession(env.Admin)
 			resp, sc := openStream(t, c, env.URL+path)
 			if resp.StatusCode != 200 || !waitEvent(sc, "ready") {

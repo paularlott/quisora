@@ -36,6 +36,23 @@ func startApp(t *testing.T, backend string) (*App, *http.Client, string) {
 // startAppWith is startApp with a configuration hook (run before validation).
 func startAppWith(t *testing.T, backend string, edit func(*config.Config)) (*App, *http.Client, string) {
 	t.Helper()
+	c := appConfig(t, backend, edit)
+	if c.Cluster.Bind == "" || bootstrapNext { // set up as an operator would before the first start ("quisora bootstrap")
+		bootstrapNext = false
+		_, link, err := Bootstrap(context.Background(), c, logger.NewNullLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if link != "" {
+			lastBootstrapLink = link
+		}
+	}
+	return runApp(t, c)
+}
+
+// appConfig is the configuration of a server on a free port, edited by edit (run before validation).
+func appConfig(t *testing.T, backend string, edit func(*config.Config)) *config.Config {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -55,16 +72,12 @@ func startAppWith(t *testing.T, backend string, edit func(*config.Config)) (*App
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if c.Cluster.Bind == "" || bootstrapNext { // set up as an operator would before the first start ("quisora bootstrap")
-		bootstrapNext = false
-		_, link, err := Bootstrap(context.Background(), c, logger.NewNullLogger())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if link != "" {
-			lastBootstrapLink = link
-		}
-	}
+	return c
+}
+
+// runApp starts the server configured by c, stopped when the test ends.
+func runApp(t *testing.T, c *config.Config) (*App, *http.Client, string) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	a, err := Start(ctx, c, logger.NewNullLogger())
 	if err != nil {

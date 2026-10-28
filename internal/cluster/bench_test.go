@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
 func benchRec(i int64) *store.Record {
-	r := newRec(newID(), fmt.Sprintf("o|u%d", i))
+	r := newRec(model.NewID(), fmt.Sprintf("o|u%d", i))
 	r.Scope, r.Partition = "org1", fmt.Sprintf("org%d", i%40) // 40 organizations over the partitions
 	r.Data = []byte(strings.Repeat("x", 400))
 	return r

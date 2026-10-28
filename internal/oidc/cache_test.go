@@ -113,7 +113,7 @@ func TestVerifiedTokenCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	gid, _ := claimsOf(t, at2)["gid"].(string)
-	if rv := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {r2.str("refresh_token")}}, cl, secret); rv.status != 200 {
+	if rv := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {r2.str("refresh_token")}}, cl, secret); rv.status != 200 {
 		t.Fatalf("revoke: %d", rv.status)
 	}
 	h.p.InvalidateGrant(gid)

@@ -65,7 +65,7 @@ func TestEmptyNodesWaitForABootstrappedNode(t *testing.T) {
 		if tn.n.IsLeader() {
 			t.Fatal("a node without a data set runs housekeeping")
 		}
-		if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
+		if err := tn.st().Put(bg, newRec(model.NewID(), "")); !errors.Is(err, store.ErrUnavailable) {
 			t.Fatalf("a write on a node without a data set: %v", err)
 		}
 	}
@@ -559,7 +559,7 @@ func TestUnpartitionedDatabaseIsRefused(t *testing.T) {
 	c.noSeed = true
 	dir := t.TempDir()
 	st := c.mk.open(t, dir)
-	if _, err := st.PutReplicated(bg, newRec(newID(), "")); err != nil { // a record, written outside the partition protocol
+	if _, err := st.PutReplicated(bg, newRec(model.NewID(), "")); err != nil { // a record, written outside the partition protocol
 		t.Fatal(err)
 	}
 	st.Close()

@@ -173,9 +173,11 @@ func BenchmarkRestore(b *testing.B) {
 	}
 }
 
-// A forced restore into a store holding a different record with the same unique value keeps one of them, as
-// replication does (the older wins), and removes the other: no record is left without its index.
-func TestForcedRestoreResolvesUniqueClashes(t *testing.T) {
+// A forced restore of another server's backup over a store that holds its own primary organization is refused: each
+// installation's primary organization has an id of its own, and both claim the primary organization's unique value
+// (and the name "primary"), which is never resolved by guessing which one should be the server's. The store keeps
+// its own.
+func TestForcedRestoreOverAnotherServerIsRefused(t *testing.T) {
 	f := setup(t, 1)
 	data := f.backup(t)
 	ctx := f.ctx
@@ -184,23 +186,19 @@ func TestForcedRestoreResolvesUniqueClashes(t *testing.T) {
 	if _, _, err := other.Bootstrap(ctx, "root@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), true, ""); err != nil {
+	mine, err := other.PrimaryOrgID(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// both stores have an organization named "primary" (made by their own bootstrap): exactly one survives, and
-	// the store's unique index finds it
-	orgs, _, _ := other.Orgs.List(ctx, store.ListQuery{})
-	n := 0
-	for _, o := range orgs {
-		if o.Name == "primary" {
-			n++
-		}
+	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), true, ""); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("forced restore over another server: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("%d live organizations named primary", n)
+	fresh := service.New(f.cfg, dst, f.sealer)
+	if id, err := fresh.PrimaryOrgID(ctx); err != nil || id != mine {
+		t.Fatalf("primary after the refused restore: %q %v, want %q", id, err, mine)
 	}
-	if _, err := other.OrgByName(ctx, "primary"); err != nil {
-		t.Fatalf("unique lookup: %v", err)
+	if o, err := fresh.OrgByName(ctx, "primary"); err != nil || o.ID != mine {
+		t.Fatalf("unique lookup: %v %v", o, err)
 	}
 }
 

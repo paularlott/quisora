@@ -57,7 +57,7 @@ The new token's claims:
 
 ```jsonc
 {
-  "sub": "01a16bdd-…",                                   // still the user
+  "sub": "-Ox7Lm2qT…",                                   // still the user
   "aud": ["c_orders…", "https://billing.example.com/"],
   "client_id": "c_orders…",
   "scope": "openid profile",

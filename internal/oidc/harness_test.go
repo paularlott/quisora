@@ -34,14 +34,11 @@ import (
 
 const rpCallback = "https://rp.example/cb"
 
-// orgBase is the address space of the primary organization, where the harness's clients and users live.
-const orgBase = "/o/" + model.PrimaryOrgID
-
 // at is the address of an endpoint (like "/oauth/token") of the organization of client c: the primary one for a client
 // with no organization (one an application named, not stored).
 func (h *harness) at(c *model.Client, path string) string {
 	if c.OrgID == "" {
-		return orgBase + path
+		return h.orgBase + path
 	}
 	return web.OrgPath(c.OrgID, path)
 }
@@ -50,12 +47,14 @@ func (h *harness) at(c *model.Client, path string) string {
 func (h *harness) issuer() string { return h.env.Cfg.OrgIssuer(h.env.Primary.ID) }
 
 type harness struct {
-	t     testing.TB
-	env   *webtest.Env
-	p     *Provider
-	admin *service.Actor
-	user  *model.User
-	http  *http.Client
+	t   testing.TB
+	env *webtest.Env
+	// orgBase is the address space of the primary organization, where the harness's clients and users live.
+	orgBase string
+	p       *Provider
+	admin   *service.Actor
+	user    *model.User
+	http    *http.Client
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -71,7 +70,7 @@ func setupKey(t testing.TB, cfgFn func(*config.Config), masterKey []byte) *harne
 		return []web.Module{p}
 	}})
 	p.HTTP = &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	h := &harness{t: t, env: env, p: p, admin: service.ActorForUser(env.Admin, "")}
+	h := &harness{t: t, env: env, p: p, admin: service.ActorForUser(env.Admin, ""), orgBase: web.OrgPath(env.Primary.ID, "")}
 	h.http = &http.Client{Timeout: 10 * time.Second, Transport: env.HTTP.Client().Transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	pw := "correct horse battery"
@@ -510,7 +509,7 @@ func (h *harness) assertion(k assertionKey, claims map[string]any) string {
 }
 
 func (h *harness) assertionClaims(c *model.Client, edit func(map[string]any)) map[string]any {
-	m := map[string]any{"iss": c.ID, "sub": c.ID, "aud": h.env.URL + orgBase + "/oauth/token", "jti": b64.EncodeToString(randBytes(12)),
+	m := map[string]any{"iss": c.ID, "sub": c.ID, "aud": h.env.URL + h.orgBase + "/oauth/token", "jti": b64.EncodeToString(randBytes(12)),
 		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix()}
 	if edit != nil {
 		edit(m)
@@ -519,7 +518,7 @@ func (h *harness) assertionClaims(c *model.Client, edit func(map[string]any)) ma
 }
 
 func (h *harness) ccWithAssertion(c *model.Client, tok string) tokResp {
-	return h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
+	return h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
 		"client_assertion": {tok}}, "", "")
 }
 
@@ -567,7 +566,7 @@ func (h *harness) grant(tn *model.Tenant, typ, id string, in service.AccessInput
 // tryCode runs authorize for a signed-in browser and reports the code, or the status and body of the refusal.
 func (h *harness) tryCode(c *http.Client, cl *model.Client, challenge string, extra url.Values) (code string, status int, text string) {
 	h.t.Helper()
-	resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, challenge, extra).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, challenge, extra).Encode())
 	if resp.StatusCode == http.StatusFound {
 		u := loc(h.t, resp)
 		return u.Query().Get("code"), resp.StatusCode, u.Query().Get("error")
@@ -653,7 +652,7 @@ func (h *harness) auditEvents(action string) []*model.Audit {
 
 func (h *harness) userinfo(at string) map[string]any {
 	h.t.Helper()
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	if resp.StatusCode != 200 {
 		h.t.Fatalf("userinfo: %d", resp.StatusCode)
 	}
@@ -683,7 +682,7 @@ func (h *harness) postJSON(path string, body any) tokResp {
 // register registers an application by RFC 7591 and returns it as a client (id and redirect URIs).
 func (h *harness) register(redirect string) *model.Client {
 	h.t.Helper()
-	r := h.postJSON(orgBase+"/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{redirect}})
+	r := h.postJSON(h.orgBase+"/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{redirect}})
 	if r.status != http.StatusCreated || !strings.HasPrefix(r.str("client_id"), "dyn-") {
 		h.t.Fatalf("register: %d %v", r.status, r.m)
 	}
@@ -707,7 +706,7 @@ func (h *harness) mcpTenant(name string, allow bool) *model.Tenant {
 func (h *harness) consentPage(c *http.Client, cl *model.Client, ch string, extra url.Values) (string, string) {
 	h.t.Helper()
 	u := h.authorize(c, authzQuery(cl, ch, extra))
-	if u.Path != orgBase+"/oauth/consent" {
+	if u.Path != h.orgBase+"/oauth/consent" {
 		h.t.Fatalf("no consent page: %s", u)
 	}
 	return body(h.get(c, u.String())), u.Query().Get("flow")
@@ -748,7 +747,7 @@ func newTLSServer(t testing.TB, serve http.HandlerFunc) (*httptest.Server, *atom
 // confirmLogout posts a form (as the confirmation page does) to the logout confirmation endpoint.
 func (h *harness) confirmLogout(c *http.Client, form string) *http.Response {
 	h.t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+orgBase+"/oauth/logout/confirm", strings.NewReader(form))
+	req, _ := http.NewRequest(http.MethodPost, h.env.URL+h.orgBase+"/oauth/logout/confirm", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.Do(req)
 	if err != nil {

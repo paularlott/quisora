@@ -33,7 +33,7 @@ func TestAuthorizeValidation(t *testing.T) {
 		"prefix match":   authzQuery(cl, ch, url.Values{"redirect_uri": {rpCallback + "/x"}}),
 		"http downgrade": authzQuery(cl, ch, url.Values{"redirect_uri": {"http://rp.example/cb"}}),
 	} {
-		resp := h.get(c, orgBase+"/oauth/authorize?"+q.Encode())
+		resp := h.get(c, h.orgBase+"/oauth/authorize?"+q.Encode())
 		if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
 			t.Errorf("%s: status %d location %q", name, resp.StatusCode, resp.Header.Get("Location"))
 		}
@@ -82,14 +82,14 @@ func TestAuthorizeValidation(t *testing.T) {
 		t.Errorf("default scope: %s", u)
 	}
 	// an unreadable query
-	resp := h.get(c, orgBase+"/oauth/authorize?%zz")
+	resp := h.get(c, h.orgBase+"/oauth/authorize?%zz")
 	if body(resp); resp.StatusCode != 400 {
 		t.Errorf("unreadable query: %d", resp.StatusCode)
 	}
 	// disabled client
 	h.env.Svc.UpdateClient(context.Background(), h.admin, cl.ID, service.ClientInput{Enabled: ptr(false)})
 	h.p.InvalidateClient(cl.ID)
-	if resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()); resp.StatusCode != 400 {
+	if resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()); resp.StatusCode != 400 {
 		t.Errorf("disabled client status %d", resp.StatusCode)
 	}
 }
@@ -106,7 +106,7 @@ func TestAuthorizeLoopbackRedirectPort(t *testing.T) {
 	if u.Host != "127.0.0.1:53211" || u.Query().Get("code") == "" {
 		t.Fatal(u)
 	}
-	resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"redirect_uri": {"http://127.0.0.1:53211/other"}}).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"redirect_uri": {"http://127.0.0.1:53211/other"}}).Encode())
 	if body(resp); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("another path accepted (%d)", resp.StatusCode)
 	}
@@ -150,11 +150,11 @@ func TestSignInHandoff(t *testing.T) {
 	anon := h.anon()
 
 	u := h.authorize(anon, authzQuery(cl, ch, nil))
-	if u.Path != orgBase+"/login" || u.Query().Get("reauth") != "" {
+	if u.Path != h.orgBase+"/login" || u.Query().Get("reauth") != "" {
 		t.Fatalf("handoff %s", u)
 	}
 	next := u.Query().Get("next")
-	if !strings.HasPrefix(next, orgBase+"/oauth/authorize/resume?flow=") {
+	if !strings.HasPrefix(next, h.orgBase+"/oauth/authorize/resume?flow=") {
 		t.Fatal(next)
 	}
 	// the sign-in page is told the login hint
@@ -196,7 +196,7 @@ func TestSignInHandoff(t *testing.T) {
 	cl2, _, _ := h.env.Svc.CreateClient(context.Background(), h.admin, org2.ID, service.ClientInput{Name: ptr("acme app"),
 		RedirectURIs: &[]string{rpCallback}, GrantTypes: &[]string{"authorization_code"}, FirstParty: ptr(true)})
 	q2 := authzQuery(cl2, ch, url.Values{"scope": {"openid"}}).Encode()
-	if resp := h.get(signed, orgBase+"/oauth/authorize?"+q2); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body(resp), "not recognised") {
+	if resp := h.get(signed, h.orgBase+"/oauth/authorize?"+q2); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body(resp), "not recognised") {
 		t.Fatalf("a client of another organization: %d", resp.StatusCode)
 	}
 	u5 := loc(t, h.get(signed, web.OrgPath(org2.ID, "/oauth/authorize?"+q2)))
@@ -216,7 +216,7 @@ func TestPromptLoginAndMaxAge(t *testing.T) {
 		t.Fatalf("plain: %s", u)
 	}
 	u := h.authorize(old, authzQuery(cl, ch, url.Values{"max_age": {"60"}}))
-	if u.Path != orgBase+"/login" || u.Query().Get("reauth") != "1" {
+	if u.Path != h.orgBase+"/login" || u.Query().Get("reauth") != "1" {
 		t.Fatalf("max_age: %s", u)
 	}
 	if u := h.authorize(old, authzQuery(cl, ch, url.Values{"max_age": {"86400"}})); u.Query().Get("code") == "" {
@@ -256,7 +256,7 @@ func TestFormPostResponseMode(t *testing.T) {
 	cl, _ := h.newClient(nil)
 	c, _ := h.session(h.user)
 	_, ch := pkce()
-	resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}}).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}}).Encode())
 	page := body(resp)
 	if resp.StatusCode != 200 || !strings.Contains(page, `action="`+rpCallback+`"`) || !strings.Contains(page, `name="code"`) ||
 		!strings.Contains(page, `name="state" value="st1"`) || !strings.Contains(page, `name="iss"`) {
@@ -267,7 +267,7 @@ func TestFormPostResponseMode(t *testing.T) {
 		t.Fatalf("csp %q", csp)
 	}
 	// errors use the same mode
-	resp = h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}, "scope": {"bogus"}}).Encode())
+	resp = h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}, "scope": {"bogus"}}).Encode())
 	if p := body(resp); !strings.Contains(p, `name="error" value="invalid_scope"`) {
 		t.Fatal(p)
 	}
@@ -283,22 +283,22 @@ func TestRepeatedParameters(t *testing.T) {
 	raw := authzQuery(cl, ch, nil).Encode()
 	// which application or where to is in doubt: an error page, no redirect
 	for _, extra := range []string{"&client_id=" + cl.ID, "&redirect_uri=" + url.QueryEscape(cl.RedirectURIs[0])} {
-		if resp := h.get(c, orgBase+"/oauth/authorize?"+raw+extra); resp.StatusCode != 400 {
+		if resp := h.get(c, h.orgBase+"/oauth/authorize?"+raw+extra); resp.StatusCode != 400 {
 			t.Errorf("repeated %s: %d", extra, resp.StatusCode)
 		}
 	}
 	// anything else: invalid_request back to the client
-	resp := h.get(c, orgBase+"/oauth/authorize?"+raw+"&scope=openid")
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+raw+"&scope=openid")
 	if loc := loc(t, resp); loc.Query().Get("error") != "invalid_request" {
 		t.Errorf("repeated scope: %s", loc)
 	}
 	// resource may repeat
-	ok := h.get(c, orgBase+"/oauth/authorize?"+raw+"&resource=https://api.example/a&resource=https://api.example/b")
+	ok := h.get(c, h.orgBase+"/oauth/authorize?"+raw+"&resource=https://api.example/a&resource=https://api.example/b")
 	if l := loc(t, ok); l.Query().Get("code") == "" {
 		t.Errorf("repeated resource refused: %s", l)
 	}
 	// token endpoint
-	r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials", "client_credentials"}, "client_id": {cl.ID},
+	r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials", "client_credentials"}, "client_id": {cl.ID},
 		"client_secret": {secret}}, "", "")
 	if r.status != 400 || r.str("error") != "invalid_request" {
 		t.Errorf("repeated grant_type: %d %v", r.status, r.m)
@@ -313,12 +313,12 @@ func TestAuthorizeLimitedPerAddress(t *testing.T) {
 	c, _ := h.session(h.user)
 	_, ch := pkce()
 	for i := range authorizePerIPMin {
-		resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+		resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
 		if u := loc(t, resp); u.Query().Get("error") != "" {
 			t.Fatalf("request %d refused: %s", i+1, u)
 		}
 	}
-	resp := h.get(c, orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
 	body(resp)
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Location") != "" {
 		t.Fatalf("over the limit: %d %s", resp.StatusCode, resp.Header.Get("Location"))
@@ -327,9 +327,9 @@ func TestAuthorizeLimitedPerAddress(t *testing.T) {
 	h2 := setup(t, nil)
 	c2, _ := h2.session(h2.user)
 	for range authorizePerIPMin {
-		body(h2.get(c2, orgBase+"/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"))
+		body(h2.get(c2, h2.orgBase+"/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"))
 	}
-	if resp := h2.get(c2, orgBase+"/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"); resp.StatusCode != http.StatusTooManyRequests {
+	if resp := h2.get(c2, h2.orgBase+"/oauth/authorize?client_id=nope&redirect_uri=https://x.example/cb"); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("unknown-client flood not limited: %d", resp.StatusCode)
 	}
 }
@@ -345,7 +345,7 @@ func TestFlowBoundToBrowser(t *testing.T) {
 	a := h.anon()
 	u := h.authorize(a, authzQuery(cl, ch, nil))
 	next := u.Query().Get("next")
-	if !strings.HasPrefix(next, orgBase+"/oauth/authorize/resume?flow=") {
+	if !strings.HasPrefix(next, h.orgBase+"/oauth/authorize/resume?flow=") {
 		t.Fatal(u)
 	}
 	// browser B (signed in, but never started the flow) cannot resume it
@@ -380,7 +380,7 @@ func TestFlowCookieAttributes(t *testing.T) {
 	h := setup(t, nil)
 	cl, _ := h.newClient(nil)
 	_, ch := pkce()
-	resp := h.get(h.anon(), orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+	resp := h.get(h.anon(), h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
 	body(resp)
 	var got *http.Cookie
 	for _, ck := range resp.Cookies() {
@@ -430,8 +430,8 @@ func TestResumeAndConsentRefuseUnknownOrStaleFlows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{orgBase + "/oauth/authorize/resume?flow=" + garbage, orgBase + "/oauth/authorize/cancel?flow=" + garbage,
-		orgBase + "/oauth/authorize/resume?flow=unknown", orgBase + "/oauth/consent?flow=" + garbage, orgBase + "/oauth/consent?flow=unknown"} {
+	for _, path := range []string{h.orgBase + "/oauth/authorize/resume?flow=" + garbage, h.orgBase + "/oauth/authorize/cancel?flow=" + garbage,
+		h.orgBase + "/oauth/authorize/resume?flow=unknown", h.orgBase + "/oauth/consent?flow=" + garbage, h.orgBase + "/oauth/consent?flow=unknown"} {
 		if st := status(path); st != http.StatusBadRequest {
 			t.Errorf("%s: %d", path, st)
 		}
@@ -443,7 +443,7 @@ func TestResumeAndConsentRefuseUnknownOrStaleFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.p.InvalidateClient(cl.ID)
-	for _, path := range []string{orgBase + "/oauth/authorize/resume?flow=" + id, orgBase + "/oauth/consent?flow=" + id} {
+	for _, path := range []string{h.orgBase + "/oauth/authorize/resume?flow=" + id, h.orgBase + "/oauth/consent?flow=" + id} {
 		if st := status(path); st != http.StatusBadRequest {
 			t.Errorf("disabled client %s: %d", path, st)
 		}
@@ -451,7 +451,7 @@ func TestResumeAndConsentRefuseUnknownOrStaleFlows(t *testing.T) {
 	if st, _ := h.decideConsent(c, csrf, id, true); st != http.StatusNotFound {
 		t.Errorf("consent for a disabled client: %d", st)
 	}
-	req, _ := http.NewRequest(http.MethodPost, h.env.URL+orgBase+"/api-internal/oauth/consent", strings.NewReader("not json"))
+	req, _ := http.NewRequest(http.MethodPost, h.env.URL+h.orgBase+"/api-internal/oauth/consent", strings.NewReader("not json"))
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Content-Type", "application/json")
 	if r, err := c.Do(req); err != nil || r.StatusCode != http.StatusBadRequest {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
+	"strconv"
 	"testing"
 	"time"
 
@@ -38,7 +38,7 @@ func auditAPI(t *testing.T, vl string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := "acme" + strings.ToLower(model.NewID()[24:])
+	name := "acme" + strconv.FormatInt(time.Now().UnixNano(), 36) // a name of its own on a shared VictoriaLogs
 	org, err := a.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: &name})
 	if err != nil {
 		t.Fatal(err)

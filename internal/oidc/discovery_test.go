@@ -96,7 +96,7 @@ func TestDiscovery(t *testing.T) {
 	})
 
 	t.Run("jwks", func(t *testing.T) {
-		resp := h.get(h.http, orgBase+"/oauth/jwks", "Origin", "https://anywhere.example")
+		resp := h.get(h.http, h.orgBase+"/oauth/jwks", "Origin", "https://anywhere.example")
 		if resp.StatusCode != http.StatusOK || resp.Header.Get("Access-Control-Allow-Origin") != "*" ||
 			!strings.Contains(resp.Header.Get("Cache-Control"), "max-age") {
 			t.Errorf("jwks headers %d %v", resp.StatusCode, resp.Header)
@@ -106,26 +106,26 @@ func TestDiscovery(t *testing.T) {
 		if err != nil || len(set) != 1 || set[0].Kty != "EC" || set[0].Alg != AlgES256 || set[0].Kid == "" {
 			t.Fatalf("jwks %+v %v", set, err)
 		}
-		if again := body(h.get(h.http, orgBase+"/oauth/jwks")); again != first { // served from the cache
+		if again := body(h.get(h.http, h.orgBase+"/oauth/jwks")); again != first { // served from the cache
 			t.Errorf("the key set changed between two reads: %s", again)
 		}
 	})
 
 	t.Run("cors", func(t *testing.T) {
 		// no CORS on the token endpoint for an unknown origin
-		if r := h.post(orgBase+"/oauth/token", url.Values{}, "", "", "Origin", "https://evil.example"); r.hdr.Get("Access-Control-Allow-Origin") != "" {
+		if r := h.post(h.orgBase+"/oauth/token", url.Values{}, "", "", "Origin", "https://evil.example"); r.hdr.Get("Access-Control-Allow-Origin") != "" {
 			t.Error("token endpoint leaked CORS")
 		}
 		// the public documents answer a preflight
 		rec := httptest.NewRecorder()
-		handlePreflight(rec, httptest.NewRequest(http.MethodOptions, orgBase+"/.well-known/openid-configuration", nil))
+		handlePreflight(rec, httptest.NewRequest(http.MethodOptions, h.orgBase+"/.well-known/openid-configuration", nil))
 		if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") == "" {
 			t.Errorf("preflight: %d %v", rec.Code, rec.Header())
 		}
 	})
 
 	t.Run("features", func(t *testing.T) {
-		d := document(orgBase + "/.well-known/openid-configuration")
+		d := document(h.orgBase + "/.well-known/openid-configuration")
 		issuer := h.issuer()
 		// Public clients revoke their own tokens, so revocation lists "none"; introspection is confidential only.
 		if !slices.Contains(strsOf(d["revocation_endpoint_auth_methods_supported"]), "none") ||
@@ -171,7 +171,7 @@ func (s keyListErr) List(ctx context.Context, kind model.Kind, q store.ListQuery
 // JWKS unavailable rather than publish the keys last loaded; a store that fails otherwise keeps them standing in.
 func TestJWKSPastItsBoundNotServedWhileTheStoreRefuses(t *testing.T) {
 	h := setup(t, nil)
-	if resp := h.get(h.http, orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
 	}
 	good := h.env.Svc.Keys.S
@@ -182,17 +182,17 @@ func TestJWKSPastItsBoundNotServedWhileTheStoreRefuses(t *testing.T) {
 	}
 	h.env.Svc.Keys.S = keyListErr{good, errors.New("database hiccup")}
 	stale()
-	if resp := h.get(h.http, orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
 		t.Fatalf("a store that cannot be read: %d, want the keys last loaded", resp.StatusCode)
 	}
 	h.env.Svc.Keys.S = keyListErr{good, store.ErrUnavailable}
 	stale()
-	if resp := h.get(h.http, orgBase+"/oauth/jwks"); resp.StatusCode != http.StatusServiceUnavailable {
+	if resp := h.get(h.http, h.orgBase+"/oauth/jwks"); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("a store that refuses, past the bound: %d, want 503", resp.StatusCode)
 	}
 	h.env.Svc.Keys.S = good
 	stale()
-	if resp := h.get(h.http, orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/jwks"); resp.StatusCode != 200 {
 		t.Fatalf("once the store answers again: %d", resp.StatusCode)
 	}
 }

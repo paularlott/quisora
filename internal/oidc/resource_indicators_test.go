@@ -116,7 +116,7 @@ func TestResourceIndicators(t *testing.T) {
 
 		// listed: the consent page names it, and the access token is for it
 		u := h.authorize(c, authzQuery(cl, ch, url.Values{"resource": {"https://api.example/a"}}))
-		if u.Path != orgBase+"/oauth/consent" {
+		if u.Path != h.orgBase+"/oauth/consent" {
 			t.Fatalf("expected consent: %s", u)
 		}
 		flowID := u.Query().Get("flow")
@@ -139,7 +139,7 @@ func TestResourceIndicators(t *testing.T) {
 		if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"resource": {"https://api.example/b"}, "prompt": {"none"}})); u.Query().Get("error") != "consent_required" {
 			t.Fatalf("consent for another resource: %s", u)
 		}
-		if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"resource": {"https://api.example/b"}})); u.Path != orgBase+"/oauth/consent" {
+		if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"resource": {"https://api.example/b"}})); u.Path != h.orgBase+"/oauth/consent" {
 			t.Fatalf("another resource without consent: %s", u)
 		}
 	})

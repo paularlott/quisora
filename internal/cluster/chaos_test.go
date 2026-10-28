@@ -2059,7 +2059,7 @@ func TestChaosNoStaleServingAfterContactRegained(t *testing.T) {
 	keys := func(tn *tnode) *store.Table[model.SigningKey, *model.SigningKey] {
 		return store.NewTable[model.SigningKey](tn.st())
 	}
-	k := &model.SigningKey{Meta: model.Meta{ID: "k-" + newID()}, Alg: "ES256", PublicJWK: []byte("n1")}
+	k := &model.SigningKey{Meta: model.Meta{ID: "k-" + model.NewID()}, Alg: "ES256", PublicJWK: []byte("n1")}
 	if err := keys(c.nodes[owner]).Create(bg, k); err != nil {
 		t.Fatal(err)
 	}

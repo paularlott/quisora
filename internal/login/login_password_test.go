@@ -110,11 +110,11 @@ func TestPasswordFormsStateTheMinimum(t *testing.T) {
 func TestLoginPageCancel(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
-	_, body := b.get("/o/primary/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize/resume?flow=abc"))
-	if !strings.Contains(body, `href="`+primaryBase+`/oauth/authorize/cancel?flow=abc"`) {
+	_, body := b.get("/o/primary/login?next=" + url.QueryEscape(e.primaryBase()+"/oauth/authorize/resume?flow=abc"))
+	if !strings.Contains(body, `href="`+e.primaryBase()+`/oauth/authorize/cancel?flow=abc"`) {
 		t.Fatal("no Cancel link for an authorization request")
 	}
-	for _, path := range []string{"/o/primary/login", "/o/primary/login?next=" + url.QueryEscape(primaryBase+"/account")} {
+	for _, path := range []string{"/o/primary/login", "/o/primary/login?next=" + url.QueryEscape(e.primaryBase()+"/account")} {
 		if _, body := b.get(path); strings.Contains(body, "/oauth/authorize/cancel") {
 			t.Fatalf("%s: Cancel link without an authorization request", path)
 		}
@@ -127,22 +127,22 @@ func TestPagesRender(t *testing.T) {
 
 	// A plain visit goes to the primary organization's sign-in page; there is no organization picker.
 	res, _ := b.getAbs("/")
-	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login" {
 		t.Fatalf("landing: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	if res, _ = b.getAbs("/?next=/oauth/authorize/resume"); res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
+	if res, _ = b.getAbs("/?next=/oauth/authorize/resume"); res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login" {
 		t.Fatalf("landing with next: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// The sign-in page, by the organization's name or its id: the same page, whose links are by id.
-	for _, ref := range []string{"primary", model.PrimaryOrgID} {
+	for _, ref := range []string{"primary", e.Primary.ID} {
 		res, body := b.get("/o/" + ref + "/login")
-		if res.StatusCode != 200 || !strings.Contains(body, `data-org-base="`+primaryBase+`"`) || !strings.Contains(body, `id="f-email"`) ||
+		if res.StatusCode != 200 || !strings.Contains(body, `data-org-base="`+e.primaryBase()+`"`) || !strings.Contains(body, `id="f-email"`) ||
 			!strings.Contains(body, `autocomplete="username webauthn"`) {
 			t.Fatalf("login page of %s: %d %.400s", ref, res.StatusCode, body)
 		}
 	}
 	// An unknown organization: not found.
-	res, body := b.get("/o/nope/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize?flow=1"))
+	res, body := b.get("/o/nope/login?next=" + url.QueryEscape(e.primaryBase()+"/oauth/authorize?flow=1"))
 	if res.StatusCode != 404 {
 		t.Fatalf("unknown org: %d %.300s", res.StatusCode, body)
 	}
@@ -154,12 +154,12 @@ func TestPagesRender(t *testing.T) {
 		}
 	}
 	// Pages that need a session go to the organization's sign-in page, back here afterwards.
-	res, _ = b.get(primaryBase + "/account")
-	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login?next="+url.QueryEscape(primaryBase+"/account") {
+	res, _ = b.get(e.primaryBase() + "/account")
+	if res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login?next="+url.QueryEscape(e.primaryBase()+"/account") {
 		t.Fatalf("account signed out: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	res, _ = b.get("/logout")
-	if res.StatusCode != 303 || res.Header.Get("Location") != primaryBase+"/login" {
+	if res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login" {
 		t.Fatalf("logout signed out: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// invalid invite / reset links
@@ -220,12 +220,12 @@ func TestPasswordLogin(t *testing.T) {
 		t.Fatalf("account: %d %.300s", res.StatusCode, body)
 	}
 	// Signed in: the login page redirects to next (a path of the organization or the console) or the account page.
-	for path, want := range map[string]string{"/o/primary/login": primaryBase + "/account",
-		"/o/primary/login?next=" + url.QueryEscape(primaryBase+"/oauth/authorize?x=1"): primaryBase + "/oauth/authorize?x=1",
+	for path, want := range map[string]string{"/o/primary/login": e.primaryBase() + "/account",
+		"/o/primary/login?next=" + url.QueryEscape(e.primaryBase()+"/oauth/authorize?x=1"): e.primaryBase() + "/oauth/authorize?x=1",
 		"/o/primary/login?next=/admin":               "/admin",
-		"/o/primary/login?next=/account":             primaryBase + "/account",
-		"/o/primary/login?next=//evil.example":       primaryBase + "/account",
-		"/o/primary/login?next=https://evil.example": primaryBase + "/account"} {
+		"/o/primary/login?next=/account":             e.primaryBase() + "/account",
+		"/o/primary/login?next=//evil.example":       e.primaryBase() + "/account",
+		"/o/primary/login?next=https://evil.example": e.primaryBase() + "/account"} {
 		res, _ = b.get(path)
 		if res.StatusCode != 303 || res.Header.Get("Location") != want {
 			t.Fatalf("%s -> %d %q, want %q", path, res.StatusCode, res.Header.Get("Location"), want)
@@ -269,25 +269,25 @@ func TestSuccessNotAuditedByDefault(t *testing.T) {
 func TestNextParameterIsLocalOnly(t *testing.T) {
 	e := newEnv(t, nil)
 	e.member(t)
-	acct := primaryBase + "/account"
+	acct := e.primaryBase() + "/account"
 	cases := map[string]string{
-		primaryBase + "/oauth/authorize?flow=abc": primaryBase + "/oauth/authorize?flow=abc",
-		"/admin":                                          "/admin",
-		"/admin/orgs/acme/users":                          "/admin/orgs/acme/users",
-		"//evil.example":                                  acct,
-		"https://evil.example":                            acct,
-		"/\\evil.example":                                 acct,
-		"\\\\evil.example":                                acct,
-		"javascript:alert(1)":                             acct,
-		"/oauth/authorize?flow=abc":                       acct, // not in the organization's space
-		"/%0d%0aSet-Cookie:x=1":                           acct,
-		primaryBase + "/a\r\nb":                           acct,
-		primaryBase + "/a\tb":                             acct,
-		primaryBase + "/%0d%0aSet-Cookie:x=1":             primaryBase + "/%0d%0aSet-Cookie:x=1", // percent-encoded stays a path
-		"/o/other/account":                                acct,                                  // another organization's space
-		"/o/00000000-0000-7000-8000-000000000002/account": acct,
-		"/o/primary/account":                              "/o/primary/account", // by name: the same space
-		primaryBase + "/../00000000-0000-7000-8000-000000000002/account": acct,
+		e.primaryBase() + "/oauth/authorize?flow=abc": e.primaryBase() + "/oauth/authorize?flow=abc",
+		"/admin":                                              "/admin",
+		"/admin/orgs/acme/users":                              "/admin/orgs/acme/users",
+		"//evil.example":                                      acct,
+		"https://evil.example":                                acct,
+		"/\\evil.example":                                     acct,
+		"\\\\evil.example":                                    acct,
+		"javascript:alert(1)":                                 acct,
+		"/oauth/authorize?flow=abc":                           acct, // not in the organization's space
+		"/%0d%0aSet-Cookie:x=1":                               acct,
+		e.primaryBase() + "/a\r\nb":                           acct,
+		e.primaryBase() + "/a\tb":                             acct,
+		e.primaryBase() + "/%0d%0aSet-Cookie:x=1":             e.primaryBase() + "/%0d%0aSet-Cookie:x=1", // percent-encoded stays a path
+		"/o/other/account":                                    acct,                                      // another organization's space
+		"/o/" + model.NewID() + "/account":                    acct,
+		"/o/primary/account":                                  "/o/primary/account", // by name: the same space
+		e.primaryBase() + "/../" + model.NewID() + "/account": acct,
 		"":     acct,
 		"evil": acct,
 	}
@@ -414,7 +414,7 @@ func TestCSRF(t *testing.T) {
 	}
 	// a browser with the right header but without the cookie fails too
 	other := e.client()
-	req, _ := http.NewRequest("POST", e.URL+primaryBase+"/api-internal/login/password", strings.NewReader(`{"email":"admin@example.com","password":"x"}`))
+	req, _ := http.NewRequest("POST", e.URL+e.primaryBase()+"/api-internal/login/password", strings.NewReader(`{"email":"admin@example.com","password":"x"}`))
 	req.Header.Set("X-CSRF-Token", b.csrf)
 	res, err := other.Do(req)
 	if err != nil {

@@ -2,6 +2,8 @@
 package model
 
 import (
+	"encoding/binary"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -112,46 +114,68 @@ type Entity interface {
 	Index() Index
 }
 
-// NewID returns a time-ordered UUIDv7 string.
-func NewID() string {
-	return uuid.Must(uuid.NewV7()).String()
+// base62 spells ids: the 62 letters and digits in ASCII order.
+const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// IDLen is the length of every id (NewID): 22 base-62 digits hold 128 bits (62^22 > 2^128).
+const IDLen = 22
+
+// NewID returns a new id: the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, then random bits) in 22
+// characters (FormatID). An id made in a later millisecond, or later by this process, sorts after an earlier one.
+func NewID() string { return FormatID(uuid.Must(uuid.NewV7())) }
+
+// pow62x10 is 62^10, the largest power of 62 a uint64 holds: FormatID divides the 128-bit value by it twice and so
+// spells ten digits at a time in plain 64-bit arithmetic.
+const pow62x10 = 839299365868340224
+
+// FormatID spells 16 bytes as an id: their big-endian 128-bit value in base 62, left-padded with '0' to IDLen. Being
+// fixed-width in an alphabet in ASCII order, the string order of two ids is the numeric order of their bytes, so the
+// store, which lists and pages a scope in id order, lists it in creation order. Letters and digits only: a
+// double-click selects a whole id, and it needs no escaping in a URL, a path, a file name or a token (qsr_<id>_...).
+func FormatID(b [16]byte) string {
+	hi, lo := binary.BigEndian.Uint64(b[:8]), binary.BigEndian.Uint64(b[8:])
+	var out [IDLen]byte
+	i := IDLen
+	for range 2 {
+		var r uint64
+		hi, r = hi/pow62x10, hi%pow62x10
+		lo, r = bits.Div64(r, lo, pow62x10)
+		for range 10 {
+			i--
+			out[i] = base62[r%62]
+			r /= 62
+		}
+	}
+	// What is left is below 2^128 / 62^20 (under 500): the two leading digits, hi now 0.
+	out[1], out[0] = base62[lo%62], base62[lo/62]
+	return string(out[:])
 }
 
-// IsID reports whether s has the form of an id (NewID: a UUID in its canonical form). An organization's name never
-// does (ValidOrgName), so a path segment names an organization by id or by name unambiguously (/o/<id or name>).
+// maxID is the id of the largest 128-bit value (FormatID of 16 bytes 0xff). A string of IDLen base-62 digits that
+// sorts after it is a value no 16 bytes hold, so not an id: each id has exactly one spelling.
+const maxID = "7n42DGM5Tflk9n8mt7Fhc7"
+
+// IsID reports whether s is an id in its one spelling (FormatID). An organization's name never is (ValidOrgName), so a
+// path segment names an organization by id or by name unambiguously (/o/<id or name>).
 func IsID(s string) bool {
-	if len(s) != 36 {
+	if len(s) != IDLen || s > maxID {
 		return false
 	}
-	_, err := uuid.Parse(s)
-	return err == nil
+	for i := range len(s) {
+		if c := s[i]; !('0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 // ClientIDPrefix starts every client ID, so a client ID is recognizable where it is pasted (an application's config,
 // a log line) and cannot be mistaken for the client secret.
 const ClientIDPrefix = "c_"
 
-const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" // ASCII order
-
-// NewClientID returns a client ID: ClientIDPrefix and a UUIDv7 in 22 base-62 characters (c_0dk2Yv…). It carries the
-// same 128 bits as NewID and, being fixed-width in an alphabet in ASCII order, sorts byte-wise in the same order, so
-// clients still list and page in creation order. It has no hyphens, so a double-click selects all of it.
-func NewClientID() string { return ClientIDFromUUID(uuid.Must(uuid.NewV7())) }
-
-// ClientIDFromUUID formats u as a client ID (see NewClientID).
-func ClientIDFromUUID(u uuid.UUID) string {
-	var out [22]byte
-	n := u // a 128-bit big-endian number, divided down by 62 in place
-	for i := len(out) - 1; i >= 0; i-- {
-		rem := 0
-		for j := range n {
-			v := rem<<8 | int(n[j])
-			n[j], rem = byte(v/62), v%62
-		}
-		out[i] = base62[rem]
-	}
-	return ClientIDPrefix + string(out[:])
-}
+// NewClientID returns a client ID: ClientIDPrefix and a new id (NewID), so clients still list and page in creation
+// order.
+func NewClientID() string { return ClientIDPrefix + NewID() }
 
 // Lower is the form of a value in a unique key: case-insensitive, and compatibility forms folded (NFKC), so that a
 // full-width "ａｄｍｉｎ" or a ligature claims the same key as "admin" instead of passing for another name. The value
@@ -178,12 +202,3 @@ func MFA(amr []string) bool {
 	}
 	return (pwd && otp) || (key && uv)
 }
-
-// Fixed ids of what "quisora bootstrap" creates, each written only where no record with its id exists (a create):
-// bootstrapping by mistake (a new node of a running cluster, a second run) can never overwrite the primary organization
-// (however renamed), its default tenant or the first super admin.
-const (
-	PrimaryOrgID     = "00000000-0000-7000-8000-000000000001"
-	BootstrapAdminID = "00000000-0000-7000-8000-000000000002"
-	PrimaryTenantID  = "00000000-0000-7000-8000-000000000003"
-)

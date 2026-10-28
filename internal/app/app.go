@@ -145,8 +145,9 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		return nil, err
 	}
 	// Serving never creates the primary organization ("quisora bootstrap" does): a node that starts without one waits
-	// to receive it (a new member of a gossip cluster) or reports that it has not been set up.
-	switch _, err := a.Svc.PrimaryOrg(ctx); {
+	// to receive it (a new member of a gossip cluster) or reports that it has not been set up. Found, its id is
+	// remembered from now on (service.PrimaryOrgID); until then the node is not ready (health.Ready).
+	switch _, err := a.Svc.PrimaryOrgID(ctx); {
 	case errors.Is(err, service.ErrNotFound) && !!node.Standalone():
 		log.Warn("this server has not been set up: run \"quisora bootstrap\" to create the primary organization and its first administrator")
 	}
@@ -207,8 +208,8 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 }
 
 // auditForcedStart writes a start forced with "quisora force-start" (logged when it happened) to the audit log of the
-// primary organization once this node may write: the operator's override is on record in the cluster, not only in
-// one node's log. It stays pending in the node's cluster state until the event is stored, across restarts.
+// primary organization once this node may write and knows it: the operator's override is on record in the cluster,
+// not only in one node's log. It stays pending in the node's cluster state until the event is stored, across restarts.
 func (a *App) auditForcedStart(ctx context.Context) {
 	auditForcedStart(ctx, a.Node, a.Svc, time.Second)
 }
@@ -229,11 +230,9 @@ func auditForcedStart(ctx context.Context, node forceStartNode, svc *service.Ser
 	t := time.NewTicker(poll)
 	defer t.Stop()
 	for {
-		if node.Writable() {
-			org := model.PrimaryOrgID
-			if o, err := svc.PrimaryOrg(ctx); err == nil {
-				org = o.ID
-			}
+		// (the primary organization is known once this node can read its data set: a gossip node still copying it, or
+		// a server not set up yet, waits)
+		if org, err := svc.PrimaryOrgID(ctx); err == nil && node.Writable() {
 			err := svc.AuditStored(service.WithCommand(ctx, "force-start", "access to this node's data directory"),
 				service.System, org, "cluster.force_start", node.ID(),
 				map[string]string{"reason": reason, "at": at.UTC().Format(time.RFC3339)})
@@ -351,12 +350,12 @@ func readyzStatus(st cluster.Status) readyzCluster {
 }
 
 // health is the node's readiness plus one thing only the application knows: that the server has been set up (the
-// primary organization exists, made by "quisora bootstrap" or received from the cluster).
+// primary organization exists, made by "quisora bootstrap" or received from the cluster) and this node knows which
+// organization it is (service.PrimaryOrgID: once found, remembered, so readiness reads it on every request for free).
 type health struct {
 	node        *cluster.Node
 	svc         *service.Service
 	keyReported func() bool // this node's master key report counts (App.keyReportCurrent)
-	setUp       atomic.Bool // a primary organization was found: once set up, always (readiness checks it on every request)
 }
 
 func (h *health) Ready() (bool, string) {
@@ -366,19 +365,18 @@ func (h *health) Ready() (bool, string) {
 	if !h.keyReported() {
 		return false, "this node's master key report is not stored (it is retried)"
 	}
-	if h.setUp.Load() {
-		return true, ""
-	}
 	// Until found, a store read, bounded: a database that hangs makes the node unready, not the probe.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := h.svc.PrimaryOrg(ctx); err != nil {
+	if _, err := h.svc.PrimaryOrgID(ctx); err != nil {
 		if ctx.Err() != nil {
 			return false, "the database did not answer"
 		}
+		if !errors.Is(err, service.ErrNotFound) {
+			return false, "the primary organization could not be read: " + err.Error()
+		}
 		return false, "not set up: run \"quisora bootstrap\""
 	}
-	h.setUp.Store(true)
 	return true, ""
 }
 

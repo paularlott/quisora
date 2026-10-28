@@ -52,7 +52,9 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 ```
 
 The answer includes `callback_url`. To register the callback URL before the provider has issued the client ID and
-secret, choose the provider's ID yourself: send `"id"` (a lower-case UUID) when creating it, as the console does.
+secret, choose the provider's ID yourself: send `"id"` (an id of the form Quisora makes: 22 characters such as
+`034nmRmWuXazwvCcdrmRxu`, the 128 bits of a UUIDv7 in base 62, `0-9A-Za-z`, left-padded with `0`) when creating it,
+as the console does.
 `GET`, `PATCH` and `DELETE /api/orgs/acme/providers/{id}` read, change and remove one.
 
 ## Which applications offer it

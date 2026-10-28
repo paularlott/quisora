@@ -28,9 +28,9 @@ func (h *harness) push(c *model.Client, secret string, q url.Values) tokResp {
 	}
 	if secret == "" {
 		f.Set("client_id", c.ID)
-		return h.post(orgBase+"/oauth/par", f, "", "")
+		return h.post(h.orgBase+"/oauth/par", f, "", "")
 	}
-	return h.clientPost(orgBase+"/oauth/par", f, c, secret)
+	return h.clientPost(h.orgBase+"/oauth/par", f, c, secret)
 }
 
 func pushedQuery(c *model.Client, requestURI string) url.Values {
@@ -72,12 +72,12 @@ func TestPushedAuthorizationRequest(t *testing.T) {
 	// only by the client that pushed it
 	other, _ := h.newClient(nil)
 	r = h.push(cl, secret, authzQuery(cl, ch, nil))
-	resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+pushedQuery(other, r.str("request_uri")).Encode())
 	if b := body(resp); resp.StatusCode != 400 || resp.Header.Get("Location") != "" || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("another client's request_uri: %d", resp.StatusCode)
 	}
 	// an unknown one
-	resp = h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode())
+	resp = h.get(c, h.orgBase+"/oauth/authorize?"+pushedQuery(cl, parURNPrefix+"nope").Encode())
 	if b := body(resp); resp.StatusCode != 400 || !strings.Contains(b, "This sign-in request is not valid") {
 		t.Fatalf("unknown request_uri: %d", resp.StatusCode)
 	}
@@ -208,7 +208,7 @@ func TestPushedRequestUsedWhenDecided(t *testing.T) {
 		b2, csrf2 := h.session(h.user)
 		flowOf := func(b *http.Client) string {
 			u := h.authorize(b, pushedQuery(cl, uri))
-			if u.Path != orgBase+"/oauth/consent" {
+			if u.Path != h.orgBase+"/oauth/consent" {
 				t.Fatalf("expected consent: %s", u)
 			}
 			return u.Query().Get("flow")
@@ -233,8 +233,8 @@ func TestPushedRequestUsedWhenDecided(t *testing.T) {
 		c, _ := h.session(h.user)
 		_, ch := pkce()
 		uri := h.push(cl, secret, authzQuery(cl, ch, url.Values{"response_mode": {"form_post"}})).str("request_uri")
-		body(h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode()))
-		resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
+		body(h.get(c, h.orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode()))
+		resp := h.get(c, h.orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
 		if pg := body(resp); resp.StatusCode != 200 || !strings.Contains(pg, "invalid_request_uri") {
 			t.Fatalf("reuse: %d %s", resp.StatusCode, pg)
 		}
@@ -251,8 +251,8 @@ func TestCancelSignIn(t *testing.T) {
 		b := h.anon()
 		login := h.authorize(b, q)
 		next := login.Query().Get("next") // the sign-in page's Cancel link (login.cancelURL) is built from it
-		cancel := orgBase + "/oauth/authorize/cancel?" + strings.TrimPrefix(next, orgBase+"/oauth/authorize/resume?")
-		if !strings.HasPrefix(next, orgBase+"/oauth/authorize/resume?flow=") {
+		cancel := h.orgBase + "/oauth/authorize/cancel?" + strings.TrimPrefix(next, h.orgBase+"/oauth/authorize/resume?")
+		if !strings.HasPrefix(next, h.orgBase+"/oauth/authorize/resume?flow=") {
 			t.Fatalf("%s: next %q", name, next)
 		}
 		// another browser cannot cancel it
@@ -300,7 +300,7 @@ func TestPushedRequestSizeLimit(t *testing.T) {
 		if r.status != 201 {
 			t.Fatalf("%s: a push of the largest size: %d %v", name, r.status, r.m)
 		}
-		if u := orgBase + "/oauth/authorize?" + pushedQuery(cl, r.str("request_uri")).Encode(); len(u) >= 8<<10 {
+		if u := h.orgBase + "/oauth/authorize?" + pushedQuery(cl, r.str("request_uri")).Encode(); len(u) >= 8<<10 {
 			t.Errorf("%s: the authorization URL of the largest push is %d bytes", name, len(u))
 		}
 		if r := h.push(cl, secret, sized(parMaxParams+1, many)); r.status != 400 || r.m["error"] != "invalid_request" {
@@ -320,7 +320,7 @@ func TestPushedRequestStoreFailures(t *testing.T) {
 	uri := h.push(cl, secret, authzQuery(cl, ch, nil)).str("request_uri")
 	good := h.env.Svc.Replays.S
 	h.env.Svc.Replays.S = failReads(good, model.KindReplay)
-	resp := h.get(c, orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
+	resp := h.get(c, h.orgBase+"/oauth/authorize?"+pushedQuery(cl, uri).Encode())
 	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Please try again") {
 		t.Fatalf("use not readable: %d %.80s", resp.StatusCode, pg)
 	}
@@ -362,7 +362,7 @@ func TestPushedRequestURIRefusals(t *testing.T) {
 		"no id inside":      {cl.ID, seal(own, pushedRequest{Expires: live, Params: "client_id=" + cl.ID})},
 		"unparsable params": {cl.ID, seal(own, pushedRequest{ID: "a", Expires: live, Params: "a=%zz"})},
 	} {
-		resp := h.get(c, orgBase+"/oauth/authorize?"+url.Values{"client_id": {tc.client}, "request_uri": {tc.requestURI}}.Encode())
+		resp := h.get(c, h.orgBase+"/oauth/authorize?"+url.Values{"client_id": {tc.client}, "request_uri": {tc.requestURI}}.Encode())
 		if pg := body(resp); resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" ||
 			!strings.Contains(pg, "This sign-in request is not valid") {
 			t.Errorf("%s: %d %.80s", name, resp.StatusCode, pg)
@@ -390,7 +390,7 @@ func TestPublicPushesHoldNothing(t *testing.T) {
 	pad := strings.Repeat("x", 3000) // a push of about 3.5 KB: a public client's largest before pushes held nothing was 4 KB
 	pushFrom := func(c *model.Client, ip string) (int, string) {
 		f := authzQuery(c, ch, url.Values{"x_padding": {pad}})
-		req := httptest.NewRequest(http.MethodPost, orgBase+"/oauth/par", strings.NewReader(f.Encode()))
+		req := httptest.NewRequest(http.MethodPost, h.orgBase+"/oauth/par", strings.NewReader(f.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.RemoteAddr = ip + ":4000"
 		rec := httptest.NewRecorder()

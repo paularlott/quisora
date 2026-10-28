@@ -56,7 +56,7 @@ func TestPasskeyRegisterAndLogin(t *testing.T) {
 		t.Fatalf("passkey of acme at the primary organization's page: %d %v", status, out)
 	}
 	// Hostile next is dropped, and so is one that leads out of the organization's space.
-	for _, next := range []string{"//evil.example", "/o/" + model.PrimaryOrgID + "/account"} {
+	for _, next := range []string{"//evil.example", "/o/" + e.Primary.ID + "/account"} {
 		b3 := e.browser(t)
 		b3.auth = signed.auth
 		status, out = b3.passkeyLogin(map[string]any{"org": "acme", "next": next})

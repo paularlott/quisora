@@ -16,11 +16,12 @@ Quisora is in [Connecting applications](../oauth/README.md).)
 ## Where people sign in
 
 Organizations are self-contained: each has its own address space, `/o/<org>/`, where `<org>` is the organization's id
-(a UUID: the form every link Quisora makes uses) or its name (a name can never look like a UUID, and `o` is reserved).
+(22 letters and digits, in which case matters: the form every link Quisora makes uses) or its
+name (a name can never be an id, and `o` is reserved).
 The sign-in page is `/o/<org>/login`, with `/o/<org>/account`, `/o/<org>/invite`, `/o/<org>/reset`,
 `/o/<org>/verify-email` and `/o/<org>/logout` beside it; the links in invitation, reset and verification emails are
-`/o/<org id>/…`. `https://id.example.com/` redirects to the primary organization's sign-in page (its id is
-`00000000-0000-7000-8000-000000000001`).
+`/o/<org id>/…`. `https://id.example.com/` redirects to the primary organization's sign-in page (`/o/<its id>/login`:
+its id is made when the server is set up).
 
 A browser keeps one session per organization (a cookie of its own for each): being signed in to one organization is not
 being signed in to another. The console (`/admin`) and the management API (`/api`) are the server's, not an

@@ -79,7 +79,7 @@ func TestTokensBelongToTheirOrganization(t *testing.T) {
 	userinfo := func(base string) int {
 		return h.get(h.http, base+"/oauth/userinfo", "Authorization", "Bearer "+at).StatusCode
 	}
-	if st := userinfo(orgBase); st != 200 {
+	if st := userinfo(h.orgBase); st != 200 {
 		t.Fatalf("userinfo at its own organization: %d", st)
 	}
 	if st := userinfo("/o/" + h.env.Primary.Name); st != 200 {
@@ -177,7 +177,7 @@ func TestFlowsBelongToTheirOrganization(t *testing.T) {
 	_, ch := pkce()
 	consent := h.authorize(c, authzQuery(cl, ch, nil))
 	flow := consent.Query().Get("flow")
-	if consent.Path != orgBase+"/oauth/consent" || flow == "" {
+	if consent.Path != h.orgBase+"/oauth/consent" || flow == "" {
 		t.Fatalf("no consent step: %s", consent)
 	}
 

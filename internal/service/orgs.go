@@ -49,7 +49,7 @@ func (s *Service) canAssignRole(ctx context.Context, a *Actor, org *model.Org, r
 	}
 	switch role {
 	case model.RoleSuperAdmin:
-		return a.IsSuper() && org.Primary()
+		return a.IsSuper() && org.Primary
 	case model.RoleAdmin, model.RoleManager:
 		return s.canAdminOrg(a, org.ID)
 	case model.RoleUser:
@@ -89,10 +89,30 @@ func orgConflict(err error) error {
 	return mapStore(err)
 }
 
-// PrimaryOrg returns the primary organization (model.PrimaryOrgID): ErrNotFound before "quisora bootstrap" made it (or
-// before the store holds it here).
+// PrimaryOrgID returns the primary organization's id (model.Org.Primary): ErrNotFound before "quisora bootstrap" made
+// it (or before this node can read it: a gossip node still copying its data set), or the store's error. Never a
+// guess: whatever needs the primary organization fails until it is known. The store is the one place it is kept, in
+// every mode (standalone, shared database, gossip, restored from a backup); once read it is remembered, since a data
+// set's primary organization never changes (it cannot be deleted, and a second one clashes on model.PrimaryOrgKey).
+func (s *Service) PrimaryOrgID(ctx context.Context) (string, error) {
+	if id := s.primaryID.Load(); id != nil {
+		return *id, nil
+	}
+	o, err := s.Orgs.GetByUnique(ctx, model.PrimaryOrgKey)
+	if err != nil {
+		return "", mapStore(err)
+	}
+	s.primaryID.Store(&o.ID)
+	return o.ID, nil
+}
+
+// PrimaryOrg returns the primary organization as stored now (PrimaryOrgID).
 func (s *Service) PrimaryOrg(ctx context.Context) (*model.Org, error) {
-	o, err := s.Orgs.Get(ctx, model.PrimaryOrgID)
+	id, err := s.PrimaryOrgID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	o, err := s.Orgs.Get(ctx, id)
 	return o, mapStore(err)
 }
 
@@ -249,7 +269,7 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if err != nil {
 		return mapStore(err)
 	}
-	if o.Primary() {
+	if o.Primary {
 		return ErrPrimaryOrg
 	}
 	n, err := s.closeOrg(ctx, id, cascade)

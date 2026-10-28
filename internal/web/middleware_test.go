@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,18 +11,36 @@ import (
 
 	logtesting "github.com/paularlott/logger/testing"
 
-	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/secure"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
 // A signed-out visitor goes to the sign-in page of the organization the page is about (its console pages name it), and
-// otherwise to the primary organization's, coming back afterwards.
+// otherwise to the primary organization's, coming back afterwards; before the primary organization is known, nowhere
+// (the page answers that it cannot serve now).
 func TestSignInFor(t *testing.T) {
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	s := &Server{Svc: service.New(config.Default(), memstore.New(), sealer)}
 	var got string
+	var gotErr error
 	mux := http.NewServeMux()
-	mux.HandleFunc("/admin/orgs/{org}/", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
-	mux.HandleFunc("/admin/orgs/{org}", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
-	mux.HandleFunc("/", func(_ http.ResponseWriter, r *http.Request) { got = signInFor(r) })
-	primary := "/o/" + model.PrimaryOrgID + "/login?next="
+	h := func(_ http.ResponseWriter, r *http.Request) { got, gotErr = s.signInFor(r) }
+	mux.HandleFunc("/admin/orgs/{org}/", h)
+	mux.HandleFunc("/admin/orgs/{org}", h)
+	mux.HandleFunc("/", h)
+	if mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/admin", nil)); !errors.Is(gotErr, service.ErrNotFound) {
+		t.Fatalf("before bootstrap: %q %v", got, gotErr)
+	}
+	if _, _, err := s.Svc.Bootstrap(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.Svc.PrimaryOrg(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := "/o/" + p.ID + "/login?next="
 	for path, want := range map[string]string{
 		"/admin/orgs/acme/users?x=1": "/o/acme/login?next=%2Fadmin%2Forgs%2Facme%2Fusers%3Fx%3D1",
 		"/admin/orgs/acme":           "/o/acme/login?next=%2Fadmin%2Forgs%2Facme",
@@ -28,8 +48,8 @@ func TestSignInFor(t *testing.T) {
 		"/admin":                     primary + "%2Fadmin",
 	} {
 		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
-		if got != want {
-			t.Errorf("%s: %q, want %q", path, got, want)
+		if got != want || gotErr != nil {
+			t.Errorf("%s: %q %v, want %q", path, got, gotErr, want)
 		}
 	}
 }

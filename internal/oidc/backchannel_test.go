@@ -74,7 +74,7 @@ func TestBackchannelAfterGrantRevoked(t *testing.T) {
 		t.Fatal(r.m)
 	}
 	// the application revokes its refresh token: no grant is left on the session
-	if res := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {r.str("refresh_token")}}, cl, secret); res.status != 200 {
+	if res := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {r.str("refresh_token")}}, cl, secret); res.status != 200 {
 		t.Fatalf("revoke: %d", res.status)
 	}
 	if gs, _ := h.env.Svc.Grants.All(context.Background(), h.user.ID); len(gs) != 0 {
@@ -450,10 +450,9 @@ func TestBackchannelRetrySlowOrgDoesNotDelayAnother(t *testing.T) {
 	time.Sleep(due)
 	retries = h.p.OpenLogoutQueue("node-1")
 	defer retries.Close()
-	waitUntil(t, func() bool { return answered.Load() == 1 })
-	if n := stuck.Load(); n != logoutRetryPerOrg {
-		t.Errorf("%d retries held by the application that never answers, want its %d senders", n, logoutRetryPerOrg)
-	}
+	// The other organization's logout is answered while the slow one's senders are held (they are started in the same
+	// pass, so the answer may come before the second of them reaches its server).
+	waitUntil(t, func() bool { return answered.Load() == 1 && stuck.Load() == logoutRetryPerOrg })
 	open()
 	waitUntil(t, func() bool { return retries.Queued() == 0 })
 	if m := mostStuck.Load(); m > logoutRetryPerOrg {

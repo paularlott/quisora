@@ -243,10 +243,11 @@ func sharedStorage(t *testing.T, backend string) func(*config.Config) {
 
 func testSharedNodes(t *testing.T, backend string, shared func(*config.Config), public func() string) {
 	a, hc, _ := startAppWith(t, backend, shared)
-	b, _, _ := startAppWith(t, backend, shared)
+	b, _, _ := runApp(t, appConfig(t, backend, shared)) // not bootstrapped: "quisora bootstrap" runs once per database
 	if !a.Node.SharedDatabase() || !b.Node.SharedDatabase() {
 		t.Fatal("nodes on a shared database without gossip must run in shared mode")
 	}
+	samePrimary(t, []*App{a, b})
 	crossNodeOAuth(t, []*App{a, b}, hc, public())
 }
 
@@ -442,6 +443,7 @@ func TestGossipNodes(t *testing.T) {
 			t.Fatal("gossip nodes replicate and keep their own databases")
 		}
 	}
+	samePrimary(t, apps) // (readiness waits for it: a node that has not copied it yet is not ready)
 	crossNodeOAuth(t, apps, hc, publicURL)
 	gossipAudit(t, apps)
 }

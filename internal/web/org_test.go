@@ -89,9 +89,9 @@ func TestSessionsBelongToTheirOrganization(t *testing.T) {
 	}
 	admin := env.Admin.Username
 	for path, want := range map[string]map[*http.Client]string{
-		"/o/" + beta.ID + "/whoami":            {primary: "", inBeta: "bob", both: "bob", superLast: "bob", managerLast: "carol"},
-		"/o/beta/whoami":                       {primary: "", inBeta: "bob", both: "bob", superLast: "bob", managerLast: "carol"}, // by name
-		"/o/" + model.PrimaryOrgID + "/whoami": {primary: admin, inBeta: "", both: admin, superLast: admin, managerLast: admin},
+		"/o/" + beta.ID + "/whoami":        {primary: "", inBeta: "bob", both: "bob", superLast: "bob", managerLast: "carol"},
+		"/o/beta/whoami":                   {primary: "", inBeta: "bob", both: "bob", superLast: "bob", managerLast: "carol"}, // by name
+		"/o/" + env.Primary.ID + "/whoami": {primary: admin, inBeta: "", both: admin, superLast: admin, managerLast: admin},
 		// The console skips a session that cannot use it: bob, last, does not shut the super admin out; carol, a
 		// manager, can use it, and being last she is the one it acts as.
 		"/admin/orgs/beta/whoami": {primary: admin, inBeta: "bob", both: admin, superLast: admin, managerLast: "carol"},

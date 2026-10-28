@@ -22,7 +22,7 @@ func sessionFixture(t *testing.T, st store.Store, lastSeen time.Time) (*service.
 	ctx := context.Background()
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
 	svc := service.New(config.Default(), st, sealer)
-	org := &model.Org{Meta: model.Meta{ID: model.PrimaryOrgID}, Name: "org1"}
+	org := &model.Org{Name: "org1", Primary: true}
 	if err := svc.Orgs.Create(ctx, org); err != nil {
 		t.Fatal(err)
 	}

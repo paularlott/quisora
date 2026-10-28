@@ -12,6 +12,7 @@ import (
 
 	"github.com/paularlott/gossip"
 	"github.com/paularlott/quisora/internal/cluster/clustertest"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -272,7 +273,7 @@ func TestResizeGrowAndShrink(t *testing.T) {
 	three := append([]string(nil), c.addrs...)
 	write := func(tn *tnode) string {
 		t.Helper()
-		id := newID()
+		id := model.NewID()
 		if err := tn.st().Put(bg, newRec(id, "")); err != nil {
 			t.Fatalf("write on a %d-node cluster: %v", tn.n.Size(), err)
 		}
@@ -465,7 +466,7 @@ func testClusterKeyRotation(t *testing.T, c *tcluster) {
 
 	replicates := func(step string) {
 		t.Helper()
-		id := newID()
+		id := model.NewID()
 		if err := c.nodes[0].st().Put(bg, newRec(id, "")); err != nil {
 			t.Fatalf("%s: write: %v", step, err)
 		}

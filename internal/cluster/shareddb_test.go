@@ -192,7 +192,7 @@ func TestHousekeepingFencedAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("a takes the lease: %v", err)
 	}
 	ctx := a.fence(bg)
-	if err := a.Store().Put(ctx, newRec(newID(), "")); err != nil {
+	if err := a.Store().Put(ctx, newRec(model.NewID(), "")); err != nil {
 		t.Fatalf("the holder's housekeeping write: %v", err)
 	}
 	time.Sleep(700 * time.Millisecond) // a stalls past its lease
@@ -200,13 +200,13 @@ func TestHousekeepingFencedAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("b takes over: %v", err)
 	}
 	a.lease.until.Store(time.Now().Add(time.Hour).UnixNano()) // a's clock (or pause) makes it believe it still leads
-	if err := a.Store().Put(ctx, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
+	if err := a.Store().Put(ctx, newRec(model.NewID(), "")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a housekeeping write after the lease passed on: %v", err)
 	}
-	if err := b.Store().Put(b.fence(bg), newRec(newID(), "")); err != nil {
+	if err := b.Store().Put(b.fence(bg), newRec(model.NewID(), "")); err != nil {
 		t.Fatalf("the new holder's housekeeping write: %v", err)
 	}
-	if err := a.Store().Put(bg, newRec(newID(), "")); err != nil {
+	if err := a.Store().Put(bg, newRec(model.NewID(), "")); err != nil {
 		t.Fatalf("an ordinary (unfenced) write: %v", err)
 	}
 }
@@ -377,11 +377,11 @@ func TestSharedDatabaseNoticeGossip(t *testing.T) {
 		}
 	}
 	waitFor(t, 5*time.Second, "notice gossip joined", func() bool { return a.ngc.NumAliveNodes() >= 2 && b.ngc.NumAliveNodes() >= 2 })
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	if err := a.st.Put(bg, rec); err != nil {
 		t.Fatal(err)
 	}
-	gone := newRec(newID(), "")
+	gone := newRec(model.NewID(), "")
 	gone.Kind, gone.Deleted = model.KindUser, true
 	if err := a.st.Put(bg, gone); err != nil {
 		t.Fatal(err)

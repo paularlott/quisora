@@ -190,7 +190,7 @@ test('create, edit and delete an organization through the modal + confirm dialog
   await expect(page.getByRole('link', { name: 'Kbd Renamed' })).toHaveCount(0)
 })
 
-test('client secret is shown once with a copy button; public clients have no secret dialog', async ({ page, context }) => {
+test('client secret is shown once with a copy button; a public client\'s dialog has no secret', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await gotoRows(page, `${A}/tenants/customers`)
   await page.getByRole('button', { name: 'New client' }).click()
@@ -201,7 +201,7 @@ test('client secret is shown once with a copy button; public clients have no sec
   await expect(dlg).toBeVisible()
   const secret = (await dlg.locator('#client-secret').innerText()).trim()
   expect(secret).toMatch(/^qsrs_/)
-  await dlg.getByRole('button', { name: /Copy/ }).click()
+  await dlg.getByRole('button', { name: 'Copy client secret' }).click()
   await expect(page.locator('dialog[open] [data-live=polite]')).toContainText('Copied client secret')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(secret)
   const r = await axe(page)
@@ -214,7 +214,8 @@ test('client secret is shown once with a copy button; public clients have no sec
   await expect(page.getByText('Client credentials')).toBeHidden()
   await page.getByLabel('Redirect URI 1', { exact: true }).fill('com.example.app:/callback')
   await page.getByRole('button', { name: 'Create client' }).click()
-  await expect(page.getByRole('dialog', { name: 'Client created' })).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: 'Client created' }).locator('#client-secret')).toBeHidden()
+  await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: 'Rotate secret of Public test' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Rotate secret of Secret test' })).toBeVisible()
 })

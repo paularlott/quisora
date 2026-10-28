@@ -32,7 +32,7 @@ func TestVictoriaLogsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Start()
-	orgA, orgB, mark := model.NewID(), model.NewID(), "mark"+model.NewID()[24:]
+	orgA, orgB, mark := model.NewID(), model.NewID(), "mark"+model.NewID()[8:]
 	base := time.Now().Add(-time.Minute).UTC()
 	for i := range 5 {
 		c.WriteAudit(&model.Audit{Meta: model.Meta{ID: model.NewID(), Created: base.Add(time.Duration(i) * time.Second)},

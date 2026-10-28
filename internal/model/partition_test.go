@@ -81,7 +81,7 @@ func TestPartitionKeyRemovedMember(t *testing.T) {
 // Every unique value of a record is scoped to the record's organization (so it lives in the record's partition): no
 // unique value crosses partitions, so no write needs another organization's.
 func TestUniqueValuesStayInPartition(t *testing.T) {
-	const org = "6f0c2b1e-1111-7000-8000-000000000001"
+	const org = "034nmRmWuppROD1l9kiBPr"
 	ents := []Entity{
 		&User{Meta: Meta{ID: "u"}, OrgID: org, Username: "Al", Email: "a@x.org", ExternalID: "e1",
 			LinkedEmails: []LinkedEmail{{Address: "b@x.org"}}},

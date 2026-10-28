@@ -185,15 +185,16 @@ func TestProviderAdministrationIsOrgAdminOnly(t *testing.T) {
 	}
 }
 
-// A provider's id is a UUID that may be chosen once, its name is bounded, the Microsoft personal-accounts tenant is
+// A provider's id is an id (model.IsID) that may be chosen once, its name is bounded, the Microsoft personal-accounts tenant is
 // refused, and a GitHub provider needs no issuer; requests that are refused store nothing.
 func TestProviderIdentityAndLimits(t *testing.T) {
 	c := newCast(t)
 	sys := service.System
 	for name, in := range map[string]service.ProviderInput{
-		"bad id":      {ID: ptr("NOT-A-UUID"), Name: ptr("x"), Issuer: ptr("https://i.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
-		"long name":   {Name: ptr(strings.Repeat("n", 101)), Issuer: ptr("https://i.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
-		"ms personal": {Type: ptr(model.ProviderMicrosoft), Name: ptr("x"), ClientID: ptr("c"), ClientSecret: ptr("s"), Tenant: ptr("consumers")},
+		"bad id":          {ID: ptr("NOT-AN-ID"), Name: ptr("x"), Issuer: ptr("https://i.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
+		"beyond 128 bits": {ID: ptr("7n42DGM5Tflk9n8mt7Fhc8"), Name: ptr("x"), Issuer: ptr("https://i.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
+		"long name":       {Name: ptr(strings.Repeat("n", 101)), Issuer: ptr("https://i.example.com"), ClientID: ptr("c"), ClientSecret: ptr("s")},
+		"ms personal":     {Type: ptr(model.ProviderMicrosoft), Name: ptr("x"), ClientID: ptr("c"), ClientSecret: ptr("s"), Tenant: ptr("consumers")},
 	} {
 		if _, err := c.svc.CreateProvider(c.ctx, sys, c.a.ID, in); !isInvalid(err) {
 			t.Errorf("%s: %v", name, err)
@@ -206,7 +207,7 @@ func TestProviderIdentityAndLimits(t *testing.T) {
 	if err != nil || gh.Issuer != "" || len(gh.Scopes) != 2 {
 		t.Errorf("github %+v %v", gh, err)
 	}
-	id := "0192f3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+	id := "034nmRmWuXazwvCcdrmRxu"
 	custom := goodProvider("custom")
 	custom.ID = &id
 	if p, err := c.svc.CreateProvider(c.ctx, sys, c.a.ID, custom); err != nil || p.ID != id {

@@ -19,7 +19,7 @@ func (rq *request) orgResource(o *model.Org) map[string]any {
 		"id":          o.ID,
 		"name":        o.Name,
 		"displayName": o.DisplayName,
-		"primary":     o.Primary(),
+		"primary":     o.Primary,
 		"settings": map[string]any{
 			"passwordLogin": o.Settings.PasswordLogin,
 			"passwordReset": o.Settings.PasswordReset,
@@ -223,7 +223,7 @@ func (rq *request) updateOrg(id string, mutate func(cur map[string]any) (map[str
 		if in.Settings != nil && *in.Settings == o.Settings {
 			in.Settings = nil
 		}
-		if in.Settings != nil && o.Primary() && rq.actor.IsSuper() {
+		if in.Settings != nil && o.Primary && rq.actor.IsSuper() {
 			return errNeedsSession("changing the primary organization's sign-in settings")
 		}
 		result = o

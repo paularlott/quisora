@@ -72,7 +72,7 @@ func TestTenantAccessMembersOnly(t *testing.T) {
 	}
 
 	// userinfo carries the roles too
-	ui := h.get(&http.Client{Transport: h.http.Transport}, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
+	ui := h.get(&http.Client{Transport: h.http.Transport}, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
 	if text := body(ui); ui.StatusCode != 200 || !strings.Contains(text, `"roles":["editor","viewer"]`) {
 		t.Fatalf("userinfo: %d %s", ui.StatusCode, text)
 	}
@@ -107,7 +107,7 @@ func TestTenantAccessMembersOnly(t *testing.T) {
 			t.Fatalf("introspect after removal: %v", m)
 		}
 	}
-	ui = h.get(&http.Client{Transport: h.http.Transport}, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
+	ui = h.get(&http.Client{Transport: h.http.Transport}, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
 	if ui.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo after removal: %d", ui.StatusCode)
 	}

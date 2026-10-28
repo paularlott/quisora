@@ -169,8 +169,8 @@ func GetIn(ctx context.Context, s Store, kind model.Kind, partitionKey, id strin
 // Limit <= 0 means no limit.
 //
 // When Sort is "" and Search and Filters are empty, backends page through the scope in ID order without loading
-// the whole scope (IDs are UUIDv7, so this is creation order). That is the path used for very large scopes such
-// as audit logs.
+// the whole scope (model.NewID's ids sort in the order they were made, so this is creation order). That is the path
+// used for very large scopes such as audit logs.
 type ListQuery struct {
 	Scope   string
 	Search  string

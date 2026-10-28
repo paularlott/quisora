@@ -10,6 +10,7 @@ import (
 
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
@@ -22,7 +23,7 @@ func TestStandalonePassThrough(t *testing.T) {
 	defer n.Close()
 	var hook atomic.Int64
 	n.OnChange(func(*store.Record, bool) { hook.Add(1) })
-	id := newID()
+	id := model.NewID()
 	if err := n.Store().Put(bg, newRec(id, "")); err != nil || !has(n.Store(), id) || hook.Load() != 1 {
 		t.Fatal("standalone put/get/hook")
 	}
@@ -59,7 +60,7 @@ func TestStoreOptionalInterfaces(t *testing.T) {
 	t.Run("plain backend", func(t *testing.T) {
 		n, cs := hnode(t)
 		st := n.Store()
-		ids := []string{newID(), newID()}
+		ids := []string{model.NewID(), model.NewID()}
 		if err := st.Put(bg, newRec(ids[0], "")); err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +92,7 @@ func TestStoreOptionalInterfaces(t *testing.T) {
 			}
 			defer func() { n.Close(); st.Close() }()
 			s := n.Store()
-			id := newID()
+			id := model.NewID()
 			if err := s.Put(bg, newRec(id, "")); err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +112,7 @@ func TestStoreOptionalInterfaces(t *testing.T) {
 			}
 			fired := 0
 			n.OnChange(func(*store.Record, bool) { fired++ })
-			rec := newRec(newID(), "")
+			rec := newRec(model.NewID(), "")
 			if applied, err := s.PutReplicated(bg, rec); err != nil || !applied || fired != 1 {
 				t.Fatalf("PutReplicated: %v %v %d", applied, err, fired)
 			}
@@ -131,7 +132,7 @@ func TestFreshReadsWithoutGossip(t *testing.T) {
 	for name, n := range map[string]*Node{"standalone": func() *Node { n, _ := hnode(t); return n }(),
 		"shared database": snode(t, memstore.New())} {
 		st := n.Store()
-		live, gone := newRec(newID(), ""), newRec(newID(), "")
+		live, gone := newRec(model.NewID(), ""), newRec(model.NewID(), "")
 		for _, r := range []*store.Record{live, gone} {
 			if err := st.Put(bg, r); err != nil {
 				t.Fatal(err)
@@ -156,7 +157,7 @@ func TestStoreWriteFailureIsReported(t *testing.T) {
 	cs.put = errors.New("disk full")
 	fired := 0
 	n.OnChange(func(*store.Record, bool) { fired++ })
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	if err := n.Store().Put(bg, rec); err == nil || fired != 0 {
 		t.Fatalf("%v, hooks %d", err, fired)
 	}

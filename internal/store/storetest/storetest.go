@@ -79,6 +79,8 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"ListPlainScanLarge", testPlainScanLarge},
 		{"ListPlainScanSkipsExpired", testPlainScanSkipsExpired},
 		{"ListAfter", testListAfter},
+		{"IDOrderIsCreationOrder", testIDOrderIsCreationOrder},
+		{"IDsAreCaseSensitive", testIDsCaseSensitive},
 		{"WriteAfterFasterClock", testWriteAfterFasterClock},
 		{"EphemeralShared", testEphemeralShared},
 		{"ListBadQuery", testBadQuery},
@@ -1021,6 +1023,98 @@ func testListAfter(t *testing.T, s store.Store) {
 	}
 	if _, err := s.List(ctx, model.KindAudit, store.ListQuery{After: "x", Desc: true}); !errors.Is(err, store.ErrBadQuery) {
 		t.Fatalf("after with desc: %v", err)
+	}
+}
+
+// testIDOrderIsCreationOrder: ids made one after another (model.NewID), across millisecond boundaries, list in the
+// order they were made: a scope's default order, its after-paging and its descending order are creation order, as a
+// backend that compares ids byte-wise gives them.
+func testIDOrderIsCreationOrder(t *testing.T, s store.Store) {
+	var ids []string
+	for i := range 40 {
+		u := newUser("org1", fmt.Sprintf("ord%02d", 39-i)) // names in the reverse order: only the ids give the order
+		must(t, users(s).Put(ctx, u))
+		ids = append(ids, u.ID)
+		if i%10 == 9 {
+			time.Sleep(2 * time.Millisecond) // the next ids are of a later millisecond
+		}
+	}
+	if ids[0][:9] == ids[len(ids)-1][:9] { // a millisecond (2^80) is more than the ninth digit's 62^13
+		t.Fatal("setup: the ids did not cross a millisecond boundary")
+	}
+	listed, _, err := users(s).IDs(ctx, store.ListQuery{Scope: "org1"})
+	must(t, err)
+	if !slices.Equal(listed, ids) {
+		t.Fatalf("default order is not creation order:\n got %v\nwant %v", listed, ids)
+	}
+	var paged []string
+	for after := ""; ; {
+		res, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org1", After: after, Limit: 7})
+		must(t, err)
+		if len(res.Records) == 0 {
+			break
+		}
+		for _, r := range res.Records {
+			paged = append(paged, r.ID)
+		}
+		after = paged[len(paged)-1]
+	}
+	if !slices.Equal(paged, ids) {
+		t.Fatalf("after-paging is not creation order:\n got %v\nwant %v", paged, ids)
+	}
+	desc, _, err := users(s).IDs(ctx, store.ListQuery{Scope: "org1", Desc: true})
+	must(t, err)
+	slices.Reverse(desc)
+	if !slices.Equal(desc, ids) {
+		t.Fatalf("descending order is not reverse creation order: %v", desc)
+	}
+}
+
+// testIDsCaseSensitive: two ids that differ only in the case of one letter are two records, each read back as itself and
+// listed in its own scope, and the unique values that hold them (a user's username key starts with its organization's
+// id) are two values. A backend comparing ids or unique values regardless of case (a case-insensitive collation) would
+// merge them.
+func testIDsCaseSensitive(t *testing.T, s store.Store) {
+	a, b := caseTwins()
+	ua, ub := newUser(a, "twin"), newUser(b, "twin")
+	ua.ID, ub.ID = a, b
+	must(t, users(s).Create(ctx, ua))
+	must(t, users(s).Create(ctx, ub))
+	for _, id := range []string{a, b} {
+		u, err := users(s).Get(ctx, id)
+		must(t, err)
+		if u.ID != id || u.OrgID != id {
+			t.Errorf("Get(%s) = %s of %s", id, u.ID, u.OrgID)
+		}
+		listed, _, err := users(s).IDs(ctx, store.ListQuery{Scope: id})
+		must(t, err)
+		if !slices.Equal(listed, []string{id}) {
+			t.Errorf("scope %s lists %v", id, listed)
+		}
+		byName, err := users(s).GetByUnique(ctx, model.UserUsernameKey(id, "twin"))
+		must(t, err)
+		if byName.ID != id {
+			t.Errorf("unique value of %s names %s", id, byName.ID)
+		}
+	}
+	if n, err := users(s).Count(ctx, ""); err != nil || n != 2 {
+		t.Fatalf("%d records, want 2: %v", n, err)
+	}
+}
+
+// caseTwins returns two ids that differ only in the case of one letter.
+func caseTwins() (string, string) {
+	for {
+		a := []byte(model.NewID())
+		for i, c := range a {
+			if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
+				b := slices.Clone(a)
+				b[i] ^= 0x20
+				if model.IsID(string(b)) {
+					return string(a), string(b)
+				}
+			}
+		}
 	}
 }
 

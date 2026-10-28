@@ -3975,8 +3975,9 @@ components:
       properties:
         id:
           type: string
-          description: "create only, optional: choose the id (and so the callback URL) before the provider is set up"
-          format: uuid
+          description: "create only, optional: choose the id (and so the callback URL) before the provider is set up. An id is 22 base-62 digits (0-9 A-Z a-z, in that order): the 128-bit value of a UUIDv7, big-endian, left-padded with 0. A value above 2^128-1 (7n42DGM5Tflk9n8mt7Fhc7) is refused"
+          pattern: ^[0-7][0-9A-Za-z]{21}$
+          example: 034nmRmWuXazwvCcdrmRxu
         allowed_domains:
           type: array
           items:

@@ -26,7 +26,11 @@ func (s *Service) signOutCounters(ctx context.Context, orgID string) (org, serve
 	if err != nil {
 		return org, server, err
 	}
-	p, err := s.Org(ctx, model.PrimaryOrgID)
+	pid, err := s.PrimaryOrgID(ctx)
+	if err != nil {
+		return org, server, err
+	}
+	p, err := s.Org(ctx, pid)
 	if err != nil {
 		return org, server, err
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -74,7 +75,7 @@ func TestAloneAfterAllStopped(t *testing.T) {
 		ok, _ := tn.n.Ready()
 		return !ok && !tn.n.Writable()
 	})
-	if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
+	if err := tn.st().Put(bg, newRec(model.NewID(), "")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("%v", err)
 	}
 }

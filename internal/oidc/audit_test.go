@@ -23,7 +23,7 @@ func TestOAuthAuditEvents(t *testing.T) {
 	_, ch := pkce()
 	u := h.authorize(c, authzQuery(third, ch, nil))
 	b, _ := json.Marshal(map[string]any{"flow": u.Query().Get("flow"), "approve": true})
-	req, _ := http.NewRequest("POST", h.env.URL+orgBase+"/api-internal/oauth/consent", strings.NewReader(string(b)))
+	req, _ := http.NewRequest("POST", h.env.URL+h.orgBase+"/api-internal/oauth/consent", strings.NewReader(string(b)))
 	req.Header.Set("X-CSRF-Token", csrf)
 	req.Header.Set("Content-Type", "application/json")
 	if r, err := c.Do(req); err != nil || r.StatusCode != 200 {
@@ -51,7 +51,7 @@ func TestOAuthAuditEvents(t *testing.T) {
 	if ev := h.auditEvents("oauth.refresh"); len(ev) != 1 {
 		t.Fatalf("oauth.refresh: %+v", ev)
 	}
-	if r := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, cl, secret); r.status != 200 {
+	if r := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {rt}}, cl, secret); r.status != 200 {
 		t.Fatalf("revoke: %d", r.status)
 	}
 	if ev := h.auditEvents("oauth.revoke"); len(ev) != 1 || ev[0].Detail["token"] != "refresh" {

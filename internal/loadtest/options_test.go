@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paularlott/quisora/internal/model"
 )
 
 func TestParseURLs(t *testing.T) {
@@ -91,8 +93,8 @@ func TestNamesAndIDs(t *testing.T) {
 	if a == b || a != orgID(1) || !(a < b) {
 		t.Fatalf("ids must be deterministic and ordered: %s %s", a, b)
 	}
-	if len(a) != 36 || a[14] != '7' {
-		t.Fatalf("not a v7 uuid: %s", a)
+	if !model.IsID(a) {
+		t.Fatalf("not an id: %s", a)
 	}
 	o := DefaultSeedOptions()
 	seen := map[string]bool{}

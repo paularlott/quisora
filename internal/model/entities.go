@@ -40,6 +40,11 @@ type Org struct {
 	Name        string      `msgpack:"n" json:"name"`
 	DisplayName string      `msgpack:"dn" json:"display_name"`
 	Settings    OrgSettings `msgpack:"s" json:"settings"`
+	// Primary marks the server's own organization, the first one ("quisora bootstrap" makes it, with an id of its own
+	// like any other): its super admins administer the server. It is set only there and never changes, and it claims
+	// the unique value PrimaryOrgKey, so a data set has at most one. Being stored, the mark goes wherever the
+	// organization's record goes: every node of a cluster, a backup and its restore.
+	Primary bool `msgpack:"pri,omitempty" json:"-"`
 	// SignOut are the organization's emergency sign-out counters (signout.go); LastSignOut the last pull.
 	SignOut     SignOutCounters `msgpack:"so" json:"-"`
 	LastSignOut *SignOutEvent   `msgpack:"lso,omitempty" json:"last_sign_out,omitempty"`
@@ -50,20 +55,25 @@ type Org struct {
 
 func (o *Org) Kind() Kind { return KindOrg }
 
-// Primary reports whether o is the server's own organization, the first one ("quisora bootstrap" makes it with the
-// fixed id PrimaryOrgID): its super admins administer the server. It never changes, so it is not stored.
-func (o *Org) Primary() bool { return o.ID == PrimaryOrgID }
-
 func (o *Org) Index() Index {
+	uq := []string{OrgNameKey(o.Name)}
+	if o.Primary {
+		uq = append(uq, PrimaryOrgKey)
+	}
 	return Index{
 		Partition: "", // global: every organization's page and sign-in reads the organization list
-		Unique:    []string{OrgNameKey(o.Name)},
+		Unique:    uq,
 		Fields:    map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created},
 	}
 }
 
 // OrgNameKey is the unique key for an organization name.
 func OrgNameKey(name string) string { return Lower(name) }
+
+// PrimaryOrgKey is the unique value the primary organization claims (Org.Primary): every node finds it by this value,
+// and a second organization marked primary (a concurrent bootstrap, a restore over another data set) is refused as a
+// clash. No organization name is spelled so (ValidOrgName).
+const PrimaryOrgKey = "/primary"
 
 // OrgPath is the path of an organization's page or endpoint: /o/<id> followed by rest ("" or starting with "/"). Every
 // organization has its own address space, and the OAuth issuer is its root.
@@ -1112,9 +1122,6 @@ type LinkToken struct {
 	Email   string    `msgpack:"e" json:"email,omitempty"` // the address being verified, or an invitation or reset was mailed to
 	Used    bool      `msgpack:"x" json:"used"`
 	Expires time.Time `msgpack:"ex" json:"expires"`
-	// UserCreated is the creation time of the user the link was issued for: the link works only for that very
-	// account, not for another one that has (or later gets) the same id.
-	UserCreated time.Time `msgpack:"uc" json:"-"`
 	// For is the account's address when an invitation or reset link was issued: the link opens only while that is
 	// still the address on file (service.PeekLink), so one sent to a mistyped address that was then corrected sets
 	// nobody's credentials.

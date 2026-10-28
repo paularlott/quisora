@@ -34,7 +34,7 @@ func (h *harness) deviceClient(edit func(*service.ClientInput)) *model.Client {
 // startDevice asks for a device sign-in and returns the device and user codes.
 func (h *harness) startDevice(c *model.Client, scope string) (deviceCode, userCode string) {
 	h.t.Helper()
-	r := h.post(orgBase+"/oauth/device_authorization", url.Values{"client_id": {c.ID}, "scope": {scope}}, "", "")
+	r := h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {c.ID}, "scope": {scope}}, "", "")
 	if r.status != 200 {
 		h.t.Fatalf("device authorization: %d %v", r.status, r.m)
 	}
@@ -54,12 +54,12 @@ func (h *harness) pollDevice(c *model.Client, deviceCode string) tokResp {
 // It returns the final page.
 func (h *harness) consentDevice(b *http.Client, csrf, userCode string, approve bool) (int, string) {
 	h.t.Helper()
-	resp := h.get(b, orgBase+"/device?user_code="+url.QueryEscape(userCode))
+	resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(userCode))
 	if resp.StatusCode != http.StatusFound {
 		h.t.Fatalf("device page: %d %s", resp.StatusCode, body(resp))
 	}
 	u := loc(h.t, resp)
-	if u.Path != orgBase+"/oauth/consent" {
+	if u.Path != h.orgBase+"/oauth/consent" {
 		h.t.Fatalf("expected the consent screen: %s", u)
 	}
 	page := body(h.get(b, u.RequestURI()))
@@ -90,8 +90,8 @@ func TestDeviceGrant(t *testing.T) {
 	}
 
 	// signed out: the code leads to the sign-in page of the client's organization
-	resp := h.get(h.anon(), orgBase+"/device?user_code="+url.QueryEscape(uc))
-	if u := loc(t, resp); !strings.HasSuffix(u.Path, "/login") || !strings.Contains(u.Query().Get("next"), orgBase+"/oauth/authorize/resume") {
+	resp := h.get(h.anon(), h.orgBase+"/device?user_code="+url.QueryEscape(uc))
+	if u := loc(t, resp); !strings.HasSuffix(u.Path, "/login") || !strings.Contains(u.Query().Get("next"), h.orgBase+"/oauth/authorize/resume") {
 		t.Fatalf("signed out: %s", u)
 	}
 
@@ -117,7 +117,7 @@ func TestDeviceGrant(t *testing.T) {
 		t.Fatalf("second redemption: %v", r.m)
 	}
 	// the code no longer works on the page
-	resp = h.get(b, orgBase+"/device?user_code="+url.QueryEscape(uc))
+	resp = h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
 	if pg := body(resp); resp.StatusCode != 400 || !strings.Contains(pg, "That code is not valid") {
 		t.Fatalf("used code: %d", resp.StatusCode)
 	}
@@ -151,7 +151,7 @@ func TestDeviceGrantDenied(t *testing.T) {
 		t.Fatalf("poll after the answer: %v", r.m)
 	}
 	// the code is spent: the page refuses it
-	if resp := h.get(b, orgBase+"/device?user_code="+url.QueryEscape(uc)); body(resp) == "" || resp.StatusCode != 400 {
+	if resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc)); body(resp) == "" || resp.StatusCode != 400 {
 		t.Fatalf("page after the decision: %d", resp.StatusCode)
 	}
 }
@@ -162,14 +162,14 @@ func TestDeviceGrantClients(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	plain := h.publicClient(nil)
-	if r := h.post(orgBase+"/oauth/device_authorization", url.Values{"client_id": {plain.ID}}, "", ""); r.str("error") != "unauthorized_client" {
+	if r := h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {plain.ID}}, "", ""); r.str("error") != "unauthorized_client" {
 		t.Fatalf("client without the grant: %v", r.m)
 	}
 	if r := h.token(url.Values{"grant_type": {service.GrantDeviceCode}, "device_code": {"x"}}, plain, ""); r.str("error") != "unauthorized_client" {
 		t.Fatalf("token without the grant: %v", r.m)
 	}
 	cl := h.deviceClient(nil)
-	if r := h.post(orgBase+"/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid nope"}}, "", ""); r.str("error") != "invalid_scope" {
+	if r := h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid nope"}}, "", ""); r.str("error") != "invalid_scope" {
 		t.Fatalf("scope: %v", r.m)
 	}
 	dc, _ := h.startDevice(cl, "")
@@ -195,7 +195,7 @@ func TestDeviceGrantPrivileged(t *testing.T) {
 	admin, csrf := h.adminBrowser()
 	cl := h.deviceClient(nil)
 	dc, uc := h.startDevice(cl, "openid")
-	resp := h.get(admin, orgBase+"/device?user_code="+url.QueryEscape(uc))
+	resp := h.get(admin, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
 	if pg := body(resp); resp.StatusCode != http.StatusForbidden || !strings.Contains(pg, "Managers and administrators cannot sign in on devices") {
 		t.Fatalf("administrator: %d %s", resp.StatusCode, pg)
 	}
@@ -218,20 +218,20 @@ func TestDeviceCodeGuessing(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	b := h.anon()
-	resp := h.get(b, orgBase+"/device?user_code=12")
+	resp := h.get(b, h.orgBase+"/device?user_code=12")
 	if pg := body(resp); resp.StatusCode != 400 || !strings.Contains(pg, "8-letter code") {
 		t.Fatalf("malformed: %d", resp.StatusCode)
 	}
 	for i := range deviceGuessesPerIP {
-		if resp := h.get(b, orgBase+"/device?user_code=BBBB-BBBB"); resp.StatusCode != 400 {
+		if resp := h.get(b, h.orgBase+"/device?user_code=BBBB-BBBB"); resp.StatusCode != 400 {
 			t.Fatalf("guess %d: %d", i, resp.StatusCode)
 		}
 	}
-	if resp := h.get(b, orgBase+"/device?user_code=BBBB-BBBB"); resp.StatusCode != http.StatusTooManyRequests {
+	if resp := h.get(b, h.orgBase+"/device?user_code=BBBB-BBBB"); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("over the limit: %d", resp.StatusCode)
 	}
 	// the page itself, and its form
-	resp = h.get(b, orgBase+"/device")
+	resp = h.get(b, h.orgBase+"/device")
 	if pg := body(resp); resp.StatusCode != 200 || !strings.Contains(pg, `name="user_code"`) || !strings.Contains(pg, "Never enter a code someone sent you") {
 		t.Fatalf("device page: %d", resp.StatusCode)
 	}
@@ -258,7 +258,7 @@ func TestDeviceAuthorizationRefusals(t *testing.T) {
 	t.Parallel()
 	h := setup(t, func(c *config.Config) { c.Audit.Tokens = true })
 	cl := h.deviceClient(nil)
-	post := func(f url.Values) tokResp { return h.post(orgBase+"/oauth/device_authorization", f, "", "") }
+	post := func(f url.Values) tokResp { return h.post(h.orgBase+"/oauth/device_authorization", f, "", "") }
 
 	tokenErr(t, post(url.Values{"client_id": {cl.ID, cl.ID}}), 400, "invalid_request")
 	if r := post(url.Values{"client_id": {"nosuchclient"}}); r.status != 401 || r.str("error") != "invalid_client" {
@@ -290,7 +290,7 @@ func TestDeviceFailsClosedOnStoreFailures(t *testing.T) {
 	h := setup(t, nil)
 	cl := h.deviceClient(nil)
 	start := func() tokResp {
-		return h.post(orgBase+"/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid"}}, "", "")
+		return h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid"}}, "", "")
 	}
 	boom := errors.New("ephemeral down")
 	good := h.env.Server.Eph
@@ -348,7 +348,7 @@ func TestDeviceFailsClosedOnStoreFailures(t *testing.T) {
 		return nil
 	})
 	b, _ := h.session(h.user)
-	resp := h.get(b, orgBase+"/device?user_code="+url.QueryEscape(uc))
+	resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
 	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Something went wrong") {
 		t.Fatalf("page: %d %s", resp.StatusCode, pg)
 	}
@@ -360,7 +360,7 @@ func TestDevicePageRefusesStaleCodes(t *testing.T) {
 	cl := h.deviceClient(nil)
 	b, _ := h.session(h.user)
 	page := func(uc string) (int, string) {
-		resp := h.get(b, orgBase+"/device?user_code="+url.QueryEscape(uc))
+		resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
 		return resp.StatusCode, body(resp)
 	}
 	// a sign-in whose device code vanished
@@ -389,9 +389,9 @@ func TestDeviceSecondApprovalRefused(t *testing.T) {
 	b1, csrf1 := h.session(h.user)
 	b2, csrf2 := h.session(h.user)
 	flowOf := func(b *http.Client) string {
-		resp := h.get(b, orgBase+"/device?user_code="+url.QueryEscape(uc))
+		resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
 		u := loc(t, resp)
-		if u.Path != orgBase+"/oauth/consent" {
+		if u.Path != h.orgBase+"/oauth/consent" {
 			t.Fatalf("expected consent: %s", u)
 		}
 		return u.Query().Get("flow")

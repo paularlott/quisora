@@ -135,7 +135,7 @@ func TestFreshInAsksOnlyThePartitionOwner(t *testing.T) {
 	reads := func(tn *tnode) int64 { return tn.n.stats.reads.Load() }
 	node := c.nodes[0]
 
-	unknown := newID()
+	unknown := model.NewID()
 	before := reads(node)
 	got, err := node.st().Fresh(bg, dataKind, []string{unknown})
 	if err != nil || len(got) != 0 {
@@ -154,7 +154,7 @@ func TestFreshInAsksOnlyThePartitionOwner(t *testing.T) {
 	}
 
 	// a record written elsewhere is found through its partition without waiting for it to arrive here
-	rec := newRec(newID(), "")
+	rec := newRec(model.NewID(), "")
 	if err := c.nodes[1].st().Put(bg, rec); err != nil {
 		t.Fatal(err)
 	}

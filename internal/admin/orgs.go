@@ -24,7 +24,7 @@ func (m *Module) viewOf(a *service.Actor, o *model.Org) orgView {
 		cp.LastSignOut = nil
 		o = &cp
 	}
-	return orgView{Org: o, Primary: o.Primary()}
+	return orgView{Org: o, Primary: o.Primary}
 }
 
 func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +57,7 @@ func (m *Module) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	zero := 0
-	web.WriteJSON(w, http.StatusCreated, orgView{Org: o, Primary: o.Primary(), Users: &zero})
+	web.WriteJSON(w, http.StatusCreated, orgView{Org: o, Primary: o.Primary, Users: &zero})
 }
 
 func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +76,7 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		in.Settings = nil
 	}
 	// The primary organization's sign-in policy covers the super admins themselves.
-	if o.Primary() && in.Settings != nil && a.IsSuper() && !m.stepUp(w, r) {
+	if o.Primary && in.Settings != nil && a.IsSuper() && !m.stepUp(w, r) {
 		return
 	}
 	upd, err := m.s.Svc.UpdateOrg(r.Context(), a, o.ID, in)
@@ -84,7 +84,7 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, orgView{Org: upd, Primary: upd.Primary()})
+	web.WriteJSON(w, http.StatusOK, orgView{Org: upd, Primary: upd.Primary})
 }
 
 // deleteOrg deletes an organization; ?cascade=1 allows one with users (they, its groups, clients and providers stop

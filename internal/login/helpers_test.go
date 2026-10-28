@@ -172,7 +172,7 @@ func (e *env) noMail(t testing.TB) {
 	}
 }
 
-var linkRe = regexp.MustCompile(`https://localhost:\d+(/o/[0-9a-f-]{36}/[a-z-]+\?token=[A-Za-z0-9._%-]+)`)
+var linkRe = regexp.MustCompile(`https://localhost:\d+(/o/[0-9A-Za-z]{22}/[a-z-]+\?token=[A-Za-z0-9._%-]+)`)
 
 // linkPath returns the path+query of the link in a message.
 func linkPath(t testing.TB, m mail.Message) string {
@@ -242,7 +242,7 @@ type browser struct {
 }
 
 // primaryBase is the primary organization's address space.
-var primaryBase = web.OrgPath(model.PrimaryOrgID, "")
+func (e *env) primaryBase() string { return web.OrgPath(e.Primary.ID, "") }
 
 // at returns the browser's path for p: p itself when it names an organization (which the browser is then in), else p
 // in the one it is in.
@@ -265,7 +265,7 @@ var metaRe = regexp.MustCompile(`<meta name="csrf-token" content="([^"]*)"`)
 // before any.
 func (e *env) browser(t testing.TB) *browser {
 	t.Helper()
-	b := &browser{t: t, e: e, c: e.client(), auth: virtualauth.New(e.Cfg.Server.PublicURL), base: primaryBase}
+	b := &browser{t: t, e: e, c: e.client(), auth: virtualauth.New(e.Cfg.Server.PublicURL), base: e.primaryBase()}
 	if e.last != nil {
 		b.base = web.OrgPath(e.last.ID, "")
 	}

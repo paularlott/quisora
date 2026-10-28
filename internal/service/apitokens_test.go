@@ -130,6 +130,9 @@ func TestAPITokenValidation(t *testing.T) {
 		}
 	}
 
+	// secretOf is the secret of a token: what follows its id (the secret may hold '_', the id never does).
+	secretOf := func(plain string) string { return plain[len("qsr_")+model.IDLen+1:] }
+
 	tok, plain := mk()
 	got, u, err := c.svc.ValidateAPIToken(c.ctx, plain)
 	if err != nil || got.ID != tok.ID || u.ID != owner.ID {
@@ -145,8 +148,9 @@ func TestAPITokenValidation(t *testing.T) {
 	expectBad("prefix only", "qsr_")
 	expectBad("no secret", "qsr_"+tok.ID)
 	expectBad("empty secret", "qsr_"+tok.ID+"_")
-	expectBad("unknown id", "qsr_nope_"+plain[strings.LastIndex(plain, "_")+1:])
-	secret := plain[strings.LastIndex(plain, "_")+1:]
+	expectBad("unknown id", "qsr_"+model.NewID()+"_"+secretOf(plain))
+	expectBad("short id", "qsr_nope_"+secretOf(plain))
+	secret := secretOf(plain)
 	flipped := []byte(secret)
 	if flipped[0] == 'A' {
 		flipped[0] = 'B'
@@ -158,7 +162,7 @@ func TestAPITokenValidation(t *testing.T) {
 	expectBad("extended secret", plain+"x")
 	// Another token's secret does not open this one.
 	_, plain2 := mk()
-	expectBad("swapped secret", "qsr_"+tok.ID+"_"+plain2[strings.LastIndex(plain2, "_")+1:])
+	expectBad("swapped secret", "qsr_"+tok.ID+"_"+secretOf(plain2))
 
 	// Expired.
 	expTok, expPlain := mk()

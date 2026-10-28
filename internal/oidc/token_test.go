@@ -64,13 +64,13 @@ func TestCodeFlowEndToEnd(t *testing.T) {
 		t.Fatalf("id claims %v", ic)
 	}
 	// verify both against the published JWKS with an independent path
-	jw, _ := ParseJWKS([]byte(body(h.get(h.http, orgBase+"/oauth/jwks"))))
+	jw, _ := ParseJWKS([]byte(body(h.get(h.http, h.orgBase+"/oauth/jwks"))))
 	pub, _ := jw[0].PublicKey()
 	decodeIndependently(t, at, pub)
 	decodeIndependently(t, idt, pub)
 
 	// userinfo
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	var ui map[string]any
 	_ = json.Unmarshal([]byte(body(resp)), &ui)
 	if ui["sub"] != h.user.ID || ui["email"] != "alice@example.com" || ui["org_name"] != "primary" || ui["role"] != "user" {
@@ -82,17 +82,17 @@ func TestCodeFlowEndToEnd(t *testing.T) {
 		t.Fatal(r2)
 	}
 	r3 := h.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r.str("refresh_token")}, "scope": {"openid"}}, cl, secret)
-	resp = h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
+	resp = h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r3.str("access_token"))
 	ui = map[string]any{}
 	_ = json.Unmarshal([]byte(body(resp)), &ui)
 	if ui["email"] != nil || ui["sub"] != h.user.ID {
 		t.Fatalf("userinfo openid-only %v", ui)
 	}
 	// bad / missing bearer
-	if resp := h.get(h.http, orgBase+"/oauth/userinfo"); resp.StatusCode != 401 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/userinfo"); resp.StatusCode != 401 {
 		t.Fatal(resp.StatusCode)
 	}
-	resp = h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at+"x")
+	resp = h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at+"x")
 	if resp.StatusCode != 401 || !strings.Contains(resp.Header.Get("WWW-Authenticate"), "invalid_token") {
 		t.Fatal(resp.StatusCode, resp.Header)
 	}
@@ -172,14 +172,14 @@ func TestTokenEndpointPKCEAndBindings(t *testing.T) {
 	expectErr(h.token(f, cl, secret), 400, "invalid_target")
 	// unsupported / missing grant type, no auth at all, both auth methods
 	expectErr(h.token(url.Values{"grant_type": {"password"}}, cl, secret), 400, "unsupported_grant_type")
-	expectErr(h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, "", ""), 401, "invalid_client")
-	expectErr(h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_secret": {secret}}, cl.ID, secret), 400, "invalid_request")
+	expectErr(h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, "", ""), 401, "invalid_client")
+	expectErr(h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_secret": {secret}}, cl.ID, secret), 400, "invalid_request")
 	// grant type not allowed for the client
 	h.env.Svc.UpdateClient(context.Background(), h.admin, cl.ID, service.ClientInput{GrantTypes: &[]string{"authorization_code"}})
 	h.p.InvalidateClient(cl.ID)
 	expectErr(h.token(url.Values{"grant_type": {"client_credentials"}}, cl, secret), 400, "unauthorized_client")
 	// GET is not allowed
-	if resp := h.get(h.http, orgBase+"/oauth/token"); resp.StatusCode != 405 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/token"); resp.StatusCode != 405 {
 		t.Fatalf("GET token: %d", resp.StatusCode)
 	}
 	// the user is disabled between code and exchange
@@ -475,7 +475,7 @@ func TestConcurrentTokenRequests(t *testing.T) {
 func TestMalformedRequestBodiesRefused(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	for _, path := range []string{orgBase + "/oauth/token", orgBase + "/oauth/par", orgBase + "/oauth/device_authorization", orgBase + "/oauth/revoke", orgBase + "/oauth/introspect"} {
+	for _, path := range []string{h.orgBase + "/oauth/token", h.orgBase + "/oauth/par", h.orgBase + "/oauth/device_authorization", h.orgBase + "/oauth/revoke", h.orgBase + "/oauth/introspect"} {
 		r := h.rawPost(path, "a=%zz")
 		if r.status != 400 {
 			t.Errorf("%s: %d %v", path, r.status, r.m)

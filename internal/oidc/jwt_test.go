@@ -447,7 +447,7 @@ func TestMFASatisfied(t *testing.T) {
 func BenchmarkJWTSign(b *testing.B) {
 	for _, k := range genKeys(b) {
 		hdr := mkHeader(k.alg, "kid", typAccess)
-		payload := []byte(`{"iss":"https://quisora.example.com","sub":"0190f6a0-7e5f-7c3e-9c0e-0b1a2c3d4e5f","aud":"0190f6a0-7e5f-7c3e-9c0e-0b1a2c3d4e60","client_id":"0190f6a0-7e5f-7c3e-9c0e-0b1a2c3d4e60","scope":"openid profile email","exp":1900000000,"iat":1800000000,"jti":"AAAAAAAAAAAAAAAAAAAAAA","auth_time":1800000000,"acr":"urn:quisora:acr:basic","amr":["pwd"],"org":"0190f6a0-7e5f-7c3e-9c0e-0b1a2c3d4e61","org_name":"acme","role":"user"}`)
+		payload := []byte(`{"iss":"https://quisora.example.com","sub":"034nmRmWuek830Rq7vfC3T","aud":"034nmRmWuT4ZrzffAjJgxn","client_id":"034nmRmWuT4ZrzffAjJgxn","scope":"openid profile email","exp":1900000000,"iat":1800000000,"jti":"AAAAAAAAAAAAAAAAAAAAAA","auth_time":1800000000,"acr":"urn:quisora:acr:basic","amr":["pwd"],"org":"034nmRmWucodP0rMzZbwBg","org_name":"acme","role":"user"}`)
 		b.Run(k.alg, func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
@@ -462,7 +462,7 @@ func BenchmarkJWTSign(b *testing.B) {
 
 func BenchmarkJWTVerify(b *testing.B) {
 	for _, k := range genKeys(b) {
-		tok := signWith(b, k, "kid", typAccess, `{"iss":"https://quisora.example.com","sub":"0190f6a0-7e5f-7c3e-9c0e-0b1a2c3d4e5f","scope":"openid profile email","exp":1900000000}`)
+		tok := signWith(b, k, "kid", typAccess, `{"iss":"https://quisora.example.com","sub":"034nmRmWuek830Rq7vfC3T","scope":"openid profile email","exp":1900000000}`)
 		pub := k.priv.Public()
 		b.Run(k.alg, func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {

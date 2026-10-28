@@ -71,14 +71,14 @@ func TestTokenExchangeByResourceServer(t *testing.T) {
 		t.Fatalf("nested act: %v", act2)
 	}
 	// revoking the exchanged token does not end the user's grant at the application
-	if rr := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {x.str("access_token")}}, api, apiSecret); rr.status != 200 {
+	if rr := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {x.str("access_token")}}, api, apiSecret); rr.status != 200 {
 		t.Fatalf("revoke: %d", rr.status)
 	}
 	if rf := h.refreshWith(app, asecret, rt); rf.status != 200 {
 		t.Fatalf("grant ended by revoking an exchanged token: %v", rf.m)
 	}
 	// ending the grant ends the exchanged token
-	if rr := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {rt}}, app, asecret); rr.status != 200 {
+	if rr := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {rt}}, app, asecret); rr.status != 200 {
 		t.Fatal("revoke refresh")
 	}
 	h.p.InvalidateGrant(subject["gid"].(string))
@@ -199,7 +199,7 @@ func TestTokenExchangeKeepsDPoPBinding(t *testing.T) {
 	c, _ := h.session(h.user)
 	v, ch := pkce()
 	code := h.getCode(c, app, ch, nil)
-	tokenProof := func(k dpopKey) string { return h.proof(k, "POST", orgBase+"/oauth/token", nil) }
+	tokenProof := func(k dpopKey) string { return h.proof(k, "POST", h.orgBase+"/oauth/token", nil) }
 	r := h.tokenDPoP(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback},
 		"code_verifier": {v}}, app, secret, tokenProof(k))
 	if r.status != 200 || r.str("token_type") != "DPoP" {

@@ -294,9 +294,11 @@ func TestMixedBackendsConverge(t *testing.T) {
 	c.mks = map[int]backend{1: sqliteBackend(), 2: memBackend()}
 	dir0 := t.TempDir()
 	st := badgerBackend().open(t, dir0) // "quisora bootstrap" on node 0
-	if _, _, err := service.New(cfg, st, sealer).Bootstrap(bg, "admin@example.com"); err != nil {
+	admin, _, err := service.New(cfg, st, sealer).Bootstrap(bg, "admin@example.com")
+	if err != nil {
 		t.Fatal(err)
 	}
+	primary := admin.OrgID
 	if err := StartNewCluster(bg, dir0, st); err != nil {
 		t.Fatal(err)
 	}
@@ -322,11 +324,17 @@ func TestMixedBackendsConverge(t *testing.T) {
 			return true
 		}
 	}
-	waitFor(t, 20*time.Second, "bootstrap records everywhere", same(model.KindOrg, model.PrimaryOrgID))
-	waitFor(t, 20*time.Second, "bootstrap admin everywhere", same(model.KindUser, model.BootstrapAdminID))
+	waitFor(t, 20*time.Second, "bootstrap records everywhere", same(model.KindOrg, primary))
+	waitFor(t, 20*time.Second, "bootstrap admin everywhere", same(model.KindUser, admin.ID))
+	// The nodes that joined empty know the primary organization from the data set they copied.
+	for i, tn := range c.nodes {
+		if id, err := service.New(cfg, tn.st(), sealer).PrimaryOrgID(bg); err != nil || id != primary {
+			t.Fatalf("node %d: primary organization %q %v, want %q", i, id, err, primary)
+		}
+	}
 	// an update on the sqlite node, a new record on the memory node, then its deletion and re-creation on badger
 	svc1 := service.New(cfg, c.nodes[1].st(), sealer)
-	org, err := svc1.Orgs.Get(bg, model.PrimaryOrgID)
+	org, err := svc1.Orgs.Get(bg, primary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,10 +342,10 @@ func TestMixedBackendsConverge(t *testing.T) {
 	if err := svc1.Orgs.Update(bg, org); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 15*time.Second, "update converged", same(model.KindOrg, model.PrimaryOrgID))
+	waitFor(t, 15*time.Second, "update converged", same(model.KindOrg, primary))
 	svc2 := service.New(cfg, c.nodes[2].st(), sealer)
 	created := time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC) // nanoseconds: SQL index columns keep microseconds
-	g := &model.Group{Meta: model.Meta{ID: newID(), Created: created}, OrgID: model.PrimaryOrgID, DisplayName: "on memory"}
+	g := &model.Group{Meta: model.Meta{ID: model.NewID(), Created: created}, OrgID: primary, DisplayName: "on memory"}
 	if err := svc2.Groups.Create(bg, g); err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +362,7 @@ func TestMixedBackendsConverge(t *testing.T) {
 		}
 		return true
 	})
-	again := &model.Group{Meta: model.Meta{ID: g.ID}, OrgID: model.PrimaryOrgID, DisplayName: "created again"}
+	again := &model.Group{Meta: model.Meta{ID: g.ID}, OrgID: primary, DisplayName: "created again"}
 	if err := svc0.Groups.Create(bg, again); err != nil {
 		t.Fatalf("re-creating a deleted id: %v", err)
 	}
@@ -364,7 +372,7 @@ func TestMixedBackendsConverge(t *testing.T) {
 			t.Fatalf("node %d: %s", i, why)
 		}
 	}
-	g2 := &model.Group{Meta: model.Meta{ID: newID(), Created: created}, OrgID: model.PrimaryOrgID, DisplayName: "nanos"}
+	g2 := &model.Group{Meta: model.Meta{ID: model.NewID(), Created: created}, OrgID: primary, DisplayName: "nanos"}
 	if err := svc1.Groups.Create(bg, g2); err != nil {
 		t.Fatal(err)
 	}

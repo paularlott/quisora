@@ -411,7 +411,7 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if !ok {
 		return nil, nil, ErrBadToken
 	}
-	id, secret, ok := strings.Cut(rest, "_")
+	id, secret, ok := strings.Cut(rest, "_") // an id is letters and digits only: the first '_' ends it
 	if !ok {
 		return nil, nil, ErrBadToken
 	}

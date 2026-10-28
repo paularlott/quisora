@@ -316,7 +316,13 @@ func (s *Server) RequirePage(next http.HandlerFunc) http.Handler {
 			return
 		}
 		if User(r) == nil {
-			http.Redirect(w, r, signInFor(r), http.StatusSeeOther)
+			to, err := s.signInFor(r)
+			if err != nil {
+				w.Header().Set("Retry-After", "5")
+				http.Error(w, "This server cannot serve its sign-in page right now. Please try again shortly.", http.StatusServiceUnavailable)
+				return
+			}
+			http.Redirect(w, r, to, http.StatusSeeOther)
 			return
 		}
 		next(w, r)
@@ -325,15 +331,19 @@ func (s *Server) RequirePage(next http.HandlerFunc) http.Handler {
 
 // signInFor is where a signed-out visitor of a page goes, back here afterwards: an organization's own pages (under
 // /o/<org>) and its console pages (/admin/orgs/<org>) to its sign-in page; the server's pages (the rest of the
-// console) to the primary organization's, whose administrators administer the server.
-func signInFor(r *http.Request) string {
-	org := model.PrimaryOrgID
+// console) to the primary organization's, whose administrators administer the server. The error is the primary
+// organization's, not known yet (service.PrimaryOrgID).
+func (s *Server) signInFor(r *http.Request) (string, error) {
+	org := r.PathValue("org")
 	if o := Org(r); o != nil {
 		org = o.ID
-	} else if ref := r.PathValue("org"); ref != "" {
-		org = ref
+	} else if org == "" {
+		var err error
+		if org, err = s.Svc.PrimaryOrgID(r.Context()); err != nil {
+			return "", err
+		}
 	}
-	return "/o/" + url.PathEscape(org) + "/login?next=" + urlQueryEscape(r.URL.RequestURI())
+	return "/o/" + url.PathEscape(org) + "/login?next=" + urlQueryEscape(r.URL.RequestURI()), nil
 }
 
 // RequireAPI requires a signed-in user for a JSON endpoint and, for unsafe methods, a matching CSRF header

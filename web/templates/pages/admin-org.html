@@ -34,7 +34,15 @@
     </dl>
   </section>
 
-  {{template "connection" .Data.Connection}}
+  <section class="glass-card" aria-labelledby="addr-h">
+    <h2 class="section-title mb-1" id="addr-h">Addresses</h2>
+    <p class="muted mb-4">To share and to configure. Applications discover every other endpoint from the issuer.</p>
+    <dl class="kv kv-wide">
+      {{template "address" (dict "id" "addr-signin" "label" "Sign-in page" "what" "sign-in page address" "value" .Data.SignInURL)}}
+      {{template "address" (dict "id" "addr-issuer" "label" "Issuer (for applications)" "what" "issuer" "value" .Data.Issuer)}}
+      {{if .Data.SCIMURL}}{{template "address" (dict "id" "addr-scim" "label" "SCIM base URL (for provisioning tools)" "what" "SCIM base URL" "value" .Data.SCIMURL)}}{{end}}
+    </dl>
+  </section>
 
   <section class="glass-card" aria-labelledby="signout-h">
     <h2 class="section-title mb-1" id="signout-h">Emergency sign-out</h2>

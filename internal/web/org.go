@@ -97,7 +97,12 @@ func (m *Sessions) sessionOrgs(r *http.Request) ([]string, error) {
 			return nil, err
 		}
 	}
-	add(model.PrimaryOrgID)
+	switch id, err := m.svc.PrimaryOrgID(r.Context()); {
+	case err == nil:
+		add(id)
+	case !errors.Is(err, service.ErrNotFound):
+		return nil, err
+	}
 	for _, c := range r.Cookies() {
 		if id, ok := strings.CutPrefix(c.Name, sessionCookiePrefix); ok && model.IsID(id) {
 			add(id)

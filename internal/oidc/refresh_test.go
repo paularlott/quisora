@@ -72,7 +72,7 @@ func TestRefreshDefaultMode(t *testing.T) {
 	if m := h.introspect(cl, secret, r.str("access_token")); m["active"] != false {
 		t.Fatal("disabled user's access token active")
 	}
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
 	if resp.StatusCode != 401 {
 		t.Fatal("userinfo for disabled user", resp.StatusCode)
 	}
@@ -633,7 +633,7 @@ func TestRevokeUnknownOutcomeIsAudited(t *testing.T) {
 	good := h.env.Svc.Grants.S
 	h.env.Svc.Grants.S = &deleteUnknown{Store: good}
 	t.Cleanup(func() { h.env.Svc.Grants.S = good })
-	expectUnavailable(t, "revoke", h.post(orgBase+"/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""))
+	expectUnavailable(t, "revoke", h.post(h.orgBase+"/oauth/revoke", url.Values{"token": {rt}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""))
 	ev := h.auditEvents("oauth.revoke")
 	if len(ev) != 1 || ev[0].Outcome != service.OutcomeUnknown {
 		t.Fatalf("revocation of unknown outcome: %+v", ev)
@@ -676,7 +676,7 @@ func TestRevokeSupersededRefreshToken(t *testing.T) {
 	forged := parts[0] + ".0." + b64.EncodeToString([]byte("forged-mac-forged-mac-forged-mac!"))
 	revoke := func(c *model.Client, secret, tok string) {
 		t.Helper()
-		if x := h.clientPost(orgBase+"/oauth/revoke", url.Values{"token": {tok}}, c, secret); x.status != 200 {
+		if x := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {tok}}, c, secret); x.status != 200 {
 			t.Fatalf("revoke: %d %v", x.status, x.m)
 		}
 	}

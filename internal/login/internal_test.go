@@ -10,7 +10,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 )
 
-const testOrg = "0190b0de-0000-7000-8000-00000000a001"
+const testOrg = "034nmRmWulzDzPeDXkYXtH"
 
 var testOrgModel = &model.Org{ID: testOrg, Name: "acme"}
 
@@ -22,9 +22,9 @@ func TestSafeNext(t *testing.T) {
 		"javascript:alert(1)", in + "/a\\b", in + "/a\nb", in + "/a\rb", in + "/a\x00b", in + "/a\tb", in + "/\x7f", "data:text/html,x",
 		" " + in + "/account", in + strings.Repeat("/a", 2000),
 		// another organization's space, by id or by name, and what only looks like this one's or the console's
-		"/o/0190b0de-0000-7000-8000-00000000a002/account", "/o/other/account", "/o/acmex/account", in + "x/account", "/administrator", "/o",
+		"/o/034nmRmWuYvwk3Xoa4mNaO/account", "/o/other/account", "/o/acmex/account", in + "x/account", "/administrator", "/o",
 		// dot segments climb out of the space
-		in + "/../0190b0de-0000-7000-8000-00000000a002/account", in + "/./../x", in + "/%2e%2e/x", "/admin/../account"}
+		in + "/../034nmRmWuYvwk3Xoa4mNaO/account", in + "/./../x", in + "/%2e%2e/x", "/admin/../account"}
 	for _, n := range ok {
 		if safeNext(testOrgModel, n) != n {
 			t.Errorf("safeNext(%q) rejected a path in the organization's space (by id or by name) or the console", n)
@@ -37,6 +37,18 @@ func TestSafeNext(t *testing.T) {
 	}
 	if nextOrDefault(testOrgModel, "//evil.example") != in+"/account" || nextOrDefault(testOrgModel, in+"/x") != in+"/x" {
 		t.Error("nextOrDefault")
+	}
+	// Ids are case-sensitive: another organization's id, folded to lower case, spells this organization's name, and its
+	// space is still not this one's (a request to it reaches the other organization).
+	named := &model.Org{ID: testOrg, Name: "7n42dgm5tflk9n8mt7fhc0"}
+	if !model.IsID("7n42DGM5Tflk9n8mt7Fhc0") || !model.ValidOrgName(named.Name) {
+		t.Fatal("setup: the other organization's id or this one's name")
+	}
+	if got := safeNext(named, "/o/7n42DGM5Tflk9n8mt7Fhc0/account"); got != "" {
+		t.Errorf("another organization's id accepted as this one's name: %q", got)
+	}
+	if got := safeNext(named, "/o/7n42dgm5tflk9n8mt7fhC0/account"); got == "" { // not an id: the name in another case
+		t.Error("the organization's name in upper case refused")
 	}
 }
 

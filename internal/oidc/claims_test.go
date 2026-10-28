@@ -65,7 +65,7 @@ func TestClaimsParameterNeedsConsent(t *testing.T) {
 	c, _ := h.session(h.user)
 	_, ch := pkce()
 	u := h.authorize(c, authzQuery(cl, ch, url.Values{"scope": {"openid"}, "claims": {`{"userinfo":{"email":null}}`}}))
-	if u.Path != orgBase+"/oauth/consent" {
+	if u.Path != h.orgBase+"/oauth/consent" {
 		t.Fatalf("expected consent: %s", u)
 	}
 	page := body(h.get(c, u.String()))
@@ -90,7 +90,7 @@ func TestACRValues(t *testing.T) {
 		{"claims": {`{"id_token":{"acr":{"essential":true,"values":["` + acrMFA + `"]}}}`}},
 	} {
 		u := h.authorize(weak, authzQuery(cl, ch, extra))
-		if u.Path != orgBase+"/login" || u.Query().Get("reauth") != "1" {
+		if u.Path != h.orgBase+"/login" || u.Query().Get("reauth") != "1" {
 			t.Fatalf("%v with a password session: %s", extra, u)
 		}
 		// the sign-in page is told to ask for the second factor
@@ -107,7 +107,7 @@ func TestACRValues(t *testing.T) {
 		if u.Query().Get("code") == "" {
 			t.Fatalf("acr_values %q refused a password session: %s", v, u)
 		}
-		if h.p.FlowWantsMFA(context.Background(), orgBase+"/oauth/authorize/resume?flow=x") {
+		if h.p.FlowWantsMFA(context.Background(), h.orgBase+"/oauth/authorize/resume?flow=x") {
 			t.Fatal("unknown flow wants MFA")
 		}
 	}
@@ -229,7 +229,7 @@ func TestTagsClaim(t *testing.T) {
 	if got := tagsClaim(claimsOf(t, r.str("id_token"))); !slices.Equal(got, want) {
 		t.Fatalf("id token tags %v", got)
 	}
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
 	var ui map[string]any
 	_ = json.Unmarshal([]byte(body(resp)), &ui)
 	if got := tagsClaim(ui); !slices.Equal(got, want) {
@@ -292,7 +292,7 @@ func TestUserinfoRequestShapes(t *testing.T) {
 	r, _ := h.login(cl, secret, url.Values{"scope": {"openid"}})
 	at := r.str("access_token")
 	send := func(query string, form url.Values, auth string) int {
-		req, _ := http.NewRequest(http.MethodPost, h.env.URL+orgBase+"/oauth/userinfo"+query, strings.NewReader(form.Encode()))
+		req, _ := http.NewRequest(http.MethodPost, h.env.URL+h.orgBase+"/oauth/userinfo"+query, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if auth != "" {
 			req.Header.Set("Authorization", auth)
@@ -321,12 +321,12 @@ func TestUserinfoRequestShapes(t *testing.T) {
 			t.Errorf("%s: %d, want %d", name, got, tc.want)
 		}
 	}
-	if resp := h.get(h.http, orgBase+"/oauth/userinfo?access_token="+at); resp.StatusCode != 400 {
+	if resp := h.get(h.http, h.orgBase+"/oauth/userinfo?access_token="+at); resp.StatusCode != 400 {
 		t.Errorf("query token on GET: %d", resp.StatusCode)
 	}
 	// a token without openid has no business at userinfo
 	api, _ := h.login(cl, secret, url.Values{"scope": {"api"}})
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+api.str("access_token"))
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+api.str("access_token"))
 	if resp.StatusCode != http.StatusForbidden || !strings.Contains(resp.Header.Get("WWW-Authenticate"), "insufficient_scope") {
 		t.Errorf("no openid: %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
 	}
@@ -359,7 +359,7 @@ func TestEnterpriseScope(t *testing.T) {
 	if c := claimsOf(t, r.str("id_token")); c["zoneinfo"] != "Europe/London" || c["locale"] != "en-GB" {
 		t.Errorf("profile claims: %v %v", c["zoneinfo"], c["locale"])
 	}
-	resp := h.get(h.http, orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
+	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
 	var ui map[string]any
 	_ = json.Unmarshal([]byte(body(resp)), &ui)
 	if ui["enterprise"] == nil {

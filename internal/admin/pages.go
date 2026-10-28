@@ -31,9 +31,12 @@ type View struct {
 	// super admins, on the primary organization: nobody else sees any).
 	FilterRoles []RoleOption
 
-	// Connection: the organization's addresses an application, an API or MCP server, or a SCIM client is configured
-	// with (the organization's overview and tenant pages show them, each to copy).
-	Connection []Address
+	// Addresses an organization is shared and configured with (config.OrgIssuer, web.OrgPath): the overview page shows
+	// the sign-in page, the issuer and (super admins) the SCIM base URL, each to copy; the tenant page needs the issuer
+	// for the client dialog.
+	Issuer    string
+	SignInURL string
+	SCIMURL   string // super admins only
 
 	// Tenant page (/admin/orgs/{org}/tenants/{tenant}).
 	TenantID      string
@@ -56,37 +59,6 @@ type View struct {
 	KeyRotationDays int
 }
 
-// Address is one of an organization's addresses shown to copy: what it is for, and the address.
-type Address struct {
-	Label string
-	Value string
-}
-
-// connection lists the addresses of org an application or provisioning client is configured with: the OAuth issuer and
-// endpoints (config.OrgEndpoints, as the discovery document publishes them), the sign-in page, and SCIM.
-func (m *Module) connection(org *model.Org) []Address {
-	e := m.s.Cfg.OrgEndpoints(org.ID)
-	pub := m.s.Cfg.Server.PublicURL
-	return []Address{
-		{"Issuer (also an MCP server's authorization_servers entry)", e.Issuer},
-		{"OpenID Connect discovery", e.Discovery},
-		{"OAuth authorization server metadata (RFC 8414)", e.Metadata},
-		{"Authorization endpoint", e.Authorization},
-		{"Token endpoint", e.Token},
-		{"Pushed authorization requests", e.PAR},
-		{"UserInfo endpoint", e.UserInfo},
-		{"JSON Web Key Set", e.JWKS},
-		{"Introspection endpoint", e.Introspection},
-		{"Revocation endpoint", e.Revocation},
-		{"End session (sign-out) endpoint", e.EndSession},
-		{"Device authorization endpoint", e.DeviceAuthorization},
-		{"Device verification page", e.DeviceVerification},
-		{"Dynamic client registration", e.Registration},
-		{"Sign-in page", pub + web.OrgPath(org.Name, "/login")},
-		{"SCIM base URL", pub + "/scim/v2/" + org.Name},
-	}
-}
-
 var roleLabels = map[model.Role]string{
 	model.RoleSuperAdmin: "Super administrator", model.RoleAdmin: "Administrator", model.RoleManager: "Manager",
 	model.RoleUser: "User",
@@ -97,7 +69,7 @@ var roleLabels = map[model.Role]string{
 func filterRoles(a *service.Actor, org *model.Org) []RoleOption {
 	var out []RoleOption
 	for _, r := range []model.Role{model.RoleUser, model.RoleManager, model.RoleAdmin, model.RoleSuperAdmin} {
-		if r.Rank() > a.Role.Rank() || (r == model.RoleSuperAdmin && !org.Primary()) {
+		if r.Rank() > a.Role.Rank() || (r == model.RoleSuperAdmin && !org.Primary) {
 			continue
 		}
 		out = append(out, RoleOption{string(r), roleLabels[r]})
@@ -112,7 +84,7 @@ func assignableRoles(a *service.Actor, org *model.Org) []RoleOption {
 	switch {
 	case a.IsSuper():
 		roles = append(roles, model.RoleManager, model.RoleAdmin)
-		if org.Primary() {
+		if org.Primary {
 			roles = append(roles, model.RoleSuperAdmin)
 		}
 	case a.Role == model.RoleAdmin:
@@ -213,6 +185,11 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	pub := m.s.Cfg.Server.PublicURL
+	v.SignInURL = pub + web.OrgPath(org.Name, "/login")
+	if v.CanSCIM {
+		v.SCIMURL = pub + "/scim/v2/" + org.Name
+	}
 	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }
 
@@ -261,7 +238,7 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 	}
 	esc := url.PathEscape(org.Name)
 	v := &View{API: "/api/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
-		IsPrimary: org.Primary(), CanSCIM: a.IsSuper(), Connection: m.connection(org),
+		IsPrimary: org.Primary, CanSCIM: a.IsSuper(), Issuer: m.s.Cfg.OrgIssuer(org.ID),
 		Roles: assignableRoles(a, org), FilterRoles: filterRoles(a, org)}
 	return org, v, true
 }

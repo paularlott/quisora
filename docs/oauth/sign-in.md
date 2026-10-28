@@ -85,7 +85,7 @@ curl -s "$ISSUER/oauth/token" \
   "token_type": "Bearer",
   "expires_in": 600,
   "scope": "openid profile email offline_access",
-  "refresh_token": "01a16bdd-….Hk2…",
+  "refresh_token": "-Ox7Lm2qT….Hk2…",
   "id_token": "eyJhbGciOiJFUzI1NiIs…"
 }
 ```
@@ -171,7 +171,7 @@ curl -s "$ISSUER/oauth/introspect" -d token="$ACCESS_TOKEN" \
 ```
 
 ```json
-{"active": true, "sub": "01a16bdd-…", "client_id": "c_…", "scope": "openid profile", "exp": 1792812000, …}
+{"active": true, "sub": "-Ox7Lm2qT…", "client_id": "c_…", "scope": "openid profile", "exp": 1792812000, …}
 ```
 
 Only confidential clients introspect, and a client sees `active: true` only for tokens issued for it (its ID in

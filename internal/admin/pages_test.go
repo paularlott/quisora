@@ -6,8 +6,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/paularlott/quisora/internal/model"
 )
 
 func TestPages(t *testing.T) {
@@ -144,7 +142,7 @@ func TestPages(t *testing.T) {
 		return res.Header.Get("Location")
 	}
 	// signed out: an organization's pages go to its sign-in page (and back); the rest to the primary organization's
-	if l := loc(w.anon(), "/admin/orgs"); l != "/o/"+model.PrimaryOrgID+"/login?next="+url.QueryEscape("/admin/orgs") {
+	if l := loc(w.anon(), "/admin/orgs"); l != "/o/"+w.env.Primary.ID+"/login?next="+url.QueryEscape("/admin/orgs") {
 		t.Errorf("anonymous redirect %q", l)
 	}
 	if l := loc(w.anon(), "/admin/orgs/acme/users?q=x"); l != "/o/acme/login?next="+url.QueryEscape("/admin/orgs/acme/users?q=x") {

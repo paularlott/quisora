@@ -201,7 +201,7 @@ func TestHandleAuditAndAuditQueryStandalone(t *testing.T) {
 	n, cs := hnode(t)
 	for i, act := range []string{"user.create", "user.update"} {
 		v := store.Clock.Now()
-		r := &store.Record{Kind: model.KindAudit, ID: newID(), Version: v, Created: v, Scope: "org1", Data: []byte("d")}
+		r := &store.Record{Kind: model.KindAudit, ID: model.NewID(), Version: v, Created: v, Scope: "org1", Data: []byte("d")}
 		r.Fields = map[string]any{"action": act, "created": time.Now().UTC().Add(time.Duration(i) * time.Second).Truncate(time.Microsecond),
 			"actor": "a"}
 		if err := cs.Store.Put(bg, r); err != nil {

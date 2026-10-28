@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
@@ -79,7 +78,7 @@ func TestPagesRedirectWhenSignedOutAndCarryRoleFlags(t *testing.T) {
 	// Signed out: pages redirect to the sign-in page (the organization's for its admin pages).
 	anon := env.Client()
 	resp, _ := get(t, anon, env.URL+"/t/page")
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/o/"+model.PrimaryOrgID+"/login?next=%2Ft%2Fpage" {
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/o/"+env.Primary.ID+"/login?next=%2Ft%2Fpage" {
 		t.Fatalf("signed out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp, _ = get(t, anon, env.URL+"/admin/orgs/acme/page?tab=2")

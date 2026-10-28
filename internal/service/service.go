@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -179,6 +180,7 @@ type Service struct {
 	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
 
 	orgCache      *ttlcache.Cache[*model.Org] // organizations by id and by name (Org, OrgByRef)
+	primaryID     atomic.Pointer[string]      // the primary organization's id, once read (PrimaryOrgID)
 	bg            sync.WaitGroup              // Background work
 	tokenTouching sync.Map                    // ids of API tokens whose last use is being recorded (touchAPIToken)
 

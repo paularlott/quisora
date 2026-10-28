@@ -26,24 +26,24 @@ func TestClientAuthMethodEnforced(t *testing.T) {
 	post, psecret := h.newClient(nil) // client_secret_post
 	basic, bsecret := h.newClient(func(in *service.ClientInput) { in.AuthMethod = ptr(model.AuthMethodSecretBasic) })
 	// a Basic client: client_credentials with the secret works, a wrong one is refused
-	if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic.ID, bsecret); r.status != 200 || r.str("scope") != "api" {
+	if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic.ID, bsecret); r.status != 200 || r.str("scope") != "api" {
 		t.Errorf("client_credentials over Basic: %d %v", r.status, r.m)
 	}
-	if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, basic.ID, bsecret+"x"); r.status != 401 {
+	if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, basic.ID, bsecret+"x"); r.status != 401 {
 		t.Errorf("wrong secret over Basic: %d", r.status)
 	}
 	tok := url.Values{"token": {"x"}}
-	if r := h.post(orgBase+"/oauth/introspect", tok, post.ID, psecret); r.status != 401 {
+	if r := h.post(h.orgBase+"/oauth/introspect", tok, post.ID, psecret); r.status != 401 {
 		t.Errorf("post client over Basic: %d", r.status)
 	}
-	if r := h.post(orgBase+"/oauth/introspect", url.Values{"token": {"x"}, "client_id": {basic.ID}, "client_secret": {bsecret}}, "", ""); r.status != 401 {
+	if r := h.post(h.orgBase+"/oauth/introspect", url.Values{"token": {"x"}, "client_id": {basic.ID}, "client_secret": {bsecret}}, "", ""); r.status != 401 {
 		t.Errorf("basic client over the form: %d", r.status)
 	}
 	for _, c := range []struct {
 		cl     *model.Client
 		secret string
 	}{{post, psecret}, {basic, bsecret}} {
-		if r := h.clientPost(orgBase+"/oauth/introspect", tok, c.cl, c.secret); r.status != 200 {
+		if r := h.clientPost(h.orgBase+"/oauth/introspect", tok, c.cl, c.secret); r.status != 200 {
 			t.Errorf("%s the registered way: %d", c.cl.AuthMethod, r.status)
 		}
 	}
@@ -62,19 +62,19 @@ func TestClientAuthFailureLimit(t *testing.T) {
 			return url.Values{"grant_type": {"client_credentials"}, "client_id": {c.ID}, "client_secret": {s}}
 		}
 		for i := 0; i < clientAuthFailuresPerMin; i++ {
-			if r := h.post(orgBase+"/oauth/token", form(cl, "wrong"), "", ""); r.status != 401 {
+			if r := h.post(h.orgBase+"/oauth/token", form(cl, "wrong"), "", ""); r.status != 401 {
 				t.Fatalf("attempt %d: %d", i, r.status)
 			}
 		}
-		r := h.post(orgBase+"/oauth/token", form(cl, "wrong"), "", "")
+		r := h.post(h.orgBase+"/oauth/token", form(cl, "wrong"), "", "")
 		if r.status != 429 || r.hdr.Get("Retry-After") == "" || r.str("error") != "invalid_client" {
 			t.Fatalf("over the limit: %d %v", r.status, r.m)
 		}
 		// over the limit even the right secret is refused (guessing cannot go on, and a hit teaches nothing)
-		if r := h.post(orgBase+"/oauth/token", form(cl, secret), "", ""); r.status != 429 {
+		if r := h.post(h.orgBase+"/oauth/token", form(cl, secret), "", ""); r.status != 429 {
 			t.Errorf("right secret while limited: %d", r.status)
 		}
-		if r := h.post(orgBase+"/oauth/token", form(other, "wrong"), "", ""); r.status != 401 {
+		if r := h.post(h.orgBase+"/oauth/token", form(other, "wrong"), "", ""); r.status != 401 {
 			t.Errorf("another client from the same address: %d", r.status)
 		}
 	})
@@ -91,16 +91,16 @@ func TestClientAuthFailureLimit(t *testing.T) {
 			in.JWKS = ptr(k.jwks)
 		})
 		for i := 0; i <= clientAuthFailuresPerMin; i++ {
-			h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("nope-%d", i)},
+			h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("nope-%d", i)},
 				"client_secret": {"x"}}, "", "")
-			h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, "", "")
-			h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
+			h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, "", "")
+			h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
 				"client_assertion": {"x.y.z"}}, "", "")
 		}
-		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+		if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
 			t.Errorf("client_secret_post after the burst: %d %v", r.status, r.m)
 		}
-		for _, path := range []string{orgBase + "/oauth/introspect", orgBase + "/oauth/revoke"} {
+		for _, path := range []string{h.orgBase + "/oauth/introspect", h.orgBase + "/oauth/revoke"} {
 			if r := h.post(path, url.Values{"token": {"x"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
 				t.Errorf("%s after the burst: %d %v", path, r.status, r.m)
 			}
@@ -118,19 +118,19 @@ func TestClientAuthFailureLimit(t *testing.T) {
 		h := setup(t, nil)
 		cl, secret := h.newClient(nil)
 		for i := 0; i < failuresPerIPMin; i++ {
-			if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("made-up-%d", i)},
+			if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {fmt.Sprintf("made-up-%d", i)},
 				"client_secret": {"x"}}, "", ""); r.status != 401 {
 				t.Fatalf("attempt %d: %d", i, r.status)
 			}
 		}
-		r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"made-up-last"}, "client_secret": {"x"}}, "", "")
+		r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"made-up-last"}, "client_secret": {"x"}}, "", "")
 		if r.status != 429 || r.str("error") != "temporarily_unavailable" { // "try again": not a verdict on a client's credentials
 			t.Fatalf("past the address ceiling: %d %v", r.status, r.m)
 		}
-		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {"wrong"}}, "", ""); r.status != 429 {
+		if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {"wrong"}}, "", ""); r.status != 429 {
 			t.Errorf("real client's wrong secret from the same address past the ceiling: %d", r.status)
 		}
-		if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
+		if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {cl.ID}, "client_secret": {secret}}, "", ""); r.status != 200 {
 			t.Errorf("real client's right secret from the same address past the ceiling: %d", r.status)
 		}
 	})
@@ -141,13 +141,13 @@ func TestClientAuthFailureLimit(t *testing.T) {
 		h := setup(t, nil)
 		cl, _ := h.newClient(nil)
 		for i := 0; i < clientAuthFailuresPerMin; i++ {
-			h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, cl.ID, "wrong")
+			h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}}, cl.ID, "wrong")
 		}
 		enc := ""
 		for _, b := range []byte(cl.ID) {
 			enc += fmt.Sprintf("%%%02X", b)
 		}
-		req, _ := http.NewRequest(http.MethodPost, h.env.URL+orgBase+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+		req, _ := http.NewRequest(http.MethodPost, h.env.URL+h.orgBase+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(enc, "wrong")
 		resp, err := h.http.Do(req)
@@ -210,7 +210,7 @@ func TestPrivateKeyJWT(t *testing.T) {
 			if r := h.token(url.Values{"grant_type": {"client_credentials"}}, cl, secret); r.status != 401 {
 				t.Errorf("secret accepted for private_key_jwt client: %d", r.status)
 			}
-			bad := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion": {h.assertion(k, h.assertionClaims(cl, nil))}}, "", "")
+			bad := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_assertion": {h.assertion(k, h.assertionClaims(cl, nil))}}, "", "")
 			if bad.status != 400 || bad.str("error") != "invalid_request" {
 				t.Errorf("missing assertion type: %d %v", bad.status, bad.m)
 			}
@@ -306,13 +306,13 @@ func TestAssertionAudienceMayBeTheEndpointCalled(t *testing.T) {
 	c := h.jwtClient(k, nil)
 	introspect := func(aud string) tokResp {
 		tok := h.assertion(k, h.assertionClaims(c, func(m map[string]any) { m["aud"] = aud }))
-		return h.post(orgBase+"/oauth/introspect", url.Values{"token": {"x"}, "client_assertion_type": {assertionType},
+		return h.post(h.orgBase+"/oauth/introspect", url.Values{"token": {"x"}, "client_assertion_type": {assertionType},
 			"client_assertion": {tok}}, "", "")
 	}
-	if r := introspect(h.env.URL + orgBase + "/oauth/introspect"); r.status != 200 {
+	if r := introspect(h.env.URL + h.orgBase + "/oauth/introspect"); r.status != 200 {
 		t.Fatalf("aud = the introspection endpoint: %d %v", r.status, r.m)
 	}
-	if r := introspect(h.env.URL + orgBase + "/oauth/revoke"); r.status != 401 {
+	if r := introspect(h.env.URL + h.orgBase + "/oauth/revoke"); r.status != 401 {
 		t.Fatalf("aud = another endpoint: %d %v", r.status, r.m)
 	}
 }
@@ -492,7 +492,7 @@ func TestClientAuthMalformedCredentials(t *testing.T) {
 	basic := func(raw string) string { return "Basic " + base64.StdEncoding.EncodeToString([]byte(raw)) }
 	cc := url.Values{"grant_type": {"client_credentials"}}
 	req := func(auth string, form url.Values) tokResp {
-		return h.post(orgBase+"/oauth/token", form, "", "", "Authorization", auth)
+		return h.post(h.orgBase+"/oauth/token", form, "", "", "Authorization", auth)
 	}
 	for name, tc := range map[string]struct {
 		auth string
@@ -511,12 +511,12 @@ func TestClientAuthMalformedCredentials(t *testing.T) {
 		}
 	}
 	// two methods at once
-	if r := h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_secret": {secret}}, cl.ID, secret); r.m["error"] != "invalid_request" {
+	if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_secret": {secret}}, cl.ID, secret); r.m["error"] != "invalid_request" {
 		t.Errorf("basic and post: %v", r.m)
 	}
 	// a very long client id is an ordinary authentication failure
 	long := strings.Repeat("x", 300)
-	if r := h.post(orgBase+"/oauth/token", cc, long, "s"); r.status != 401 {
+	if r := h.post(h.orgBase+"/oauth/token", cc, long, "s"); r.status != 401 {
 		t.Errorf("long id: %d", r.status)
 	}
 }
@@ -548,7 +548,7 @@ func TestPrivateKeyJWTRefusals(t *testing.T) {
 		"wrong type":         {url.Values{"client_assertion": {good}, "client_assertion_type": {"nope"}}, 400, "invalid_request"},
 	} {
 		tc.form.Set("grant_type", "client_credentials")
-		if r := h.post(orgBase+"/oauth/token", tc.form, "", ""); r.status != tc.status || r.str("error") != tc.code {
+		if r := h.post(h.orgBase+"/oauth/token", tc.form, "", ""); r.status != tc.status || r.str("error") != tc.code {
 			t.Errorf("%s: %d %v, want %d %s", name, r.status, r.m, tc.status, tc.code)
 		}
 	}
@@ -620,7 +620,7 @@ func TestClientAuthCounterFailureIsUnavailable(t *testing.T) {
 			}
 			return nil
 		})
-		r := h.post(orgBase+"/oauth/token", form(cl, secret), "", "")
+		r := h.post(h.orgBase+"/oauth/token", form(cl, secret), "", "")
 		expectUnavailable(t, "valid client, counter failing", r)
 		if r.hdr.Get("Retry-After") == "" {
 			t.Errorf("no Retry-After: %v", r.hdr)
@@ -636,7 +636,7 @@ func TestClientAuthCounterFailureIsUnavailable(t *testing.T) {
 			}
 			return nil
 		})
-		if r := h.post(orgBase+"/oauth/token", form(cl, "wrong"), "", ""); r.status != 401 || r.str("error") != "invalid_client" {
+		if r := h.post(h.orgBase+"/oauth/token", form(cl, "wrong"), "", ""); r.status != 401 || r.str("error") != "invalid_client" {
 			t.Fatalf("wrong secret, failure not countable: %d %v, want the original 401 invalid_client", r.status, r.m)
 		}
 	})

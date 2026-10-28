@@ -146,7 +146,7 @@ func TestPushedAuthorizationRequestsAreLimitedPerClient(t *testing.T) {
 	cl, secret := h.newClient(nil)
 	other, otherSecret := h.newClient(nil)
 	push := func(c *model.Client, secret string) tokResp {
-		return h.clientPost(orgBase+"/oauth/par", url.Values{"request_uri": {"urn:x"}}, c, secret)
+		return h.clientPost(h.orgBase+"/oauth/par", url.Values{"request_uri": {"urn:x"}}, c, secret)
 	}
 	for range parPerClientMin {
 		expectErr(t, push(cl, secret), 400, "invalid_request")

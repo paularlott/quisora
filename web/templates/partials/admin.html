@@ -344,14 +344,29 @@
 
 {{template "dialog-start" (dict "id" "secret-dialog" "title" "Client secret" "titleBind" "secretTitle" "size" "sm")}}
 <div class="dialog-body">
-  <div class="alert alert-warning">{{template "icon" "alert"}}<span>This secret is shown once. Copy it now and store it safely; it cannot be retrieved later.</span></div>
-  <p>Secret for <strong x-text="secretClient"></strong></p>
-  <div class="code-box" x-data="copyFrom"><code id="client-secret" x-text="secret"></code>
-    <button type="button" class="btn btn-secondary btn-sm" data-source="client-secret" data-what="client secret" @click="copy" data-autofocus>
-      <span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+  <div class="alert alert-warning" x-show="hasSecret" x-cloak>{{template "icon" "alert"}}<span>The secret is shown once. Copy it now and store it safely; it cannot be retrieved later.</span></div>
+  <p>Configure <strong x-text="secretClient"></strong> with:</p>
+  {{template "copy-box" (dict "id" "client-id" "label" "Client ID" "what" "client ID" "bind" "clientId" "focus" true)}}
+  {{template "copy-box" (dict "id" "client-issuer" "label" "Issuer" "what" "issuer" "bind" "issuer")}}
+  <div x-show="hasSecret" x-cloak>{{template "copy-box" (dict "id" "client-secret" "label" "Client secret" "what" "client secret" "bind" "secret")}}</div>
 </div>
-<div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis">I have stored it</button></div>
+<div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis" x-text="secretDone"></button></div>
 {{template "dialog-end"}}
+{{end}}
+
+{{/* A labelled value to copy (x-text of bind), in a dialog. */}}
+{{define "copy-box"}}<div class="field"><span class="label" id="{{.id}}-l">{{.label}}</span>
+  <div class="code-box" x-data="copyFrom"><code id="{{.id}}" aria-labelledby="{{.id}}-l" x-text="{{.bind}}"></code>
+    <button type="button" class="btn btn-secondary btn-sm" data-source="{{.id}}" data-what="{{.what}}" @click="copy"{{if .focus}} data-autofocus{{end}}>
+      <span x-show="!done">{{template "icon" "copy"}} Copy<span class="sr-only"> {{.what}}</span></span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied<span class="sr-only"> {{.what}}</span></span></button></div></div>
+{{end}}
+
+{{/* One address of an organization to copy, in a card's <dl>: id, label, what (named in the announcement), value. */}}
+{{define "address"}}
+<div><dt id="{{.id}}-l">{{.label}}</dt>
+  <dd class="copy-id"><code class="mono" id="{{.id}}">{{.value}}</code><button type="button" class="btn btn-ghost btn-icon btn-sm"
+      x-data="copyFrom" data-source="{{.id}}" data-what="{{.what}}" aria-label="Copy {{.label}}" @click="copy"><span
+        x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button></dd></div>
 {{end}}
 
 {{/* Emergency sign-out (break glass), shared by the system page (scope "server") and an organization's page. The page

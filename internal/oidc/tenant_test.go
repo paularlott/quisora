@@ -20,7 +20,7 @@ func passkeyOnly() model.TenantSettings {
 func wantReauth(t *testing.T, u *url.URL, path, tenant string) {
 	t.Helper()
 	if u.Path != path || u.Query().Get("reauth") != "1" || u.Query().Get("tenant") != tenant ||
-		!strings.HasPrefix(u.Query().Get("next"), orgBase+"/oauth/authorize/resume") {
+		!strings.HasPrefix(u.Query().Get("next"), strings.TrimSuffix(path, "/login")+"/oauth/authorize/resume") {
 		t.Fatalf("expected reauth at %s for tenant %q: %s", path, tenant, u)
 	}
 }
@@ -35,7 +35,7 @@ func TestTenantPasskeyOnlyResume(t *testing.T) {
 
 	// not signed in: hand-off names the tenant
 	u := h.authorize(h.anon(), authzQuery(cl, ch, nil))
-	if u.Path != orgBase+"/login" || u.Query().Get("tenant") != "kiosk" || u.Query().Get("reauth") != "" {
+	if u.Path != h.orgBase+"/login" || u.Query().Get("tenant") != "kiosk" || u.Query().Get("reauth") != "" {
 		t.Fatalf("hand-off: %s", u)
 	}
 	// clients without a tenant use the default tenant
@@ -44,16 +44,16 @@ func TestTenantPasskeyOnlyResume(t *testing.T) {
 	}
 
 	pwd := h.sessionFor([]string{"pwd"}, "")
-	wantReauth(t, h.authorize(pwd, authzQuery(cl, ch, nil)), orgBase+"/login", "kiosk")
+	wantReauth(t, h.authorize(pwd, authzQuery(cl, ch, nil)), h.orgBase+"/login", "kiosk")
 	// the same password session is fine for the default tenant
 	if u := h.authorize(pwd, authzQuery(def, ch, nil)); u.Query().Get("code") == "" {
 		t.Fatalf("default tenant refused pwd session: %s", u)
 	}
 	// password + passkey second factor still counts as a password sign-in
 	both := h.sessionFor([]string{"pwd", "swk", "user", "mfa"}, "")
-	wantReauth(t, h.authorize(both, authzQuery(cl, ch, nil)), orgBase+"/login", "kiosk")
+	wantReauth(t, h.authorize(both, authzQuery(cl, ch, nil)), h.orgBase+"/login", "kiosk")
 	// a federated session is not a passkey either
-	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, "x"), authzQuery(cl, ch, nil)), orgBase+"/login", "kiosk")
+	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, "x"), authzQuery(cl, ch, nil)), h.orgBase+"/login", "kiosk")
 
 	pk := h.sessionFor([]string{"swk", "user"}, "")
 	if u := h.authorize(pk, authzQuery(cl, ch, nil)); u.Query().Get("code") == "" {
@@ -61,7 +61,7 @@ func TestTenantPasskeyOnlyResume(t *testing.T) {
 	}
 	// the org itself switching passwords off also refuses the default tenant
 	h.setOrg(model.OrgSettings{PasswordLogin: false, PasskeyLogin: true})
-	wantReauth(t, h.authorize(pwd, authzQuery(def, ch, nil)), orgBase+"/login", "default")
+	wantReauth(t, h.authorize(pwd, authzQuery(def, ch, nil)), h.orgBase+"/login", "default")
 }
 
 func TestTenantProviderRestrictions(t *testing.T) {
@@ -84,10 +84,10 @@ func TestTenantProviderRestrictions(t *testing.T) {
 	if u := h.authorize(h.sessionFor([]string{"fed"}, good.ID), authzQuery(cl, ch, nil)); u.Query().Get("code") == "" {
 		t.Fatalf("allowed provider refused: %s", u)
 	}
-	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, bad.ID), authzQuery(cl, ch, nil)), orgBase+"/login", "sso")
-	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, ""), authzQuery(cl, ch, nil)), orgBase+"/login", "sso")
+	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, bad.ID), authzQuery(cl, ch, nil)), h.orgBase+"/login", "sso")
+	wantReauth(t, h.authorize(h.sessionFor([]string{"fed"}, ""), authzQuery(cl, ch, nil)), h.orgBase+"/login", "sso")
 	// password is not allowed in this tenant (settings above have PasswordLogin false)
-	wantReauth(t, h.authorize(h.sessionFor([]string{"pwd"}, ""), authzQuery(cl, ch, nil)), orgBase+"/login", "sso")
+	wantReauth(t, h.authorize(h.sessionFor([]string{"pwd"}, ""), authzQuery(cl, ch, nil)), h.orgBase+"/login", "sso")
 
 	// all providers: both work
 	all := h.tenant("any", model.TenantSettings{AllProviders: true})
@@ -107,7 +107,7 @@ func TestTenantRequireMFA(t *testing.T) {
 	def, _ := h.newClient(nil)
 	_, ch := pkce()
 	pwd := h.sessionFor([]string{"pwd"}, "")
-	wantReauth(t, h.authorize(pwd, authzQuery(cl, ch, nil)), orgBase+"/login", "secure")
+	wantReauth(t, h.authorize(pwd, authzQuery(cl, ch, nil)), h.orgBase+"/login", "secure")
 	if u := h.authorize(pwd, authzQuery(def, ch, nil)); u.Query().Get("code") == "" {
 		t.Fatalf("org does not require MFA: %s", u)
 	}
@@ -140,7 +140,7 @@ func TestTenantClaims(t *testing.T) {
 			t.Errorf("%s token claims: %v", name, c)
 		}
 	}
-	ui := h.get(h.anon(), orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
+	ui := h.get(h.anon(), h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+r.str("access_token"))
 	b := body(ui)
 	if !strings.Contains(b, `"tenant_name":"kiosk"`) || !strings.Contains(b, `"tenant":"`+tn.ID+`"`) {
 		t.Errorf("userinfo: %s", b)
@@ -174,7 +174,7 @@ func TestRequireMFA(t *testing.T) {
 	h.env.Svc.InvalidateOrgs()
 	weak := h.sessionWith(h.user, []string{"pwd"}, time.Now())
 	u := h.authorize(weak, authzQuery(cl, ch, nil))
-	if u.Path != orgBase+"/login" || u.Query().Get("reauth") != "1" {
+	if u.Path != h.orgBase+"/login" || u.Query().Get("reauth") != "1" {
 		t.Fatalf("pwd only: %s", u)
 	}
 	// a passkey is two factors only when it verified its user

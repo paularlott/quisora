@@ -57,7 +57,7 @@ func (s *Service) issueLink(ctx context.Context, u *model.User, purpose, email s
 	u = cur
 	token := secure.RandomToken(32)
 	l := &model.LinkToken{UserID: u.ID, OrgID: u.OrgID, Purpose: purpose, Email: email, Expires: time.Now().Add(ttl),
-		UserCreated: u.Created, IssuedBy: by, Gen: u.SecurityGen, TokenHash: linkID(token)}
+		IssuedBy: by, Gen: u.SecurityGen, TokenHash: linkID(token)}
 	if purpose == LinkInvite || purpose == LinkReset {
 		// Bound to the address the account has now, and a caller that mails it (email set) mails that one: the mailer
 		// sends to the address the link is bound to (LinkAddress), never to the one on its own, older, copy of the user.
@@ -112,9 +112,7 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 		return nil, nil, ErrLink
 	}
 	u, err := s.Users.Get(ctx, l.UserID)
-	// The account must be the one the link was issued for: in a cluster a second "quisora bootstrap" on a new node
-	// issues a link for a first administrator with the same fixed id, and that link must not open the real one.
-	if err != nil || !(u.Enabled(time.Now()) || l.BreakGlass) || !u.Created.Equal(l.UserCreated) {
+	if err != nil || !(u.Enabled(time.Now()) || l.BreakGlass) {
 		return nil, nil, ErrLink
 	}
 	// An invitation or reset link sets the account's credentials, so it is bound to the account's security

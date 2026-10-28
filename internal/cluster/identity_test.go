@@ -57,7 +57,7 @@ func TestLostNodeIDNeverWipes(t *testing.T) {
 func TestClonedDatabaseRefusedNotWiped(t *testing.T) {
 	c := started(t, badgerBackend())
 	for range 50 {
-		if err := c.nodes[0].st().Put(bg, newRec(newID(), "")); err != nil {
+		if err := c.nodes[0].st().Put(bg, newRec(model.NewID(), "")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -233,7 +233,7 @@ func TestGossipNodeDatabaseOwnerAndMarkers(t *testing.T) {
 }
 
 func TestPrefix(t *testing.T) {
-	a, b := PrefixOf(newID()), PrefixOf(newID())
+	a, b := PrefixOf(model.NewID()), PrefixOf(model.NewID())
 	if len(a) != 8 || a == b {
 		t.Fatalf("bad prefixes %q %q", a, b)
 	}
@@ -275,14 +275,14 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 	}
 	tomb := func(k model.Kind, id string) *store.Record { return store.Tombstone(k, id) }
 	audit := func() *store.Record {
-		return &store.Record{Kind: model.KindAudit, ID: newID(), Version: store.Clock.Now(), Scope: "org1", Partition: "org1",
+		return &store.Record{Kind: model.KindAudit, ID: model.NewID(), Version: store.Clock.Now(), Scope: "org1", Partition: "org1",
 			Data: []byte("{}")}
 	}
 	eph := func() *store.Record {
-		return &store.Record{Kind: model.KindEphemeral, ID: "e-" + newID(), Version: store.Clock.Now(), Data: []byte("x")}
+		return &store.Record{Kind: model.KindEphemeral, ID: "e-" + model.NewID(), Version: store.Clock.Now(), Data: []byte("x")}
 	}
 	queued := func() *store.Record {
-		r, err := store.Encode(&model.QueueItem{Meta: model.Meta{ID: newID()}, Queue: "mail", Node: "n", Next: time.Now(),
+		r, err := store.Encode(&model.QueueItem{Meta: model.Meta{ID: model.NewID()}, Queue: "mail", Node: "n", Next: time.Now(),
 			Sealed: "x", Expires: time.Now().Add(time.Hour)})
 		if err != nil {
 			t.Fatal(err)
@@ -319,7 +319,7 @@ func TestNonWritableNodeWritesNothing(t *testing.T) {
 	edit.Data = []byte("edited on the minority side")
 	check("minority", lone, []try{
 		{"data update", edit, false},
-		{"new data", newRec(newID(), ""), false},
+		{"new data", newRec(model.NewID(), ""), false},
 		{"new data of another organization", newOrgRec("org-other"), false},
 		{"global data", newOrgRec(""), false},
 		{"data deletion", tomb(dataKind, ids[1]), false},

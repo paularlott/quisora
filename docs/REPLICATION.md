@@ -359,10 +359,12 @@ start, into an index in memory that its own writes keep from then on). With goss
 
 ### Re-using an id
 
-Most ids are random UUIDs and are never re-used. Deterministic ids (group memberships, tenant access, sign-in records, locks)
-are re-created with a create, which the owner orders after the deletion. The fixed bootstrap ids (primary organization, its default tenant, the first
-administrator) are written by `quisora bootstrap`, which seeds the partitions (below); a node set up apart from the
-cluster it meets is refused (below).
+Most ids are random (model.NewID: a timestamp and random bits) and are never re-used. Deterministic ids (group memberships, tenant access, sign-in records, locks)
+are re-created with a create, which the owner orders after the deletion. What `quisora bootstrap` writes (the primary
+organization, its default tenant, the first administrator) has random ids too; the primary organization is the one
+marked so in its record, which claims a unique value (`model.PrimaryOrgKey`) no second organization can hold. Every node
+reads it from the data set it holds or copies, so a node knows the primary organization once it has that record, and is
+not ready before.
 
 ### Housekeeping
 
