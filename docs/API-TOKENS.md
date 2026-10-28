@@ -15,7 +15,7 @@ is made, so if you are demoted or your account is disabled, the token loses that
 | `admin` | managers and up | The management API, `/api/…` (what the admin console uses), including the live event stream `/api/events` |
 | `scim` | managers and up | The SCIM 2.0 API, `/scim/v2/…`, for provisioning tools |
 | `backup` | super admins | `GET /api/backup` only; such a token expires within 30 days |
-| `import` | super admins | With `admin`: creating users with a password hash from another system (`password_hash`) |
+| `import` | super admins | With `admin`: creating users with the password hash, authenticator secret and provider links they had in another system (`password_hash`, `totp_secret`, `identities`) |
 | `api` | everyone | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
 
 A token with the `api` scope cannot also have `admin`, `scim`, `backup` or `import`: applications that see an `api` token
@@ -130,26 +130,67 @@ QUISORA_ADMIN_TOKEN=$TOKEN quisora backup --server "$QUISORA" quisora.bak
 
 See [RUNNING.md](RUNNING.md#backup-and-restore) for the backup format, encryption and restore.
 
-## Importing users with their passwords (`import`)
+## Importing users with their passwords, authenticator apps and provider links (`import`)
 
-Moving people from another system without asking them all to set a new password: create each user with the hash that
-system stored, using a super admin's token with the `admin` and `import` scopes.
+Moving people from another system without asking them all to set a new password, set up a new authenticator app or
+link their provider again: create each user with what that system stored, using a super admin's token with the `admin`
+and `import` scopes. Everything below is accepted only when a user is created, never on an update (it would take over
+an existing account), and only from super admins: an organization's admins cannot import.
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$QUISORA/api/orgs/acme/users" \
   -d '{"email": "alan@acme.example", "given_name": "Alan", "email_verified": true,
-       "password_hash": "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"}'
+       "password_hash": "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+       "totp_secret": "JBSWY3DPEHPK3PXP",
+       "identities": [{"provider": "Corp SSO", "subject": "freedom3-42"}]}'
 ```
 
-- `password_hash` is bcrypt (`$2a$`, `$2b$` or `$2y$`, cost 4 to 14) or argon2id. Anything else is refused (422).
-- It is accepted only when a user is created, never on an update: setting a hash sets a password someone may know,
-  so an existing account cannot be taken over this way. Only super admins can do it; an organization's admins cannot.
+### Passwords (`password_hash`)
+
+- `password_hash` is bcrypt (`$2a$`, `$2b$` or `$2y$`, cost 4 to 14), SHA-512 crypt (`$6$`, as PHP's `crypt()` and Linux
+  `/etc/shadow` make; at most 1,000,000 rounds, 5,000 when none is named) or argon2id. Anything else is refused (422).
+- SHA-512 crypt and argon2id hashes are checked against the password as typed and in its normalised form (Unicode NFKC),
+  so a password the old system stored in either form still works.
 - It is stored sealed with the master key like every password. The user's first sign-in checks it and re-hashes the
   password with Quisora's own argon2id settings; from then on the old hash is gone.
 - bcrypt reads only the first 72 bytes of a password: someone whose old password was longer cannot sign in with it and
   needs an invitation.
-- The import is audited on `user.create` (`password` = `imported bcrypt` or `imported argon2id`).
-- Imported users have no second factor: where the organization requires one, they set it up at their first sign-in.
+- The import is audited on `user.create` (`password` = `imported bcrypt`, `imported sha512-crypt` or `imported argon2id`).
+
+### Authenticator apps (`totp_secret`)
+
+- `totp_secret` is the base32 secret behind the user's authenticator app. Quisora checks codes the way apps make them
+  by default (SHA-1, 6 digits, every 30 seconds, one step of drift either way), so the user **keeps their app**: their
+  next code works at their first sign-in, with nothing to scan.
+- Letters in either case, spaces between groups and `=` padding are accepted. The secret must be 16 to 128 base32
+  characters (80 to 640 bits): the 16-character secrets that Google Authenticator and Freedom3 make are fine, anything
+  shorter or not base32 is refused with a 422 on `totp_secret`. The value is never repeated in an error.
+- It is stored sealed to the user, and the user is enrolled as if they had set the app up here. It is never returned,
+  logged or audited: the audit log has `mfa.import` on the user (`method` = `totp`), without the secret.
+- Imported users have **no recovery codes**. After they sign in, the account page marks **Recovery codes** with a warning and asks them
+  to make some (their account page is where a sign-in without a destination lands), so that a lost phone is not a call
+  to an administrator. Tell them to.
+- Do not send an invitation to a user imported this way: accepting one replaces everything they sign in with, the
+  imported authenticator app and links included.
+- The secrets are the keys to the second factor and sit **in plaintext** in the system you export from. Run the export
+  and this import server to server over TLS, from one process to the other, and never write the secrets to a file, a ticket or a chat.
+  Anyone who holds a secret and the password can sign in.
+
+### Provider links (`identities`)
+
+For an organization whose users sign in through one of its sign-in providers, `identities` makes each user's link in
+the same write that creates the user, so their first sign-in through the provider finds this account without matching
+by email address or creating a second one:
+
+- Each entry is `{"provider": ..., "subject": ...}`: the provider's id or its name in this organization, and the subject
+  that provider asserts for the person (its `sub` claim; a GitHub user id), 1 to 255 characters, kept exactly as given.
+  Up to 10 entries, one per provider.
+- A provider of another organization is refused like one that does not exist (422 on `identities`). A subject already
+  linked to another user at that provider is a 409 on `identities`, and nothing is created.
+- The links are marked as made by an administrator (`admin`). As with every link the user did not connect themselves,
+  they are dropped if the user is promoted to manager or above. The user's own connected providers are unaffected.
+- The user create is the only place for this: there is no separate endpoint to link an existing user.
+- The audit event `user.create` lists the providers (`providers`).
 
 ## Your own applications (`api`)
 

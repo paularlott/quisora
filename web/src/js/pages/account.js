@@ -458,10 +458,12 @@ export default function (Alpine) {
     },
     get has() { return this.created !== null && this.created !== undefined },
     get statusText() { return this.loading ? '' : this.has ? `${this.left} left` : 'None' },
-    get statusClass() { return this.has && this.left > 3 ? 'badge badge-success' : this.has ? 'badge badge-warning' : 'badge badge-plain' },
+    // An account with a second factor and no codes is warned, not just labelled: someone whose authenticator app was brought
+    // from another system has none, and is one lost phone from needing an administrator.
+    get statusClass() { return this.has && this.left > 3 ? 'badge badge-success' : this.has || this.available ? 'badge badge-warning' : 'badge badge-plain' },
     get note() {
       if (!this.available) return 'Set up an Authenticator App or a passkey first: recovery codes stand in for them when they are not at hand.'
-      if (!this.has) return 'Codes that sign you in when your Authenticator App or passkey is not at hand, each once. Make them now, before you need them.'
+      if (!this.has) return 'You have no recovery codes yet. They sign you in when your Authenticator App or passkey is not at hand, each once: make them now, before you need them.'
       const made = `Made ${fmtDate(this.created)}.`
       return this.left === 0 ? `${made} All have been used: make new ones.` : this.left <= 3 ? `${made} Only a few are left: make new ones.` : `${made} Each signs you in once when your Authenticator App or passkey is not at hand.`
     },

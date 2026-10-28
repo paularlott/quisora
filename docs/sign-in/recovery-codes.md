@@ -20,6 +20,9 @@ finishes the sign-in it was typed into and is marked used, nothing more.
 
 Quisora keeps only hashes of the codes, and a code used on one node is refused on every other.
 
+A user whose authenticator app was [imported with them](../API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)
+has none yet: the row shows a warning, and the same button makes them.
+
 ## Using one
 
 At the second-factor step of a sign-in, **Try another way** lists what the account has instead of the authenticator

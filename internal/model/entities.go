@@ -778,11 +778,15 @@ type Provider struct {
 func (p *Provider) OIDC() bool { return p.Type != ProviderGitHub }
 
 func (p *Provider) Kind() Kind { return KindProvider }
+
+// ProviderNameKey is the unique value of a provider's name in its organization (names match without regard to case).
+func ProviderNameKey(orgID, name string) string { return orgID + "/n/" + Lower(name) }
+
 func (p *Provider) Index() Index {
 	return Index{
 		Scope:     p.OrgID,
 		Partition: p.OrgID,
-		Unique:    []string{p.OrgID + "/n/" + Lower(p.Name)},
+		Unique:    []string{ProviderNameKey(p.OrgID, p.Name)},
 		Fields:    map[string]any{"name": p.Name, "type": p.Type, "enabled": p.Enabled, "created": p.Created},
 	}
 }

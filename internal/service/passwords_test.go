@@ -271,6 +271,40 @@ func TestImportPasswordHash(t *testing.T) {
 	}
 }
 
+// A user created with a SHA-512 crypt hash (what PHP's crypt() made in the system they come from) signs in with the
+// password they had, and the hash is then argon2id; hashes asking for too many rounds are refused at creation.
+func TestImportSHA512CryptHash(t *testing.T) {
+	e := newEnv(t)
+	acme := e.org("acme")
+	const hash = "$6$aZ09./aZ09./aZ09$JNpuOzbJHWS6aFNixpRZk4jTQsizfyAu/UAR2aRai8mCqPKjtRvYsUsCOajeqcNfK.UM.Qc9hpmXeM8kHaatU0"
+	in := func(name, hash string) service.UserInput {
+		return service.UserInput{GivenName: ptr("I"), Username: ptr(name), Email: ptr(name + "@example.com"), PasswordHash: ptr(hash)}
+	}
+	if _, err := e.svc.CreateUser(e.ctx, service.System, acme.ID, in("too-many", "$6$rounds=1000001$"+hash[3:])); outcome(err) != "invalid" {
+		t.Errorf("rounds over the cap: %v", err)
+	}
+	u, err := e.svc.CreateUser(e.ctx, service.System, acme.ID, in("php", hash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.verify(u, "wrong horse battery") {
+		t.Error("a wrong password verified")
+	}
+	if inner, _ := e.svc.Sealer.OpenFor(service.PasswordBinding(u.ID), e.stored(u)); string(inner) != hash {
+		t.Error("a wrong password changed the stored hash")
+	}
+	if !e.verify(u, "correct horse battery") {
+		t.Fatal("the imported password does not verify")
+	}
+	inner, _ := e.svc.Sealer.OpenFor(service.PasswordBinding(u.ID), e.stored(u))
+	if !strings.HasPrefix(string(inner), "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Errorf("not re-hashed with argon2id at the first sign-in: %q", inner)
+	}
+	if !e.verify(u, "correct horse battery") {
+		t.Error("the re-hashed password does not verify")
+	}
+}
+
 // A password is checked for length (limits.password_min_length: 15 by default, NIST SP 800-63B rev 4, where a password
 // may be the only factor; lower where the operator sets it, as the development server does with 10), for being easy to
 // guess, and for being built on what identifies its owner.

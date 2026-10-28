@@ -263,7 +263,10 @@ paths:
     post:
       tags: [Users]
       summary: Create a user without a password
-      description: Create a user without a password; optionally issue (and email) an invitation link
+      description: "Create a user without a password; optionally issue (and email) an invitation link. A super admin's token with
+        the import scope can also bring a user's password hash, authenticator secret and provider links from another system
+        (password_hash, totp_secret, identities). Do not issue an invitation to such a user: accepting one replaces every way
+        they sign in."
       operationId: post_orgs_org_users
       requestBody:
         content:
@@ -2921,7 +2924,7 @@ components:
   securitySchemes:
     bearer:
       bearerFormat: qsr_<id>_<secret>
-      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash: the import scope too, super admins only). The
+      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash, an authenticator secret or provider links: the import scope too, super admins only). The
         owning user's role still limits every call."
       scheme: bearer
       type: http
@@ -4452,9 +4455,42 @@ components:
         password_hash:
           type: string
           description: "a password hash brought from another system, for a migration: bcrypt ($2a$, $2b$ or $2y$, cost 4 to
-            14) or argon2id. Super admins only (an API token needs the import scope too); never with password, never on an
+            14), SHA-512 crypt ($6$, at most 1,000,000 rounds) or argon2id. Super admins only (an API token needs the import scope too); never with password, never on an
             update. It is stored sealed like any password, and the user's first sign-in re-hashes it with argon2id. Audited
-            on user.create as password: imported bcrypt (or argon2id)."
+            on user.create as password: imported bcrypt (sha512-crypt, argon2id)."
+        totp_secret:
+          type: string
+          writeOnly: true
+          description: "the authenticator-app secret the user already has in another system, for a migration, so their app keeps
+            working: base32 (either case, spaces and = padding are ignored) of 16 to 128 characters (80 to 640 bits; SHA-1,
+            6 digits, 30 seconds, one step either way, as authenticator apps use by default). Super admins only (an API
+            token needs the import scope too); never on an update. It is stored sealed, the user is enrolled as if they had
+            set the app up, and the secret is never returned, logged or audited (mfa.import is recorded without it). The
+            user is not given recovery codes: the account page asks them to make some. 422 on the field when it is not
+            base32 or the wrong length; the value is never repeated in the error."
+        identities:
+          type: array
+          writeOnly: true
+          description: "sign-in providers of this organization to link the new user to, so their first sign-in through each
+            finds this account (a migration of users who sign in through an organization's provider). Super admins only (an
+            API token needs the import scope too); never on an update. The user and their links are created together; the
+            links are marked as made by an administrator (an administrator's link is dropped, as every non-connected link
+            is, if the user is promoted to manager or above). At most 10, one per provider. 422 on identities for an
+            unknown provider (or one of another organization) or a bad subject, 409 when the subject is already linked
+            to another user at that provider."
+          maxItems: 10
+          items:
+            type: object
+            required: [provider, subject]
+            properties:
+              provider:
+                type: string
+                description: the provider's id, or its name in this organization
+              subject:
+                type: string
+                description: what the provider asserts for the person (its sub claim, a GitHub user id), 1 to 255 characters, kept exactly as given
+                minLength: 1
+                maxLength: 255
         invite:
           type: object
           description: issue an invitation link and return it in the response

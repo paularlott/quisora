@@ -200,6 +200,10 @@ type createUserBody struct {
 	// PasswordHash imports a password hash from another system (bcrypt or argon2id): super admins, and an API token
 	// only with the import scope. See service.UserInput.PasswordHash.
 	PasswordHash *string `json:"password_hash"`
+	// TOTPSecret and Identities import an authenticator app's secret and provider links, under the same rule: see
+	// service.UserInput.
+	TOTPSecret *string                 `json:"totp_secret"`
+	Identities []service.IdentityInput `json:"identities"`
 	// Invite asks for an invitation link in the response; Invite.Email also mails it.
 	Invite *struct {
 		Email bool `json:"email"`
@@ -216,7 +220,7 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := in.input()
-	input.PasswordHash = in.PasswordHash
+	input.PasswordHash, input.TOTPSecret, input.Identities = in.PasswordHash, in.TOTPSecret, in.Identities
 	input.Username = emptyToNil(input.Username)
 	if input.Email != nil && *input.Email == "" {
 		input.Email = nil

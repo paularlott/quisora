@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -282,4 +283,63 @@ func TestImportUserAPI(t *testing.T) {
 		service.APITokenInput{Name: "t", Scopes: []string{"admin", "import"}}); err == nil {
 		t.Error("an organization's admin made an import token")
 	}
+}
+
+// An authenticator secret and provider links are imported by the same actors as a password hash, in the create body
+// only; neither is ever returned, and a refusal never repeats the secret.
+func TestImportUserFactorsAPI(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	prov, err := w.env.Svc.CreateProvider(ctx, service.System, w.acme.ID, service.ProviderInput{Name: ptr("Corp"),
+		Issuer: ptr("https://login.example.com"), ClientID: ptr("cid"), ClientSecret: ptr("csecret")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secret = "JBSWY3DPEHPK3PXP"
+	body := func(name string, more map[string]any) map[string]any {
+		b := map[string]any{"email": name + "@x.example", "given_name": "I"}
+		for k, v := range more {
+			b[k] = v
+		}
+		return b
+	}
+	links := func(subject string) []any { return []any{map[string]any{"provider": prov.ID, "subject": subject}} }
+
+	// without the import scope, or as an organization's admin: refused on the field
+	wantField(t, w.withBearer("super", "admin").post(AU, body("a1", map[string]any{"totp_secret": secret})), 422, "totp_secret")
+	wantField(t, w.as("admin").post(AU, body("a2", map[string]any{"totp_secret": secret})), 422, "totp_secret")
+	wantField(t, w.withBearer("super", "admin").post(AU, body("a3", map[string]any{"identities": links("s-1")})), 422, "identities")
+	wantField(t, w.as("admin").post(AU, body("a4", map[string]any{"identities": links("s-1")})), 422, "identities")
+	// a bad secret: the error does not repeat it
+	r := w.withBearer("super", "admin", "import").post(AU, body("a5", map[string]any{"totp_secret": "not base32 but secret!"}))
+	wantField(t, r, 422, "totp_secret")
+	if strings.Contains(string(r.Raw), "secret!") {
+		t.Errorf("the error repeats the secret: %s", r.Raw)
+	}
+
+	imp := w.withBearer("super", "admin", "import")
+	r = imp.post(AU, body("pat", map[string]any{"totp_secret": strings.ToLower(secret), "identities": links("s-1")}))
+	want(t, r, 201)
+	if strings.Contains(strings.ToUpper(string(r.Raw)), "JBSWY3DP") || r.JSON["totp_secret"] != nil || r.JSON["identities"] != nil {
+		t.Errorf("the response returns what was imported: %s", r.Raw)
+	}
+	id := r.str("id")
+	u, err := w.env.Svc.Users.Get(ctx, id)
+	if err != nil || !u.HasTOTP() {
+		t.Fatalf("no authenticator app: %v", err)
+	}
+	if ident, err := w.env.Svc.Identities.GetByUnique(ctx, model.IdentityKey(prov.ID, "s-1")); err != nil || ident.UserID != id || ident.Via != "admin" {
+		t.Fatalf("link: %+v %v", ident, err)
+	}
+	// the same subject again: 409 on the field
+	wantField(t, imp.post(AU, body("sam", map[string]any{"identities": links("s-1")})), 409, "identities")
+	// a provider of another organization is not found
+	foreign, err := w.env.Svc.CreateProvider(ctx, service.System, w.other.ID, service.ProviderInput{Name: ptr("Corp"),
+		Issuer: ptr("https://login.example.com"), ClientID: ptr("cid"), ClientSecret: ptr("csecret")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantField(t, imp.post(AU, body("kim", map[string]any{"identities": []any{map[string]any{"provider": foreign.ID, "subject": "s-2"}}})), 422, "identities")
+	// an update never takes either
+	want(t, imp.patch(AU+"/"+id, map[string]any{"totp_secret": secret}), 400)
 }

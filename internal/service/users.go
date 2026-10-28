@@ -48,10 +48,16 @@ type UserInput struct {
 	Work       *WorkInput `json:"work"`
 	Password   *string    `json:"password"`
 	// PasswordHash imports a password hash from another system when a user is created (never on an update): bcrypt
-	// (cost 4 to 14) or argon2id. The system, or super admins (an API token needs the import scope). The first sign-in
-	// re-hashes it with today's argon2id (passwords.go).
+	// (cost 4 to 14), SHA-512 crypt or argon2id. The system, or super admins (an API token needs the import scope).
+	// The first sign-in re-hashes it with today's argon2id (passwords.go).
 	PasswordHash *string `json:"password_hash"`
-	Verified     *bool   `json:"email_verified"`
+	// TOTPSecret imports the authenticator app's base32 secret from another system when a user is created (never on
+	// an update), under the same rule as PasswordHash: the user keeps the app they have (see normalizeTOTPSecret).
+	TOTPSecret *string `json:"totp_secret"`
+	// Identities links the new user to sign-in providers of the organization (never on an update), under the same
+	// rule as PasswordHash: a provider's sign-in with that subject is then this user.
+	Identities []IdentityInput `json:"identities"`
+	Verified   *bool           `json:"email_verified"`
 	// Phone is a contact number: spaces, dots, dashes and brackets are dropped and the rest must be E.164 (+ and
 	// the country code); "" clears. A new number is unverified unless PhoneVerified says otherwise.
 	Phone         *string   `json:"phone_number"`
@@ -255,8 +261,8 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 	if u.GivenName == "" {
 		return Invalid("given_name", "is required")
 	}
-	if in.PasswordHash != nil {
-		return Invalid("password_hash", "a password hash is imported only when the user is created")
+	if in.PasswordHash != nil || in.TOTPSecret != nil || in.Identities != nil {
+		return Invalid("password_hash", "credentials and provider links are imported only when the user is created")
 	}
 	if in.Password != nil {
 		if err := s.CheckPassword(ctx, u, *in.Password); err != nil {
@@ -444,22 +450,38 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	if in.PasswordHash != nil {
 		// Setting a hash is setting a password someone may know: only the system and super admins, and a token only
 		// with the import scope, for a new user (an existing account could otherwise be taken over).
-		if a != System && !(a.IsSuper() && a.HasScope(ScopeImport)) {
-			return nil, Invalid("password_hash", "only super admins import password hashes (an API token needs the import scope)")
+		if err := requireImport(a, "password_hash", "password hashes"); err != nil {
+			return nil, err
 		}
 		if in.Password != nil {
 			return nil, Invalid("password_hash", "give a password or a password hash, not both")
 		}
 		kind, err := secure.CheckImport(*in.PasswordHash)
 		if err != nil {
-			return nil, Invalid("password_hash", "must be a bcrypt hash (cost 4 to 14) or an argon2id hash")
+			return nil, Invalid("password_hash", "must be a bcrypt hash (cost 4 to 14), a SHA-512 crypt hash ($6$, at most 1,000,000 rounds) or an argon2id hash")
 		}
 		imported = kind
 		u.PasswordHash = s.SealPasswordHash(u.ID, *in.PasswordHash)
 		in.PasswordHash = nil // apply refuses it (updates never take one)
 	}
+	if in.TOTPSecret != nil {
+		if err := s.importTOTP(a, u, *in.TOTPSecret); err != nil {
+			return nil, err
+		}
+		in.TOTPSecret = nil // apply refuses it too
+	}
+	identities := in.Identities
+	in.Identities = nil
 	if err := s.apply(ctx, u, in); err != nil {
 		return nil, err
+	}
+	var imports []*model.Identity
+	var providers []string
+	if identities != nil {
+		// after apply, as every identity is of the account's credential epoch as it is written
+		if imports, providers, err = s.importLinks(ctx, a, u, identities); err != nil {
+			return nil, err
+		}
 	}
 	detail := map[string]string{"role": string(role)}
 	if len(u.Tags) > 0 {
@@ -468,25 +490,41 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	if imported != "" {
 		detail["password"] = "imported " + imported
 	}
-	if err := s.AuditedUser(ctx, a, u, "user.create", detail, func() error { return s.createUser(ctx, u, link) }); err != nil {
+	if len(providers) > 0 {
+		detail["providers"] = strings.Join(providers, " ")
+	}
+	links := imports
+	if link != nil {
+		links = append(links, link(u))
+	}
+	events := []change{userChange(u, "user.create", detail)}
+	if u.HasTOTP() {
+		events = append(events, userChange(u, "mfa.import", map[string]string{"method": "totp"})) // never the secret
+	}
+	err = s.createUser(ctx, u, links)
+	s.auditOutcome(ctx, a, err, events...)
+	if err != nil {
+		if lerr := s.linkConflict(ctx, err, u, imports); lerr != nil {
+			return nil, lerr
+		}
 		return nil, s.userConflict(ctx, err, u)
 	}
 	return u, nil
 }
 
-// createUser writes the new user u (and its link, when link is given) in one transaction that asserts its
+// createUser writes the new user u (and its links) in one transaction that asserts its
 // organization's deletion guard is as it was found, open (store.Op.Assert: the guard is read, not written, so creations
 // never conflict with each other): a deletion that has taken the guard refuses it (errOrgDeleting), and one that takes
 // the guard after it counts the user (see orgDeleting). A guard changed meanwhile is read and judged again.
-func (s *Service) createUser(ctx context.Context, u *model.User, link func(u *model.User) *model.Identity) error {
+func (s *Service) createUser(ctx context.Context, u *model.User, links []*model.Identity) error {
 	for attempt := 0; ; attempt++ {
 		g, err := s.openOrgGuard(ctx, u.OrgID)
 		if err != nil {
 			return err
 		}
 		ents := []model.Entity{u}
-		if link != nil {
-			ents = append(ents, link(u))
+		for _, l := range links {
+			ents = append(ents, l)
 		}
 		var ops []store.Op
 		for _, e := range ents {

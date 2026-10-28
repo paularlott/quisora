@@ -1547,7 +1547,7 @@ export default function (Alpine) {
     'cluster.reload.failure', 'group.create', 'group.delete', 'group.member.add', 'group.member.remove', 'group.update',
     'identity.link.email', 'identity.link.refused', 'identity.refresh.refused', 'identity.unlink', 'invite.accept',
     'keys.create', 'keys.remove', 'keys.rotate', 'login.email_code.sent', 'login.failure', 'login.limited', 'login.lockout',
-    'login.recovery_code', 'login.success', 'logout', 'oauth.client_auth.limited', 'oauth.client_credentials',
+    'login.recovery_code', 'login.success', 'logout', 'mfa.import', 'oauth.client_auth.limited', 'oauth.client_credentials',
     'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.refresh',
     'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary', 'org.signout',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',

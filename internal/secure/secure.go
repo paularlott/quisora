@@ -189,7 +189,8 @@ const (
 func isBcrypt(encoded string) bool { return strings.HasPrefix(encoded, "$2") }
 
 // CheckImport validates a password hash brought from another system before it is stored: bcrypt with a cost of 4 to
-// 14, or argon2id within the bounds Verify accepts. It returns the kind ("bcrypt" or "argon2id"), or ErrHashParams.
+// 14, SHA-512 crypt ("$6$") with at most 1,000,000 rounds, or argon2id within the bounds Verify accepts. It returns
+// the kind ("bcrypt", "sha512-crypt" or "argon2id"), or ErrHashParams.
 func CheckImport(encoded string) (string, error) {
 	if isBcrypt(encoded) {
 		cost, err := bcrypt.Cost([]byte(encoded))
@@ -197,6 +198,12 @@ func CheckImport(encoded string) (string, error) {
 			return "", ErrHashParams
 		}
 		return "bcrypt", nil
+	}
+	if isSHA512Crypt(encoded) {
+		if _, _, _, err := parseSHA512Crypt(encoded); err != nil {
+			return "", err
+		}
+		return "sha512-crypt", nil
 	}
 	if _, _, _, _, _, err := parseArgon2(encoded); err != nil {
 		return "", err
@@ -227,7 +234,7 @@ func parseArgon2(encoded string) (m, t uint32, p uint8, salt, want []byte, err e
 }
 
 // Verify reports whether password matches the encoded hash, and (rehash) whether the hash should be replaced while
-// the caller has the password: an imported bcrypt hash, argon2id made with settings other than today's, or one made
+// the caller has the password: an imported bcrypt or SHA-512 crypt hash, argon2id made with settings other than today's, or one made
 // of the password as typed rather than normalized (imported from another system). An empty hash never matches (but
 // still costs a hash, so timing does not reveal whether an account has a password). A hash naming settings outside
 // the bounds above is refused without hashing (ErrHashParams). key is the waiting line's (Hash).
@@ -245,6 +252,24 @@ func (h *Hasher) Verify(ctx context.Context, key, password, encoded string) (ok,
 			return false, false, nil
 		}
 		return true, true, nil
+	}
+	if isSHA512Crypt(encoded) {
+		salt, rounds, want, err := parseSHA512Crypt(encoded)
+		if err != nil {
+			return false, false, err
+		}
+		if err := h.acquire(ctx, key); err != nil {
+			return false, false, err
+		}
+		defer h.release()
+		// The system it came from hashed the password as typed; the normalized form is tried as well (when it differs),
+		// as with argon2id.
+		for _, pw := range slices.Compact([]string{password, NormalizePassword(password)}) {
+			if subtle.ConstantTimeCompare([]byte(sha512Crypt([]byte(pw), salt, rounds)), []byte(want)) == 1 {
+				return true, true, nil
+			}
+		}
+		return false, false, nil
 	}
 	plain := encoded != ""
 	m, t, p, salt, want, perr := parseArgon2(encoded)
