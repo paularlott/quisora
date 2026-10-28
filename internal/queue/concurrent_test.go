@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,7 +34,7 @@ func newGate() *gate {
 		maxKey: map[string]int{}, started: make(chan string, 100)}
 }
 
-func (g *gate) deliver(_ context.Context, it string) error {
+func (g *gate) deliver(ctx context.Context, it string) error {
 	g.mu.Lock()
 	g.active[it]++
 	g.perKey[keyOf(it)]++
@@ -42,12 +43,18 @@ func (g *gate) deliver(_ context.Context, it string) error {
 	g.maxAll = max(g.maxAll, g.total)
 	g.mu.Unlock()
 	g.started <- it
-	<-g.release
-	g.mu.Lock()
-	g.active[it]--
-	g.perKey[keyOf(it)]--
-	g.total--
-	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		g.active[it]--
+		g.perKey[keyOf(it)]--
+		g.total--
+		g.mu.Unlock()
+	}()
+	select {
+	case <-g.release:
+	case <-ctx.Done(): // the queue is closing
+		return ctx.Err()
+	}
 	g.done.Add(1)
 	return nil
 }
@@ -63,16 +70,37 @@ func addAll(t *testing.T, q *Queue[string], items ...string) {
 	}
 }
 
-// A pass delivers by at most Workers at once and by at most PerKey of one key; what a key's limit holds back is
-// delivered by the next pass, and the pass says so (its next time is now).
+// openWith opens a queue of strings with the test defaults, closed when the test ends.
+func openWith(t *testing.T, o Options[string]) *Queue[string] {
+	t.Helper()
+	o.Name, o.Log, o.Binding, o.Max = "test queue", logger.NewNullLogger(), "test/queue", 1000
+	o.Sealer = sealer(t, secure.RandomBytes(32))
+	q, err := Open(t.TempDir(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(q.Close)
+	return q
+}
+
+// next waits for the next delivery to begin, and returns its item.
+func (g *gate) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case it := <-g.started:
+		return it
+	case <-time.After(3 * time.Second):
+		t.Fatal("nothing was delivered: a slow delivery holds the queue")
+		return ""
+	}
+}
+
+// Deliveries are by at most Workers at once and by at most PerKey of one key; what a key's limit holds back is
+// delivered as its deliveries end, and everything is delivered in the end.
 func TestWorkersAndPerKeyBound(t *testing.T) {
 	g := newGate()
-	q := idle(t.TempDir(), Options[string]{Sealer: sealer(t, secure.RandomBytes(32)), Deliver: g.deliver,
-		Workers: 3, Key: keyOf, PerKey: 2})
+	q := openWith(t, Options[string]{Deliver: g.deliver, Workers: 3, Key: keyOf, PerKey: 2})
 	addAll(t, q, "A1", "A2", "A3", "A4", "B1", "B2", "B3")
-	var next atomic.Value
-	passed := make(chan struct{})
-	go func() { next.Store(q.deliverDue(context.Background())); close(passed) }()
 	waitFor(t, func() bool { return g.inFlight() == 3 })
 	time.Sleep(50 * time.Millisecond) // for any delivery that should not start
 	g.mu.Lock()
@@ -81,26 +109,9 @@ func TestWorkersAndPerKeyBound(t *testing.T) {
 	}
 	g.mu.Unlock()
 	close(g.release)
-	<-passed
+	waitFor(t, func() bool { return q.Queued() == 0 && g.done.Load() == 7 })
 	if g.maxAll > 3 || g.maxKey["A"] > 2 || g.maxKey["B"] > 2 {
 		t.Errorf("at most %d at once (A %d, B %d), want 3, 2 and 2", g.maxAll, g.maxKey["A"], g.maxKey["B"])
-	}
-	if n := next.Load().(time.Time); n.IsZero() || time.Until(n) > time.Second {
-		t.Errorf("a pass that held items back must be followed at once: next %v", n)
-	}
-	// A3 and A4 were held back by their key (both A deliveries were running when the pass reached them); B3 too
-	// when B1 had not finished by then, which depends on timing.
-	if n := q.Queued(); n < 2 || n > 3 {
-		t.Fatalf("%d queued after the first pass, want A3 and A4 (and perhaps B3) held back", n)
-	}
-	for range 3 { // each pass delivers what the last held back
-		if q.Queued() == 0 {
-			break
-		}
-		q.deliverDue(context.Background())
-	}
-	if q.Queued() != 0 || g.done.Load() != 7 {
-		t.Fatalf("queued %d, delivered %d, want 0 and 7", q.Queued(), g.done.Load())
 	}
 }
 
@@ -108,25 +119,96 @@ func TestWorkersAndPerKeyBound(t *testing.T) {
 // wait, and the other key's item is delivered while the slow ones are still running.
 func TestSlowKeyDoesNotDelayAnother(t *testing.T) {
 	g := newGate()
-	q := idle(t.TempDir(), Options[string]{Sealer: sealer(t, secure.RandomBytes(32)), Deliver: g.deliver,
-		Workers: 2, Key: keyOf, PerKey: 1})
+	q := openWith(t, Options[string]{Deliver: g.deliver, Workers: 2, Key: keyOf, PerKey: 1})
 	addAll(t, q, "A1", "A2", "B1")
-	passed := make(chan struct{})
-	go func() { q.deliverDue(context.Background()); close(passed) }()
-	got := map[string]bool{}
-	for range 2 {
-		select {
-		case it := <-g.started:
-			got[it] = true
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %v started: the slow key holds the queue", got)
-		}
-	}
+	got := map[string]bool{g.next(t): true, g.next(t): true}
 	if !got["A1"] || !got["B1"] {
 		t.Fatalf("started %v, want A1 and B1 (A2 waits for its key)", got)
 	}
+}
+
+// An item added while another key's delivery is slow is delivered at once, not once that delivery has ended: the
+// workers are free for it (the back-channel retries of one organization that never answers must not hold the first
+// retry of another for the 8 s timeout).
+func TestAddedItemDoesNotWaitForSlowDelivery(t *testing.T) {
+	g := newGate()
+	q := openWith(t, Options[string]{Deliver: g.deliver, Workers: 8, Key: keyOf, PerKey: 2})
+	addAll(t, q, "A1")
+	if it := g.next(t); it != "A1" {
+		t.Fatalf("started %s", it)
+	}
+	addAll(t, q, "B1") // A1 is still running: nothing has released it
+	if it := g.next(t); it != "B1" {
+		t.Fatalf("started %s, want B1 while A1 is running", it)
+	}
 	close(g.release)
-	<-passed
+	waitFor(t, func() bool { return q.Queued() == 0 })
+}
+
+// An item that comes due while another key's delivery is slow is delivered when it does, not once that delivery has
+// ended.
+func TestDueItemDoesNotWaitForSlowDelivery(t *testing.T) {
+	g := newGate()
+	q := openWith(t, Options[string]{Deliver: g.deliver, Workers: 8, Key: keyOf, PerKey: 2})
+	if err := q.Add("B1", 200*time.Millisecond, 0); err != nil {
+		t.Fatal(err)
+	}
+	addAll(t, q, "A1")
+	if it := g.next(t); it != "A1" {
+		t.Fatalf("started %s, want A1 (B1 is not due)", it)
+	}
+	if it := g.next(t); it != "B1" {
+		t.Fatalf("started %s, want B1 once due while A1 is running", it)
+	}
+	close(g.release)
+	waitFor(t, func() bool { return q.Queued() == 0 })
+}
+
+// A queue of one worker (the mail queue) delivers one item at a time, oldest first, even with more due at once.
+func TestSerialQueueOldestFirst(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	var active, overlap atomic.Int32
+	q := openWith(t, Options[string]{Deliver: func(_ context.Context, it string) error {
+		if active.Add(1) > 1 {
+			overlap.Add(1)
+		}
+		time.Sleep(2 * time.Millisecond)
+		active.Add(-1)
+		mu.Lock()
+		order = append(order, it)
+		mu.Unlock()
+		return nil
+	}})
+	want := []string{"1", "2", "3", "4", "5", "6"}
+	addAll(t, q, want...)
+	waitFor(t, func() bool { return q.Queued() == 0 })
+	mu.Lock()
+	defer mu.Unlock()
+	if overlap.Load() != 0 || !slices.Equal(order, want) {
+		t.Errorf("delivered %v with %d overlaps, want %v one at a time", order, overlap.Load(), want)
+	}
+}
+
+// Close cancels the deliveries in flight and waits for them: their attempts do not count, and the items stay queued.
+func TestCloseCancelsDeliveries(t *testing.T) {
+	g := newGate()
+	var failed atomic.Int32
+	q := openWith(t, Options[string]{Deliver: g.deliver, Workers: 2, Backoff: []time.Duration{time.Hour},
+		Failed: func(string, int, time.Duration, error) { failed.Add(1) }})
+	addAll(t, q, "A1", "B1")
+	g.next(t)
+	g.next(t)
+	closed := make(chan struct{})
+	go func() { q.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close waits for the deliveries")
+	}
+	if failed.Load() != 0 || q.Queued() != 2 || g.inFlight() != 0 {
+		t.Errorf("failed %d, queued %d, in flight %d, want 0, 2 and 0", failed.Load(), q.Queued(), g.inFlight())
+	}
 }
 
 // Items are never delivered twice at the same time, whatever the number of workers and passes: every attempt of an
@@ -198,8 +280,7 @@ func TestResealDuringDelivery(t *testing.T) {
 				return nil
 			}})
 		addAll(t, q, "A1")
-		passed := make(chan struct{})
-		go func() { q.deliverDue(context.Background()); close(passed) }()
+		q.dispatch(context.Background())
 		<-started
 		ring.Replace(sealer(t, newKey, oldKey))
 		resealed := make(chan struct{})
@@ -215,7 +296,7 @@ func TestResealDuringDelivery(t *testing.T) {
 			t.Fatal("Reseal waits for the delivery")
 		}
 		close(release)
-		<-passed
+		q.deliveries.Wait()
 		ring.Replace(sealer(t, newKey)) // the previous key is retired
 		names, err := q.files()
 		switch {

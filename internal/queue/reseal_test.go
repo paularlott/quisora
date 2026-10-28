@@ -82,7 +82,7 @@ func TestResealUnreadableQueue(t *testing.T) {
 	if _, err := q.read("none" + ext); err == nil {
 		t.Fatal("read of a missing file")
 	}
-	if next := q.deliverDue(context.Background()); !next.IsZero() {
+	if next := pass(q, context.Background()); !next.IsZero() {
 		t.Fatalf("next %v", next)
 	}
 }

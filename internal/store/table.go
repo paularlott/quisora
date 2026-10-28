@@ -131,6 +131,16 @@ func (t *Table[T, PT]) Get(ctx context.Context, id string) (PT, error) {
 	return t.decode(r)
 }
 
+// GetIn loads a live entity by id when it is in the partition of partitionKey (store GetIn): one of another partition is
+// ErrNotFound, as one that does not exist.
+func (t *Table[T, PT]) GetIn(ctx context.Context, partitionKey, id string) (PT, error) {
+	r, err := GetIn(ctx, t.S, t.Kind, partitionKey, id)
+	if err != nil {
+		return nil, err
+	}
+	return t.decode(r)
+}
+
 // GetMany loads the live entities among ids, in their order, leaving out those that do not exist (store GetMany).
 func (t *Table[T, PT]) GetMany(ctx context.Context, ids []string) ([]PT, error) {
 	recs, err := GetMany(ctx, t.S, t.Kind, ids)

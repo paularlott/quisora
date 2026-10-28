@@ -39,7 +39,8 @@ func (s *Store) open() error {
 }
 
 var (
-	_ store.Store = (*Store)(nil)
+	_ store.Store           = (*Store)(nil)
+	_ store.PartitionGetter = (*Store)(nil)
 )
 
 // Get returns the live record kind/id from this node's copy; in a gossip cluster, only while this node can vouch for the
@@ -95,6 +96,20 @@ func (s *Store) gated(ctx context.Context, kind model.Kind, miss func() int, rea
 		}
 	}
 	return r, err
+}
+
+// GetIn returns the live record kind/id when it is in the partition of partitionKey (store.GetIn), through the staleness
+// gate on that one partition whatever the read finds: a record of another partition is not found (it is not in the one
+// asked of, and a record never moves), and a miss is answered from that partition's copy alone. So an id never received
+// here (a stale or random session cookie of an organization) is "not found" while another partition is between owners,
+// where Get's miss of it needs every partition readable.
+func (s *Store) GetIn(ctx context.Context, kind model.Kind, partitionKey, id string) (*store.Record, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	p := partitionNum(partitionKey)
+	return s.gated(ctx, kind, func() int { return p },
+		func() (*store.Record, error) { return store.GetIn(ctx, s.inner, kind, partitionKey, id) })
 }
 
 // idPartition is the partition of record kind/id as far as this node can tell without finding it live: from its kind

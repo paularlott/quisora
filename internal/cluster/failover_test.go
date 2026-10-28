@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +76,61 @@ func TestAloneAfterAllStopped(t *testing.T) {
 	})
 	if err := tn.st().Put(bg, newRec(newID(), "")); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// A lost owner's partitions cannot take a node down: while a partition's owner is gone and not yet replaced, a node
+// holds at most maxPartitionWrites writes of it waiting, refuses any more at once (store.ErrUnavailable, not unknown:
+// nothing was sent), and goes on writing the other partitions meanwhile.
+func TestWritesWaitingForALostOwnerAreCapped(t *testing.T) {
+	c := started(t, badgerBackend())
+	org, owner := c.orgNotOwnedBy(0)
+	p := partitionNum(org)
+	elsewhere := ""
+	for k := 0; elsewhere == ""; k++ {
+		if o := fmt.Sprintf("org-%d", k); partitionNum(o) != p && c.ownerOf(partitionNum(o)) != owner {
+			elsewhere = o
+		}
+	}
+	stop(c.nodes[owner])
+
+	const extra = 16
+	type result struct {
+		err  error
+		took time.Duration
+	}
+	results := make(chan result, maxPartitionWrites+extra)
+	start := make(chan struct{})
+	for range maxPartitionWrites + extra {
+		go func() {
+			<-start
+			began := time.Now()
+			err := c.nodes[0].st().Put(bg, newOrgRec(org))
+			results <- result{err, time.Since(began)}
+		}()
+	}
+	close(start)
+	// the other partitions are written promptly while the lost owner's writes wait
+	for range 5 {
+		began := time.Now()
+		if err := c.nodes[0].st().Put(bg, newOrgRec(elsewhere)); err != nil || time.Since(began) > time.Second {
+			t.Fatalf("a write of another partition while the owner of partition %d is lost: %v after %s", p, err,
+				time.Since(began))
+		}
+	}
+	refused := 0
+	for range maxPartitionWrites + extra {
+		r := <-results
+		if r.err == nil || !strings.Contains(r.err.Error(), "too many writes") {
+			continue
+		}
+		refused++
+		if !errors.Is(r.err, store.ErrUnavailable) || errors.Is(r.err, store.ErrUnconfirmed) || r.took > 250*time.Millisecond {
+			t.Errorf("a write past the cap: %v after %s, want unavailable at once", r.err, r.took)
+		}
+	}
+	if refused != extra {
+		t.Fatalf("%d of %d writes to a partition whose owner is lost were refused at once, want %d (the cap is %d)",
+			refused, maxPartitionWrites+extra, extra, maxPartitionWrites)
 	}
 }

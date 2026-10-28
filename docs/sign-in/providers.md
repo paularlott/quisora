@@ -74,7 +74,9 @@ The first time someone signs in through a provider, Quisora decides which accoun
    loses every link they did not make themselves there: those made by email, by an account the provider created at
    first sign-in (including a guest of an [organization provider](#users-of-another-organization-guest-accounts)),
    or by an administrator. The provider's side controls such a link, and the account may have no second factor yet,
-   so whoever held the provider's account could enrol their own. Each removal is audited as `identity.unlink`. The
+   so whoever held the provider's account could enrol their own. A sign-in through such a link that is still between
+   its steps (entering a code, enrolling a second factor) ends with the promotion: it cannot be finished. Each
+   removal is audited as `identity.unlink`. The
    user connects the provider again on their account page, signed in, if they want it.
 3. **Create accounts automatically** (when on): a new user with the provider's verified address and name, the `user`
    role (`user.provision`). Refused if a user already has that address.

@@ -218,9 +218,9 @@ application does not take (unreachable, or answering with an error) is retried a
 hold each other up: each has its own share of the senders (8 at a time) and of the queue (2,500 logouts), and the
 senders serve the organizations in turn, so an application that is slow or never answers delays only the notices of
 its own organization. A logout that finds its organization's share full goes straight to the retry queue instead.
-The retry queue is fair the same way: it sends 8 at a time, at most 2 of them for one organization, so retries to an
-application that never answers hold back only the retries of its own organization (a retry pass lasts as long as its
-slowest attempt, 8 s at most).
+The retry queue is fair the same way: it sends 8 at a time, at most 2 of them for one organization, and sends each
+retry as soon as one of those is free, so retries to an application that never answers (8 s each, at most) hold back
+only the retries of its own organization, and a new retry of another one does not wait for them.
 Answer quickly and idempotently: the same logout can arrive twice.
 
 ## Tokens for an API (resource indicators)

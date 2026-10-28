@@ -142,7 +142,7 @@ func (s *Service) modifyUserWith(ctx context.Context, id string, f func(u *model
 // audited. f may add to detail what only it knows.
 func (s *Service) modifyUserAudited(ctx context.Context, a *Actor, u *model.User, action string, detail map[string]string,
 	f func(u *model.User) error) (out *model.User, err error) {
-	err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() (err error) {
+	err = s.AuditedUser(ctx, a, u, action, detail, func() (err error) {
 		out, err = s.modifyUser(ctx, u.ID, f)
 		return err
 	})
@@ -367,7 +367,7 @@ func (s *Service) VerifyEmailAddress(ctx context.Context, userID, address string
 	if err == nil && !changed {
 		return nil // nothing to record
 	}
-	s.auditOutcome(ctx, System, err, change{cur.OrgID, "user.email.verify", cur.Username, map[string]string{"email": address}})
+	s.auditOutcome(ctx, System, err, userChange(cur, "user.email.verify", map[string]string{"email": address}))
 	return err
 }
 

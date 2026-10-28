@@ -266,9 +266,36 @@ func (s *Service) AuditRefused(ctx context.Context, a *Actor, method, path, reas
 	})
 }
 
-// Audit records a security event. Failures are not fatal to the operation.
+// Audit records a security event. Failures are not fatal to the operation. An event whose target is a user is
+// recorded with AuditUser.
 func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) {
-	e, log, kv := s.auditEvent(ctx, a, orgID, action, target, detail)
+	s.auditChange(ctx, a, change{orgID, action, target, detail, nil})
+}
+
+// AuditUser records a security event whose target is the user u, in u's organization: the event names u by username
+// (as the log shows them) and by id, and is a super admin's event when u is one (model.Audit.SuperAdmin).
+func (s *Service) AuditUser(ctx context.Context, a *Actor, u *model.User, action string, detail map[string]string) {
+	s.auditChange(ctx, a, userChange(u, action, detail))
+}
+
+// AuditTargetUser returns the user with id userID as an event of organization orgID that targets them names them
+// (AuditUser), for a caller that holds only the id: read from orgID's partition. One that is not there is named by
+// its id; one that cannot be read is taken for a super admin, so that its event is never shown below them on a guess.
+func (s *Service) AuditTargetUser(ctx context.Context, orgID, userID string) *model.User {
+	u, err := s.Users.GetIn(ctx, orgID, userID)
+	if err == nil {
+		return u
+	}
+	role := model.RoleUser
+	if !errors.Is(err, store.ErrNotFound) {
+		role = model.RoleSuperAdmin
+	}
+	return &model.User{Meta: model.Meta{ID: userID}, OrgID: orgID, Username: userID, Role: role}
+}
+
+// auditChange records the event of c (Audit).
+func (s *Service) auditChange(ctx context.Context, a *Actor, c change) {
+	e, log, kv := s.auditEvent(ctx, a, c)
 	if s.AuditWriter != nil { // VictoriaLogs: the database keeps none
 		s.AuditWriter.WriteAudit(e)
 		return
@@ -283,7 +310,7 @@ func (s *Service) Audit(ctx context.Context, a *Actor, orgID, action, target str
 // With VictoriaLogs the event is handed to its writer, which never loses it silently (WriteAudit). The database's copy
 // is this node's own (with gossip, every node keeps its own audit events).
 func (s *Service) AuditStored(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) error {
-	e, log, kv := s.auditEvent(ctx, a, orgID, action, target, detail)
+	e, log, kv := s.auditEvent(ctx, a, change{orgID, action, target, detail, nil})
 	if s.AuditWriter != nil {
 		s.AuditWriter.WriteAudit(e)
 		return nil
@@ -295,16 +322,26 @@ func (s *Service) AuditStored(ctx context.Context, a *Actor, orgID, action, targ
 	return nil
 }
 
-// auditEvent makes the audit event of a security event (with its id and time) and writes it to the structured log; it
-// returns the event and the log line's fields.
-func (s *Service) auditEvent(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string) (*model.Audit, logger.Logger, []any) {
+// auditEvent makes the audit event of c, a security event (with its id and time), and writes it to the structured log;
+// it returns the event and the log line's fields.
+func (s *Service) auditEvent(ctx context.Context, a *Actor, c change) (*model.Audit, logger.Logger, []any) {
 	if a == nil {
 		a = System
 	}
+	orgID, action, target, detail := c.org, c.action, c.target, c.detail
+	// The actor makes it a super admin's event when it is a super admin's account: an operator's restore carries the
+	// role without one, and stays in view.
+	super := a.UserID != "" && a.Role == model.RoleSuperAdmin
+	targetID := ""
+	if c.user != nil { // read now, not when the change was described: its write may have given the user its id
+		target, targetID = c.user.Username, c.user.ID
+		super = super || c.user.Role == model.RoleSuperAdmin
+	}
 	// Queryable audit fields are stored in VARCHAR(255) columns on MySQL/MariaDB.
 	e := &model.Audit{OrgID: orgID, ActorID: a.UserID, Actor: clip(a.Name, 255), Action: clip(action, 255),
-		Target: clip(target, 255), IP: a.IP, Outcome: model.AuditOutcome(action),
-		Detail: detail, Expires: time.Now().Add(time.Duration(s.Cfg.Audit.RetentionDays) * 24 * time.Hour)}
+		Target: clip(target, 255), TargetID: targetID, IP: a.IP, Outcome: model.AuditOutcome(action),
+		Detail: detail, Expires: time.Now().Add(time.Duration(s.Cfg.Audit.RetentionDays) * 24 * time.Hour),
+		SuperAdmin: super}
 	if o, _ := ctx.Value(outcomeKey{}).(string); o != "" { // a change whose outcome is not known (auditUnknown)
 		e.Outcome = o
 	}
@@ -344,7 +381,8 @@ func (s *Service) auditEvent(ctx context.Context, a *Actor, orgID, action, targe
 	// without VictoriaLogs. A request that ends (the client went away) does not lose its audit record.
 	kv := []any{"action", e.Action, "outcome", e.Outcome, "org", orgID, "actor", e.Actor, "actor_id", e.ActorID,
 		"target", e.Target, "ip", e.IP}
-	for k, v := range map[string]string{"request_id": e.RequestID, "user_agent": e.UserAgent, "session_id": e.SessionID} {
+	for k, v := range map[string]string{"target_id": e.TargetID, "request_id": e.RequestID, "user_agent": e.UserAgent,
+		"session_id": e.SessionID} {
 		if v != "" {
 			kv = append(kv, k, v)
 		}

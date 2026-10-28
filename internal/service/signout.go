@@ -276,7 +276,7 @@ func (s *Service) pullSignOut(ctx context.Context, a *Actor, orgID string, serve
 			action, target = "server.signout", "every organization"
 		}
 		s.auditOutcome(ctx, a, err, change{o.ID, action, target, map[string]string{"reason": reason,
-			"api_tokens": strconv.FormatBool(opt.APITokens)}})
+			"api_tokens": strconv.FormatBool(opt.APITokens)}, nil})
 		if err != nil {
 			return nil, mapStore(err)
 		}

@@ -50,7 +50,7 @@ func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason stri
 		detail["result"] = "incomplete"
 		detail["error"] = err.Error()
 	}
-	s.Audit(ctx, a, u.OrgID, "user.locked_out", u.Username, detail)
+	s.AuditUser(ctx, a, u, "user.locked_out", detail)
 	if err != nil {
 		return nil, mapStore(err)
 	}

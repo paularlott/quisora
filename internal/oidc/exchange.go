@@ -126,7 +126,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 		return nil, serverError(err)
 	}
 	tr.issuedType = tokenTypeAccess
-	p.auditClient(ctx, c, u.Username, "oauth.token_exchange", map[string]string{"user_id": u.ID,
+	p.auditClient(ctx, c, u, "oauth.token_exchange", map[string]string{"user_id": u.ID,
 		"subject_client_id": cl.ClientID, "scopes": strings.Join(scopes, " "), "resources": strings.Join(res, " ")})
 	return tr, nil
 }

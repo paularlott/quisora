@@ -38,10 +38,13 @@ func TestFilterConditions(t *testing.T) {
 	}
 }
 
-// The exact actor and target the service asks for (to find what a reader may not see) are escaped equality conditions.
-func TestFilterActorAndTarget(t *testing.T) {
-	f := Filter(service.AuditQuery{Actor: `a" | delete`, Target: "root@example.com"})
-	if !strings.Contains(f, `actor:="a\" | delete"`) || !strings.Contains(f, `target:="root@example.com"`) {
+// A reader below super admin is given only the events marked as not a super admin's: an event without the mark is left
+// out too.
+func TestFilterNoSuperAdmins(t *testing.T) {
+	if f := Filter(service.AuditQuery{Org: "o", NoSuperAdmins: true}); f != `app:="quisora" org:="o" super_admin:="false"` {
 		t.Fatalf("filter %s", f)
+	}
+	if f := Filter(service.AuditQuery{Org: "o"}); strings.Contains(f, "super_admin") {
+		t.Fatalf("a super admin's filter %s", f)
 	}
 }

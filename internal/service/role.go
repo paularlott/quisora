@@ -19,7 +19,9 @@ import (
 // address or created by a provider, and a provider that an organization administrator controls could otherwise
 // keep the first factor of the account while it has no second one enrolled. They are deleted in the
 // transaction that promotes the user, so no copy of the account is ever privileged and linked by email address at
-// once. Its sessions and refresh grants end too, in the same write: a new session epoch (model.User.SessionEpoch).
+// once, and, as with any provider link removed, the account's security generation moves on in that write
+// (model.User.SecurityGen): a sign-in begun through one of them and still between its steps (enrolling the second
+// factor the account lacks) is dead, rather than finished by whoever holds the provider's account. Its sessions and refresh grants end too, in the same write: a new session epoch (model.User.SessionEpoch).
 // A session may have met its second factor only through rules for plain users (an upstream provider trusted for it,
 // or a code mailed to the address: both count for users below manager only), and what a session holds is not judged
 // again by the user's role at each request, so a promotion must not carry such a session over to a privileged
@@ -41,10 +43,13 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	for _, l := range links {
 		also = append(also, store.Op{Rec: store.Tombstone(model.KindIdentity, l.ID)})
 	}
+	if len(links) > 0 {
+		u.BumpSecurity()
+	}
 	return also, func(ctx context.Context, a *Actor, err error) {
 		for _, l := range links {
-			s.auditOutcome(ctx, a, err, change{u.OrgID, "identity.unlink", u.Username,
-				map[string]string{"provider": l.ProviderID, "reason": "promoted to " + string(role)}})
+			s.auditOutcome(ctx, a, err, userChange(u, "identity.unlink",
+				map[string]string{"provider": l.ProviderID, "reason": "promoted to " + string(role)}))
 		}
 	}, nil
 }

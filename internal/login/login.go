@@ -345,12 +345,13 @@ func (m *Module) rateLimit(w http.ResponseWriter, r *http.Request, bucket string
 func (m *Module) auditLimited(r *http.Request, bucket, limit, uid string) {
 	ctx := r.Context()
 	orgID := web.Org(r).ID
-	target := web.ClientIP(r)
-	if uid != "" {
-		target = uid
+	a := &service.Actor{IP: web.ClientIP(r), Name: "anonymous"}
+	detail := map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": bucket}
+	if uid != "" { // the budget of an account (a browser it signed in from): the account is the target
+		m.s.Svc.AuditUser(ctx, a, m.s.Svc.AuditTargetUser(ctx, orgID, uid), "login.limited", detail)
+		return
 	}
-	m.s.Svc.Audit(ctx, &service.Actor{IP: web.ClientIP(r), Name: "anonymous"}, orgID, "login.limited", target,
-		map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": bucket})
+	m.s.Svc.Audit(ctx, a, orgID, "login.limited", web.ClientIP(r), detail)
 }
 
 // ---- lockout -------------------------------------------------------------------------------------------------
@@ -431,14 +432,18 @@ func (m *Module) lockedResponse(w http.ResponseWriter) {
 
 func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.User, login string, detail map[string]string) {
 	a, orgID, target := auditActor(r, org, u, login)
+	if u != nil { // the account is the target, named by its id as well
+		m.s.Svc.AuditUser(context.WithoutCancel(r.Context()), a, u, action, detail)
+		return
+	}
 	m.s.Svc.Audit(context.WithoutCancel(r.Context()), a, orgID, action, target, detail)
 }
 
 // auditUnknown records action as audit does, with outcome "unknown": the change ended with err, whose outcome is not
 // known (it may have been made), and one that was made must not be missing from the audit log.
 func (m *Module) auditUnknown(r *http.Request, action string, org *model.Org, u *model.User, detail map[string]string, err error) {
-	a, orgID, target := auditActor(r, org, u, u.Username)
-	_ = m.s.Svc.Audited(context.WithoutCancel(r.Context()), a, orgID, action, target, detail, func() error { return err })
+	a, _, _ := auditActor(r, org, u, u.Username)
+	_ = m.s.Svc.AuditedUser(context.WithoutCancel(r.Context()), a, u, action, detail, func() error { return err })
 }
 
 // auditActor is who an audit event of the request names, in which organization, and its target.
@@ -485,8 +490,9 @@ type ticket struct {
 	// Gen is the account's security generation (model.User.SecurityGen) when the first factor was verified, and Stamp
 	// the sign-out counters then (model.SignOutStamp). Every later step checks both against the account as it is now
 	// (ticketCurrent): a ticket whose password has since been changed, whose account set up a second factor
-	// meanwhile, was disabled, re-enabled or given another role, or whose organization pulled the emergency
-	// sign-out lever, is dead, and the browser holding it starts again with the account's current credentials.
+	// meanwhile, lost the provider link it signed in with (removed, or taken by a promotion), was disabled or
+	// re-enabled, or whose organization pulled the emergency sign-out lever, is dead, and the browser holding it
+	// starts again with the account's current credentials. (The role is not bound: each step judges it afresh.)
 	Gen   uint64             `json:"g"`
 	Stamp model.SignOutStamp `json:"st"`
 }

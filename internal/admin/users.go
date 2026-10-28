@@ -890,7 +890,7 @@ func (m *Module) revokeUserSession(w http.ResponseWriter, r *http.Request) {
 			web.WriteJSON(w, http.StatusConflict, web.ErrorBody{Error: "That is the session you are using. Sign out instead."})
 			return
 		}
-		if err := m.s.Svc.Audited(ctx, a, u.OrgID, "user.session.revoke", u.Username, map[string]string{"ip": s.IP},
+		if err := m.s.Svc.AuditedUser(ctx, a, u, "user.session.revoke", map[string]string{"ip": s.IP},
 			func() error { return m.s.Sessions.Delete(ctx, s.ID) }); err != nil {
 			web.WriteError(w, err)
 			return

@@ -475,12 +475,21 @@ pages read it from one of two places:
 | One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database |
 | Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads              |
 
-Admins see their own organization's events, except those that name a super admin as actor or target (a sign-in, a
+Admins see their own organization's events, except those that name a super admin as actor or target user (a sign-in, a
 change made to one, a super admin's work in the organization): super admins are invisible below them everywhere, so the
 page, its count and its search leave those events out. Super admins also see every organization, and all of it
 (`/admin/audit`, `GET /api/audit?org=<name>`). The same holds when the events are read from VictoriaLogs through
-Quisora; reading them in VictoriaLogs itself is for the operators who run it. An event that names a super admin only in
-its detail (such as a group membership change) is not recognised.
+Quisora; reading them in VictoriaLogs itself is for the operators who run it.
+
+Which events those are is decided when each is written: an event names its actor and its target user by id
+(`actor_id`, `target_id`) as well as by name, and carries a `super_admin` mark when either was a super admin at the
+time. An admin's page is the organization's events without the mark, one indexed filter: it reads no other
+organization's data and no list of super admins, and costs what any page costs. So the mark follows the account, not
+the name: a super admin renamed keeps their past hidden. It is never changed afterwards (the log is not rewritten): a
+user's events from before they were made a super admin stay visible to the admins who could see them then, and a super
+admin's from before a demotion stay hidden. An event whose target is known only by an id that cannot be read when it
+is written is marked, not shown on a guess. An event that names a super admin only in its detail (such as a group
+membership change) is not marked.
 
 In a gossip cluster with the database trail, an event is on the node that recorded it only: a node that is down, or slow to
 answer (3 s), is missing from a page (the page says how many nodes answered), and a node whose disk is lost takes its events
@@ -604,7 +613,8 @@ spool. Every event has a unique `id`; the audit pages show and count each once.
 - Commands (`bootstrap`, `invite`, offline `restore`) do not use the spool: they retry, then log `audit.undelivered`,
   as without one.
 - Each event has the stream fields `app` (`quisora`) and `org` (organization id), and the fields `action`, `outcome`,
-  `actor`, `actor_id`, `target`, `ip`, `node`, `id`, `request_id`, `user_agent`, `session_id` and `detail.<name>`.
+  `actor`, `actor_id`, `target`, `target_id` (a target user's id), `super_admin` (`true` for an event of a super admin,
+  [above](#audit-log)), `ip`, `node`, `id`, `request_id`, `user_agent`, `session_id` and `detail.<name>`.
 
 ```bash
 curl http://victorialogs:9428/select/logsql/query \

@@ -101,6 +101,52 @@ func TestPromotedGuestCannotSignInThroughItsProvider(t *testing.T) {
 	}
 }
 
+// A sign-in through a provider that was between its steps when the account was promoted cannot be finished: the
+// promotion took the provider link it signed in with, so the ticket (here at the enrolment of a second factor, which
+// the account has none of) is dead, and whoever holds the provider's account cannot enrol their own authenticator app
+// and become the manager.
+func TestPromotionEndsProviderSignInInProgress(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	u.setSettings(t, u.org, func(s *model.OrgSettings) { s.RequireMFA = true })
+	p := u.oidcProvider(t, nil)
+	b := u.browser(t)
+	res := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
+	loc := res.Header.Get("Location")
+	if res.StatusCode != 303 || !strings.Contains(loc, "step=1") || b.hasSession() {
+		t.Fatalf("callback: %d %q session=%v", res.StatusCode, loc, b.hasSession())
+	}
+	_, body := b.get(loc)
+	ticket := attr(body, "data-ticket")
+	if !strings.Contains(body, `data-step="enrol"`) || ticket == "" {
+		t.Fatalf("sign-in page does not continue with enrolment: %.600s", body)
+	}
+	res2, out := b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	wantStatus(t, res2, out, 200)
+	secret := str(out, "secret")
+
+	pat, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	res2, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	wantStatus(t, res2, out, 401)
+	res2, out = b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	wantStatus(t, res2, out, 401)
+	if b.hasSession() {
+		t.Fatal("the sign-in begun through the provider made a session after the promotion")
+	}
+	if fresh, err := u.Svc.Users.Get(ctx, pat.ID); err != nil || fresh.HasTOTP() {
+		t.Fatalf("authenticator app enrolled after the promotion: %v", err)
+	}
+	if n := len(sessionsOf(t, u.env, pat)); n != 0 {
+		t.Fatalf("sessions %d", n)
+	}
+}
+
 func TestUpstreamHostileNext(t *testing.T) {
 	u := newUpEnv(t, nil)
 	p := u.oidcProvider(t, nil)

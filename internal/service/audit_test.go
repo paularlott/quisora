@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,7 +187,7 @@ func TestAuditTrail(t *testing.T) {
 	seen := map[string]bool{}
 	for _, e := range list {
 		seen[e.Action] = true
-		if e.Action == "user.delete" && (e.Actor != "aadmin" || e.ActorID != c.aAdmin.ID || e.Target != "audited") {
+		if e.Action == "user.delete" && (e.Actor != "aadmin" || e.ActorID != c.aAdmin.ID || e.Target != "audited" || e.TargetID != u.ID) {
 			t.Errorf("audit entry %+v", e)
 		}
 	}
@@ -256,10 +257,10 @@ func TestOutcomeUnknownChangesAreAudited(t *testing.T) {
 	}
 }
 
-// Super admins are invisible below them everywhere, so the audit log leaves out what names one as its actor or target
-// for an administrator (here of the primary organization, whose log holds their sign-ins and the changes made to them,
-// and of another organization they acted in), and the page and its total agree: nothing says that such events exist.
-// Their own and other administrators' events stay, and a super admin sees everything.
+// Super admins are invisible below them everywhere, so the audit log leaves out the events that name one as their actor
+// or target user (here of the primary organization, whose log holds their sign-ins and the changes made to them, and
+// of another organization they acted in) for an administrator, and the page and its total agree: nothing says that
+// such events exist. Their own and other administrators' events stay, and a super admin sees everything.
 func TestAuditLeavesOutSuperAdminsForOthers(t *testing.T) {
 	c := newCast(t)
 	sup, padmin := actor(c.super), actor(c.pAdmin)
@@ -271,16 +272,17 @@ func TestAuditLeavesOutSuperAdminsForOthers(t *testing.T) {
 	}
 
 	// the first thing every page of the administrator holds: its own events, then the hidden ones among them
-	c.svc.Audit(c.ctx, padmin, c.primary.ID, "user.update", "puser", nil)
+	c.svc.AuditUser(c.ctx, padmin, c.pUser, "user.update", nil)
 	for i := 0; i < 3; i++ {
-		c.svc.Audit(c.ctx, sup, c.primary.ID, "login.success", c.super.Username, map[string]string{"amr": "pwd otp"})
-		c.svc.Audit(c.ctx, padmin, c.primary.ID, "user.update", c.super.Username, nil) // a change targeting a super admin
-		c.svc.Audit(c.ctx, padmin, c.primary.ID, "user.update", "pmanager", nil)
+		c.svc.AuditUser(c.ctx, sup, c.super, "login.success", map[string]string{"amr": "pwd otp"})
+		c.svc.AuditUser(c.ctx, padmin, c.super, "user.update", nil) // a change targeting a super admin
+		c.svc.AuditUser(c.ctx, padmin, c.pManager, "user.update", nil)
 	}
-	c.svc.Audit(c.ctx, padmin, c.primary.ID, "identity.unlink", c.super.ID, nil) // a target named by id
-	c.svc.Audit(c.ctx, sup, c.a.ID, "org.update", "org-a", nil)                  // a super admin acting in organization a
-	c.svc.Audit(c.ctx, actor(namesake), c.a.ID, "login.success", namesake.Username, nil)
-	c.svc.Audit(c.ctx, actor(c.aAdmin), c.a.ID, "user.update", "auser", nil)
+	// a target known by its id only
+	c.svc.AuditUser(c.ctx, padmin, c.svc.AuditTargetUser(c.ctx, c.primary.ID, c.super.ID), "identity.unlink", nil)
+	c.svc.Audit(c.ctx, sup, c.a.ID, "org.update", "org-a", nil) // a super admin acting in organization a
+	c.svc.AuditUser(c.ctx, actor(namesake), namesake, "login.success", nil)
+	c.svc.AuditUser(c.ctx, actor(c.aAdmin), c.aUser, "user.update", nil)
 
 	names := func(p service.AuditPage) (n []string) {
 		for _, e := range p.Items {
@@ -288,10 +290,7 @@ func TestAuditLeavesOutSuperAdminsForOthers(t *testing.T) {
 		}
 		return n
 	}
-	hidden := func(e *model.Audit) bool {
-		return e.Actor == c.super.Username && e.OrgID != c.a.ID || e.Target == c.super.Username && e.OrgID != c.a.ID ||
-			e.Target == c.super.ID || e.ActorID == c.super.ID
-	}
+	hidden := func(e *model.Audit) bool { return e.ActorID == c.super.ID || e.TargetID == c.super.ID }
 
 	// each reader of an organization's log against what is read as a super admin
 	for _, tc := range []struct {
@@ -373,28 +372,171 @@ func TestAuditLeavesOutSuperAdminsForOthers(t *testing.T) {
 	}
 }
 
-// Hidden events are found a read at a time, so more of them than one read holds are all left out, and a reader that is
-// not the store (VictoriaLogs, the cluster) is asked for the actor and target it is given.
-func TestAuditLeavesOutManyHiddenEventsThroughAnyReader(t *testing.T) {
+// A renamed super admin's past stays hidden: what hides an event is recorded on it when it is written, not looked up
+// by the name its users have now. Among the events is the one that made them (bootstrap: the system's, naming them by
+// their first username), and the total counts only what is shown.
+func TestAuditHidesARenamedSuperAdminsPast(t *testing.T) {
 	c := newCast(t)
-	c.svc.AuditReader = storeReader{c}
-	for i := 0; i < 1100; i++ {
-		c.svc.Audit(c.ctx, actor(c.super), c.primary.ID, "login.success", c.super.Username, nil)
+	sup, padmin := actor(c.super), actor(c.pAdmin)
+	first := c.super.Username
+	if _, err := c.svc.UpdateUser(c.ctx, sup, c.pUser.ID, service.UserInput{FamilyName: ptr("Changed")}); err != nil {
+		t.Fatal(err)
 	}
-	c.svc.Audit(c.ctx, actor(c.pAdmin), c.primary.ID, "user.update", "puser", nil)
-	pg, err := c.svc.ListAudit(c.ctx, actor(c.pAdmin), c.primary.ID, service.AuditQuery{Action: "login.success", Limit: 50})
-	if err != nil || len(pg.Items) != 0 || pg.Total != 0 {
-		t.Fatalf("sign-ins of a super admin: %d events (total %d), %v", len(pg.Items), pg.Total, err)
+	if _, err := c.svc.UpdateUser(c.ctx, sup, c.super.ID, service.UserInput{Username: ptr("renamed")}); err != nil {
+		t.Fatal(err)
 	}
-	pg, err = c.svc.ListAudit(c.ctx, actor(c.pAdmin), c.primary.ID, service.AuditQuery{Limit: 50})
-	if err != nil || pg.Total != len(pg.Items) || len(pg.Items) == 0 {
-		t.Fatalf("the rest: %d events (total %d), %v", len(pg.Items), pg.Total, err)
+	names := func(e *model.Audit) bool {
+		return e.ActorID == c.super.ID || e.Actor == first || e.Target == first || e.Target == "renamed" || e.Target == c.super.ID
+	}
+	all, err := c.svc.ListAudit(c.ctx, sup, c.primary.ID, service.AuditQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen, bootstrap := 0, false
+	for _, e := range all.Items {
+		if !names(e) {
+			seen++
+		}
+		bootstrap = bootstrap || e.Action == "bootstrap" && e.Target == first
+	}
+	if !bootstrap || seen == len(all.Items) {
+		t.Fatalf("the super admin's events: bootstrap %v, %d of %d not theirs", bootstrap, seen, len(all.Items))
+	}
+	pg, err := c.svc.ListAudit(c.ctx, padmin, c.primary.ID, service.AuditQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, e := range pg.Items {
-		if e.Actor == c.super.Username {
-			t.Fatalf("a super admin's event: %+v", e)
+		if names(e) {
+			t.Errorf("an event of the renamed super admin: %s %s %s", e.Actor, e.Action, e.Target)
 		}
 	}
+	if len(pg.Items) != seen || pg.Total != seen {
+		t.Fatalf("%d events (total %d), want %d", len(pg.Items), pg.Total, seen)
+	}
+}
+
+// What hides an event is decided when it is written. A plain user's events stay in view after they are made a super
+// admin: they were seen then, and the audit log is never rewritten. From the promotion on (the promotion included,
+// a super admin's doing) their events are hidden.
+func TestAuditVisibilityIsDecidedWhenWritten(t *testing.T) {
+	c := newCast(t)
+	sup, padmin := actor(c.super), actor(c.pAdmin)
+	c.svc.AuditUser(c.ctx, actor(c.pUser), c.pUser, "login.success", nil)
+	if _, err := c.svc.UpdateUser(c.ctx, sup, c.pUser.ID, service.UserInput{Role: ptr(model.RoleSuperAdmin)}); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := c.svc.Users.Get(c.ctx, c.pUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.svc.AuditUser(c.ctx, actor(promoted), promoted, "login.success", nil)
+	pg, err := c.svc.ListAudit(c.ctx, padmin, c.primary.ID, service.AuditQuery{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after, promotion int
+	for _, e := range pg.Items {
+		switch {
+		case e.Action == "login.success" && e.TargetID == c.pUser.ID && e.SuperAdmin:
+			after++
+		case e.Action == "login.success" && e.TargetID == c.pUser.ID:
+			before++
+		case e.Action == "user.update" && e.TargetID == c.pUser.ID:
+			promotion++
+		}
+	}
+	if before != 1 || after != 0 || promotion != 0 || pg.Total != len(pg.Items) {
+		t.Fatalf("sign-ins as a user %d, as a super admin %d, the promotion %d (%d events, total %d)", before, after,
+			promotion, len(pg.Items), pg.Total)
+	}
+}
+
+// An event whose target is known only by an id that cannot be read is taken for a super admin's: it is never shown
+// below them on a guess. One whose user does not exist is named by the id, and shown.
+func TestAuditTargetThatCannotBeReadIsHidden(t *testing.T) {
+	c := newCast(t)
+	gone := model.NewID()
+	c.svc.AuditUser(c.ctx, service.System, c.svc.AuditTargetUser(c.ctx, c.primary.ID, gone), "identity.unlink", nil)
+	c.svc.Users.S = &faultStore{Store: c.svc.Users.S, beforeGet: func(model.Kind, string) error { return errInjected }}
+	c.svc.AuditUser(c.ctx, service.System, c.svc.AuditTargetUser(c.ctx, c.primary.ID, c.pUser.ID), "identity.unlink", nil)
+	pg, err := c.svc.ListAudit(c.ctx, actor(c.pAdmin), c.primary.ID, service.AuditQuery{Action: "identity.unlink", Limit: 50})
+	if err != nil || len(pg.Items) != 1 || pg.Total != 1 || pg.Items[0].Target != gone || pg.Items[0].TargetID != gone {
+		t.Fatalf("%+v, %v", pg, err)
+	}
+	if pg, _ := c.svc.ListAudit(c.ctx, actor(c.super), c.primary.ID, service.AuditQuery{Action: "identity.unlink", Limit: 50}); pg.Total != 2 {
+		t.Fatalf("a super admin sees %d events, want 2", pg.Total)
+	}
+}
+
+// An audit page below super admins reads the page, however many events it leaves out, and nothing else: the store is
+// asked for the page with the filter that leaves them out (model.Audit.SuperAdmin), not for the users to hide nor for
+// their events first.
+func TestAuditPageReadsOnlyThePage(t *testing.T) {
+	c := newCast(t)
+	for range 1000 {
+		c.svc.Audit(c.ctx, actor(c.super), c.primary.ID, "login.success", c.super.Username, nil)
+	}
+	for range 20 {
+		c.svc.Audit(c.ctx, actor(c.pAdmin), c.primary.ID, "user.update", "puser", nil)
+	}
+	all, err := c.svc.ListAudit(c.ctx, actor(c.super), c.primary.ID, service.AuditQuery{Limit: 2000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range all.Items {
+		if e.ActorID != c.super.ID && e.Target != c.super.Username {
+			seen++
+		}
+	}
+	cs := &countingStore{Store: c.svc.Audits.S, rows: map[model.Kind]int{}}
+	c.svc.Audits.S, c.svc.Users.S = cs, cs
+	for _, reader := range []service.AuditReader{nil, storeReader{c}} { // this node's store, and a reader given the query
+		c.svc.AuditReader = reader
+		clear(cs.rows)
+		pg, err := c.svc.ListAudit(c.ctx, actor(c.pAdmin), c.primary.ID, service.AuditQuery{Limit: 10})
+		if err != nil || len(pg.Items) != 10 || pg.Total != seen {
+			t.Fatalf("%d events (total %d, want %d), %v", len(pg.Items), pg.Total, seen, err)
+		}
+		for _, e := range pg.Items {
+			if e.ActorID == c.super.ID {
+				t.Fatalf("a super admin's event: %+v", e)
+			}
+		}
+		if cs.rows[model.KindAudit] > 10 || len(cs.rows) > 1 {
+			t.Fatalf("a page of 10 read %v", cs.rows)
+		}
+	}
+}
+
+// countingStore counts the records each kind's listings and reads return.
+type countingStore struct {
+	store.Store
+	mu   sync.Mutex
+	rows map[model.Kind]int
+}
+
+func (s *countingStore) count(kind model.Kind, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[kind] += n
+}
+
+func (s *countingStore) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	res, err := s.Store.List(ctx, kind, q)
+	if err == nil {
+		s.count(kind, len(res.Records))
+	}
+	return res, err
+}
+
+func (s *countingStore) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	r, err := s.Store.Get(ctx, kind, id)
+	if err == nil {
+		s.count(kind, 1)
+	}
+	return r, err
 }
 
 // storeReader is an AuditReader that answers from the store as the cluster's does: through AuditListQuery.
@@ -403,20 +545,4 @@ type storeReader struct{ c *cast }
 func (r storeReader) ReadAudit(ctx context.Context, q service.AuditQuery) (service.AuditPage, error) {
 	items, total, err := r.c.svc.Audits.List(ctx, service.AuditListQuery(q))
 	return service.AuditPage{Items: items, Total: total, Nodes: 1, Answered: 1, Source: "test"}, err
-}
-
-// When what a reader may not see cannot be read, the audit log is not shown to them (a super admin, who sees all, needs
-// no such read).
-func TestAuditFailsClosedWhenTheHiddenUsersCannotBeRead(t *testing.T) {
-	c := newCast(t)
-	c.svc.Audit(c.ctx, actor(c.super), c.primary.ID, "login.success", c.super.Username, nil)
-	c.svc.Users.S = &faultStore{Store: c.svc.Users.S, beforeList: func(kind model.Kind, q store.ListQuery) error {
-		return errInjected
-	}}
-	if pg, err := c.svc.ListAudit(c.ctx, actor(c.pAdmin), c.primary.ID, service.AuditQuery{Limit: 50}); err == nil {
-		t.Fatalf("the audit log was shown: %d events", len(pg.Items))
-	}
-	if pg, err := c.svc.ListAudit(c.ctx, actor(c.super), c.primary.ID, service.AuditQuery{Limit: 50}); err != nil || len(pg.Items) == 0 {
-		t.Fatalf("a super admin: %d events, %v", len(pg.Items), err)
-	}
 }

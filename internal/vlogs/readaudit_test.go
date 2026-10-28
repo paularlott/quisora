@@ -19,7 +19,7 @@ import (
 // back as audit events with their time, every named field and the detail.* fields, and the count is the total.
 // Delivery is at least once, so the page query keeps one row per id before it cuts the page (dedup).
 func TestReadAuditQueriesAndParsesRows(t *testing.T) {
-	rows := `{"_time":"2026-10-24T10:00:01.5Z","id":"e1","org":"o1","actor":"ada","actor_id":"u1","action":"user.update","target":"bob","ip":"192.0.2.1","outcome":"success","request_id":"r1","user_agent":"curl","session_id":"s1","detail.tags":"x y","detail.reason":"policy"}` + "\n\n" +
+	rows := `{"_time":"2026-10-24T10:00:01.5Z","id":"e1","org":"o1","actor":"ada","actor_id":"u1","action":"user.update","target":"bob","target_id":"u2","super_admin":"true","ip":"192.0.2.1","outcome":"success","request_id":"r1","user_agent":"curl","session_id":"s1","detail.tags":"x y","detail.reason":"policy"}` + "\n\n" +
 		`{"_time":"2026-10-24T09:59:59Z","id":"e2","org":"o1","actor":"bob","action":"login.failure","outcome":"failure"}` + "\n"
 	vl := newFakeSelect(t, answer(rows, `{"n":"7"}`+"\n"))
 	c := newReader(t, vl.srv.URL)
@@ -38,13 +38,14 @@ func TestReadAuditQueriesAndParsesRows(t *testing.T) {
 	e := page.Items[0]
 	want := time.Date(2026, 10, 24, 10, 0, 1, 500_000_000, time.UTC)
 	if e.ID != "e1" || !e.Created.Equal(want) || e.OrgID != "o1" || e.Actor != "ada" || e.ActorID != "u1" || e.Action != "user.update" ||
-		e.Target != "bob" || e.IP != "192.0.2.1" || e.Outcome != "success" || e.RequestID != "r1" || e.UserAgent != "curl" || e.SessionID != "s1" {
+		e.Target != "bob" || e.IP != "192.0.2.1" || e.Outcome != "success" || e.RequestID != "r1" || e.UserAgent != "curl" || e.SessionID != "s1" ||
+		e.TargetID != "u2" || !e.SuperAdmin {
 		t.Fatalf("first row %+v", e)
 	}
 	if len(e.Detail) != 2 || e.Detail["tags"] != "x y" || e.Detail["reason"] != "policy" {
 		t.Fatalf("detail %v", e.Detail)
 	}
-	if page.Items[1].ID != "e2" || page.Items[1].Detail != nil || page.Items[1].Action != "login.failure" {
+	if page.Items[1].ID != "e2" || page.Items[1].Detail != nil || page.Items[1].Action != "login.failure" || page.Items[1].SuperAdmin {
 		t.Fatalf("second row %+v", page.Items[1])
 	}
 }

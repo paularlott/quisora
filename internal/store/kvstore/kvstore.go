@@ -1003,6 +1003,9 @@ func (s *Store) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc
 // Tx applies ops all or nothing as one write (one Badger transaction, or one operation of a group commit batch, which
 // is rolled back whole when it fails), routed by its first record. Each op runs as putTx does, in order, so a later
 // op sees what the earlier ones wrote: a unique value one releases another may claim, and two claiming one conflict.
+// An assertion reads its record in the transaction, so a commit of that record by another transaction meanwhile is a
+// commit conflict, and the transaction is run again (Badger detects conflicts on what a transaction read); reads do
+// not conflict with each other.
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if len(ops) == 0 {
 		return store.ErrBadTx
@@ -1030,17 +1033,29 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			if stored[i], err = loadRec(tx, op.Rec.Kind, op.Rec.ID); err != nil {
 				return err
 			}
-			retried = retried || (stored[i] != nil && store.Retried(op.Rec, stored[i].rec.Head()))
+			retried = retried || (!op.Assert && stored[i] != nil && store.Retried(op.Rec, stored[i].rec.Head()))
 		}
 		if retried { // the whole transaction was applied: every record it wrote takes its stored version
 			for i, op := range ops {
-				if stored[i] != nil && stored[i].rec.Req == op.Rec.Req {
+				if !op.Assert && stored[i] != nil && stored[i].rec.Req == op.Rec.Req {
 					store.Settle(op.Rec, stored[i].rec.Head())
 				}
 			}
 			return nil
 		}
-		for _, op := range ops {
+		now := time.Now()
+		for i, op := range ops {
+			if op.Assert {
+				// (the records of a transaction are distinct: no earlier op wrote this one since it was read)
+				var rec *store.Record
+				if stored[i] != nil {
+					rec = stored[i].rec
+				}
+				if !op.Asserted(rec, now) {
+					return store.ErrStale
+				}
+				continue
+			}
 			if err := putTx(tx, op.Rec, op.Match, op.Expect); err != nil {
 				return err
 			}

@@ -66,7 +66,8 @@ type Index struct {
 	//   - KindOrg and KindKey (organizations, signing keys): "". They are read by every organization and by pages that
 	//     have no organization yet, and the organization list is one record set;
 	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
-	//     other, so they spread over the partitions instead of loading partition 0;
+	//     other, so they spread over the partitions instead of loading partition 0 (an organization's deletion guard,
+	//     a Lock whose id is the organization's, is so in the organization's partition, with its users);
 	//   - KindEphemeral: "". It is node-local (or shared-database) state that is never replicated by partition, so the
 	//     key is never used.
 	Partition string

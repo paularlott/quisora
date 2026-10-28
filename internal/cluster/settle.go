@@ -25,6 +25,21 @@ var settleWait = 10 * time.Second
 // memory. A variable for tests.
 var maxWaiting = 2048
 
+// maxPartitionWrites caps the writes of one partition under way from a node at once (submit, settling included); past
+// it a write is refused at once (store.ErrUnavailable, nothing sent: a clean retry). A write waits for an owner that
+// cannot take it up to the write timeout (5 s), and a lost owner cannot be told from a slow one for the owner timeout
+// (5 s), after which its partitions are between owners until the takeover (a second or two more): a lost node's
+// partitions are a third of a three-node cluster's, and their writes, uncapped, would pile up on every node at the
+// request rate until they filled the HTTP layer's in-flight limit (limits.max_in_flight, 4096 by default), which then
+// sheds every organization's requests. Capped, the lost owner's partitions hold at most about 22 × 64 ≈ 1,400 of a
+// node's requests, and the other partitions' writes go on. A partition that is merely busy is capped too, which is
+// the price: its writes are committed one at a time (its owner takes 32 at once, partition.Tuning.MaxChangesPerPartition,
+// and answers more "busy"), so 64 waiting on one node already queue behind a saturated owner, and the cap turns a
+// further pile-up of waits into prompt 503s. Writes are not refused by a guess at the owner's state instead: during the
+// owner timeout there is nothing to tell a lost owner by, and a write that arrives while the partition is between
+// owners succeeds once the takeover completes, within its timeout.
+const maxPartitionWrites = 64
+
 // errUnsettled marks a write whose outcome could not be settled before its deadline: it may have been applied (its
 // claims of global values are kept: the sweep releases those of a record that never was). It is store.ErrUnavailable
 // to the caller and also matches store.ErrUnconfirmed, the one mark that a write may have been applied (the service
@@ -57,12 +72,22 @@ var errBusy = fmt.Errorf("%w: too many requests are waiting on this node", store
 // deleted) by another is not recognised, and its resubmission is refused as the first attempt itself may have caused
 // (stale, conflict, deleted, not found). Such a refusal of a resubmission is not an answer about this write: it is
 // unsettled too (ambiguous), as a SQL store's write whose connection was lost and whose record no longer shows it.
+//
+// At most maxPartitionWrites changes of p are under way from this node at once: one past them is refused before it is
+// sent (store.ErrUnavailable, not marked errUnsettled).
 func (s *Store) submit(ctx context.Context, p int, c *change) (partition.Result, error) {
+	n := s.n
+	if n.writing[p].Add(1) > maxPartitionWrites {
+		n.writing[p].Add(-1)
+		n.stats.unavailable.Add(1)
+		return partition.Result{}, fmt.Errorf("%w: too many writes of partition %d are under way on this node (its owner "+
+			"may be lost)", store.ErrUnavailable, p)
+	}
+	defer n.writing[p].Add(-1)
 	res, err := s.submitOnce(ctx, p, c)
 	if err == nil || !unsettled(err) {
 		return res, err
 	}
-	n := s.n
 	if !n.waitSlot() {
 		return res, fmt.Errorf("%w: %w: %v", errBusy, errUnsettled, err)
 	}
@@ -140,8 +165,10 @@ func (s *Store) settleDone(ctx context.Context, recs []*store.Record) error {
 	return nil
 }
 
-// Tx applies ops all or nothing (store.Store). In a gossip cluster every write must be of one partition (an
-// organization's) and of a kind that is replicated: the transaction is one partition write, settled like any other. Otherwise (no gossip) it is the wrapped store's.
+// Tx applies ops all or nothing (store.Store). In a gossip cluster every op must be of one partition (an
+// organization's) and of a kind that is replicated: the transaction is one partition write, settled like any other, and
+// its assertions are checked by the partition's owner as it prepares it (prepareTx), so in the partition's order.
+// Otherwise (no gossip) it is the wrapped store's.
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if err := s.open(); err != nil {
 		return err
@@ -174,24 +201,31 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			return err
 		}
 		for _, op := range ops {
-			n.notice(n.fire(op.Rec, true))
+			if !op.Assert {
+				n.notice(n.fire(op.Rec, true))
+			}
 		}
 		return nil
 	}
 	p := -1
 	c := &change{Op: opTx}
-	var recs []*store.Record
+	var recs, written []*store.Record // (recs: one per op of c; written: those of its writes)
 	for _, op := range ops {
 		rec := op.Rec
 		if localOnly(rec.Kind) {
 			return fmt.Errorf("%w: %s records stay on the node that writes them", store.ErrBadTx, rec.Kind)
 		}
 		mode, expect := modeUpsert, uint64(0)
-		if op.Match {
+		switch {
+		case op.Assert:
+			mode, expect = modeAssert, uint64(op.Expect)
+		case op.Match:
 			mode, expect = modeMatch, uint64(op.Expect)
 		}
 		var base uint64 // the version the write is based on (change.Base)
-		if rec.Deleted {
+		switch {
+		case op.Assert: // of the partition it names, and sent as it is: the owner checks it
+		case rec.Deleted:
 			// a tombstone carries the partition key of the record it deletes
 			fresh, err := s.lookupOrFresh(ctx, rec.Kind, rec.ID)
 			if err != nil {
@@ -207,7 +241,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			if !op.Match {
 				mode = modeBlind
 			}
-		} else {
+		default:
 			old, err := s.lookup(ctx, rec.Kind, rec.ID)
 			if err != nil {
 				return err
@@ -221,9 +255,12 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		case p < 0:
 			p = q
 		case q != p:
-			return fmt.Errorf("%w: its writes are in partitions %d and %d", store.ErrBadTx, p, q)
+			return fmt.Errorf("%w: its ops are in partitions %d and %d", store.ErrBadTx, p, q)
 		}
-		provisional(rec)
+		provisional(rec) // (an assertion's record too: it must decode as well formed)
+		if !op.Assert {
+			written = append(written, rec)
+		}
 		b, err := encodeRecord(rec)
 		if err != nil {
 			return err
@@ -232,12 +269,12 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		recs = append(recs, rec)
 	}
 	if len(recs) == 0 {
-		return nil
+		return nil // deletions of what is not there, only (store.Store.Put); with assertions, the owner checks them
 	}
 	res, err := s.submit(ctx, p, c)
 	switch {
 	case isDone(err):
-		return s.settleDone(ctx, recs)
+		return s.settleDone(ctx, written)
 	case err != nil:
 		var re *partition.RefusedError
 		switch {
@@ -260,7 +297,7 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	}
 	for i, st := range rep.Stamps {
 		if st.Version == 0 {
-			continue // a deletion of a record that was not live: nothing was written (store.Store.Put)
+			continue // an assertion, or a deletion of a record that was not live: nothing was written (store.Store.Put)
 		}
 		recs[i].Version, recs[i].Epoch, recs[i].Created = hlc.Timestamp(st.Version), hlc.Timestamp(st.Epoch), hlc.Timestamp(st.Created)
 	}

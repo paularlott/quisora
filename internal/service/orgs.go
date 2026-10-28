@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -238,7 +239,8 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 
 // DeleteOrg deletes a non-primary organization. Without cascade the org must have no users; with cascade it may, and
 // they go with it (with its groups, applications, tenants and providers: they stop counting at once, and the orphan
-// sweep removes them).
+// sweep removes them). Either way it first closes the organization to new users (closeOrg), so no user is created in
+// it, and reported made, once it is about to go.
 func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bool) error {
 	if !a.IsSuper() {
 		return ErrForbidden
@@ -250,12 +252,9 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if o.Primary() {
 		return ErrPrimaryOrg
 	}
-	n, err := s.Users.Count(ctx, id) // gated by the organization's partition: a node trailing it refuses
+	n, err := s.closeOrg(ctx, id, cascade)
 	if err != nil {
-		return mapStore(err)
-	}
-	if n > 0 && !cascade {
-		return ErrNotEmpty
+		return err
 	}
 	// The organization record is the one thing deleted: its users, groups, applications, tenants and providers stand
 	// on it, so none counts any more from this write (service.UserUsable, and an application of a deleted organization
@@ -265,6 +264,119 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	err = s.audited(ctx, a, id, "org.delete", o.Name, map[string]string{"users": itoa(n)}, func() error { return s.Orgs.Delete(ctx, id) })
 	s.InvalidateOrgs() // its users stop counting at once here (also after a write that may have landed)
 	return mapStore(err)
+}
+
+// An organization's deletion guard keeps the creation of its users and its deletion apart. The organization record is
+// in the global partition and its users in the organization's own, so no one transaction can make a user and check
+// that the organization is staying; without the guard a deletion could count no users, a user be created, and the
+// organization be deleted, both reporting success (the orphan sweep then removing the user). The guard is a lease
+// (model.Lock) whose id is the organization's id, so it is in the organization's partition, and:
+//
+//   - every creation of a user asserts it open, at the version it found, in the transaction that creates the user
+//     (store.Op.Assert: read, not written, so creations never conflict with each other), and is refused while a
+//     deletion holds it (errOrgDeleting); it writes the guard only when there is none yet, or to open it again once a
+//     deletion's lease has run out (openOrgGuard), and asserts what it wrote;
+//   - a deletion takes it (Holder orgDeleting, a compare-and-swap) before it counts the users, then commits (Holder
+//     orgDeleted, a compare-and-swap on the version it took) before it deletes the organization record.
+//
+// The store orders every write of the guard and every creation's transaction (all in the organization's partition),
+// and a creation's assertion holds only if no write of the guard comes between the version it read and its commit. So
+// a creation ordered before the deletion took the guard is in its count (read from a copy that holds the guard, so
+// every write before it); one ordered after it asserted a version the taking replaced, and is refused, or read the
+// taken guard and is refused, or found its lease run out and opened it again, a write that makes the deletion's commit
+// fail (try again). None commits once the deletion has committed: the committed guard is never asserted. Neither step
+// depends on clocks for this: the leases only end what a deletion that died left. One that died holding the guard
+// leaves new users refused for orgDeletingFor; one that died after it committed, with the organization record still
+// there, for model.TombstoneRetention, unless the deletion is made again, which finishes it.
+const (
+	orgDeleting    = "org.deleting"
+	orgDeleted     = "org.deleted"
+	orgDeletingFor = time.Minute
+)
+
+// errOrgDeleting refuses a user's creation while the organization's deletion holds its guard: the deletion may yet be
+// refused (its organization not empty), so the creation is to be tried again.
+var errOrgDeleting = fmt.Errorf("%w: the organization is being deleted", ErrStale)
+
+// orgOpen reports whether guard g lets a user be created now: no deletion holds it, or the lease of one that did has
+// run out.
+func orgOpen(g *model.Lock, now time.Time) bool { return g.Holder == "" || !now.Before(g.Until) }
+
+// openOrgGuard returns organization orgID's deletion guard open, for a creation of a user to assert (see orgDeleting):
+// as it is when no deletion holds it, and written open when there is none (the organization's first user, or one
+// after a deletion was refused or the guard was swept) or a deletion's lease on it has run out. errOrgDeleting while
+// a deletion holds it.
+func (s *Service) openOrgGuard(ctx context.Context, orgID string) (*model.Lock, error) {
+	for attempt := 0; ; attempt++ {
+		g, err := s.Locks.Get(ctx, orgID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			g = &model.Lock{Meta: model.Meta{ID: orgID}} // none yet: created (version 0)
+		case err != nil:
+			return nil, err
+		case g.Holder == "":
+			return g, nil
+		case !orgOpen(g, time.Now()):
+			return nil, errOrgDeleting
+		}
+		g.Holder, g.Until = "", time.Time{}
+		err = s.Locks.Update(ctx, g)
+		if (errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound)) && attempt < 7 {
+			continue // written meanwhile (another creation made it, a deletion took it): read again
+		}
+		return g, err
+	}
+}
+
+// closeOrg takes organization orgID's deletion guard for its deletion (see orgDeleting) and returns how many users the
+// organization has; without cascade, one that has some is not closed (ErrNotEmpty, the guard given back). A guard a
+// deletion committed and did not finish is taken as it is: no user has been created since.
+func (s *Service) closeOrg(ctx context.Context, orgID string, cascade bool) (int, error) {
+	g, committed, err := s.takeOrgGuard(ctx, orgID)
+	if err != nil {
+		return 0, mapStore(err)
+	}
+	n, err := s.Users.Count(ctx, orgID) // gated by the organization's partition: a node trailing it refuses
+	if err != nil || committed {
+		return n, mapStore(err)
+	}
+	if n > 0 && !cascade {
+		_ = s.Locks.DeleteIf(ctx, orgID, g.Version) // open now, not when the lease runs out
+		return 0, ErrNotEmpty
+	}
+	g.Holder, g.Until = orgDeleted, time.Now().Add(model.TombstoneRetention)
+	return n, mapStore(s.Locks.Update(ctx, g)) // stale: a creation found the lease run out and opened it again
+}
+
+// takeOrgGuard takes organization orgID's deletion guard for a deletion (Holder orgDeleting), or finds it committed by
+// one that did not finish (committed: left as it is). A guard written meanwhile (a creation made it, or opened it once
+// a lease ran out) is read and taken again: the creations before the taking are in the count that follows.
+func (s *Service) takeOrgGuard(ctx context.Context, orgID string) (g *model.Lock, committed bool, err error) {
+	for attempt := 0; ; attempt++ {
+		g, err = s.Locks.Get(ctx, orgID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			g = &model.Lock{Meta: model.Meta{ID: orgID}} // none yet: created (version 0)
+		case err != nil:
+			return nil, false, err
+		case g.Holder == orgDeleted && !orgOpen(g, time.Now()):
+			return g, true, nil
+		}
+		g.Holder, g.Until = orgDeleting, time.Now().Add(orgDeletingFor)
+		err = s.Locks.Update(ctx, g)
+		if (errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound)) && attempt < 7 {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		// The count must see every user created before the guard was taken: a copy that holds the guard holds every
+		// write of the partition before it (a cluster node may not have applied its own write yet).
+		if held, err := s.Locks.Get(ctx, orgID); err != nil || held.Version != g.Version {
+			return nil, false, fmt.Errorf("%w: the organization's guard is not here yet", store.ErrUnavailable)
+		}
+		return g, false, nil
+	}
 }
 
 // validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the

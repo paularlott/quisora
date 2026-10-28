@@ -191,6 +191,20 @@ which Quisora keeps. A write is not abandoned when its caller goes away: it is s
 timeout. Writes are checked on the owner against committed data, so **every check that must not run on a stale copy
 runs there**: the compare-and-swap on the version the caller read, and the unique values.
 
+**A lost owner costs its own partitions' writes, not the node.** A write to a partition whose owner is gone waits on the
+landing node: for the owner timeout (5 s) the owner cannot be told from a slow one, and then the partition is between
+owners until the takeover (a second or two more), each write waiting up to the write timeout (and a write whose outcome
+became unknown is settled for up to 10 s more). At thousands of requests a second those waits, for the third of the
+partitions a lost node of three owned, would fill the HTTP layer's in-flight limit (`limits.max_in_flight`) and shed
+every organization's requests. So a node has at most 64 writes of one partition under way at once (sent, waiting for an
+owner, or being settled): one past them is refused at once with `store.ErrUnavailable` (503, retry; nothing was sent, so
+it is not an unknown outcome), the lost owner's partitions hold at most about 1,400 of a node's requests, and the other
+partitions go on. Those 64 still wait, and succeed when the takeover completes within their timeout. A partition that is
+only busy meets the same cap: 64 writes waiting on one node already queue behind an owner that runs them one at a time
+and takes 32 at once, and further ones are refused promptly instead of each holding a request for seconds. Writes are not
+refused on a guess at the owner's state: during the owner timeout there is nothing to tell a lost owner by, and a write
+that arrives while the partition is between owners succeeds once it has one.
+
 The owner's `Commit` applies exactly what `Prepare` decided, deterministically, on every node; the change hooks
 (`Node.OnChange`: cache eviction, live admin pages) run for every applied record, local or replicated, on every node.
 
@@ -231,16 +245,20 @@ partitions.
   partition (`partition.Manager.CanRead`): it has heard the partition's owner within the protocol's `StaleAfter` (or,
   owning it, a majority), it has not trailed what the owner reported committed for that long (a follower whose catch-up
   keeps failing), the partition has not diverged here, and the node is not copying its data (resync). Otherwise the
-  single-record reads of the cluster store (`Get`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrUnavailable`
+  single-record reads of the cluster store (`Get`, `GetIn`, `GetByUnique`, `GetMany`, `Lookup`) refuse with `store.ErrUnavailable`
   (HTTP 503), so a revoked session, a disabled user or a rotated secret is never served from a copy that stopped following
   the cluster for longer than that bound and a cache's 5 s, however long it stays behind; the other nodes serve it. A
   read that finds nothing is gated the same way, on the partition the record would be in: the one its key names (an
   organization's name: the global partition; a username, email, external id, group, tenant or provider name: the
   organization id the value starts with, `model.UniquePartition`; a lock or replay id: its own), or the one of a copy
   this node holds in any state (a record expired or deleted here, which never moves). So an unknown username at sign-in
-  answers "not found" while another organization's partition is between owners. Only a miss whose key names no
-  partition (an id never received here, a link token, a provider identity or a passkey credential) needs every partition
-  readable, since what it lacks may be in any. A node's own audit events and short-lived state are
+  answers "not found" while another organization's partition is between owners. A caller that knows the organization
+  of what it looks for asks that organization's partition alone (`store.GetIn`: a record of another partition is "not
+  found" to it, which is what the caller would make of it anyway): a session cookie is looked for in the partition of
+  the organization whose cookie it is, so a stale or made-up cookie is "signed out", not 503, while another
+  organization's partition is between owners. Only a miss whose key names no partition (an id never received here asked
+  without its organization, a link token, a provider identity or a passkey credential) needs every partition readable,
+  since what it lacks may be in any. A node's own audit events and short-lived state are
   not in a partition and are exempt. Listings and counts are not
   gated (they are not decisions about one record), except listings of organizations and signing keys, which live only in
   the global partition: a node that trails it refuses them, so it never publishes a key set the majority has changed (a
@@ -275,6 +293,18 @@ partition's data, with one owner that commits its writes, much like a replicated
 whose data the other nodes replicate. A transaction that would write in more than one partition is refused
 (`store.ErrBadTx`), and a write that would change a stored record's partition is refused (`store.ErrBadRecord`: a
 record never moves).
+
+A transaction may also **assert** a record of its partition (`store.Op.Assert`): the record must be live at the
+version the writer read, or the transaction is refused (`store.ErrStale`) and writes nothing; the record itself is not
+written. The partition's owner prepares the partition's changes one at a time, each against what the ones before it
+committed, so it checks the assertion in the partition's order: a write of the asserted record is either before the
+transaction (which it then refuses) or after it, never between the version read and the commit. Transactions that
+only assert one record do not conflict with each other over it (a single database checks the assertion inside its
+transaction: Badger detects a conflict on what the transaction read, a SQL server database share-locks the row,
+SQLite has one writer). An assertion names a record that exists (version 0 is refused): a SQL server database has no
+row to lock for one that does not. Its outcome is its transaction's writes': a retried transaction whose writes are
+found stored is answered as done, and a resubmission after a lost reply checks its assertions again as they then
+stand.
 
 A unique value of any length is accepted: a value longer than 512 characters (or one that looks like a hash) is
 indexed by its SHA-256 (`store.UniqueIndexKey`), the same on every backend, and the record keeps the value itself.
@@ -454,7 +484,7 @@ With 3 nodes (with 5, read "up to two"):
 
 | Situation | What happens |
 | --- | --- |
-| One node down | The other two are a majority: they take over its partitions and keep writing and serving. |
+| One node down | The other two are a majority: they take over its partitions and keep writing and serving. Until they have (about 7 s) its partitions' writes wait or answer 503 (their reads too, past the owner timeout); the writes waiting are capped per partition, so the other organizations are unaffected. |
 | It returns with its data | It catches up by sequence and rejoins on its own. |
 | It returns with its data lost (a new disk) | It copies from the other two and rejoins on its own. |
 | It was away longer than tombstones are kept | It copies the partitions it cannot catch up by sequence, on its own. |
@@ -626,7 +656,19 @@ also removes what any interrupted write left, so there is no other clean-up path
 
 Deleting an organization sends no back-channel logout: a user signs in only to applications of their own
 organization, and those are deleted with it (their tokens stop working at once), so the deletion is one write
-whatever the organization's size. Deleting a user tells the applications at once. Their memberships stand on them:
+whatever the organization's size. Before it, the deletion closes the organization to new users through a guard in the
+organization's own partition (a lease record whose id is the organization's): every user's creation asserts the guard
+open, at the version it read, in the transaction that creates the user (it reads the guard and does not write it, so
+users created in parallel, as a directory provisions them, do not conflict with each other), and the deletion takes
+the guard (a compare-and-swap) before it counts the users, on a copy that holds the guard and so every write of the
+partition before it, and commits it (another, on the version it took) before it deletes the organization record. A
+user created before the guard was taken is counted (a deletion that must find the organization empty refuses); one
+whose transaction comes after it asserted a version the taking replaced, or read the taken guard, and is refused, to
+be tried again. So a user is never created, and reported made, in an organization that is about to go. A creation
+writes the guard only to make it (an organization's first user, or the first after a refused deletion) or to open it
+once a deletion's lease has run out, which then makes that deletion's commit fail. A deletion that dies holding the
+guard leaves new users refused until its lease ends (a minute); one that dies after it committed is finished by the
+next deletion. Deleting a user tells the applications at once. Their memberships stand on them:
 every reader of a group's members (lists, counts, SCIM) keeps only members that are users of the organization, by
 merging the member ids with the organization's user ids read from its index a page at a time (no user record is
 read), so a deleted user is never a member, whatever the clean-up has done (a pending addition that materializes
@@ -693,7 +735,7 @@ compare-and-swap, quorum read) and are not reused. The compatibility version pub
 metadata (`quisora.compat`) is 2: a node of the earlier mode, which publishes 1, and this one refuse each other.
 
 The **change** a node sends is `change{Op, Mode, Expect, Rec, Before, Ops, Base, Replay}` (msgpack): a record write, a
-transaction or a purge point; the **write's data** is `writeData{Recs, Purge}`: the stamped records every
+transaction (its ops writes, or assertions: mode 3, the record named and the version expected) or a purge point; the **write's data** is `writeData{Recs, Purge}`: the stamped records every
 node applies, and the purge point to apply first. Both stay under the cluster's packet limit (4 MB by default), so a
 record must too; a fresh read's reply is asked again in halves when it would not fit.
 

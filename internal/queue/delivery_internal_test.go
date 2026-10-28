@@ -11,7 +11,7 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 )
 
-func TestDeliverDueCorruptItemIsDropped(t *testing.T) {
+func TestPassCorruptItemIsDropped(t *testing.T) {
 	dir := t.TempDir()
 	s := sealer(t, secure.RandomBytes(32))
 	sk := &sink{}
@@ -19,7 +19,7 @@ func TestDeliverDueCorruptItemIsDropped(t *testing.T) {
 	name := "00000000000000000001-aa" + ext
 	put(t, dir, name, "garbage")
 	q.queued.Store(1)
-	if next := q.deliverDue(context.Background()); !next.IsZero() {
+	if next := pass(q, context.Background()); !next.IsZero() {
 		t.Fatalf("next %v", next)
 	}
 	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) || q.Queued() != 0 || sk.n.Load() != 0 {
@@ -28,13 +28,13 @@ func TestDeliverDueCorruptItemIsDropped(t *testing.T) {
 	// A sealed value that opens but is not JSON of an item is dropped the same way.
 	put(t, dir, name, s.SealFor("test/queue", []byte("not json")))
 	q.queued.Store(1)
-	q.deliverDue(context.Background())
+	pass(q, context.Background())
 	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 		t.Fatalf("non-JSON item kept: %v", err)
 	}
 }
 
-func TestDeliverDueStoppingDoesNotCountAttempt(t *testing.T) {
+func TestPassStoppingDoesNotCountAttempt(t *testing.T) {
 	dir := t.TempDir()
 	s := sealer(t, secure.RandomBytes(32))
 	var failed int
@@ -46,20 +46,20 @@ func TestDeliverDueStoppingDoesNotCountAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	names, _ := q.files()
-	if next := q.deliverDue(ctx); !next.IsZero() {
+	if next := pass(q, ctx); !next.IsZero() {
 		t.Fatalf("next %v", next)
 	}
 	it, err := q.read(names[0])
 	if err != nil || it.Attempt != 0 || failed != 0 {
 		t.Fatalf("attempt %v, failed callbacks %d, err %v", it, failed, err)
 	}
-	// With the context already cancelled deliverDue does not even try.
-	if next := q.deliverDue(ctx); !next.IsZero() {
+	// With the context already cancelled the scheduler does not even try.
+	if next := pass(q, ctx); !next.IsZero() {
 		t.Fatalf("next %v", next)
 	}
 }
 
-func TestDeliverDueFailureCallbackAndLostRetryWrite(t *testing.T) {
+func TestPassFailureCallbackAndLostRetryWrite(t *testing.T) {
 	dir := t.TempDir()
 	s := sealer(t, secure.RandomBytes(32))
 	var attempts []int
@@ -81,7 +81,7 @@ func TestDeliverDueFailureCallbackAndLostRetryWrite(t *testing.T) {
 	}
 	name := mustOne(t, q)
 	before := time.Now()
-	next := q.deliverDue(context.Background())
+	next := pass(q, context.Background())
 	if next.Before(before.Add(time.Hour)) || next.After(time.Now().Add(time.Hour)) {
 		t.Fatalf("next retry %v is not an hour away", next)
 	}
@@ -100,7 +100,7 @@ func TestDeliverDueFailureCallbackAndLostRetryWrite(t *testing.T) {
 		}
 		put()
 		lock = true
-		if next := q.deliverDue(context.Background()); next.IsZero() {
+		if next := pass(q, context.Background()); next.IsZero() {
 			t.Fatal("a failed retry write dropped the schedule")
 		}
 		_ = os.Chmod(dir, 0o700)
@@ -116,7 +116,7 @@ func TestDeliverDueFailureCallbackAndLostRetryWrite(t *testing.T) {
 	if err := q.write(name, it); err != nil {
 		t.Fatal(err)
 	}
-	if next := q.deliverDue(context.Background()); !next.IsZero() {
+	if next := pass(q, context.Background()); !next.IsZero() {
 		t.Fatalf("next %v after giving up", next)
 	}
 	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) || q.Queued() != 0 {
@@ -127,7 +127,7 @@ func TestDeliverDueFailureCallbackAndLostRetryWrite(t *testing.T) {
 	}
 }
 
-func TestDeliverDueNotDueAndUnknownKey(t *testing.T) {
+func TestPassNotDueAndUnknownKey(t *testing.T) {
 	dir := t.TempDir()
 	lost, key := sealer(t, secure.RandomBytes(32)), sealer(t, secure.RandomBytes(32))
 	sk := &sink{}
@@ -136,24 +136,24 @@ func TestDeliverDueNotDueAndUnknownKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := mustOne(t, q)
-	if next := q.deliverDue(context.Background()); next.IsZero() || sk.n.Load() != 0 {
+	if next := pass(q, context.Background()); next.IsZero() || sk.n.Load() != 0 {
 		t.Fatalf("a future item: next %v, delivered %d", next, sk.n.Load())
 	}
 	// The same file under a keyring without its key (a restart with another master key): kept, not delivered, not
 	// dropped.
 	q.o.Sealer, q.waiting = key, nil
-	if next := q.deliverDue(context.Background()); !next.IsZero() || sk.n.Load() != 0 {
+	if next := pass(q, context.Background()); !next.IsZero() || sk.n.Load() != 0 {
 		t.Fatalf("lost-key item: next %v, delivered %d", next, sk.n.Load())
 	}
 	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 		t.Fatalf("lost-key item removed: %v", err)
 	}
-	// deliverDue reports the earliest due time over several waiting items.
+	// A pass reports the earliest due time over several waiting items.
 	q.o.Sealer = lost
 	if err := q.Add("sooner", 30*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
-	next := q.deliverDue(context.Background())
+	next := pass(q, context.Background())
 	if next.IsZero() || time.Until(next) > 31*time.Minute {
 		t.Fatalf("earliest due %v", time.Until(next))
 	}

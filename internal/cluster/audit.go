@@ -31,13 +31,16 @@ type auditReq struct {
 	Offset int
 }
 
-// auditFilter is a store.Filter on the wire: a string value, or a time (UnixMicro).
+// auditFilter is a store.Filter on the wire: a string value, a time (UnixMicro), or a bool (the readers below super
+// admin leave out the events of super admins: super_admin false).
 type auditFilter struct {
 	Field string
 	Op    string
 	Str   string
 	Time  int64
 	IsT   bool
+	Bool  bool
+	IsB   bool
 }
 
 type auditResp struct {
@@ -60,6 +63,8 @@ func toAuditFilters(fs []store.Filter) []auditFilter {
 			w.Time, w.IsT = v.UnixMicro(), true
 		case string:
 			w.Str = v
+		case bool:
+			w.Bool, w.IsB = v, true
 		}
 		out = append(out, w)
 	}
@@ -70,8 +75,11 @@ func fromAuditFilters(fs []auditFilter) []store.Filter {
 	out := make([]store.Filter, 0, len(fs))
 	for _, w := range fs {
 		f := store.Filter{Field: w.Field, Op: w.Op, Value: w.Str}
-		if w.IsT {
+		switch {
+		case w.IsT:
 			f.Value = time.UnixMicro(w.Time).UTC()
+		case w.IsB:
+			f.Value = w.Bool
 		}
 		out = append(out, f)
 	}

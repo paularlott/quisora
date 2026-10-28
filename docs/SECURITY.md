@@ -34,9 +34,11 @@ not see (an administrator to a manager, a super admin to everyone below them). O
 holds it; reads, listings and searches still withhold the account.
 
 The audit log follows the same rule: an organization's administrators read its events without those whose actor or
-target is a super admin (their sign-ins, with address and methods, and the changes made to them), and the page, its
-total and its search leave them out. An event names a user in its actor, target and detail; only the first two are
-judged, so a super admin named only in an event's detail (a group membership change) is still shown by id.
+target user is a super admin (their sign-ins, with address and methods, and the changes made to them), and the page,
+its total and its search leave them out. Each event is marked when it is written, by the accounts it names (their ids,
+not their names: a rename reveals nothing), and never re-marked: what a user did before they were made a super admin
+stays visible to the admins who saw it then. An event names a user in its actor, target and detail; only the first two
+are judged, so a super admin named only in an event's detail (a group membership change) is still shown by id.
 
 ## Hardening checklist
 

@@ -468,28 +468,44 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	if imported != "" {
 		detail["password"] = "imported " + imported
 	}
-	write := func() error { return s.Users.Create(ctx, u) }
-	if link != nil {
-		write = func() error {
-			ur, err := store.Encode(u)
-			if err != nil {
-				return err
-			}
-			lr, err := store.Encode(link(u))
-			if err != nil {
-				return err
-			}
-			if err := s.Users.S.Tx(ctx, []store.Op{{Rec: ur, Match: true}, {Rec: lr, Match: true}}); err != nil {
-				return err
-			}
-			u.Version = ur.Version
-			return nil
-		}
-	}
-	if err := s.audited(ctx, a, orgID, "user.create", u.Username, detail, write); err != nil {
+	if err := s.AuditedUser(ctx, a, u, "user.create", detail, func() error { return s.createUser(ctx, u, link) }); err != nil {
 		return nil, s.userConflict(ctx, err, u)
 	}
 	return u, nil
+}
+
+// createUser writes the new user u (and its link, when link is given) in one transaction that asserts its
+// organization's deletion guard is as it was found, open (store.Op.Assert: the guard is read, not written, so creations
+// never conflict with each other): a deletion that has taken the guard refuses it (errOrgDeleting), and one that takes
+// the guard after it counts the user (see orgDeleting). A guard changed meanwhile is read and judged again.
+func (s *Service) createUser(ctx context.Context, u *model.User, link func(u *model.User) *model.Identity) error {
+	for attempt := 0; ; attempt++ {
+		g, err := s.openOrgGuard(ctx, u.OrgID)
+		if err != nil {
+			return err
+		}
+		ents := []model.Entity{u}
+		if link != nil {
+			ents = append(ents, link(u))
+		}
+		var ops []store.Op
+		for _, e := range ents {
+			rec, err := store.Encode(e)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, store.Op{Rec: rec, Match: true})
+		}
+		ops = append(ops, store.AssertOp(model.KindLock, u.OrgID, u.OrgID, g.Version))
+		err = s.Users.S.Tx(ctx, ops)
+		if errors.Is(err, store.ErrStale) && attempt < 7 {
+			continue
+		}
+		if err == nil {
+			u.Version = ops[0].Rec.Version
+		}
+		return err
+	}
 }
 
 // LinkExisting links a new way into user userID's existing account (a sign-in provider's identity matched by email
@@ -700,7 +716,7 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if endsSessions {
 		u.SessionEpoch = NewCredEpoch()
 	}
-	err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error {
+	err = s.AuditedUser(ctx, a, u, action, detail, func() error {
 		err := s.writeUser(ctx, u, also)
 		roleDone(ctx, a, err)
 		if err == nil && endsSessions {
@@ -830,7 +846,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// The user goes first, and only as the copy every check above was made on: a copy that is not the newest (one
 	// read on a node that has not seen the user's promotion to administrator yet, so the rank rules above did not
 	// apply) is refused, instead of deleting an administrator unchecked.
-	err = s.audited(ctx, a, u.OrgID, "user.delete", u.Username, nil, func() error { return s.Users.DeleteIf(ctx, u.ID, u.Version) })
+	err = s.AuditedUser(ctx, a, u, "user.delete", nil, func() error { return s.Users.DeleteIf(ctx, u.ID, u.Version) })
 	if err != nil {
 		return mapStore(err)
 	}
@@ -1045,11 +1061,11 @@ func (s *Service) RevokeSessions(ctx context.Context, a *Actor, userID string) e
 		err = s.endSessionsOf(ctx, userID, was)
 	}
 	if err != nil {
-		s.Audit(ctx, a, u.OrgID, "user.sessions.revoke", u.Username, map[string]string{"result": "incomplete",
+		s.AuditUser(ctx, a, u, "user.sessions.revoke", map[string]string{"result": "incomplete",
 			"error": err.Error()})
 		return mapStore(err)
 	}
-	s.Audit(ctx, a, u.OrgID, "user.sessions.revoke", u.Username, nil)
+	s.AuditUser(ctx, a, u, "user.sessions.revoke", nil)
 	return nil
 }
 
@@ -1309,7 +1325,7 @@ func (s *Service) ExpireUsers(ctx context.Context) (int, error) {
 				continue
 			}
 			progress = true
-			if err := s.audited(ctx, System, u.OrgID, "user.expire", u.Username, map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)}, func() error {
+			if err := s.AuditedUser(ctx, System, u, "user.expire", map[string]string{"valid_until": u.ValidUntil.Format(time.RFC3339)}, func() error {
 				_, err := s.UpdateUser(ctx, System, u.ID, UserInput{Active: ptrBool(false), StatusReason: &endReached})
 				return err
 			}); err != nil {

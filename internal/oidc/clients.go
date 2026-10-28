@@ -129,9 +129,12 @@ type oauthError struct {
 	realm  bool   // add WWW-Authenticate: Basic
 	retry  bool   // add Retry-After (rate limited)
 	nonce  string // add DPoP-Nonce (use_dpop_nonce)
+	cause  error  // the failure behind an unavailable answer, for callers that report it in their own shape
 }
 
 func (e *oauthError) Error() string { return e.code + ": " + e.desc }
+
+func (e *oauthError) Unwrap() error { return e.cause }
 
 func oerr(code, desc string) *oauthError {
 	return &oauthError{status: http.StatusBadRequest, code: code, desc: desc}
@@ -235,7 +238,7 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 		// The failure that reaches the limit: once per client, address and minute. Only for a client that exists
 		// (an unknown id has no organization to record it in, and anyone can make up any number of them).
 		if c, cerr := p.client(r.Context(), web.Org(r).ID, authClientID(r)); cerr == nil {
-			p.auditClient(r.Context(), c.c, "", "oauth.client_auth.limited", map[string]string{
+			p.auditClient(r.Context(), c.c, nil, "oauth.client_auth.limited", map[string]string{
 				"failures_per_minute": strconv.Itoa(clientAuthFailuresPerMin)})
 		}
 	}
@@ -329,7 +332,11 @@ func (p *Provider) checkClient(r *http.Request, allowPublic bool) (*clientEntry,
 		// Public clients identify themselves by client_id alone; a confidential client never falls back to this.
 		if allowPublic {
 			if cid := form.Get("client_id"); cid != "" {
-				if e, err := p.client(ctx, org.ID, cid); err == nil && e.c.Enabled && e.c.Public() {
+				e, err := p.client(ctx, org.ID, cid)
+				if err != nil && !gone(err) { // the client could not be read: not "authentication required"
+					return nil, serverError(unavailable(err))
+				}
+				if err == nil && e.c.Enabled && e.c.Public() {
 					return e, nil
 				}
 			}

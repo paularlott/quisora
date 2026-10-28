@@ -48,6 +48,15 @@ func TestTableCRUD(t *testing.T) {
 	if _, err := tb.Get(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Get missing: %v", err)
 	}
+	// GetIn finds a record only in its own partition (the organization's): elsewhere it is not found.
+	if in, err := tb.GetIn(ctx, "o", g.ID); err != nil || in.ID != g.ID {
+		t.Errorf("GetIn of its partition: %v", err)
+	}
+	for key, id := range map[string]string{"other": g.ID, "o": "missing"} {
+		if _, err := tb.GetIn(ctx, key, id); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("GetIn %s in %q: %v", id, key, err)
+		}
+	}
 
 	// Update is optimistic: a stale copy is refused and keeps its own version.
 	stale := *got

@@ -1058,6 +1058,14 @@ type Audit struct {
 	RequestID string `msgpack:"rid,omitempty" json:"request_id,omitempty"`
 	UserAgent string `msgpack:"ua,omitempty" json:"user_agent,omitempty"`
 	SessionID string `msgpack:"sid,omitempty" json:"session_id,omitempty"`
+	// TargetID is the id of the user the event targets, when its target is one (Target then holds their username at
+	// the time): the username may change or be reused, the id names the account for good.
+	TargetID string `msgpack:"ti,omitempty" json:"target_id,omitempty"`
+	// SuperAdmin marks an event whose actor or target user was a super admin when it was recorded. Super admins are
+	// invisible to everyone below them, so their events are left out of every other reader's audit log by this
+	// indexed field (service.ListAudit): decided once, when the event is written, it holds whatever the users are
+	// renamed or promoted to later, and lets a page and its total be read with one filter.
+	SuperAdmin bool `msgpack:"sa,omitempty" json:"-"`
 }
 
 // AuditOutcome says whether an audit action records something refused or failed ("failure") or done ("success"),
@@ -1077,7 +1085,8 @@ func (a *Audit) Index() Index {
 		Scope:     a.OrgID,
 		Partition: a.OrgID, // a server-level event with no organization is global
 		Fields: map[string]any{"action": a.Action, "actor": a.Actor, "target": a.Target, "created": a.Created,
-			"outcome": cmp.Or(a.Outcome, AuditOutcome(a.Action)), "ip": a.IP}, // older events may carry no outcome
+			"outcome": cmp.Or(a.Outcome, AuditOutcome(a.Action)), "ip": a.IP, // older events may carry no outcome
+			"super_admin": a.SuperAdmin},
 		Expires: a.Expires,
 	}
 }
@@ -1150,7 +1159,8 @@ func (s *SignIn) Index() Index {
 
 // Lock is a lease record, replicated with a compare-and-swap its owner decides: Holder holds it until Until, and a
 // holder that stops renewing it stops counting. Each node's report of its master keys is one (service.ReportMasterKey):
-// Holder is the report, Until how long it counts.
+// Holder is the report, Until how long it counts. An organization's deletion guard is another (service.DeleteOrg): its
+// id is the organization's, so it is in the organization's partition, and Holder says whether a deletion holds it.
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`

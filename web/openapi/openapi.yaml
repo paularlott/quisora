@@ -3111,6 +3111,9 @@ components:
           type: string
         target:
           type: string
+        target_id:
+          type: string
+          description: The id of the user the event targets, when its target is a user (target holds their username at the time).
         created:
           type: string
           format: date-time

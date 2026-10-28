@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
 
@@ -16,6 +17,14 @@ type outcomeKey struct{}
 type change struct {
 	org, action, target string
 	detail              map[string]string
+	// user is the user the change targets, if it targets one (userChange): the event names them by its username and id
+	// as they are when it is recorded, in place of target.
+	user *model.User
+}
+
+// userChange is the change of action to the user u.
+func userChange(u *model.User, action string, detail map[string]string) change {
+	return change{u.OrgID, action, "", detail, u}
 }
 
 // audited is how every audited change of the service is made: it runs write (the store write that is the change) and
@@ -30,7 +39,7 @@ type change struct {
 // auditOutcome directly.
 func (s *Service) audited(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string, write func() error) error {
 	err := write()
-	s.auditOutcome(ctx, a, err, change{orgID, action, target, detail})
+	s.auditOutcome(ctx, a, err, change{orgID, action, target, detail, nil})
 	return err
 }
 
@@ -38,6 +47,14 @@ func (s *Service) audited(ctx context.Context, a *Actor, orgID, action, target s
 // changes): the same rule, from the one implementation.
 func (s *Service) Audited(ctx context.Context, a *Actor, orgID, action, target string, detail map[string]string, write func() error) error {
 	return s.audited(ctx, a, orgID, action, target, detail, write)
+}
+
+// AuditedUser is audited for a change to the user u (AuditUser): u is read for the event once write has returned, so
+// write may fill it in (the id of a user it creates).
+func (s *Service) AuditedUser(ctx context.Context, a *Actor, u *model.User, action string, detail map[string]string, write func() error) error {
+	err := write()
+	s.auditOutcome(ctx, a, err, userChange(u, action, detail))
+	return err
 }
 
 // auditOutcome records the events of a change whose write ended with err, as audited does for one.
@@ -50,7 +67,7 @@ func (s *Service) auditOutcome(ctx context.Context, a *Actor, err error, events 
 		return
 	}
 	for _, e := range events {
-		s.Audit(ctx, a, e.org, e.action, e.target, e.detail)
+		s.auditChange(ctx, a, e)
 	}
 }
 

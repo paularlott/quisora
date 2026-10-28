@@ -143,6 +143,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "outcome", Type: FieldString, Index: true},
 		{Name: "ip", Type: FieldString, Search: true},
+		// Every reader below super admin filters on false: the indexed set is the events of super admins, which such a
+		// page leaves out (Audit.SuperAdmin).
+		{Name: "super_admin", Type: FieldBool, Index: true},
 	}},
 }
 

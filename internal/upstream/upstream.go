@@ -324,7 +324,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 		// else (GitHub and GitLab ids are public numbers). The link goes; the sign-in carries on as unlinked.
 		_ = s.Svc.Identities.Delete(ctx, ident.ID)
 		actor := &service.Actor{OrgID: org.ID, Role: model.RoleManager, Name: "provider:" + p.Name}
-		s.Svc.Audit(ctx, actor, org.ID, "identity.unlink", ident.UserID, map[string]string{"provider": p.Name, "reason": "provider changed"})
+		s.Svc.AuditUser(ctx, actor, s.Svc.AuditTargetUser(ctx, org.ID, ident.UserID), "identity.unlink", map[string]string{"provider": p.Name, "reason": "provider changed"})
 		err = store.ErrNotFound
 	}
 	if err == nil && !DomainAllowed(p, c) {
@@ -406,7 +406,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	if err != nil {
 		return nil, false, err
 	}
-	s.Svc.Audit(ctx, actor, org.ID, "user.provision", u.Username, map[string]string{"provider": p.Name})
+	s.Svc.AuditUser(ctx, actor, u, "user.provision", map[string]string{"provider": p.Name})
 	return u, true, nil
 }
 
@@ -454,7 +454,7 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 			// Managers and administrators are never linked by email: a provider that an organization administrator
 			// set up could otherwise claim any of their addresses and become them. They connect providers
 			// themselves, signed in (account page).
-			s.Svc.Audit(ctx, actor, org.ID, "identity.link.refused", u.Username, map[string]string{"provider": p.Name,
+			s.Svc.AuditUser(ctx, actor, u, "identity.link.refused", map[string]string{"provider": p.Name,
 				"reason": "privileged account"})
 			return ErrPrivileged
 		}
@@ -464,7 +464,7 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	// Audited: a link whose write's outcome is unknown (it may have landed) is recorded as such, since a retry signs in
 	// through it and nothing would record its making again.
 	var u *model.User
-	err = s.Svc.Audited(ctx, actor, org.ID, "identity.link.email", users[0].Username,
+	err = s.Svc.AuditedUser(ctx, actor, users[0], "identity.link.email",
 		map[string]string{"provider": p.Name, "subject": c.Subject}, func() (err error) {
 			u, err = s.Svc.LinkExisting(ctx, users[0].ID, allow, link)
 			return err

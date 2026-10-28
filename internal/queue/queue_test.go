@@ -68,8 +68,8 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 }
 
-// idle returns a queue whose worker is not started: the tests drive deliverDue and the file helpers
-// themselves, so nothing races them.
+// idle returns a queue whose scheduler is not started: the tests drive pass and the file helpers themselves, so
+// nothing races them.
 func idle[T any](dir string, o Options[T]) *Queue[T] {
 	o.Log = logger.NewNullLogger()
 	if o.Binding == "" {
@@ -78,7 +78,15 @@ func idle[T any](dir string, o Options[T]) *Queue[T] {
 	if o.Max == 0 {
 		o.Max = 100
 	}
-	return &Queue[T]{o: o, dir: dir, kick: make(chan struct{}, 1), stop: make(chan struct{})}
+	return newQueue(dir, o)
+}
+
+// pass starts what is due on an idle queue, waits for those deliveries to end, and returns when the next item waiting
+// is due (zero: none), as the scheduler would learn it from the wake-up each delivery ends with.
+func pass[T any](q *Queue[T], ctx context.Context) time.Time {
+	q.dispatch(ctx)
+	q.deliveries.Wait()
+	return q.dispatch(ctx)
 }
 
 // chmod changes a mode for the test and restores 0o700 before the temporary directory is removed. Permission bits do

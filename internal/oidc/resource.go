@@ -542,7 +542,7 @@ func (p *Provider) readRefresh(ctx context.Context, caller *model.Client, tok st
 	if !ok {
 		return nil, false, nil
 	}
-	g, err = p.svc.Grants.Get(ctx, pr.gid)
+	g, err = p.svc.Grants.GetIn(ctx, caller.OrgID, pr.gid) // in the caller's organization's partition, as refresh reads it
 	if err != nil && !gone(err) {
 		return nil, false, unavailable(err)
 	}
@@ -599,7 +599,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil && cl.ClientID == ce.c.ClientID() && cl.GID != "" && len(cl.Act) == 0 {
 			// RFC 7009 §2.2.1: the client retries; nothing is audited as done (a revocation of unknown outcome, as such)
-			if err := p.auditedClient(ctx, ce.c, cl.Sub, "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
+			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, cl.Sub), "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
 				func() error { return p.revokeGrant(ctx, cl.GID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
@@ -615,15 +615,11 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if g != nil {
-			target := g.UserID
-			if u, err := p.user(ctx, g.UserID); err == nil {
-				target = u.Username
-			}
 			detail := map[string]string{"grant": g.ID, "user_id": g.UserID, "token": "refresh"}
 			if !current {
 				detail["superseded"] = "true"
 			}
-			if err := p.auditedClient(ctx, ce.c, target, "oauth.revoke", detail,
+			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, g.UserID), "oauth.revoke", detail,
 				func() error { return p.revokeGrant(ctx, g.ID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return

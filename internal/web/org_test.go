@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -220,5 +221,39 @@ func TestConsoleSessionThatCannotBeCheckedIsNotSkipped(t *testing.T) {
 	resp, body := get(t, c, env.URL+"/admin/whoami")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("a console request whose first session cannot be checked: %d %s, want 503", resp.StatusCode, body)
+	}
+}
+
+// sessionMissesRefused answers session reads as a cluster node does while some partition is between owners: a session id
+// it does not hold, read by Get, may be in any partition and is refused, while one asked of its organization's
+// partition (store.GetIn), which is readable, is answered.
+type sessionMissesRefused struct{ store.Store }
+
+func (s sessionMissesRefused) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	r, err := s.Store.Get(ctx, kind, id)
+	if kind == model.KindSession && errors.Is(err, store.ErrNotFound) {
+		return nil, store.ErrUnavailable
+	}
+	return r, err
+}
+
+func (s sessionMissesRefused) GetIn(ctx context.Context, kind model.Kind, partitionKey, id string) (*store.Record, error) {
+	return store.GetIn(ctx, s.Store, kind, partitionKey, id)
+}
+
+// A session cookie whose session is not there (a stale one, a made-up one) is signed out, not 503, while the session's
+// organization can be read: its session is looked for in that organization's partition only, so another partition
+// between owners does not leave every such request unchecked.
+func TestUnknownSessionCookieIsSignedOutWhileAnotherPartitionIsUnreadable(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{whoami{}} }})
+	good := env.Svc.Sessions.S
+	env.Svc.Sessions.S = sessionMissesRefused{good}
+	defer func() { env.Svc.Sessions.S = good }()
+	c := env.Client()
+	c.Jar.SetCookies(mustURL(t, env.URL), []*http.Cookie{{Name: web.SessionCookieFor(env.Primary.ID),
+		Value: "made-up-cookie-value-abcdefghijklmnopqrstuvwxyz", Path: "/"}})
+	resp, body := get(t, c, env.URL+"/o/"+env.Primary.ID+"/whoami")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"user":""`) {
+		t.Fatalf("an unknown session cookie: %d %s, want signed out", resp.StatusCode, body)
 	}
 }

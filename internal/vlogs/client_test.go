@@ -26,12 +26,16 @@ func TestNewRejectsBadURLs(t *testing.T) {
 	}
 }
 
-// A row carries the request id, user agent and session id only when the event has them, and every detail field.
+// A row carries the target's user id, request id, user agent and session id only when the event has them, every
+// detail field, and always whether it is a super admin's event (the readers below super admin filter on false).
 func TestRowOptionalFields(t *testing.T) {
 	c := newReader(t, "http://127.0.0.1:1")
 	e := event(1)
 	r := c.row(e)
-	for _, k := range []string{"request_id", "user_agent", "session_id"} {
+	if r["super_admin"] != "false" {
+		t.Errorf("super_admin %v on an event of nobody's", r["super_admin"])
+	}
+	for _, k := range []string{"target_id", "request_id", "user_agent", "session_id"} {
 		if _, ok := r[k]; ok {
 			t.Errorf("%s present on a bare event", k)
 		}
@@ -40,8 +44,10 @@ func TestRowOptionalFields(t *testing.T) {
 		t.Fatalf("row %v", r)
 	}
 	e.RequestID, e.UserAgent, e.SessionID, e.Detail = "r", "ua", "s", map[string]string{"k": "v"}
+	e.TargetID, e.SuperAdmin = "u2", true
 	r = c.row(e)
-	if r["request_id"] != "r" || r["user_agent"] != "ua" || r["session_id"] != "s" || r["detail.k"] != "v" {
+	if r["request_id"] != "r" || r["user_agent"] != "ua" || r["session_id"] != "s" || r["detail.k"] != "v" ||
+		r["target_id"] != "u2" || r["super_admin"] != "true" {
 		t.Fatalf("row %v", r)
 	}
 }

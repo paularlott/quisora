@@ -265,6 +265,8 @@ type Node struct {
 	staleAfter atomic.Int64
 	// waiting holds a place for each request waiting in the store (waitSlot): at most maxWaiting at once.
 	waiting chan struct{}
+	// writing counts the writes of each partition under way from this node (Store.submit): at most maxPartitionWrites.
+	writing [partitions]atomic.Int32
 	// faults are the faults tests inject (built with the faults tag only: faults.go).
 	faults faultHooks
 	// tcpDeadline is the gossip transport's TCPDeadline (checked against the partition protocol's need: newManager).

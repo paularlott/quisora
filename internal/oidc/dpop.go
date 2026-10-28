@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -118,7 +119,11 @@ func (p *Provider) checkProof(r *http.Request, accessToken string, needNonce, fa
 	jkt := thumbprint(jwk)
 	first, err := p.svc.UseOnce(r.Context(), "dpop|"+jkt+"|"+cl.Jti, now.Add(dpopMaxAge+2*leeway))
 	if err != nil {
-		return "", &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable"}
+		// The proof could not be recorded, so it cannot be told from a replay: not "invalid", but "not now".
+		err = unavailable(err)
+		e := serverError(err)
+		e.cause = err
+		return "", e
 	}
 	if !first {
 		return "", dpopErr("the DPoP proof was already used")
@@ -231,7 +236,8 @@ func (p *Provider) setDPoPNonce(w http.ResponseWriter) {
 
 // VerifyRequestToken is verifyAccessToken for a token presented with the given authorization scheme ("Bearer" or
 // "DPoP") in request r: a DPoP-bound token is accepted only with the DPoP scheme and a proof of its key for this
-// request, and the DPoP scheme only with a bound token. A failed proof is ErrDPoPProof. A request to an organization's
+// request, and the DPoP scheme only with a bound token. A failed proof is ErrDPoPProof; one that could not be checked
+// (the replay store failed) is an error for which service.IsUnavailable is true. A request to an organization's
 // endpoint (web.Org) takes that organization's tokens only.
 func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Claims, error) {
 	var cl *Claims
@@ -260,6 +266,9 @@ func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Cla
 		fapi = ce.c.FAPI
 	}
 	jkt, e := p.checkProof(r, tok, false, fapi)
+	if e != nil && service.IsUnavailable(e) {
+		return nil, e // the proof could not be checked: not refused, and the caller answers "not now"
+	}
 	if e != nil || jkt == "" {
 		return nil, ErrDPoPProof
 	}

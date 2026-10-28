@@ -18,6 +18,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 type dpopKey struct {
@@ -394,5 +395,55 @@ func TestThumbprintAndSameHTU(t *testing.T) {
 		sameHTU("https://example.com/oauth/token/", "https://example.com/oauth/token") ||
 		sameHTU("::", "https://a.example/") || sameHTU("/path", "https://a.example/path") {
 		t.Fatal("htu comparison")
+	}
+}
+
+// A proof whose single-use record cannot be written cannot be told from a replay, but it is not an invalid proof
+// either (a client answers invalid_dpop_proof by dropping its key's proofs and a resource's invalid_dpop_proof by
+// signing in again): the token, pushed authorization and userinfo endpoints each answer "not now", and the same
+// proof is accepted once the store answers.
+func TestDPoPProofReplayStoreOutageIsUnavailable(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	k := newDPoPKey(t, AlgES256)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, cl, ch, nil)
+	r := h.tokenDPoP(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback}, "code_verifier": {v}},
+		cl, secret, h.proof(k, "POST", orgBase+"/oauth/token", nil))
+	if r.status != 200 || r.str("token_type") != "DPoP" {
+		t.Fatalf("control: %d %v", r.status, r.m)
+	}
+	at := r.str("access_token")
+
+	good := h.env.Svc.Replays.S
+	h.env.Svc.Replays.S = failCAS(good, model.KindReplay, func() error { return store.ErrUnavailable })
+	tokenProof := h.proof(k, "POST", orgBase+"/oauth/token", nil)
+	expectUnavailable(t, "token endpoint", h.tokenDPoP(url.Values{"grant_type": {"client_credentials"}}, cl, secret, tokenProof))
+
+	pushed := url.Values{"client_id": {cl.ID}, "client_secret": {secret}}
+	for key, val := range authzQuery(cl, ch, nil) {
+		if key != "client_id" {
+			pushed[key] = val
+		}
+	}
+	parProof := h.proof(k, "POST", orgBase+"/oauth/par", nil)
+	expectUnavailable(t, "pushed authorization", h.post(orgBase+"/oauth/par", pushed, "", "", "DPoP", parProof))
+
+	uiProof := h.proof(k, "GET", orgBase+"/oauth/userinfo", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = nil })
+	ui := h.userinfoDPoP("DPoP "+at, uiProof)
+	if text := body(ui); ui.StatusCode != http.StatusServiceUnavailable || ui.Header.Get("WWW-Authenticate") != "" ||
+		!strings.Contains(text, "temporarily_unavailable") {
+		t.Fatalf("userinfo: %d %q %s", ui.StatusCode, ui.Header.Get("WWW-Authenticate"), text)
+	}
+
+	// the proofs were not recorded as used, so the store answering again accepts them
+	h.env.Svc.Replays.S = good
+	if r := h.tokenDPoP(url.Values{"grant_type": {"client_credentials"}}, cl, secret, tokenProof); r.status != 200 {
+		t.Fatalf("token endpoint once the store answers again: %d %v", r.status, r.m)
+	}
+	if ui := h.userinfoDPoP("DPoP "+at, uiProof); ui.StatusCode != 200 {
+		t.Fatalf("userinfo once the store answers again: %d %s", ui.StatusCode, body(ui))
 	}
 }

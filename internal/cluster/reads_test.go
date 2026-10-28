@@ -276,8 +276,9 @@ func TestLaggingFollowerStopsServingThePartition(t *testing.T) {
 
 // A read that finds nothing is answered from the copy of the partition the record would be in, when its key names one:
 // while a node cannot read one partition (a catch-up that keeps failing), a username, organization name or id missing
-// from any other partition is not found there (an unknown user signing in elsewhere is told so, not 503), and only a
-// miss in that partition, or one whose key names no partition, is refused.
+// from any other partition is not found there (an unknown user signing in elsewhere is told so, not 503), and so is an
+// id asked of an organization of another partition (a stale session cookie, an unknown refresh token: store.GetIn); only
+// a miss in that partition, or one whose key names no partition, is refused.
 func TestMissIsGatedOnItsOwnPartition(t *testing.T) {
 	var fs faults
 	c := newTCluster(t, 3, fs.over(badgerBackend()))
@@ -308,13 +309,23 @@ func TestMissIsGatedOnItsOwnPartition(t *testing.T) {
 		}
 	}
 	missIn, missOut := replayID(true), replayID(false)
+	// a session of the other organization, which node 1 holds
+	held := newSession(other)
+	if err := sessions(c.nodes[0]).Create(bg, held); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "node 1 to hold the session", func() bool {
+		_, err := sessions(c.nodes[1]).Get(bg, held.ID)
+		return err == nil
+	})
 
 	// node 1 misses the next write of the partition, and every catch-up of it fails
 	fs.of(c.nodes[1]).failImport.Store(int64(p) + 1)
 	for _, j := range []int{0, 2} {
 		c.drop(j, 1, true, gossip.PartWriteMsg, gossip.PartCommitMsg)
 	}
-	if err := sessions(c.nodes[0]).Create(bg, newSession(trailed)); err != nil {
+	trailedSession := newSession(trailed)
+	if err := sessions(c.nodes[0]).Create(bg, trailedSession); err != nil {
 		t.Fatal(err)
 	}
 	st := c.nodes[1].st()
@@ -342,10 +353,26 @@ func TestMissIsGatedOnItsOwnPartition(t *testing.T) {
 			}
 			return store.ErrNotFound
 		},
+		// (a session cookie, a refresh token: ids that name no partition, asked of the organization they are presented to)
+		"an unknown session id asked of another organization": func() error {
+			_, err := store.GetIn(bg, st, model.KindSession, other, model.NewID())
+			return err
+		},
+		"an unknown grant id asked of another organization": func() error {
+			_, err := store.GetIn(bg, st, model.KindGrant, other, model.NewID())
+			return err
+		},
+		"a session of the trailed organization asked of another": func() error {
+			_, err := store.GetIn(bg, st, model.KindSession, other, trailedSession.ID)
+			return err
+		},
 	} {
 		if err := asked(op); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s, on the node trailing partition %d: want not found, got %v", what, p, err)
 		}
+	}
+	if _, err := sessions(c.nodes[1]).GetIn(bg, other, held.ID); err != nil {
+		t.Errorf("a session of another organization, asked of its own, on the node trailing partition %d: %v", p, err)
 	}
 	for what, op := range map[string]func() error{
 		"a username of the trailed organization": func() error {
@@ -366,6 +393,14 @@ func TestMissIsGatedOnItsOwnPartition(t *testing.T) {
 		},
 		"an id that names no partition": func() error {
 			_, err := st.Get(bg, model.KindSession, model.NewID())
+			return err
+		},
+		"an unknown session id asked of the trailed organization": func() error {
+			_, err := store.GetIn(bg, st, model.KindSession, trailed, model.NewID())
+			return err
+		},
+		"an unknown grant id asked of the trailed organization": func() error {
+			_, err := store.GetIn(bg, st, model.KindGrant, trailed, model.NewID())
 			return err
 		},
 	} {

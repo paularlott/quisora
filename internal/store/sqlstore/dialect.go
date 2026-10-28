@@ -71,6 +71,18 @@ func (d *dialect) lockClause(of string) string {
 	return "" // sqlite: the single writer already holds the database lock
 }
 
+// shareClause is appended to a SELECT of a row that must not change until the transaction ends, while other
+// transactions may read it so too (a transaction's assertion). MariaDB knows only the older form, which MySQL keeps.
+func (d *dialect) shareClause() string {
+	switch {
+	case d.isPG():
+		return " FOR SHARE"
+	case d.isMySQL():
+		return " LOCK IN SHARE MODE"
+	}
+	return "" // sqlite: the single writer already holds the database lock
+}
+
 // deleteLimit is a DELETE of at most n of the rows of table that match where. MySQL and MariaDB take a LIMIT on a
 // DELETE; PostgreSQL and SQLite do not, so there a subquery chooses the rows, locking them (PostgreSQL), which checks a
 // row changed meanwhile against where again before it is chosen.

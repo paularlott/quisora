@@ -67,12 +67,23 @@ func CheckRecord(rec *Record) error {
 	return nil
 }
 
-// CheckTx is CheckRecord for every record of a transaction.
+// CheckTx is CheckRecord for every record of a transaction, and refuses one that writes nothing or asserts version 0
+// (Op.Assert; ErrBadTx).
 func CheckTx(ops []Op) error {
+	writes := 0
 	for _, op := range ops {
 		if err := CheckRecord(op.Rec); err != nil {
 			return err
 		}
+		switch {
+		case !op.Assert:
+			writes++
+		case op.Expect == 0:
+			return fmt.Errorf("%w: an assertion of version 0", ErrBadTx)
+		}
+	}
+	if writes == 0 {
+		return fmt.Errorf("%w: nothing to write", ErrBadTx)
 	}
 	return nil
 }

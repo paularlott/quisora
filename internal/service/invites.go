@@ -312,7 +312,10 @@ func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string, sup
 		// (the operator runs the command again); modifyUser reads the account again on each try.
 		roleDone := func(context.Context, *Actor, error) {}
 		changes := map[string]string{"break_glass": "made a super admin", "role": string(model.RoleSuperAdmin)}
-		err = s.audited(ctx, System, u.OrgID, "user.update", u.Username, changes, func() error {
+		// The event is one of the super admin the account becomes, whatever its outcome: hidden below super admins as
+		// the account is from now on (model.Audit.SuperAdmin).
+		promoted := &model.User{Meta: u.Meta, OrgID: u.OrgID, Username: u.Username, Role: model.RoleSuperAdmin}
+		err = s.AuditedUser(ctx, System, promoted, "user.update", changes, func() error {
 			changed, err := s.modifyUserWith(ctx, userID, func(u *model.User) ([]store.Op, error) {
 				also, done, err := s.applyRole(ctx, u, model.RoleSuperAdmin)
 				if err != nil {
@@ -344,7 +347,7 @@ func (s *Service) CreateBreakGlassInvite(ctx context.Context, userID string, sup
 	}
 	var token string
 	var l *model.LinkToken
-	err = s.audited(ctx, System, u.OrgID, "user.invite.break_glass", u.Username, detail, func() (err error) {
+	err = s.AuditedUser(ctx, System, u, "user.invite.break_glass", detail, func() (err error) {
 		token, l, err = s.issueLink(ctx, u, LinkInvite, "", BreakGlassTTL, "", nil, func(l *model.LinkToken) { l.BreakGlass = true })
 		return err
 	})
@@ -379,7 +382,7 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	}
 	var token string
 	var l *model.LinkToken
-	err = s.audited(ctx, a, u.OrgID, "user.invite", u.Username, nil, func() (err error) {
+	err = s.AuditedUser(ctx, a, u, "user.invite", nil, func() (err error) {
 		token, l, err = s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by, mayReplaceInvite(a, u))
 		return err
 	})
@@ -413,7 +416,7 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 	u.BumpSecurity()
 	u.SessionEpoch = NewCredEpoch() // the account's sessions and refresh grants end at this write
 	detail := map[string]string{}
-	err = s.audited(ctx, a, u.OrgID, "user.password.remove", u.Username, detail, func() error {
+	err = s.AuditedUser(ctx, a, u, "user.password.remove", detail, func() error {
 		err := s.Users.Update(ctx, u)
 		if err == nil { // tidying (they count for nothing already), and the applications are told
 			if serr := s.endUserSessions(ctx, u.ID, nil); serr != nil {

@@ -272,6 +272,62 @@ func TestCodeReplayRevokesGrant(t *testing.T) {
 	}
 }
 
+// A code is spent only by the client it was issued to: another client presenting it (it came by the value, from a
+// leaked redirect) is refused without touching it, so the rightful client still redeems it, and its presentation of
+// the used code afterwards (nothing to do with that client's grant) does not revoke the grant either.
+func TestCodeOfAnotherClientIsNotSpentNorReplayed(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	a, secretA := h.newClient(nil)
+	b, secretB := h.newClient(nil)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, a, ch, nil)
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback}, "code_verifier": {v}}
+	if r := h.token(form, b, secretB); r.status != 400 || r.str("error") != "invalid_grant" {
+		t.Fatalf("another client's code: %d %v", r.status, r.m)
+	}
+	first := h.token(form, a, secretA)
+	if first.status != 200 {
+		t.Fatalf("the rightful client after another's attempt: %d %v", first.status, first.m)
+	}
+	rt := first.str("refresh_token")
+	if r := h.token(form, b, secretB); r.status != 400 || r.str("error") != "invalid_grant" {
+		t.Fatalf("another client's presentation of a used code: %d %v", r.status, r.m)
+	}
+	if r := h.refreshWith(a, secretA, rt); r.status != 200 {
+		t.Fatalf("another client's presentation revoked the grant: %d %v", r.status, r.m)
+	}
+	if ev := h.auditEvents("oauth.code.replay"); len(ev) != 0 {
+		t.Fatalf("replay audited: %+v", ev)
+	}
+	// The rightful client's own replay still ends its grant.
+	if r := h.token(form, a, secretA); r.status != 400 {
+		t.Fatalf("replay: %d %v", r.status, r.m)
+	}
+	if r := h.refreshWith(a, secretA, rt); r.status != 400 {
+		t.Fatalf("grant survived its client's replay: %d %v", r.status, r.m)
+	}
+}
+
+// Another client's presentation of a code that is being redeemed leaves no mark that makes that redemption revoke its
+// own grant.
+func TestOtherClientsReplayMarkDoesNotRaceRedemption(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	a, secretA := h.newClient(nil)
+	b, _ := h.newClient(nil)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, a, ch, nil)
+	_ = h.p.s.Eph.Set(context.Background(), nsReplayed, replayKey(b, code), []byte{1}, usedTTL) // what b's presentation leaves
+	r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback},
+		"code_verifier": {v}}, a, secretA)
+	if r.status != 200 {
+		t.Fatalf("redemption with another client's mark: %d %v", r.status, r.m)
+	}
+}
+
 // A code presented again while its first redemption is still making the grant (the replay found no grant yet to end)
 // leaves a mark the first redemption finds: the grant it made is revoked and nothing is issued (RFC 6749 §4.1.2).
 func TestCodeReplayDuringRedemptionRevokes(t *testing.T) {
@@ -281,7 +337,7 @@ func TestCodeReplayDuringRedemptionRevokes(t *testing.T) {
 	c, _ := h.session(h.user)
 	v, ch := pkce()
 	code := h.getCode(c, cl, ch, nil)
-	_ = h.p.s.Eph.Set(context.Background(), nsReplayed, code, []byte{1}, usedTTL) // the racing replay's mark
+	_ = h.p.s.Eph.Set(context.Background(), nsReplayed, replayKey(cl, code), []byte{1}, usedTTL) // the racing replay's mark
 	r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {cl.RedirectURIs[0]},
 		"code_verifier": {v}}, cl, secret)
 	if r.status != 400 || r.str("error") != "invalid_grant" {

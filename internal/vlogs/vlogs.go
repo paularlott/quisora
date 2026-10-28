@@ -290,8 +290,9 @@ func (c *Client) run() {
 func (c *Client) row(e *model.Audit) map[string]any {
 	r := map[string]any{"_time": e.Created.UTC().Format(time.RFC3339Nano), "_msg": "audit " + e.Action, "app": app,
 		"node": c.node, "boot": c.boot, "seq": c.seq.Add(1), "id": e.ID, "org": e.OrgID, "action": e.Action, "actor": e.Actor, "actor_id": e.ActorID,
-		"target": e.Target, "ip": e.IP, "outcome": e.Outcome}
-	for k, v := range map[string]string{"request_id": e.RequestID, "user_agent": e.UserAgent, "session_id": e.SessionID} {
+		"target": e.Target, "ip": e.IP, "outcome": e.Outcome, "super_admin": strconv.FormatBool(e.SuperAdmin)}
+	for k, v := range map[string]string{"target_id": e.TargetID, "request_id": e.RequestID, "user_agent": e.UserAgent,
+		"session_id": e.SessionID} {
 		if v != "" {
 			r[k] = v
 		}
@@ -501,7 +502,7 @@ func (c *Client) ReadAudit(ctx context.Context, q service.AuditQuery) (service.A
 }
 
 // Filter is the LogsQL filter of a page: this application's events, of one organization unless q.Org is "", whose
-// action, actor or target contains q.Search (case-insensitive).
+// action, actor or target contains q.Search (case-insensitive), narrowed by q's filters.
 func Filter(q service.AuditQuery) string {
 	var b strings.Builder
 	b.WriteString(`app:=` + strconv.Quote(app))
@@ -523,11 +524,8 @@ func Filter(q service.AuditQuery) string {
 	if q.Outcome != "" {
 		b.WriteString(` outcome:=` + strconv.Quote(q.Outcome))
 	}
-	if q.Actor != "" {
-		b.WriteString(` actor:=` + strconv.Quote(q.Actor))
-	}
-	if q.Target != "" {
-		b.WriteString(` target:=` + strconv.Quote(q.Target))
+	if q.NoSuperAdmins { // an event without the field (none should be) is left out too: hidden unless known not to be
+		b.WriteString(` super_admin:="false"`)
 	}
 	if s := strings.TrimSpace(q.Search); s != "" {
 		re := strconv.Quote("(?i)" + regexp.QuoteMeta(s))
@@ -575,7 +573,8 @@ func (c *Client) query(ctx context.Context, q string) ([]map[string]string, erro
 
 func fromRow(r map[string]string) *model.Audit {
 	e := &model.Audit{OrgID: r["org"], ActorID: r["actor_id"], Actor: r["actor"], Action: r["action"], Target: r["target"], IP: r["ip"],
-		Outcome: r["outcome"], RequestID: r["request_id"], UserAgent: r["user_agent"], SessionID: r["session_id"]}
+		Outcome: r["outcome"], RequestID: r["request_id"], UserAgent: r["user_agent"], SessionID: r["session_id"],
+		TargetID: r["target_id"], SuperAdmin: r["super_admin"] == "true"}
 	e.ID = r["id"]
 	if t, err := time.Parse(time.RFC3339Nano, r["_time"]); err == nil {
 		e.Created = t

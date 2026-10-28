@@ -203,8 +203,8 @@ func (s *Store) Put(ctx context.Context, rec *store.Record) (err error) {
 }
 
 // Tx applies ops all or nothing under one lock: each as apply does, in order, so a later op sees what the earlier ones
-// leave (a unique value one releases another may claim). A refusal puts back every record and unique entry the ops
-// touched.
+// leave (a unique value one releases another may claim), and an assertion is checked under the same lock. A refusal
+// puts back every record and unique entry the ops touched.
 func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	if err := s.open(); err != nil {
 		return err
@@ -231,11 +231,11 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 	defer s.mu.Unlock()
 	retried := false
 	for _, op := range ops {
-		retried = retried || store.Retried(op.Rec, headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]))
+		retried = retried || !op.Assert && store.Retried(op.Rec, headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]))
 	}
 	if retried { // the whole transaction was applied: every record it wrote takes its stored version
 		for _, op := range ops {
-			if h := headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]); h != nil && h.Req == op.Rec.Req {
+			if h := headOf(s.records[key{op.Rec.Kind, op.Rec.ID}]); !op.Assert && h != nil && h.Req == op.Rec.Req {
 				store.Settle(op.Rec, h)
 			}
 		}
@@ -255,6 +255,9 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 		}
 	}
 	for _, op := range ops {
+		if op.Assert {
+			continue
+		}
 		k := key{op.Rec.Kind, op.Rec.ID}
 		oldRecs[k] = s.records[k]
 		if e := s.records[k]; e != nil {
@@ -266,8 +269,21 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			save(key{k.kind, u})
 		}
 	}
+	now := time.Now()
 	for _, op := range ops {
-		if err := s.apply(op.Rec, op.Match, op.Expect); err != nil {
+		var err error
+		if op.Assert {
+			var stored *store.Record
+			if e := s.records[key{op.Rec.Kind, op.Rec.ID}]; e != nil {
+				stored = e.rec
+			}
+			if !op.Asserted(stored, now) {
+				err = store.ErrStale
+			}
+		} else {
+			err = s.apply(op.Rec, op.Match, op.Expect)
+		}
+		if err != nil {
 			for k, e := range oldRecs {
 				if e == nil {
 					delete(s.records, k)

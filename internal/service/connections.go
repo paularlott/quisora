@@ -148,7 +148,7 @@ func (s *Service) RemoveUserApp(ctx context.Context, a *Actor, userID, clientID 
 	if n > 0 {
 		rec = nil // some grants did go (the error is the rest that did not): recorded as done
 	}
-	s.auditOutcome(ctx, a, rec, change{u.OrgID, "user.app.revoke", u.Username, map[string]string{"client": name, "client_id": clientID}})
+	s.auditOutcome(ctx, a, rec, userChange(u, "user.app.revoke", map[string]string{"client": name, "client_id": clientID}))
 	return n, err
 }
 
@@ -456,7 +456,7 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		for _, g := range gone {
 			extra = append(extra, store.Op{Rec: store.Tombstone(g.Kind(), g.GetMeta().ID)})
 		}
-		err = s.audited(ctx, a, u.OrgID, action, u.Username, detail, func() error { return s.writeUser(ctx, u, extra) })
+		err = s.AuditedUser(ctx, a, u, action, detail, func() error { return s.writeUser(ctx, u, extra) })
 		if (errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound)) && attempt < 7 {
 			// changed meanwhile (another removal, a grant made on a session it ends, a session that expired since it
 			// was listed): decided again on the newer copies

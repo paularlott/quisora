@@ -137,6 +137,30 @@ func GetMany(ctx context.Context, s Store, kind model.Kind, ids []string) ([]*Re
 	return out, nil
 }
 
+// PartitionGetter is optionally implemented by a store whose answer to a read depends on the partition it is asked of
+// (the cluster store, which answers a miss only from a copy of a partition it can vouch for). GetIn uses it where
+// available and falls back to Get.
+type PartitionGetter interface {
+	// GetIn is GetIn of the store itself.
+	GetIn(ctx context.Context, kind model.Kind, partitionKey, id string) (*Record, error)
+}
+
+// GetIn returns the live record kind/id when it is in the partition of partitionKey (Record.Partition: an
+// organization's id for its data), and ErrNotFound when it is not there, whether it is nowhere or in another partition.
+// It is for a caller that knows the partition the record must be in (a session cookie of an organization) and would
+// treat a record of another one as none: a cluster store then answers a miss from that one partition, where Get's miss
+// of an id it never received needs every partition (cluster.Store.GetIn).
+func GetIn(ctx context.Context, s Store, kind model.Kind, partitionKey, id string) (*Record, error) {
+	if pg, ok := s.(PartitionGetter); ok {
+		return pg.GetIn(ctx, kind, partitionKey, id)
+	}
+	r, err := s.Get(ctx, kind, id)
+	if err == nil && r.Partition != partitionKey {
+		return nil, ErrNotFound
+	}
+	return r, err
+}
+
 // ListQuery selects records of one kind.
 //
 // Scope restricts the listing to one scope ("" lists every record of the kind). Search is a case-insensitive prefix
@@ -173,10 +197,32 @@ type ListResult struct {
 
 // Op is one write of a transaction (Store.Tx): rec (a tombstone when rec.Deleted), as Put, or with Match as
 // CompareAndPut(rec, Expect).
+//
+// With Assert it is a condition of the transaction instead, and writes nothing: the record Rec names (its Kind, ID and
+// Partition; the rest is not used) must be live, in that partition, at version Expect, or the transaction is refused
+// with ErrStale. It is checked atomically with the transaction's writes: no write of the record comes between the check
+// and the commit (a store orders such a write before the transaction, which it then refuses, or after it). Transactions
+// that only assert a record never conflict with each other over it. Expect must not be 0 (ErrBadTx): no store could
+// hold off the creation of a record that is not stored (a SQL server database has no row to lock), so an assertion
+// names a record that exists. A transaction must write something (ErrBadTx): its outcome is that of its writes, which
+// are what a retry is recognised by.
 type Op struct {
 	Rec    *Record
 	Match  bool
 	Expect hlc.Timestamp
+	Assert bool
+}
+
+// AssertOp is the op of a transaction that asserts record kind/id, in the partition of partitionKey, is live at
+// version (Op.Assert).
+func AssertOp(kind model.Kind, partitionKey, id string, version hlc.Timestamp) Op {
+	return Op{Rec: &Record{Kind: kind, ID: id, Partition: partitionKey}, Assert: true, Expect: version}
+}
+
+// Asserted reports whether stored, the record a transaction's assertion op names in any state (nil: none), holds:
+// live, in the partition the op names and at the version it expects.
+func (op Op) Asserted(stored *Record, now time.Time) bool {
+	return stored != nil && stored.Live(now) && stored.Partition == op.Rec.Partition && stored.Version == op.Expect
 }
 
 // NewReq returns a new request id (Record.Req): a random prefix of this process and a count, unique without a random

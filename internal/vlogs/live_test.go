@@ -40,6 +40,8 @@ func TestVictoriaLogsRoundTrip(t *testing.T) {
 			Detail: map[string]string{"tags": "x y"}})
 	}
 	c.WriteAudit(&model.Audit{Meta: model.Meta{ID: model.NewID(), Created: base}, OrgID: orgB, Action: "user.delete", Actor: "bob", Target: mark})
+	c.WriteAudit(&model.Audit{Meta: model.Meta{ID: model.NewID(), Created: base}, OrgID: orgB, Action: "user.update", Actor: "root",
+		SuperAdmin: true})
 	c.Close() // flushes
 	ctx := context.Background()
 	var pg service.AuditPage
@@ -60,8 +62,13 @@ func TestVictoriaLogsRoundTrip(t *testing.T) {
 		t.Fatalf("second page: %+v", page2.Items)
 	}
 	other, _ := c.ReadAudit(ctx, service.AuditQuery{Org: orgB, Sort: "created", Desc: true, Limit: 10})
-	if other.Total != 1 || other.Items[0].Action != "user.delete" {
+	if other.Total != 2 {
 		t.Fatalf("org b: %+v", other)
+	}
+	// below super admins, the super admin's event is left out of the page and its total
+	other, _ = c.ReadAudit(ctx, service.AuditQuery{Org: orgB, Sort: "created", Desc: true, Limit: 10, NoSuperAdmins: true})
+	if other.Total != 1 || len(other.Items) != 1 || other.Items[0].Action != "user.delete" {
+		t.Fatalf("org b below super admins: %+v", other)
 	}
 	// every organization, by search (case-insensitive substring)
 	all, _ := c.ReadAudit(ctx, service.AuditQuery{Search: strings.ToUpper(mark), Sort: "created", Desc: true, Limit: 50})

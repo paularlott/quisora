@@ -260,7 +260,7 @@ func (s *Store) putPartition(ctx context.Context, r runner, rec *store.Record, p
 		return fmt.Errorf("sqlstore: version %d out of range", rec.Version)
 	}
 	store.Witness(rec.Version)
-	old, err := loadStored(ctx, r, t, rec.ID)
+	old, err := loadStored(ctx, r, t.meta, t, rec.ID)
 	if err != nil {
 		return err
 	}
@@ -472,7 +472,7 @@ func (s *Store) exportPage(ctx context.Context, r runner, t *table, p int, after
 
 // deleteRow removes a row and releases its unique values.
 func (s *Store) deleteRow(ctx context.Context, r runner, t *table, id string) error {
-	old, err := loadStored(ctx, r, t, id)
+	old, err := loadStored(ctx, r, t.meta, t, id)
 	if err != nil || old == nil {
 		return err
 	}

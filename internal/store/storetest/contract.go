@@ -2,9 +2,14 @@ package storetest
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -297,4 +302,174 @@ func testFailedWriteLeavesRecord(t *testing.T, s store.Store) {
 	if rec.Version != was.Version || rec.Req != was.Req || !slices.Equal(rec.Unique, was.Unique) {
 		t.Fatalf("Tx: the record changed: %+v, was %+v", rec, &was)
 	}
+}
+
+// A transaction's assertion (store.Op.Assert) holds while its record is live at the version it names, in its
+// partition, and writes nothing; one that does not hold (the record changed, was deleted, or is a new generation)
+// refuses the transaction with ErrStale, its writes not made. Transactions asserting the same record all commit. A
+// retried transaction is answered by its writes, whatever its assertions now find.
+func testTxAssert(t *testing.T, s store.Store) {
+	locks := store.NewTable[model.Lock](s)
+	guard := &model.Lock{Meta: model.Meta{ID: "org1"}}
+	must(t, locks.Create(ctx, guard))
+	v := guard.Version
+	create := func(name string, assert hlc.Timestamp) ([]store.Op, error) {
+		t.Helper()
+		r, err := store.Encode(newUser("org1", name))
+		must(t, err)
+		ops := []store.Op{{Rec: r, Match: true}, store.AssertOp(model.KindLock, "org1", "org1", assert)}
+		return ops, s.Tx(ctx, ops)
+	}
+	exists := func(ops []store.Op) bool {
+		t.Helper()
+		_, err := s.Get(ctx, model.KindUser, ops[0].Rec.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+	unchanged := func(want hlc.Timestamp) {
+		t.Helper()
+		g, err := s.Lookup(ctx, model.KindLock, "org1")
+		if err != nil || g.Version != want {
+			t.Fatalf("an assertion changed the record it asserts: %+v %v, want version %d", g, err, want)
+		}
+	}
+
+	for _, name := range []string{"as-a", "as-b"} { // two transactions asserting one record: both commit
+		ops, err := create(name, v)
+		if err != nil || !exists(ops) {
+			t.Fatalf("a transaction whose assertion holds: %v", err)
+		}
+	}
+	unchanged(v)
+
+	guard.Holder = "changed"
+	must(t, locks.Update(ctx, guard))
+	if ops, err := create("as-c", v); !errors.Is(err, store.ErrStale) || exists(ops) {
+		t.Fatalf("an assertion of a record changed since: want ErrStale and nothing written, got %v", err)
+	}
+	v = guard.Version
+	if err := s.Tx(ctx, []store.Op{store.AssertOp(model.KindLock, "org1", "org1", v)}); !errors.Is(err, store.ErrBadTx) {
+		t.Fatalf("a transaction of assertions alone: want ErrBadTx, got %v", err)
+	}
+	if _, err := create("as-d", 0); !errors.Is(err, store.ErrBadTx) {
+		t.Fatalf("an assertion of version 0: want ErrBadTx, got %v", err)
+	}
+	gr, err := store.Encode(&model.Lock{Meta: model.Meta{ID: "org1"}})
+	must(t, err)
+	if err = s.Tx(ctx, []store.Op{{Rec: gr}, store.AssertOp(model.KindLock, "org1", "org1", v)}); !errors.Is(err, store.ErrBadTx) {
+		t.Fatalf("a transaction writing and asserting one record: want ErrBadTx, got %v", err)
+	}
+	unchanged(v)
+
+	// Disappeared, and appeared again: a deletion and a new generation are changes too.
+	must(t, locks.DeleteIf(ctx, "org1", v))
+	if ops, err := create("as-e", v); !errors.Is(err, store.ErrStale) || exists(ops) {
+		t.Fatalf("an assertion of a deleted record: want ErrStale and nothing written, got %v", err)
+	}
+	again := &model.Lock{Meta: model.Meta{ID: "org1"}}
+	must(t, locks.Create(ctx, again))
+	if ops, err := create("as-f", v); !errors.Is(err, store.ErrStale) || exists(ops) {
+		t.Fatalf("an assertion of a record deleted and created again: want ErrStale and nothing written, got %v", err)
+	}
+	ops, err := create("as-g", again.Version)
+	if err != nil || !exists(ops) {
+		t.Fatalf("an assertion of the new generation: %v", err)
+	}
+
+	// A retry of an applied transaction is answered as done by its writes, though its assertion no longer holds.
+	again.Holder = "changed"
+	must(t, locks.Update(ctx, again))
+	retry := []store.Op{{Rec: ops[0].Rec, Match: true}, store.AssertOp(model.KindLock, "org1", "org1", ops[1].Expect)}
+	first := retry[0].Rec.Version
+	retry[0].Rec.Req = mustStored(t, s, model.KindUser, retry[0].Rec.ID).Req
+	if err := s.Tx(ctx, retry); err != nil || retry[0].Rec.Version != first {
+		t.Fatalf("a retried transaction whose assertion has changed since: %v (version %d, stored %d)", err,
+			retry[0].Rec.Version, first)
+	}
+}
+
+// Many transactions asserting one record at once all commit (they do not conflict with each other over it), and a
+// write of the record decides between them: none asserting the version it replaced commits after it.
+func testConcurrentTxAssert(t *testing.T, s store.Store) {
+	locks := store.NewTable[model.Lock](s)
+	guard := &model.Lock{Meta: model.Meta{ID: "org1"}}
+	must(t, locks.Create(ctx, guard))
+	v := guard.Version
+	assertCreate := func(name string) error {
+		r, err := store.Encode(newUser("org1", name))
+		if err != nil {
+			return err
+		}
+		return s.Tx(ctx, []store.Op{{Rec: r, Match: true}, store.AssertOp(model.KindLock, "org1", "org1", v)})
+	}
+	var wg sync.WaitGroup
+	for w := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 8 {
+				if err := assertCreate(fmt.Sprintf("ca-%d-%d", w, i)); err != nil {
+					t.Errorf("a transaction asserting a record others assert too: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if t.Failed() {
+		return
+	}
+
+	// Creations asserting v run until refused; the guard is changed while they do.
+	var made atomic.Int32
+	for w := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				err := assertCreate(fmt.Sprintf("cb-%d-%d", w, i))
+				if errors.Is(err, store.ErrStale) {
+					return
+				}
+				if err != nil {
+					t.Errorf("a transaction asserting a record: %v", err)
+					return
+				}
+				made.Add(1)
+			}
+		}()
+	}
+	for made.Load() < 32 {
+		time.Sleep(time.Millisecond)
+	}
+	guard.Holder = "changed"
+	must(t, locks.Update(ctx, guard))
+	// Counted from a copy that holds the change (a cluster node applies it as it can): every creation before it.
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		g, err := locks.Get(ctx, "org1")
+		if err == nil && g.Version == guard.Version {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the change of the record is not readable here: %+v %v", g, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	before, err := users(s).Count(ctx, "org1")
+	must(t, err)
+	wg.Wait()
+	after, err := users(s).Count(ctx, "org1")
+	must(t, err)
+	if after != before {
+		t.Fatalf("%d transactions asserting the version a write replaced committed after it", after-before)
+	}
+}
+
+// mustStored returns the stored record kind/id, in any state.
+func mustStored(t *testing.T, s store.Store, kind model.Kind, id string) *store.Record {
+	t.Helper()
+	r, err := s.Lookup(ctx, kind, id)
+	must(t, err)
+	return r
 }

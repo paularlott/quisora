@@ -164,17 +164,13 @@ func (s *Service) leaver(ctx context.Context, id *model.Identity, p *model.Provi
 	if err != nil || cur.Refresh != id.Refresh {
 		return
 	}
-	target := id.UserID
-	if u, err := s.Svc.Users.Get(ctx, id.UserID); err == nil {
-		target = u.Username
-	}
 	result := "sessions ended"
 	if err := s.Svc.RevokeSessions(ctx, service.System, id.UserID); err != nil {
 		result = "not every session ended: " + err.Error()
 		s.Svc.Log.Warn("upstream: ending the sessions of a user the provider refused", "provider", p.Name, "user", id.UserID, "error", err)
 	}
 	actor := &service.Actor{OrgID: p.OrgID, Role: model.RoleManager, Name: "provider:" + p.Name}
-	s.Svc.Audit(ctx, actor, p.OrgID, "identity.refresh.refused", target, map[string]string{"provider": p.Name, "result": result})
+	s.Svc.AuditUser(ctx, actor, s.Svc.AuditTargetUser(ctx, p.OrgID, id.UserID), "identity.refresh.refused", map[string]string{"provider": p.Name, "result": result})
 	for range 4 {
 		cur.Refresh, cur.RefreshChecked = "", s.Now().UTC()
 		if err := s.Svc.Identities.Update(ctx, cur); !errors.Is(err, store.ErrStale) {

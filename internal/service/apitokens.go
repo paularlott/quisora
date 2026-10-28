@@ -212,7 +212,7 @@ func (s *Service) RegenerateAPIToken(ctx context.Context, a *Actor, id string) (
 		if errors.Is(err, store.ErrStale) && attempt < 3 {
 			continue
 		}
-		s.auditOutcome(ctx, a, err, change{t.OrgID, "apitoken.regenerate", t.Name, nil})
+		s.auditOutcome(ctx, a, err, change{t.OrgID, "apitoken.regenerate", t.Name, nil, nil})
 		if err != nil {
 			return nil, "", mapStore(err)
 		}

@@ -141,8 +141,8 @@ of "which write may have been committed" at a takeover, rest on there being one.
 **Cross-partition changes** (creating an organization writes the organization in partition 0 and its first
 administrator in its own partition) have no transaction across partitions: each is a sequence of single-partition
 writes, ordered so that a crash between them leaves something harmless and repeatable, as today. The inventory is in
-the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization and deleting an organization (one write;
-the rest is the orphan sweep). Everything else an organization owns is one partition's data, so no write of an
+the build ("Implementation in Quisora" and docs/REPLICATION.md): creating an organization and deleting an organization (a guard in
+the organization's partition that keeps new users out, then one write; the rest is the orphan sweep). Everything else an organization owns is one partition's data, so no write of an
 organization's records needs a second partition, and none needs two organizations' partitions: an organization is one
 partition's data, with one owner that writes it, like a replicated MariaDB primary per organization whose data the other
 nodes replicate.

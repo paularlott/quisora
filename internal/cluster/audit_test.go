@@ -319,9 +319,10 @@ func TestMergeAuditOrders(t *testing.T) {
 
 func TestAuditFiltersWireRoundTrip(t *testing.T) {
 	when := time.Date(2026, 1, 2, 3, 4, 5, 6000, time.UTC)
-	in := []store.Filter{{Field: "action", Op: "=", Value: "a"}, {Field: "created", Op: ">=", Value: when}, {Field: "n", Op: "=", Value: 5}}
+	in := []store.Filter{{Field: "action", Op: "=", Value: "a"}, {Field: "created", Op: ">=", Value: when}, {Field: "n", Op: "=", Value: 5},
+		{Field: "super_admin", Value: false}}
 	out := fromAuditFilters(toAuditFilters(in))
-	if len(out) != 3 || out[0].Value != "a" || !out[1].Value.(time.Time).Equal(when) || out[2].Value != "" {
+	if len(out) != 4 || out[0].Value != "a" || !out[1].Value.(time.Time).Equal(when) || out[2].Value != "" || out[3].Value != false {
 		t.Fatalf("%+v", out)
 	}
 }

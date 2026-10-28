@@ -78,7 +78,7 @@ func (s *Service) CreateRecoveryCodes(ctx context.Context, a *Actor, u *model.Us
 		hashes[i] = recoveryHash(u.ID, normRecoveryCode(codes[i]))
 	}
 	now := time.Now().UTC()
-	err = s.audited(ctx, a, u.OrgID, "account.recovery_codes.create", u.Username, map[string]string{"codes": itoa(RecoveryCodeCount)}, func() error {
+	err = s.AuditedUser(ctx, a, u, "account.recovery_codes.create", map[string]string{"codes": itoa(RecoveryCodeCount)}, func() error {
 		for attempt := 0; ; attempt++ {
 			u.RecoveryCodes, u.RecoveryCreated = hashes, &now
 			u.BumpSecurity() // a new set of codes is a new credential: what was in flight under the old one ends

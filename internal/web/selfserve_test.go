@@ -19,6 +19,12 @@ func (pingRoutes) Register(s *web.Server) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = w.Write(b)
 	})
+	s.Mux.HandleFunc("GET /o/x/plain", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html>hello</html>"))
+		w.(http.Flusher).Flush() // a handler that streams asks for this
+		w.Header().Set("X-Late", "after the status")
+	})
+	s.Mux.HandleFunc("GET /o/x/empty", func(http.ResponseWriter, *http.Request) {})
 	s.Mux.HandleFunc("GET /elsewhere", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 }
 
@@ -54,5 +60,32 @@ func TestSelfTransportServesOrganizationPathsInProcess(t *testing.T) {
 	}
 	if len(base.urls) != 2 {
 		t.Fatalf("requests that reached the base transport: %v", base.urls)
+	}
+}
+
+// An answer is what a server over the network would give: 200 when the handler says nothing, a content type from the
+// first bytes when it sets none, and the headers as they were when the status was sent.
+func TestSelfTransportResponseMatchesAServer(t *testing.T) {
+	e := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{pingRoutes{}} }})
+	c := &http.Client{Transport: e.Server.SelfTransport(&baseCalls{})}
+
+	res, err := c.Get(e.Cfg.Server.PublicURL + "/o/x/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Status != "200 OK" || string(b) != "<html>hello</html>" || res.ContentLength != int64(len(b)) ||
+		res.Header.Get("Content-Type") != "text/html; charset=utf-8" || res.Header.Get("X-Late") != "" {
+		t.Fatalf("streamed answer: %q %d %q %q %q", res.Status, res.ContentLength, b, res.Header.Get("Content-Type"), res.Header.Get("X-Late"))
+	}
+	res, err = c.Get(e.Cfg.Server.PublicURL + "/o/x/empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(b) != 0 {
+		t.Fatalf("silent handler: %d %q", res.StatusCode, b)
 	}
 }

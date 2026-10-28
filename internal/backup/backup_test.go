@@ -90,6 +90,9 @@ func TestRoundTripAcrossBackends(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range model.Kinds() {
+		if backup.Skipped(k) {
+			continue
+		}
 		want, _ := f.src.Count(ctx, k, "")
 		got, _ := dst.Count(ctx, k, "")
 		if want != got || stats[k] != want {
@@ -451,6 +454,9 @@ func TestRestoreKeepsPartitionKey(t *testing.T) {
 	}
 	checked := map[model.Kind]int{}
 	for _, k := range model.Kinds() {
+		if backup.Skipped(k) {
+			continue
+		}
 		for after := ""; ; {
 			page, err := f.src.List(ctx, k, store.ListQuery{After: after, Limit: 200})
 			if err != nil {

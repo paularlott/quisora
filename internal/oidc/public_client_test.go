@@ -275,3 +275,25 @@ func TestPublicClientCORSIsPerOrganization(t *testing.T) {
 		}
 	}
 }
+
+// A public client is identified by client_id alone, so a client that cannot be read is not "authentication required"
+// (401 invalid_client, which a client answers by signing the user in again): the request is valid and the server
+// cannot decide now, so the answer is 503 and the same request succeeds once the store answers.
+func TestPublicClientTokenRequestFailsClosedOnUnreadableClient(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.publicClient(nil)
+	r, _ := h.publicLogin(cl, nil)
+	refresh := func() tokResp {
+		return h.post(orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r.str("refresh_token")},
+			"client_id": {cl.ID}}, "", "")
+	}
+	good := h.env.Svc.Clients.S
+	h.env.Svc.Clients.S = failReads(good, model.KindClient)
+	h.p.InvalidateClient(cl.ID)
+	expectUnavailable(t, "public client with an unreadable record", refresh())
+	h.env.Svc.Clients.S = good
+	if r1 := refresh(); r1.status != 200 {
+		t.Fatalf("the same request once the store answers again: %d %v", r1.status, r1.m)
+	}
+}

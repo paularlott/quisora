@@ -77,19 +77,6 @@ func FullViewQuery(a *Actor, q store.ListQuery) store.ListQuery {
 // NotSeenInFull returns the ids of org's users that a does not see in full (super admins below them, administrators to
 // managers): only users of administrator rank can be, and they are few.
 func (s *Service) NotSeenInFull(ctx context.Context, a *Actor, orgID string) (map[string]bool, error) {
-	users, err := s.usersNotSeenInFull(ctx, a, orgID)
-	if err != nil || users == nil {
-		return nil, err
-	}
-	out := map[string]bool{}
-	for _, u := range users {
-		out[u.ID] = true
-	}
-	return out, nil
-}
-
-// usersNotSeenInFull is NotSeenInFull with the users themselves.
-func (s *Service) usersNotSeenInFull(ctx context.Context, a *Actor, orgID string) ([]*model.User, error) {
 	if seesSuperAdmins(a) {
 		return nil, nil
 	}
@@ -97,7 +84,13 @@ func (s *Service) usersNotSeenInFull(ctx context.Context, a *Actor, orgID string
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	return slices.DeleteFunc(l, func(u *model.User) bool { return s.Visibility(a, u) == Full }), nil
+	out := map[string]bool{}
+	for _, u := range l {
+		if s.Visibility(a, u) != Full {
+			out[u.ID] = true
+		}
+	}
+	return out, nil
 }
 
 // present returns users as a sees them: hidden ones dropped, directory entries cut down.

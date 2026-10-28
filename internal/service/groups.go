@@ -119,7 +119,7 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 		g.Pending = []model.GroupChange{*entry}
 	}
 	err = s.Groups.Create(ctx, g)
-	s.auditOutcome(ctx, a, err, append([]change{{orgID, "group.create", g.DisplayName, tagDetail(g, in)}}, memberChanges(g, entry)...)...)
+	s.auditOutcome(ctx, a, err, append([]change{{orgID, "group.create", g.DisplayName, tagDetail(g, in), nil}}, memberChanges(g, entry)...)...)
 	if err != nil {
 		return nil, s.groupConflict(ctx, err, g)
 	}
@@ -410,7 +410,7 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 	}
 	var events []change
 	if fieldsChanged {
-		events = append(events, change{g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next)})
+		events = append(events, change{g.OrgID, "group.update", next.DisplayName, addChanges(tagDetail(&next, in), snapshot(g), &next), nil})
 	}
 	if membersChanged {
 		events = append(events, memberChanges(&next, &entry)...)
@@ -431,10 +431,10 @@ func memberChanges(g *model.Group, c *model.GroupChange) []change {
 	}
 	var out []change
 	for _, uid := range c.Add {
-		out = append(out, change{g.OrgID, "group.member.add", g.DisplayName, map[string]string{"user": uid}})
+		out = append(out, change{g.OrgID, "group.member.add", g.DisplayName, map[string]string{"user": uid}, nil})
 	}
 	for _, uid := range c.Remove {
-		out = append(out, change{g.OrgID, "group.member.remove", g.DisplayName, map[string]string{"user": uid}})
+		out = append(out, change{g.OrgID, "group.member.remove", g.DisplayName, map[string]string{"user": uid}, nil})
 	}
 	return out
 }

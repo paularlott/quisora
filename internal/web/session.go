@@ -151,7 +151,7 @@ func (m *Sessions) Check(r *http.Request) (*model.Session, *model.User, error) {
 		if err != nil || len(c.Value) < 20 || len(c.Value) > 100 {
 			continue
 		}
-		s, u, err := m.lookup(r.Context(), SessionID(c.Value))
+		s, u, err := m.lookup(r.Context(), org, SessionID(c.Value))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -250,12 +250,16 @@ func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
 
 // Lookup returns a valid session and its active user by stored session id (see SessionID).
 func (m *Sessions) Lookup(ctx context.Context, id string) (*model.Session, *model.User) {
-	s, u, _ := m.lookup(ctx, id)
+	s, u, _ := m.lookup(ctx, "", id)
 	return s, u
 }
 
 // lookup is Lookup that also returns the store's refusal (store.ErrUnavailable) when it could not check the session.
-func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *model.User, error) {
+// org, when not "", is the organization whose cookie carried the id: the session is read from that organization's
+// partition only (store.GetIn; one of another organization is no session to the caller anyway), so a cookie whose
+// session was never seen here or is long gone (a stale or a made-up one) is answered "no session" from that partition
+// alone, while another organization's partition is between owners. Lookup, of a session already found, passes "".
+func (m *Sessions) lookup(ctx context.Context, org, id string) (*model.Session, *model.User, error) {
 	now := time.Now()
 	m.mu.RLock()
 	cs := m.cache[id]
@@ -268,7 +272,13 @@ func (m *Sessions) lookup(ctx context.Context, id string) (*model.Session, *mode
 	}
 	if cs == nil || now.Sub(cs.fetched) > sessionCacheTTL {
 		sessTok := m.gens.Token(id)
-		s, err := m.svc.Sessions.Get(ctx, id)
+		var s *model.Session
+		var err error
+		if org == "" {
+			s, err = m.svc.Sessions.Get(ctx, id)
+		} else {
+			s, err = m.svc.Sessions.GetIn(ctx, org, id)
+		}
 		if err != nil {
 			m.Evict(id, "")
 			return nil, nil, refused(err)

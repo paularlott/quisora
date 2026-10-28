@@ -198,7 +198,7 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if p.cfg.Audit.Tokens {
-		p.auditClient(ctx, c, "", "oauth.device.start", map[string]string{"scopes": strings.Join(scopes, " ")})
+		p.auditClient(ctx, c, nil, "oauth.device.start", map[string]string{"scopes": strings.Join(scopes, " ")})
 	}
 	o := newObj(512)
 	o.str("device_code", deviceCode)

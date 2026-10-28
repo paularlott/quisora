@@ -30,6 +30,7 @@ type table struct {
 	lookup   string // WHERE id = ?, whatever the state
 	byUnique string // WHERE id is the holder of a unique value (kind, value) and live
 	meta     string // version, origin, deleted, expires, uniq, epoch, created_v, req of one id, row-locked
+	shared   string // meta, the row share-locked (a transaction's assertion)
 	insert   string
 	update   string
 
@@ -76,7 +77,9 @@ func newTable(d *dialect, kind model.Kind) *table {
 	// A scalar subquery, not a join: SQLite re-prepares a joined statement at every step (6x slower than the two lookups).
 	t.byUnique = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = (SELECT id FROM " + uniqueTable +
 		" WHERE kind = ? AND value = ?) AND deleted = FALSE AND (expires IS NULL OR expires > ?)")
-	t.meta = d.bind("SELECT version, origin, deleted, expires, uniq, epoch, created_v, req, part FROM " + t.name + " WHERE id = ?" + d.lockClause(""))
+	metaSQL := "SELECT version, origin, deleted, expires, uniq, epoch, created_v, req, part FROM " + t.name + " WHERE id = ?"
+	t.meta = d.bind(metaSQL + d.lockClause(""))
+	t.shared = d.bind(metaSQL + d.shareClause())
 	t.lookup = d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE id = ?")
 	t.insert = d.bind("INSERT INTO " + t.name + " (" + wcols + ") VALUES (" + marks + ")")
 	// Every partition read says pseq > 0 although its bound sequence (never negative) implies it: SQLite uses the partial

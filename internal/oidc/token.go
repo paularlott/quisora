@@ -197,31 +197,54 @@ func pkceOK(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(b64.EncodeToString(h[:])), []byte(challenge)) == 1
 }
 
+// replayKey is the id of a code's records of use and of replay (nsUsed, nsReplayed): they are kept per client, so a
+// client that presents a code it was not issued to neither finds the grant made from it (and revokes it) nor leaves a
+// mark that makes the rightful client's redemption under way revoke its own grant.
+func replayKey(c *model.Client, code string) string {
+	return c.ID + "\x00" + code
+}
+
+// codeReplayed answers the presentation of a code that is no longer there: unknown, expired or used. A code presented
+// twice by its client: everything issued from the first use must die (RFC 6749 §4.1.2). The mark goes first, then the
+// grant is looked for; the first use records its grant, then looks for the mark (both under the code's id, on one
+// node, in order): whichever comes second sees the other, so a replay racing the first use's grant still ends it.
+// Both are the client's own (replayKey): another client's presentation of the code finds no grant of its own to end,
+// and is refused alone. It is not audited either: it ends nothing, and anyone can make it, so it would only fill the
+// audit log.
+func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code string) *oauthError {
+	key := replayKey(c, code)
+	_ = p.s.Eph.Set(ctx, nsReplayed, key, []byte{1}, replayMarkTTL)
+	if gid, err := p.s.Eph.Get(ctx, nsUsed, key); err == nil {
+		// The replay is refused either way; whether the grant could be ended is recorded as it happened.
+		rerr := p.revokeGrant(ctx, string(gid))
+		p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid), "revoke_error", rerr)
+		p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": revokedText(rerr)})
+	}
+	return oerr("invalid_grant", "the authorization code is invalid, expired or already used")
+}
+
 func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource []string, jkt string) (*tokenResponse, *oauthError) {
 	if code == "" || len(code) > 200 {
 		return nil, oerr("invalid_request", "code is required")
 	}
-	raw, err := p.s.Eph.Take(ctx, nsCode, code)
+	// The code is read before it is taken: a client it was not issued to (one that came by the value from a leaked
+	// redirect, say) must not be able to spend it, nor make its rightful client's exchange look like a replay.
+	raw, err := p.s.Eph.Get(ctx, nsCode, code)
+	if errors.Is(err, ephemeral.ErrNotFound) {
+		return nil, p.codeReplayed(ctx, c, code)
+	}
 	if err != nil {
-		if errors.Is(err, ephemeral.ErrNotFound) {
-			// A code presented twice: everything issued from the first use must die (RFC 6749 §4.1.2). The mark goes
-			// first, then the grant is looked for; the first use records its grant, then looks for the mark (both
-			// under the code's id, on one node, in order): whichever comes second sees the other, so a replay racing
-			// the first use's grant still ends it.
-			_ = p.s.Eph.Set(ctx, nsReplayed, code, []byte{1}, replayMarkTTL)
-			if gid, err := p.s.Eph.Get(ctx, nsUsed, code); err == nil {
-				// The replay is refused either way; whether the grant could be ended is recorded as it happened.
-				rerr := p.revokeGrant(ctx, string(gid))
-				p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid), "revoke_error", rerr)
-				p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": revokedText(rerr)})
-			}
-			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
-		}
 		return nil, serverError(err)
 	}
 	var cd codeData
 	if json.Unmarshal(raw, &cd) != nil || cd.ClientID != c.ID {
 		return nil, oerr("invalid_grant", "the authorization code was not issued to this client")
+	}
+	if _, err := p.s.Eph.Take(ctx, nsCode, code); err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) { // another request took it since it was read
+			return nil, p.codeReplayed(ctx, c, code)
+		}
+		return nil, serverError(err)
 	}
 	if redirectURI != cd.RedirectURI {
 		return nil, oerr("invalid_grant", "redirect_uri does not match the authorization request")
@@ -263,11 +286,11 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		// retry, rather than spent on our failure (its retry makes the same grant: codeData.GrantID).
 		_ = p.s.Eph.Set(ctx, nsCode, code, raw, p.codeTTL(c))
 	case oe == nil:
-		_ = p.s.Eph.Set(ctx, nsUsed, code, []byte(gid), usedTTL)
-		if _, err := p.s.Eph.Get(ctx, nsReplayed, code); err == nil { // presented again while this one ran
+		_ = p.s.Eph.Set(ctx, nsUsed, replayKey(c, code), []byte(gid), usedTTL)
+		if _, err := p.s.Eph.Get(ctx, nsReplayed, replayKey(c, code)); err == nil { // presented again while this one ran
 			rerr := p.revokeGrant(ctx, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
-			p.auditClient(ctx, c, "", "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
+			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 		}
 	}
@@ -371,7 +394,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if via != "" {
 		detail["grant_type"] = via
 	}
-	p.auditClient(ctx, c, u.Username, "oauth.grant", detail)
+	p.auditClient(ctx, c, u, "oauth.grant", detail)
 	if c.BackchannelURI != "" {
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
@@ -577,7 +600,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	if !ok {
 		return nil, invalid
 	}
-	g, err := p.svc.Grants.Get(ctx, pr.gid)
+	// Read in the client's organization's partition (a grant is its user's, who signs in only to applications of their
+	// own organization): an unknown or purged grant is then "not found" whatever other partitions are doing.
+	g, err := p.svc.Grants.GetIn(ctx, c.OrgID, pr.gid)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, invalid
@@ -680,7 +705,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				if errors.Is(err, store.ErrUnconfirmed) {
 					// The rotation may have landed: the client retries with the same token, within refreshRetryGrace
 					// (retryAfter), and gets the new one (isRefreshRetry). Recorded as a rotation of unknown outcome.
-					_ = p.auditedClient(ctx, c, u.Username, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID},
+					_ = p.auditedClient(ctx, c, u, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID},
 						func() error { return err })
 				}
 				return nil, serverError(err)
@@ -728,7 +753,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	tr.refresh = newRefresh
 	if p.cfg.Audit.Tokens {
-		p.auditClient(ctx, c, u.Username, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID,
+		p.auditClient(ctx, c, u, "oauth.refresh", map[string]string{"grant": g.ID, "user_id": u.ID,
 			"scopes": strings.Join(scopes, " ")})
 	}
 	return tr, nil
@@ -770,7 +795,7 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	}
 	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res, jkt: jkt}, false)
 	if err == nil && p.cfg.Audit.Tokens {
-		p.auditClient(ctx, c, "", "oauth.client_credentials", map[string]string{"scopes": strings.Join(scopes, " ")})
+		p.auditClient(ctx, c, nil, "oauth.client_credentials", map[string]string{"scopes": strings.Join(scopes, " ")})
 	}
 	if err != nil {
 		return nil, serverError(err)
@@ -778,38 +803,37 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	return tr, nil
 }
 
-// auditClient records an OAuth event made by client c (the actor) about target (a username, or "").
-func (p *Provider) auditClient(ctx context.Context, c *model.Client, target, action string, detail map[string]string) {
+// auditClient records an OAuth event made by client c (the actor) about the user u (nil: about c itself).
+func (p *Provider) auditClient(ctx context.Context, c *model.Client, u *model.User, action string, detail map[string]string) {
 	if detail == nil {
 		detail = map[string]string{}
 	}
 	detail["client_id"] = c.ClientID()
-	if target == "" {
-		target = c.Name
+	a := &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}
+	if u == nil {
+		p.svc.Audit(ctx, a, c.OrgID, action, c.Name, detail)
+		return
 	}
-	p.svc.Audit(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail)
+	p.svc.AuditUser(ctx, a, u, action, detail)
 }
 
 // auditedClient is auditClient for a change made by client c: the event is written when write succeeds, and (with
 // outcome "unknown") when its outcome is not known; a change known not to have happened is not audited as done.
-func (p *Provider) auditedClient(ctx context.Context, c *model.Client, target, action string, detail map[string]string, write func() error) error {
+func (p *Provider) auditedClient(ctx context.Context, c *model.Client, u *model.User, action string, detail map[string]string, write func() error) error {
 	if detail == nil {
 		detail = map[string]string{}
 	}
 	detail["client_id"] = c.ClientID()
-	if target == "" {
-		target = c.Name
+	a := &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}
+	if u == nil {
+		return p.svc.Audited(ctx, a, c.OrgID, action, c.Name, detail, write)
 	}
-	return p.svc.Audited(ctx, &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}, c.OrgID, action, target, detail, write)
+	return p.svc.AuditedUser(ctx, a, u, action, detail, write)
 }
 
 // auditReuse records a refresh token presented after it was replaced: someone kept a copy, and the grant is revoked
 // (revoked says whether that deletion persisted; a failed one is logged, and the token is refused either way).
 func (p *Provider) auditReuse(ctx context.Context, c *model.Client, g *model.Grant, why, revoked string) {
-	target := g.UserID
-	if u, err := p.user(ctx, g.UserID); err == nil {
-		target = u.Username
-	}
-	p.auditClient(ctx, c, target, "oauth.refresh.reuse", map[string]string{"grant": g.ID, "user_id": g.UserID,
+	p.auditClient(ctx, c, p.svc.AuditTargetUser(ctx, c.OrgID, g.UserID), "oauth.refresh.reuse", map[string]string{"grant": g.ID, "user_id": g.UserID,
 		"grant_revoked": revoked, "reason": why})
 }

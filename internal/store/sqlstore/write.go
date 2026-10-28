@@ -21,7 +21,8 @@ const (
 	modePut mode = iota
 	modeCAS
 	modeReplicated
-	modeApply // a write decided by a partition's owner (ApplyPartition, ImportPartition): taken as it is
+	modeApply  // a write decided by a partition's owner (ApplyPartition, ImportPartition): taken as it is
+	modeAssert // a transaction's assertion (store.Op.Assert): its row is read share-locked, and nothing is written
 )
 
 const maxAttempts = 30
@@ -54,7 +55,8 @@ func (o *stored) live(now int64) bool {
 }
 
 // op is one write of a transaction: Put (modePut), CompareAndPut (modeCAS, expecting expect) or PutReplicated
-// (modeReplicated, always alone). old is the row the transaction found, loaded inside it.
+// (modeReplicated, always alone), or an assertion (modeAssert, expecting expect). old is the row the transaction found,
+// loaded inside it.
 type op struct {
 	t      *table
 	rec    *store.Record
@@ -126,7 +128,10 @@ func (s *Store) Tx(ctx context.Context, ops []store.Op) (err error) {
 			return err
 		}
 		list[i] = op{t: t, rec: o.Rec, m: modePut}
-		if o.Match {
+		switch {
+		case o.Assert:
+			list[i].m, list[i].expect = modeAssert, o.Expect
+		case o.Match:
 			list[i].m, list[i].expect = modeCAS, o.Expect
 		}
 	}
@@ -195,15 +200,21 @@ func (s *Store) applyIn(ctx context.Context, r runner, ops []op) (bool, error) {
 	retried := false
 	for i := range ops {
 		o := &ops[i]
+		// An assertion's row is share-locked until the transaction ends: a write of it waits for the commit, and other
+		// assertions of it do not (a write's row is locked for update).
+		q := o.t.meta
+		if o.m == modeAssert {
+			q = o.t.shared
+		}
 		var err error
-		if o.old, err = loadStored(ctx, r, o.t, o.rec.ID); err != nil {
+		if o.old, err = loadStored(ctx, r, q, o.t, o.rec.ID); err != nil {
 			return false, err
 		}
-		retried = retried || (o.m != modeReplicated && store.Retried(o.rec, o.old.head()))
+		retried = retried || (o.writes() && store.Retried(o.rec, o.old.head()))
 	}
 	if retried { // an earlier attempt applied this request: nothing is written, and the records take what is stored
 		for _, o := range ops {
-			if h := o.old.head(); h != nil && h.Req == o.rec.Req {
+			if h := o.old.head(); o.writes() && h != nil && h.Req == o.rec.Req {
 				store.Settle(o.rec, h)
 			}
 		}
@@ -227,10 +238,20 @@ func (s *Store) applyIn(ctx context.Context, r runner, ops []op) (bool, error) {
 	return written, nil
 }
 
+// writes reports whether o is a write made for a request (not a replicated record, nor an assertion): one a retry is
+// recognised by.
+func (o *op) writes() bool { return o.m != modeReplicated && o.m != modeAssert }
+
 // stage decides the write over the row o found: refused (an error), not to be made (a replicated record that is not
-// newer), or stamped and ready to write. Unique values are not looked at here: writeRow claims them as the transaction
-// goes, so a later write of a transaction meets the values the earlier ones left.
+// newer, an assertion that holds), or stamped and ready to write. Unique values are not looked at here: writeRow claims
+// them as the transaction goes, so a later write of a transaction meets the values the earlier ones left.
 func (o *op) stage(now int64) (bool, error) {
+	if o.m == modeAssert {
+		if o.old == nil || !o.old.live(now) || o.old.part != o.rec.Partition || o.old.version != o.expect {
+			return false, store.ErrStale
+		}
+		return false, nil
+	}
 	if o.m == modeReplicated {
 		if o.old != nil && o.old.version >= o.rec.Version {
 			return false, nil
@@ -278,7 +299,7 @@ func (s *Store) settle(ctx context.Context, ops []op, cause error) (bool, error)
 		if err == nil {
 			applied := false
 			for i, h := range heads {
-				if h != nil && h.Req == ops[i].rec.Req {
+				if ops[i].writes() && h != nil && h.Req == ops[i].rec.Req {
 					store.Settle(ops[i].rec, h)
 					applied = true
 				}
@@ -361,11 +382,12 @@ func (s *Store) writeRow(ctx context.Context, r runner, t *table, m mode, rec *s
 	return err
 }
 
-func loadStored(ctx context.Context, r runner, t *table, id string) (*stored, error) {
+// loadStored reads the row of id in t with q, t.meta or t.shared (nil: no row).
+func loadStored(ctx context.Context, r runner, q string, t *table, id string) (*stored, error) {
 	var o stored
 	var v, epoch, created int64
 	var uniq sql.NullString
-	err := r.queryRow(ctx, t.meta, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created, &o.req, &o.part)
+	err := r.queryRow(ctx, q, id).Scan(&v, &o.origin, &o.deleted, &o.expires, &uniq, &epoch, &created, &o.req, &o.part)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -393,7 +415,7 @@ func uniqueKey(u string) string { return store.UniqueIndexKey(u) }
 
 // warm prepares the statements a write to t uses, outside any transaction.
 func (s *Store) warm(ctx context.Context, t *table) {
-	for _, q := range []string{t.meta, t.insert, t.update, t.uInsert, t.uHolder, t.uSteal, s.releaseQ} {
+	for _, q := range []string{t.meta, t.shared, t.insert, t.update, t.uInsert, t.uHolder, t.uSteal, s.releaseQ} {
 		s.wc.get(ctx, q)
 	}
 }

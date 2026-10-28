@@ -49,6 +49,7 @@ const (
 	modeUpsert uint8 = iota // whole-record put: refused over a tombstone
 	modeMatch               // compare-and-swap on the live version (0: the record must not exist)
 	modeBlind               // a deletion that needs no particular version
+	modeAssert              // opTx only: no write, the record must be live at the version expected (store.Op.Assert)
 )
 
 // The codes a change is refused with (partition.Refuse); the cluster store turns them back into the store's errors.
@@ -83,7 +84,8 @@ type change struct {
 	Replay bool
 }
 
-// txOp is one write of an opTx change: as an opWrite's Mode, Expect, Rec and Base.
+// txOp is one op of an opTx change: as an opWrite's Mode, Expect, Rec and Base, or an assertion (modeAssert: Rec
+// names the record, Expect its version, and Base is not used).
 type txOp struct {
 	Mode   uint8
 	Expect uint64
@@ -472,10 +474,15 @@ type txUniques struct {
 func uniqueKey(k model.Kind, u string) string { return string(k) + "\x00" + u }
 
 // prepareTx checks and stamps an opTx: every write of partition p, in order, each as prepareWrite would, with unique
-// values checked as the earlier writes leave them. A transaction one of whose records is its request's already was
-// applied (whyDone): every record of a transaction carries its one request id. A deletion of what is no longer live
-// writes nothing (as a deletion of its own: writePartitioned), and the rest goes ahead. It returns the records to write
-// and the stamp of every op, in order (a deletion skipped: zero).
+// values checked as the earlier writes leave them, and every assertion against the committed copy (whyStale when it
+// does not hold). The owner prepares the partition's changes one at a time, each against what the ones before it
+// committed, so an assertion is decided in the partition's order: no write of its record comes between it and the
+// transaction's writes, and assertions of one record never conflict with each other. A transaction one of whose records
+// is its request's already was applied (whyDone): every record of a transaction carries its one request id, and an
+// assertion has none of its own to find (it writes nothing), so a transaction's outcome is that of its writes, and a
+// replay (change.Replay) checks its assertions again as they now stand. A deletion of what is no longer live writes
+// nothing (as a deletion of its own: writePartitioned), and the rest goes ahead. It returns the records to write and
+// the stamp of every op, in order (an assertion or a deletion skipped: zero).
 func (s *pstore) prepareTx(p int, c *change) ([]*store.Record, []writeReply, error) {
 	if len(c.Ops) == 0 {
 		return nil, nil, refuse(whyBad, "an empty transaction")
@@ -492,18 +499,27 @@ func (s *pstore) prepareTx(p int, c *change) ([]*store.Record, []writeReply, err
 			return nil, nil, refuse(whyBad, "%s written twice in one transaction", k)
 		}
 		seen[k] = true
+		recs[i] = rec
+		if op.Mode == modeAssert {
+			continue
+		}
 		if err := s.retried(rec); err != nil {
 			return nil, nil, err
 		}
 		if err := s.replayed(c.Replay, rec, op.Base); err != nil {
 			return nil, nil, err
 		}
-		recs[i] = rec
 	}
 	tu := &txUniques{claimed: map[string]string{}, released: map[string]bool{}}
 	var write []*store.Record
 	stamps := make([]writeReply, len(c.Ops))
 	for i, op := range c.Ops {
+		if op.Mode == modeAssert {
+			if err := s.prepareAssert(p, op.Expect, recs[i]); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
 		if recs[i].Deleted && (op.Mode == modeBlind || op.Mode == modeMatch && op.Expect == 0) {
 			cur, err := s.lookup(recs[i].Kind, recs[i].ID)
 			if err != nil {
@@ -522,6 +538,22 @@ func (s *pstore) prepareTx(p int, c *change) ([]*store.Record, []writeReply, err
 		return nil, nil, refuse(whyNothing, "nothing to write")
 	}
 	return write, stamps, nil
+}
+
+// prepareAssert checks an assertion of a transaction of partition p against the committed copy: the record rec names
+// must be live, in p, at version expect (whyStale otherwise).
+func (s *pstore) prepareAssert(p int, expect uint64, rec *store.Record) error {
+	if localOnly(rec.Kind) || recPartition(rec) != p {
+		return refuse(whyBad, "%s %s cannot be asserted in partition %d", rec.Kind, rec.ID, p)
+	}
+	cur, err := s.lookup(rec.Kind, rec.ID)
+	if err != nil {
+		return err
+	}
+	if !(store.Op{Rec: rec, Expect: hlc.Timestamp(expect)}).Asserted(cur, time.Now()) {
+		return refuse(whyStale, "%s %s is not as the transaction expects", rec.Kind, rec.ID)
+	}
+	return nil
 }
 
 // prepareWrite checks and stamps rec, one record write in mode against the committed copy: the version compare of a
