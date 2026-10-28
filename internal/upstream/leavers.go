@@ -150,9 +150,11 @@ func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *Le
 		return false
 	}
 	// Record the check (and a rotated token). A concurrent sign-in that stored a newer token wins: its token is the
-	// current one, and the one just replayed is dropped.
+	// current one, and the one just replayed is dropped. The write is a compare-and-swap, right whichever node makes
+	// it, so it is not fenced: a tenure that passed during the replay must not cost the token the provider rotated.
+	sctx := s.Unfenced(ctx)
 	for range 4 {
-		cur, gerr := s.Svc.Identities.Get(ctx, id.ID)
+		cur, gerr := s.Svc.Identities.Get(sctx, id.ID)
 		if gerr != nil || cur.Refresh != id.Refresh {
 			return true
 		}
@@ -160,7 +162,7 @@ func (s *Service) checkIdentity(ctx context.Context, id *model.Identity, res *Le
 			cur.Refresh = s.Svc.Sealer.SealFor(refreshBinding(cur.ID), []byte(next))
 		}
 		cur.RefreshChecked = s.Now().UTC()
-		uerr := s.Svc.Identities.Update(ctx, cur)
+		uerr := s.Svc.Identities.Update(sctx, cur)
 		if errors.Is(uerr, store.ErrStale) {
 			continue
 		}

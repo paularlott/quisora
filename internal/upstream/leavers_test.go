@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/upstream"
 )
 
@@ -256,5 +258,57 @@ func TestCheckSessionsStopsWhenTenureIsLost(t *testing.T) {
 	e.up.Tenure = func(context.Context) error { return nil }
 	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != n-1 || e.refreshCalls() != n {
 		t.Fatalf("the next run: %+v %v calls=%d (want the other %d, none twice)", r, err, e.refreshCalls(), n-1)
+	}
+}
+
+// deposedWrites refuses every identity write made under the fence, as a node's store does once housekeeping has
+// passed to another node; a write whose context carries unfenced (the hook the cluster's Unfenced stands for) goes on.
+type deposedWrites struct{ store.Store }
+
+type unfenced struct{}
+
+func (d deposedWrites) refuse(ctx context.Context, rec *store.Record) error {
+	if rec.Kind == model.KindIdentity && ctx.Value(unfenced{}) == nil {
+		return fmt.Errorf("%w: housekeeping has passed to another node", store.ErrUnavailable)
+	}
+	return nil
+}
+
+func (d deposedWrites) Put(ctx context.Context, rec *store.Record) error {
+	if err := d.refuse(ctx, rec); err != nil {
+		return err
+	}
+	return d.Store.Put(ctx, rec)
+}
+
+func (d deposedWrites) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if err := d.refuse(ctx, rec); err != nil {
+		return err
+	}
+	return d.Store.CompareAndPut(ctx, rec, expect)
+}
+
+// The refresh token a provider rotates during a replay is kept even when the tenure passes to another node during that
+// replay: keeping it is a compare-and-swap any node may make. Lost, the next check would replay the retired token, the
+// provider would refuse it, and a user who never left would be signed out.
+func TestRotatedTokenIsKeptWhenTenureIsLostMidReplay(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh, e.oidc.RotateRefresh = true, true
+	p := e.oidcProvider(t, nil)
+	e.signedInThrough(t, p, "lee", "lee@corp.example")
+	e.advance(2 * time.Hour)
+
+	good := e.svc.Identities.S
+	e.svc.Identities.S = deposedWrites{good} // the tenure is gone by the time the replay's answer is saved
+	e.up.Unfenced = func(ctx context.Context) context.Context { return context.WithValue(ctx, unfenced{}, true) }
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("the check: %+v %v", r, err)
+	}
+	e.svc.Identities.S = good
+
+	// The next check (any node) replays the token the provider rotated to: accepted, nobody signed out.
+	e.advance(2 * time.Hour)
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
+		t.Fatalf("the rotated token was not kept: %+v %v", r, err)
 	}
 }

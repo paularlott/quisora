@@ -111,6 +111,10 @@ type Service struct {
 	// has passed to another node (the cluster's fence). The check asks before every replay of a refresh token, because
 	// only writes are fenced and a replay made by a deposed node would race the new one's (see CheckSessions).
 	Tenure func(context.Context) error
+	// Unfenced lifts the fence from ctx for a write any node may make (the cluster's Unfenced): keeping the refresh
+	// token a provider rotated during a replay, a compare-and-swap on the identity, is not refused when the tenure
+	// passes mid-replay, or the token would be lost (see checkIdentity).
+	Unfenced func(context.Context) context.Context
 
 	// leaverAfter is the last identity the leaver check reached (see CheckSessions): in memory, as the check runs on
 	// one node at a time and a node that takes over starts again.
@@ -131,8 +135,9 @@ func New(svc *service.Service, eph ephemeral.Store, publicURL string, client *ht
 		Svc: svc, Eph: eph, PublicURL: strings.TrimSuffix(publicURL, "/"), HTTP: client,
 		GitHubAuthURL: "https://github.com/login/oauth/authorize", GitHubTokenURL: "https://github.com/login/oauth/access_token",
 		GitHubAPIURL: "https://api.github.com", MicrosoftAuthority: model.MicrosoftAuthority, Now: time.Now,
-		Tenure: func(context.Context) error { return nil },
-		disc:   map[string]*discovery{}, discCalls: map[string]*discoveryCall{}, cache: map[string]*keyCache{},
+		Tenure:   func(context.Context) error { return nil },
+		Unfenced: func(ctx context.Context) context.Context { return ctx },
+		disc:     map[string]*discovery{}, discCalls: map[string]*discoveryCall{}, cache: map[string]*keyCache{},
 	}
 }
 

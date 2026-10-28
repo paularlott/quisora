@@ -9,6 +9,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/admin"
+	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/events"
 
 	"github.com/paularlott/quisora/internal/login"
@@ -241,7 +242,7 @@ const leaverCheckBudget = 5 * time.Minute
 // to servers that may be slow, which would hold up the tasks that must run on time (end dates, key rotation) for as long
 // as it takes. A run is a time-bounded slice, with every request made only while this node still leads.
 func (a *App) runLeaverChecks(ctx context.Context, up *upstream.Service, every time.Duration) {
-	up.Tenure = a.Node.Tenure
+	up.Tenure, up.Unfenced = a.Node.Tenure, cluster.Unfenced
 	budget := min(every, leaverCheckBudget)
 	hk := housekeepingLog{log: a.Log}
 	a.Node.RunHousekeeping(ctx, budget, func(ctx context.Context) {

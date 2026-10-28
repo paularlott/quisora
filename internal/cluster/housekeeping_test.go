@@ -75,3 +75,20 @@ func TestHousekeepingFencedAfterDeposed(t *testing.T) {
 	}
 	putRetrying(t, old, newOrgRec("")) // the node itself is fine
 }
+
+// A write made with Unfenced is not refused once the tenure its context was fenced with has passed: a compare-and-swap
+// any node may make (a provider's rotated refresh token) must not be lost to a change of housekeeper.
+func TestUnfencedWriteOutlivesTheTenure(t *testing.T) {
+	n := &Node{}
+	lost := context.WithValue(context.Background(), fenceKey{}, func(context.Context) bool { return false })
+	if err := n.fenced(lost); err == nil {
+		t.Fatal("a write fenced with a tenure that has passed was allowed")
+	}
+	if err := n.fenced(Unfenced(lost)); err != nil {
+		t.Fatalf("an unfenced write was refused: %v", err)
+	}
+	held := context.WithValue(context.Background(), fenceKey{}, func(context.Context) bool { return true })
+	if err := n.fenced(held); err != nil {
+		t.Fatalf("a write under a tenure still held was refused: %v", err)
+	}
+}

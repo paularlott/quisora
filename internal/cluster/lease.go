@@ -142,6 +142,12 @@ func (n *Node) globalEpoch() (partition.Epoch, bool) {
 	return st.Epoch, err == nil && st.Leading
 }
 
+// Unfenced is ctx (from fence) for a write that is right whichever node makes it, so it is not refused once the tenure
+// has passed: one that only replaces what it read (a compare-and-swap), such as keeping the refresh token a provider
+// rotated while this node replayed the previous one — lost, the user's next check would replay a token the provider
+// has retired and end their sessions.
+func Unfenced(ctx context.Context) context.Context { return context.WithValue(ctx, fenceKey{}, nil) }
+
 // fenced refuses a housekeeping write (ctx from fence) when this node no longer holds the tenure it started under.
 func (n *Node) fenced(ctx context.Context) error {
 	held, ok := ctx.Value(fenceKey{}).(func(context.Context) bool)
