@@ -43,7 +43,9 @@
   .btn-secondary:hover { background: color-mix(in srgb, var(--ctl-bg) 80%, var(--accent-solid) 14%); }
   .btn-ghost { color: var(--fg); }
   .btn-ghost:hover { background: var(--ctl-hover); }
-  .btn-icon { min-height: 2.75rem; min-width: 2.75rem; padding: 0; border-radius: 50%; }
+  /* middle, not the baseline: an icon wrapped in a span (copy, with its check) has a text baseline, a bare one does not,
+     so side by side in a row they would sit at different heights */
+  .btn-icon { min-height: 2.75rem; min-width: 2.75rem; padding: 0; border-radius: 50%; vertical-align: middle; }
   .btn-icon.btn-sm { min-height: 2.25rem; min-width: 2.25rem; }
   .btn-icon:hover { background: var(--ctl-hover); }
 

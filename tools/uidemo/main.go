@@ -293,7 +293,16 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 		return c
 	}
 	portal := client("Customer portal", "Server-rendered web app", "client_secret_post", []string{"authorization_code", "refresh_token"}, []string{"https://portal.acme.example/callback"})
-	client("Billing API", "Machine-to-machine", "client_secret_basic", []string{"client_credentials"}, nil)
+	billing := client("Billing API", "Machine-to-machine", "client_secret_basic", []string{"client_credentials"}, nil)
+	// Acme lets everyone make personal API tokens (an organization starts with none), and two of its applications accept them.
+	acmeSettings := model.DefaultOrgSettings()
+	acmeSettings.APITokens = model.APITokensEveryone
+	_, err = svc.UpdateOrg(ctx, sys, acme.ID, service.OrgInput{Settings: &acmeSettings})
+	must(err)
+	for _, c := range []*model.Client{portal, billing} {
+		_, err = svc.UpdateClient(ctx, sys, c.ID, service.ClientInput{AcceptsAPITokens: ptr(true)})
+		must(err)
+	}
 	mobile := client("Mobile app", "iOS and Android", "none", []string{"authorization_code", "refresh_token"}, []string{"com.acme.app:/callback"})
 	// Alan signed in through Acme SSO and allowed two applications (the user page's connections cards).
 	alan := out["user"]

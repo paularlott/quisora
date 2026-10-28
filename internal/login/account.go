@@ -1183,9 +1183,14 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 	for _, t := range list {
 		items = append(items, toTokenItem(t))
 	}
+	apiOK, err := m.s.Svc.APITokensAllowed(r.Context(), a.u)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
 	scopes := []string{}
 	for _, sc := range service.APITokenScopes {
-		if (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && !a.actor.Role.Privileged() ||
+		if sc == service.ScopeAPI && !apiOK || (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && !a.actor.Role.Privileged() ||
 			service.SuperOnlyScope(sc) && !a.actor.IsSuper() {
 			continue
 		}

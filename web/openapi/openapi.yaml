@@ -3154,6 +3154,9 @@ components:
             type: string
         id_token_signed_response_alg:
           type: string
+        accepts_api_tokens:
+          type: boolean
+          description: the application sees its users' personal API tokens (the api scope) through introspection, and they can be made for it; off by default, and never for a public client
         introspect_org:
           type: boolean
         jwks:
@@ -3238,6 +3241,9 @@ components:
             type: string
         id_token_signed_response_alg:
           type: string
+        accepts_api_tokens:
+          type: boolean
+          description: the application sees its users' personal API tokens (the api scope) through introspection, and they can be made for it; off by default, and never for a public client
         introspect_org:
           type: boolean
         jwks:
@@ -3325,6 +3331,9 @@ components:
             type: string
         id_token_signed_response_alg:
           type: string
+        accepts_api_tokens:
+          type: boolean
+          description: the application sees its users' personal API tokens (the api scope) through introspection, and they can be made for it; off by default, and never for a public client
         introspect_org:
           type: boolean
         jwks:
@@ -3895,6 +3904,15 @@ components:
     OrgSettings:
       type: object
       properties:
+        api_token_groups:
+          type: array
+          description: ids of groups of the organization whose members may make api tokens; only, and at least one, when api_tokens is groups (at most 20)
+          items:
+            type: string
+        api_tokens:
+          type: string
+          enum: [off, groups, everyone]
+          description: who may make personal API tokens with the api scope, the ones the organization's applications check through introspection (an application must accept them too, with accepts_api_tokens); off (also when absent) is nobody. Checked at every use of a token, not only when it is made, so turning it off stops the tokens already made (they work again if it is turned back on). The scim, admin, backup and import scopes are not affected; their owner's role alone decides
         email_codes:
           type: boolean
           description: users without an authenticator app or passkey may give the second factor as a one-time code emailed to

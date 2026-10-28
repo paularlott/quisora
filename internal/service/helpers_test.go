@@ -55,7 +55,27 @@ func newEnvOn(t testing.TB, st store.Store) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{t: t, ctx: ctx, svc: svc, primary: primary, super: super}
+	e := &env{t: t, ctx: ctx, svc: svc, primary: primary, super: super}
+	e.primary = e.setAPITokens(primary.ID, model.APITokensEveryone)
+	return e
+}
+
+// setAPITokens sets who may make api tokens in organization orgID (and which groups, for the groups mode). The
+// environments let everyone, as the tokens most tests make are not what they are about; tests of the setting change it.
+// It returns the organization as saved.
+func (e *env) setAPITokens(orgID, mode string, groups ...string) *model.Org {
+	e.t.Helper()
+	o, err := e.svc.GetOrg(e.ctx, nil, orgID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	st := o.Settings
+	st.APITokens, st.APITokenGroups = mode, groups
+	upd, err := e.svc.UpdateOrg(e.ctx, service.System, orgID, service.OrgInput{Settings: &st})
+	if err != nil {
+		e.t.Fatalf("set api tokens %q: %v", mode, err)
+	}
+	return upd
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -66,7 +86,7 @@ func (e *env) org(name string) *model.Org {
 	if err != nil {
 		e.t.Fatalf("create org %s: %v", name, err)
 	}
-	return o
+	return e.setAPITokens(o.ID, model.APITokensEveryone)
 }
 
 // user creates a user directly as the system actor (primary-org super admins included).

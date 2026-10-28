@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -66,13 +67,15 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// settings is decoded over a copy of the current ones: a PATCH that names some settings leaves the others as
-	// they are (an omitted switch must not read as "off").
+	// they are (an omitted switch must not read as "off"). The group list is copied: decoding reuses the memory of the
+	// slice it is given, and the organization read is shared.
 	set := o.Settings
+	set.APITokenGroups = slices.Clone(set.APITokenGroups)
 	in := service.OrgInput{Settings: &set}
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
-	if in.Settings != nil && *in.Settings == o.Settings {
+	if in.Settings != nil && in.Settings.Equal(o.Settings) {
 		in.Settings = nil
 	}
 	// The primary organization's sign-in policy covers the super admins themselves.

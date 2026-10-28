@@ -20,7 +20,10 @@ const (
 	// ScopeBackup downloads backups of the whole store (GET /api/backup): super admins only, and such a token
 	// always expires within BackupTokenMaxDays — a backup holds every credential (sealed) of every organization.
 	ScopeBackup = "backup"
-	ScopeAPI    = "api" // for the user's own applications: validated by them through introspection
+	// ScopeAPI is for the organization's own applications, which validate the token through introspection. Who may hold
+	// one is the organization's decision (OrgSettings.APITokens, APITokensAllowed), and which applications see it theirs
+	// (Client.AcceptsAPITokens).
+	ScopeAPI = "api"
 	// ScopeImport lets an admin-scope token create users with a password hash brought from another system
 	// (UserInput.PasswordHash): super admins only.
 	ScopeImport = "import"
@@ -154,6 +157,17 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if days == 0 {
 		days = max
 	}
+	owner, err := s.Users.Get(ctx, a.UserID)
+	if err != nil {
+		return nil, "", mapStore(err)
+	}
+	if slices.Contains(in.Scopes, ScopeAPI) {
+		if ok, err := s.APITokensAllowed(ctx, owner); err != nil {
+			return nil, "", err
+		} else if !ok {
+			return nil, "", Invalid("scopes", "your organization does not let you make tokens with the api scope")
+		}
+	}
 	aud, err := s.tokenAudience(ctx, a.OrgID, in)
 	if err != nil {
 		return nil, "", err
@@ -161,10 +175,6 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	appScopes, err := s.tokenAppScopes(ctx, a, in.Scopes, aud, in.AppScopes)
 	if err != nil {
 		return nil, "", err
-	}
-	owner, err := s.Users.Get(ctx, a.UserID)
-	if err != nil {
-		return nil, "", mapStore(err)
 	}
 	t := &model.APIToken{Meta: model.Meta{ID: model.NewID()}, UserID: a.UserID, OrgID: a.OrgID, Name: name,
 		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes, Epoch: owner.CredEpoch}
@@ -238,8 +248,32 @@ func (s *Service) ownLiveToken(ctx context.Context, a *Actor, id string) (*model
 	return t, nil
 }
 
+// APITokensAllowed reports whether u may hold a personal API token with the api scope under their organization's
+// setting (OrgSettings.APITokens): everyone, the members of its chosen groups, or nobody. The scim, admin, backup and
+// import scopes are not decided here: their owner's role alone is. An error is a read that failed (the organization,
+// the user's groups): no verdict, never "not allowed". The organization is read as Org reads it, within its bound,
+// so this is cheap enough to ask at every use of a token.
+func (s *Service) APITokensAllowed(ctx context.Context, u *model.User) (bool, error) {
+	org, err := s.Org(ctx, u.OrgID)
+	if err != nil {
+		return false, err
+	}
+	switch org.Settings.APITokens {
+	case model.APITokensEveryone:
+		return true, nil
+	case model.APITokensGroups:
+		groups, err := s.UserGroups(ctx, u)
+		if err != nil {
+			return false, err
+		}
+		return slices.ContainsFunc(groups, func(g *model.Group) bool { return slices.Contains(org.Settings.APITokenGroups, g.ID) }), nil
+	}
+	return false, nil
+}
+
 // TokenApps lists the applications the actor may make a personal api token for: the enabled confidential clients of
-// their organization they have access to (as a sign-in to each would decide), by name, each with its own scopes.
+// their organization that accept api tokens and that they have access to (as a sign-in to each would decide), by
+// name, each with its own scopes.
 func (s *Service) TokenApps(ctx context.Context, a *Actor) ([]TokenApp, error) {
 	if a.UserID == "" {
 		return nil, ErrForbidden
@@ -262,7 +296,7 @@ func (s *Service) TokenApps(ctx context.Context, a *Actor) ([]TokenApp, error) {
 	}
 	out := []TokenApp{}
 	for _, c := range cs {
-		if !c.Enabled || c.Public() {
+		if !c.Enabled || c.Public() || !c.AcceptsAPITokens {
 			continue
 		}
 		t, err := s.ClientTenant(ctx, c)
@@ -370,6 +404,9 @@ func (s *Service) tokenAudience(ctx context.Context, orgID string, in APITokenIn
 		if err != nil || c.OrgID != orgID {
 			return nil, Invalid("audience", "unknown application "+id)
 		}
+		if !c.AcceptsAPITokens {
+			return nil, Invalid("audience", c.Name+" does not accept API tokens")
+		}
 		out = append(out, id)
 	}
 	if len(out) > 0 && !slices.Contains(in.Scopes, ScopeAPI) {
@@ -465,6 +502,16 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	if !u.Role.Privileged() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
 		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {
 		return refuse("the owner's role no longer allows the token's scopes") // demoted since the token was made
+	}
+	// An api token lives by the organization's setting as it is now, not as it was when the token was made: turned off,
+	// or the owner out of the chosen groups, it stops here, and works again should the setting allow it again. A read
+	// that fails decides nothing (503), as with the owner above.
+	if slices.Contains(t.Scopes, ScopeAPI) {
+		if ok, err := s.APITokensAllowed(ctx, u); err != nil {
+			return nil, nil, fmt.Errorf("%w: the organization's API token setting could not be read: %v", ErrUnavailable, err)
+		} else if !ok {
+			return refuse("the organization does not let the owner use api tokens")
+		}
 	}
 	s.touchAPIToken(ctx, t)
 	return t, u, nil

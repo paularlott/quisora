@@ -179,3 +179,36 @@ func TestClientRequirePKCE(t *testing.T) {
 	want(t, ad.post(A+"/clients", map[string]any{"name": "SPA", "redirect_uris": []string{"https://s.example/cb"},
 		"token_endpoint_auth_method": "none", "require_pkce": false}), 422)
 }
+
+// An application accepts personal API tokens only once chosen (accepts_api_tokens, off by default), by its
+// administrator, at creation or later; a public client cannot.
+func TestClientAcceptsAPITokens(t *testing.T) {
+	w := newWorld(t)
+	ad := w.as("admin")
+	r := ad.post(A+"/clients", map[string]any{"name": "Default", "grant_types": []string{"client_credentials"}})
+	want(t, r, 201)
+	if r.JSON["accepts_api_tokens"] != false {
+		t.Fatalf("default: %s", r.Raw)
+	}
+	id := r.str("id")
+	if p := ad.patch(A+"/clients/"+id, map[string]any{"accepts_api_tokens": true}); p.JSON["accepts_api_tokens"] != true {
+		t.Fatalf("patch: %s", p.Raw)
+	}
+	if g := ad.get(A + "/clients/" + id); g.JSON["accepts_api_tokens"] != true {
+		t.Fatalf("get: %s", g.Raw)
+	}
+	if p := ad.patch(A+"/clients/"+id, map[string]any{"name": "Renamed"}); p.JSON["accepts_api_tokens"] != true {
+		t.Fatalf("a patch that does not name it keeps it: %s", p.Raw)
+	}
+	r = ad.post(A+"/clients", map[string]any{"name": "Chosen", "grant_types": []string{"client_credentials"}, "accepts_api_tokens": true})
+	want(t, r, 201)
+	if r.JSON["accepts_api_tokens"] != true {
+		t.Fatalf("create: %s", r.Raw)
+	}
+	r = ad.post(A+"/clients", map[string]any{"name": "SPA", "redirect_uris": []string{"https://s.example/cb"},
+		"token_endpoint_auth_method": "none", "accepts_api_tokens": true})
+	want(t, r, 201)
+	if r.JSON["accepts_api_tokens"] != false {
+		t.Fatalf("public client: %s", r.Raw)
+	}
+}

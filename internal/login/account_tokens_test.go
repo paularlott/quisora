@@ -12,7 +12,7 @@ import (
 
 func TestAccountTokens(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	mgr := e.user(t, org, "mia", model.RoleManager)
 	b := e.signedIn(t, pat)
@@ -93,7 +93,7 @@ func TestAccountTokens(t *testing.T) {
 // The same conditions as making a token (a recent re-authentication), and only for your own tokens.
 func TestAccountTokenRegenerate(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	sam := e.user(t, org, "sam", model.RoleUser)
 	b := e.signedIn(t, pat)
@@ -138,11 +138,11 @@ func sameSecond(a, b string) bool {
 // name, applications and scopes (checked as when it was made), and only for its owner.
 func TestAccountTokenEdit(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	sam := e.user(t, org, "sam", model.RoleUser)
 	app, _, err := e.Svc.CreateClient(context.Background(), service.System, org.ID, service.ClientInput{Name: ptr("Orders"),
-		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{"orders:read", "orders:write"})})
+		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{"orders:read", "orders:write"}), AcceptsAPITokens: ptr(true)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,4 +207,51 @@ func TestAccountTokenChangesNeedMFAForManagers(t *testing.T) {
 	e.Mod.ClearReauth(single.sessionID())
 	res, out = single.api("DELETE", "/api-internal/account/tokens/"+id, nil)
 	wantStatus(t, res, out, 204)
+}
+
+// The api scope is offered, and accepted, only to those the organization lets make api tokens; the others still get
+// the scopes their role allows, and no application that has not chosen to accept api tokens is offered for one.
+func TestAccountTokensFollowTheOrganizationSetting(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil) // as a new organization is: nobody
+	pat := e.user(t, org, "pat", model.RoleUser)
+	mia := e.user(t, org, "mia", model.RoleManager)
+	closed, _, err := e.Svc.CreateClient(context.Background(), service.System, org.ID, service.ClientInput{Name: ptr("Closed"),
+		GrantTypes: ptr([]string{"client_credentials"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, m := e.signedIn(t, pat), e.signedInMFA(t, mia)
+	b.markReauth()
+	m.markReauth()
+	scopes := func(c *browser) []any {
+		t.Helper()
+		res, out := c.api("GET", "/api-internal/account/tokens", nil)
+		wantStatus(t, res, out, 200)
+		sc, _ := out["scopes"].([]any)
+		if apps, _ := out["apps"].([]any); len(apps) != 0 {
+			t.Fatalf("an application that does not accept api tokens is offered: %v (%s)", apps, closed.ID)
+		}
+		return sc
+	}
+	if sc := scopes(b); len(sc) != 0 {
+		t.Fatalf("nobody allowed, user scopes %v", sc)
+	}
+	if sc := scopes(m); len(sc) != 2 || sc[0] != "scim" || sc[1] != "admin" {
+		t.Fatalf("nobody allowed, manager scopes %v", sc)
+	}
+	res, out := b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}})
+	wantStatus(t, res, out, 422)
+	if str(out, "field") != "scopes" {
+		t.Fatalf("refusal: %v", out["_raw"])
+	}
+	res, out = m.api("POST", "/api-internal/account/tokens", map[string]any{"name": "provisioning", "scopes": []string{"scim"}})
+	wantStatus(t, res, out, 201)
+
+	e.setSettings(t, org, allowAPITokens)
+	if sc := scopes(b); len(sc) != 1 || sc[0] != "api" {
+		t.Fatalf("everyone allowed, user scopes %v", sc)
+	}
+	res, out = b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}})
+	wantStatus(t, res, out, 201)
 }

@@ -82,6 +82,11 @@ func setupKey(t testing.TB, cfgFn func(*config.Config), masterKey []byte) *harne
 		t.Fatal(err)
 	}
 	h.user = u
+	// Everyone may make api tokens, and the test applications accept them (newClient): most tests that make one are not
+	// about who may. Tests of the setting and of the opt-in change them.
+	st := env.Primary.Settings
+	st.APITokens = model.APITokensEveryone
+	h.setOrg(st)
 	return h
 }
 
@@ -95,7 +100,7 @@ func (h *harness) newClient(edit func(*service.ClientInput)) (*model.Client, str
 	in := service.ClientInput{Name: ptr("app"), RedirectURIs: &[]string{rpCallback},
 		GrantTypes: &[]string{"authorization_code", "refresh_token", "client_credentials"},
 		Scopes:     &[]string{"openid", "profile", "email", "groups", "org", "offline_access", "api"}, FirstParty: ptr(true),
-		Resources: &testResources,
+		Resources: &testResources, AcceptsAPITokens: ptr(true),
 		// Most tests present one refresh token several times: the static format. Tests of rotation (the default
 		// for a new client: TestNewClientsRotateRefreshTokens) set it.
 		RotateRefresh: ptr(false)}

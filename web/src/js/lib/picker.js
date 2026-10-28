@@ -2,10 +2,11 @@
 // search, Up/Down (and Home/End) move through the results, Enter chooses, Escape closes the list (not the dialog),
 // Tab or leaving the field closes it. Each result line shows a label, a detail line and a kind badge (User, Group).
 // Markup: the "picker" template partial. Compose with mix():
-//   pickerMixin({ search(q) -> Promise<[{ type, id, label, detail, kind }]>, chosen(item), clearOnChoose })
+//   pickerMixin({ search(q) -> Promise<[{ type, id, label, detail, kind }]>, chosen(item), clearOnChoose, removeLast })
 //   - search runs 200 ms after typing stops; results whose search started earlier than the latest are dropped
 //   - chosen is called with the item; with clearOnChoose the field empties for the next search (e.g. adding several
 //     members), otherwise it shows the chosen label and pickChoice holds the item until the text is changed
+//   - removeLast (the "picker-chips" partial) is called on Backspace in the empty input, to take back the last chip
 const DELAY = 200
 
 export function pickerMixin(cfg) {
@@ -94,6 +95,9 @@ export function pickerMixin(cfg) {
         case 'Tab':
           this.closePicks()
           break
+        case 'Backspace': // the "picker-chips" partial: the empty input takes back the last chip
+          if (cfg.removeLast && this.pickQ === '') { ev.preventDefault(); cfg.removeLast.call(this) }
+          break
       }
       if (this.pickOpen && this.pickActive >= 0) {
         this.$nextTick(() => { const el = document.getElementById(this.pickActiveId); if (el) el.scrollIntoView({ block: 'nearest' }) })
@@ -101,5 +105,11 @@ export function pickerMixin(cfg) {
     },
     pickClick(ev) { this.choosePick(Number(ev.currentTarget.dataset.index)) },
     pickBlur() { setTimeout(() => this.closePicks(), 120) },
+    // A click on the chip box itself (not a chip's button) goes to its input, as in the tag field.
+    pickFocus(ev) {
+      if (ev.target !== ev.currentTarget) return
+      const el = ev.currentTarget.querySelector('input')
+      if (el) el.focus()
+    },
   }
 }

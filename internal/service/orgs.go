@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -206,7 +207,7 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if err := s.validOrgSettings(*in.Settings, nil); err != nil {
+		if err := s.validOrgSettings(ctx, o.ID, *in.Settings, nil); err != nil {
 			return nil, err
 		}
 		o.Settings = *in.Settings
@@ -244,7 +245,7 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
-		if err := s.validOrgSettings(*in.Settings, &o.Settings); err != nil {
+		if err := s.validOrgSettings(ctx, o.ID, *in.Settings, &o.Settings); err != nil {
 			return nil, err
 		}
 		o.Settings = *in.Settings
@@ -448,14 +449,43 @@ func (s *Service) takeOrgGuard(ctx context.Context, orgID string) (g *model.Lock
 	}
 }
 
-// validOrgSettings checks an organization's settings: session lifetimes are not negative and not longer than the
-// server's (session.ttl and session.idle are the most an organization may set; 0 keeps the server's).
-func (s *Service) validOrgSettings(st model.OrgSettings, old *model.OrgSettings) error {
+// maxAPITokenGroups bounds the groups that may be chosen to make api tokens: the list is part of the organization's
+// record, which every use of a token reads.
+const maxAPITokenGroups = 20
+
+// validOrgSettings checks the settings of organization orgID: session lifetimes are not negative and not longer than
+// the server's (session.ttl and session.idle are the most an organization may set; 0 keeps the server's), and the
+// api token setting is one of its modes, with groups of the organization for the groups mode only.
+func (s *Service) validOrgSettings(ctx context.Context, orgID string, st model.OrgSettings, old *model.OrgSettings) error {
 	if st.SessionTTL < 0 || st.SessionIdle < 0 {
 		return Invalid("settings", "lifetimes cannot be negative")
 	}
 	if st.EmailCodes && !s.Cfg.Mail.Enabled() && (old == nil || !old.EmailCodes) {
 		return Invalid("email_codes", "needs the server to send email (mail.smtp_host)")
+	}
+	switch st.APITokens {
+	case "", model.APITokensOff, model.APITokensEveryone:
+		if len(st.APITokenGroups) > 0 {
+			return Invalid("api_token_groups", "only with api_tokens set to "+model.APITokensGroups)
+		}
+	case model.APITokensGroups:
+		if len(st.APITokenGroups) == 0 || len(st.APITokenGroups) > maxAPITokenGroups {
+			return Invalid("api_token_groups", "choose 1 to "+itoa(maxAPITokenGroups)+" groups")
+		}
+		// Only groups being chosen are looked up: a group deleted since does not stop other settings being saved
+		// (its members just no longer count).
+		if old == nil || !slices.Equal(st.APITokenGroups, old.APITokenGroups) {
+			for _, id := range st.APITokenGroups {
+				g, err := s.Groups.Get(ctx, id)
+				if errors.Is(err, store.ErrNotFound) || err == nil && g.OrgID != orgID {
+					return Invalid("api_token_groups", "unknown group "+id)
+				} else if err != nil {
+					return mapStore(err)
+				}
+			}
+		}
+	default:
+		return Invalid("api_tokens", "must be "+model.APITokensOff+", "+model.APITokensGroups+" or "+model.APITokensEveryone)
 	}
 	// Only a lifetime being changed is held to the server's: one saved before the limit (or before the server's
 	// was lowered) does not block saving other settings; sessions are capped at the server's anyway.

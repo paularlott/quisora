@@ -558,6 +558,10 @@ export default function (Alpine) {
     get hasItems() { return this.items.length > 0 },
     get isEmpty() { return !this.loading && this.items.length === 0 && this.loadError === '' },
     get hasLoadError() { return this.loadError !== '' },
+    // Which scopes may be chosen is the server's answer (the role, and the organization's setting for the api scope): a
+    // person who may make none has nothing to create.
+    get canCreate() { return this.scopes.length > 0 },
+    get cannotCreate() { return !this.loading && this.loadError === '' && this.scopes.length === 0 },
     get isEditToken() { return this.editingToken !== null },
     get tokenDialogTitle() { return this.isEditToken ? 'Edit API token' : 'New API token' },
     get submitLabel() { return this.isEditToken ? (this.busy ? 'Saving…' : 'Save changes') : this.busy ? 'Creating…' : 'Create token' },
@@ -588,7 +592,7 @@ export default function (Alpine) {
     get expiryHelp() { return this.maxDays > 0 ? `Between 1 and ${this.maxDays} days. Leave empty for ${this.maxDays}.` : 'Leave empty for a token that never expires, or enter 1 to 3650 days.' },
     openCreate(ev) {
       this.editingToken = null
-      this.resetForm({ tk_name: '', tk_expires_days: '', tk_scopes: ['api'], tk_audience: [], tk_app_scopes: [] })
+      this.resetForm({ tk_name: '', tk_expires_days: '', tk_scopes: this.scopes.includes('api') ? ['api'] : [], tk_audience: [], tk_app_scopes: [] })
       this.openDlg('token-dialog', ev.currentTarget)
     },
     openEdit(ev) {

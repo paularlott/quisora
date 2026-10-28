@@ -45,11 +45,17 @@ func newWorldWith(t *testing.T, cfgFn func(*config.Config)) *world {
 	w.env.Server.Reauthed = func(*http.Request) bool { return true }
 	ctx := context.Background()
 	sys := service.System
+	// Everyone may make api tokens here (the tokens most tests make are not about that); tests of the setting change it.
+	st := model.DefaultOrgSettings()
+	st.APITokens = model.APITokensEveryone
 	var err error
-	if w.acme, err = w.env.Svc.CreateOrg(ctx, sys, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme")}); err != nil {
+	if w.env.Primary, err = w.env.Svc.UpdateOrg(ctx, sys, w.env.Primary.ID, service.OrgInput{Settings: &st}); err != nil {
 		t.Fatal(err)
 	}
-	if w.other, err = w.env.Svc.CreateOrg(ctx, sys, service.OrgInput{Name: ptr("globex"), DisplayName: ptr("Globex")}); err != nil {
+	if w.acme, err = w.env.Svc.CreateOrg(ctx, sys, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme"), Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	if w.other, err = w.env.Svc.CreateOrg(ctx, sys, service.OrgInput{Name: ptr("globex"), DisplayName: ptr("Globex"), Settings: &st}); err != nil {
 		t.Fatal(err)
 	}
 	mk := func(key string, org *model.Org, name string, role model.Role) {

@@ -14,7 +14,7 @@ import (
 
 func TestSensitiveActionsNeedReauth(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	b := e.signedIn(t, pat)
 	b.registerPasskey("Key")
@@ -87,7 +87,7 @@ func TestSensitiveActionsNeedReauth(t *testing.T) {
 // in through a provider only) confirms a sensitive change by signing in again.
 func TestRecentSignInCountsAsReauth(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 	pat := e.user(t, org, "pat", model.RoleUser)
 	b := e.signedIn(t, pat)
 	tok := map[string]any{"name": "ci", "scopes": []string{"api"}}
@@ -102,7 +102,7 @@ func TestRecentSignInCountsAsReauth(t *testing.T) {
 // account that signs in with nothing else.
 func TestReauthRequiresSecondFactor(t *testing.T) {
 	e := newEnv(t, nil)
-	org := e.org(t, "acme", nil)
+	org := e.org(t, "acme", allowAPITokens)
 
 	plain := e.signedIn(t, e.user(t, org, "plain", model.RoleUser))
 	res, out := plain.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword})

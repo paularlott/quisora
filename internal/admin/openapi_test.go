@@ -293,6 +293,10 @@ func TestOpenAPIMatchesModel(t *testing.T) {
 			t.Errorf("schema %s: type enum %v, model.ProviderTypes %v", name, got, model.ProviderTypes)
 		}
 	}
+	modes := []string{model.APITokensOff, model.APITokensGroups, model.APITokensEveryone}
+	if got := doc.Comps.Schemas["OrgSettings"].Properties["api_tokens"].Enum; strings.Join(got, ",") != strings.Join(modes, ",") {
+		t.Errorf("schema OrgSettings: api_tokens enum %v, the model's modes %v", got, modes)
+	}
 	re, err := regexp.Compile(doc.Comps.Parameters["Org"].Schema.Pattern)
 	if err != nil || doc.Comps.Parameters["Org"].Schema.Pattern == "" {
 		t.Fatalf("Org parameter pattern %q: %v", doc.Comps.Parameters["Org"].Schema.Pattern, err)

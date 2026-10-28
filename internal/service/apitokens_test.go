@@ -401,12 +401,12 @@ func TestAPITokenRegenerate(t *testing.T) {
 func TestAPITokenAppScopes(t *testing.T) {
 	c := newCast(t)
 	sys := service.System
-	orders, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
+	orders, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"openid", "orders:read", "orders:write"})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	billing, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Billing"), GrantTypes: ptr([]string{"client_credentials"}),
+	billing, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Billing"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"billing:read"})})
 	if err != nil {
 		t.Fatal(err)
@@ -712,19 +712,20 @@ func TestAPITokenUpdateRules(t *testing.T) {
 func TestTokenAppsListsOnlyUsableApplications(t *testing.T) {
 	c := newCast(t)
 	sys := service.System
-	app, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
+	app, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"orders:read", "orders:write"})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreign, _, err := c.svc.CreateClient(c.ctx, sys, c.b.ID, service.ClientInput{Name: ptr("Theirs"), GrantTypes: ptr([]string{"client_credentials"}),
+	foreign, _, err := c.svc.CreateClient(c.ctx, sys, c.b.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Theirs"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"theirs:read"})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub, _, _ := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Public"), AuthMethod: ptr(model.AuthMethodNone),
+	pub, _, _ := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Public"), AuthMethod: ptr(model.AuthMethodNone),
 		RedirectURIs: ptr([]string{"https://p.example.com/cb"})})
-	off, _, _ := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Off"), GrantTypes: ptr([]string{"client_credentials"}), Enabled: ptr(false)})
+	off, _, _ := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Off"), GrantTypes: ptr([]string{"client_credentials"}), Enabled: ptr(false)})
+	closed, _, _ := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Closed"), GrantTypes: ptr([]string{"client_credentials"})})
 	apps, err := c.svc.TokenApps(c.ctx, actor(c.aUser))
 	if err != nil {
 		t.Fatal(err)
@@ -733,7 +734,7 @@ func TestTokenAppsListsOnlyUsableApplications(t *testing.T) {
 	for _, a := range apps {
 		ids[a.ID] = true
 	}
-	if !ids[app.ID] || ids[foreign.ID] || ids[pub.ID] || ids[off.ID] {
+	if !ids[app.ID] || ids[foreign.ID] || ids[pub.ID] || ids[off.ID] || ids[closed.ID] {
 		t.Errorf("token apps %+v", apps)
 	}
 	if _, err := c.svc.TokenApps(c.ctx, service.System); !errors.Is(err, service.ErrForbidden) {
@@ -749,13 +750,17 @@ func TestTokenAppsListsOnlyUsableApplications(t *testing.T) {
 func TestAPITokenAudienceRules(t *testing.T) {
 	c := newCast(t)
 	sys := service.System
-	app, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
+	app, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Orders"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"orders:read", "orders:write"})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreign, _, err := c.svc.CreateClient(c.ctx, sys, c.b.ID, service.ClientInput{Name: ptr("Theirs"), GrantTypes: ptr([]string{"client_credentials"}),
+	foreign, _, err := c.svc.CreateClient(c.ctx, sys, c.b.ID, service.ClientInput{AcceptsAPITokens: ptr(true), Name: ptr("Theirs"), GrantTypes: ptr([]string{"client_credentials"}),
 		Scopes: ptr([]string{"theirs:read"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, _, err := c.svc.CreateClient(c.ctx, sys, c.a.ID, service.ClientInput{Name: ptr("Closed"), GrantTypes: ptr([]string{"client_credentials"})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +770,8 @@ func TestAPITokenAudienceRules(t *testing.T) {
 		return err
 	}
 	for name, in := range map[string]service.APITokenInput{
-		"foreign client":   {Scopes: []string{"api"}, Audience: []string{foreign.ID}},
+		"foreign client": {Scopes: []string{"api"}, Audience: []string{foreign.ID}},
+		"an application that does not accept api tokens": {Scopes: []string{"api"}, Audience: []string{closed.ID}},
 		"audience on scim": {Scopes: []string{"scim"}, Audience: []string{app.ID}},
 		"bad scope syntax": {Scopes: []string{"api"}, Audience: []string{app.ID}, AppScopes: []string{"a b"}},
 	} {
@@ -789,6 +795,9 @@ func TestAPITokenAudienceRules(t *testing.T) {
 	}
 	if _, err := c.svc.UpdateAPIToken(c.ctx, actor(c.aUser), tok.ID, service.APITokenUpdate{Audience: &[]string{foreign.ID}}); !isInvalid(err) {
 		t.Errorf("foreign audience on update: %v", err)
+	}
+	if _, err := c.svc.UpdateAPIToken(c.ctx, actor(c.aUser), tok.ID, service.APITokenUpdate{Audience: &[]string{closed.ID}}); !isInvalid(err) {
+		t.Errorf("an application that does not accept api tokens, on update: %v", err)
 	}
 	if _, err := c.svc.UpdateAPIToken(c.ctx, actor(c.aUser), tok.ID, service.APITokenUpdate{AppScopes: &[]string{"orders:delete"}}); !isInvalid(err) {
 		t.Errorf("undeclared scope on update: %v", err)

@@ -126,6 +126,36 @@
   <p class="sr-only" role="status" x-text="pickStatus"></p>
 </div>{{end}}
 
+{{/* Chip picker (lib/picker.js): the chosen items as chips with the search-as-you-type input beside them in one box, as
+     the tag field looks. dict: id (the input; errors under e-<id without "f-">), list (listbox id), label, listLabel,
+     placeholder, help, chips (expression: [{ id, name, removeLabel }]), chipsLabel (the chip list's name), remove (the chip button's handler, given
+     data-id), show. Backspace in the empty input removes the last chip when the picker has removeLast. */}}
+{{define "picker-chips"}}{{$e := slice .id 2}}<div class="field"{{with .show}} x-show="{{.}}" x-cloak{{end}}>
+  <label class="label" for="{{.id}}">{{.label}}</label>
+  <div class="picker">
+    <div class="tag-field" @click="pickFocus">
+      <ul class="tag-list" aria-label="{{.chipsLabel}}" x-show="{{.chips}}.length > 0" x-cloak>
+        <template x-for="c in {{.chips}}" :key="c.id"><li class="tag-chip"><span class="tag-chip-text" x-text="c.name"></span><button type="button" class="tag-chip-x" :aria-label="c.removeLabel" :data-id="c.id" @click="{{.remove}}">{{template "icon" "x"}}</button></li></template>
+      </ul>
+      <input class="tag-input" id="{{.id}}" type="text" role="combobox" aria-autocomplete="list" aria-controls="{{.list}}" :aria-expanded="pickExpanded"
+        :aria-activedescendant="pickActiveId" :aria-invalid="invalid.{{$e}}" aria-describedby="e-{{$e}} h-{{$e}}"
+        autocomplete="off" spellcheck="false" placeholder="{{.placeholder}}" x-model="pickQ" @input="pickInput" @keydown="pickKey" @blur="pickBlur">
+    </div>
+    <ul class="picker-list" id="{{.list}}" role="listbox" aria-label="{{.listLabel}}" x-show="pickListOpen" x-cloak>
+      <template x-for="o in pickOptions" :key="o.key">
+        <li role="option" :id="o.optId" :class="o.cls" :aria-selected="o.selected" :data-index="o.index" @mousedown.prevent="pickClick">
+          <span class="picker-text"><span class="picker-label" x-text="o.label"></span><span class="picker-detail" x-show="o.detail" x-text="o.detail"></span></span>
+          <span class="badge badge-plain" x-text="o.kind"></span>
+        </li>
+      </template>
+    </ul>
+    <p class="picker-none" x-show="pickNone" x-cloak>Nothing matches.</p>
+  </div>
+  <p class="help" id="h-{{$e}}">{{.help}}</p>
+  <p class="field-error" id="e-{{$e}}" x-text="errors.{{$e}}"></p>
+  <p class="sr-only" role="status" x-text="pickStatus"></p>
+</div>{{end}}
+
 {{/* Autocomplete field (lib/combo.js): dict name (form key; input f-<name>, combo state combo.<name>), label,
      placeholder, help, show. The value is form.<name>; the input shows its label. */}}
 {{define "combo-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>

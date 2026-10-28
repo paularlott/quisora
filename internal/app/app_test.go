@@ -185,7 +185,13 @@ func testIntegration(t *testing.T, backend string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The api scope is never mixed with Quisora's own: the token for applications is a separate one.
+	// The api scope is never mixed with Quisora's own: the token for applications is a separate one. An organization
+	// starts with nobody allowed to make it.
+	st := primary.Settings
+	st.APITokens = model.APITokensEveryone
+	if _, err := a.Svc.UpdateOrg(ctx, service.System, primary.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
 	_, appTok, err := a.Svc.CreateAPIToken(ctx, service.ActorForUser(admin, ""), service.APITokenInput{Name: "app",
 		Scopes: []string{service.ScopeAPI}})
 	if err != nil {
@@ -199,9 +205,9 @@ func testIntegration(t *testing.T, backend string) {
 	if code != 200 || orgs["total"].(float64) < 2 {
 		t.Fatalf("mgmt list orgs %d %v", code, orgs)
 	}
-	// The API token is introspectable by a confidential client.
+	// The API token is introspectable by a confidential client that accepts them.
 	app, appSecret, err := a.Svc.CreateClient(ctx, service.System, primary.ID, service.ClientInput{Name: ptr("app"),
-		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{})})
+		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{}), AcceptsAPITokens: ptr(true)})
 	if err != nil {
 		t.Fatal(err)
 	}

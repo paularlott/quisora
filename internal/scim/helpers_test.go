@@ -69,7 +69,10 @@ func newEnvStore(t testing.TB, st store.Store) *env {
 }
 
 func (e *env) org(name string) *model.Org {
-	o, err := e.Svc.CreateOrg(e.ctx, service.System, service.OrgInput{Name: &name})
+	// Everyone may make api tokens here (a test makes one to see SCIM refuse it); an organization starts with nobody.
+	st := model.DefaultOrgSettings()
+	st.APITokens = model.APITokensEveryone
+	o, err := e.Svc.CreateOrg(e.ctx, service.System, service.OrgInput{Name: &name, Settings: &st})
 	if err != nil {
 		e.t.Fatal(err)
 	}

@@ -174,12 +174,13 @@ func TestIntrospectionTenantIsolation(t *testing.T) {
 
 	// a client of another org gets nothing: at our organization's endpoint it is unknown, at its own our tokens (and
 	// the API token of our user) are inactive
-	org2, err := h.env.Svc.CreateOrg(ctx, h.admin, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme")})
+	org2, err := h.env.Svc.CreateOrg(ctx, h.admin, service.OrgInput{Name: ptr("acme"), DisplayName: ptr("Acme"),
+		Settings: &model.OrgSettings{APITokens: model.APITokensEveryone}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	foreign, fsecret, err := h.env.Svc.CreateClient(ctx, h.admin, org2.ID, service.ClientInput{Name: ptr("foreign"),
-		RedirectURIs: &[]string{rpCallback}, GrantTypes: &[]string{"authorization_code"}, FirstParty: ptr(true)})
+		RedirectURIs: &[]string{rpCallback}, GrantTypes: &[]string{"authorization_code"}, FirstParty: ptr(true), AcceptsAPITokens: ptr(true)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,5 +443,83 @@ func TestRevokeClientCredentialsTokenUnsupported(t *testing.T) {
 	}
 	if x := h.clientPost(h.orgBase+"/oauth/revoke", url.Values{"token": {at}}, cl, secret); x.status != 400 || x.str("error") != "unsupported_token_type" {
 		t.Fatalf("revoke: %d %v", x.status, x.str("error"))
+	}
+}
+
+// An application sees its users' api tokens only once its administrator has chosen it to (accepts_api_tokens): until
+// then they are inactive to it, whoever made them and whatever their audience says.
+func TestIntrospectionAPITokenNeedsTheApplicationToAccept(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	closed, csecret := h.newClient(func(in *service.ClientInput) { in.AcceptsAPITokens = ptr(false) })
+	open, osecret := h.newClient(nil)
+	_, any, err := h.env.Svc.CreateAPIToken(ctx, service.ActorForUser(h.user, ""), service.APITokenInput{Name: "any", Scopes: []string{"api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, named, err := h.env.Svc.CreateAPIToken(ctx, service.ActorForUser(h.user, ""), service.APITokenInput{Name: "named", Scopes: []string{"api"}, Audience: []string{open.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []string{any, named} {
+		if m := h.introspect(open, osecret, tok); m["active"] != true || m["scope"] != "api" {
+			t.Fatalf("an application that accepts api tokens: %v", m)
+		}
+	}
+	if m := h.introspect(closed, csecret, any); len(m) != 1 || m["active"] != false {
+		t.Fatalf("an application that does not accept them: %v", m)
+	}
+	// the choice is the application's, and can be made later
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, closed.ID, service.ClientInput{AcceptsAPITokens: ptr(true)}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(closed.ID) // the provider keeps the clients it has read
+	if m := h.introspect(closed, csecret, any); m["active"] != true {
+		t.Fatalf("once it accepts them: %v", m)
+	}
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, open.ID, service.ClientInput{AcceptsAPITokens: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(open.ID)
+	if m := h.introspect(open, osecret, named); m["active"] != false {
+		t.Fatalf("once it stops accepting them, a token made for it: %v", m)
+	}
+}
+
+// A token whose owner the organization no longer lets use api tokens is inactive to every application, until it does
+// again.
+func TestIntrospectionAPITokenFollowsTheOrganizationSetting(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	cl, secret := h.newClient(nil)
+	_, plain, err := h.env.Svc.CreateAPIToken(ctx, service.ActorForUser(h.user, ""), service.APITokenInput{Name: "t", Scopes: []string{"api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := func(mode string, groups ...string) {
+		t.Helper()
+		st := h.env.Primary.Settings
+		st.APITokens, st.APITokenGroups = mode, groups
+		h.setOrg(st)
+	}
+	set(model.APITokensOff)
+	if m := h.introspect(cl, secret, plain); len(m) != 1 || m["active"] != false {
+		t.Fatalf("setting off: %v", m)
+	}
+	g, err := h.env.Svc.CreateGroup(ctx, h.admin, h.env.Primary.ID, service.GroupInput{DisplayName: ptr("Developers")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set(model.APITokensGroups, g.ID)
+	if m := h.introspect(cl, secret, plain); m["active"] != false {
+		t.Fatalf("owner not in the chosen group: %v", m)
+	}
+	if err := h.env.Svc.SetMembership(ctx, h.admin, g.ID, h.user.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if m := h.introspect(cl, secret, plain); m["active"] != true {
+		t.Fatalf("owner in the chosen group: %v", m)
 	}
 }

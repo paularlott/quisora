@@ -66,7 +66,8 @@ Ended, at once, on every node:
   console's (your own session stays);
 - every refresh grant, so applications cannot get new tokens, and the access tokens issued from those grants stop
   working at userinfo and introspection;
-- with the option, every personal API token.
+- with the option, every personal API token, for good. (Turning off the organization's setting for who may make `api`
+  tokens only stops them while it is off; see [API-TOKENS.md](API-TOKENS.md#who-may-make-api-tokens).)
 
 Applications are told through back-channel logout, and the ended records are deleted in the background. Signing in
 again works straight away: nothing about the accounts changes.

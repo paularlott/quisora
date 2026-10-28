@@ -253,9 +253,10 @@
         <h2 class="section-title" id="tokens-h" tabindex="-1">API tokens</h2>
         <p class="muted">Personal tokens for scripts and your own applications. A token never has more access than you do.</p>
       </div>
-      <button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New token</button>
+      <button type="button" class="btn btn-primary" x-show="canCreate" x-cloak @click="openCreate">{{template "icon" "plus"}} New token</button>
     </div>
     <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <p class="muted" x-show="cannotCreate" x-cloak>You cannot make API tokens: your organization has not allowed them for you. An administrator can change that.</p>
     <p class="muted" x-show="isEmpty" x-cloak>You have no API tokens.</p>
     <div class="table-wrap" role="region" aria-label="Your API tokens" tabindex="0" x-show="hasItems" x-cloak>
       <table class="table">
@@ -285,8 +286,8 @@
         {{/* An api token: which applications may see it, and optionally which of their own scopes it is narrowed to. */}}
         <fieldset class="fieldset" aria-describedby="h-tk_audience e-tk_audience" x-show="forApps" x-cloak>
           <legend>Applications</legend>
-          <p class="help" id="h-tk_audience">Leave all unticked for every application you can use, with your full access. Tick some to choose which, and optionally limit what the token may do in them.</p>
-          <p class="muted" x-show="noApps">There are no applications you can use a token with yet.</p>
+          <p class="help" id="h-tk_audience">Leave all unticked for every application that accepts API tokens and that you can use, with your full access. Tick some to choose which, and optionally limit what the token may do in them.</p>
+          <p class="muted" x-show="noApps">No application you can use accepts API tokens yet. An administrator turns that on for each application.</p>
           <template x-for="app in apps" :key="app.id"><label class="check"><input class="checkbox" type="checkbox" x-model="form.tk_audience" :value="app.id"><span class="check-text" x-text="app.name"></span></label></template>
           <p class="field-error" id="e-tk_audience" x-text="errors.tk_audience"></p>
         </fieldset>

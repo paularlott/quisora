@@ -13,7 +13,7 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Boundary | Protected by | The operator provides |
 | --- | --- | --- |
 | Internet → HTTPS | TLS 1.2+ only; strict CSP and HSTS; `__Host-` cookies (one session cookie per organization); CSRF tokens plus Origin checks; rate limits and lockouts; load shedding; passwords of at least `limits.password_min_length` characters (15 by default), refused when they are a common word dressed up, a keyboard or alphabet run, a repeated pattern, or built on the person's name, email or organization (offline checks, nothing is looked up elsewhere; there is no list of breached passwords) | A real certificate (or a TLS proxy), `server.trust_proxy` behind a load balancer |
-| Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection; every organization is its own authorization server (its own issuer and endpoints: a client of another organization is unknown, and a token of one is not valid at another's) | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers |
+| Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection; every organization is its own authorization server (its own issuer and endpoints: a client of another organization is unknown, and a token of one is not valid at another's) | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers; `accepts_api_tokens` only for applications that check personal API tokens |
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write; each organization has its own address space, `/o/<org>/…`, and its own browser session, and its unique values are its own | Few super admins; reviewed access |
 | Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
 | Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused; a catch-up stream goes from the database to the other node's database without touching the disk in between | `cluster.key` kept like the master key; the gossip port reachable by cluster members only; BadgerDB with `storage.badgerdb.sync_writes = true` |
@@ -60,8 +60,9 @@ Before production:
 6. **Monitoring**: `metrics.token` set and the [suggested alerts](RUNNING.md#metrics) in place.
 7. **Backups**: on a schedule, encrypted (the default), the password kept apart from them; a restore tested regularly.
 8. **People**: as few super admins as possible; every administrator with a passkey or authenticator app; API tokens
-   with short lifetimes (`tokens.api_token_max_days`: 365 by default; lower it to what your scripts need); access reviewed
-   periodically from the user lists.
+   with short lifetimes (`tokens.api_token_max_days`: 365 by default; lower it to what your scripts need); the
+   organization's setting for who may make `api` tokens left off (the default) or limited to the groups that need them;
+   access reviewed periodically from the user lists.
 9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
    the mailboxes are at least as well protected as the passwords.
 

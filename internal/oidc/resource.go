@@ -335,9 +335,11 @@ func (p *Provider) introspect(ctx context.Context, caller *model.Client, tok str
 }
 
 // introspectAPIToken answers for a personal API token made for the user's own applications (the api scope), and
-// only to a caller in the owner's organization that is in the token's audience (when it has one). A token holding
-// only Quisora's own scopes (scim, admin, backup) is no business of an application: it is inactive to every caller, as
-// is anything else that does not qualify, so introspection is no oracle across organizations or applications.
+// only to a caller in the owner's organization that accepts api tokens (Client.AcceptsAPITokens) and is in the token's
+// audience (when it has one). A token holding only Quisora's own scopes (scim, admin, backup) is no business of an
+// application: it is inactive to every caller, as is one whose owner the organization no longer lets use api tokens
+// (ValidateAPIToken) and anything else that does not qualify, so introspection is no oracle across organizations or
+// applications.
 //
 // The caller is the application the token is used with, so the answer carries what a sign-in to it would: the
 // user's application roles for it and their access's tags (their own entry and their groups', in its tenant). A user
@@ -347,7 +349,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 	if errors.Is(err, service.ErrUnavailable) {
 		return nil, err
 	}
-	if err != nil || u.OrgID != caller.OrgID || !slices.Contains(t.Scopes, service.ScopeAPI) ||
+	if err != nil || u.OrgID != caller.OrgID || !caller.AcceptsAPITokens || !slices.Contains(t.Scopes, service.ScopeAPI) ||
 		(len(t.Audience) > 0 && !slices.Contains(t.Audience, caller.ClientID())) {
 		return inactive, nil
 	}

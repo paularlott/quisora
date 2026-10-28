@@ -632,7 +632,7 @@ function clientDialogMixin(Alpine) {
         redirect_uris: listRows(c.redirect_uris, LIST_ITEMS.redirect_uris), post_logout_redirect_uris: listRows(c.post_logout_redirect_uris, LIST_ITEMS.post_logout_redirect_uris, true),
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
-        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
+        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
         dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile, scim: !!c.scim,
         device_privileged_users: !!c.device_privileged_users }
     },
@@ -660,7 +660,7 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && CONFIDENTIAL_GRANTS.includes(g))),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
-        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, require_pkce: pub ? true : f.require_pkce,
+        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, accepts_api_tokens: pub ? false : f.accepts_api_tokens, require_pkce: pub ? true : f.require_pkce,
         require_pushed_authorization_requests: redirects && f.require_pushed_authorization_requests,
         dpop_bound_access_tokens: f.dpop_bound_access_tokens,
         device_privileged_users: this.usesDevice && f.device_privileged_users,
@@ -892,8 +892,29 @@ export default function (Alpine) {
   userConnectionsComponents(Alpine)
   accessComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
-  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), {
-    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 },
+  const API_GROUP_LIMIT = 20 // the server's bound on the groups chosen to make API tokens
+  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), pickerMixin({
+    // the groups of the organization being edited
+    async search(q) {
+      const r = await get(`/api/orgs/${enc(this.editing.name)}/groups${qs({ q, limit: 8 })}`)
+      const items = r.items.filter((g) => !this.form.api_token_groups.includes(g.id)) // the chosen ones are already chips
+      return { more: r.total > r.items.length, items: items.map((g) => ({ type: 'group', id: g.id, label: g.display_name, detail: '', kind: 'Group' })) }
+    },
+    chosen(p) {
+      this.clearErrors()
+      if (this.form.api_token_groups.includes(p.id)) return
+      if (this.form.api_token_groups.length >= API_GROUP_LIMIT) { toast(`At most ${API_GROUP_LIMIT} groups.`, 'error'); return }
+      this.groupNames = { ...this.groupNames, [p.id]: p.label }
+      this.form.api_token_groups = [...this.form.api_token_groups, p.id]
+      announce(`${p.label} added.`)
+    },
+    clearOnChoose: true,
+    removeLast() {
+      const id = this.form.api_token_groups.at(-1)
+      if (id) this.dropGroup(id)
+    },
+  }), {
+    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 }, groupNames: {},
     init() {
       this.base = this.$el.dataset.base
       this.publicUrl = this.$el.dataset.public
@@ -911,6 +932,28 @@ export default function (Alpine) {
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create organization' },
     get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + 'h).' },
     get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
+    // The chosen groups need an organization that exists to choose from.
+    get groupsUnavailable() { return !this.isEdit },
+    get groupsOption() { return this.isEdit ? 'Members of chosen groups' : 'Members of chosen groups (once the organization exists)' },
+    get groupsMode() { return this.form.api_tokens === 'groups' },
+    get groupChips() {
+      return (this.form.api_token_groups || []).map((id) => { const name = this.groupNames[id] || 'Deleted group'; return { id, name, removeLabel: 'Remove ' + name } })
+    },
+    dropGroup(id) {
+      this.form.api_token_groups = this.form.api_token_groups.filter((g) => g !== id)
+      announce(`${this.groupNames[id] || 'Deleted group'} removed.`)
+    },
+    removeGroup(ev) {
+      this.dropGroup(ev.currentTarget.dataset.id)
+      this.$nextTick(() => { const el = document.getElementById('f-api_group'); if (el) el.focus() })
+    },
+    // the names of the chosen groups, by id (a group deleted since shows as such)
+    async loadGroupNames(o) {
+      const ids = o.settings.api_token_groups || []
+      const gs = await Promise.all(ids.map((id) => getOrNull(`/api/orgs/${enc(o.name)}/groups/${enc(id)}`)))
+      if (this.editing === o) this.groupNames = Object.fromEntries(ids.map((id, i) => [id, gs[i] && gs[i].display_name]).filter(([, n]) => n))
+    },
+    errorKey(f) { return f === 'api_token_groups' ? 'api_group' : f },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
     get resetOff() { return !this.form.password_login },
     // Codes by email need the server to send email. Without it the switch can only be turned off (it was on when the
@@ -925,17 +968,23 @@ export default function (Alpine) {
       const s = o.settings
       return { name: o.name, display_name: o.display_name, password_login: !!s.password_login, password_reset: !!s.password_reset,
         passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes,
+        api_tokens: s.api_tokens || 'off', api_token_groups: [...(s.api_token_groups || [])],
         session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' }
     },
     openCreate(ev) {
       this.editing = null
       this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false } }))
+      this.groupNames = {}
+      this.resetPicker()
       this.openDlg('org-dialog', ev.currentTarget)
     },
     edit(ev) {
       const o = this.rowFromEvent(ev)
       this.editing = o
       this.resetForm(this.orgToForm(o))
+      this.groupNames = {}
+      this.resetPicker()
+      this.loadGroupNames(o)
       this.openDlg('org-dialog', ev.currentTarget)
       this.watchEdit({ kinds: ['org'], record: o, fetchOne: () => getOrNull(`/api/orgs/${enc(o.name)}`) })
     },
@@ -950,6 +999,7 @@ export default function (Alpine) {
       const edit = this.editing
       const res = await this.run(() => {
         const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa, email_codes: f.email_codes,
+          api_tokens: f.api_tokens, api_token_groups: f.api_tokens === 'groups' ? f.api_token_groups : [],
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
@@ -1819,6 +1869,12 @@ export default function (Alpine) {
     get mfaText() {
       const s = this.org.settings
       return (s.require_mfa ? 'Required' : 'Optional') + (!s.email_codes ? '' : mailOn() ? ', codes by email allowed' : ', codes by email allowed but email is not set up')
+    },
+    get apiTokensText() {
+      const s = this.org.settings
+      const n = (s.api_token_groups || []).length
+      if (s.api_tokens === 'everyone') return 'Everyone may make them'
+      return s.api_tokens === 'groups' ? `Members of ${n} chosen group${n === 1 ? '' : 's'}` : 'Nobody'
     },
     get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
     get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },

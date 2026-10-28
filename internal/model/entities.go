@@ -28,7 +28,28 @@ type OrgSettings struct {
 	EmailCodes  bool `msgpack:"ec,omitempty" json:"email_codes"`
 	SessionTTL  int  `msgpack:"sttl" json:"session_ttl"`  // seconds
 	SessionIdle int  `msgpack:"sidl" json:"session_idle"` // seconds
+	// APITokens is who may make personal API tokens with the api scope, the ones the organization's own applications
+	// check through introspection: APITokensOff (or empty: nobody, so an organization saved before the setting
+	// existed, and a new one, has none), APITokensGroups (the members of APITokenGroups) or APITokensEveryone. The
+	// other scopes (scim, admin, backup, import) have no part in it: their owner's role alone decides.
+	APITokens string `msgpack:"at,omitempty" json:"api_tokens,omitempty"`
+	// APITokenGroups are the ids of the groups of the organization whose members may (APITokensGroups only).
+	APITokenGroups []string `msgpack:"atg,omitempty" json:"api_token_groups,omitempty"`
 }
+
+// Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
+func (s OrgSettings) Equal(o OrgSettings) bool {
+	g, og := s.APITokenGroups, o.APITokenGroups
+	s.APITokenGroups, o.APITokenGroups = nil, nil
+	return reflect.DeepEqual(s, o) && slices.Equal(g, og)
+}
+
+// Who may make api-scope personal API tokens (OrgSettings.APITokens).
+const (
+	APITokensOff      = "off"
+	APITokensGroups   = "groups"
+	APITokensEveryone = "everyone"
+)
 
 // DefaultOrgSettings is applied to new organizations.
 func DefaultOrgSettings() OrgSettings {
@@ -641,7 +662,11 @@ type Client struct {
 	// IntrospectOrg lets the client introspect every access token of its organization (a resource server that serves
 	// several applications); without it introspection answers active only for tokens issued for the client (aud).
 	IntrospectOrg bool `msgpack:"io,omitempty" json:"introspect_org"`
-	Enabled       bool `msgpack:"en" json:"enabled"`
+	// AcceptsAPITokens lets the application see its users' personal API tokens (the api scope) through introspection,
+	// and lets them be made for it. Off: they are inactive to it, and it is not offered among the applications to make
+	// one for, so an application takes them only once its administrator has chosen to.
+	AcceptsAPITokens bool `msgpack:"apt,omitempty" json:"accepts_api_tokens"`
+	Enabled          bool `msgpack:"en" json:"enabled"`
 	// Resources are the resource indicators (RFC 8707) the client may ask tokens for: absolute URIs of the APIs the
 	// access tokens are meant for (their aud). A request may name only these; none listed: no resource parameter.
 	Resources []string `msgpack:"res,omitempty" json:"resources"`

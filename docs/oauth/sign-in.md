@@ -177,7 +177,8 @@ curl -s "$ISSUER/oauth/introspect" -d token="$ACCESS_TOKEN" \
 Only confidential clients introspect, and a client sees `active: true` only for tokens issued for it (its ID in
 `aud`). An API with its own client that serves several applications, or that applications name as a resource, turns
 on **May introspect every token of the organization** on its client. Refresh tokens can be introspected by the client
-they belong to; [personal API tokens](../API-TOKENS.md#your-own-applications-api) with the `api` scope too.
+they belong to; [personal API tokens](../API-TOKENS.md#your-own-applications-api) with the `api` scope too, for a client
+that has **Accepts personal API tokens** turned on, and while the organization lets the token's owner use them.
 
 A user's token is `active` only while the user may still use the application: the same checks as userinfo (user
 enabled, grant not revoked or signed out, access to a members-only tenant's application still held, a

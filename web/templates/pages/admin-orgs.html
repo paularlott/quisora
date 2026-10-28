@@ -67,6 +67,20 @@
       </fieldset>
 
       <fieldset class="fieldset">
+        <legend>API tokens for applications</legend>
+        <div class="field">
+          <label class="label" for="f-api_tokens">Who may make them</label>
+          <select class="select" id="f-api_tokens" name="api_tokens" x-model="form.api_tokens" aria-describedby="h-api_tokens">
+            <option value="off">Nobody</option>
+            <option value="groups" :disabled="groupsUnavailable" x-text="groupsOption">Members of chosen groups</option>
+            <option value="everyone">Everyone in the organization</option>
+          </select>
+          <p class="help" id="h-api_tokens">Personal API tokens that the organization's own applications check through Quisora; an application also has to accept them in its own settings. Tokens for SCIM and the administration API follow people's roles, whatever is chosen here. Tokens already made are kept: turning this off stops them working, and turning it on again brings them back.</p>
+        </div>
+        {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Type to search, use the arrow keys to move through the results and Enter to choose; Backspace removes the last group. Anyone in a chosen group may make API tokens, including people who join later.")}}
+      </fieldset>
+
+      <fieldset class="fieldset">
         <legend>Sessions</legend>
         <div class="field-row">
           <div class="field">

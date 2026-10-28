@@ -14,7 +14,7 @@ async function copied(page, button, what) {
   return page.evaluate(() => navigator.clipboard.readText())
 }
 
-test('org overview: sign-in page and issuer to copy; no SCIM address for an org admin', async ({ page, context }) => {
+test('org overview: sign-in page, issuer and discovery URL to copy; no SCIM address for an org admin', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await signIn(page, 'admin')
   await page.goto(A, { waitUntil: 'load' })
@@ -25,6 +25,10 @@ test('org overview: sign-in page and issuer to copy; no SCIM address for an org 
   await expect(card.locator('#addr-issuer')).toHaveText(`${pub}/o/${org.id}`)
   expect(await copied(page, card.getByRole('button', { name: 'Copy Sign-in page' }), 'sign-in page address')).toBe(`${pub}/o/acme/login`)
   expect(await copied(page, card.getByRole('button', { name: 'Copy Issuer (for applications)' }), 'issuer')).toBe(`${pub}/o/${org.id}`)
+  const discovery = `${pub}/o/${org.id}/.well-known/openid-configuration`
+  await expect(card.locator('#addr-discovery')).toHaveText(discovery)
+  expect(await copied(page, card.getByRole('button', { name: 'Copy Discovery URL (OpenID configuration)' }), 'discovery URL')).toBe(discovery)
+  expect((await (await page.request.get(discovery)).json()).issuer).toBe(`${pub}/o/${org.id}`)
   await expect(card.getByRole('button', { name: /SCIM/ })).toHaveCount(0)
   await expect(card.locator('#addr-scim')).toHaveCount(0)
 })
@@ -46,6 +50,11 @@ test('organizations list: each row copies its sign-in link', async ({ page, cont
   const pub = new URL(page.url()).origin
   const btn = page.getByRole('button', { name: 'Copy sign-in link for Acme Corporation' })
   await expect(btn).toBeVisible()
+  // the row's icon buttons (copy, edit, delete) sit in one line, the copy button no lower than the others
+  const tops = await page.getByRole('row', { name: /Acme Corporation/ }).first().locator('td.actions .btn:visible')
+    .evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().top)))
+  expect(tops.length).toBeGreaterThan(1)
+  expect(new Set(tops).size, `button tops ${tops}`).toBe(1)
   expect(await copied(page, btn, 'sign-in link')).toBe(`${pub}/o/acme/login`)
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)

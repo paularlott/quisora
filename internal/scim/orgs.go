@@ -220,7 +220,7 @@ func (rq *request) updateOrg(id string, mutate func(cur map[string]any) (map[str
 		if in.DisplayName != nil && *in.DisplayName == o.DisplayName {
 			in.DisplayName = nil
 		}
-		if in.Settings != nil && *in.Settings == o.Settings {
+		if in.Settings != nil && in.Settings.Equal(o.Settings) {
 			in.Settings = nil
 		}
 		if in.Settings != nil && o.Primary && rq.actor.IsSuper() {

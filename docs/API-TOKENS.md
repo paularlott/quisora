@@ -16,7 +16,7 @@ is made, so if you are demoted or your account is disabled, the token loses that
 | `scim` | managers and up | The SCIM 2.0 API, `/scim/v2/…`, for provisioning tools |
 | `backup` | super admins | `GET /api/backup` only; such a token expires within 30 days |
 | `import` | super admins | With `admin`: creating users with the password hash, authenticator secret and provider links they had in another system (`password_hash`, `totp_secret`, `identities`) |
-| `api` | everyone | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
+| `api` | whoever the organization allows ([below](#who-may-make-api-tokens)) | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
 
 A token with the `api` scope cannot also have `admin`, `scim`, `backup` or `import`: applications that see an `api` token
 must never be able to administer Quisora with it. Make a separate token for each purpose.
@@ -197,7 +197,9 @@ by email address or creating a second one:
 
 ## Your own applications (`api`)
 
-An `api` token is for your own scripts calling **your applications**, not Quisora. The application checks each token
+An `api` token is for your own scripts calling **your applications**, not Quisora. Two choices decide whether one
+works: the organization decides [who may make them](#who-may-make-api-tokens), and each application decides whether
+it [accepts them](#which-applications-accept-them). The application checks each token
 it receives with the introspection endpoint of its own organization (`/o/<org id>/oauth/introspect`), authenticating as
 its own confidential client (RFC 7662). Clients use `client_secret_post` unless they were set up otherwise, so the
 credentials go in the form:
@@ -255,12 +257,50 @@ only to those. A token limited to some scopes is active only to the applications
 another application would otherwise see `api` alone and take it for full access. Anything else (another
 organization's client, a token without the `api` scope, a revoked or expired token) answers `{"active": false}`.
 
+### Who may make `api` tokens
+
+Whether an `api` token may exist is the organization's decision, because every application that accepts one sees a
+person's identity, roles and tags without that person signing in. A super admin sets it in the organization's dialog on
+the **Organizations** page (**API tokens for applications**), or with `settings.api_tokens` of
+`PATCH /api/orgs/<org>`:
+
+| `api_tokens` | Who may make `api` tokens |
+| --- | --- |
+| `off` (the default, also when absent) | Nobody |
+| `groups` | The members of the groups in `api_token_groups` (ids of groups of the organization; 1 to 20) |
+| `everyone` | Every user of the organization |
+
+There is no per-user switch: a group of one person does the same. A group that is deleted stops counting (its members
+are no longer allowed), but stays in the list until the setting is saved again. The role does not matter here (an administrator who
+is not in a chosen group may not make one either), and the `admin`, `scim`, `backup` and `import` scopes are not
+affected: their owner's role alone decides, as above.
+
+The setting is checked **every time a token is used**, not only when it is made. Turn it off, or take the owner out of
+the chosen groups, and their `api` tokens stop working at once: introspection answers `{"active": false}` for them
+(and the refusal is audited as `apitoken.refused`, with the reason). The tokens are **kept**, so turning the setting
+back on, or putting the owner back in a group, brings the unexpired ones back; to end them for good, use the
+organization's [emergency sign-out](emergency-sign-out.md) with **End personal API tokens too**, or delete them. A
+person who may not make `api` tokens is not offered the option on their account page, and a request to make one is
+refused (422 on `scopes`). If Quisora cannot read the setting or the person's groups when a token is used, the answer
+is 503 (introspection: `temporarily_unavailable`), never a refusal.
+
+**Upgrading from a version without this setting:** an organization has the setting `off`, so ordinary users' existing
+`api` tokens **stop working** until an administrator turns the setting on, and then only for the applications that
+accept them (below). Tokens with the other scopes are not affected.
+
+### Which applications accept them
+
+An application sees `api` tokens only when its administrator has turned on **Accepts personal API tokens** in its
+settings (`accepts_api_tokens` in the management API; off by default; never for a public client). Until then
+introspection answers `{"active": false}` to it for every `api` token, whatever its audience, and it is not offered when
+someone makes a token. Turning it off ends the tokens made for the application at once.
+
 ### Choosing applications and scopes
 
 When you make an `api` token (or edit one), you can choose:
 
 - **Applications**: which of your organization's applications may accept it. None ticked: every application you can
-  use. The list shows the applications you have access to.
+  use that accepts `api` tokens. The list shows only the applications that accept them and that you have access to.
 - **Limit to these scopes**: shown once applications are ticked, with only their own scopes (each application's
   "Scopes for your own APIs", such as `orders:read`). None ticked: the token has your full access in each of them. Tick some to let a
   script do only those things, for example read orders but not change them. A scope never gives you more than your

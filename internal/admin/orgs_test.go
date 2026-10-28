@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -161,4 +162,54 @@ func TestLastSignOutHiddenFromUsers(t *testing.T) {
 			t.Errorf("%s: last_sign_out shown=%v, want %v", who, ok, visible)
 		}
 	}
+}
+
+// Who may make api tokens is a setting of the organization (super admins change it): the mode and, for groups, the
+// ids of groups of the organization; a PATCH that does not name them leaves them.
+func TestOrgAPITokenSetting(t *testing.T) {
+	w := newWorld(t)
+	su, ad := w.as("super"), w.as("admin")
+	set := func(s map[string]any) resp { return su.patch(A, map[string]any{"settings": s}) }
+	stored := func() model.OrgSettings {
+		o, err := w.env.Svc.Orgs.Get(context.Background(), w.acme.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o.Settings
+	}
+	if r := su.get(A); r.JSON["settings"].(map[string]any)["api_tokens"] != "everyone" {
+		t.Fatalf("read: %s", r.Raw)
+	}
+	r := ad.post(A+"/groups", map[string]any{"display_name": "Developers"})
+	want(t, r, 201)
+	gid := r.str("id")
+	want(t, ad.patch(A, map[string]any{"settings": map[string]any{"api_tokens": "off"}}), 403) // super admins only
+
+	want(t, set(map[string]any{"api_tokens": "off"}), 200)
+	if st := stored(); st.APITokens != "off" || len(st.APITokenGroups) != 0 {
+		t.Fatalf("off: %+v", st)
+	}
+	want(t, set(map[string]any{"api_tokens": "groups", "api_token_groups": []string{gid}}), 200)
+	if st := stored(); st.APITokens != "groups" || len(st.APITokenGroups) != 1 || st.APITokenGroups[0] != gid {
+		t.Fatalf("groups: %+v", st)
+	}
+	r = set(map[string]any{"require_mfa": true})
+	want(t, r, 200)
+	if st := stored(); st.APITokens != "groups" || len(st.APITokenGroups) != 1 || !st.RequireMFA {
+		t.Fatalf("a patch that does not name the setting changed it: %+v", st)
+	}
+	if got, _ := r.JSON["settings"].(map[string]any)["api_token_groups"].([]any); len(got) != 1 || got[0] != gid {
+		t.Fatalf("shown: %s", r.Raw)
+	}
+	wantField(t, set(map[string]any{"api_tokens": "groups", "api_token_groups": []string{}}), 422, "api_token_groups")
+	wantField(t, set(map[string]any{"api_tokens": "groups", "api_token_groups": []string{"nope"}}), 422, "api_token_groups")
+	wantField(t, set(map[string]any{"api_tokens": "everyone", "api_token_groups": []string{gid}}), 422, "api_token_groups")
+	wantField(t, set(map[string]any{"api_tokens": "admins"}), 422, "api_tokens")
+	if st := stored(); st.APITokens != "groups" {
+		t.Fatalf("a refused change was saved: %+v", st)
+	}
+	// the groups of another organization are not this one's to name
+	r = w.as("other").post("/api/orgs/globex/groups", map[string]any{"display_name": "Theirs"})
+	want(t, r, 201)
+	wantField(t, set(map[string]any{"api_tokens": "groups", "api_token_groups": []string{r.str("id")}}), 422, "api_token_groups")
 }

@@ -200,6 +200,9 @@ func (e *env) user(t testing.TB, org *model.Org, name string, role model.Role) *
 	return u
 }
 
+// allowAPITokens is an org mutation that lets everyone make api tokens (an organization starts with nobody allowed).
+func allowAPITokens(s *model.OrgSettings) { s.APITokens = model.APITokensEveryone }
+
 func (e *env) org(t testing.TB, name string, mut func(*model.OrgSettings)) *model.Org {
 	t.Helper()
 	in := service.OrgInput{Name: &name}
@@ -696,7 +699,7 @@ func (e *env) tenant(t testing.TB, org *model.Org, name string, set model.Tenant
 // number of failures (0: never), with the organization "acme".
 func accountEnv(t *testing.T, attempts int) (*env, *model.Org) {
 	e := newEnv(t, noIPLimit, auditLogins, lockoutAfter(attempts))
-	return e, e.org(t, "acme", nil)
+	return e, e.org(t, "acme", allowAPITokens)
 }
 
 // mfaEnv is accountEnv without a lockout, for the organization "acme" that requires a second factor.

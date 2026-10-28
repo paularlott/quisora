@@ -37,6 +37,8 @@ type ClientInput struct {
 	// DevicePrivileged lets managers and above approve device sign-ins (RFC 8628).
 	DevicePrivileged *bool `json:"device_privileged_users"`
 	Enabled          *bool `json:"enabled"`
+	// AcceptsAPITokens lets the application see its users' personal API tokens through introspection.
+	AcceptsAPITokens *bool `json:"accepts_api_tokens"`
 }
 
 // GrantTokenExchange is the RFC 8693 token exchange grant type.
@@ -253,6 +255,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.IntrospectOrg != nil {
 		c.IntrospectOrg = *in.IntrospectOrg
 	}
+	if in.AcceptsAPITokens != nil {
+		c.AcceptsAPITokens = *in.AcceptsAPITokens
+	}
 	if in.RequirePKCE != nil {
 		c.PKCEOptional = !*in.RequirePKCE
 	}
@@ -296,8 +301,9 @@ func settleClient(c *model.Client) error {
 		case c.PKCEOptional:
 			return Invalid("require_pkce", "a public client must use PKCE")
 		}
-		c.RotateRefresh = true  // public clients always get one-time refresh tokens
-		c.IntrospectOrg = false // and cannot introspect at all
+		c.RotateRefresh = true     // public clients always get one-time refresh tokens
+		c.IntrospectOrg = false    // and cannot introspect at all
+		c.AcceptsAPITokens = false // so no api token is made for them
 	}
 	if c.FAPI {
 		// FAPI 2.0 Security Profile §5.3.2: the settings it requires follow from the profile; the ones the

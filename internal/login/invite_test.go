@@ -248,7 +248,7 @@ func TestInviteRequireMFAEnrolsBeforeSession(t *testing.T) {
 func TestInviteResetsTheAccount(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
-	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasskeyLogin = false })
+	org := e.org(t, "acme", func(s *model.OrgSettings) { s.PasskeyLogin = false; allowAPITokens(s) })
 	pat := e.user(t, org, "pat", model.RoleUser)
 	e.giveTOTP(t, pat)
 	old := e.signedIn(t, pat) // e.g. an attacker's session
