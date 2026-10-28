@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -37,9 +38,11 @@ const (
 	parURNPrefix = "urn:ietf:params:oauth:request_uri:"
 	parTTL       = 60 * time.Second
 	// parMaxParams is the largest authorization request (form-encoded) that may be pushed. The request_uri carries it
-	// (about 1.8 times its size, sealed and encoded for a URL), and goes in a URL the browser sends: a real request is
-	// about 1 KiB, and proxies refuse URLs much longer than this allows.
-	parMaxParams = 8 << 10
+	// sealed and encoded twice for a URL (about 1.8 times its size, plus 200 bytes), and goes in a URL the browser
+	// sends: a request of this size makes a request_uri of 7,501 bytes and an authorization URL of 7.6 KB, under the
+	// 8 KiB request line nginx allows by default (a longer one is a 414 at the proxy, an error page with no way back
+	// to the client). A real request is about 1 KiB.
+	parMaxParams = 4 << 10
 )
 
 // Pushes are counted after the client has authenticated (which has failure limits of its own), before anything is
@@ -145,8 +148,13 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("invalid_request", "the authorization request is too large"))
 		return
 	}
-	b, _ := json.Marshal(pushedRequest{ID: model.NewID(), Expires: time.Now().Add(parTTL).Unix(), Params: enc})
-	sealed := p.svc.Sealer.SealFor(parBinding(c.OrgID, c.ClientID()), b)
+	// (Without HTML escaping, which would write every "&" of the parameters as six characters and take the request_uri past
+	// the size parMaxParams is chosen for.)
+	var b bytes.Buffer
+	je := json.NewEncoder(&b)
+	je.SetEscapeHTML(false)
+	_ = je.Encode(pushedRequest{ID: model.NewID(), Expires: time.Now().Add(parTTL).Unix(), Params: enc})
+	sealed := p.svc.Sealer.SealFor(parBinding(c.OrgID, c.ClientID()), b.Bytes())
 	o := newObj(128)
 	o.str("request_uri", parURNPrefix+base64.RawURLEncoding.EncodeToString([]byte(sealed)))
 	o.num("expires_in", int64(parTTL/time.Second))

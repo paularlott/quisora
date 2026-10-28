@@ -1731,14 +1731,13 @@ func (s *Store) Purge(ctx context.Context, tombstonesBefore, expiredBefore time.
 		return r.Deleted && r.Version.Time().Before(tombstonesBefore)
 	})
 	total += n
-	if err != nil {
-		return total, err
-	}
+	// A failing tombstone pass must not stop the expired records from being purged: both go on, and both failures are
+	// reported.
 	expTo := fmt.Sprintf("%015d/\xff", max(expMs(expiredBefore), 0))
-	n, err = s.purgeIndex(ctx, "exp", expTo, func(r *store.Record) bool {
+	n, err2 := s.purgeIndex(ctx, "exp", expTo, func(r *store.Record) bool {
 		return !r.Deleted && !r.Expires.IsZero() && r.Expires.Before(expiredBefore)
 	})
-	return total + n, err
+	return total + n, errors.Join(err, err2)
 }
 
 // purgeIndex removes the records listed in an index bucket up to member `to` whose current state still satisfies

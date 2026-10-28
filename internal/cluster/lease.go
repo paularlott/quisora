@@ -43,6 +43,8 @@ type lease struct {
 	until    atomic.Int64  // unix nanos until which this node holds the lease (0: not held)
 	ok       atomic.Int64  // unix nanos of the last tick that reached the database
 	token    atomic.Uint64 // fencing token of the tenure this node holds: the lease record's Created (0: none)
+	// skew is how far the database server's clock is ahead of this node's at the last reading (nil: none yet, checkDBClock).
+	skew atomic.Pointer[time.Duration]
 }
 
 // reachable reports whether the database answered a lease tick recently.
@@ -246,6 +248,43 @@ func (l *lease) release(ctx context.Context) {
 	}
 }
 
+// dbClockRTT is the longest round trip of a reading of the database's time that is used: the offset is taken at the
+// midpoint of the trip, which a slow one (a busy server, a congested network) makes unreliable by up to half of it.
+var dbClockRTT = time.Second
+
+// serverClock is a store that can tell the database server's time (sqlstore.Store.ServerTime); the others (one
+// process's own memory or files) have only this machine's clock.
+type serverClock interface {
+	ServerTime(ctx context.Context) (time.Time, error)
+}
+
+// checkDBClock measures this node's clock against the database server's and refuses to serve while it is too far off.
+// A node without gossip has no peers to compare clocks with, but every node of a shared database stamps expiries (a
+// code, a PAR request_uri, the lease itself) with its own clock, so one that is off makes them expire early or late
+// depending on which node a request reaches. The nodes share the database server's clock, so each reads it with every
+// lease tick and is judged against it as a gossip node is against its peers (judgeClock).
+func (n *Node) checkDBClock(ctx context.Context) {
+	sc, ok := n.lease.st.S.(serverClock)
+	if !ok {
+		return
+	}
+	sent := time.Now()
+	dbNow, err := sc.ServerTime(ctx)
+	got := time.Now()
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			n.log.WithError(err).Warn("database clock")
+		}
+		return
+	case got.Sub(sent) > dbClockRTT:
+		return // too slow to tell: the next tick reads again
+	}
+	off := dbNow.Sub(sent.Add(got.Sub(sent) / 2))
+	n.lease.skew.Store(&off)
+	n.judgeClock(off, "the database server's")
+}
+
 func (n *Node) runLease() {
 	defer n.wg.Done()
 	t := time.NewTicker(leaseRenew)
@@ -255,6 +294,7 @@ func (n *Node) runLease() {
 			n.log.WithError(err).Warn("housekeeping lease")
 		}
 		n.checkNoGossip(n.ctx)
+		n.checkDBClock(n.ctx)
 		n.checkID(n.ctx)
 		select {
 		case <-n.ctx.Done():

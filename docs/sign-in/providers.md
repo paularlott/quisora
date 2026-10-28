@@ -109,6 +109,14 @@ has a session that came through that provider. If the provider refuses it (`inva
 user's sessions and refresh grants, and applications are told (`identity.refresh.refused`). The account is not
 disabled: lock it out or end-date it in Quisora for that. GitHub gives no refresh tokens, so this does not apply to it.
 
+The checks run on the housekeeping leader, one provider request at a time, in a loop of their own that holds up none of
+the leader's other tasks (end dates, key rotation). A run works for at most `session.upstream_check_minutes` (5 minutes
+at most) and the next resumes where it stopped, going back to the start after the last identity; a user is checked about
+every `session.upstream_check_minutes`, or less often when there are more sessions through providers than one pass
+can check in that time (a slow provider answers its users one at a time). A run that stopped at its time limit logs
+`upstream session check: more identities than one run's time allows`; if that repeats, the checks are running behind.
+A node that stops leading makes no further request.
+
 ## Network
 
 Quisora calls the provider's discovery, token and key endpoints from the server, over https only, without following

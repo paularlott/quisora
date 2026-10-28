@@ -49,42 +49,61 @@ type LeaverResult struct {
 	Checked int // refresh tokens replayed
 	Ended   int // users whose sessions were ended because their provider refused the token
 	Failed  int // replays that failed for another reason (tried again next time)
+	// Unfinished is set when the run stopped at its time budget before the end; Reached is then the last identity it
+	// went through (the next run resumes after it).
+	Unfinished bool
+	Reached    string
 }
 
 // identityPage is how many identities CheckSessions reads at a time.
 const identityPage = 500
 
-// CheckSessions replays the stored refresh token of every identity whose last check is older than every and whose
-// user has a live session signed in through its provider (see the package comment on leaver detection). Run by the
-// housekeeping leader.
-func (s *Service) CheckSessions(ctx context.Context, every time.Duration) (LeaverResult, error) {
+// CheckSessions replays the stored refresh token of the identities whose last check is older than every and whose
+// user has a live session signed in through their provider (see the package comment on leaver detection). Run by the
+// housekeeping leader, in a loop of its own so that it delays no other task.
+//
+// A run is a slice of the work, not all of it: it stops after budget (the replays are one HTTP request each, so a
+// directory of tens of thousands of identities takes hours) and the next run resumes after the last identity this one
+// reached, wrapping to the start once it has been through them all. It also stops, without error, as soon as Tenure
+// says this node no longer leads: the next leader replays from its own start, and what was checked recently is
+// skipped by the age filter. Only one provider's token is replayed at a time, and by one node: a provider that
+// rotates refresh tokens and detects their reuse would refuse the second replayer, and a refusal ends the user's
+// sessions.
+func (s *Service) CheckSessions(ctx context.Context, every, budget time.Duration) (LeaverResult, error) {
 	var res LeaverResult
 	now := s.Now()
-	down := map[string]bool{} // providers whose check failed this run: their other identities wait for the next run
+	started := time.Now()     // (the real clock: the budget is time spent, which s.Now may not measure)
+	down := map[string]bool{} // providers whose check failed this run: their other identities wait for the next pass
 	// Paged by id (After), not by offset: every page is a range read from where the last one ended, where an offset
 	// would walk past every earlier identity again (and miss or repeat some when identities come and go meanwhile).
-	for after := ""; ; {
+	for after := s.leaverAfter; ; {
 		ids, _, err := s.Svc.Identities.List(ctx, store.ListQuery{After: after, Limit: identityPage})
 		if err != nil {
 			return res, err
-		}
-		if len(ids) > 0 {
-			after = ids[len(ids)-1].ID
 		}
 		for _, id := range ids {
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
-			if id.Refresh == "" || now.Sub(id.RefreshChecked) < every || down[id.ProviderID] || !s.hasProviderSession(ctx, id) {
-				continue
+			if time.Since(started) >= budget {
+				res.Unfinished, res.Reached = true, s.leaverAfter
+				return res, nil
 			}
-			if !s.checkIdentity(ctx, id, &res) {
-				down[id.ProviderID] = true
+			if id.Refresh != "" && now.Sub(id.RefreshChecked) >= every && !down[id.ProviderID] && s.hasProviderSession(ctx, id) {
+				if s.Tenure(ctx) != nil {
+					return res, nil
+				}
+				if !s.checkIdentity(ctx, id, &res) {
+					down[id.ProviderID] = true
+				}
 			}
+			s.leaverAfter = id.ID
 		}
 		if len(ids) < identityPage {
+			s.leaverAfter = ""
 			return res, nil
 		}
+		after = ids[len(ids)-1].ID
 	}
 }
 

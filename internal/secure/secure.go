@@ -72,9 +72,12 @@ const (
 )
 
 // Bounds on the settings a stored hash may name: Verify refuses anything outside them before hashing, so a damaged
-// or planted hash naming, say, gigabytes of memory cannot make one sign-in exhaust the server.
+// or planted hash naming, say, gigabytes of memory cannot make one sign-in exhaust the server. The memory bound is
+// also what a sign-in wave can hold at once: one hash per worker (one per CPU), so 64 MiB on 16 CPUs is 1 GiB where
+// 256 MiB was 4 GiB. 64 MiB takes what PHP's password_hash (64 MiB) and libsodium's interactive limit make, RFC 9106's
+// second recommended setting, and every OWASP choice (46 MiB and less); a hash of more is refused at import.
 const (
-	argonMaxMemory  = 256 * 1024 // KiB
+	argonMaxMemory  = 64 * 1024 // KiB
 	argonMaxTime    = 10
 	argonMaxThreads = 16
 )
@@ -258,13 +261,19 @@ func (h *Hasher) Verify(ctx context.Context, key, password, encoded string) (ok,
 		if err != nil {
 			return false, false, err
 		}
+		// The system it came from hashed the password as typed; the normalized form is tried as well (when it differs),
+		// as with argon2id. One too long to be a real password (normalizing can make it longer) is no match, found out
+		// before a worker is taken: it costs the caller nothing but its own request.
+		pws := slices.DeleteFunc(slices.Compact([]string{password, NormalizePassword(password)}),
+			func(pw string) bool { return len(pw) > sha512CryptMaxPassword })
+		if len(pws) == 0 {
+			return false, false, nil
+		}
 		if err := h.acquire(ctx, key); err != nil {
 			return false, false, err
 		}
 		defer h.release()
-		// The system it came from hashed the password as typed; the normalized form is tried as well (when it differs),
-		// as with argon2id.
-		for _, pw := range slices.Compact([]string{password, NormalizePassword(password)}) {
+		for _, pw := range pws {
 			if subtle.ConstantTimeCompare([]byte(sha512Crypt([]byte(pw), salt, rounds)), []byte(want)) == 1 {
 				return true, true, nil
 			}

@@ -27,6 +27,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -104,18 +105,23 @@ func New(cfg *config.Config, log logger.Logger, st store.Store, node string, sea
 		Deliver: func(ctx context.Context, msg Message) error {
 			if !msg.Expires.IsZero() && !time.Now().Before(msg.Expires) {
 				// Sent now, it would only cost a slot of SMTP ahead of mail that still works.
+				metrics.MailFailed.Inc("expired")
 				log.Warn("mail not sent: what it carries expired while it was queued", "to", msg.To, "subject", msg.Subject)
 				return nil
 			}
 			return tr.Deliver(ctx, msg)
 		},
+		// The recipient is logged only when the mail is given up on (someone has to be told it did not arrive), not on
+		// every retry: a down mail server would write the addresses of everyone waiting, again and again.
 		Failed: func(msg Message, attempt int, retry time.Duration, err error) {
 			if retry == 0 {
+				metrics.MailFailed.Inc("given_up")
 				log.Error("mail delivery failed, giving up", "to", msg.To, "subject", msg.Subject, "error", err)
 			} else {
-				log.Warn("mail delivery failed, will retry", "to", msg.To, "attempt", attempt, "in", retry, "error", err)
+				log.Warn("mail delivery failed, will retry", "organization", msg.OrgID, "attempt", attempt, "in", retry, "error", err)
 			}
-		}})
+		},
+		Dropped: func() { metrics.MailFailed.Inc("dropped") }})
 	return m
 }
 

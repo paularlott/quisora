@@ -187,9 +187,29 @@ Super admins see that a rotation is in progress on the **System overview**, whic
 same status is `GET /api/master-key` (super admin). It shows:
 
 - the key every node seals with, and the previous keys every node holds;
-- how many stored secrets are still sealed with a previous key, and how many open with no configured key;
+- how many secrets the housekeeping leader has re-sealed so far (`resealed_secrets`), and when it last finished a
+  walk over every stored record (`checked_at`, null until the first walk ends); `stale_secrets` (still sealed with a
+  previous key) and `unopenable_secrets` (no configured key opens them) are what that walk found, so they say nothing
+  until `checked_at` is set;
 - a state: `waiting_for_nodes`, `resealing`, `unopenable`, `complete` (with
   `previous_keys_removable: true`: remove them now) or `none` (no rotation in progress).
+
+The status is cheap: it reads the leader's last report (any node answers it), not the stored secrets, so the console
+may poll it. A reload that removes a key is refused until a walk that began after the keys changed has ended with
+nothing left and every node seals with the active key (the error says so).
+
+**How long it takes.** The leader re-seals in passes, each for at most a third of its minute-long housekeeping tick
+(20 seconds), and the next pass goes on where the last one stopped; a walk that finds nothing left ends the work, and
+nothing is read again until the keys change. Measured on one BadgerDB node, a re-seal runs at about 3,000 users per
+second (a user's authenticator secret and password hash are re-sealed in one write: about 6,500 secrets per second),
+so a million users take about 5 minutes of writing, which at 20 seconds in every 60 is about **15 minutes**; add
+about as much again for each million upstream identities and grants. A gossip cluster or a shared SQL database writes
+more slowly (every write is replicated, or a network round trip), and each pass then gets through fewer records: that
+was not measured, so watch it.
+Watch it in `resealed_secrets` (status page, API) and the leader's log line `master key: secrets re-sealed with the
+active key`, which gives each pass's count (`resealed`) and the total since the keys changed (`resealed_total`); the
+state turns `complete` when the walk ends. A leader that changes, or restarts, begins its walk again; what it finds
+already re-sealed it only reads (about 300,000 users per second).
 
 The housekeeping leader also logs `master key rotation complete … remove server.previous_master_keys now`, and repeats
 it every hour until they are removed.
@@ -205,7 +225,7 @@ it every hour until they are removed.
    previous_master_keys = ["<old>"]
    ```
 
-3. Within minutes the status says `complete`. Remove `previous_master_keys`, and reload or restart.
+3. When the status says `complete` (a few seconds for a small installation: [how long it takes](#is-it-done-when-can-the-old-key-go)), remove `previous_master_keys`, and reload or restart.
 
 ### Several nodes (shared database or gossip)
 
@@ -445,6 +465,12 @@ How the cluster behaves is in [REPLICATION.md](REPLICATION.md); what an operator
   each has its own database (queued items are in it), and a database two gossip nodes share is refused (above).
 - **Clocks** must be in sync (NTP); more than 5 s apart is a broken node, and gossip refuses packets more than two minutes off
   the receiver's clock. ([Clocks](REPLICATION.md#clocks))
+  Nodes that share one database without gossip have no peers to compare with, but they stamp expiries (a 60 s
+  `request_uri`, a 60 s code, short-lived state, the housekeeping lease) with their own clocks, so a node whose clock is
+  off sees them expire early or late: sign-ins fail on one node and work on another. Each therefore reads the database
+  server's clock every 10 seconds and, when its own is more than 5 s off, reports itself not ready (`/readyz` 503) and
+  logs `refusing to serve` with the offset, until it is within 2.5 s again; `/readyz` shows `clock_offset_ms`. Fix the
+  node's time synchronisation (NTP), and the database server's own.
 - **Open the gossip port** (`cluster.bind`, TCP and UDP) between the nodes only: the partition protocol's messages (writes, promises,
   catch-up streams) use it, encrypted and authenticated by `cluster.key`.
 - **`quisora invite` and `quisora sign-out` go through a running node** in a gossip cluster (they sign the
@@ -710,6 +736,18 @@ QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quiso
 - `quisora backup quisora.bak` without `--server` reads the configured store directly. On BadgerDB and SQLite, stop the node
   first.
 - Every backend gives a point-in-time snapshot: the backup is consistent.
+- **A backup holds one database snapshot open for its whole run**, and `--server` streams it to the client as it reads, so
+  a large store or a slow downloader makes the run last minutes. For all that time the database cannot clean up what
+  changed since: PostgreSQL keeps the old row versions (table and index bloat, until the snapshot ends and vacuum
+  catches up), MySQL and MariaDB keep their undo log growing (history list length), and SQLite's WAL cannot be
+  checkpointed past the snapshot, so the `-wal` file grows with every write. So:
+  - take backups when traffic is lowest (the cron example below is at 02:30);
+  - over a slow link (a backup machine far from the server, a throttled download), do not stream it: run
+    `quisora backup quisora.bak` without `--server` on a host close to the database (it needs the same configuration,
+    and on BadgerDB and SQLite the node stopped), then copy the finished file;
+  - watch the database while one runs, and alert on it: the size of SQLite's `-wal` file, PostgreSQL's oldest
+    transaction (`pg_stat_activity.xact_start`) and dead tuples, MySQL's history list length. A backup that takes
+    noticeably longer than it used to is the first sign.
 
 Quisora has no backup schedule of its own: run `quisora backup --server` from cron (or a systemd timer, or a
 Kubernetes CronJob) on a machine that keeps the files away from the node, and alert when it fails. For example,
@@ -775,6 +813,17 @@ Until the first release, formats change in place. From then on:
   Renaming, removing or re-interpreting one needs a migration, on every backend:
   - BadgerDB: append to `formatMigrations` (`internal/store/kvstore/kvstore.go`);
   - SQL: append to `migrations()` (`internal/store/sqlstore/migrate.go`): statements, and Go code for data.
+- **Making an existing field a column or an index (something a list can filter or sort by) needs a data migration that
+  backfills it.** The SQL stores add a new column to existing tables with its zero value and never fill it in from the
+  stored records (`reconcile` in `internal/store/sqlstore/reconcile.go`; the real value stays in the record's data
+  until the record is next written), so a SQL listing that filters on it silently misses every old record. BadgerDB
+  misses them too: it keeps each record's index fields as they were computed when the record was written, and filters
+  and indexes by those, so an old record has neither the field nor its index entries until it is written again. Nothing
+  reports an error. Put the backfill in the same migration as the change, in both places above: on SQL a `data` step
+  of `migrations()` that reads each record and writes the column (and, for a unique value, its row in the unique
+  table); on BadgerDB a `formatMigrations` step that calls `rewriteRecords` for the kind, which recomputes the stored
+  index fields and entries from each record's data. Test it by creating records with the old build's schema, opening the store with the new one,
+  and listing by the new field on every backend.
 - A backup format change: raise `version`, add `upgrades[old]`, and keep `minVersion` at the previous release's
   version (`internal/backup/backup.go`).
 - What nodes send each other changes (a change or a write's data in `internal/cluster/partition.go`, the record encoding in
@@ -836,8 +885,9 @@ endpoint. Every node serves its own.
 | `quisora_audit_undelivered_total` | Audit events VictoriaLogs will never receive |
 | `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
 | `quisora_mail_queued` | Emails this node has waiting to be sent |
+| `quisora_mail_failed_total{reason}` | Emails that never reached the mail server: `given_up` (every retry failed; the log names the recipient), `dropped` (kept past the queue's discard horizon, or unreadable) and `expired` (the sign-in code or link in it had expired while it waited) |
 | `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
-| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, or dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped) |
+| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped), or dropped unsent past the queue's discard horizon |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
 | `quisora_partitions_owned` | Partitions this node owns (the 64 are shared by the ready nodes) |
@@ -864,6 +914,9 @@ Alerts worth having:
   `oauth.code.replay`), a cloned passkey (`passkey.clone`).
 - Any `quisora_audit_events_total{action=~"keys.rotate|cluster.force_start|backup.download|backup.restore"}`:
   rare, privileged events someone should know about.
+- `increase(quisora_mail_failed_total[1h]) > 0`: mail is being lost (invitations, password resets, sign-in codes): the mail
+  server is down or refusing it, or the queue is not keeping up. `quisora_mail_queued` growing says the same earlier.
+  Likewise `increase(quisora_backchannel_logout_failed_total[1h]) > 0` for applications that are not told of a sign-out.
 - `rate(quisora_http_shed_total[5m]) > 0`: the node is overloaded.
 
 ### Access log

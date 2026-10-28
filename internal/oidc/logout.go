@@ -452,7 +452,8 @@ func (p *Provider) OpenLogoutQueue(node string) *queue.Queue[LogoutRetry] {
 				metrics.BackchannelFailed.Inc()
 				p.log.Warn("oidc: back-channel logout failed, giving up", "client", r.ClientID, "attempts", attempt+1, "error", err)
 			}
-		}})
+		},
+		Dropped: func() { metrics.BackchannelFailed.Inc() }})
 	p.bcRetry = q
 	return q
 }

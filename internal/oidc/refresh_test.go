@@ -280,7 +280,7 @@ func TestRefreshTokenAcrossMasterKeyRotation(t *testing.T) {
 	if r := h.refreshWith(cl, secret, rt); r.status != 200 || r.str("refresh_token") != "" {
 		t.Fatalf("during the rotation: %d %v", r.status, r.m)
 	}
-	if res, err := h.env.Svc.ResealSecrets(ctx, 1000); err != nil || !res.Done() {
+	if res, err := h.env.Svc.ResealSecrets(ctx, time.Minute); err != nil || !res.Done() {
 		t.Fatalf("reseal: %+v %v", res, err)
 	}
 

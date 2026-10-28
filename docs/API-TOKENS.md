@@ -148,13 +148,16 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$QUI
 ### Passwords (`password_hash`)
 
 - `password_hash` is bcrypt (`$2a$`, `$2b$` or `$2y$`, cost 4 to 14), SHA-512 crypt (`$6$`, as PHP's `crypt()` and Linux
-  `/etc/shadow` make; at most 1,000,000 rounds, 5,000 when none is named) or argon2id. Anything else is refused (422).
+  `/etc/shadow` make; at most 1,000,000 rounds, 5,000 when none is named) or argon2id (at most 64 MiB of memory, which
+  covers PHP, libsodium's interactive limit and OWASP's settings). Anything else is refused (422).
 - SHA-512 crypt and argon2id hashes are checked against the password as typed and in its normalised form (Unicode NFKC),
   so a password the old system stored in either form still works.
 - It is stored sealed with the master key like every password. The user's first sign-in checks it and re-hashes the
   password with Quisora's own argon2id settings; from then on the old hash is gone.
 - bcrypt reads only the first 72 bytes of a password: someone whose old password was longer cannot sign in with it and
   needs an invitation.
+  A password of more than 256 bytes likewise never matches a SHA-512 crypt hash (checking one would hold a hashing
+  worker for seconds); it is a wrong password, answered without hashing.
 - The import is audited on `user.create` (`password` = `imported bcrypt`, `imported sha512-crypt` or `imported argon2id`).
 
 ### Authenticator apps (`totp_secret`)

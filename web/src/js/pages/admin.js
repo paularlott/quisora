@@ -1710,7 +1710,7 @@ export default function (Alpine) {
   }))
 
   // ---- Master key rotation (super admins): GET /api/master-key, polled --------------------------------------------
-  const MASTER_KEY_POLL_MS = 30000 // the status reads every sealed value: not too often
+  const MASTER_KEY_POLL_MS = 30000 // the status reads the leader's last report, not the stored secrets
   const MASTER_KEY_STATE = {
     none: { title: 'No rotation in progress.', cls: 'alert alert-success' },
     waiting_for_nodes: { title: 'Waiting for the nodes.', cls: 'alert alert-warning' },

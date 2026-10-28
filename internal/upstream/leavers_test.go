@@ -3,6 +3,7 @@ package upstream_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -43,20 +44,20 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 	}
 
 	// Not due yet: checked just now.
-	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Checked != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Checked != 0 {
 		t.Fatalf("within interval: %+v %v", r, err)
 	}
 	e.advance(2 * time.Hour)
 	// Due, accepted and rotated.
 	before := e.oidc.LiveRefresh()
-	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Checked != 1 || r.Ended != 0 || r.Failed != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 || r.Failed != 0 {
 		t.Fatalf("due check: %+v %v", r, err)
 	}
 	if after := e.oidc.LiveRefresh(); len(after) != 1 || after[0] == before[0] {
 		t.Fatalf("rotation: %v -> %v", before, after)
 	}
 	// The check was recorded, so it is not due again.
-	if r, _ := e.up.CheckSessions(e.ctx, time.Hour); r.Checked != 0 {
+	if r, _ := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); r.Checked != 0 {
 		t.Fatalf("checked twice: %+v", r)
 	}
 
@@ -65,7 +66,7 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 	e.oidc.Mu.Lock()
 	e.oidc.RefreshFail = 503
 	e.oidc.Mu.Unlock()
-	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Failed != 1 || r.Ended != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Failed != 1 || r.Ended != 0 {
 		t.Fatalf("failure: %+v %v", r, err)
 	}
 	if _, err := e.svc.Sessions.Get(e.ctx, sess.ID); err != nil {
@@ -77,7 +78,7 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 
 	// Refused with invalid_grant: sessions end, the token is forgotten, an audit record says why.
 	e.oidc.RevokeRefresh()
-	if r, err := e.up.CheckSessions(e.ctx, time.Hour); err != nil || r.Ended != 1 {
+	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Ended != 1 {
 		t.Fatalf("leaver: %+v %v", r, err)
 	}
 	if _, err := e.svc.Sessions.Get(e.ctx, sess.ID); err == nil {
@@ -91,7 +92,7 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 	}
 	// Nothing left to check.
 	calls := e.refreshCalls()
-	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 0 || e.refreshCalls() != calls {
+	if r, _ := e.up.CheckSessions(e.ctx, 0, time.Minute); r.Checked != 0 || e.refreshCalls() != calls {
 		t.Fatalf("replayed without a token: %+v", r)
 	}
 }
@@ -113,17 +114,17 @@ func TestCheckSessionsNeedsLiveProviderSession(t *testing.T) {
 		}
 	}
 	// No session at all, an expired one, and a live one not signed in through the provider: nothing is replayed.
-	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != 0 {
 		t.Fatalf("no session: %+v %v", r, err)
 	}
 	mk(p.ID, -time.Minute)
 	mk("", time.Hour)
-	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 0 || e.refreshCalls() != 0 {
+	if r, _ := e.up.CheckSessions(e.ctx, 0, time.Minute); r.Checked != 0 || e.refreshCalls() != 0 {
 		t.Fatalf("checked without a live provider session: %+v", r)
 	}
 	// A live session through the provider: checked and accepted; no rotation, so the token stays valid.
 	mk(p.ID, time.Hour)
-	if r, _ := e.up.CheckSessions(e.ctx, 0); r.Checked != 1 || r.Ended != 0 {
+	if r, _ := e.up.CheckSessions(e.ctx, 0, time.Minute); r.Checked != 1 || r.Ended != 0 {
 		t.Fatalf("live session: %+v", r)
 	}
 	if len(e.oidc.LiveRefresh()) != 1 {
@@ -141,12 +142,12 @@ func TestCheckSessionsProviderOffAndCancel(t *testing.T) {
 	if _, err := e.svc.UpdateProvider(e.ctx, service.System, p.ID, service.ProviderInput{Enabled: ptr(false)}); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != 0 {
 		t.Fatalf("disabled provider replayed: %+v %v", r, err)
 	}
 	ctx, cancel := context.WithCancel(e.ctx)
 	cancel()
-	if _, err := e.up.CheckSessions(ctx, 0); !errors.Is(err, context.Canceled) {
+	if _, err := e.up.CheckSessions(ctx, 0, time.Minute); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled run: %v", err)
 	}
 }
@@ -159,7 +160,7 @@ func TestCheckSessionsBasicAuthProvider(t *testing.T) {
 	e.oidc.Mu.Lock()
 	e.oidc.GotBasic = false
 	e.oidc.Mu.Unlock()
-	if r, err := e.up.CheckSessions(e.ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
 		t.Fatalf("%+v %v", r, err)
 	}
 	if !e.oidc.GotBasic {
@@ -177,8 +178,83 @@ func TestCheckSessionsUnreachableProvider(t *testing.T) {
 	e.oidc.Mu.Lock()
 	e.oidc.RefreshFail = 500
 	e.oidc.Mu.Unlock()
-	r, err := e.up.CheckSessions(e.ctx, 0)
+	r, err := e.up.CheckSessions(e.ctx, 0, time.Minute)
 	if err != nil || r.Failed != 1 || r.Checked != 1 || e.refreshCalls() != 1 {
 		t.Fatalf("one failure must park the provider: %+v %v calls=%d", r, err, e.refreshCalls())
+	}
+}
+
+// A run is a slice of the work: with a slow provider and many due identities it stops at its time budget, and the next
+// run resumes after the identity the last one reached, so every identity is replayed once before any is replayed again.
+func TestCheckSessionsBudgetAndResume(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, nil)
+	const n = 6
+	for i := range n {
+		e.signedInThrough(t, p, fmt.Sprintf("sub%d", i), fmt.Sprintf("u%d@corp.example", i))
+	}
+	e.oidc.Mu.Lock()
+	e.oidc.RefreshDelay = 100 * time.Millisecond
+	e.oidc.Mu.Unlock()
+
+	budget := 150 * time.Millisecond // two replays fit (the budget is looked at before each one)
+	runs := 0
+	for {
+		runs++
+		started := time.Now()
+		r, err := e.up.CheckSessions(e.ctx, 0, budget)
+		if err != nil || r.Checked == 0 || r.Checked > 3 {
+			t.Fatalf("run %d: %+v %v", runs, r, err)
+		}
+		if took := time.Since(started); took > 2*time.Second {
+			t.Fatalf("run %d took %v against a budget of %v", runs, took, budget)
+		}
+		if !r.Unfinished {
+			break
+		}
+		if r.Reached == "" {
+			t.Fatalf("run %d stopped without saying how far it got: %+v", runs, r)
+		}
+		if runs > 2*n {
+			t.Fatal("the runs never reach the end")
+		}
+	}
+	if runs < 2 || e.refreshCalls() != n {
+		t.Fatalf("one pass over %d identities in %d runs replayed %d tokens (want each exactly once)", n, runs, e.refreshCalls())
+	}
+	// The pass wrapped: the next run starts again from the first identity.
+	e.oidc.Mu.Lock()
+	e.oidc.RefreshDelay = 0
+	e.oidc.Mu.Unlock()
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != n || r.Unfinished {
+		t.Fatalf("second pass: %+v %v", r, err)
+	}
+}
+
+// A run stops replaying as soon as the node no longer leads (Tenure refuses), without an error, and the identity it
+// had not replayed is the first of the next run.
+func TestCheckSessionsStopsWhenTenureIsLost(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, nil)
+	const n = 4
+	for i := range n {
+		e.signedInThrough(t, p, fmt.Sprintf("sub%d", i), fmt.Sprintf("u%d@corp.example", i))
+	}
+	var asked int
+	e.up.Tenure = func(context.Context) error { // lost after the first replay
+		asked++
+		if asked > 1 {
+			return errors.New("housekeeping has passed to another node")
+		}
+		return nil
+	}
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != 1 || e.refreshCalls() != 1 {
+		t.Fatalf("a deposed run replayed after losing the tenure: %+v %v calls=%d", r, err, e.refreshCalls())
+	}
+	e.up.Tenure = func(context.Context) error { return nil }
+	if r, err := e.up.CheckSessions(e.ctx, 0, time.Minute); err != nil || r.Checked != n-1 || e.refreshCalls() != n {
+		t.Fatalf("the next run: %+v %v calls=%d (want the other %d, none twice)", r, err, e.refreshCalls(), n-1)
 	}
 }

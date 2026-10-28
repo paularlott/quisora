@@ -3,14 +3,18 @@ package mail
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/paularlott/logger"
+	logtest "github.com/paularlott/logger/testing"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
@@ -185,5 +189,55 @@ func TestExpiredMessageIsNotSent(t *testing.T) {
 	}
 	if m.Queued() != 0 || sent.Load() != 1 {
 		t.Fatalf("%d queued, %d sent: want the fresh one sent and the stale one dropped", m.Queued(), sent.Load())
+	}
+}
+
+// Mail that is given up on after every retry, and mail whose code expired while it was queued, count in
+// quisora_mail_failed_total by reason, and mail that is delivered does not; the retries log no recipient.
+func TestFailedMailIsCounted(t *testing.T) {
+	sealer, _ := secure.NewSealer(secure.RandomBytes(32))
+	var sentTo atomic.Int32
+	tr := TransportFunc(func(_ context.Context, msg Message) error {
+		if msg.Text == "ok" {
+			sentTo.Add(1)
+			return nil
+		}
+		return errors.New("nope")
+	})
+	logs := logtest.New()
+	m := New(config.Default(), logs, memstore.New(), "node-1", sealer, tr, 5*time.Millisecond, 5*time.Millisecond)
+	defer m.Close()
+	givenUp, expired := metrics.MailFailed.Value("given_up"), metrics.MailFailed.Value("expired")
+	ctx := context.Background()
+	for _, msg := range []Message{
+		{To: "bob@example.com", Text: "lost"},
+		{To: "carol@example.com", Text: "stale", Expires: time.Now().Add(-time.Second)},
+		{To: "dave@example.com", Text: "ok"},
+	} {
+		if err := m.Send(ctx, msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for (m.Queued() != 0 || metrics.MailFailed.Value("given_up") == givenUp) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := metrics.MailFailed.Value("given_up") - givenUp; n != 1 {
+		t.Errorf("given up: %d, want 1", n)
+	}
+	if n := metrics.MailFailed.Value("expired") - expired; n != 1 || sentTo.Load() != 1 {
+		t.Errorf("expired: %d, delivered %d: want 1 counted and the good one sent", n, sentTo.Load())
+	}
+	retries := 0
+	for _, e := range logs.GetEntries() {
+		if e.Message == "mail delivery failed, will retry" {
+			retries++
+			if strings.Contains(fmt.Sprint(e.KeysAndValues), "@example.com") {
+				t.Errorf("a retry logged a recipient: %v", e.KeysAndValues)
+			}
+		}
+	}
+	if retries == 0 {
+		t.Error("no retry was logged")
 	}
 }

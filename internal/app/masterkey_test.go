@@ -254,7 +254,7 @@ func TestGossipMasterKeyRotation(t *testing.T) {
 		}
 	}
 	// a re-seal pass on any node now has nothing left to do
-	if r, err := nodes[1].app.Svc.ResealSecrets(ctx, 1000); err != nil || !r.Done() || r.Resealed != 0 {
+	if r, err := nodes[1].app.Svc.ResealSecrets(ctx, time.Minute); err != nil || !r.Done() || r.Resealed != 0 {
 		t.Fatalf("a pass after the rotation, on another node: %+v %v", r, err)
 	}
 }
@@ -306,7 +306,7 @@ func TestReloadKeepsAKeyAQueuedItemNeeds(t *testing.T) {
 	if err := a.ReloadMasterKeys(ctx, newKey, []string{oldKey}); err != nil {
 		t.Fatalf("adding the next key: %v", err)
 	}
-	if _, err := a.Svc.ResealSecrets(ctx, 10000); err != nil {
+	if _, err := a.Svc.ResealSecrets(ctx, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.ReloadMasterKeys(ctx, newKey, nil); err == nil || !strings.Contains(err.Error(), "still need") {
@@ -319,6 +319,56 @@ func TestReloadKeepsAKeyAQueuedItemNeeds(t *testing.T) {
 	}
 	if _, err := a.Svc.Sealer.OpenFor("mail/queue", items[0].Sealed); err != nil {
 		t.Fatalf("the queued item no longer opens: %v", err)
+	}
+}
+
+// A reload that drops a key is refused until the leader has been through every stored record since the keys changed
+// (what it found is published, and a status read costs no scan), and while a node still seals with another key; once
+// both hold, it goes through. A key still needed is never dropped on a guess: before, the check scanned every stored secret
+// itself, and no node answered for the leader's walk.
+func TestReloadDropsAKeyOnlyAfterTheWalk(t *testing.T) {
+	ctx := context.Background()
+	b64 := base64.StdEncoding.EncodeToString
+	oldKey, newKey := b64(secure.RandomBytes(32)), b64(secure.RandomBytes(32))
+	a, _, _ := startAppWith(t, "badgerdb", func(c *config.Config) { c.Server.MasterKey = oldKey })
+	// the leader's first pass (under the old key) has run: its next is a minute away, after this test
+	deadline := time.Now().Add(20 * time.Second)
+	for st, err := a.Svc.RotationStatus(ctx); err != nil || st.Checked == nil; st, err = a.Svc.RotationStatus(ctx) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the leader's first pass did not finish: %+v %v", st, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := a.ReloadMasterKeys(ctx, newKey, []string{oldKey}); err != nil {
+		t.Fatalf("adding the next key: %v", err)
+	}
+	// no walk has been made with the new key: nothing says the old one is not needed
+	if err := a.ReloadMasterKeys(ctx, newKey, nil); err == nil || !strings.Contains(err.Error(), "may still need") {
+		t.Fatalf("dropping the key before the walk: %v", err)
+	}
+	// a node that still seals with the old key
+	raw, _ := base64.StdEncoding.DecodeString(oldKey)
+	oldSealer, _ := secure.NewSealer(raw)
+	laggard := service.New(a.Svc.Cfg, a.Svc.Store, oldSealer)
+	if err := laggard.ReportMasterKey(ctx, "laggard"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Svc.ResealSecrets(ctx, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ReloadMasterKeys(ctx, newKey, nil); err == nil || !strings.Contains(err.Error(), "waiting_for_nodes") {
+		t.Fatalf("dropping the key while a node seals with it: %v", err)
+	}
+	l, err := a.Svc.Locks.Get(ctx, "master-key/laggard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Until = time.Now().Add(-time.Minute)
+	if err := a.Svc.Locks.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ReloadMasterKeys(ctx, newKey, nil); err != nil {
+		t.Fatalf("dropping the key after the walk, every node on the new one: %v", err)
 	}
 }
 

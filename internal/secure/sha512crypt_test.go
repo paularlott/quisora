@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The test vectors of the specification (Drepper, "Unix crypt using SHA-256 and SHA-512"), in the form a hash is
@@ -123,5 +124,33 @@ func TestHashIsNeverSHA512Crypt(t *testing.T) {
 	enc, err := NewHasher(1).Hash(context.Background(), "", "x")
 	if err != nil || isSHA512Crypt(enc) {
 		t.Fatalf("%q %v", enc, err)
+	}
+}
+
+// A password too long to be a real one is a miss without hashing: it does not even wait for a hashing worker (here the
+// only one is held), where hashing it against the most rounds accepted would hold the worker for seconds. One at
+// the limit still verifies.
+func TestSHA512CryptLongPasswordIsAFastMiss(t *testing.T) {
+	h := NewHasher(1)
+	if err := h.acquire(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	enc := "$6$rounds=1000000$maxroundssalt$aB5mM1MoyOVXaYjda30FvFrqviTPaOplBCgMtWcZJI4i1r9sAsl5StKDKSxGv0jdEcWQVNtP2fBo06BBNW//K0"
+	long := strings.Repeat("x", sha512CryptMaxPassword+1)
+	if ok, rehash, err := h.Verify(ctx, "", long, enc); ok || rehash || err != nil {
+		t.Errorf("over-long password: ok %v, rehash %v, %v", ok, rehash, err)
+	}
+	// a password within the limit still needs a worker, and none is free
+	if _, _, err := h.Verify(ctx, "", "x", enc); !errors.Is(err, ErrBusy) {
+		t.Errorf("a password within the limit: %v", err)
+	}
+	h.release()
+
+	atLimit := strings.Repeat("y", sha512CryptMaxPassword)
+	hash := "$6$rounds=1000$limitsalt$" + sha512Crypt([]byte(atLimit), []byte("limitsalt"), 1000)
+	if ok, _, err := h.Verify(context.Background(), "", atLimit, hash); !ok || err != nil {
+		t.Errorf("password at the limit: %v %v", ok, err)
 	}
 }

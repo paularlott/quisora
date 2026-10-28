@@ -271,15 +271,41 @@ func TestCancelSignIn(t *testing.T) {
 	}
 }
 
-// A pushed request is kept in memory until it is used: one larger than parMaxParams is refused, not kept.
-func TestPushedRequestTooLarge(t *testing.T) {
+// A pushed request of more than parMaxParams (form-encoded) is refused; one of exactly that size is accepted, and the
+// authorization URL that carries its request_uri fits the 8 KiB request line nginx allows by default, whether the
+// request is one large value or many small parameters (whose "&" JSON would escape to six characters each).
+func TestPushedRequestSizeLimit(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	cl, secret := h.newClient(nil)
 	_, ch := pkce()
-	q := authzQuery(cl, ch, url.Values{"x_padding": {strings.Repeat("x", parMaxParams)}})
-	if r := h.push(cl, secret, q); r.status != 400 || r.m["error"] != "invalid_request" {
-		t.Fatalf("oversized push: %d %v", r.status, r.m)
+	// the form the server encodes: the request with client_id, padded to size by one parameter ("x=" and its "&")
+	sized := func(size int, many bool) url.Values {
+		q := authzQuery(cl, ch, nil)
+		if many { // as many parameters as will fit
+			for i := 0; len(q.Encode()) < size-12; i++ {
+				q.Set("p"+strconv.Itoa(i), "")
+			}
+		}
+		q.Set("x", "")
+		q.Set("x", strings.Repeat("x", size-len(q.Encode())))
+		return q
+	}
+	for name, many := range map[string]bool{"one large value": false, "many parameters": true} {
+		q := sized(parMaxParams, many)
+		if len(q.Encode()) != parMaxParams {
+			t.Fatalf("%s: test request of %d bytes", name, len(q.Encode()))
+		}
+		r := h.push(cl, secret, q)
+		if r.status != 201 {
+			t.Fatalf("%s: a push of the largest size: %d %v", name, r.status, r.m)
+		}
+		if u := orgBase + "/oauth/authorize?" + pushedQuery(cl, r.str("request_uri")).Encode(); len(u) >= 8<<10 {
+			t.Errorf("%s: the authorization URL of the largest push is %d bytes", name, len(u))
+		}
+		if r := h.push(cl, secret, sized(parMaxParams+1, many)); r.status != 400 || r.m["error"] != "invalid_request" {
+			t.Errorf("%s: a push of one byte more: %d %v", name, r.status, r.m)
+		}
 	}
 }
 

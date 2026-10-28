@@ -16,7 +16,7 @@ its records of processing and its privacy notice.
 | Connected providers | The provider's subject id and email address; its refresh token (sealed) | Until disconnected, or the user is deleted |
 | API tokens | Name, scopes, times (the token itself only as a hash) | Until revoked or expired |
 | Audit events | Actor and target (usernames, ids), IP address, user agent, session id, what changed | `audit.retention_days` in the database; in VictoriaLogs, its retention |
-| Structured log | Every audit event; with `log.access`, every request's path and client address; email recipients | The log pipeline's retention |
+| Structured log | Every audit event; with `log.access`, every request's path and client address; recipients of email that could not be delivered | The log pipeline's retention |
 | Backups | All of the above, as stored | As long as the backups are kept |
 
 Tokens issued to applications carry the claims the user consented to (names, email address, groups, roles, tags):

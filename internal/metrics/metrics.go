@@ -145,7 +145,12 @@ var (
 	AuditUndelivered = Default.NewCounter("quisora_audit_undelivered_total",
 		"Audit events VictoriaLogs will never receive (logged in full as audit.undelivered).")
 	BackchannelFailed = Default.NewCounter("quisora_backchannel_logout_failed_total",
-		"Back-channel logouts given up on: the relying party did not take them after every retry (or none could be queued).")
+		"Back-channel logouts given up on: the relying party did not take them after every retry (or none could be queued), "+
+			"or they were dropped unsent past their discard horizon.")
+	MailFailed = Default.NewCounter("quisora_mail_failed_total",
+		"Emails that never reached the mail server, by reason: given_up (every retry failed), dropped (kept past the "+
+			"queue's discard horizon, or unreadable) and expired (the code or link in it had expired while it was queued).",
+		"reason")
 )
 
 // Write writes every metric in the Prometheus text exposition format (0.0.4).

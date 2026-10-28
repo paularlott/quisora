@@ -73,6 +73,12 @@ type Options[T any] struct {
 	// when the item is given up on. Optional (the queue logs nothing of its own about failures).
 	// It is called from the delivering worker, so from several goroutines at once when Workers is more than one.
 	Failed func(item T, attempt int, retry time.Duration, err error)
+	// Dropped is told of each item lost without a verdict: found past its discard horizon while the node was up (it
+	// waited for a worker longer than its retries last, or no configured master key opened it) or unreadable. With
+	// Failed's last call (retry 0) it covers the items that never reached their destination, except those whose
+	// horizon passed while the node was stopped: the store no longer lists them. Optional (the queue logs the item's
+	// id). Like Failed, it may be called from several goroutines at once.
+	Dropped func()
 	// Workers is the most deliveries at once (0 or 1: one at a time). A slow delivery (at most 30 s) then holds one
 	// worker, not the queue: any other item is delivered as soon as a worker is free, so Deliver must be safe to call
 	// from several goroutines.
@@ -477,6 +483,10 @@ func (q *Queue[T]) dispatch(ctx context.Context) time.Time {
 func (q *Queue[T]) attempt(ctx context.Context, e *entry) *entry {
 	to := *e
 	if !time.Now().Before(e.expires) {
+		if !e.ended { // an ended item (delivered or given up on) is only waiting for its end to be recorded
+			q.o.Log.Warn(q.o.Name+" queue: item dropped, kept past its horizon", "item", e.id)
+			q.dropped()
+		}
 		return nil
 	}
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), writeWait)
@@ -505,6 +515,7 @@ func (q *Queue[T]) attempt(ctx context.Context, e *entry) *entry {
 			return &to
 		case err != nil:
 			q.o.Log.Error(q.o.Name+" queue: item cannot be read, dropping it", "item", e.id, "error", err)
+			q.dropped()
 			to.ended = true
 		default:
 			dctx, dcancel := context.WithTimeout(ctx, deliveryTimeout)
@@ -547,6 +558,13 @@ func (q *Queue[T]) attempt(ctx context.Context, e *entry) *entry {
 		q.o.Log.Error(q.o.Name+" queue: item's retry not recorded", "item", e.id, "error", err)
 	}
 	return &to
+}
+
+// dropped tells Options.Dropped that an item was lost without being delivered or given up on.
+func (q *Queue[T]) dropped() {
+	if q.o.Dropped != nil {
+		q.o.Dropped()
+	}
 }
 
 // settle ends the delivery of e: its worker and its key's share are free again, and e is back waiting as to, or gone

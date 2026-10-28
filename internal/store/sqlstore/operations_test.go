@@ -90,6 +90,31 @@ func TestOperationsOnClosedStoreFail(t *testing.T) {
 	}
 }
 
+// A kind whose purge fails (here its table is gone) does not stop the kinds after it from being purged, and the error
+// names it: one table that keeps hitting its lock or statement timeout must not let the audit log, sessions and
+// ephemeral records grow without bound.
+func TestPurgeGoesOnPastAFailingKind(t *testing.T) {
+	ctx := context.Background()
+	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
+		s, _ := openTest(t, d.name, d.env, 0)
+		defer s.Close()
+		if err := s.Put(ctx, record(model.KindLink, "old", time.Now().Add(-time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		// links come after sessions in the order Purge takes the kinds
+		if _, err := s.wdb.ExecContext(ctx, "DROP TABLE "+s.tables[model.KindSession].name); err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.Purge(ctx, time.Time{}, time.Now())
+		if err == nil || !strings.Contains(err.Error(), "purge "+string(model.KindSession)) || n != 1 {
+			t.Fatalf("purge: %d %v", n, err)
+		}
+		if _, err := s.Lookup(ctx, model.KindLink, "old"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a record of a later kind was not purged: %v", err)
+		}
+	})
+}
+
 // Purge removes expired records and releases their unique values, in batches past 500 rows. Until then an expired
 // record is invisible but its unique value stays stored.
 func TestPurgeReleasesExpiredUniqueValues(t *testing.T) {

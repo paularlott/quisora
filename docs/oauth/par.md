@@ -42,7 +42,9 @@ tokens](sign-in.md#2-exchange-the-code-for-tokens) as always.
 
 The request_uri is the request itself, sealed with the server's key (encrypted and authenticated), so Quisora keeps
 nothing for a push. It is about twice as long as the request, and goes in a URL the browser sends: a real request is
-about 1 KB, and one over 8 KB is refused.
+about 1 KB, and one over 4 KB (4,096 bytes, form-encoded) is refused with `invalid_request`. The longest request_uri
+that allows is 7.5 KB, and the authorization URL that carries it 7.6 KB, which fits the 8 KB request line that nginx
+(and most proxies) accept by default.
 
 - **60 seconds** to start: the browser must reach the organization's `/oauth/authorize` within a minute of the push. The
   sign-in it starts then lasts as long as any sign-in flow, so a user who takes their time signing in is fine, but the

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,6 +226,106 @@ func TestSharedNodeStartsWithoutDatabase(t *testing.T) {
 	if n.IsLeader() {
 		t.Fatal("a node without its database leads")
 	}
+}
+
+// clockedStore is a shared database whose server clock is off from this machine's by off, and whose reading takes rtt.
+type clockedStore struct {
+	*memstore.Store
+	off, rtt atomic.Int64 // nanoseconds
+	reads    atomic.Int64
+}
+
+func (s *clockedStore) ServerTime(context.Context) (time.Time, error) {
+	s.reads.Add(1)
+	time.Sleep(time.Duration(s.rtt.Load()) / 2)
+	now := time.Now().Add(time.Duration(s.off.Load()))
+	time.Sleep(time.Duration(s.rtt.Load()) / 2)
+	return now, nil
+}
+
+// startClocked starts a shared-database node over a store with a skewed server clock; the lease (and with it the
+// clock reading) ticks every 20 ms.
+func startClocked(t *testing.T, off, rtt time.Duration) (*Node, *clockedStore) {
+	t.Helper()
+	saved := leaseRenew
+	leaseRenew = 20 * time.Millisecond
+	t.Cleanup(func() { leaseRenew = saved })
+	cs := &clockedStore{Store: memstore.New()}
+	cs.off.Store(int64(off))
+	cs.rtt.Store(int64(rtt))
+	n := snode(t, cs)
+	if err := n.Start(bg); err != nil {
+		t.Fatal(err)
+	}
+	return n, cs
+}
+
+// Nodes sharing a database stamp expiries with their own clocks, so one whose clock is off from the database server's
+// refuses to serve, as a gossip node does when it is off from its peers, and serves again once it is within half the
+// bound. /readyz (Status) reports the offset.
+func TestSharedDatabaseClockRefusesToServe(t *testing.T) {
+	n, cs := startClocked(t, 3*time.Second, 0) // within the bound
+	if ok, why := n.Ready(); !ok {
+		t.Fatalf("a node 3 s off its database's clock is not ready: %s", why)
+	}
+	if ms := n.Status().ClockOffsetMs; ms == nil || *ms < 2900 || *ms > 3100 {
+		t.Fatalf("the offset in the status: %v", ms)
+	}
+	notReady := func(what, dir string) {
+		t.Helper()
+		waitFor(t, 5*time.Second, what, func() bool {
+			ok, why := n.Ready()
+			return !ok && strings.Contains(why, dir+" the database server's")
+		})
+	}
+
+	cs.off.Store(int64(time.Minute)) // the database's clock a minute ahead: this node's is behind
+	notReady("not ready a minute behind", "behind")
+	if ms := n.Status().ClockOffsetMs; ms == nil || *ms < 59000 {
+		t.Fatalf("the offset in the status: %v", ms)
+	}
+	cs.off.Store(int64(-time.Minute))
+	notReady("not ready a minute ahead", "ahead of")
+
+	// Within the bound but not within half of it: it keeps refusing (no flapping at the edge).
+	cs.off.Store(int64(4 * time.Second))
+	reads := cs.reads.Load()
+	waitFor(t, 5*time.Second, "a reading", func() bool { return cs.reads.Load() >= reads+3 })
+	if ok, _ := n.Ready(); ok {
+		t.Fatal("a node 4 s off served again before it was within 2.5 s")
+	}
+	cs.off.Store(int64(time.Second))
+	waitFor(t, 5*time.Second, "serving again", func() bool { ok, _ := n.Ready(); return ok })
+}
+
+// A reading whose round trip was long says nothing about the offset (the midpoint is a guess), however far off it
+// looks: it is ignored, neither refusing nor lifting a refusal, and the next quick one decides.
+func TestSharedDatabaseClockIgnoresSlowReadings(t *testing.T) {
+	saved := dbClockRTT
+	dbClockRTT = 50 * time.Millisecond
+	t.Cleanup(func() { dbClockRTT = saved })
+	reads := func(cs *clockedStore, n int64) {
+		t.Helper()
+		from := cs.reads.Load()
+		waitFor(t, 10*time.Second, "more readings", func() bool { return cs.reads.Load() >= from+n })
+	}
+	n, cs := startClocked(t, time.Hour, 200*time.Millisecond)
+	reads(cs, 3)
+	if ok, why := n.Ready(); !ok || n.Status().ClockOffsetMs != nil {
+		t.Fatalf("slow readings an hour off refused a node (%s) or showed an offset: %v", why, n.Status().ClockOffsetMs)
+	}
+
+	cs.rtt.Store(0)
+	waitFor(t, 5*time.Second, "not ready an hour off", func() bool { ok, _ := n.Ready(); return !ok })
+
+	cs.off.Store(0)
+	cs.rtt.Store(int64(200 * time.Millisecond))
+	reads(cs, 3)
+	if ok, _ := n.Ready(); ok {
+		t.Fatal("slow readings lifted the refusal")
+	}
+	cs.rtt.Store(0)
+	waitFor(t, 5*time.Second, "serving again", func() bool { ok, _ := n.Ready(); return ok })
 }
 
 // Two nodes on one database with the notice gossip (cluster.notify): a write on one runs the other's change hooks

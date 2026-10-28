@@ -326,15 +326,20 @@ func (s *Store) purge(ctx context.Context, tombstonesBefore, expiredBefore time.
 	}
 	exp := expiredBefore.UnixMicro()
 	total := 0
+	var errs []error
 	for _, k := range model.Kinds() {
-		t := s.tables[k]
-		n, err := s.purgeKind(ctx, t, tombVersion, exp)
+		n, err := s.purgeKind(ctx, s.tables[k], tombVersion, exp)
 		total += n
 		if err != nil {
-			return total, err
+			// One table that keeps timing out must not leave every later kind (audit, sessions, ephemeral records)
+			// growing without bound: go on, and report each failure with the kind it was.
+			errs = append(errs, fmt.Errorf("purge %s: %w", k, err))
+			if ctx.Err() != nil { // nothing later can succeed
+				break
+			}
 		}
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 func (s *Store) purgeKind(ctx context.Context, t *table, tombVersion, exp int64) (int, error) {

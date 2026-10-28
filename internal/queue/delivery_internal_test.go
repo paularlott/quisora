@@ -220,3 +220,48 @@ func TestFailedResealKeepsItemOpenableByPreviousKey(t *testing.T) {
 		}
 	})
 }
+
+// An item kept past its discard horizon (here: waiting for a worker for longer than its retries last) is dropped
+// undelivered and told to Dropped, as is one that cannot be read; an ended item whose end is only waiting to be
+// recorded is not.
+func TestDroppedItemsAreCounted(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		st, _ := b.open(t)
+		sk := &sink{}
+		o := options(t, st, sk.deliver)
+		var dropped atomic.Int32
+		o.Dropped = func() { dropped.Add(1) }
+		q := newQueue(o)
+		ctx := context.Background()
+		addAll(t, q, "late")
+		q.mu.Lock()
+		for _, e := range q.waiting {
+			e.next, e.expires = time.Now(), time.Now().Add(-time.Second)
+		}
+		q.mu.Unlock()
+		if pass(q, ctx); dropped.Load() != 1 || sk.n.Load() != 0 || q.Queued() != 0 {
+			t.Fatalf("past its horizon: dropped %d, delivered %d, queued %d", dropped.Load(), sk.n.Load(), q.Queued())
+		}
+
+		o.Node = model.NewID() // (the first item is still stored, under the first node)
+		it := &model.QueueItem{Meta: model.Meta{ID: model.NewID()}, Queue: o.Name, Node: o.Node,
+			Next: time.Now(), Sealed: "garbage", Expires: time.Now().Add(time.Hour)}
+		if err := store.NewTable[model.QueueItem](st).Create(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+		q = newQueue(o)
+		if pass(q, ctx); dropped.Load() != 2 {
+			t.Fatalf("unreadable: dropped %d", dropped.Load())
+		}
+
+		addAll(t, q, "done")
+		q.mu.Lock()
+		for _, e := range q.waiting {
+			e.next, e.expires, e.ended = time.Now(), time.Now().Add(-time.Second), true
+		}
+		q.mu.Unlock()
+		if pass(q, ctx); dropped.Load() != 2 || sk.n.Load() != 0 {
+			t.Fatalf("ended: dropped %d, delivered %d", dropped.Load(), sk.n.Load())
+		}
+	})
+}

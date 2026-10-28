@@ -51,8 +51,16 @@ func (n *Node) clockReading(peer string, sent, got time.Time, peerNow int64) {
 }
 
 // clockOffset returns how far the cluster's clock is ahead of this node's: the median of this node's own (0) and the
-// fresh readings of its peers; false until fresh readings from at least quorum-1 peers make a quorum with it.
+// fresh readings of its peers; false until fresh readings from at least quorum-1 peers make a quorum with it. Without
+// gossip, nodes sharing a database have no peers to ask: it is how far the database server's clock is ahead (false
+// until the first reading).
 func (n *Node) clockOffset() (time.Duration, bool) {
+	if n.lease != nil { // a shared database: its server's clock is the one measured against
+		if off := n.lease.skew.Load(); off != nil {
+			return *off, true
+		}
+		return 0, false
+	}
 	n.clocks.mu.Lock()
 	defer n.clocks.mu.Unlock()
 	offs := []time.Duration{0} // this node's own clock
@@ -71,12 +79,17 @@ func (n *Node) clockOffset() (time.Duration, bool) {
 	return (offs[len(offs)/2-1] + offs[len(offs)/2]) / 2, true
 }
 
-// checkClock refuses to serve while this node's clock is off from the cluster's, and serves again once it is close.
+// checkClock judges this node's clock against the other nodes' (gossip).
 func (n *Node) checkClock() {
-	off, ok := n.clockOffset()
-	if !ok {
-		return
+	if off, ok := n.clockOffset(); ok {
+		n.judgeClock(off, "the other nodes'")
 	}
+}
+
+// judgeClock refuses to serve while this node's clock is off by more than clockLimit from the one it is measured
+// against (the other nodes' median, or a shared database's server: lease.go), and serves again once it is within
+// clockOK. off is how far that clock is ahead of this node's.
+func (n *Node) judgeClock(off time.Duration, against string) {
 	abs := max(off, -off)
 	switch {
 	case abs > clockLimit:
@@ -84,15 +97,15 @@ func (n *Node) checkClock() {
 		if off < 0 {
 			dir = "ahead of"
 		}
-		why := fmt.Sprintf("this node's clock is %s %s the other nodes': fix its time synchronisation (NTP)",
-			abs.Round(time.Second), dir)
+		why := fmt.Sprintf("this node's clock is %s %s %s: fix its time synchronisation (NTP)",
+			abs.Round(time.Second), dir, against)
 		if n.clockOff.Swap(&why) == nil {
 			n.log.Error("refusing to serve", "reason", why)
 			n.rebuild()
 		}
 	case abs < clockOK:
 		if n.clockOff.Swap(nil) != nil {
-			n.log.Info("this node's clock agrees with the other nodes' again", "offset", off.Round(time.Millisecond))
+			n.log.Info("this node's clock agrees with "+against+" again", "offset", off.Round(time.Millisecond))
 			n.rebuild()
 		}
 	}

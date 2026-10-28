@@ -55,6 +55,7 @@ type FakeOIDC struct {
 	RotateRefresh bool
 	RefreshFail   int
 	RefreshCalls  int
+	RefreshDelay  time.Duration   // how long a refresh request waits before it is answered (a slow provider)
 	refresh       map[string]bool // live refresh tokens
 	refreshSeq    int
 }
@@ -114,8 +115,16 @@ func NewFakeOIDC(t *testing.T) *FakeOIDC {
 		}
 		if r.Form.Get("grant_type") == "refresh_token" {
 			f.Mu.Lock()
-			defer f.Mu.Unlock()
 			f.RefreshCalls++
+			delay := f.RefreshDelay
+			f.Mu.Unlock()
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+			f.Mu.Lock()
+			defer f.Mu.Unlock()
 			if f.RefreshFail != 0 {
 				http.Error(w, `{"error":"temporarily_unavailable"}`, f.RefreshFail)
 				return

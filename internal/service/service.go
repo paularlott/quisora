@@ -176,6 +176,7 @@ type Service struct {
 	Replays    *store.Table[model.Replay, *model.Replay]
 
 	members confirmedMembers // memberships a fresh read decided (membersAt)
+	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
 
 	orgCache      *ttlcache.Cache[*model.Org] // organizations by id and by name (Org, OrgByRef)
 	bg            sync.WaitGroup              // Background work

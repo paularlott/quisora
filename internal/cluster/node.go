@@ -660,6 +660,7 @@ func (n *Node) Start(ctx context.Context) error {
 					n.log.WithError(err).Warn("housekeeping lease")
 				}
 				n.checkNoGossip(ctx)
+				n.checkDBClock(ctx)
 				n.wg.Add(1)
 				go n.runLease()
 				if n.ngc != nil {
@@ -1347,7 +1348,8 @@ type Status struct {
 	ClockSkewed int64 `json:"clock_skewed"`
 	SkewRefused int64 `json:"skew_refused"`
 	// ClockOffsetMs is how far the other nodes' clocks are ahead of this one's (the median of their latest readings,
-	// milliseconds; negative: behind). Omitted until a peer has answered.
+	// milliseconds; negative: behind); on a shared database, the database server's clock. Omitted until a peer or the
+	// server has answered.
 	ClockOffsetMs *int64 `json:"clock_offset_ms,omitempty"`
 	// ClusterKeys are this node's gossip keys (ids), the one that encrypts first (a rotation shows more than one).
 	ClusterKeys []string `json:"cluster_keys,omitempty"`
@@ -1514,6 +1516,11 @@ func (n *Node) RunHousekeeping(ctx context.Context, interval time.Duration, fn f
 		}
 	}
 }
+
+// Tenure reports whether this node still holds the tenure ctx (from RunHousekeeping) started under: nil, or an error
+// once housekeeping has passed to another node. Work that is not a store write (a request to another system) asks it
+// first, as only writes are fenced.
+func (n *Node) Tenure(ctx context.Context) error { return n.fenced(ctx) }
 
 // RunPurge purges tombstones and expired records every interval until ctx is done (purgeOnce). Run it in a goroutine.
 func (n *Node) RunPurge(ctx context.Context, interval time.Duration) {

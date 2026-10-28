@@ -95,7 +95,9 @@ func TestRotationStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("resealing_then_unopenable", func(t *testing.T) {
+	t.Run("resealing_then_complete", func(t *testing.T) {
+		// Until the leader's first walk over every stored record has ended nothing is known of them: resealing, with
+		// no count; then complete.
 		e := newEnv(t)
 		oldKey, newKey := secure.RandomBytes(32), secure.RandomBytes(32)
 		old, _ := secure.NewSealer(oldKey)
@@ -111,15 +113,45 @@ func TestRotationStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		st, err := e.svc.RotationStatus(e.ctx)
-		if err != nil || st.State != "resealing" || st.Stale == 0 || st.Removable {
-			t.Fatalf("resealing: %+v %v", st, err)
+		if err != nil || st.State != "resealing" || st.Checked != nil || st.Removable {
+			t.Fatalf("before the first pass: %+v %v", st, err)
 		}
-		// an unopenable secret outranks the rest
-		u, _ = e.svc.Users.Get(e.ctx, u.ID)
+		if r, err := e.svc.ResealSecrets(e.ctx, time.Minute); err != nil || r.Resealed != 1 || !r.Done() {
+			t.Fatalf("the pass: %+v %v", r, err)
+		}
+		if st, err = e.svc.RotationStatus(e.ctx); err != nil || st.State != "complete" || !st.Removable || st.Checked == nil ||
+			st.Resealed != 1 || st.Stale != 0 {
+			t.Fatalf("after it: %+v %v", st, err)
+		}
+	})
+
+	t.Run("unopenable", func(t *testing.T) {
+		// A secret no configured key opens outranks the rest, until it is gone.
+		e := newEnv(t)
+		ring, _ := secure.NewKeyring(secure.RandomBytes(32), secure.RandomBytes(32))
+		e.svc.Sealer.Replace(ring)
+		u := e.user(e.primary.ID, "alan", model.RoleUser)
 		u.TOTPSecret = mustSealer(t).SealFor(service.TOTPBinding(u.ID), []byte("x"))
-		_ = e.svc.Users.Update(e.ctx, u)
-		if st, _ = e.svc.RotationStatus(e.ctx); st.State != "unopenable" || st.Unopenable != 1 {
-			t.Fatalf("unopenable: %+v", st)
+		if err := e.svc.Users.Update(e.ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := e.svc.ResealSecrets(e.ctx, time.Minute); err != nil || r.Done() || r.Unopenable != 1 {
+			t.Fatalf("the pass: %+v %v", r, err)
+		}
+		if st, err := e.svc.RotationStatus(e.ctx); err != nil || st.State != "unopenable" || st.Unopenable != 1 || st.Removable {
+			t.Fatalf("unopenable: %+v %v", st, err)
+		}
+		u, _ = e.svc.Users.Get(e.ctx, u.ID)
+		u.TOTPSecret = ""
+		if err := e.svc.Users.Update(e.ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		// the next pass walks every record again (a finished walk that left something is not the end)
+		if r, err := e.svc.ResealSecrets(e.ctx, time.Minute); err != nil || !r.Done() {
+			t.Fatalf("the pass after it was removed: %+v %v", r, err)
+		}
+		if st, err := e.svc.RotationStatus(e.ctx); err != nil || st.State != "complete" || st.Unopenable != 0 {
+			t.Fatalf("after it was removed: %+v %v", st, err)
 		}
 	})
 
@@ -147,6 +179,9 @@ func TestRotationStatus(t *testing.T) {
 		}
 		stale = 0
 		if err := e.svc.ReportMasterKey(e.ctx, "node-a"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.ResealSecrets(e.ctx, time.Minute); err != nil {
 			t.Fatal(err)
 		}
 		if st, err = e.svc.RotationStatus(e.ctx); err != nil || !st.Removable {

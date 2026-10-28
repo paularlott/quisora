@@ -46,15 +46,17 @@ func (a *App) ReloadMasterKeys(ctx context.Context, master string, previous []st
 		return fmt.Errorf("the new keys do not include the key in use (%s); during a rotation it stays in "+
 			"server.previous_master_keys until the rotation is complete", cur.ActiveKeyID())
 	}
-	// Dropping a key while anything stored is still sealed with it (or bound to it) would leave that unopenable.
+	// Dropping a key while anything stored is still sealed with it (or bound to it) would leave that unopenable. That
+	// is known only from a walk over every stored record that ended with every node sealing with the active key (the
+	// leader's report, RotationStatus): without one, or with a secret it left, the key stays.
 	if gone := dropped(cur.KeyIDs(), next.KeyIDs()); len(gone) > 0 {
 		st, err := a.Svc.RotationStatus(ctx)
 		if err != nil {
 			return fmt.Errorf("checking what still needs %v: %w", gone, err)
 		}
-		if st.Stale > 0 {
-			return fmt.Errorf("%d secrets still need %v (state %s): keep it in server.previous_master_keys until "+
-				"GET /api/master-key says complete", st.Stale, gone, st.State)
+		if !st.NodesAgree || st.Checked == nil || st.Stale > 0 {
+			return fmt.Errorf("secrets may still need %v (state %s): keep it in server.previous_master_keys until "+
+				"GET /api/master-key says complete", gone, st.State)
 		}
 	}
 	if err := checkSharedKey(ctx, a.Store, next, a.Log, !c.Replicate() && c.SharedStorage()); err != nil {

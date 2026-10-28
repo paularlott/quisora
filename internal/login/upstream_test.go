@@ -475,26 +475,26 @@ func TestUpstreamLeaverDetection(t *testing.T) {
 	}
 
 	// Nothing is due within the interval.
-	if r, err := u.Mod.Upstream.CheckSessions(ctx, time.Hour); err != nil || r.Checked != 0 {
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, time.Hour, time.Minute); err != nil || r.Checked != 0 {
 		t.Fatalf("check within the interval: %+v %v", r, err)
 	}
 	// Accepted, and rotated: the new token replaces the old one.
 	before := u.oidc.LiveRefresh()
-	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
 		t.Fatalf("first check: %+v %v", r, err)
 	}
 	after := u.oidc.LiveRefresh()
 	if len(before) != 1 || len(after) != 1 || before[0] == after[0] {
 		t.Fatalf("rotation: %v -> %v", before, after)
 	}
-	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Checked != 1 || r.Ended != 0 {
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
 		t.Fatalf("check with the rotated token: %+v %v", r, err)
 	}
 	// A transient failure ends nothing.
 	u.oidc.Mu.Lock()
 	u.oidc.RefreshFail = 503
 	u.oidc.Mu.Unlock()
-	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Failed != 1 || r.Ended != 0 {
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0, time.Minute); err != nil || r.Failed != 1 || r.Ended != 0 {
 		t.Fatalf("transient failure: %+v %v", r, err)
 	}
 	if _, err := u.Svc.Sessions.Get(ctx, sid); err != nil {
@@ -506,7 +506,7 @@ func TestUpstreamLeaverDetection(t *testing.T) {
 
 	// The account is gone at the provider: its sessions and grants end here.
 	u.oidc.RevokeRefresh()
-	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0); err != nil || r.Ended != 1 {
+	if r, err := u.Mod.Upstream.CheckSessions(ctx, 0, time.Minute); err != nil || r.Ended != 1 {
 		t.Fatalf("leaver: %+v %v", r, err)
 	}
 	if _, err := u.Svc.Sessions.Get(ctx, sid); err == nil {
@@ -527,7 +527,7 @@ func TestUpstreamLeaverDetection(t *testing.T) {
 	// With no session through the provider, nothing is replayed.
 	refreshCalls := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.RefreshCalls }
 	calls := refreshCalls()
-	if r, _ := u.Mod.Upstream.CheckSessions(ctx, 0); r.Checked != 0 || refreshCalls() != calls {
+	if r, _ := u.Mod.Upstream.CheckSessions(ctx, 0, time.Minute); r.Checked != 0 || refreshCalls() != calls {
 		t.Fatalf("replayed without a session: %+v", r)
 	}
 }

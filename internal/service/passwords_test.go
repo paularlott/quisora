@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
@@ -153,7 +154,7 @@ func TestResealSecrets(t *testing.T) {
 
 		// rotate: key B active, key A previous; re-seal; then key A is removed
 		e.svc.Sealer.Replace(ring(keyB, keyA))
-		res, err := e.svc.ResealSecrets(e.ctx, 1000)
+		res, err := e.svc.ResealSecrets(e.ctx, time.Minute)
 		if err != nil || !res.Done() || res.Resealed != 2 {
 			t.Fatalf("re-seal after the rotation: %+v %v", res, err)
 		}
@@ -184,15 +185,15 @@ func TestResealSecrets(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.svc.Sealer.Replace(ring(newKey, oldKey))
-		// a dry run (status) only counts
+		// the status only reports: it has not found anything yet, and it re-seals nothing
 		st, _ := e.svc.RotationStatus(e.ctx)
-		if st.Stale < 1 {
-			t.Fatalf("stale not counted: %+v", st)
+		if st.State != "resealing" || st.Checked != nil {
+			t.Fatalf("status before the first pass: %+v", st)
 		}
 		if got, _ := e.svc.Identities.Get(e.ctx, id.ID); got.Refresh != id.Refresh {
 			t.Error("status rewrote a secret")
 		}
-		if r, err := e.svc.ResealSecrets(e.ctx, 100); err != nil || r.Resealed < 1 || !r.Done() {
+		if r, err := e.svc.ResealSecrets(e.ctx, time.Minute); err != nil || r.Resealed < 1 || !r.Done() {
 			t.Fatalf("reseal %+v %v", r, err)
 		}
 		only, _ := secure.NewSealer(newKey)

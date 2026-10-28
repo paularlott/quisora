@@ -776,6 +776,15 @@ expires, on each node by its own clock, and the age of a tombstone for its purge
   the node refuses to serve (not ready, no writes, no tokens) and logs why; it serves again once it is within 2.5 s. A
   minority of bad clocks is outvoted: in three nodes, one with a bad clock stops only itself. `/readyz` reports the offset
   (`clock_offset_ms`).
+- **Nodes sharing one database without gossip** have no peers to ask, and stamp expiries with their own clocks (a 60 s PAR
+  `request_uri` or code, short-lived state, the lease), so one with a clock off would see them expire early or late
+  depending on which node the load balancer picks. On every lease tick (10 s) such a node reads the database server's time
+  (`sqlstore.Store.ServerTime`: PostgreSQL `clock_timestamp()`, MySQL and MariaDB `NOW(6)`, both as microseconds since the
+  epoch so no time zone enters), takes the offset against the midpoint of the request, and ignores a reading whose round
+  trip took longer than a second. It then applies the same rule as a gossip node (`judgeClock`): more than 5 s off, it is
+  not ready and logs why; it is ready again within 2.5 s; `/readyz` reports `clock_offset_ms`. The database server's clock
+  is the reference, so its own time synchronisation matters too. A node on its own file (SQLite, BadgerDB) has one clock
+  and reads nothing.
 - **A node whose clock is off owns no partition** (`partition.Manager.SetEligible(false)`): it steps down from every
   partition it owns at once (the others take them over without waiting for a timeout) and takes none over, so it never
   decides whether a record is live, or how long an owner has been silent, by a clock the cluster does not keep. It still

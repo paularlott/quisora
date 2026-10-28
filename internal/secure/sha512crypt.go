@@ -15,8 +15,12 @@ const (
 	sha512CryptMinRounds     = 1000    // the specification treats fewer as this many
 	sha512CryptMaxRounds     = 1000000 // more is refused: an imported hash must not tie up the hashing workers
 	sha512CryptMaxSalt       = 16
-	sha512CryptHashLen       = 86
-	sha512CryptAlphabet      = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	// sha512CryptMaxPassword is the longest password checked against a SHA-512 crypt hash. A round hashes the password
+	// up to three times, so 1 KiB against 1,000,000 rounds holds a hashing worker for seconds (twice, with the normalized
+	// retry); no real password is this long, so a longer one is a miss without hashing, as bcrypt's 72 bytes are.
+	sha512CryptMaxPassword = 256
+	sha512CryptHashLen     = 86
+	sha512CryptAlphabet    = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 
 // isSHA512Crypt reports whether encoded is a SHA-512 crypt hash: its own prefix says so, so a password is only ever

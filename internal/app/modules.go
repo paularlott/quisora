@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/quisora/internal/scim"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/upstream"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -61,17 +62,17 @@ func modules(ctx context.Context, a *App) []web.Module {
 	// Key rotation runs on one node (the leader), every minute: EnsureKeys is a no-op unless a key is due or missing
 	// (a new cluster's first key is made here, as no node makes keys before it is writable).
 	// Users past their end date are disabled (sessions end, applications are told) within a minute.
-	// Sessions signed in through an upstream provider are checked with the provider's refresh token every
-	// session.upstream_check_minutes (leaver detection); the identities due are looked for every few minutes.
 	// Every node reports the master key it seals with (renewed well within service.MasterKeyReportTTL).
 	a.background(func() { a.reportMasterKey(ctx) })
 
 	// Secrets sealed with anything but the active master key (a rotation, or values from before sealed values named
-	// their key) are re-sealed by the leader in passes, but only once every live node seals with the leader's key: a
-	// rotation rolled out node by node is finished first. Passes run every minute while there is work and every ten
-	// otherwise, for as long as previous keys are configured (a node could still seal with one); without them, until
-	// one finds nothing left. Once nothing needs the previous keys, the leader says every hour that they must be removed.
-	var lastLeaverRun, lastReseal, lastRemind, lastSelfReg time.Time
+	// their key) are re-sealed by the leader in passes of a third of a tick at most (each goes on where the last
+	// stopped), but only once every live node seals with the leader's key: a rotation rolled out node by node is
+	// finished first. Passes run every minute while there is work and every ten otherwise, for as long as previous
+	// keys are configured (a node could still seal with one); without them, until one finds nothing left. A pass
+	// that has nothing left to do reads nothing: no record is read again until the keys change. Once nothing needs
+	// the previous keys, the leader says every hour that they must be removed.
+	var lastReseal, lastRemind, lastSelfReg time.Time
 	var resealEvery time.Duration
 	var resealed bool
 	var lastResult service.ResealResult
@@ -99,19 +100,20 @@ func modules(ctx context.Context, a *App) []web.Module {
 							"other_nodes", others)
 					}
 					resealed = false
+					hk.ok("master key: restarting the re-seal", a.Svc.ResealRestart(ctx))
 				default:
 					lastOthers = ""
-					r, err := a.Svc.ResealSecrets(ctx, 1000)
+					r, err := a.Svc.ResealSecrets(ctx, every/3)
 					if !hk.ok("master key: re-sealing secrets", err) {
 						break
 					}
-					if r.Resealed > 0 || r.Pending > 0 {
+					if r.Resealed > 0 {
 						a.Log.Info("master key: secrets re-sealed with the active key", "key", a.Svc.Sealer.ActiveKeyID(),
-							"resealed", r.Resealed, "left", r.Pending)
+							"resealed", r.Resealed, "resealed_total", r.Total)
 					}
-					if r.Failed > 0 && r.Failed != lastResult.Failed {
+					if r.Unopenable > 0 && r.Unopenable != lastResult.Unopenable {
 						a.Log.Error("master key: secrets that no configured master key opens (sealed with a key that is "+
-							"not in server.previous_master_keys, or damaged)", "count", r.Failed)
+							"not in server.previous_master_keys, or damaged)", "count", r.Unopenable)
 					}
 					if r.Resealed == 0 {
 						resealEvery = 10 * every
@@ -152,14 +154,12 @@ func modules(ctx context.Context, a *App) []web.Module {
 					a.Log.Info("removed unused self-registered applications", "count", n)
 				}
 			}
-			if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 && time.Since(lastLeaverRun) >= min(every, 5*time.Minute) {
-				lastLeaverRun = time.Now()
-				if r, err := lm.Upstream.CheckSessions(ctx, every); hk.ok("upstream session check", err) && (r.Ended > 0 || r.Failed > 0) {
-					a.Log.Info("upstream session check", "checked", r.Checked, "ended", r.Ended, "failed", r.Failed)
-				}
-			}
 		})
 	})
+
+	if every := time.Duration(a.Cfg.Session.UpstreamCheckMinutes) * time.Minute; every > 0 {
+		a.background(func() { a.runLeaverChecks(ctx, lm.Upstream, every) })
+	}
 
 	hub := events.NewHub()
 	hub.OrgOfUser = func(id string) string {
@@ -229,6 +229,36 @@ func (h *housekeepingLog) ok(task string, err error) bool {
 
 // housekeepingEvery is how often the housekeeping leader runs (tests shorten it).
 var housekeepingEvery = time.Minute
+
+// leaverCheckBudget is the longest one run of the leaver check works before it hands over to the next (it resumes
+// where this one stopped), and so the longest a backlog goes unreported. Runs follow one another as long as there is
+// work (a run starts when the previous ended, once the interval since its start has passed).
+const leaverCheckBudget = 5 * time.Minute
+
+// runLeaverChecks is the leaver detection (upstream.Service.CheckSessions): sessions signed in through an upstream
+// provider are checked with the provider's refresh token every `every` (session.upstream_check_minutes). It is a loop
+// of its own on the housekeeping leader, not a task of the housekeeping pass: it makes one HTTP request per identity
+// to servers that may be slow, which would hold up the tasks that must run on time (end dates, key rotation) for as long
+// as it takes. A run is a time-bounded slice, with every request made only while this node still leads.
+func (a *App) runLeaverChecks(ctx context.Context, up *upstream.Service, every time.Duration) {
+	up.Tenure = a.Node.Tenure
+	budget := min(every, leaverCheckBudget)
+	hk := housekeepingLog{log: a.Log}
+	a.Node.RunHousekeeping(ctx, budget, func(ctx context.Context) {
+		r, err := up.CheckSessions(ctx, every, budget)
+		if !hk.ok("upstream session check", err) {
+			return
+		}
+		if r.Ended > 0 || r.Failed > 0 {
+			a.Log.Info("upstream session check", "checked", r.Checked, "ended", r.Ended, "failed", r.Failed)
+		}
+		if r.Unfinished {
+			a.Log.Warn("upstream session check: more identities than one run's time allows; the next run resumes after "+
+				"where this one stopped (providers slow to answer, or very many sessions through providers)",
+				"budget", budget, "checked", r.Checked, "reached", r.Reached)
+		}
+	})
+}
 
 // reportMasterKey reports this node's master key (reportKey) every few minutes, retrying every second while the store
 // refuses.

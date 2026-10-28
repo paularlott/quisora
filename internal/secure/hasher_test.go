@@ -208,3 +208,23 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("timed out")
 }
+
+// An imported argon2id hash may name up to 64 MiB (PHP's default, libsodium's interactive limit): more is refused at
+// import and at sign-in before any hashing, so a first sign-in wave cannot hold workers x 256 MiB.
+func TestArgon2ImportMemoryCap(t *testing.T) {
+	salt := base64.RawStdEncoding.EncodeToString(RandomBytes(16))
+	sum := base64.RawStdEncoding.EncodeToString(RandomBytes(32))
+	mk := func(m int) string { return fmt.Sprintf("$argon2id$v=19$m=%d,t=2,p=1$%s$%s", m, salt, sum) }
+	if kind, err := CheckImport(mk(argonMaxMemory)); kind != "argon2id" || err != nil {
+		t.Errorf("64 MiB: %q %v", kind, err)
+	}
+	h := NewHasher(1)
+	for _, m := range []int{argonMaxMemory + 1, 256 * 1024} {
+		if _, err := CheckImport(mk(m)); !errors.Is(err, ErrHashParams) {
+			t.Errorf("m=%d import: %v", m, err)
+		}
+		if ok, _, err := h.Verify(context.Background(), "", "pw", mk(m)); ok || !errors.Is(err, ErrHashParams) {
+			t.Errorf("m=%d verify: %v %v", m, ok, err)
+		}
+	}
+}

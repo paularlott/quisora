@@ -25,21 +25,25 @@ const (
 
 // ReportMasterKey records node nodeID's master keys (this service's keyring), for MasterKeyReportTTL.
 func (s *Service) ReportMasterKey(ctx context.Context, nodeID string) error {
-	id := masterKeyReportPrefix + nodeID
+	// "<active>,<previous>...|<queued items needing a previous key>|<queued items needing a key not configured>"
+	// (QueuesStale)
+	keys := strings.Join(s.Sealer.KeyIDs(), ",")
+	if s.QueuesStale != nil {
+		stale, lost := s.QueuesStale()
+		keys += "|" + strconv.Itoa(stale) + "|" + strconv.Itoa(lost)
+	}
+	return s.putLock(ctx, masterKeyReportPrefix+nodeID, keys, time.Now().Add(MasterKeyReportTTL))
+}
+
+// putLock sets the lock record id (created if it is not there) to holder, until until.
+func (s *Service) putLock(ctx context.Context, id, holder string, until time.Time) error {
 	for range 5 {
-		// "<active>,<previous>...|<queued items needing a previous key>|<queued items needing a key not configured>"
-		// (QueuesStale)
-		until, keys := time.Now().Add(MasterKeyReportTTL), strings.Join(s.Sealer.KeyIDs(), ",")
-		if s.QueuesStale != nil {
-			stale, lost := s.QueuesStale()
-			keys += "|" + strconv.Itoa(stale) + "|" + strconv.Itoa(lost)
-		}
 		l, err := s.Locks.Get(ctx, id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			err = s.Locks.Create(ctx, &model.Lock{Meta: model.Meta{ID: id}, Holder: keys, Until: until})
+			err = s.Locks.Create(ctx, &model.Lock{Meta: model.Meta{ID: id}, Holder: holder, Until: until})
 		case err == nil:
-			l.Holder, l.Until = keys, until
+			l.Holder, l.Until = holder, until
 			err = s.Locks.Update(ctx, l)
 		}
 		if err == nil || (!errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound)) {
@@ -126,10 +130,15 @@ type MasterKeyStatus struct {
 	// Nodes are the keys every live node reported, by node id; NodesAgree says they all seal with Active.
 	Nodes      map[string]NodeKeys `json:"nodes"`
 	NodesAgree bool                `json:"nodes_agree"`
-	// Stale counts stored secrets sealed with a previous key (the housekeeping leader re-seals them); Unopenable
-	// those no configured key opens.
-	Stale      int `json:"stale_secrets"`
-	Unopenable int `json:"unopenable_secrets"`
+	// Resealed counts the stored secrets the housekeeping leader has re-sealed since it began with the active key.
+	// Checked is when it last finished a walk over every stored record (null: it has not yet); Stale and Unopenable
+	// are what that walk found: secrets still sealed with a previous key (they changed while it ran, and the next
+	// walk re-seals them), and secrets no configured key opens. Nothing here reads a stored secret: it is the
+	// leader's last report.
+	Resealed   int        `json:"resealed_secrets"`
+	Checked    *time.Time `json:"checked_at"`
+	Stale      int        `json:"stale_secrets"`
+	Unopenable int        `json:"unopenable_secrets"`
 	// QueueStale counts the nodes' queued items still sealed with a previous key (NodeKeys.QueueStale);
 	// QueueLost those sealed with a key no longer configured, which only a warning in Detail mentions
 	// (NodeKeys.QueueLost).
@@ -143,7 +152,8 @@ type MasterKeyStatus struct {
 	Detail    string `json:"detail"`
 }
 
-// RotationStatus reports where a master key rotation stands. It reads every sealed value (without changing any).
+// RotationStatus reports where a master key rotation stands. It reads the nodes' reports and the leader's progress
+// (ResealProgress), both small records, never the stored secrets: it is cheap enough to poll.
 func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) {
 	ids := s.Sealer.KeyIDs()
 	st := &MasterKeyStatus{Active: ids[0], Previous: ids[1:]}
@@ -167,11 +177,14 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 			lost = append(lost, node)
 		}
 	}
-	r, err := s.resealSecrets(ctx, 0, true)
+	prog, err := s.resealProgress(ctx)
 	if err != nil {
 		return nil, err
 	}
-	st.Stale, st.Unopenable = r.Pending, r.Failed
+	st.Resealed, st.Stale, st.Unopenable = prog.Total, prog.Stale, prog.Unopenable
+	if !prog.Checked.IsZero() {
+		st.Checked = &prog.Checked
+	}
 	switch {
 	case !st.NodesAgree:
 		st.State = "waiting_for_nodes"
@@ -183,8 +196,12 @@ func (s *Service) RotationStatus(ctx context.Context) (*MasterKeyStatus, error) 
 			"server.previous_master_keys."
 	case st.Stale > 0:
 		st.State = "resealing"
-		st.Detail = itoa(st.Stale) + " stored secrets are still sealed with a previous key; the housekeeping leader " +
-			"re-seals them within minutes."
+		st.Detail = itoa(st.Stale) + " stored secrets were still sealed with a previous key when the housekeeping leader " +
+			"last went through them (" + st.Checked.Format(time.RFC3339) + "); it re-seals them in its next pass."
+	case st.Checked == nil && len(st.Previous) > 0:
+		st.State = "resealing"
+		st.Detail = "The housekeeping leader is re-sealing the stored secrets with " + st.Active + " and has not yet been " +
+			"through all of them (" + itoa(st.Resealed) + " re-sealed so far; it logs each pass)."
 	case st.QueueStale > 0:
 		st.State = "resealing"
 		st.Detail = itoa(st.QueueStale) + " queued messages on " + strings.Join(queued, ", ") + " are still sealed " +

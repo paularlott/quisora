@@ -1164,8 +1164,10 @@ func (s *SignIn) Index() Index {
 
 // Lock is a lease record, replicated with a compare-and-swap its owner decides: Holder holds it until Until, and a
 // holder that stops renewing it stops counting. Each node's report of its master keys is one (service.ReportMasterKey):
-// Holder is the report, Until how long it counts. An organization's deletion guard is another (service.DeleteOrg): its
-// id is the organization's, so it is in the organization's partition, and Holder says whether a deletion holds it.
+// Holder is the report, Until how long it counts. The housekeeping leader's report of its master key re-seal
+// (service.ResealProgress) is another, with an Until that never comes. An organization's deletion guard is a third
+// (service.DeleteOrg): its id is the organization's, so it is in the organization's partition, and Holder says whether
+// a deletion holds it.
 type Lock struct {
 	Meta
 	Holder string    `msgpack:"h" json:"holder"`

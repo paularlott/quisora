@@ -75,3 +75,24 @@ func TestCorruptIndexEntryFailsPurge(t *testing.T) {
 		}
 	}
 }
+
+// A tombstone index that fails Purge does not stop the expired records from being purged, and both failures are
+// reported.
+func TestPurgeGoesOnPastAFailingIndex(t *testing.T) {
+	ctx := context.Background()
+	s := openBadger(t, BadgerOptions{})
+	if err := s.Put(ctx, record(model.KindLink, "old", time.Now().Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	err := s.eng.Update(ctx, func(tx txn) error { tx.SetAdd("tomb", "0000/notenough", 0); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.Purge(ctx, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	if err == nil || !strings.Contains(err.Error(), "corrupt tomb index entry") || n != 1 {
+		t.Fatalf("purge: %d %v", n, err)
+	}
+	if v, err := s.eng.Get(ctx, recKey(model.KindLink, "old")); err != nil || v != nil {
+		t.Fatalf("the expired record was not purged: %v %v", v, err)
+	}
+}
