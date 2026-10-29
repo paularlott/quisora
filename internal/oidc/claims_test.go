@@ -163,16 +163,16 @@ func TestIDTokenOrgClaimsNeedOrgScope(t *testing.T) {
 	cl, secret := h.newClient(nil)
 	r, _ := h.login(cl, secret, nil)
 	id := claimsOf(t, r.str("id_token"))
-	for _, k := range []string{"org", "org_name", "tenant", "tenant_name", "role"} {
+	for _, k := range []string{"org", "org_name", "tenant", "tenant_name", "org_role"} {
 		if _, ok := id[k]; ok {
 			t.Errorf("id token without the org scope has %q", k)
 		}
 	}
-	if at := claimsOf(t, r.str("access_token")); at["org"] == nil || at["role"] == nil {
+	if at := claimsOf(t, r.str("access_token")); at["org"] == nil || at["org_role"] == nil {
 		t.Errorf("access token lost the org claims: %v", at)
 	}
 	r, _ = h.login(cl, secret, url.Values{"scope": {"openid profile email org"}})
-	if id := claimsOf(t, r.str("id_token")); id["org"] == nil || id["tenant_name"] == nil || id["role"] == nil {
+	if id := claimsOf(t, r.str("id_token")); id["org"] == nil || id["tenant_name"] == nil || id["org_role"] == nil {
 		t.Errorf("id token with the org scope: %v", id)
 	}
 }
@@ -220,12 +220,13 @@ func TestTagsClaim(t *testing.T) {
 	if got := tagsClaim(access()); !slices.Equal(got, want) {
 		t.Fatalf("access token tags %v, want %v", got, want)
 	}
-	// a new login: without the org scope the ID token and userinfo leave them out; with it they carry them
-	r, _ = h.login(cl, secret, scope)
-	if got := tagsClaim(claimsOf(t, r.str("id_token"))); len(got) != 0 {
-		t.Fatalf("id token tags without the org scope: %v", got)
-	}
+	// a new login: without the roles scope (the org scope alone) the ID token and userinfo leave them out; with it
+	// they carry them
 	r, _ = h.login(cl, secret, url.Values{"scope": {scope.Get("scope") + " org"}})
+	if got := tagsClaim(claimsOf(t, r.str("id_token"))); len(got) != 0 {
+		t.Fatalf("id token tags without the roles scope: %v", got)
+	}
+	r, _ = h.login(cl, secret, url.Values{"scope": {scope.Get("scope") + " roles"}})
 	if got := tagsClaim(claimsOf(t, r.str("id_token"))); !slices.Equal(got, want) {
 		t.Fatalf("id token tags %v", got)
 	}

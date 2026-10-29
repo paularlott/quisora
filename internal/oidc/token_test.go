@@ -41,7 +41,7 @@ func TestCodeFlowEndToEnd(t *testing.T) {
 	aud, _ := ac["aud"].([]any)
 	if ac["iss"] != h.issuer() || ac["sub"] != h.user.ID || ac["client_id"] != cl.ID || len(aud) != 2 || aud[0] != cl.ID ||
 		aud[1] != "https://api.example/v1" || ac["org"] != h.env.Primary.ID || ac["org_name"] != "primary" ||
-		ac["role"] != "user" || ac["jti"] == "" || ac["sid"] == "" || ac["acr"] != acrBasic {
+		ac["org_role"] != "user" || ac["jti"] == "" || ac["sid"] == "" || ac["acr"] != acrBasic {
 		t.Fatalf("access claims %v", ac)
 	}
 	if g, _ := ac["groups"].([]any); len(g) != 1 || g[0] != "devs" {
@@ -73,7 +73,7 @@ func TestCodeFlowEndToEnd(t *testing.T) {
 	resp := h.get(h.http, h.orgBase+"/oauth/userinfo", "Authorization", "Bearer "+at)
 	var ui map[string]any
 	_ = json.Unmarshal([]byte(body(resp)), &ui)
-	if ui["sub"] != h.user.ID || ui["email"] != "alice@example.com" || ui["org_name"] != "primary" || ui["role"] != "user" {
+	if ui["sub"] != h.user.ID || ui["email"] != "alice@example.com" || ui["org_name"] != "primary" || ui["org_role"] != "user" {
 		t.Fatalf("userinfo %v", ui)
 	}
 	// narrower scope -> fewer claims
@@ -409,7 +409,7 @@ func TestClientCredentials(t *testing.T) {
 		t.Fatal("client_credentials not audited")
 	}
 	ac := claimsOf(t, r.str("access_token"))
-	if ac["sub"] != cl.ID || ac["client_id"] != cl.ID || ac["sid"] != nil || ac["role"] != nil || ac["org"] != h.env.Primary.ID {
+	if ac["sub"] != cl.ID || ac["client_id"] != cl.ID || ac["sid"] != nil || ac["org_role"] != nil || ac["org"] != h.env.Primary.ID {
 		t.Fatalf("%v", ac)
 	}
 	if r := h.token(url.Values{"grant_type": {"client_credentials"}, "resource": {"not a uri"}}, cl, secret); r.status != 400 || r.str("error") != "invalid_target" {

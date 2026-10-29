@@ -22,7 +22,7 @@ import (
 )
 
 // userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
-var userScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"}
+var userScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "roles", "enterprise", "offline_access"}
 
 // codeData is what an authorization code stands for (kept in ephemeral state, single use).
 type codeData struct {

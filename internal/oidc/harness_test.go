@@ -99,7 +99,7 @@ func (h *harness) newClient(edit func(*service.ClientInput)) (*model.Client, str
 	h.t.Helper()
 	in := service.ClientInput{Name: ptr("app"), RedirectURIs: &[]string{rpCallback},
 		GrantTypes: &[]string{"authorization_code", "refresh_token", "client_credentials"},
-		Scopes:     &[]string{"openid", "profile", "email", "groups", "org", "offline_access", "api"}, FirstParty: ptr(true),
+		Scopes:     &[]string{"openid", "profile", "email", "groups", "org", "roles", "offline_access", "api"}, FirstParty: ptr(true),
 		Resources: &testResources, AcceptsAPITokens: ptr(true),
 		// Most tests present one refresh token several times: the static format. Tests of rotation (the default
 		// for a new client: TestNewClientsRotateRefreshTokens) set it.
@@ -551,8 +551,9 @@ func (h *harness) jwtClient(k assertionKey, edit func(*service.ClientInput)) *mo
 	return c
 }
 
-// orgScope asks for the organization claims (org, tenant, role, tags, roles) in ID tokens and at userinfo.
-var orgScope = url.Values{"scope": {"openid profile email offline_access org"}}
+// orgScope asks for the organization claims (org, tenant, org_role) and the application ones (roles, tags) in ID
+// tokens and at userinfo.
+var orgScope = url.Values{"scope": {"openid profile email offline_access org roles"}}
 
 func membersOnly() model.TenantSettings {
 	return model.TenantSettings{MembersOnly: true, PasswordLogin: true, PasskeyLogin: true, AllProviders: true}

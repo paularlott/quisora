@@ -269,7 +269,9 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		}
 		o.strIf("tenant", cl.Tenant)
 		o.strIf("tenant_name", cl.TenantName)
-		o.str("role", string(u.Role))
+		o.str("org_role", string(u.Role))
+	}
+	if is.has("roles") {
 		if tags := p.userTags(r.Context(), u, app); len(tags) > 0 {
 			o.strs("tags", tags)
 		}
@@ -392,7 +394,7 @@ func (p *Provider) introspectAPIToken(ctx context.Context, caller *model.Client,
 	if org, err := p.svc.Org(ctx, u.OrgID); err == nil {
 		o.str("org_name", org.Name)
 	}
-	o.str("role", string(u.Role))
+	o.str("org_role", string(u.Role))
 	if tags := p.userTags(ctx, u, app); len(tags) > 0 {
 		o.strs("tags", tags)
 	}
@@ -491,7 +493,7 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 		o.strIf("acr", cl.ACR)
 		o.strs("amr", nonNil(cl.AMR))
 		o.strIf("sid", cl.SID)
-		o.strIf("role", cl.Role)
+		o.strIf("org_role", cl.Role)
 		if cl.Groups != nil {
 			o.strs("groups", cl.Groups)
 		}

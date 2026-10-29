@@ -295,7 +295,7 @@ type Claims struct {
 	OrgName    string                     `json:"org_name"`
 	Tenant     string                     `json:"tenant"`
 	TenantName string                     `json:"tenant_name"`
-	Role       string                     `json:"role"`
+	Role       string                     `json:"org_role"`
 	Groups     []string                   `json:"groups"`
 	Tags       []string                   `json:"tags"`
 	Roles      []string                   `json:"roles"`

@@ -61,7 +61,7 @@ type APITokenUpdate struct {
 }
 
 // StandardScopes are the OpenID Connect scopes Quisora defines; a client's other scopes are its own, for its APIs.
-var StandardScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "enterprise", "offline_access"}
+var StandardScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "roles", "enterprise", "offline_access"}
 
 // AppScopesOf returns a client's own scopes (those that are not standard).
 func AppScopesOf(c *model.Client) []string {

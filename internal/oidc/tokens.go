@@ -117,7 +117,7 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 			o.strs("userinfo_claims", is.claimsUI)
 		}
 		p.orgClaims(o, is)
-		o.str("role", string(is.user.Role))
+		o.str("org_role", string(is.user.Role))
 		p.appClaims(ctx, o, is)
 		if is.has("groups") {
 			o.strs("groups", p.groupNames(ctx, is.user))
@@ -259,11 +259,13 @@ func (p *Provider) idToken(ctx context.Context, key *keyEntry, is *issue, now ti
 	o.str("acr", acrFor(is.amr))
 	o.strs("amr", nonNil(is.amr))
 	o.strIf("sid", is.sid)
-	// The organization, tenant, Quisora role, tags and application roles are claims of the "org" scope (as at
-	// userinfo); access tokens always carry them, for resource servers.
+	// The organization, tenant and Quisora role are claims of the "org" scope, the tags and application roles of the
+	// "roles" scope (as at userinfo); access tokens always carry them all, for resource servers.
 	if is.has("org") {
 		p.orgClaims(o, is)
-		o.str("role", string(u.Role))
+		o.str("org_role", string(u.Role))
+	}
+	if is.has("roles") {
 		p.appClaims(ctx, o, is)
 	}
 	if accessToken != "" {

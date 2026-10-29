@@ -447,7 +447,7 @@ func TestMFASatisfied(t *testing.T) {
 func BenchmarkJWTSign(b *testing.B) {
 	for _, k := range genKeys(b) {
 		hdr := mkHeader(k.alg, "kid", typAccess)
-		payload := []byte(`{"iss":"https://quisora.example.com","sub":"034nmRmWuek830Rq7vfC3T","aud":"034nmRmWuT4ZrzffAjJgxn","client_id":"034nmRmWuT4ZrzffAjJgxn","scope":"openid profile email","exp":1900000000,"iat":1800000000,"jti":"AAAAAAAAAAAAAAAAAAAAAA","auth_time":1800000000,"acr":"urn:quisora:acr:basic","amr":["pwd"],"org":"034nmRmWucodP0rMzZbwBg","org_name":"acme","role":"user"}`)
+		payload := []byte(`{"iss":"https://quisora.example.com","sub":"034nmRmWuek830Rq7vfC3T","aud":"034nmRmWuT4ZrzffAjJgxn","client_id":"034nmRmWuT4ZrzffAjJgxn","scope":"openid profile email","exp":1900000000,"iat":1800000000,"jti":"AAAAAAAAAAAAAAAAAAAAAA","auth_time":1800000000,"acr":"urn:quisora:acr:basic","amr":["pwd"],"org":"034nmRmWucodP0rMzZbwBg","org_name":"acme","org_role":"user"}`)
 		b.Run(k.alg, func(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {

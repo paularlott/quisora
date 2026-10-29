@@ -359,7 +359,7 @@ func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in C
 	// Refresh tokens rotate by default: a copy that is used after the client used the token is detected and ends the
 	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
-		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "offline_access"},
+		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
 		ProviderID: providerID}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")

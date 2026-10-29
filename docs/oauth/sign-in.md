@@ -115,11 +115,12 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | `email` | `email`, `email_verified` |
 | `phone` | `phone_number`, `phone_number_verified` |
 | `groups` | `groups`: the names of the user's groups |
-| `org` | `org`, `org_name`, `tenant`, `tenant_name`, `role` (Quisora's: `user`, `manager`, `admin`, `super_admin`), `tags`, and `roles`: the application roles the user's access to this application gives them |
+| `org` | `org`, `org_name`, `tenant`, `tenant_name`, `org_role` (the user's Quisora role: `user`, `manager`, `admin`, `super_admin`) |
+| `roles` | `roles`: the application roles the user's access to this application gives them, and `tags` |
 | `enterprise` | `enterprise`: job title, department, manager, employee number and the like |
 | `offline_access` | No claims: the refresh tokens outlive the user's browser session ([refreshing](#refreshing)). |
 
-Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `role`,
+Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
 `tags` and `roles`, plus `groups` and `enterprise` with those scopes, and `acr`, `amr` and `auth_time`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's

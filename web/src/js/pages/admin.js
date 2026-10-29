@@ -567,8 +567,9 @@ const STD_SCOPES = [
   { value: 'openid', help: 'Required for OpenID Connect sign-in: the user\u2019s identity.' },
   { value: 'profile', help: 'The user\u2019s name, username, language and time zone.' },
   { value: 'email', help: 'The user\u2019s email address and whether it is verified.' },
-  { value: 'groups', help: 'The user\u2019s group names and tags.' },
-  { value: 'org', help: 'The user\u2019s organization and tenant.' },
+  { value: 'groups', help: 'The user\u2019s group names.' },
+  { value: 'org', help: 'The user\u2019s organization, tenant and Quisora role (org_role).' },
+  { value: 'roles', help: 'The user\u2019s application roles and tags for this application.' },
   { value: 'offline_access', help: 'Refresh tokens, so the application can stay signed in.' },
 ]
 const STD_NAMES = STD_SCOPES.map((s) => s.value)

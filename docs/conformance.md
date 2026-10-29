@@ -152,8 +152,8 @@ text before each screenshot.
 
 - `POST /api/keys/rotate` returned success but rotated nothing unless a scheduled rotation was due. It now
   creates a key that signs at once; the previous keys stay published until their tokens expire.
-- The ID token named the organization, tenant and Quisora role (`org`, `org_name`, `tenant`, `tenant_name`, `role`)
-  whatever the scopes. They now need the `org` scope, as at userinfo; access tokens still always carry them.
+- The ID token named the organization, tenant and Quisora role (`org`, `org_name`, `tenant`, `tenant_name`, `role`, since
+  renamed `org_role`) whatever the scopes. They now need the `org` scope, as at userinfo; access tokens still always carry them.
 - The sign-out confirmation page needed JavaScript and, outside the session middleware, rendered the anonymous CSRF
   token, so confirming without the page's script failed. It is now a plain form (`POST /o/<org id>/oauth/logout/confirm`) with
   the session's token.

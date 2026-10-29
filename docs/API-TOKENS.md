@@ -216,14 +216,14 @@ A client set to `client_secret_basic` sends them as HTTP Basic instead (`curl -u
 
 ```json
 {"active": true, "token_type": "Bearer", "token_kind": "api_token", "sub": "<user id>", "username": "alan",
- "scope": "api", "org": "<org id>", "org_name": "acme", "role": "user", "roles": ["approver"],
+ "scope": "api", "org": "<org id>", "org_name": "acme", "org_role": "user", "roles": ["approver"],
  "tags": ["dept:finance", "region:eu", "vpn"], "iat": 1760000000, "exp": 1790000000}
 ```
 
 One call gives the application everything it needs about the person behind the token, as it applies to **that
 application** (the client making the call):
 
-- who: `sub` (user id), `username`, `org`, `org_name`, and `role`, the user's Quisora role.
+- who: `sub` (user id), `username`, `org`, `org_name`, and `org_role`, the user's Quisora role.
 - `roles`: the user's application roles for this application, from their own access entry and their groups' entries
   in its tenant (see [Application roles](#application-roles)). Absent when there are none, and always for an
   application in a tenant open to everyone.
