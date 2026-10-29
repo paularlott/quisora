@@ -19,7 +19,7 @@ import (
 
 // Partition replication support (store.PartitionStore).
 //
-// State: one row per partition in qsr_partition, in the same database as the data and written in the same
+// State: one row per partition in partition_state, in the same database as the data and written in the same
 // transaction as the records an apply or import changes. Every kind table has the stamp columns pnum and pseq (the
 // partition and the sequence of the write that last changed the row) with a partial index on (pnum, pseq), which is
 // what ExportPartition selects on; a row is stamped only by ApplyPartition and ImportPartition.
@@ -38,7 +38,7 @@ import (
 //     redo log at every commit); there is no per-transaction setting, so every partition write is simply synced.
 
 // partTable holds each partition's protocol state.
-const partTable = "qsr_partition"
+const partTable = "partition_state"
 
 func (s *Store) partitionDDL() []string {
 	d := s.d
@@ -59,7 +59,7 @@ func (s *Store) partitionDDL() []string {
 // record it brought; only the marker row is used now, and the table is kept as it is to spare databases that have it a
 // migration.)
 const (
-	importTable  = "qsr_import"
+	importTable  = "partition_import"
 	importActive = "" // the kind of the marker row (no record kind is empty)
 )
 

@@ -33,9 +33,9 @@ const maxBatch = 512
 
 // The savepoint each write runs in.
 const (
-	savepointSQL = "SAVEPOINT qsr_write"
-	releaseSQL   = "RELEASE qsr_write"
-	rollbackSQL  = "ROLLBACK TO qsr_write"
+	savepointSQL = "SAVEPOINT store_write"
+	releaseSQL   = "RELEASE store_write"
+	rollbackSQL  = "ROLLBACK TO store_write"
 )
 
 var errStoreClosed = fmt.Errorf("%w: %w", store.ErrUnavailable, store.ErrClosed)

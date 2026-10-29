@@ -115,8 +115,8 @@ func TestPartitionSchemaUpgrade(t *testing.T) {
 	ctx := context.Background()
 	s, dsn := openTest(t, "sqlite", "", 0)
 	for _, stmt := range []string{
-		`DROP INDEX "ix_user_part"`, `DROP INDEX "ix_user_parttomb"`, `DROP INDEX "ix_user_tomb"`, `ALTER TABLE "qsr_user" DROP COLUMN part`, `ALTER TABLE "qsr_user" DROP COLUMN pnum`,
-		`ALTER TABLE "qsr_user" DROP COLUMN pseq`, `DROP TABLE qsr_partition`,
+		`DROP INDEX "ix_users_part"`, `DROP INDEX "ix_users_parttomb"`, `DROP INDEX "ix_users_tomb"`, `ALTER TABLE "users" DROP COLUMN part`, `ALTER TABLE "users" DROP COLUMN pnum`,
+		`ALTER TABLE "users" DROP COLUMN pseq`, `DROP TABLE partition_state`,
 	} {
 		if _, err := s.wdb.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -167,7 +167,7 @@ func TestPartitionReadsUseThePartialIndex(t *testing.T) {
 			plan = append(plan, detail)
 		}
 		rows.Close()
-		if p := strings.Join(plan, "; "); !strings.Contains(p, "INDEX ix_user_part") {
+		if p := strings.Join(plan, "; "); !strings.Contains(p, "INDEX ix_users_part") {
 			t.Errorf("%s uses no partition index: %s", name, p)
 		}
 	}

@@ -87,11 +87,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	switch {
 	case d.isMySQL():
 		var got int
-		if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK('qsr_schema', 60)").Scan(&got); err != nil || got != 1 {
+		if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK('quisora_schema', 60)").Scan(&got); err != nil || got != 1 {
 			return fmt.Errorf("sqlstore: migrate: schema lock: %v", err)
 		}
 		finish = func(bool) error {
-			_, err := conn.ExecContext(context.WithoutCancel(ctx), "SELECT RELEASE_LOCK('qsr_schema')")
+			_, err := conn.ExecContext(context.WithoutCancel(ctx), "SELECT RELEASE_LOCK('quisora_schema')")
 			return err
 		}
 	default: // DDL is transactional on sqlite and postgres

@@ -13,11 +13,48 @@ import (
 	"github.com/paularlott/quisora/internal/store"
 )
 
+// The tables beside the kind tables; docs/DATABASE.md describes every table. No name is a reserved word of any of
+// the databases, so none needs quoting, here or in an operator's own query.
 const (
-	uniqueTable = "qsr_unique"
-	feedTable   = "qsr_feed" // the database's identity (one row)
-	schemaTable = "qsr_schema"
+	uniqueTable = "unique_values"
+	feedTable   = "store_identity" // one row: the store's id (feed_id), new after a restore
+	schemaTable = "schema_version"
 )
+
+// tableNames is the table of each kind. They are named for what they hold, not after the kind (which is also in the
+// backup format and the BadgerDB keys, and so stays as it is). Keep docs/DATABASE.md in step.
+var tableNames = map[model.Kind]string{
+	model.KindOrg:       "organizations",
+	model.KindUser:      "users",
+	model.KindGroup:     "user_groups", // GROUPS is reserved in MySQL 8
+	model.KindMember:    "group_members",
+	model.KindTenant:    "tenants",
+	model.KindAccess:    "tenant_access",
+	model.KindClient:    "clients",
+	model.KindProvider:  "identity_providers",
+	model.KindPasskey:   "passkeys",
+	model.KindIdentity:  "linked_identities",
+	model.KindSession:   "sessions",
+	model.KindGrant:     "refresh_grants",
+	model.KindAPIToken:  "api_tokens",
+	model.KindKey:       "signing_keys",
+	model.KindAudit:     "audit_events",
+	model.KindLink:      "link_tokens",
+	model.KindSignIn:    "sign_ins",
+	model.KindLock:      "leases",
+	model.KindReplay:    "single_use_values",
+	model.KindEphemeral: "ephemeral_state",
+	model.KindQueue:     "retry_queue",
+}
+
+// tableName is the (unquoted) table of a kind.
+func tableName(kind model.Kind) string {
+	n, ok := tableNames[kind]
+	if !ok {
+		panic("sqlstore: no table name for kind " + string(kind))
+	}
+	return n
+}
 
 // table holds the generated SQL for one kind. Statements use ? placeholders already rewritten for the dialect.
 type table struct {
@@ -58,7 +95,7 @@ func partColumns(d *dialect) []struct{ name, def string } {
 
 func newTable(d *dialect, kind model.Kind) *table {
 	s := model.Schemas[kind]
-	t := &table{kind: kind, name: d.quote("qsr_" + string(kind)), fields: s.Fields}
+	t := &table{kind: kind, name: d.quote(tableName(kind)), fields: s.Fields}
 	cols := []string{"id", "version", "origin", "deleted", "scope", "expires", "uniq", "data", "epoch", "created_v", "part", "req"}
 	for _, f := range s.Fields {
 		cols = append(cols, f.Name)
@@ -313,7 +350,7 @@ func (t *table) ddl(d *dialect) []string {
 	}
 	out := []string{create}
 	idx := func(name, keys string) {
-		out = append(out, fmt.Sprintf("CREATE INDEX %s%s ON %s (%s)", ifNotExists(d), d.quote("ix_"+string(t.kind)+"_"+name), t.name, keys))
+		out = append(out, fmt.Sprintf("CREATE INDEX %s%s ON %s (%s)", ifNotExists(d), d.quote("ix_"+tableName(t.kind)+"_"+name), t.name, keys))
 	}
 	if !model.Unscoped(t.kind) { // the records of an unscoped kind all have the empty scope: nothing to find by it
 		idx("scope", "scope, id")
@@ -325,7 +362,7 @@ func (t *table) ddl(d *dialect) []string {
 	case e == model.NeverExpires:
 	case e == model.MayExpire && !d.isMySQL():
 		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (expires) WHERE expires IS NOT NULL",
-			d.quote("ix_"+string(t.kind)+"_expires"), t.name))
+			d.quote("ix_"+tableName(t.kind)+"_expires"), t.name))
 	default:
 		idx("expires", "expires")
 	}
@@ -333,20 +370,20 @@ func (t *table) ddl(d *dialect) []string {
 		idx("part", "pnum, pseq")
 	} else { // partial: only the records a partition write stamped
 		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (pnum, pseq) WHERE pseq > 0",
-			d.quote("ix_"+string(t.kind)+"_part"), t.name))
+			d.quote("ix_"+tableName(t.kind)+"_part"), t.name))
 	}
 	if d.isMySQL() { // the tombstones of a partition by sequence (PartitionTombstones, PurgePartition)
 		idx("parttomb", "pnum, deleted, pseq")
 	} else {
 		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (pnum, pseq) WHERE deleted = TRUE AND pseq > 0",
-			d.quote("ix_"+string(t.kind)+"_parttomb"), t.name))
+			d.quote("ix_"+tableName(t.kind)+"_parttomb"), t.name))
 	}
 	if d.isMySQL() {
 		idx("tomb", "deleted, version")
 	} else { // partial: the planner must never pick it for the (far more common) deleted = FALSE queries
 		// Nor does a partition's tombstone (stamped: it has the index above) need it: Purge leaves those to their partition.
 		out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (version) WHERE deleted = TRUE AND pseq = 0",
-			d.quote("ix_"+string(t.kind)+"_tomb"), t.name))
+			d.quote("ix_"+tableName(t.kind)+"_tomb"), t.name))
 	}
 	for _, f := range t.fields {
 		if f.Sort {
@@ -368,7 +405,7 @@ func (t *table) ddl(d *dialect) []string {
 		col := d.quote(f.Name)
 		if f.Type == model.FieldBool && !d.isMySQL() {
 			out = append(out, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (scope, id) WHERE %s = TRUE",
-				d.quote("ix_"+string(t.kind)+"_f_"+f.Name), t.name, col))
+				d.quote("ix_"+tableName(t.kind)+"_f_"+f.Name), t.name, col))
 			continue
 		}
 		idx("f_"+f.Name, col+", scope, id")

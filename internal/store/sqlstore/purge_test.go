@@ -15,7 +15,7 @@ import (
 )
 
 // commitLog records what each commit of a SQLite store's writer connection changed: per commit, the rows deleted from
-// and inserted into each table ("delete qsr_link"). It reads the connection's own hooks, so it sees every transaction
+// and inserted into each table ("delete link_tokens"). It reads the connection's own hooks, so it sees every transaction
 // the store commits, the group committer's and the partition writes' alike.
 type commitLog struct {
 	mu       sync.Mutex
@@ -184,7 +184,7 @@ func TestPurgeInBatches(t *testing.T) {
 		}
 		return n
 	}
-	linkTable := "qsr_" + string(model.KindLink)
+	linkTable := tableName(model.KindLink)
 
 	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
 		s, _ := openTest(t, d.name, d.env, 0)

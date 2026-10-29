@@ -24,7 +24,7 @@ func (s *Store) reconcile(ctx context.Context, ex execer) error {
 	}
 	for _, k := range model.Kinds() {
 		t := s.tables[k]
-		have, err := s.columns(ctx, ex, "qsr_"+string(k))
+		have, err := s.columns(ctx, ex, tableName(k))
 		if err != nil {
 			return fmt.Errorf("reconcile %s: %w", k, err)
 		}

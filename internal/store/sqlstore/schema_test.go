@@ -58,12 +58,12 @@ func TestReconcileOlderSchema(t *testing.T) {
 		// Simulate an older model: no tenant table, no client.tenant_id (nor its index), no created sort index.
 		drop := func(index string) string {
 			if s.d.isMySQL() {
-				return "DROP INDEX " + index + " ON qsr_client"
+				return "DROP INDEX " + index + " ON clients"
 			}
 			return "DROP INDEX " + index
 		}
-		for _, q := range []string{drop("ix_client_s_created"), drop("ix_client_f_tenant_id"),
-			"ALTER TABLE qsr_client DROP COLUMN tenant_id", "DROP TABLE qsr_tenant"} {
+		for _, q := range []string{drop("ix_clients_s_created"), drop("ix_clients_f_tenant_id"),
+			"ALTER TABLE clients DROP COLUMN tenant_id", "DROP TABLE tenants"} {
 			if _, err := s.wdb.Exec(q); err != nil {
 				t.Fatalf("%s: %v", q, err)
 			}
@@ -88,10 +88,10 @@ func TestReconcileOlderSchema(t *testing.T) {
 		}
 		s = stores[0]
 		defer s.Close()
-		if !hasIndex(t, s, "qsr_client", "ix_client_s_created") {
+		if !hasIndex(t, s, "clients", "ix_clients_s_created") {
 			t.Fatal("sort index not recreated")
 		}
-		if have, err := s.columns(ctx, s.wdb, "qsr_client"); err != nil || !have["tenant_id"] || !have["epoch"] {
+		if have, err := s.columns(ctx, s.wdb, "clients"); err != nil || !have["tenant_id"] || !have["epoch"] {
 			t.Fatalf("columns after reconcile: %v %v", have, err)
 		}
 		if have, err := s.columns(ctx, s.wdb, "no_such_table"); err != nil || len(have) != 0 {
@@ -131,7 +131,7 @@ func TestSchemaVersionGuards(t *testing.T) {
 		name, change, want string
 	}{
 		{"NewerBuild", "UPDATE " + schemaTable + " SET version = 99", "newer than this build"},
-		{"PreReleaseWithoutEpoch", "ALTER TABLE qsr_link DROP COLUMN epoch", "incompatible pre-release"},
+		{"PreReleaseWithoutEpoch", "ALTER TABLE link_tokens DROP COLUMN epoch", "incompatible pre-release"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "q.db")
@@ -167,7 +167,7 @@ func TestReconcileAddsRequestColumn(t *testing.T) {
 		if err := s.Put(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.wdb.Exec("ALTER TABLE qsr_link DROP COLUMN req"); err != nil {
+		if _, err := s.wdb.Exec("ALTER TABLE link_tokens DROP COLUMN req"); err != nil {
 			t.Fatal(err)
 		}
 		s.Close()
@@ -175,7 +175,7 @@ func TestReconcileAddsRequestColumn(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer s.Close()
-		if have, err := s.columns(ctx, s.wdb, "qsr_link"); err != nil || !have["req"] {
+		if have, err := s.columns(ctx, s.wdb, "link_tokens"); err != nil || !have["req"] {
 			t.Fatalf("columns after reconcile: %v %v", have, err)
 		}
 		if got, err := s.Get(ctx, model.KindLink, "old"); err != nil || got.Req != "" || got.Version != rec.Version {
@@ -206,7 +206,7 @@ func TestIndexesFollowTheModel(t *testing.T) {
 			total += len(ix)
 			has := func(name string) string {
 				for _, stmt := range ix {
-					if strings.Contains(stmt, d.quote("ix_"+string(k)+"_"+name)+" ON") {
+					if strings.Contains(stmt, d.quote("ix_"+tableName(k)+"_"+name)+" ON") {
 						return stmt
 					}
 				}

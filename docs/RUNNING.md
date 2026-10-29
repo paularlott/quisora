@@ -287,7 +287,7 @@ admins belong to it, and the server's emergency sign-out counters are kept on it
 ## Storage backends
 
 Pick one with `storage.backend` (`--storage`). The tables or keys are created on first start; the database itself
-must exist.
+must exist. [DATABASE.md](DATABASE.md) lists the tables and what each one holds.
 
 | Backend            | Use                                                            | Settings                                                                                         |
 | ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
