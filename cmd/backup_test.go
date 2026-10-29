@@ -9,9 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/backup"
 	"github.com/paularlott/quisora/internal/config"
@@ -122,5 +125,56 @@ func TestBackupPassword(t *testing.T) {
 func TestSummaryOrdered(t *testing.T) {
 	if got := summary(backup.Stats{"users": 2, "orgs": 1}); got != "orgs 1, users 2" {
 		t.Fatal(got)
+	}
+}
+
+// An interrupted backup (Ctrl+C or SIGTERM at the password prompt, or while it writes) leaves no temporary file
+// beside the target. The backup runs in a child process (this test binary again), which the test interrupts.
+func TestBackupInterruptedLeavesNoFile(t *testing.T) {
+	if args := os.Getenv("QUISORA_TEST_BACKUP_ARGS"); args != "" {
+		os.Args = append([]string{"quisora"}, strings.Split(args, "\n")...)
+		if err := newRoot(config.Default()).Execute(context.Background()); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	started := make(chan struct{}, 1)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte{0x1f, 0x8b}) // the start of a download that never ends
+		w.(http.Flusher).Flush()
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	for _, c := range []struct {
+		name  string
+		args  []string
+		ready func()
+	}{
+		{"password prompt", []string{"backup", "out.bak"}, func() { time.Sleep(time.Second) }},
+		{"download", []string{"backup", "--plain", "--insecure", "--token", "t", "--server", srv.URL, "out.bak"}, func() { <-started }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, "")
+			child := exec.Command(os.Args[0], "-test.run=^TestBackupInterruptedLeavesNoFile$")
+			child.Dir = e.dir
+			child.Env = append(os.Environ(), "HOME="+e.dir, "QUISORA_TEST_BACKUP_ARGS="+
+				strings.Join(append([]string{"--config", e.conf}, c.args...), "\n"))
+			stdin, err := child.StdinPipe() // open and silent: the password is waited for
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			if err := child.Start(); err != nil {
+				t.Fatal(err)
+			}
+			c.ready()
+			_ = child.Process.Signal(syscall.SIGTERM)
+			_ = child.Wait()
+			left, _ := filepath.Glob(filepath.Join(e.dir, ".quisora-backup-*"))
+			if len(left) > 0 {
+				t.Fatalf("left behind: %v", left)
+			}
+		})
 	}
 }

@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/paularlott/cli"
 	"github.com/paularlott/quisora/internal/app"
@@ -54,6 +56,20 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 		},
 		Run: func(ctx context.Context, c *cli.Command) error {
 			name := c.GetStringArg("file")
+			var stats backup.Stats
+			var err error
+			password := ""
+			if !c.GetBool("plain") {
+				if password, err = backupPassword(c.GetString("password-file"), true, true); err != nil {
+					return err
+				}
+				if len(password) < backup.MinPassword {
+					return fmt.Errorf("the backup password must have at least %d characters", backup.MinPassword)
+				}
+			}
+			// Interrupted from here on (Ctrl+C, SIGTERM), the backup stops and the temporary file is removed.
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
 			var w io.Writer = os.Stdout
 			var tmp *os.File
 			if name != "-" {
@@ -69,17 +85,6 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 					return err
 				}
 				tmp, w = f, f
-			}
-			var stats backup.Stats
-			var err error
-			password := ""
-			if !c.GetBool("plain") {
-				if password, err = backupPassword(c.GetString("password-file"), true, true); err != nil {
-					return err
-				}
-				if len(password) < backup.MinPassword {
-					return fmt.Errorf("the backup password must have at least %d characters", backup.MinPassword)
-				}
 			}
 			if server := c.GetString("server"); server != "" {
 				stats, err = remoteBackup(ctx, server, c.GetString("token"), c.GetString("ca-file"), c.GetBool("insecure"),
