@@ -87,6 +87,9 @@
   .select option { background: var(--glass-solid); color: var(--fg); }
   .field-row { display: grid; gap: 1rem; }
   @media (min-width: 40rem) { .field-row { grid-template-columns: 1fr 1fr; } }
+  /* A long list of checkboxes, two to a row where there is room (a service account's scopes). */
+  .check-columns { display: grid; gap: 0.25rem 1rem; }
+  @media (min-width: 40rem) { .check-columns { grid-template-columns: 1fr 1fr; } }
   fieldset.fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.65rem; }
   fieldset.fieldset > legend { font-size: 0.875rem; font-weight: 650; padding: 0; margin-bottom: 0.4rem; }
   /* A collapsible section of a form (<details class="disclosure">): the summary is a full-width button-like row. */
