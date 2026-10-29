@@ -259,11 +259,16 @@ type bcTarget struct {
 	client *model.Client
 	sub    string
 	sid    string
+	// jti identifies this logout to the relying party: chosen once, when the logout is collected, and sent in the
+	// token of every attempt, so a relying party that has acted on it can tell a retry (or a replay) from a new logout
+	// and does not act again (Back-Channel Logout 2.6). Empty only for a retry queued before it was kept; one is
+	// chosen per attempt then.
+	jti string
 }
 
 // retry is the target as an item of the retry queue.
 func (t bcTarget) retry() LogoutRetry {
-	return LogoutRetry{OrgID: t.client.OrgID, ClientID: t.client.ID, Sub: t.sub, SID: t.sid}
+	return LogoutRetry{OrgID: t.client.OrgID, ClientID: t.client.ID, Sub: t.sub, SID: t.sid, JTI: t.jti}
 }
 
 // collect finds the clients that hold a refresh grant on the user's sessions (all of the user's sessions when
@@ -282,7 +287,7 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 		if err != nil || ce.c.BackchannelURI == "" || !ce.c.Enabled {
 			return
 		}
-		out = append(out, bcTarget{client: ce.c, sub: userID, sid: sid})
+		out = append(out, bcTarget{client: ce.c, sub: userID, sid: sid, jti: newJTI()})
 	}
 	// The applications each session issued tokens to (also those whose refresh grant was revoked since) ...
 	sessions, err := p.svc.Sessions.All(ctx, userID)
@@ -418,6 +423,7 @@ type LogoutRetry struct {
 	ClientID string `json:"c"`
 	Sub      string `json:"s"`
 	SID      string `json:"i,omitempty"`
+	JTI      string `json:"j,omitempty"` // the logout's token id, the same for every attempt (see bcTarget)
 }
 
 // The retry queue sends by logoutRetryWorkers at once, of which one organization has at most logoutRetryPerOrg: an
@@ -445,7 +451,7 @@ func (p *Provider) OpenLogoutQueue(node string) *queue.Queue[LogoutRetry] {
 			} else if err != nil {
 				return err
 			}
-			return p.sendLogoutToken(bcTarget{client: ce.c, sub: r.Sub, sid: r.SID})
+			return p.sendLogoutToken(bcTarget{client: ce.c, sub: r.Sub, sid: r.SID, jti: r.JTI})
 		},
 		Failed: func(r LogoutRetry, attempt int, retry time.Duration, err error) {
 			if retry == 0 {
@@ -582,7 +588,11 @@ func (p *Provider) sendLogoutToken(t bcTarget) error {
 	o.str("aud", t.client.ClientID())
 	o.num("iat", now.Unix())
 	o.num("exp", now.Add(2*time.Minute).Unix())
-	o.str("jti", newJTI())
+	jti := t.jti
+	if jti == "" {
+		jti = newJTI()
+	}
+	o.str("jti", jti)
 	o.raw("events", `{"`+backchannelEvent+`":{}}`)
 	o.strIf("sid", t.sid)
 	tok, err := key.sign(typLogout, o.bytes())

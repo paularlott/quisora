@@ -587,3 +587,67 @@ func TestBackchannelSendFailures(t *testing.T) {
 	retries.Close()
 	h.p.retryLogout(bcTarget{client: ce.c, sub: "u"}, errors.New("refused"))
 }
+
+// A logout keeps its token id (jti) for every attempt to deliver it, so a relying party that acted on it can tell a
+// retry from a new logout; each logout has its own. A retry queued before the id was kept is still sent, with one.
+func TestBackchannelRetryKeepsTheLogoutsJTI(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string][]map[string]any{} // the claims of each token delivered, by path
+	var attempts atomic.Int64
+	rp, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		got[r.URL.Path] = append(got[r.URL.Path], claimsOf(t, r.PostForm.Get("logout_token")))
+		mu.Unlock()
+		if r.URL.Path == "/retried" && attempts.Add(1) < 3 { // taken at the third attempt
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	h := setup(t, nil)
+	ctx := context.Background()
+	withLogoutBackoff(t, 5*time.Millisecond, 5*time.Millisecond)
+	retries := h.p.OpenLogoutQueue("node-1")
+	defer retries.Close()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL + "/retried") })
+	for range 2 { // two sessions of the user, each with a grant of the client
+		if r, _ := h.login(cl, secret, nil); r.status != 200 {
+			t.Fatal(r.m)
+		}
+	}
+
+	targets := h.p.collect(ctx, h.user.ID, nil)
+	if len(targets) != 2 {
+		t.Fatalf("%d logouts collected, want one for each session", len(targets))
+	}
+	if targets[0].jti == "" || targets[0].jti == targets[1].jti {
+		t.Fatalf("token ids %q and %q: want one of its own for each logout", targets[0].jti, targets[1].jti)
+	}
+
+	h.p.dispatch(targets[:1])
+	h.p.Wait()
+	waitUntil(t, func() bool { return attempts.Load() >= 3 && retries.Queued() == 0 })
+	mu.Lock()
+	delivered := got["/retried"]
+	mu.Unlock()
+	if len(delivered) != 3 {
+		t.Fatalf("%d attempts, want 3", len(delivered))
+	}
+	for i, c := range delivered {
+		if c["jti"] != targets[0].jti || c["sid"] != targets[0].sid {
+			t.Errorf("attempt %d: jti %v sid %v, want the logout's own %q and %q", i+1, c["jti"], c["sid"],
+				targets[0].jti, targets[0].sid)
+		}
+	}
+
+	// a retry queued before the token id was kept (none in the item) is sent with one
+	old, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL + "/old") })
+	if err := retries.Add(LogoutRetry{OrgID: old.OrgID, ClientID: old.ID, Sub: "u", SID: "s"}, time.Millisecond, 1); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(got["/old"]) == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if jti, _ := got["/old"][0]["jti"].(string); jti == "" {
+		t.Error("a retry queued without a token id was sent without one")
+	}
+}
