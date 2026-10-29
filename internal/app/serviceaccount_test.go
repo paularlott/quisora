@@ -52,7 +52,7 @@ func TestServiceAccountDeployFlow(t *testing.T) {
 	deployTok := token(primary.ID, deploy.ID, deploySecret)
 
 	code, created := call(deployTok, "POST", "/api/orgs", map[string]any{"name": "fortix-one", "service_account": map[string]any{
-		"name": "setup", "scopes": []string{"users", "admins", "import", "tenants", "clients", "providers", "access"}}})
+		"name": "setup", "scopes": []string{"users", "admins", "import", "groups", "tenants", "clients", "providers", "access"}}})
 	if code != 201 {
 		t.Fatalf("create org %d %v", code, created)
 	}
@@ -80,9 +80,26 @@ func TestServiceAccountDeployFlow(t *testing.T) {
 	if code, _ := call(setup, "GET", "/api/orgs/fortix-one", nil); code != 200 {
 		t.Errorf("reads its organization: %d", code)
 	}
-	// What its scopes do not name stays closed: the organization's settings, groups, its audit log, other orgs.
+	// Groups and their members: groups is also an OpenID Connect scope, which a token without a user never carries,
+	// but a service account's is its own and is kept.
+	_, carol := call(setup, "POST", "/api/orgs/fortix-one/users", map[string]any{"given_name": "Carol", "username": "carol", "email": "carol@fortix.test"})
+	code, g := call(setup, "POST", "/api/orgs/fortix-one/groups", map[string]any{"display_name": "Staff"})
+	if code != 201 {
+		t.Fatalf("create group: %d %v", code, g)
+	}
+	members := "/api/orgs/fortix-one/groups/" + g["id"].(string) + "/members"
+	if code, out := call(setup, "PUT", members+"/"+carol["id"].(string), nil); code != 200 && code != 204 {
+		t.Errorf("add member: %d %v", code, out)
+	}
+	if code, out := call(setup, "GET", members, nil); code != 200 || out["total"] != float64(1) {
+		t.Errorf("list members: %d %v", code, out)
+	}
+	if code, out := call(setup, "DELETE", members+"/"+carol["id"].(string), nil); code != 200 && code != 204 {
+		t.Errorf("remove member: %d %v", code, out)
+	}
+	// What its scopes do not name stays closed: the organization's settings, its audit log, other orgs.
 	for _, c := range []struct{ method, path string }{
-		{"PATCH", "/api/orgs/fortix-one"}, {"GET", "/api/orgs/fortix-one/groups"}, {"GET", "/api/orgs/fortix-one/audit"},
+		{"PATCH", "/api/orgs/fortix-one"}, {"GET", "/api/orgs/fortix-one/audit"},
 		{"GET", "/api/orgs/fortix-one/service-accounts"}, {"GET", "/api/orgs"}, {"POST", "/api/orgs"},
 	} {
 		if code, _ := call(setup, c.method, c.path, map[string]any{}); code != 403 {

@@ -772,9 +772,11 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 // client_credentials
 
 func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
-	allowed := make([]string, 0, len(c.Scopes)+1)
+	// A service account's scopes are all Quisora's own, whatever they share a name with: its groups is the management
+	// API's, not the OpenID Connect scope a token without a user never carries.
+	allowed := make([]string, 0, len(c.Scopes))
 	for _, s := range c.Scopes {
-		if !slices.Contains(userScopes, s) {
+		if c.ServiceAccount || !slices.Contains(userScopes, s) {
 			allowed = append(allowed, s)
 		}
 	}
