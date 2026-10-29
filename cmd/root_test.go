@@ -113,7 +113,7 @@ func TestRootHelpAndUnknown(t *testing.T) {
 	}
 }
 
-// Flags of one command must not leak into another: the commands add their own flags to one shared server-flag slice.
+// A command's own flags work beside the settings' flags it offers, and do not leak into another command.
 func TestCommandFlagsDoNotClobberEachOther(t *testing.T) {
 	e := newEnv(t, "")
 	// one command with a flag of its own that works through
@@ -133,5 +133,50 @@ func TestPrepareRejectsInvalidConfig(t *testing.T) {
 	cfg.Cluster.Size = 3 // size without bind
 	if err := prepare(context.Background(), cfg); err == nil {
 		t.Fatal("invalid configuration prepared")
+	}
+}
+
+// Each command offers as flags the settings it reads, and the log settings and --config are global. The rest are read
+// from the config file and the environment, which every command shares with serve (validated whole), and refused on
+// the command line.
+func TestCommandFlagsAreItsOwn(t *testing.T) {
+	e := newEnv(t, "[ui]\nsite_name = \"Acme\"\n")
+	t.Setenv(config.EnvPrefix+"FOOTER", "Acme Inc")
+	help := func(args ...string) string {
+		t.Helper()
+		out, errOut, err := e.run(t, "", append(args, "--help")...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out + errOut
+	}
+	for _, c := range []struct {
+		cmd       string
+		has, hasn []string
+	}{
+		{"serve", []string{"--site-name", "--listen", "--master-key", "--log-access", "--log-level", "--config"}, []string{"--bootstrap-admin"}},
+		{"backup", []string{"--master-key", "--storage", "--data-dir", "--log-level", "--config"}, []string{"--site-name", "--logo-light", "--listen", "--log-access", "--access-ttl", "--cluster-bind"}},
+		{"healthcheck", []string{"--listen", "--log-level"}, []string{"--master-key", "--storage", "--site-name"}},
+		{"bootstrap", []string{"--bootstrap-admin", "--public-url", "--cluster-bind"}, []string{"--site-name", "--listen"}},
+	} {
+		h := help(c.cmd)
+		for _, f := range c.has {
+			if !strings.Contains(h, f+" ") && !strings.Contains(h, f+",") && !strings.Contains(h, f+"=") {
+				t.Errorf("%s does not offer %s", c.cmd, f)
+			}
+		}
+		for _, f := range c.hasn {
+			if strings.Contains(h, f+" ") || strings.Contains(h, f+",") || strings.Contains(h, f+"=") {
+				t.Errorf("%s offers %s", c.cmd, f)
+			}
+		}
+	}
+	out := filepath.Join(e.dir, "b")
+	if _, _, err := e.run(t, "", "backup", "--plain", "--site-name", "x", out); err == nil || !strings.Contains(err.Error(), "--site-name") {
+		t.Fatalf("a serve setting on backup's command line: %v", err)
+	}
+	// The same settings from the config file and the environment are read as ever.
+	if _, errOut, err := e.run(t, "", "backup", "--plain", out); err != nil {
+		t.Fatalf("backup with serve's settings in the file and environment: %v %s", err, errOut)
 	}
 }

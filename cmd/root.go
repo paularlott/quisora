@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 
 	"github.com/paularlott/cli"
@@ -29,7 +28,6 @@ func Root() *cli.Command { return newRoot(config.Default()) }
 func newRoot(cfg *config.Config) *cli.Command {
 	flags := config.Flags(cfg)
 	cfgFile, configFlag := config.NewConfigFile(cfg)
-	server := slices.Clip(flags.Server) // full: each command's append(server, ...) gets its own copy
 	return &cli.Command{
 		Name:        "quisora",
 		Version:     build.Version,
@@ -39,6 +37,9 @@ func newRoot(cfg *config.Config) *cli.Command {
 		Suggestions: true,
 		Flags:       append([]cli.Flag{configFlag}, flags.Global...),
 		PreRun: func(ctx context.Context, c *cli.Command) (context.Context, error) {
+			if err := flags.Refuse(c); err != nil {
+				return ctx, err
+			}
 			if warnings := append(append(secretFlagWarnings(cfg, c), looseFileWarnings(cfg, c)...), cfg.RemovedSettingWarnings()...); len(warnings) > 0 {
 				log := logger(cfg) // the configured format and level, like every other warning of the process
 				for _, w := range warnings {
@@ -47,8 +48,10 @@ func newRoot(cfg *config.Config) *cli.Command {
 			}
 			return ctx, nil
 		},
-		Commands: []*cli.Command{serveCmd(cfg, server), bootstrapCmd(cfg, flags.For("bootstrap")), forceStartCmd(cfg, server), signOutCmd(cfg, server), inviteCmd(cfg, server), backupCmd(cfg, server), restoreCmd(cfg, server),
-			healthcheckCmd(cfg, server), genkeyCmd()},
+		Commands: []*cli.Command{serveCmd(cfg, flags.For("serve")), bootstrapCmd(cfg, flags.For("bootstrap")),
+			forceStartCmd(cfg, flags.For("force-start")), signOutCmd(cfg, flags.For("sign-out")),
+			inviteCmd(cfg, flags.For("invite")), backupCmd(cfg, flags.For("backup")), restoreCmd(cfg, flags.For("restore")),
+			healthcheckCmd(cfg, flags.For("healthcheck")), genkeyCmd()},
 	}
 }
 

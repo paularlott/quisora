@@ -36,7 +36,7 @@ func main() {
 		ConfigFile:  cfgFile,
 		Suggestions: true,
 		Flags:       append([]cli.Flag{configFlag}, flags.Global...),
-		Commands:    []*cli.Command{seedCmd(cfg, flags.Server), runCmd()},
+		Commands:    []*cli.Command{seedCmd(cfg, flags.For("serve")), runCmd()},
 	}
 	if err := cmd.Execute(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

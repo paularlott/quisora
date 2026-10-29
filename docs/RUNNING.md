@@ -12,6 +12,9 @@ which beats the file. The public URL, for example, is `--public-url`, `QUISORA_P
   `/etc/quisora/`. Unknown keys are refused.
 - `quisora serve --help` lists every setting with its variable and key; [quisora.toml.example](../quisora.toml.example) is
   an annotated file.
+- The other commands take as flags only the settings they use (`quisora <command> --help`), and refuse the rest on the
+  command line. `--config`, `--log-level` and `--log-format` are taken by every command. Every command reads the same
+  config file and environment as serve, whole, and checks it the same way.
 - `quisora genkey` prints a key for `server.master_key`, `cluster.key` and `storage.badgerdb.encryption_key`.
 - Secrets (the master key and previous master keys, `cluster.key` and `cluster.previous_keys`, database DSNs and passwords, the SMTP password,
   `storage.badgerdb.encryption_key`, `server.restore_password`, a VictoriaLogs URL with credentials) belong in the config

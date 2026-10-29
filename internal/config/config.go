@@ -24,7 +24,8 @@ import (
 
 // Config is every setting. Each one can be given as a command-line flag (`flag` tag, with the prefixes of the
 // structs it sits in), an QUISORA_<FLAG> environment variable or a key in the TOML config file (`toml` path); see
-// Flags. Precedence: flag, then environment, then config file, then the default.
+// Flags. Precedence: flag, then environment, then config file, then the default. The `cmd` tag names the commands that
+// offer the flag (serve's alone when there is none; on a struct, for the settings inside it; "*" is every command).
 type Config struct {
 	// ConfigFile is the configuration file the command line read (nil or no file used: none); Validate refuses keys
 	// in it that are not settings (a misspelt key would otherwise be ignored silently). Set by NewConfigFile's caller.
@@ -32,8 +33,8 @@ type Config struct {
 
 	Server  Server  `toml:"server"`
 	UI      UI      `toml:"ui"`
-	Storage Storage `toml:"storage"`
-	Cluster Cluster `toml:"cluster" flag:"cluster"`
+	Storage Storage `toml:"storage" cmd:"serve bootstrap invite sign-out backup restore"`
+	Cluster Cluster `toml:"cluster" flag:"cluster" cmd:"serve bootstrap invite sign-out restore force-start"`
 	Tokens  Tokens  `toml:"tokens"`
 	Session Session `toml:"session" flag:"session"`
 	Mail    Mail    `toml:"mail"`
@@ -41,7 +42,7 @@ type Config struct {
 	Limits  Limits  `toml:"limits"`
 	Log     Log     `toml:"log" flag:"log"`
 	Metrics Metrics `toml:"metrics" flag:"metrics"`
-	Secrets Secrets `toml:"secrets"`
+	Secrets Secrets `toml:"secrets" cmd:"serve bootstrap invite sign-out backup restore force-start"`
 }
 
 // Metrics configures GET /metrics (Prometheus). It is served only with a token: the counters say how the server is
@@ -51,20 +52,20 @@ type Metrics struct {
 }
 
 type Server struct {
-	Listen               string   `toml:"listen" flag:"listen" usage:"HTTPS listen address (there is no plain-HTTP listener)"`
-	PublicURL            string   `toml:"public_url" flag:"public-url" usage:"Public base URL and OIDC issuer, https://host[:port], identical on every node (default https://localhost:<port>)"`
-	DataDir              string   `toml:"data_dir" flag:"data-dir" usage:"Data directory: everything this node keeps on disk (embedded database, self-signed certificate, audit spool, node id, cluster state)"`
+	Listen               string   `toml:"listen" flag:"listen" cmd:"serve healthcheck" usage:"HTTPS listen address (there is no plain-HTTP listener)"`
+	PublicURL            string   `toml:"public_url" flag:"public-url" cmd:"serve bootstrap invite sign-out" usage:"Public base URL and OIDC issuer, https://host[:port], identical on every node (default https://localhost:<port>)"`
+	DataDir              string   `toml:"data_dir" flag:"data-dir" cmd:"serve bootstrap invite sign-out backup restore force-start" usage:"Data directory: everything this node keeps on disk (embedded database, self-signed certificate, audit spool, node id, cluster state)"`
 	TLSCert              string   `toml:"tls_cert" flag:"tls-cert" usage:"TLS certificate (PEM); without it a self-signed certificate is generated in <data-dir>/tls"`
 	TLSKey               string   `toml:"tls_key" flag:"tls-key" usage:"TLS private key (PEM)"`
-	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
-	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" secret:"true" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
+	MasterKey            string   `toml:"master_key" flag:"master-key" secret:"true" cmd:"serve bootstrap invite sign-out backup restore" usage:"Base64 32-byte key sealing secrets at rest (quisora genkey); required and identical on every node in a cluster"`
+	PreviousMasterKeys   []string `toml:"previous_master_keys" flag:"previous-master-keys" secret:"true" cmd:"serve bootstrap invite sign-out backup restore" usage:"Earlier master keys (base64), during a master key rotation: they only open what they sealed until it is re-sealed with master_key; identical on every node"`
 	TrustProxy           []string `toml:"trust_proxy" flag:"trust-proxy" usage:"Proxies (CIDRs or IPs) whose X-Forwarded-For is honoured"`
 	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" cmd:"bootstrap" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
 	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach every private address (a home lab)"`
 	AllowedNetworks      []string `toml:"allowed_networks" flag:"allowed-networks" usage:"Networks (CIDRs or IPs) outbound calls to admin-supplied URLs may reach although private: the internal providers and applications"`
 	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
-	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
+	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" cmd:"serve invite sign-out" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
 	ShutdownDrain        int      `toml:"shutdown_drain" flag:"shutdown-drain" usage:"Seconds /readyz answers 503 before shutting down, when a load balancer has been polling it, so traffic moves to other nodes first (0 = none)"`
 	ShutdownTimeout      int      `toml:"shutdown_timeout" flag:"shutdown-timeout" usage:"Seconds requests in flight get to finish at shutdown"`
 }
@@ -120,7 +121,7 @@ type Cluster struct {
 	// Notify links nodes that share one database server by a gossip network of their own that carries only change
 	// notices (no data): each node's caches and live admin pages then follow the others' changes within moments.
 	// Ignored, with a warning, when cluster.bind is set (replication delivers the changes already).
-	Notify Notify `toml:"notify" flag:"notify"`
+	Notify Notify `toml:"notify" flag:"notify" cmd:"serve"`
 }
 
 // Notify is the change-notice gossip of nodes sharing one database (cluster.notify).
@@ -167,12 +168,12 @@ type Mail struct {
 }
 
 type Audit struct {
-	RetentionDays int  `toml:"retention_days" flag:"retention-days" usage:"Keep audit events this many days (in the database; with gossip, on each node)"`
+	RetentionDays int  `toml:"retention_days" flag:"retention-days" cmd:"serve bootstrap invite sign-out" usage:"Keep audit events this many days (in the database; with gossip, on each node)"`
 	Logins        bool `toml:"logins" flag:"logins" usage:"Also audit successful sign-ins (default on; failures are always audited)"`
 	Tokens        bool `toml:"tokens" flag:"tokens" usage:"Also audit every refresh and client_credentials token issued (new grants, revocations and token reuse are always audited)"`
 	// VictoriaLogs sends audit events to VictoriaLogs instead of the database, and the audit pages read them from
 	// there (any node). The base URL; user:password in it is sent as basic authentication.
-	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" secret:"true" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
+	VictoriaLogs string `toml:"victorialogs_url" flag:"victorialogs-url" secret:"true" cmd:"serve bootstrap invite sign-out" usage:"VictoriaLogs base URL (http://host:9428): audit events go there instead of the database, and the audit pages read them from there"`
 	// Audit events VictoriaLogs does not take (unreachable, refusing) wait in <data-dir>/auditspool until it does, at
 	// most SpoolMaxMB.
 	SpoolMaxMB int `toml:"victorialogs_spool_max_mb" flag:"victorialogs-spool-max-mb" usage:"Most disk space the VictoriaLogs spool may use, in megabytes; past it the oldest events are dropped"`
@@ -191,8 +192,8 @@ type Limits struct {
 }
 
 type Log struct {
-	Level  string `toml:"level" flag:"level" usage:"Log level: trace, debug, info, warn or error"`
-	Format string `toml:"format" flag:"format" usage:"Log format: console or json"`
+	Level  string `toml:"level" flag:"level" cmd:"*" usage:"Log level: trace, debug, info, warn or error"`
+	Format string `toml:"format" flag:"format" cmd:"*" usage:"Log format: console or json"`
 	// Access logs every HTTP request (method, path without its query string, status, duration, size, client address,
 	// request id). Query strings are never logged: they carry codes, states and link tokens.
 	Access bool `toml:"access" flag:"access" usage:"Log every HTTP request (never its query string)"`

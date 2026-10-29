@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,29 +26,36 @@ type Setting struct {
 	// Secret marks a value that must not be seen by others on the machine: given as a flag it is in the process list
 	// (ps) and often in orchestration logs, so the config file or the environment are the places for it.
 	Secret bool
-	// Command names the one command that reads the setting (`cmd` tag; "" for every command that runs against the
-	// configured server): its flag is offered there alone.
-	Command string
-	field   reflect.Value
+	// Commands are the commands that offer the setting's flag (`cmd` tag): serve alone when there is none, "*" for
+	// every command.
+	Commands []string
+	field    reflect.Value
 }
 
+// offeredBy reports whether command offers the setting's flag.
+func (s Setting) offeredBy(command string) bool { return slices.Contains(s.Commands, command) }
+
+// global reports whether every command offers the setting's flag (a global flag of the root command).
+func (s Setting) global() bool { return s.offeredBy("*") }
+
 // settings walks c and returns every setting, bound to c's fields. Struct fields with a `flag` tag prefix the flag
-// names of the fields inside them.
+// names of the fields inside them, and their `cmd` tag is that of the fields inside them that have none.
 func settings(c *Config) []Setting {
 	var out []Setting
-	var walk func(v reflect.Value, flagPrefix, pathPrefix string)
-	walk = func(v reflect.Value, flagPrefix, pathPrefix string) {
+	var walk func(v reflect.Value, flagPrefix, pathPrefix, cmds string)
+	walk = func(v reflect.Value, flagPrefix, pathPrefix, cmds string) {
 		t := v.Type()
 		for i := range t.NumField() {
 			f, fv := t.Field(i), v.Field(i)
 			path := pathPrefix + f.Tag.Get("toml")
 			name := f.Tag.Get("flag")
+			cmds := cmp.Or(f.Tag.Get("cmd"), cmds)
 			if f.Type.Kind() == reflect.Struct {
 				p := flagPrefix
 				if name != "" {
 					p += name + "-"
 				}
-				walk(fv, p, path+".")
+				walk(fv, p, path+".", cmds)
 				continue
 			}
 			if name == "" {
@@ -55,10 +63,11 @@ func settings(c *Config) []Setting {
 			}
 			flag := flagPrefix + name
 			out = append(out, Setting{Flag: flag, Env: EnvPrefix + strings.ToUpper(strings.ReplaceAll(flag, "-", "_")),
-				Path: path, Usage: f.Tag.Get("usage"), Secret: f.Tag.Get("secret") == "true", Command: f.Tag.Get("cmd"), field: fv})
+				Path: path, Usage: f.Tag.Get("usage"), Secret: f.Tag.Get("secret") == "true", Commands: strings.Fields(cmds),
+				field: fv})
 		}
 	}
-	walk(reflect.ValueOf(c).Elem(), "", "")
+	walk(reflect.ValueOf(c).Elem(), "", "", "serve")
 	return out
 }
 
@@ -82,54 +91,64 @@ func Settings(c *Config) []Setting { return settings(c) }
 
 // FlagSet is the command-line flags of every setting, bound to a configuration.
 type FlagSet struct {
-	// Global are the log settings, for the root command, so every command honours them.
-	Global []cli.Flag
-	// Server are the rest, for the commands that run against the configured server (serve, invite, the load test
-	// tool's seed, ...).
-	Server []cli.Flag
-	// Command are the flags of settings only one command reads (`cmd` tag), by command name, to add to Server there.
-	Command map[string][]cli.Flag
+	// Global are the flags every command offers (`cmd:"*"`: the log level and format), for the root command.
+	Global   []cli.Flag
+	settings []Setting
 }
 
-// For returns the flags of the named command: Server plus its own.
+// For returns the flags of the named command. Those of the settings it offers (`cmd` tag) are its own; every other
+// setting is bound too, hidden, so that the config file and the environment, which every command shares with serve,
+// are read whole and validated as one. Given on the command line, those are refused (Refuse).
 func (fs FlagSet) For(command string) []cli.Flag {
-	return append(slices.Clone(fs.Server), fs.Command[command]...)
+	var out []cli.Flag
+	for _, s := range fs.settings {
+		if !s.global() {
+			out = append(out, s.flag(!s.offeredBy(command)))
+		}
+	}
+	return out
 }
 
-// Flags returns a command-line flag for every setting, bound to c (which should hold the defaults). The cli package
+// Refuse refuses a setting given on the command line of c that c does not offer as a flag (For).
+func (fs FlagSet) Refuse(c *cli.Command) error {
+	for _, s := range fs.settings {
+		if !s.global() && !s.offeredBy(c.Name) && c.FlagSource(s.Flag) == cli.SourceCommandLine {
+			return fmt.Errorf("--%s is not a flag of %s: the command does not use %s", s.Flag, c.Name, s.Path)
+		}
+	}
+	return nil
+}
+
+// Flags returns the command-line flags of every setting, bound to c (which should hold the defaults). The cli package
 // fills each from, in order: the flag, its QUISORA_* environment variable, its key in the config file, the default.
 func Flags(c *Config) FlagSet {
-	fs := FlagSet{Command: map[string][]cli.Flag{}}
-	for _, s := range settings(c) {
-		var f cli.Flag
-		global := strings.HasPrefix(s.Flag, "log-")
-		paths, envs := []string{s.Path}, []string{s.Env}
-		switch p := s.field.Addr().Interface().(type) {
-		case *string:
-			f = &cli.StringFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
-				DefaultValue: *p, AssignTo: p, Global: global}
-		case *int:
-			f = &cli.IntFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
-				DefaultValue: *p, AssignTo: p, Global: global}
-		case *bool:
-			f = &cli.BoolFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
-				DefaultValue: *p, AssignTo: p, Global: global}
-		case *[]string:
-			f = &cli.StringSliceFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
-				DefaultValue: *p, AssignTo: p, Global: global}
-		default:
-			continue
-		}
-		switch {
-		case global:
-			fs.Global = append(fs.Global, f)
-		case s.Command != "":
-			fs.Command[s.Command] = append(fs.Command[s.Command], f)
-		default:
-			fs.Server = append(fs.Server, f)
+	fs := FlagSet{settings: settings(c)}
+	for _, s := range fs.settings {
+		if s.global() {
+			fs.Global = append(fs.Global, s.flag(false))
 		}
 	}
 	return fs
+}
+
+// flag is the setting's command-line flag.
+func (s Setting) flag(hidden bool) cli.Flag {
+	paths, envs, global := []string{s.Path}, []string{s.Env}, s.global()
+	switch p := s.field.Addr().Interface().(type) {
+	case *string:
+		return &cli.StringFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
+			DefaultValue: *p, AssignTo: p, Global: global, Hidden: hidden}
+	case *int:
+		return &cli.IntFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
+			DefaultValue: *p, AssignTo: p, Global: global, Hidden: hidden}
+	case *bool:
+		return &cli.BoolFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
+			DefaultValue: *p, AssignTo: p, Global: global, Hidden: hidden}
+	case *[]string:
+		return &cli.StringSliceFlag{Name: s.Flag, Usage: s.Usage, ConfigPath: paths, EnvVars: envs,
+			DefaultValue: *p, AssignTo: p, Global: global, Hidden: hidden}
+	}
+	panic("config: no flag type for setting " + s.Path)
 }
 
 // FileName is the configuration file looked for in the search path when --config is not given.

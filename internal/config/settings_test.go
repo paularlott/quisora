@@ -1,7 +1,6 @@
 package config
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/paularlott/cli"
@@ -41,13 +40,32 @@ func TestSettingsComplete(t *testing.T) {
 	}
 }
 
-// A setting only one command reads is offered there alone.
-func TestCommandOnlyFlags(t *testing.T) {
+// A command offers the flags of the settings it reads; the others it binds hidden (read from the config file and the
+// environment), and the log level and format are global.
+func TestCommandFlags(t *testing.T) {
 	fs := Flags(Default())
-	has := func(flags []cli.Flag, name string) bool {
-		return slices.ContainsFunc(flags, func(f cli.Flag) bool { s, ok := f.(*cli.StringFlag); return ok && s.Name == name })
+	shown := func(flags []cli.Flag, name string) (found, visible bool) {
+		for _, f := range flags {
+			if s, ok := f.(*cli.StringFlag); ok && s.Name == name {
+				return true, !s.Hidden
+			}
+		}
+		return false, false
 	}
-	if has(fs.Server, "bootstrap-admin") || !has(fs.For("bootstrap"), "bootstrap-admin") || !has(fs.For("bootstrap"), "listen") {
-		t.Fatal("bootstrap-admin placement")
+	for _, c := range []struct {
+		cmd, flag      string
+		found, visible bool
+	}{
+		{"bootstrap", "bootstrap-admin", true, true}, {"serve", "bootstrap-admin", true, false},
+		{"serve", "site-name", true, true}, {"backup", "site-name", true, false}, {"backup", "master-key", true, true},
+		{"healthcheck", "listen", true, true}, {"healthcheck", "master-key", true, false},
+		{"serve", "log-level", false, false}, {"backup", "log-level", false, false},
+	} {
+		if found, visible := shown(fs.For(c.cmd), c.flag); found != c.found || visible != c.visible {
+			t.Errorf("%s --%s: bound %v, offered %v", c.cmd, c.flag, found, visible)
+		}
+	}
+	if found, _ := shown(fs.Global, "log-level"); !found {
+		t.Error("log-level is not global")
 	}
 }

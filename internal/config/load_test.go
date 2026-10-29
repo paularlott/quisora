@@ -20,7 +20,7 @@ func parse(t *testing.T, path string, args ...string) (*Config, error) {
 	fs := Flags(cfg)
 	ran := false
 	cmd := &cli.Command{Name: "quisora", Flags: fs.Global,
-		Commands: []*cli.Command{{Name: "serve", Flags: fs.Server, Run: func(context.Context, *cli.Command) error {
+		Commands: []*cli.Command{{Name: "serve", Flags: fs.For("serve"), Run: func(context.Context, *cli.Command) error {
 			ran = true
 			return nil
 		}}}}
