@@ -1606,7 +1606,7 @@ export default function (Alpine) {
   // organization alone); the server refuses the rest, so they are not offered.
   const SERVICE_SCOPES = [
     { value: 'users', help: 'Users and managers.' },
-    { value: 'admins', help: 'With users: administrators too.' },
+    { value: 'manage_admins', help: 'With users: administrators too.' },
     { value: 'groups', help: 'Groups and their members.' },
     { value: 'providers', help: 'Sign-in providers.' },
     { value: 'tenants', help: 'Tenants.' },

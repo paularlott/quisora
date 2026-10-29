@@ -53,7 +53,7 @@ operation's `serviceAccount` security requirement.
 | Scope | Lets it | Organizations |
 | --- | --- | --- |
 | `users` | Manage users and managers: details, email addresses, sessions, linked providers, tokens, invitations | any |
-| `admins` | With `users`, manage the organization's administrators too (never super admins) | any |
+| `manage_admins` | With `users`, manage the organization's administrators too (never super admins) | any |
 | `groups` | Manage groups and their members | any |
 | `providers` | Manage sign-in providers | any |
 | `tenants` | Create, change and delete tenants | any |
@@ -71,7 +71,7 @@ service accounts.
 
 SCIM provisioning is a service account with the `scim` scope: Entra ID, Okta and similar tools use its `client_id` and
 secret. The SCIM rules for what a provisioning client may touch
-are unchanged: it never reaches a super admin, and it manages administrators only with the `admins` scope.
+are unchanged: it never reaches a super admin, and it manages administrators only with the `manage_admins` scope.
 
 ## Who may grant what
 
@@ -86,7 +86,7 @@ are unchanged: it never reaches a super admin, and it manages administrators onl
   organization (a super admin, or an account with `orgs:create`) may give it any of the organization's scopes,
   `import` and `service_accounts` included.
 - A service account is not asked to re-authenticate for the sensitive changes a person must confirm; what it may do was
-  decided when it was granted its scopes. Granting `admins` or `orgs:delete` is therefore a decision to take seriously.
+  decided when it was granted its scopes. Granting `manage_admins` or `orgs:delete` is therefore a decision to take seriously.
 
 ## Deploying organizations
 
@@ -104,7 +104,7 @@ account on the primary organization, made by a super admin:
      "display_name": "Customer 42",
      "service_account": {
        "name": "setup",
-       "scopes": ["users", "admins", "groups", "providers", "tenants", "clients", "access", "import", "service_accounts"]
+       "scopes": ["users", "manage_admins", "groups", "providers", "tenants", "clients", "access", "import", "service_accounts"]
      }
    }'
    ```

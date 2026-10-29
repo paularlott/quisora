@@ -34,8 +34,8 @@ func (s *Service) canManageUser(a *Actor, target *model.User) bool {
 		return false
 	case a.ClientID != "":
 		// A service account manages plain users and managers only (never an admin's password, status or role), unless
-		// it holds the admins scope: then every user of its organization but a super admin.
-		if a.HasScope(ScopeAdmins) {
+		// it holds the manage_admins scope: then every user of its organization but a super admin.
+		if a.HasScope(ScopeManageAdmins) {
 			return target.Role != model.RoleSuperAdmin
 		}
 		return target.Role.Rank() <= model.RoleManager.Rank()
@@ -49,8 +49,8 @@ func (s *Service) canManageUser(a *Actor, target *model.User) bool {
 
 // canAssignRole reports whether a may give role to a user of org.
 func (s *Service) canAssignRole(ctx context.Context, a *Actor, org *model.Org, role model.Role) bool {
-	if a.ClientID != "" && role.Rank() > model.RoleManager.Rank() && !a.HasScope(ScopeAdmins) {
-		return false // a service account grants roles above manager only with the admins scope (never super admin)
+	if a.ClientID != "" && role.Rank() > model.RoleManager.Rank() && !a.HasScope(ScopeManageAdmins) {
+		return false // a service account grants roles above manager only with the manage_admins scope (never super admin)
 	}
 	switch role {
 	case model.RoleSuperAdmin:

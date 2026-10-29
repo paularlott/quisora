@@ -653,7 +653,7 @@ func (m *Module) connectionsUser(w http.ResponseWriter, r *http.Request) (*model
 // one (service.CurbsAdmin), removing another user's password. An
 // API token is refused: whoever holds one has not proven anything recently. A service account goes ahead: there is no
 // person to re-authenticate, and what it may do was decided when it was granted its scopes (the routes it reaches,
-// and administrators only with the admins scope). It writes the response itself; the console answers a 403 with field
+// and administrators only with the manage_admins scope). It writes the response itself; the console answers a 403 with field
 // "reauth" with its re-authentication dialog and retries.
 func (m *Module) stepUp(w http.ResponseWriter, r *http.Request) bool {
 	if web.Actor(r).ClientID != "" {

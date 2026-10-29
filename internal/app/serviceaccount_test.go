@@ -52,7 +52,7 @@ func TestServiceAccountDeployFlow(t *testing.T) {
 	deployTok := token(primary.ID, deploy.ID, deploySecret)
 
 	code, created := call(deployTok, "POST", "/api/orgs", map[string]any{"name": "fortix-one", "service_account": map[string]any{
-		"name": "setup", "scopes": []string{"users", "admins", "import", "groups", "tenants", "clients", "providers", "access"}}})
+		"name": "setup", "scopes": []string{"users", "manage_admins", "import", "groups", "tenants", "clients", "providers", "access"}}})
 	if code != 201 {
 		t.Fatalf("create org %d %v", code, created)
 	}

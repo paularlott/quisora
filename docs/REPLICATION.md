@@ -607,7 +607,7 @@ and remove at most 1,000 memberships (`service.MaxMembersPerChange`), which keep
 larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
 
 Whose membership an actor may change depends on the user's rank (an administrator never reaches a super admin; a
-manager or a service account without the `admins` scope changes plain users' memberships only), so a change by anyone but a super admin
+manager or a service account without the `manage_admins` scope changes plain users' memberships only), so a change by anyone but a super admin
 judges each user it touches on the newer of this node's copy and **the owners'** (one fresh read for the whole
 change, `membersToJudge`): a promotion committed anywhere counts before it has reached this node. A user who
 cannot be read refuses the change; a rank that could not be read is never taken as plain.

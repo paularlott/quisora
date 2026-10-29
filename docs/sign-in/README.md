@@ -109,7 +109,7 @@ from the user's page. Changing a password signs the user out of every other brow
 
 **Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks with
 its **Confirm it is you** dialog), and a personal API token can never make them, through the management API or SCIM (a
-[service account](../SERVICE-ACCOUNTS.md) is not asked: it makes only what its scopes allow, with `admins` for
+[service account](../SERVICE-ACCOUNTS.md) is not asked: it makes only what its scopes allow, with `manage_admins` for
 administrators):
 
 - deleting an organization;

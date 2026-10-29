@@ -14,19 +14,19 @@ import (
 // that calls the management API and SCIM with client_credentials tokens, and holds only the scopes it was granted:
 // each management route names the one it needs, and a route that names none is closed to it (the organization's
 // settings, the audit log, the server's keys and backups). It acts as an administrator of its own organization within
-// those scopes, and never as a super admin: without ScopeAdmins it manages users and managers only, as SCIM does.
+// those scopes, and never as a super admin: without ScopeManageAdmins it manages users and managers only, as SCIM does.
 const (
 	// ScopeOrgsCreate creates organizations, each with an optional first service account (CreateOrgWithServiceAccount).
 	ScopeOrgsCreate = "orgs:create"
 	// ScopeOrgsDelete deletes the organizations the account created (model.Org.CreatedBy).
-	ScopeOrgsDelete = "orgs:delete"
-	ScopeUsers      = "users"     // users and managers: their details, emails, provider links, sessions, tokens
-	ScopeAdmins     = "admins"    // with users: the organization's administrators too
-	ScopeGroups     = "groups"    // groups and their members
-	ScopeProviders  = "providers" // sign-in providers
-	ScopeTenants    = "tenants"   // tenants
-	ScopeClients    = "clients"   // applications (OAuth clients), and the self-registered ones
-	ScopeAccess     = "access"    // tenants' access lists
+	ScopeOrgsDelete   = "orgs:delete"
+	ScopeUsers        = "users"         // users and managers: their details, emails, provider links, sessions, tokens
+	ScopeManageAdmins = "manage_admins" // with users: the organization's administrators too
+	ScopeGroups       = "groups"        // groups and their members
+	ScopeProviders    = "providers"     // sign-in providers
+	ScopeTenants      = "tenants"       // tenants
+	ScopeClients      = "clients"       // applications (OAuth clients), and the self-registered ones
+	ScopeAccess       = "access"        // tenants' access lists
 	// ScopeServiceAccounts manages the organization's service accounts, giving none more than the account holds.
 	ScopeServiceAccounts = "service_accounts"
 )
@@ -34,7 +34,7 @@ const (
 // ServiceAccountScopes are the scopes a service account of any organization may hold (ScopeImport with ScopeUsers or
 // ScopeSCIM); PrimaryServiceAccountScopes only one of the primary organization.
 var (
-	ServiceAccountScopes = []string{ScopeUsers, ScopeAdmins, ScopeGroups, ScopeProviders, ScopeTenants, ScopeClients,
+	ServiceAccountScopes = []string{ScopeUsers, ScopeManageAdmins, ScopeGroups, ScopeProviders, ScopeTenants, ScopeClients,
 		ScopeAccess, ScopeImport, ScopeSCIM, ScopeServiceAccounts}
 	PrimaryServiceAccountScopes = []string{ScopeOrgsCreate, ScopeOrgsDelete}
 )

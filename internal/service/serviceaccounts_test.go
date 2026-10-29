@@ -29,7 +29,7 @@ func TestServiceAccountGrants(t *testing.T) {
 	in := func(scopes ...string) service.ServiceAccountInput {
 		return service.ServiceAccountInput{Name: ptr(c.next("sa")), Scopes: &scopes}
 	}
-	sa, secret, err := c.svc.CreateServiceAccount(c.ctx, admin, c.a.ID, in("users", "admins", "groups", "providers", "tenants", "clients", "access", "scim", "service_accounts"))
+	sa, secret, err := c.svc.CreateServiceAccount(c.ctx, admin, c.a.ID, in("users", "manage_admins", "groups", "providers", "tenants", "clients", "access", "scim", "service_accounts"))
 	if err != nil || secret == "" || !sa.ServiceAccount || sa.TenantID != "" || len(sa.GrantTypes) != 1 || sa.GrantTypes[0] != "client_credentials" {
 		t.Fatalf("org admin creates: %+v %v", sa, err)
 	}
@@ -126,12 +126,12 @@ func TestServiceAccountActorScopes(t *testing.T) {
 	}
 }
 
-// Without the admins scope a service account manages plain users and managers only; with it, administrators too, but
+// Without the manage_admins scope a service account manages plain users and managers only; with it, administrators too, but
 // never a super admin.
 func TestServiceAccountRoles(t *testing.T) {
 	c := newCast(t)
 	_, users := newServiceAccount(t, c, c.a.ID, "users")
-	_, admins := newServiceAccount(t, c, c.a.ID, "users", "admins")
+	_, admins := newServiceAccount(t, c, c.a.ID, "users", "manage_admins")
 	mk := func(a *service.Actor, role model.Role) error {
 		n := c.next("u")
 		_, err := c.svc.CreateUser(c.ctx, a, c.a.ID, service.UserInput{GivenName: ptr("T"), Username: &n, Email: ptr(n + "@example.com"), Role: &role})
@@ -186,7 +186,7 @@ func TestServiceAccountOrgLifecycle(t *testing.T) {
 	c := newCast(t)
 	_, deploy := newServiceAccount(t, c, c.primary.ID, "orgs:create", "orgs:delete")
 	_, other := newServiceAccount(t, c, c.primary.ID, "orgs:delete")
-	first := &service.ServiceAccountInput{Name: ptr("setup"), Scopes: &[]string{"users", "admins", "import", "tenants", "clients", "providers", "service_accounts"}}
+	first := &service.ServiceAccountInput{Name: ptr("setup"), Scopes: &[]string{"users", "manage_admins", "import", "tenants", "clients", "providers", "service_accounts"}}
 	o, sa, secret, err := c.svc.CreateOrgWithServiceAccount(c.ctx, deploy, service.OrgInput{Name: ptr("fortix-one"), ServiceAccount: first})
 	if err != nil || sa == nil || secret == "" || sa.OrgID != o.ID || !sa.ServiceAccount || o.CreatedBy != deploy.ClientID {
 		t.Fatalf("create: %+v %+v %v", o, sa, err)
