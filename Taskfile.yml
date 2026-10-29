@@ -133,6 +133,40 @@ tasks:
         --allow-private-networks
         --log-level debug
 
+  run-server-db:
+    desc: "Like run-server, but stores its data in the remote database server named by DEV_DB_HOST, DEV_DB_USER, DEV_DB_PASSWORD, DEV_DB_NAME (and DEV_DB_BACKEND, mysql or mariadb, default mysql) in .env. Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
+    deps: [build-1password]
+    vars:
+      DB_BACKEND: '{{.DEV_DB_BACKEND | default "mysql"}}'
+      PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
+      LISTEN: '{{.DEV_LISTEN | default "localhost:8443"}}'
+      SMTP_HOST: '{{.DEV_SMTP_HOST | default "localhost"}}'
+    env:
+      QUISORA_STORAGE: '{{.DB_BACKEND}}'
+      QUISORA_MYSQL_DSN: '{{.DEV_DB_USER}}:{{.DEV_DB_PASSWORD}}@tcp({{.DEV_DB_HOST}}:{{.DEV_DB_PORT | default "3306"}})/{{.DEV_DB_NAME}}?parseTime=true'
+      QUISORA_MARIADB_DSN: '{{.DEV_DB_USER}}:{{.DEV_DB_PASSWORD}}@tcp({{.DEV_DB_HOST}}:{{.DEV_DB_PORT | default "3306"}})/{{.DEV_DB_NAME}}?parseTime=true'
+    cmds:
+      - mkdir -p ./data/dev
+      - >-
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} bootstrap
+        --master-key "{{.DEV_MASTER_KEY}}"
+        --data-dir ./data/dev
+        --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
+        --bootstrap-admin admin@example.com
+      - >-
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} serve
+        --master-key "{{.DEV_MASTER_KEY}}"
+        --listen {{.LISTEN | default "127.0.0.1:8443"}}
+        --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
+        --data-dir ./data/dev
+        --smtp-host {{.SMTP_HOST | default "localhost"}}
+        --smtp-port 1025
+        --smtp-tls none
+        --smtp-from "Quisora <quisora@example.com>"
+        --password-min-length 10
+        --allow-private-networks
+        --log-level debug
+
   test:
     desc: "The everyday loop: vet, and every Go test with the race detector but the cluster package's (task test-cluster): the store drivers' conformance suite and every layer above them (set the QUISORA_TEST_* variables for database servers)"
     cmds:
