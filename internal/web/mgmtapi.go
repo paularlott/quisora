@@ -126,7 +126,7 @@ func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Han
 			var org *model.Org
 			if ref := r.PathValue("org"); ref != "" {
 				var err error
-				if org, err = s.Svc.OrgByName(r.Context(), ref); err != nil {
+				if org, err = s.Svc.OrgByRef(r.Context(), ref); err != nil {
 					WriteError(w, err)
 					return
 				}

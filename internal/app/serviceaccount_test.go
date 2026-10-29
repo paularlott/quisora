@@ -80,6 +80,10 @@ func TestServiceAccountDeployFlow(t *testing.T) {
 	if code, _ := call(setup, "GET", "/api/orgs/fortix-one", nil); code != 200 {
 		t.Errorf("reads its organization: %d", code)
 	}
+	// The organization's id names it too, as under /o/.
+	if code, out := call(setup, "GET", "/api/orgs/"+orgID+"/tenants", nil); code != 200 || out["total"] != float64(2) { // default and customers
+		t.Errorf("tenants by organization id: %d %v", code, out)
+	}
 	// Groups and their members: groups is also an OpenID Connect scope, which a token without a user never carries,
 	// but a service account's is its own and is kept.
 	_, carol := call(setup, "POST", "/api/orgs/fortix-one/users", map[string]any{"given_name": "Carol", "username": "carol", "email": "carol@fortix.test"})
@@ -124,7 +128,7 @@ func TestServiceAccountDeployFlow(t *testing.T) {
 	}
 
 	// The creator deletes it, and with it the account it made.
-	if code, out := call(deployTok, "DELETE", "/api/orgs/fortix-one?cascade=1", nil); code != 200 {
+	if code, out := call(deployTok, "DELETE", "/api/orgs/"+orgID+"?cascade=1", nil); code != 200 {
 		t.Fatalf("delete org %d %v", code, out)
 	}
 	if code, _ := call(setup, "GET", "/api/orgs/fortix-one", nil); code != 401 && code != 404 {

@@ -107,7 +107,7 @@ func (m *Module) deleteOrg(w http.ResponseWriter, r *http.Request) {
 	var o *model.Org
 	if a.ClientID != "" {
 		var err error
-		if o, err = m.s.Svc.OrgByName(r.Context(), r.PathValue("org")); err != nil {
+		if o, err = m.s.Svc.OrgByRef(r.Context(), r.PathValue("org")); err != nil {
 			web.WriteError(w, err)
 			return
 		}
