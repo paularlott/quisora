@@ -1,5 +1,5 @@
 // The addresses an organization is shared and configured with, each to copy: its overview page, the organizations
-// list, and the dialog of a client just created.
+// list, a tenant page and the dialog of a client just created.
 import { test, expect } from '@playwright/test'
 import { signIn, apiCall, axe, fmt } from './helpers.mjs'
 
@@ -57,7 +57,7 @@ test('organizations list: each row copies its sign-in link', async ({ page, cont
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })
 
-test('client dialog: a confidential client shows client ID, issuer and secret; a public one no secret', async ({ page, context }) => {
+test('client dialog: a confidential client shows client ID, issuer, discovery URL and secret; a public one no secret', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await signIn(page, 'admin')
   await page.goto(`${A}/tenants/customers`, { waitUntil: 'load' })
@@ -80,6 +80,9 @@ test('client dialog: a confidential client shows client ID, issuer and secret; a
   await expect(dlg.getByText('The secret is shown once')).toBeVisible()
   expect(await copied(page, dlg.getByRole('button', { name: 'Copy client ID' }), 'client ID')).toBe(id)
   expect(await copied(page, dlg.getByRole('button', { name: 'Copy issuer' }), 'issuer')).toBe(`${pub}/o/${org.id}`)
+  const discovery = `${pub}/o/${org.id}/.well-known/openid-configuration`
+  await expect(dlg.locator('#client-discovery')).toHaveText(discovery)
+  expect(await copied(page, dlg.getByRole('button', { name: 'Copy discovery URL' }), 'discovery URL')).toBe(discovery)
   const secret = (await dlg.locator('#client-secret').innerText()).trim()
   expect(await copied(page, dlg.getByRole('button', { name: 'Copy client secret' }), 'client secret')).toBe(secret)
   await dlg.getByRole('button', { name: 'I have stored it' }).click()
@@ -94,4 +97,17 @@ test('client dialog: a confidential client shows client ID, issuer and secret; a
   expect(r.violations.length, fmt(r.violations)).toBe(0)
   await dlg.getByRole('button', { name: 'Done' }).click()
   await expect(dlg).toBeHidden()
+})
+
+test('tenant page: the issuer URL and the discovery URL to copy, named beside the tenant ID', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await signIn(page, 'admin')
+  await page.goto(`${A}/tenants/staff`, { waitUntil: 'load' })
+  const org = await apiCall(page, 'GET', API)
+  const pub = new URL(page.url()).origin
+  const head = page.locator('.page-head')
+  await expect(head.getByRole('button', { name: 'Copy issuer URL' })).toHaveAttribute('title', 'Copy issuer URL')
+  expect(await copied(page, head.getByRole('button', { name: 'Copy issuer URL' }), 'issuer URL')).toBe(`${pub}/o/${org.id}`)
+  expect(await copied(page, head.getByRole('button', { name: 'Copy discovery URL' }), 'discovery URL'))
+    .toBe(`${pub}/o/${org.id}/.well-known/openid-configuration`)
 })

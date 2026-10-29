@@ -11,8 +11,12 @@
     <div>
       <p class="eyebrow">{{.Org.DisplayName}} · Tenant</p>
       <h1 class="page-title">Tenant: <span x-text="tenantTitle">{{.Data.TenantDisplay}}</span></h1>
-      <p class="page-sub"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span>
-        · ID <span class="copy-id"><code class="mono" id="tenant-id">{{.Data.TenantID}}</code><button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyFrom" data-source="tenant-id" data-what="tenant ID" aria-label="Copy tenant ID" @click="copy"><span x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button></span></p>
+      <p class="page-sub page-sub-wide"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span>
+        <span class="copy-id">· ID <code class="mono" id="tenant-id">{{.Data.TenantID}}</code>{{template "copy-icon" (dict "source" "tenant-id" "what" "tenant ID")}}</span>
+        {{- /* The organization's addresses applications are configured with (the same for every tenant; also in a new
+               client's dialog and on the organization page): named, not shown, to keep the line short. */}}
+        <span class="copy-id">· <span id="tenant-issuer" hidden>{{.Data.Issuer}}</span>Issuer URL{{template "copy-icon" (dict "source" "tenant-issuer" "what" "issuer URL")}}</span>
+        <span class="copy-id">· <span id="tenant-discovery" hidden>{{.Data.Issuer}}/.well-known/openid-configuration</span>Discovery URL{{template "copy-icon" (dict "source" "tenant-discovery" "what" "discovery URL")}}</span></p>
     </div>
   </div>
 

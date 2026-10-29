@@ -348,6 +348,7 @@
   <p>Configure <strong x-text="secretClient"></strong> with:</p>
   {{template "copy-box" (dict "id" "client-id" "label" "Client ID" "what" "client ID" "bind" "clientId" "focus" true)}}
   {{template "copy-box" (dict "id" "client-issuer" "label" "Issuer" "what" "issuer" "bind" "issuer")}}
+  {{template "copy-box" (dict "id" "client-discovery" "label" "Discovery URL" "what" "discovery URL" "bind" "discoveryUrl")}}
   <div x-show="hasSecret" x-cloak>{{template "copy-box" (dict "id" "client-secret" "label" "Client secret" "what" "client secret" "bind" "secret")}}</div>
 </div>
 <div class="dialog-foot"><button type="button" class="btn btn-primary" @click="closeThis" x-text="secretDone"></button></div>
@@ -360,6 +361,11 @@
     <button type="button" class="btn btn-secondary btn-sm" data-source="{{.id}}" data-what="{{.what}}" @click="copy"{{if .focus}} data-autofocus{{end}}>
       <span x-show="!done">{{template "icon" "copy"}} Copy<span class="sr-only"> {{.what}}</span></span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied<span class="sr-only"> {{.what}}</span></span></button></div></div>
 {{end}}
+
+{{/* An icon-only button that copies the text of the element source (which may be hidden): what names it (label,
+     tooltip and announcement). */}}
+{{define "copy-icon"}}<button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyFrom" data-source="{{.source}}" data-what="{{.what}}"
+  aria-label="Copy {{.what}}" title="Copy {{.what}}" @click="copy"><span x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button>{{end}}
 
 {{/* One address of an organization to copy, in a card's <dl>: id, label, what (named in the announcement), value. */}}
 {{define "address"}}

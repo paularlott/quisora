@@ -33,8 +33,12 @@ test('structure: no Clients in the navigation; tenants list links to tenant page
   const crumbs = page.getByRole('navigation', { name: 'Breadcrumb' })
   await expect(crumbs.locator('ol > li')).toHaveCount(2)
   await expect(crumbs.locator('[aria-current="page"]')).toHaveText('Tenants')
-  await expect(page.getByRole('row', { name: /Staff tools/ })).toContainText('3 clients')
+  // searched: other tests add tenants, which can push these past the first page
+  const search = page.getByRole('searchbox', { name: 'Search tenants' })
+  await search.fill('Partners')
   await expect(page.getByRole('row', { name: /Partners/ })).toContainText('0 clients')
+  await search.fill('Staff tools')
+  await expect(page.getByRole('row', { name: /Staff tools/ })).toContainText('3 clients')
   // open from the name link
   await page.getByRole('link', { name: 'Staff tools', exact: true }).click()
   await expect(page).toHaveURL(`${A}/tenants/staff`)
@@ -42,6 +46,7 @@ test('structure: no Clients in the navigation; tenants list links to tenant page
   // and from the client count
   await page.goBack()
   await page.waitForSelector('tbody tr')
+  await search.fill('Customer apps')
   await page.getByRole('link', { name: /\d+ clients in Customer apps/ }).click()
   await expect(page).toHaveURL(`${A}/tenants/customers`)
   // old links keep working

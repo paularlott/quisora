@@ -10,7 +10,7 @@ import { subscribe, liveRunner, announceUpdate, flashRows } from './live.js'
 
 export function tableMixin() {
   return {
-    items: [], total: 0, loading: true, loadError: '', q: '', sort: '', desc: false, offset: 0, limit: 25,
+    items: [], total: 0, loading: true, loadError: '', q: '', sort: '', desc: false, offset: 0, limit: 10,
     extra: {}, scope: {}, apiUrl: '', noun: 'items', _timer: null, _seq: 0, _firstLoad: true,
     _root: null, _lastRes: '', _sigs: null, _live: null, _unlive: null, liveText: '',
 

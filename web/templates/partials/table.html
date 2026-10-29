@@ -44,7 +44,7 @@
   <p class="muted" x-text="summary"></p>
   <div class="pager-group">
     <label class="sr-only" for="{{.}}">Rows per page</label>
-    <select class="select" id="{{.}}" @change="setLimit"><option value="10">10 per page</option><option value="25" selected>25 per page</option><option value="50">50 per page</option><option value="100">100 per page</option></select>
+    <select class="select" id="{{.}}" @change="setLimit"><option value="10" selected>10 per page</option><option value="25">25 per page</option><option value="50">50 per page</option><option value="100">100 per page</option></select>
     <button type="button" class="btn btn-secondary btn-sm" :disabled="noPrev" @click="prev">{{template "icon" "chevron-left"}} Previous</button>
     <button type="button" class="btn btn-secondary btn-sm" :disabled="noNext" @click="next">Next {{template "icon" "chevron-right"}}</button>
   </div>

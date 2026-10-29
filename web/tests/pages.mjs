@@ -153,7 +153,7 @@ export const PAGES = [
   { name: 'tenants', path: `${A}/tenants`, as: 'admin', steps: [waitRows] },
   { name: 'tenants-new', path: `${A}/tenants`, as: 'admin', steps: [waitRows, open('New tenant')], dialog: true },
   { name: 'tenants-new-org-mfa', path: '/admin/orgs/northwind/tenants', as: 'super', steps: [waitRows, open('New tenant')], dialog: true },
-  { name: 'tenants-edit', path: `${A}/tenants`, as: 'admin', steps: [waitRows, open('Edit Staff tools')], dialog: true },
+  { name: 'tenants-edit', path: `${A}/tenants`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('searchbox', { name: 'Search tenants' }).fill('Staff tools') }, open('Edit Staff tools')], dialog: true },
   { name: 'tenant', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows] },
   { name: 'tenant-customers', path: `${A}/tenants/customers`, as: 'admin', steps: [waitRows] },
   { name: 'tenant-empty', path: `${A}/tenants/partners`, as: 'admin', steps: [async (p) => { await p.getByText('No clients in this tenant yet').waitFor() }] },

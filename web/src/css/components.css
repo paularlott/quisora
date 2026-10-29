@@ -2,6 +2,7 @@
   /* ---- Typography ------------------------------------------------------------------------------------------- */
   .page-title { font-size: clamp(1.6rem, 1.2rem + 1.6vw, 2.2rem); line-height: 1.15; font-weight: 750; letter-spacing: -0.025em; }
   .page-sub { color: var(--fg-muted); max-width: 60ch; margin-top: 0.35rem; }
+  .page-sub-wide { max-width: none; } /* a line of short labelled values, not prose: as wide as the header */
   .section-title { font-size: 1.125rem; font-weight: 650; letter-spacing: -0.01em; }
   .eyebrow { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-muted); }
   .muted { color: var(--fg-muted); }

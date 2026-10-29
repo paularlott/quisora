@@ -683,8 +683,8 @@ function clientDialogMixin(Alpine) {
       else toast('Client saved.')
       await this.afterClientSaved(res, moved)
     },
-    // The dialog of what the application is configured with: client ID and issuer, and the secret (shown once) of a
-    // confidential client (c.secret; a public client has none).
+    // The dialog of what the application is configured with: client ID, issuer and discovery URL (applications ask for
+    // one or the other), and the secret (shown once) of a confidential client (c.secret; a public client has none).
     showClient(c, title) {
       this.clientId = c.id
       this.secret = c.secret || ''
@@ -692,6 +692,7 @@ function clientDialogMixin(Alpine) {
       this.secretTitle = title
       this.$nextTick(() => this.openDlg('secret-dialog'))
     },
+    get discoveryUrl() { return this.issuer + '/.well-known/openid-configuration' },
     get hasSecret() { return this.secret !== '' },
     get secretDone() { return this.hasSecret ? 'I have stored it' : 'Done' },
     async rotateClient(c) {
