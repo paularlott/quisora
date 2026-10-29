@@ -41,10 +41,10 @@ type IdentityInput struct {
 }
 
 // requireImport refuses an actor that may not import what (a password hash, an authenticator secret, provider
-// links): the system and super admins, and a token only with the import scope.
+// links): the system, super admins (a token only with the import scope) and service accounts with the import scope.
 func requireImport(a *Actor, field, what string) error {
-	if a != System && !(a.IsSuper() && a.HasScope(ScopeImport)) {
-		return Invalid(field, "only super admins import "+what+" (an API token needs the import scope)")
+	if a != System && !((a.IsSuper() || a.ClientID != "") && a.HasScope(ScopeImport)) {
+		return Invalid(field, "only super admins and service accounts with the import scope import "+what+" (an API token needs the import scope)")
 	}
 	return nil
 }

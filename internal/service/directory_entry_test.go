@@ -139,7 +139,7 @@ func TestSearchDoesNotLeakHiddenFields(t *testing.T) {
 // administrator's, for a client), and a manager is given a plain user's but not an administrator's.
 func TestFullViewListsOnlyWhatTheViewerSeesInFull(t *testing.T) {
 	c := newCast(t)
-	client := service.ActorForClient(&model.Client{Meta: model.Meta{ID: "scim"}, OrgID: c.primary.ID}, "")
+	client := service.ActorForServiceAccount(&model.Client{Meta: model.Meta{ID: "scim"}, OrgID: c.primary.ID}, nil, "")
 	for _, tc := range []struct {
 		name   string
 		viewer *service.Actor

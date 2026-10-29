@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/paularlott/quisora/internal/service"
@@ -13,14 +12,14 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// bearer resolves management-API bearer tokens: personal API tokens (the user's role still limits each call).
-// OAuth access tokens are not accepted by the management API; SCIM takes provisioning clients' (scimVerifier).
-func bearer(svc *service.Service) web.BearerFunc {
+// bearer resolves management-API bearer tokens: personal API tokens (the user's role still limits each call) and
+// service accounts' access tokens (serviceAccount). Other OAuth access tokens are not accepted.
+func bearer(a *App) web.BearerFunc {
 	return func(ctx context.Context, r *http.Request, tok string) (*service.Actor, error) {
 		if !service.IsAPIToken(tok) {
-			return nil, service.ErrBadToken
+			return serviceAccount(a, r, "Bearer", tok)
 		}
-		t, u, err := svc.ValidateAPIToken(ctx, tok)
+		t, u, err := a.Svc.ValidateAPIToken(ctx, tok)
 		if err != nil {
 			return nil, err
 		}
@@ -28,27 +27,32 @@ func bearer(svc *service.Service) web.BearerFunc {
 	}
 }
 
-// scimVerifier accepts OAuth client_credentials access tokens carrying the scim scope from an enabled client with
-// SCIM provisioning turned on; the client acts as an admin of its own organization (never granting admin roles).
+// serviceAccount resolves an OAuth client_credentials access token of an enabled service account to its actor (the
+// management API and SCIM; each checks the scope it needs). The account is read for every request, so one disabled,
+// deleted or given fewer scopes is refused at once, not when its token expires.
+func serviceAccount(a *App, r *http.Request, scheme, tok string) (*service.Actor, error) {
+	cl, err := a.OIDC.VerifyRequestToken(r, scheme, tok)
+	if err != nil {
+		return nil, err
+	}
+	if cl.ClientID == "" || cl.Sub != cl.ClientID {
+		return nil, service.ErrBadToken // a user's token: applications act for their users, never as Quisora's administrators
+	}
+	c, err := a.Svc.Clients.Get(r.Context(), cl.ClientID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		// The read failed, not the token: answered 503 (as for a personal API token), not 401, so the caller retries
+		// instead of treating its token as revoked.
+		return nil, fmt.Errorf("%w: the service account could not be read: %v", service.ErrUnavailable, err)
+	}
+	if err != nil || !c.Enabled || !c.ServiceAccount {
+		return nil, service.ErrBadToken
+	}
+	return service.ActorForServiceAccount(c, strings.Fields(cl.Scope), web.ClientIP(r)), nil
+}
+
+// scimVerifier accepts service accounts' access tokens for SCIM (which then requires the scim scope).
 func scimVerifier(a *App) func(r *http.Request, scheme, tok string) (*service.Actor, error) {
 	return func(r *http.Request, scheme, tok string) (*service.Actor, error) {
-		ctx := r.Context()
-		cl, err := a.OIDC.VerifyRequestToken(r, scheme, tok)
-		if err != nil {
-			return nil, err
-		}
-		if cl.ClientID == "" || cl.Sub != cl.ClientID || !slices.Contains(strings.Fields(cl.Scope), service.ScopeSCIM) {
-			return nil, service.ErrBadToken // user tokens and tokens without the scim scope are not provisioning tokens
-		}
-		c, err := a.Svc.Clients.Get(ctx, cl.ClientID)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			// The read failed, not the token: SCIM answers 503 (as for a personal API token), not 401, so the
-			// provisioning client retries instead of treating its token as revoked.
-			return nil, fmt.Errorf("%w: the client could not be read: %v", service.ErrUnavailable, err)
-		}
-		if err != nil || !c.Enabled || !c.SCIM {
-			return nil, service.ErrBadToken
-		}
-		return service.ActorForClient(c, ""), nil
+		return serviceAccount(a, r, scheme, tok)
 	}
 }

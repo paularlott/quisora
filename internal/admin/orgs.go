@@ -47,18 +47,27 @@ func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
 	writeList(w, out, total)
 }
 
+// createOrg creates an organization, with its first service account when the request names one (returned with its
+// secret, which is never retrievable again).
 func (m *Module) createOrg(w http.ResponseWriter, r *http.Request) {
 	var in service.OrgInput
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
-	o, err := m.s.Svc.CreateOrg(r.Context(), web.Actor(r), in)
+	o, sa, secret, err := m.s.Svc.CreateOrgWithServiceAccount(r.Context(), web.Actor(r), in)
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
 	zero := 0
-	web.WriteJSON(w, http.StatusCreated, orgView{Org: o, Primary: o.Primary, Users: &zero})
+	out := struct {
+		orgView
+		ServiceAccount *createdServiceAccount `json:"service_account,omitempty"`
+	}{orgView: orgView{Org: o, Primary: o.Primary, Users: &zero}}
+	if sa != nil {
+		out.ServiceAccount = &createdServiceAccount{m.serviceAccountViewOf(sa), secret}
+	}
+	web.WriteJSON(w, http.StatusCreated, out)
 }
 
 func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
@@ -91,11 +100,22 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteOrg deletes an organization; ?cascade=1 allows one with users (they, its groups, clients and providers stop
-// counting at once and the orphan sweep removes them).
+// counting at once and the orphan sweep removes them). A service account (orgs:delete) names an organization it
+// created, not its own: the service decides which it may delete.
 func (m *Module) deleteOrg(w http.ResponseWriter, r *http.Request) {
-	o, a, found := m.orgFor(w, r)
-	if !found {
-		return
+	a := web.Actor(r)
+	var o *model.Org
+	if a.ClientID != "" {
+		var err error
+		if o, err = m.s.Svc.OrgByName(r.Context(), r.PathValue("org")); err != nil {
+			web.WriteError(w, err)
+			return
+		}
+	} else {
+		var found bool
+		if o, a, found = m.orgFor(w, r); !found {
+			return
+		}
 	}
 	cascade := r.URL.Query().Get("cascade") == "1"
 	if a.IsSuper() && !m.stepUp(w, r) {

@@ -79,7 +79,7 @@ func TestSelfRegisteredLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	view := service.InTenant(app, ten)
-	if view.OrgID != c.a.ID || view.TenantID != ten.ID || len(view.Resources) != 1 || view.FirstParty || view.SCIM || view.IntrospectOrg {
+	if view.OrgID != c.a.ID || view.TenantID != ten.ID || len(view.Resources) != 1 || view.FirstParty || view.IntrospectOrg {
 		t.Errorf("InTenant %+v", view)
 	}
 	if app.TenantID != "" || len(app.Resources) != 0 {

@@ -34,6 +34,7 @@ Each guide explains one feature, with curl examples you can run against a server
 | Make stolen tokens useless | [DPoP](dpop.md) |
 | Meet the FAPI 2.0 Security Profile (open banking and the like) | [FAPI 2.0](fapi2.md) |
 | Let AI clients register themselves with an MCP server | [MCP servers and self-registered apps](../MCP.md) |
+| Automate Quisora itself: provisioning, imports, deploying organizations | [Service accounts](../SERVICE-ACCOUNTS.md) |
 | Let users' scripts call your API with their own tokens | [Personal API tokens](../API-TOKENS.md#your-own-applications-api) |
 
 The examples need `curl`, `jq` and, for the guides that sign JWTs, OpenSSL 3 with the helpers in [jwt.sh](jwt.sh).

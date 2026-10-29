@@ -603,10 +603,10 @@ function clientDialogMixin(Alpine) {
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
     get usesDevice() { return (this.form.grant_types || []).includes(DEVICE_CODE) },
-    editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canScim: false, tenants: [], tenantId: '',
+    editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canFirstParty: false, tenants: [], tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
-      const locked = !this.canScim && !!(c.scim || c.first_party) // SCIM and first-party clients: super admins only
+      const locked = !this.canFirstParty && !!c.first_party // first-party clients: super admins only
       return { ...c, createdText: fmtDate(c.created), statusText: b.text, statusClass: b.cls, copyLabel: 'Copy client ID of ' + c.name,
         editLabel: 'Edit ' + c.name, deleteLabel: 'Delete ' + c.name, rotateLabel: 'Rotate secret of ' + c.name,
         methodText: { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT', none: 'Public (no secret)' }[c.token_endpoint_auth_method] || c.token_endpoint_auth_method,
@@ -633,7 +633,7 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
         first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
-        dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile, scim: !!c.scim,
+        dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile,
         device_privileged_users: !!c.device_privileged_users }
     },
     openCreateClient(opener) {
@@ -667,7 +667,7 @@ function clientDialogMixin(Alpine) {
         fapi2_security_profile: f.token_endpoint_auth_method === 'private_key_jwt' && f.fapi2_security_profile }
       if (f.tenant_id) b.tenant_id = f.tenant_id
       if (f.token_endpoint_auth_method === 'private_key_jwt') { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
-      if (this.canScim) { b.scim = pub ? false : f.scim; b.first_party = f.first_party }
+      if (this.canFirstParty) b.first_party = f.first_party
       return b
     },
     async submitClient() {
@@ -1396,7 +1396,7 @@ export default function (Alpine) {
       this.pageBase = d.page
       this.tenantId = d.tenant
       this.titleText = d.title
-      this.canScim = d.canScim === '1'
+      this.canFirstParty = d.canFirstParty === '1'
       this.issuer = d.issuer
       this.scope = { tenant: this.tenantId }
       this.initTable()
@@ -1601,12 +1601,119 @@ export default function (Alpine) {
     },
   }))
 
+  // ---- Service accounts: an organization's non-human principals (client_credentials) ---------------------------------
+  // The scopes a service account may hold. Only super admins give import and the orgs:* scopes (the latter on the primary
+  // organization alone); the server refuses the rest, so they are not offered.
+  const SERVICE_SCOPES = [
+    { value: 'users', help: 'Users and managers.' },
+    { value: 'admins', help: 'With users: administrators too.' },
+    { value: 'groups', help: 'Groups and their members.' },
+    { value: 'providers', help: 'Sign-in providers.' },
+    { value: 'tenants', help: 'Tenants.' },
+    { value: 'clients', help: 'Applications.' },
+    { value: 'access', help: 'Tenant access lists.' },
+    { value: 'import', help: 'Password hashes, authenticator secrets and provider links when creating users.', superOnly: true },
+    { value: 'scim', help: 'The SCIM API.' },
+    { value: 'service_accounts', help: 'This organization’s service accounts, granting no more than it holds.' },
+    { value: 'orgs:create', help: 'Create organizations.', superOnly: true, primaryOnly: true },
+    { value: 'orgs:delete', help: 'Delete the organizations it created.', superOnly: true, primaryOnly: true },
+  ]
+  const SERVICE_METHODS = { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT' }
+  Alpine.data('adminServiceAccounts', () => mix(tableMixin(), formMixin(), dialogMixin(), {
+    editing: null, scopeChoices: [], clientId: '', tokenEndpoint: '', secret: '', secretAccount: '', secretTitle: '',
+    init() {
+      const d = this.$el.dataset
+      this.scopeChoices = SERVICE_SCOPES.filter((s) => (!s.superOnly || !!d.super) && (!s.primaryOnly || !!d.primary)).map((s) => ({ ...s, id: 'f-scope-' + s.value }))
+      this.initTable()
+    },
+    transform(a) {
+      const b = activeBadge(a.enabled, 'Enabled', 'Disabled')
+      const locked = a.scopes.some((sc) => !this.scopeChoices.some((c) => c.value === sc)) // holds a scope this viewer may not give
+      return { ...a, statusText: b.text, statusClass: b.cls, copyLabel: 'Copy client ID of ' + a.name, editLabel: 'Edit ' + a.name,
+        rotateLabel: 'Rotate secret of ' + a.name, deleteLabel: 'Delete ' + a.name, sub: a.description || '',
+        methodText: SERVICE_METHODS[a.token_endpoint_auth_method] || a.token_endpoint_auth_method,
+        canChange: !locked, canRotate: !locked && a.token_endpoint_auth_method !== 'private_key_jwt' }
+    },
+    get isEdit() { return this.editing !== null },
+    get isJwt() { return this.form.token_endpoint_auth_method === 'private_key_jwt' },
+    get dialogTitle() { return this.editing ? 'Edit service account' : 'New service account' },
+    get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create service account' },
+    get methodHelp() {
+      return { client_secret_post: 'Quisora issues a secret, sent in the request body of the token request.', client_secret_basic: 'Quisora issues a secret, sent in an HTTP Basic header.',
+        private_key_jwt: 'No secret: the service account signs a JWT with its private key, and you register the public keys.' }[this.form.token_endpoint_auth_method] || ''
+    },
+    toForm(a) {
+      return { name: a.name, description: a.description || '', scopes: [...(a.scopes || [])], token_endpoint_auth_method: a.token_endpoint_auth_method,
+        jwks: a.jwks || '', jwks_uri: a.jwks_uri || '', enabled: a.enabled !== false }
+    },
+    openCreate(ev) {
+      this.editing = null
+      this.resetForm(this.toForm({ name: '', scopes: [], token_endpoint_auth_method: 'client_secret_post' }))
+      this.openDlg('sa-dialog', ev.currentTarget)
+    },
+    edit(ev) {
+      const a = this.rowFromEvent(ev)
+      this.editing = a
+      this.resetForm(this.toForm(a))
+      this.openDlg('sa-dialog', ev.currentTarget)
+      this.watchEdit({ kinds: ['client'], record: a, fetchOne: () => getOrNull(`${this.apiUrl}/${enc(a.id)}`) })
+    },
+    body() {
+      const f = this.form
+      const b = { name: f.name, description: f.description, scopes: this.scopeChoices.map((c) => c.value).filter((v) => f.scopes.includes(v)),
+        token_endpoint_auth_method: f.token_endpoint_auth_method }
+      if (this.isJwt) { b.jwks = f.jwks; b.jwks_uri = f.jwks_uri }
+      if (this.editing) b.enabled = f.enabled
+      return b
+    },
+    async submit() {
+      const edit = this.editing
+      const body = this.body()
+      const res = await this.run(() => edit ? patch(`${this.apiUrl}/${enc(edit.id)}`, body) : post(this.apiUrl, body))
+      if (!res) return
+      this.closeDlg('sa-dialog')
+      if (edit) toast('Service account saved.')
+      else this.showSecret(res, 'Service account created')
+      this.load()
+    },
+    // What the service account is configured with: its client ID and token endpoint, and the secret (shown once) of one
+    // that authenticates with a secret (a.secret).
+    showSecret(a, title) {
+      this.clientId = a.id
+      this.tokenEndpoint = a.token_endpoint
+      this.secret = a.secret || ''
+      this.secretAccount = a.name
+      this.secretTitle = title
+      this.$nextTick(() => this.openDlg('sa-secret-dialog'))
+    },
+    get hasSecret() { return this.secret !== '' },
+    get secretDone() { return this.hasSecret ? 'I have stored it' : 'Done' },
+    async rotate(ev) {
+      const a = this.rowFromEvent(ev)
+      const yes = await confirmAction(Alpine, { title: 'Rotate secret?', message: `Issue a new secret for “${a.name}”?`,
+        detail: 'The current secret stops working immediately. Update everything that uses it.', confirmLabel: 'Rotate secret', danger: true })
+      if (!yes) return
+      try {
+        const res = await post(`${this.apiUrl}/${enc(a.id)}/secret`)
+        this.showSecret({ ...a, secret: res.secret }, 'New secret')
+      } catch (e) { toast(e.message, 'error') }
+    },
+    async remove(ev) {
+      const a = this.rowFromEvent(ev)
+      const yes = await confirmAction(Alpine, { title: 'Delete service account?', message: `Delete the service account “${a.name}”?`,
+        detail: 'Its tokens stop working immediately. This cannot be undone.', confirmLabel: 'Delete service account' })
+      if (!yes) return
+      try { await del(`${this.apiUrl}/${enc(a.id)}`); toast(`Service account “${a.name}” deleted.`); this.load() } catch (e) { toast(e.message, 'error') }
+    },
+  }))
+
   // ---- Audit ----------------------------------------------------------------------------------------------------
   // Kinds of action (the first part of the name: the action_group filter) and the known actions, for the filters.
   const AUDIT_GROUPS = [
     { value: 'login.', label: 'Sign-in' }, { value: 'password.', label: 'Password resets' }, { value: 'invite.', label: 'Invitations' },
     { value: 'account.', label: 'Own account changes' }, { value: 'user.', label: 'Users' }, { value: 'group.', label: 'Groups' },
     { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'client.', label: 'Applications' },
+    { value: 'service_account.', label: 'Service accounts' },
     { value: 'oauth.', label: 'Application sign-ins and tokens' }, { value: 'provider.', label: 'Sign-in providers' }, { value: 'identity.', label: 'Linked sign-ins' },
     { value: 'passkey.', label: 'Passkeys' }, { value: 'apitoken.', label: 'API tokens' }, { value: 'keys.', label: 'Signing keys' },
     { value: 'signout.', label: 'Sign-out sweeps' }, { value: 'backup.', label: 'Backups' }, { value: 'cluster.', label: 'Cluster' },
@@ -1625,7 +1732,8 @@ export default function (Alpine) {
     'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.refresh',
     'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary', 'org.signout',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',
-    'provider.update', 'server.signout', 'signout.sweep', 'tenant.access.add', 'tenant.access.remove',
+    'provider.update', 'server.signout', 'service_account.create', 'service_account.delete',
+    'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'tenant.access.add', 'tenant.access.remove',
     'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update', 'user.app.revoke',
     'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove', 'user.email.verify',
     'user.expire', 'user.invite', 'user.invite.break_glass', 'user.locked_out', 'user.passkey.remove',

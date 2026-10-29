@@ -651,9 +651,14 @@ func (m *Module) connectionsUser(w http.ResponseWriter, r *http.Request) (*model
 // (signed in or confirmed within the last 5 minutes): deleting an organization, rotating the signing keys, changing
 // the primary organization's sign-in settings, making someone an administrator or demoting, disabling or deleting
 // one (service.CurbsAdmin), removing another user's password. An
-// API token is refused: whoever holds one has not proven anything recently. It writes the response itself; the
-// console answers a 403 with field "reauth" with its re-authentication dialog and retries.
+// API token is refused: whoever holds one has not proven anything recently. A service account goes ahead: there is no
+// person to re-authenticate, and what it may do was decided when it was granted its scopes (the routes it reaches,
+// and administrators only with the admins scope). It writes the response itself; the console answers a 403 with field
+// "reauth" with its re-authentication dialog and retries.
 func (m *Module) stepUp(w http.ResponseWriter, r *http.Request) bool {
+	if web.Actor(r).ClientID != "" {
+		return true
+	}
 	if web.Session(r) == nil {
 		web.WriteJSON(w, http.StatusForbidden, web.ErrorBody{Field: "reauth",
 			Error: "This change needs a recent re-authentication in the admin console; an API token cannot make it."})

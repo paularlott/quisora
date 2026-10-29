@@ -26,7 +26,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   commit they were run on: [docs/conformance.md](docs/conformance.md)). A guide for each, with curl examples:
   [docs/oauth](docs/oauth/README.md).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
-  document, and personal API tokens with scopes. Keys and passwords can be read from HashiCorp Vault or 1Password
+  document, personal API tokens with scopes, and service accounts for automation that belongs to no person. Keys and passwords can be read from HashiCorp Vault or 1Password
   (Connect, or a service account in the 1Password build) and rotated without a restart.
 - **Roles.** Super admin, admin, manager and user. Managers look after plain users: they create and change them and
   add them to groups and take them out, but create, rename, retag or delete no group, and change nothing for a
@@ -98,7 +98,8 @@ Every flag is also an `QUISORA_*` variable and a TOML key: see `quisora serve --
 Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.md](docs/RUNNING.md). Replication rules
 and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it securely (threat model, hardening checklist, incident
 response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md). Scripts and tools with personal API tokens:
-[docs/API-TOKENS.md](docs/API-TOKENS.md). MCP servers and AI clients that register themselves:
+[docs/API-TOKENS.md](docs/API-TOKENS.md). Automation with service accounts (SCIM provisioning, importers, deploying
+organizations): [docs/SERVICE-ACCOUNTS.md](docs/SERVICE-ACCOUNTS.md). MCP servers and AI clients that register themselves:
 [docs/MCP.md](docs/MCP.md).
 Connecting applications (sign-in, client credentials, device sign-in, token exchange, PAR, DPoP, FAPI 2.0):
 [docs/oauth](docs/oauth/README.md). How people sign in (passkeys, upstream providers, recovery codes, codes by email):

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -20,14 +19,15 @@ import (
 	"github.com/paularlott/quisora/internal/webtest"
 )
 
-// The management API takes personal API tokens only: anything else, and unknown tokens, are rejected.
+// The management API takes personal API tokens and service accounts' access tokens only: anything else, and unknown
+// tokens, are rejected (as refusals, not as a failure to check them).
 func TestBearerRejections(t *testing.T) {
 	a, _, _ := startApp(t, "sqlite")
-	f := bearer(a.Svc)
+	f := bearer(a)
 	r := httptest.NewRequest("GET", "/api/me", nil)
 	for _, tok := range []string{"", "plain-oauth-access-token", "eyJhbGciOiJFUzI1NiJ9.e30.sig"} {
-		if _, err := f(context.Background(), r, tok); !errors.Is(err, service.ErrBadToken) {
-			t.Fatalf("token %q: %v", tok, err)
+		if act, err := f(context.Background(), r, tok); err == nil || act != nil || service.IsUnavailable(err) {
+			t.Fatalf("token %q: %v %v", tok, act, err)
 		}
 	}
 	// well formed but unknown: refused (never an actor)

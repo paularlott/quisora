@@ -20,17 +20,28 @@ import (
 type probe struct{}
 
 func (probe) Register(s *web.Server) {
-	h := s.RequireManagement(func(w http.ResponseWriter, r *http.Request) {
+	probe := func(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, 200, map[string]string{"actor": web.Actor(r).Name})
-	})
+	}
+	h := s.RequireManagement(service.ScopeUsers, probe)
 	s.Mux.Handle("POST /api/probe", h)
 	s.Mux.Handle("POST /api/orgs/{org}/probe", h)
+	s.Mux.Handle("POST /api/closed", s.RequireManagement("", probe))
+	s.Mux.Handle("POST /api/any", s.RequireManagement(web.AnyScope, probe))
 	s.Bearer = func(ctx context.Context, r *http.Request, tok string) (*service.Actor, error) {
 		switch tok {
 		case "admin":
 			return &service.Actor{Name: "tok", Scopes: []string{service.ScopeAdmin}}, nil
 		case "scim":
 			return &service.Actor{Name: "tok", Scopes: []string{service.ScopeSCIM}}, nil
+		case "users": // a personal token cannot hold it, but a token's scopes are not the route's: admin it needs
+			return &service.Actor{Name: "tok", Scopes: []string{service.ScopeUsers}}, nil
+		case "sa-users":
+			return &service.Actor{Name: "service:deploy", ClientID: "c_1", Scopes: []string{service.ScopeUsers}}, nil
+		case "sa-clients":
+			return &service.Actor{Name: "service:deploy", ClientID: "c_1", Scopes: []string{service.ScopeClients}}, nil
+		case "sa-admin": // a service account never holds admin; were it to, admin would not open a route to it
+			return &service.Actor{Name: "service:deploy", ClientID: "c_1", Scopes: []string{service.ScopeAdmin}}, nil
 		case "down": // the store failed while the token was checked
 			return nil, service.ErrUnavailable
 		}
@@ -41,7 +52,12 @@ func (probe) Register(s *web.Server) {
 func TestManagementAuthAndVersion(t *testing.T) {
 	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{probe{}} }})
 	do := func(c *http.Client, hdr map[string]string) *http.Response {
-		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/probe", nil)
+		path := "/api/probe"
+		if p := hdr["path"]; p != "" {
+			path = p
+		}
+		delete(hdr, "path")
+		req, _ := http.NewRequest(http.MethodPost, env.URL+path, nil)
 		for k, v := range hdr {
 			req.Header.Set(k, v)
 		}
@@ -65,6 +81,15 @@ func TestManagementAuthAndVersion(t *testing.T) {
 		{"bad version", map[string]string{"Authorization": "Bearer admin", "Api-Version": "99"}, 400},
 		{"unknown date", map[string]string{"Authorization": "Bearer admin", "Api-Version": "2026-10-19"}, 400},
 		{"old numeric version", map[string]string{"Authorization": "Bearer admin", "Api-Version": "1"}, 400},
+		// A personal token needs admin wherever it calls; a service account the route's own scope.
+		{"personal token, route's scope", map[string]string{"Authorization": "Bearer users"}, 403},
+		{"service account, route's scope", map[string]string{"Authorization": "Bearer sa-users"}, 200},
+		{"service account, other scope", map[string]string{"Authorization": "Bearer sa-clients"}, 403},
+		{"service account, admin scope", map[string]string{"Authorization": "Bearer sa-admin"}, 403},
+		{"service account, closed route", map[string]string{"Authorization": "Bearer sa-users", "path": "/api/closed"}, 403},
+		{"admin token, closed route", map[string]string{"Authorization": "Bearer admin", "path": "/api/closed"}, 200},
+		{"service account, any scope", map[string]string{"Authorization": "Bearer sa-clients", "path": "/api/any"}, 200},
+		{"personal token, any scope", map[string]string{"Authorization": "Bearer scim", "path": "/api/any"}, 403},
 	}
 	for _, c := range cases {
 		if r := do(anon, c.hdr); r.StatusCode != c.want {
@@ -121,7 +146,12 @@ func TestManagementBearerLimitAndRefusalAudit(t *testing.T) {
 	audit := auditCapture{actions: make(chan string, 16)}
 	env.Svc.AuditWriter = audit
 	do := func(c *http.Client, hdr map[string]string) *http.Response {
-		req, _ := http.NewRequest(http.MethodPost, env.URL+"/api/probe", nil)
+		path := "/api/probe"
+		if p := hdr["path"]; p != "" {
+			path = p
+		}
+		delete(hdr, "path")
+		req, _ := http.NewRequest(http.MethodPost, env.URL+path, nil)
 		for k, v := range hdr {
 			req.Header.Set(k, v)
 		}

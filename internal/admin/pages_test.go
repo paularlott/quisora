@@ -28,6 +28,7 @@ func TestPages(t *testing.T) {
 	for _, p := range []struct{ path, comp string }{
 		{"/admin/orgs/acme/users", "adminUsers"}, {"/admin/orgs/acme/groups", "adminGroups"},
 		{"/admin/orgs/acme/tenants", "adminTenants"}, {"/admin/orgs/acme/providers", "adminProviders"}, {"/admin/orgs/acme/audit", "adminAudit"},
+		{"/admin/orgs/acme/service-accounts", "adminServiceAccounts"},
 		{"/admin/orgs/acme/users/" + w.users["user"].ID, "adminUser"},
 	} {
 		body := html(ad, p.path, 200)
@@ -110,6 +111,13 @@ func TestPages(t *testing.T) {
 	}
 	if b := html(ad, "/admin/orgs/acme/groups", 200); !strings.Contains(b, "data-admin") || !strings.Contains(b, "openCreate") {
 		t.Error("admin: groups page")
+	}
+	html(mg, "/admin/orgs/acme/service-accounts", 403)
+	if b := html(mg, "/admin/orgs/acme/users", 200); strings.Contains(b, "/service-accounts") {
+		t.Error("manager: service accounts link")
+	}
+	if b := html(ad, "/admin/orgs/acme/users", 200); !strings.Contains(b, `href="/admin/orgs/acme/service-accounts"`) {
+		t.Error("admin: no service accounts link")
 	}
 	b := html(mg, "/admin/orgs/acme/tenants", 403)
 	if !strings.Contains(b, "Not allowed") || !strings.Contains(b, "<h1") {

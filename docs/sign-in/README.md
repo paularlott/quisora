@@ -108,7 +108,9 @@ from the user's page. Changing a password signs the user out of every other brow
 ## Confirming it is you
 
 **Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks with
-its **Confirm it is you** dialog), and an API token can never make them, through the management API or SCIM:
+its **Confirm it is you** dialog), and a personal API token can never make them, through the management API or SCIM (a
+[service account](../SERVICE-ACCOUNTS.md) is not asked: it makes only what its scopes allow, with `admins` for
+administrators):
 
 - deleting an organization;
 - rotating the signing keys;
@@ -135,7 +137,7 @@ and an account whose second factor is a passkey confirms with the passkey, not t
   they connect the provider themselves ([providers](providers.md#who-signs-in-as-whom)).
 - **No codes by email** and **no trusted provider second factor** for them: they always give their own.
 - **Who may remove a super admin.** Nobody demotes, disables, locks out, end-dates or deletes themselves (nor changes their
-  own end date), and only a super admin does any of that to a super admin: an administrator, a manager or a SCIM client
+  own end date), and only a super admin does any of that to a super admin: an administrator, a manager or a service account
   cannot. The system never does either (the sweep that disables accounts past their end date skips super admins; their end
   date still stops sign-in). These are rules about who acts on whom, not a count: there is no guarantee that a super admin
   always remains. Two super admins removing each other at the same moment on different nodes can leave none, as can an end

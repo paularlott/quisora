@@ -48,10 +48,12 @@ request.
 
 ## SCIM provisioning
 
-A client with **May provision users with SCIM** (super admins set it) also gets the `scim` scope, and its tokens can
-call its organization's SCIM API (`/scim/v2/<org>/…`): ask for `scope=scim`. That is how Entra ID and Okta
-provision users; see [the SCIM section](../API-TOKENS.md#scim-scim) for the endpoints, which accept these tokens and
-personal API tokens alike.
+A [service account](../SERVICE-ACCOUNTS.md) with the `scim` scope calls its organization's SCIM API
+(`/scim/v2/<org>/…`) with its client credentials tokens: ask for `scope=scim`, or leave `scope` out to get all of its
+scopes. That is how Entra ID and Okta provision users; see [the SCIM section](../API-TOKENS.md#scim-scim) for the
+endpoints, which accept these tokens and personal API tokens alike. A service account is made on the organization's
+**Service accounts** page, not as an application: it is not in the list of clients, and an ordinary client's token is
+refused by the management API and SCIM.
 
 ## What it cannot reach
 

@@ -33,7 +33,11 @@ func (s *Service) canManageUser(a *Actor, target *model.User) bool {
 	case a.OrgID != target.OrgID:
 		return false
 	case a.ClientID != "":
-		// Provisioning clients manage plain users and managers only: never an admin's password, status or role.
+		// A service account manages plain users and managers only (never an admin's password, status or role), unless
+		// it holds the admins scope: then every user of its organization but a super admin.
+		if a.HasScope(ScopeAdmins) {
+			return target.Role != model.RoleSuperAdmin
+		}
 		return target.Role.Rank() <= model.RoleManager.Rank()
 	case a.Role == model.RoleAdmin:
 		return target.Role != model.RoleSuperAdmin
@@ -45,8 +49,8 @@ func (s *Service) canManageUser(a *Actor, target *model.User) bool {
 
 // canAssignRole reports whether a may give role to a user of org.
 func (s *Service) canAssignRole(ctx context.Context, a *Actor, org *model.Org, role model.Role) bool {
-	if a.ClientID != "" && role.Rank() > model.RoleManager.Rank() {
-		return false // provisioning clients never grant admin roles
+	if a.ClientID != "" && role.Rank() > model.RoleManager.Rank() && !a.HasScope(ScopeAdmins) {
+		return false // a service account grants roles above manager only with the admins scope (never super admin)
 	}
 	switch role {
 	case model.RoleSuperAdmin:
@@ -73,6 +77,8 @@ type OrgInput struct {
 	Name        *string            `json:"name"`
 	DisplayName *string            `json:"display_name"`
 	Settings    *model.OrgSettings `json:"settings"`
+	// ServiceAccount, when creating an organization, is its first service account (CreateOrgWithServiceAccount).
+	ServiceAccount *ServiceAccountInput `json:"service_account"`
 }
 
 func validateOrgName(name string) error {
@@ -192,15 +198,24 @@ func (s *Service) ListOrgs(ctx context.Context, a *Actor, q store.ListQuery) ([]
 
 // CreateOrg creates an organization (super admins only).
 func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.Org, error) {
-	if !a.IsSuper() {
-		return nil, ErrForbidden
+	o, _, _, err := s.CreateOrgWithServiceAccount(ctx, a, in)
+	return o, err
+}
+
+// CreateOrgWithServiceAccount creates an organization: a super admin or a service account with the orgs:create
+// scope. With in.ServiceAccount it also creates the organization's first service account, with any of the
+// organization's scopes, and returns it with its secret (shown once; none for private_key_jwt): the account is checked
+// before anything is written, and if it cannot be written the organization is deleted again, so a retry starts clean.
+func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in OrgInput) (*model.Org, *model.Client, string, error) {
+	if !a.IsSuper() && !(a.ClientID != "" && a.HasScope(ScopeOrgsCreate)) {
+		return nil, nil, "", ErrForbidden
 	}
 	if in.Name == nil {
-		return nil, Invalid("name", "required")
+		return nil, nil, "", Invalid("name", "required")
 	}
-	o := &model.Org{Name: strings.TrimSpace(*in.Name), Settings: model.DefaultOrgSettings()}
+	o := &model.Org{Name: strings.TrimSpace(*in.Name), Settings: model.DefaultOrgSettings(), CreatedBy: a.ClientID}
 	if err := validateOrgName(o.Name); err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	o.DisplayName = o.Name
 	if in.DisplayName != nil && strings.TrimSpace(*in.DisplayName) != "" {
@@ -208,17 +223,36 @@ func (s *Service) CreateOrg(ctx context.Context, a *Actor, in OrgInput) (*model.
 	}
 	if in.Settings != nil {
 		if err := s.validOrgSettings(ctx, o.ID, *in.Settings, nil); err != nil {
-			return nil, err
+			return nil, nil, "", err
 		}
 		o.Settings = *in.Settings
 	}
+	var (
+		sa     *model.Client
+		secret string
+	)
+	if in.ServiceAccount != nil {
+		var err error
+		if sa, secret, err = s.newServiceAccount(ctx, a, o, *in.ServiceAccount, true); err != nil {
+			return nil, nil, "", prefixField("service_account.", err)
+		}
+	}
 	if err := s.audited(ctx, a, o.ID, "org.create", o.Name, nil, func() error { return s.Orgs.Create(ctx, o) }); err != nil {
-		return nil, orgConflict(err)
+		return nil, nil, "", orgConflict(err)
 	}
 	if _, err := s.DefaultTenant(ctx, o.ID); err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
-	return o, nil
+	if sa != nil {
+		sa.OrgID = o.ID
+		if err := s.createServiceAccount(ctx, a, sa); err != nil {
+			if _, cerr := s.closeOrg(ctx, o.ID, true); cerr == nil {
+				_ = s.deleteOrgRecord(ctx, a, o, map[string]string{"reason": "its service account could not be created"})
+			}
+			return nil, nil, "", err
+		}
+	}
+	return o, sa, secret, nil
 }
 
 // UpdateOrg changes name, display name or settings (super admins only).
@@ -261,14 +295,18 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 // DeleteOrg deletes a non-primary organization. Without cascade the org must have no users; with cascade it may, and
 // they go with it (with its groups, applications, tenants and providers: they stop counting at once, and the orphan
 // sweep removes them). Either way it first closes the organization to new users (closeOrg), so no user is created in
-// it, and reported made, once it is about to go.
+// it, and reported made, once it is about to go. A super admin deletes any; a service account with the orgs:delete
+// scope only one it created (model.Org.CreatedBy).
 func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bool) error {
-	if !a.IsSuper() {
+	if !a.IsSuper() && !(a.ClientID != "" && a.HasScope(ScopeOrgsDelete)) {
 		return ErrForbidden
 	}
 	o, err := s.Orgs.Get(ctx, id)
 	if err != nil {
 		return mapStore(err)
+	}
+	if !a.IsSuper() && o.CreatedBy != a.ClientID {
+		return ErrNotFound // a service account deletes only the organizations it created
 	}
 	if o.Primary {
 		return ErrPrimaryOrg

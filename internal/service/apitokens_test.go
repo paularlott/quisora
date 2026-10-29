@@ -253,7 +253,7 @@ func TestAPITokenLifetimeAndManagement(t *testing.T) {
 	if _, n, _ := c.svc.ListAPITokens(c.ctx, actor(c.aAdmin), store.ListQuery{}); n != 0 {
 		t.Errorf("admin sees %d tokens of a manager", n)
 	}
-	if _, _, err := c.svc.ListAPITokens(c.ctx, service.ActorForClient(&model.Client{OrgID: c.a.ID}, ""), store.ListQuery{}); !errors.Is(err, service.ErrForbidden) {
+	if _, _, err := c.svc.ListAPITokens(c.ctx, service.ActorForServiceAccount(&model.Client{OrgID: c.a.ID}, nil, ""), store.ListQuery{}); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("client listing tokens: %v", err)
 	}
 

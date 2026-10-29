@@ -14,7 +14,7 @@ async function copied(page, button, what) {
   return page.evaluate(() => navigator.clipboard.readText())
 }
 
-test('org overview: sign-in page, issuer and discovery URL to copy; no SCIM address for an org admin', async ({ page, context }) => {
+test('org overview: sign-in page, issuer, discovery URL and SCIM base URL to copy', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await signIn(page, 'admin')
   await page.goto(A, { waitUntil: 'load' })
@@ -29,18 +29,15 @@ test('org overview: sign-in page, issuer and discovery URL to copy; no SCIM addr
   await expect(card.locator('#addr-discovery')).toHaveText(discovery)
   expect(await copied(page, card.getByRole('button', { name: 'Copy Discovery URL (OpenID configuration)' }), 'discovery URL')).toBe(discovery)
   expect((await (await page.request.get(discovery)).json()).issuer).toBe(`${pub}/o/${org.id}`)
-  await expect(card.getByRole('button', { name: /SCIM/ })).toHaveCount(0)
-  await expect(card.locator('#addr-scim')).toHaveCount(0)
+  await expect(card.locator('#addr-scim')).toHaveText(`${pub}/scim/v2/acme`)
+  expect(await copied(page, card.getByRole('button', { name: 'Copy SCIM base URL (for provisioning tools)' }), 'SCIM base URL')).toBe(`${pub}/scim/v2/acme`)
 })
 
-test('org overview: a super admin also gets the SCIM base URL', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+test('org overview: a super admin gets the SCIM base URL too', async ({ page }) => {
   await signIn(page, 'super')
   await page.goto(A, { waitUntil: 'load' })
   const pub = new URL(page.url()).origin
-  const card = page.getByRole('region', { name: 'Addresses' })
-  await expect(card.locator('#addr-scim')).toHaveText(`${pub}/scim/v2/acme`)
-  expect(await copied(page, card.getByRole('button', { name: 'Copy SCIM base URL (for provisioning tools)' }), 'SCIM base URL')).toBe(`${pub}/scim/v2/acme`)
+  await expect(page.getByRole('region', { name: 'Addresses' }).locator('#addr-scim')).toHaveText(`${pub}/scim/v2/acme`)
 })
 
 test('organizations list: each row copies its sign-in link', async ({ page, context }) => {

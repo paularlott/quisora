@@ -108,6 +108,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "auth_method", Type: FieldString, Sort: true, Index: true, SortIndex: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
 		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (purge)
+		{Name: "service_account", Type: FieldBool, Index: true}, // the organization's service accounts, listed apart
 		// those nobody has let sign in yet: what the registration cap counts (service.MaxSelfRegistered), on an
 		// open endpoint, so it reads at most the cap's worth, not every application ever registered
 		{Name: "unused_self_registered", Type: FieldBool, Index: true},

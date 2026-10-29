@@ -10,9 +10,11 @@ info:
 
     With a browser session, managers and above must have signed in with a second factor; otherwise every call answers 403 with field "mfa".
 
+    Automation: a service account is a non-human principal of one organization that gets an access token from the organization's token endpoint (/o/{org}/oauth/token, client credentials) and calls this API with it as a bearer token. It holds only the scopes it was granted, and each operation below names the one it needs in its security requirements (the serviceAccount scheme; no such requirement: service accounts cannot call it). See the Service accounts tag and the serviceAccount security scheme.
+
     Failed bearer authentications (this API and SCIM together) are limited to 60 per address and minute: past that every bearer request from the address answers 429 with Retry-After for the rest of the minute, before its token is checked. Successful requests never count.
 
-    SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or an OAuth access token of a client with SCIM provisioning turned on (client credentials, scim scope).
+    SCIM 2.0 (RFC 7643, RFC 7644) is described too, under the SCIM tag: a provisioning client's base URL is /scim/v2/{org}. It answers application/scim+json and takes a personal API token with the scim scope, or the access token of a service account that holds the scim scope.
 
     Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /o/{org}/api-internal/account (the signed-in user of that organization, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).
 servers:
@@ -23,7 +25,7 @@ security:
   - bearer: [admin]
 tags:
   - name: Organizations
-    description: Organizations hold users, groups, tenants, clients and sign-in providers. Creating, renaming and deleting them is for super admins.
+    description: Organizations hold users, groups, tenants, clients and sign-in providers. Creating, renaming and deleting them is for super admins; on the primary organization a service account with the orgs:create scope creates them, and one with orgs:delete deletes the ones it created.
   - name: Users
     description: People who sign in, with their email addresses, invitations, sessions, linked providers, passkeys and personal API tokens.
   - name: Groups
@@ -36,6 +38,8 @@ tags:
     description: "OAuth 2 / OpenID Connect clients: the applications that sign users in through this server."
   - name: Providers
     description: Upstream sign-in providers (other OpenID Connect or OAuth 2 identity providers) users can sign in with.
+  - name: Service accounts
+    description: Non-human principals of an organization that call this API and SCIM with client-credentials access tokens, each holding only the scopes it was granted. Their administrators are org admins and super admins (and service accounts with the service_accounts scope).
   - name: Audit
     description: The audit log, per organization and across all of them.
   - name: Keys
@@ -58,6 +62,9 @@ paths:
       tags: [Organizations]
       summary: List organizations (non-super callers see only their own)
       operationId: get_orgs
+      security:
+        - session: []
+        - bearer: [admin]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -86,8 +93,13 @@ paths:
         "503": {$ref: "#/components/responses/Unavailable"}
     post:
       tags: [Organizations]
-      summary: Create an organization (super admin)
+      summary: Create an organization (super admin, or a service account with orgs:create)
+      description: "Create an organization (super admin, or a service account of the primary organization with the orgs:create scope). The optional service_account is the organization's first service account, with any of the service account scopes, import included (orgs:create and orgs:delete are only for the primary organization's own accounts). The response carries its secret, shown once (none for private_key_jwt). If the account cannot be created the organization is not left behind. A service account that creates an organization is the only one that may delete it again."
       operationId: post_orgs
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [orgs:create]
       requestBody:
         content:
           application/json:
@@ -100,7 +112,7 @@ paths:
             Api-Version: {$ref: "#/components/headers/ApiVersion"}
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Org"}
+              schema: {$ref: "#/components/schemas/OrgCreated"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -116,6 +128,10 @@ paths:
       tags: [Organizations]
       summary: Get an organization
       operationId: get_orgs_org
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: []
       responses:
         "200":
           description: Success
@@ -160,8 +176,12 @@ paths:
     delete:
       tags: [Organizations]
       summary: Delete an organization
-      description: Delete an organization (super admin). ?cascade=1 also deletes its users, groups, clients and providers; they stop working at once, and their records are removed in the background within about a day
+      description: Delete an organization (super admin, or a service account with the orgs:delete scope, which may delete only organizations it created). ?cascade=1 also deletes its users, groups, clients and providers; they stop working at once, and their records are removed in the background within about a day
       operationId: delete_orgs_org
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [orgs:delete]
       parameters:
         - name: cascade
           in: query
@@ -192,6 +212,9 @@ paths:
       description: |-
         Ends every browser session and refresh grant of the organization at once, on every node, and so every access token issued from them; with `api_tokens`, its personal API tokens too. The session making the request is kept. Organization administrators and super admins, from a browser session that re-authenticated in the last 5 minutes (otherwise 403 with field `reauth`; an API token is refused). Applications are then told (back-channel logout) and the ended records deleted, in the background. Applications that check access tokens themselves rather than through introspection accept the ones already issued until they expire. Tokens of applications acting for themselves (client credentials) are not affected: rotate the client's secret.
       operationId: post_orgs_org_sign_out
+      security:
+        - session: []
+        - bearer: [admin]
       requestBody:
         content:
           application/json:
@@ -221,6 +244,10 @@ paths:
       summary: List users
       description: List users; ?tag=<tag> keeps only users carrying exactly that tag; q also matches tags
       operationId: get_orgs_org_users
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -268,6 +295,10 @@ paths:
         (password_hash, totp_secret, identities). Do not issue an invitation to such a user: accepting one replaces every way
         they sign in."
       operationId: post_orgs_org_users
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       requestBody:
         content:
           application/json:
@@ -302,6 +333,10 @@ paths:
       tags: [Users]
       summary: Get a user with their groups
       operationId: get_orgs_org_users_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -321,6 +356,10 @@ paths:
       tags: [Users]
       summary: Update a user (role, active, profile)
       operationId: patch_orgs_org_users_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       requestBody:
         content:
           application/json:
@@ -345,6 +384,10 @@ paths:
       tags: [Users]
       summary: Delete a user and everything that belongs to them
       operationId: delete_orgs_org_users_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -376,6 +419,10 @@ paths:
       description: Remove the user's password and end their sessions; they can sign in with a password again only after
         accepting a new invitation
       operationId: delete_orgs_org_users_id_password
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "204":
           description: Success
@@ -404,6 +451,10 @@ paths:
       description: |-
         For a compromised account or a leaver. The user is disabled (with the reason, as when disabling them), their sessions and refresh grants end at once (applications are told, and remembered consent goes with the grants), and their password, authenticator app, passkeys, linked sign-in providers, personal API tokens and unused invitation, reset and verification links are removed. The account stays, for the audit log. Enabling it again brings none of that back: it then needs a new invitation. The rules are those of removing someone's password and of disabling them (never your own account; an established administrator's only by a super admin), from a browser session that re-authenticated in the last 5 minutes (otherwise 403 with field `reauth`; an API token is refused). Audited as user.locked_out.
       operationId: post_orgs_org_users_id_lock_out
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       requestBody:
         content:
           application/json:
@@ -445,6 +496,10 @@ paths:
       description: Issue a new single-use invitation link (valid 7 days; earlier links stop working) through which the user
         sets a password, if their organization allows passwords, or creates a passkey; optionally email it
       operationId: post_orgs_org_users_id_invite
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       requestBody:
         content:
           application/json:
@@ -483,6 +538,10 @@ paths:
         user is mailed a link to verify it; without email it counts as verified at once (your own: always unverified).
         409 when the address is already anyone's primary or linked address, 422 beyond 10 addresses"
       operationId: post_orgs_org_users_id_emails
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       requestBody:
         content:
           application/json:
@@ -524,6 +583,10 @@ paths:
       summary: Unlink an email address
       description: Unlink an email address; the primary address cannot be removed (make another address primary first)
       operationId: delete_orgs_org_users_id_emails_address
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -560,6 +623,10 @@ paths:
       summary: Make a verified linked address the primary one
       description: Make a verified linked address the primary one; the old primary becomes a linked address
       operationId: post_orgs_org_users_id_emails_address_primary
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -599,6 +666,10 @@ paths:
         Managers and up, for users they manage; never your own; a manager's or administrator's who can already sign in
         only by a super admin. Audited as user.email.verify. 409 when already verified"
       operationId: post_orgs_org_users_id_emails_address_mark-verified
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -635,6 +706,10 @@ paths:
       summary: Mail the user a new verification link for one of their unverified addresses
       description: Mail the user a new verification link for one of their unverified addresses; 503 when email is not set up
       operationId: post_orgs_org_users_id_emails_address_verify
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -665,6 +740,10 @@ paths:
       summary: The applications the user granted access to
       description: The applications the user granted access to (managers and up, for users they manage, and yourself)
       operationId: get_orgs_org_users_id_apps
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -707,6 +786,10 @@ paths:
       description: "End the user's access to one application: it is sent a back-channel logout and its refresh tokens stop
         working; 404 when the user granted it nothing"
       operationId: delete_orgs_org_users_id_apps_client
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -737,6 +820,10 @@ paths:
       summary: The user's signed-in sessions
       description: The user's signed-in sessions, the current one first (managers and up, for users they manage, and yourself)
       operationId: get_orgs_org_users_id_sessions
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -761,6 +848,10 @@ paths:
       tags: [Users]
       summary: Sign the user out everywhere (revoke sessions and refresh grants)
       operationId: delete_orgs_org_users_id_sessions
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -798,6 +889,10 @@ paths:
       description: Sign the user out of one session (its applications are sent back-channel logouts); 409 for the session
         making the request
       operationId: delete_orgs_org_users_id_sessions_session
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -828,6 +923,10 @@ paths:
       summary: The sign-in providers linked to the user
       description: The sign-in providers linked to the user (managers and up, for users they manage, and yourself)
       operationId: get_orgs_org_users_id_providers
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -871,6 +970,10 @@ paths:
         (send an invitation afterwards), for yourself it may not (409) and needs a recent re-authentication (403, field
         reauth); 404 when none is linked
       operationId: delete_orgs_org_users_id_providers_provider
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -901,6 +1004,10 @@ paths:
       summary: The user's passkeys
       description: The user's passkeys, oldest first (managers and up, for users they manage, and yourself)
       operationId: get_orgs_org_users_id_passkeys
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -944,6 +1051,10 @@ paths:
         their last way to sign in (send an invitation afterwards), for yourself it may not (409) and needs a recent
         re-authentication (403, field reauth)
       operationId: delete_orgs_org_users_id_passkeys_passkey
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -974,6 +1085,10 @@ paths:
       summary: List the user's personal API tokens
       description: List the user's personal API tokens, newest first (offset/limit only; secrets are never shown again)
       operationId: get_orgs_org_users_id_tokens
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -1014,6 +1129,10 @@ paths:
       tags: [Users]
       summary: Revoke one of the user's personal API tokens at once
       operationId: delete_orgs_org_users_id_tokens_token
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
       responses:
         "200":
           description: Success
@@ -1037,6 +1156,10 @@ paths:
       tags: [Groups]
       summary: List groups
       operationId: get_orgs_org_groups
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1072,6 +1195,10 @@ paths:
       tags: [Groups]
       summary: Create a group
       operationId: post_orgs_org_groups
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       requestBody:
         content:
           application/json:
@@ -1106,6 +1233,10 @@ paths:
       tags: [Groups]
       summary: Get a group
       operationId: get_orgs_org_groups_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       responses:
         "200":
           description: Success
@@ -1126,6 +1257,10 @@ paths:
       summary: Update a group
       description: Administrators only; a manager changes a group's members and nothing else
       operationId: patch_orgs_org_groups_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       requestBody:
         content:
           application/json:
@@ -1150,6 +1285,10 @@ paths:
       tags: [Groups]
       summary: Delete a group
       operationId: delete_orgs_org_groups_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       responses:
         "200":
           description: Success
@@ -1179,6 +1318,10 @@ paths:
       tags: [Groups]
       summary: List the members of a group (offset/limit only)
       operationId: get_orgs_org_groups_id_members
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -1220,6 +1363,10 @@ paths:
       summary: Add a user to a group (idempotent)
       description: Administrators add anyone; managers add plain users only (not managers, administrators or themselves)
       operationId: put_orgs_org_groups_id_members_user
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       responses:
         "200":
           description: Success
@@ -1240,6 +1387,10 @@ paths:
       summary: Remove a user from a group
       description: Administrators remove anyone; managers remove plain users only (not managers, administrators or themselves)
       operationId: delete_orgs_org_groups_id_members_user
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [groups]
       responses:
         "200":
           description: Success
@@ -1264,6 +1415,10 @@ paths:
       summary: List tenants
       description: List tenants (groups of applications sharing sign-in rules); each carries its client count
       operationId: get_orgs_org_tenants
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: []
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1294,6 +1449,10 @@ paths:
       tags: [Tenants]
       summary: Create a tenant
       operationId: post_orgs_org_tenants
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [tenants]
       requestBody:
         content:
           application/json:
@@ -1328,6 +1487,10 @@ paths:
       tags: [Tenants]
       summary: Get a tenant
       operationId: get_orgs_org_tenants_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: []
       responses:
         "200":
           description: Success
@@ -1349,6 +1512,10 @@ paths:
       description: Update a tenant (name, display name, description, sign-in settings, resources). Settings left out of
         `settings` keep their current values.
       operationId: patch_orgs_org_tenants_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [tenants]
       requestBody:
         content:
           application/json:
@@ -1374,6 +1541,10 @@ paths:
       summary: Delete a tenant
       description: Delete a tenant; 409 while it still has clients
       operationId: delete_orgs_org_tenants_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [tenants]
       responses:
         "200":
           description: Success
@@ -1398,6 +1569,10 @@ paths:
       summary: The self-registered applications of the organization
       description: The self-registered applications of the organization, with how many users they hold access for
       operationId: get_orgs_org_self-registered
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -1434,6 +1609,10 @@ paths:
       description: "End a self-registered application's access in the organization: every user's grants to it go; it can come
         back only by asking users again"
       operationId: delete_orgs_org_self-registered_client
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       responses:
         "200":
           description: Success
@@ -1464,6 +1643,10 @@ paths:
       summary: List the users and groups with access to the tenant's applications
       description: List the users and groups with access to the tenant's applications (q searches name and email)
       operationId: get_orgs_org_tenants_id_access
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1495,6 +1678,10 @@ paths:
       summary: Give a user or group access
       description: Give a user or group access; 409 when they already have it
       operationId: post_orgs_org_tenants_id_access
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
       requestBody:
         content:
           application/json:
@@ -1535,6 +1722,10 @@ paths:
       tags: [Tenant access]
       summary: Get one access entry
       operationId: get_orgs_org_tenants_id_access_aid
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
       responses:
         "200":
           description: Success
@@ -1555,6 +1746,10 @@ paths:
       summary: Change an access entry
       description: Change roles, tags, applications or the end date (subject_type and subject_id are ignored)
       operationId: patch_orgs_org_tenants_id_access_aid
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
       requestBody:
         content:
           application/json:
@@ -1579,6 +1774,10 @@ paths:
       tags: [Tenant access]
       summary: Remove an access entry
       operationId: delete_orgs_org_tenants_id_access_aid
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
       responses:
         "200":
           description: Success
@@ -1603,6 +1802,10 @@ paths:
       summary: List OAuth clients
       description: List OAuth clients; ?tenant=<tenant id> keeps only that tenant's clients
       operationId: get_orgs_org_clients
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: []
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1638,6 +1841,10 @@ paths:
       summary: Create an OAuth client
       description: Create an OAuth client; the response carries its secret, shown once
       operationId: post_orgs_org_clients
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       requestBody:
         content:
           application/json:
@@ -1672,6 +1879,10 @@ paths:
       tags: [Clients]
       summary: Get an OAuth client
       operationId: get_orgs_org_clients_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: []
       responses:
         "200":
           description: Success
@@ -1691,6 +1902,10 @@ paths:
       tags: [Clients]
       summary: Update an OAuth client
       operationId: patch_orgs_org_clients_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       requestBody:
         content:
           application/json:
@@ -1715,6 +1930,10 @@ paths:
       tags: [Clients]
       summary: Delete an OAuth client
       operationId: delete_orgs_org_clients_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       responses:
         "200":
           description: Success
@@ -1745,6 +1964,10 @@ paths:
       summary: Rotate the client secret
       description: Rotate the client secret; the old one stops working at once
       operationId: post_orgs_org_clients_id_secret
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [clients]
       responses:
         "200":
           description: Success
@@ -1768,6 +1991,10 @@ paths:
       tags: [Providers]
       summary: List upstream sign-in providers
       operationId: get_orgs_org_providers
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1798,6 +2025,10 @@ paths:
       tags: [Providers]
       summary: Create a provider (client_secret is write-only)
       operationId: post_orgs_org_providers
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
       requestBody:
         content:
           application/json:
@@ -1832,6 +2063,10 @@ paths:
       tags: [Providers]
       summary: Get a provider
       operationId: get_orgs_org_providers_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
       responses:
         "200":
           description: Success
@@ -1851,6 +2086,10 @@ paths:
       tags: [Providers]
       summary: Update a provider (omit client_secret to keep it)
       operationId: patch_orgs_org_providers_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
       requestBody:
         content:
           application/json:
@@ -1875,6 +2114,10 @@ paths:
       tags: [Providers]
       summary: Delete a provider
       operationId: delete_orgs_org_providers_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
       responses:
         "200":
           description: Success
@@ -1883,6 +2126,194 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/service-accounts:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Service accounts]
+      summary: List service accounts
+      description: List the organization's service accounts (organization admins and super admins; a service account needs the service_accounts scope)
+      operationId: get_orgs_org_service-accounts
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - name: sort
+          in: query
+          description: sort field
+          schema:
+            type: string
+            enum: [name, created]
+        - {$ref: "#/components/parameters/Desc"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServiceAccountList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Service accounts]
+      summary: Create a service account
+      description: "Create a service account; the response carries its secret, shown once (none with private_key_jwt, where jwks or jwks_uri is required). name and scopes are required. A caller may grant only scopes it may hold itself: only super admins grant import (a service account grants only what it holds), and orgs:create and orgs:delete only on the primary organization"
+      operationId: post_orgs_org_service-accounts
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ServiceAccountInput"}
+        required: true
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServiceAccountCreated"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/service-accounts/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Service accounts]
+      summary: Get a service account
+      operationId: get_orgs_org_service-accounts_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServiceAccount"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [Service accounts]
+      summary: Change a service account
+      description: "Change a service account; fields left out keep their values. The caller must be able to grant every scope the account holds (so none is reached through an account holding more than its manager), and may add only scopes it can grant. Changing to private_key_jwt discards a secret the account had. A scope taken away stops working at once, not when its tokens expire"
+      operationId: patch_orgs_org_service-accounts_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ServiceAccountInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServiceAccount"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [Service accounts]
+      summary: Delete a service account
+      description: Delete a service account; its tokens stop working at once
+      operationId: delete_orgs_org_service-accounts_id
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/service-accounts/{id}/secret:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Service accounts]
+      summary: Rotate a service account's secret
+      description: "Rotate a service account's secret; the old one stops working at once (tokens already issued last until they expire). A service account that uses private_key_jwt has no secret (422): change its keys instead"
+      operationId: post_orgs_org_service-accounts_id_secret
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [service_accounts]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServiceAccountSecret"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -1900,6 +2331,9 @@ paths:
       description: "List audit events, newest first by default. Also: source (store, cluster or victorialogs) and, in a gossip
         cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)"
       operationId: get_orgs_org_audit
+      security:
+        - session: []
+        - bearer: [admin]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1940,6 +2374,9 @@ paths:
       description: List the audit events of every organization (super admins), newest first by default; ?org=<name> for one.
         Items carry org_name; source, nodes and nodes_answered as for an organization's audit log
       operationId: get_audit
+      security:
+        - session: []
+        - bearer: [admin]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - name: sort
@@ -1982,6 +2419,9 @@ paths:
       tags: [Keys]
       summary: List signing keys, newest first, with their state (super admin)
       operationId: get_keys
+      security:
+        - session: []
+        - bearer: [admin]
       parameters:
         - {$ref: "#/components/parameters/Q"}
         - {$ref: "#/components/parameters/Desc"}
@@ -2011,6 +2451,9 @@ paths:
       description: "Rotate the signing key now (super admin): a new key signs from now on; the old one stays published until
         the tokens it signed have expired"
       operationId: post_keys_rotate
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2036,6 +2479,9 @@ paths:
         perhaps expired), whether nodes replicate over gossip, the key rotation schedule, whether a master key rotation is
         configured, and the last server-wide emergency sign-out."
       operationId: get_system
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2060,6 +2506,9 @@ paths:
       description: |-
         The same as signing an organization out, for every organization at once. Super admins only, from a browser session that re-authenticated in the last 5 minutes.
       operationId: post_sign_out
+      security:
+        - session: []
+        - bearer: [admin]
       requestBody:
         content:
           application/json:
@@ -2095,6 +2544,9 @@ paths:
       description: |-
         Removes a key that no longer signs (state previous) at once, rather than when the tokens it signed expire: they stop verifying here now (userinfo, introspection), and applications stop accepting them once they fetch the key set again. For a key that may have been exposed: rotate first, then remove the old key (the key that signs now, or will, cannot be removed: 422). Applications get new tokens through their refresh tokens; nobody is signed out. Super admins, from a browser session that re-authenticated in the last 5 minutes. Audited as keys.remove.
       operationId: delete_keys_id
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2166,6 +2618,9 @@ paths:
         removed now (previous_keys_removable, state, detail). Reads every sealed value: a few seconds on a large
         directory"
       operationId: get_master-key
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2191,6 +2646,9 @@ paths:
         readiness, the partitions it owns (with each one's owner, epoch and committed position), and the counts of writes whose
         outcome is not known, refused writes and clock skew"
       operationId: get_cluster
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2220,6 +2678,9 @@ paths:
         The size changes by one node at a time: grow after adding the node to every configuration, shrink after stopping
         the node that leaves"
       operationId: post_cluster_reload
+      security:
+        - session: []
+        - bearer: [admin]
       responses:
         "200":
           description: Success
@@ -2248,7 +2709,6 @@ paths:
       operationId: get_scim_Organizations
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       parameters:
         - {$ref: "#/components/parameters/ScimFilter"}
         - {$ref: "#/components/parameters/ScimSortBy"}
@@ -2274,7 +2734,6 @@ paths:
       operationId: post_scim_Organizations
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2305,7 +2764,6 @@ paths:
       operationId: get_scim_Organizations_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       responses:
         "200":
           description: Success
@@ -2323,7 +2781,6 @@ paths:
       operationId: put_scim_Organizations_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2346,7 +2803,6 @@ paths:
       operationId: patch_scim_Organizations_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2371,7 +2827,6 @@ paths:
       operationId: delete_scim_Organizations_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
       responses:
         "401": {$ref: "#/components/responses/ScimUnauthorized"}
         "403": {$ref: "#/components/responses/ScimForbidden"}
@@ -2420,7 +2875,7 @@ paths:
       operationId: get_scim_org_Groups
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       parameters:
         - {$ref: "#/components/parameters/ScimFilter"}
         - {$ref: "#/components/parameters/ScimSortBy"}
@@ -2446,7 +2901,7 @@ paths:
       operationId: post_scim_org_Groups
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2478,7 +2933,7 @@ paths:
       operationId: get_scim_org_Groups_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       responses:
         "200":
           description: Success
@@ -2496,7 +2951,7 @@ paths:
       operationId: put_scim_org_Groups_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2519,7 +2974,7 @@ paths:
       operationId: patch_scim_org_Groups_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2542,7 +2997,7 @@ paths:
       operationId: delete_scim_org_Groups_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       responses:
         "204":
           description: Deleted
@@ -2602,7 +3057,7 @@ paths:
       operationId: get_scim_org_Users
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       parameters:
         - {$ref: "#/components/parameters/ScimFilter"}
         - {$ref: "#/components/parameters/ScimSortBy"}
@@ -2628,7 +3083,7 @@ paths:
       operationId: post_scim_org_Users
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2660,7 +3115,7 @@ paths:
       operationId: get_scim_org_Users_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       responses:
         "200":
           description: Success
@@ -2678,7 +3133,7 @@ paths:
       operationId: put_scim_org_Users_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2701,7 +3156,7 @@ paths:
       operationId: patch_scim_org_Users_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       requestBody:
         content:
           application/scim+json:
@@ -2724,7 +3179,7 @@ paths:
       operationId: delete_scim_org_Users_id
       security:
         - bearer: [scim]
-        - scimClient: [scim]
+        - serviceAccount: [scim]
       responses:
         "204":
           description: Deleted
@@ -2869,7 +3324,7 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
-      description: Not permitted (or CSRF check failed, or the token lacks the admin scope)
+      description: "Not permitted (or CSRF check failed, or the token lacks the admin scope; for a service account: it lacks the scope the operation needs, or the operation is closed to service accounts)"
     ForbiddenBackup:
       content:
         application/json:
@@ -2925,17 +3380,27 @@ components:
     bearer:
       bearerFormat: qsr_<id>_<secret>
       description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash, an authenticator secret or provider links: the import scope too, super admins only). The
-        owning user's role still limits every call."
+        owning user's role still limits every call. A service account's access token is sent the same way: see the serviceAccount scheme."
       scheme: bearer
       type: http
-    scimClient:
-      description: A confidential client with SCIM provisioning turned on; it acts as an administrator of its own organization
-        (never granting administrator roles).
+    serviceAccount:
+      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization, never as a super admin, and holds only the scopes it was granted. Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create and orgs:delete (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
       flows:
         clientCredentials:
           scopes:
+            users: Users and managers
+            admins: With users, the organization's administrators too (never super admins)
+            groups: Groups and their members
+            providers: Sign-in providers
+            tenants: Tenants
+            clients: Applications (OAuth clients) and the self-registered ones
+            access: Tenants' access lists
+            import: With users, password hashes, authenticator secrets and provider links on user create (granted by super admins)
             scim: SCIM provisioning
-          tokenUrl: /oauth/token
+            service_accounts: The organization's service accounts
+            orgs:create: Create organizations (primary organization only)
+            orgs:delete: Delete the organizations it created (primary organization only)
+          tokenUrl: /o/{org}/oauth/token
       type: oauth2
     session:
       description: Browser session. Unsafe methods must also send the X-CSRF-Token header (from the page's csrf-token meta tag).
@@ -3202,8 +3667,6 @@ components:
             type: string
         rotate_refresh_tokens:
           type: boolean
-        scim:
-          type: boolean
         scopes:
           type: array
           items:
@@ -3286,8 +3749,6 @@ components:
           items:
             type: string
         rotate_refresh_tokens:
-          type: boolean
-        scim:
           type: boolean
         scopes:
           type: array
@@ -3378,8 +3839,6 @@ components:
           items:
             type: string
         rotate_refresh_tokens:
-          type: boolean
-        scim:
           type: boolean
         scopes:
           type: array
@@ -3884,6 +4343,13 @@ components:
         api_tokens:
           type: boolean
           description: end personal API tokens too (default false)
+    OrgCreated:
+      description: A new organization; service_account is its first service account, when the request asked for one
+      allOf:
+        - {$ref: "#/components/schemas/Org"}
+        - type: object
+          properties:
+            service_account: {$ref: "#/components/schemas/ServiceAccountCreated"}
     OrgInput:
       type: object
       properties:
@@ -3892,6 +4358,9 @@ components:
         name:
           type: string
         settings: {$ref: "#/components/schemas/OrgSettings"}
+        service_account:
+          description: "when creating an organization: its first service account, with any of the service account scopes, import included; ignored when changing an organization"
+          $ref: "#/components/schemas/ServiceAccountInput"
     OrgList:
       type: object
       required: [items, total]
@@ -4240,6 +4709,103 @@ components:
           items: {$ref: "#/components/schemas/SelfRegisteredApp"}
         total:
           type: integer
+    ServiceAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          description: the client_id the account authenticates with at its token endpoint
+        description:
+          type: string
+        fapi2_security_profile:
+          type: boolean
+          description: "FAPI 2.0 Security Profile: needs private_key_jwt; its tokens are DPoP-bound and are presented with the DPoP scheme (SCIM takes them, the management API does not)"
+        jwks:
+          type: string
+          description: "private_key_jwt: the account's public keys as a JWK Set (JSON); alternatively jwks_uri"
+        jwks_uri:
+          type: string
+          description: "private_key_jwt: where the account publishes its public keys (https); alternatively jwks"
+        name:
+          type: string
+          description: shown in the audit log as service:<name>
+        scopes:
+          type: array
+          description: "what the account may do; see the serviceAccount security scheme. At least one. users, admins, groups, providers, tenants, clients, access, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
+          items:
+            type: string
+            enum: [users, admins, groups, providers, tenants, clients, access, import, scim, service_accounts, orgs:create, orgs:delete]
+        token_endpoint_auth_method:
+          type: string
+          description: "how the account authenticates at the token endpoint: client_secret_post (default) or client_secret_basic with a secret Quisora issues, or private_key_jwt with keys it holds"
+          enum: [client_secret_post, client_secret_basic, private_key_jwt]
+        enabled:
+          type: boolean
+        token_endpoint:
+          type: string
+          description: where the account gets its access tokens (client credentials)
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    ServiceAccountCreated:
+      description: A new service account with its secret
+      allOf:
+        - {$ref: "#/components/schemas/ServiceAccount"}
+        - type: object
+          properties:
+            secret:
+              type: string
+              description: shown once; absent with private_key_jwt
+    ServiceAccountInput:
+      type: object
+      properties:
+        description:
+          type: string
+        fapi2_security_profile:
+          type: boolean
+          description: "FAPI 2.0 Security Profile: needs private_key_jwt; its tokens are DPoP-bound and are presented with the DPoP scheme (SCIM takes them, the management API does not)"
+        jwks:
+          type: string
+          description: "private_key_jwt: the account's public keys as a JWK Set (JSON); alternatively jwks_uri"
+        jwks_uri:
+          type: string
+          description: "private_key_jwt: where the account publishes its public keys (https); alternatively jwks"
+        name:
+          type: string
+          description: shown in the audit log as service:<name>
+        scopes:
+          type: array
+          description: "what the account may do; see the serviceAccount security scheme. At least one. users, admins, groups, providers, tenants, clients, access, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
+          items:
+            type: string
+            enum: [users, admins, groups, providers, tenants, clients, access, import, scim, service_accounts, orgs:create, orgs:delete]
+        token_endpoint_auth_method:
+          type: string
+          description: "how the account authenticates at the token endpoint: client_secret_post (default) or client_secret_basic with a secret Quisora issues, or private_key_jwt with keys it holds"
+          enum: [client_secret_post, client_secret_basic, private_key_jwt]
+        enabled:
+          type: boolean
+          description: a disabled account gets no tokens, and the ones it has stop working at once
+    ServiceAccountList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/ServiceAccount"}
+        total:
+          type: integer
+    ServiceAccountSecret:
+      type: object
+      properties:
+        id:
+          type: string
+        secret:
+          type: string
+          description: shown once
     Tenant:
       type: object
       properties:

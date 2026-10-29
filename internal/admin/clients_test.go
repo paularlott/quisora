@@ -25,9 +25,8 @@ func TestClients(t *testing.T) {
 	wantField(t, ad.post(A+"/clients", map[string]any{"name": "Bad", "redirect_uris": []string{"ftp://x"}}), 422, "redirect_uris")
 	wantField(t, ad.post(A+"/clients", map[string]any{"redirect_uris": []string{"https://p.example/cb"}}), 422, "name")
 	want(t, ad.post(A+"/clients", map[string]any{"name": "SA", "grant_types": []string{"client_credentials"}}), 201)
-	// super-only flag: SCIM
-	want(t, ad.post(A+"/clients", map[string]any{"name": "SA2", "scim": true, "grant_types": []string{"client_credentials"}}), 403)
-	want(t, w.as("super").post(A+"/clients", map[string]any{"name": "SA3", "scim": true, "grant_types": []string{"client_credentials"}}), 201)
+	// the former SCIM flag is gone (a service account with the scim scope provisions): the strict decoder refuses it
+	want(t, w.as("super").post(A+"/clients", map[string]any{"name": "SA3", "scim": true, "grant_types": []string{"client_credentials"}}), 400)
 	// the former "serves every organization" flag is gone: the strict decoder refuses it
 	want(t, ad.patch(A+"/clients/"+id, map[string]any{"all_orgs": true}), 400)
 

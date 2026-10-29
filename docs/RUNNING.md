@@ -140,6 +140,7 @@ These have guides of their own:
 - **Emergency sign-out and lock-out**: [emergency-sign-out.md](emergency-sign-out.md).
 - **Secrets in Vault or 1Password**: [secret-stores.md](secret-stores.md).
 - **Personal API tokens**: [API-TOKENS.md](API-TOKENS.md).
+- **Service accounts** (automation that belongs to no person): [SERVICE-ACCOUNTS.md](SERVICE-ACCOUNTS.md).
 
 Settings the guides refer to: `session.ttl`, `session.idle`, `session.privileged_ttl` and `session.privileged_idle`
 (session lifetimes); `session.upstream_check_minutes` (leaver detection); `tokens.*` (token lifetimes and signing);
@@ -574,7 +575,7 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
 | API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
@@ -590,7 +591,8 @@ Every event has:
 - `request_id`: the request's id, also sent as the `X-Request-ID` response header (a trusted proxy's
   `X-Request-ID` is kept, so its logs and the audit log name a request alike);
 - `user_agent` and `session_id` (the browser session the request was made in, or the one a sign-in created);
-- `detail.token_id` when a personal API token made the change (or was refused);
+- `detail.token_id` when a personal API token made the change (or was refused); a service account's changes name it as the
+  actor, `service:<name>` ([SERVICE-ACCOUNTS.md](SERVICE-ACCOUNTS.md#auditing));
 - `ip`;
 - with VictoriaLogs, `node`, `boot` and `seq`: the node that recorded it, that process start's random id, and the
   event's number in that start's sequence (1, 2, 3…), so a gap is an event VictoriaLogs does not hold

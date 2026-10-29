@@ -48,7 +48,8 @@ type UserInput struct {
 	Work       *WorkInput `json:"work"`
 	Password   *string    `json:"password"`
 	// PasswordHash imports a password hash from another system when a user is created (never on an update): bcrypt
-	// (cost 4 to 14), SHA-512 crypt or argon2id. The system, or super admins (an API token needs the import scope).
+	// (cost 4 to 14), SHA-512 crypt or argon2id. The system, super admins (an API token needs the import scope) or a
+	// service account with the import scope.
 	// The first sign-in re-hashes it with today's argon2id (passwords.go).
 	PasswordHash *string `json:"password_hash"`
 	// TOTPSecret imports the authenticator app's base32 secret from another system when a user is created (never on

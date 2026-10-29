@@ -92,13 +92,18 @@ func (s *Server) auditRefused(r *http.Request, a *service.Actor, reason string) 
 }
 
 // BearerFunc resolves a bearer token to an actor. The app sets Server.Bearer to accept personal API tokens and
-// OAuth access tokens.
+// service accounts' access tokens.
 type BearerFunc func(ctx context.Context, r *http.Request, token string) (*service.Actor, error)
 
+// AnyScope is the scope of a management route every service account may call (reading its organization, its tenants
+// and applications): RequireManagement.
+const AnyScope = "*"
+
 // RequireManagement guards the management API (/api/...): either a browser session (with the CSRF header on
-// unsafe methods) or "Authorization: Bearer <token>" whose actor holds the admin scope. It also negotiates the API
-// version. Handlers must use Actor(r) — User(r) is nil for bearer requests.
-func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
+// unsafe methods) or "Authorization: Bearer <token>": a personal API token with the admin scope, or a service
+// account's access token with the route's scope (AnyScope: any service account; "": none may call it). It also
+// negotiates the API version. Handlers must use Actor(r) — User(r) is nil for bearer requests.
+func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Handler {
 	return s.WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := r.Header.Get(APIVersionHeader)
 		if v == "" {
@@ -147,16 +152,24 @@ func (s *Server) RequireManagement(next http.HandlerFunc) http.Handler {
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "The access token is invalid or has expired."})
 				return
 			}
-			// The backup download takes its own scope (and only that one does: admin is not enough for it).
-			backup := r.URL.Path == "/api/backup"
-			if backup && !a.HasScope(service.ScopeBackup) || !backup && !a.HasScope(service.ScopeAdmin) {
-				scope := service.ScopeAdmin
-				if backup {
-					scope = service.ScopeBackup
-				}
-				s.auditRefused(r, a, "the token does not have the "+scope+" scope")
-				w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+scope+`"`)
-				WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "The token does not have the " + scope + " scope."})
+			// A personal token needs the admin scope, but the backup download its own (and only that one does: admin is
+			// not enough for it); a service account the route's.
+			need := service.ScopeAdmin
+			switch {
+			case a.ClientID != "":
+				need = scope
+			case r.URL.Path == "/api/backup":
+				need = service.ScopeBackup
+			}
+			if need == "" {
+				s.auditRefused(r, a, "service accounts cannot make this call")
+				WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "Service accounts cannot make this call."})
+				return
+			}
+			if need != AnyScope && !a.HasScope(need) {
+				s.auditRefused(r, a, "the token does not have the "+need+" scope")
+				w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+need+`"`)
+				WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "The token does not have the " + need + " scope."})
 				return
 			}
 			s.auditDenied(w, WithActor(r, a), a, next)

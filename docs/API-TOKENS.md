@@ -5,6 +5,9 @@ account → API tokens → New token**, choose what each one may do (its scopes)
 empty, it never expires (unless the server sets a maximum lifetime, which it then gets). The token is shown once,
 in the form `qsr_<id>_<secret>`: copy it then. Quisora keeps only a hash of the secret.
 
+For automation that should not depend on a person, use a [service account](SERVICE-ACCOUNTS.md): it belongs to the
+organization, holds only the scopes it was granted, and its access tokens are accepted by the same APIs.
+
 A token never has more access than you have: every call is checked against your role and organization at the time it
 is made, so if you are demoted or your account is disabled, the token loses that access too.
 
@@ -90,8 +93,8 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?count=10"
 curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?filter=userName%20eq%20%22alan%22"
 ```
 
-A provisioning service that supports OAuth can use a client instead: a confidential client with SCIM provisioning
-turned on gets short-lived tokens with the client credentials grant, and no person's token is involved.
+A provisioning service that supports OAuth uses a [service account](SERVICE-ACCOUNTS.md) with the `scim` scope instead:
+it gets short-lived tokens with the client credentials grant, and no person's token is involved.
 
 ### Listing and filters
 
@@ -135,7 +138,8 @@ See [RUNNING.md](RUNNING.md#backup-and-restore) for the backup format, encryptio
 Moving people from another system without asking them all to set a new password, set up a new authenticator app or
 link their provider again: create each user with what that system stored, using a super admin's token with the `admin`
 and `import` scopes. Everything below is accepted only when a user is created, never on an update (it would take over
-an existing account), and only from super admins: an organization's admins cannot import.
+an existing account), and only from super admins and from [service accounts](SERVICE-ACCOUNTS.md) holding the `import`
+scope (with `users`; only super admins grant it): an organization's admins cannot import.
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$QUISORA/api/orgs/acme/users" \

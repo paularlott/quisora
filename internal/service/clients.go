@@ -27,7 +27,6 @@ type ClientInput struct {
 	JWKS           *string   `json:"jwks"`
 	JWKSURI        *string   `json:"jwks_uri"`
 	FirstParty     *bool     `json:"first_party"`
-	SCIM           *bool     `json:"scim"`
 	RotateRefresh  *bool     `json:"rotate_refresh_tokens"`
 	IntrospectOrg  *bool     `json:"introspect_org"`
 	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
@@ -242,7 +241,7 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		c.JWKSURI = v
 	}
 	// first_party skips the consent screen: its redirect URIs receive any user's code from one link they open, which
-	// would let an administrator act as a peer they may not reset. Super admins only, like SCIM.
+	// would let an administrator act as a peer they may not reset. Super admins only.
 	if in.FirstParty != nil && *in.FirstParty != c.FirstParty {
 		if !a.IsSuper() {
 			return ErrForbidden
@@ -276,13 +275,6 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 	if in.Enabled != nil {
 		c.Enabled = *in.Enabled
 	}
-	// SCIM (provisioning) is a super-admin-only flag.
-	if in.SCIM != nil && *in.SCIM != c.SCIM {
-		if !a.IsSuper() { // super admins only
-			return ErrForbidden
-		}
-		c.SCIM = *in.SCIM
-	}
 	return settleClient(c)
 }
 
@@ -296,8 +288,6 @@ func settleClient(c *model.Client) error {
 			return Invalid("grant_types", "a public client cannot use the client credentials grant")
 		case slices.Contains(c.GrantTypes, GrantTokenExchange):
 			return Invalid("grant_types", "a public client cannot use the token exchange grant")
-		case c.SCIM:
-			return Invalid("scim", "a public client cannot use SCIM")
 		case c.PKCEOptional:
 			return Invalid("require_pkce", "a public client must use PKCE")
 		}
@@ -334,8 +324,10 @@ func (s *Service) ListClients(ctx context.Context, a *Actor, orgID string, q sto
 		return nil, 0, ErrForbidden
 	}
 	q.Scope = orgID
-	// The applications that registered themselves are listed apart (SelfRegisteredApps): nobody set them up.
-	q.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "self_registered", Value: false})
+	// The applications that registered themselves are listed apart (SelfRegisteredApps): nobody set them up. So are
+	// the service accounts (ListServiceAccounts).
+	q.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "self_registered", Value: false},
+		store.Filter{Field: "service_account", Value: false})
 	l, n, err := s.Clients.List(ctx, q)
 	return l, n, mapStore(err)
 }
@@ -345,8 +337,10 @@ func (s *Service) GetClient(ctx context.Context, a *Actor, id string) (*model.Cl
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if c.SelfRegistered || !s.canAdminOrg(a, c.OrgID) {
-		return nil, ErrNotFound // self-registered applications are not edited: they are listed and removed (selfreg.go)
+	// Self-registered applications are not edited: they are listed and removed (selfreg.go). Service accounts are
+	// managed as such (serviceaccounts.go).
+	if c.SelfRegistered || c.ServiceAccount || !s.canAdminOrg(a, c.OrgID) {
+		return nil, ErrNotFound
 	}
 	return c, nil
 }
@@ -397,8 +391,8 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if err != nil {
 		return nil, err
 	}
-	if superOnly(c) && !a.IsSuper() {
-		return nil, ErrForbidden // provisioning and first-party clients are managed by super admins only
+	if c.FirstParty && !a.IsSuper() {
+		return nil, ErrForbidden // first-party clients are managed by super admins only
 	}
 	if err := providerMade(c); err != nil {
 		return nil, err
@@ -413,10 +407,6 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	}
 	return c, nil
 }
-
-// superOnly reports whether c carries a capability only super admins grant (SCIM provisioning, skipping consent), so
-// only they change, rotate or delete it.
-func superOnly(c *model.Client) bool { return c.SCIM || c.FirstParty }
 
 // providerMade refuses a change to a client an organization sign-in provider made for itself (Client.ProviderID): its
 // redirect URI and secret are the provider's, kept in step by the provider's own changes, so a change made to the
@@ -437,8 +427,8 @@ func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (
 	if c.Public() {
 		return "", Invalid("token_endpoint_auth_method", "a public client has no secret")
 	}
-	if superOnly(c) && !a.IsSuper() {
-		return "", ErrForbidden // the credential of a super-admin-only capability stays with super admins
+	if c.FirstParty && !a.IsSuper() {
+		return "", ErrForbidden // the credential of a client that skips consent stays with super admins
 	}
 	if err := providerMade(c); err != nil {
 		return "", err
@@ -457,7 +447,7 @@ func (s *Service) DeleteClient(ctx context.Context, a *Actor, id string) error {
 	if err != nil {
 		return err
 	}
-	if superOnly(c) && !a.IsSuper() {
+	if c.FirstParty && !a.IsSuper() {
 		return ErrForbidden
 	}
 	if err := providerMade(c); err != nil {

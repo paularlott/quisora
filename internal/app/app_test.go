@@ -136,13 +136,13 @@ func testIntegration(t *testing.T, backend string) {
 		}
 	}
 
-	// A SCIM provisioning client in a customer org: client_credentials → SCIM create + filter.
+	// A SCIM provisioning service account in a customer org: client_credentials → SCIM create + filter.
 	org, err := a.Svc.CreateOrg(ctx, service.System, service.OrgInput{Name: ptr("acme")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cl, secret, err := a.Svc.CreateClient(ctx, service.System, org.ID, service.ClientInput{Name: ptr("provisioner"),
-		GrantTypes: ptr([]string{"client_credentials"}), Scopes: ptr([]string{}), SCIM: ptr(true)})
+	cl, secret, err := a.Svc.CreateServiceAccount(ctx, service.System, org.ID, service.ServiceAccountInput{Name: ptr("provisioner"),
+		Scopes: ptr([]string{"scim"})})
 	if err != nil {
 		t.Fatal(err)
 	}

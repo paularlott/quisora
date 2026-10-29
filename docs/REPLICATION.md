@@ -551,7 +551,7 @@ every mode, are rules about who may act on whom, none of which needs a lock or a
 
 - nobody demotes, disables, locks out, end-dates or deletes **themselves** (nor changes their own end date);
 - only a **super admin** demotes, disables, locks out, end-dates or deletes a super admin (an administrator, a manager or a
-  provisioning client such as SCIM cannot);
+  service account, SCIM provisioning included, cannot);
 - the **system** (housekeeping, the end-date sweep, commands acting as the system) never does either: the sweep that
   disables accounts past their end date leaves super admins alone (their end date still stops their sign-in).
 
@@ -607,7 +607,7 @@ and remove at most 1,000 memberships (`service.MaxMembersPerChange`), which keep
 larger PATCH or PUT with 413 (RFC 7644 §3.12) and the client splits it.
 
 Whose membership an actor may change depends on the user's rank (an administrator never reaches a super admin; a
-manager or a provisioning client changes plain users' memberships only), so a change by anyone but a super admin
+manager or a service account without the `admins` scope changes plain users' memberships only), so a change by anyone but a super admin
 judges each user it touches on the newer of this node's copy and **the owners'** (one fresh read for the whole
 change, `membersToJudge`): a promotion committed anywhere counts before it has reached this node. A user who
 cannot be read refuses the change; a rank that could not be read is never taken as plain.

@@ -31,8 +31,9 @@ curl -s -u "$CLIENT_ID:$CLIENT_SECRET" "$ISSUER/oauth/token" -d grant_type=clien
 ```
 
 **Rotating a secret.** **Rotate secret** on the client (or `POST /api/orgs/{org}/clients/{id}/secret`) makes a new
-one, and the old one stops working at once: update the application straight after. The secrets of SCIM and
-first-party clients are rotated by super admins only.
+one, and the old one stops working at once: update the application straight after. The secrets of first-party
+clients are rotated by super admins only. A [service account](../SERVICE-ACCOUNTS.md)'s secret is rotated on its own page
+(`POST /api/orgs/{org}/service-accounts/{id}/secret`) by its organization's administrators.
 
 **Wrong secrets** are limited: after 30 failures a minute for one client from one address (300 from one address for
 any client), every attempt is refused for the rest of the minute, the right secret included, and the client's

@@ -72,6 +72,9 @@ type Org struct {
 	// ServerSignOut and LastServerSignOut are the server's, kept on the primary organization (moved with the role).
 	ServerSignOut     SignOutCounters `msgpack:"sso" json:"-"`
 	LastServerSignOut *SignOutEvent   `msgpack:"lsso,omitempty" json:"-"`
+	// CreatedBy is the service account (of the primary organization) that created the organization, which alone of
+	// the service accounts may delete it again (orgs:delete). Empty for one a person created.
+	CreatedBy string `msgpack:"cb,omitempty" json:"-"`
 }
 
 func (o *Org) Kind() Kind { return KindOrg }
@@ -636,7 +639,7 @@ const (
 	AuthMethodSecretBasic = "client_secret_basic"
 	AuthMethodPrivateJWT  = "private_key_jwt"
 	// AuthMethodNone is a public client (SPA, mobile or desktop app, CLI) that cannot keep a secret: PKCE is its
-	// only proof, refresh tokens always rotate, and it can never use client_credentials, SCIM or serve every org.
+	// only proof, refresh tokens always rotate, and it can never use client_credentials or serve every org.
 	AuthMethodNone = "none"
 )
 
@@ -657,8 +660,11 @@ type Client struct {
 	JWKS           string   `msgpack:"jw" json:"jwks,omitempty"` // for private_key_jwt
 	JWKSURI        string   `msgpack:"ju" json:"jwks_uri,omitempty"`
 	FirstParty     bool     `msgpack:"fp" json:"first_party"`           // skip consent
-	SCIM           bool     `msgpack:"scim" json:"scim"`                // client_credentials tokens may call SCIM for its org
 	RotateRefresh  bool     `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
+	// ServiceAccount marks a service account: a non-human principal of the organization (no tenant) that calls the
+	// management API and SCIM with client_credentials tokens. Scopes are what it was granted (ServiceAccountScopes),
+	// and GrantTypes only client_credentials. It is managed apart from the organization's applications.
+	ServiceAccount bool `msgpack:"svc,omitempty" json:"-"`
 	// IntrospectOrg lets the client introspect every access token of its organization (a resource server that serves
 	// several applications); without it introspection answers active only for tokens issued for the client (aud).
 	IntrospectOrg bool `msgpack:"io,omitempty" json:"introspect_org"`
@@ -750,7 +756,7 @@ func (c *Client) Index() Index {
 		Scope:     c.OrgID,
 		Partition: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
-			"created": c.Created, "self_registered": c.SelfRegistered,
+			"created": c.Created, "self_registered": c.SelfRegistered, "service_account": c.ServiceAccount,
 			"unused_self_registered": c.SelfRegistered && c.LastUsed.IsZero()},
 	}
 }

@@ -23,48 +23,8 @@ func newClient(t *testing.T, c *cast, a *service.Actor, orgID string, in service
 	return c.svc.CreateClient(c.ctx, a, orgID, in)
 }
 
-func TestClientSCIMFlag(t *testing.T) {
-	c := newCast(t)
-	super, admin := actor(c.super), actor(c.aAdmin)
-
-	// SCIM: super admin only ...
-	if _, _, err := newClient(t, c, admin, c.a.ID, service.ClientInput{SCIM: ptr(true)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("admin set scim on create: %v", err)
-	}
-	sc, _, err := newClient(t, c, super, c.a.ID, service.ClientInput{SCIM: ptr(true)})
-	if err != nil || !sc.SCIM {
-		t.Fatalf("super scim: %v", err)
-	}
-	if _, err := c.svc.UpdateClient(c.ctx, admin, sc.ID, service.ClientInput{SCIM: ptr(false)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("admin cleared scim: %v", err)
-	}
-	plain, _, _ := newClient(t, c, admin, c.a.ID, service.ClientInput{})
-	if _, err := c.svc.UpdateClient(c.ctx, admin, plain.ID, service.ClientInput{SCIM: ptr(true)}); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("admin enabled scim: %v", err)
-	}
-	// ... and a provisioning client is managed by super admins only: any change, its secret, its deletion.
-	for name, in := range map[string]service.ClientInput{
-		"description": {Description: ptr("d")},
-		"redirect":    {RedirectURIs: ptr([]string{"https://attacker.example/cb"})},
-		"first party": {FirstParty: ptr(true)},
-	} {
-		if _, err := c.svc.UpdateClient(c.ctx, admin, sc.ID, in); !errors.Is(err, service.ErrForbidden) {
-			t.Errorf("org admin %s on a scim client: %v", name, err)
-		}
-	}
-	if _, err := c.svc.RotateClientSecret(c.ctx, admin, sc.ID); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("org admin rotated a scim client's secret: %v", err)
-	}
-	if err := c.svc.DeleteClient(c.ctx, admin, sc.ID); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("org admin deleted a scim client: %v", err)
-	}
-	if _, err := c.svc.UpdateClient(c.ctx, super, sc.ID, service.ClientInput{Description: ptr("d")}); err != nil {
-		t.Errorf("super admin edit: %v", err)
-	}
-}
-
 // first_party skips consent, so its redirect URIs receive any user's code from a link they open: an org admin who
-// could set it, or edit such a client, could act as a peer administrator. Like SCIM, it is super admins' alone.
+// could set it, or edit such a client, could act as a peer administrator. It is super admins' alone.
 func TestClientFirstPartyFlag(t *testing.T) {
 	c := newCast(t)
 	super, admin := actor(c.super), actor(c.aAdmin)
@@ -278,15 +238,8 @@ func TestClientAdministrationIsOrgAdminOnly(t *testing.T) {
 
 func TestPublicClients(t *testing.T) {
 	c := newCast(t)
-	admin, super := actor(c.aAdmin), actor(c.super)
+	admin := actor(c.aAdmin)
 	none := ptr("none")
-	fieldOf := func(err error) string {
-		var fe *service.FieldError
-		if errors.As(err, &fe) {
-			return fe.Field
-		}
-		return ""
-	}
 	cl, secret, err := newClient(t, c, admin, c.a.ID, service.ClientInput{AuthMethod: none})
 	if err != nil {
 		t.Fatal(err)
@@ -309,9 +262,6 @@ func TestPublicClients(t *testing.T) {
 	if _, _, err := newClient(t, c, admin, c.a.ID, service.ClientInput{AuthMethod: none,
 		GrantTypes: ptr([]string{"client_credentials"})}); fieldOf(err) != "grant_types" {
 		t.Errorf("none + client_credentials: %v", err)
-	}
-	if _, _, err := newClient(t, c, super, c.a.ID, service.ClientInput{AuthMethod: none, SCIM: ptr(true)}); fieldOf(err) != "scim" {
-		t.Errorf("none + scim: %v", err)
 	}
 	// Switching an existing confidential client to public is validated too.
 	conf, _, _ := newClient(t, c, admin, c.a.ID, service.ClientInput{GrantTypes: ptr([]string{"client_credentials"})})

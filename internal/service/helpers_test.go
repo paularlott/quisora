@@ -107,6 +107,15 @@ func (e *env) next(prefix string) string {
 
 func actor(u *model.User) *service.Actor { return service.ActorForUser(u, "127.0.0.1") }
 
+// fieldOf returns the field a validation error names ("" for any other error).
+func fieldOf(err error) string {
+	var fe *service.FieldError
+	if errors.As(err, &fe) {
+		return fe.Field
+	}
+	return ""
+}
+
 // outcome classifies an error for matrix tests.
 func outcome(err error) string {
 	switch {

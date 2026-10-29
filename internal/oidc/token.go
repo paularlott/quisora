@@ -778,9 +778,6 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 			allowed = append(allowed, s)
 		}
 	}
-	if c.SCIM && !slices.Contains(allowed, service.ScopeSCIM) {
-		allowed = append(allowed, service.ScopeSCIM)
-	}
 	scopes := allowed
 	if scope != "" {
 		scopes = dedupe(splitScope(scope))
@@ -812,13 +809,21 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 	return tr, nil
 }
 
+// clientActorName is how the audit log names client c as an actor.
+func clientActorName(c *model.Client) string {
+	if c.ServiceAccount {
+		return service.ServiceAccountName(c)
+	}
+	return "client:" + c.Name
+}
+
 // auditClient records an OAuth event made by client c (the actor) about the user u (nil: about c itself).
 func (p *Provider) auditClient(ctx context.Context, c *model.Client, u *model.User, action string, detail map[string]string) {
 	if detail == nil {
 		detail = map[string]string{}
 	}
 	detail["client_id"] = c.ClientID()
-	a := &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}
+	a := &service.Actor{OrgID: c.OrgID, Name: clientActorName(c), ClientID: c.ID}
 	if u == nil {
 		p.svc.Audit(ctx, a, c.OrgID, action, c.Name, detail)
 		return
@@ -833,7 +838,7 @@ func (p *Provider) auditedClient(ctx context.Context, c *model.Client, u *model.
 		detail = map[string]string{}
 	}
 	detail["client_id"] = c.ClientID()
-	a := &service.Actor{OrgID: c.OrgID, Name: "client:" + c.Name, ClientID: c.ID}
+	a := &service.Actor{OrgID: c.OrgID, Name: clientActorName(c), ClientID: c.ID}
 	if u == nil {
 		return p.svc.Audited(ctx, a, c.OrgID, action, c.Name, detail, write)
 	}

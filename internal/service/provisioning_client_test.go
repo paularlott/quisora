@@ -8,16 +8,11 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// A provisioning (SCIM) client acts as an admin of its own organization but cannot create or promote administrators,
-// mint API tokens or reach other organizations.
+// A provisioning (SCIM) service account acts as an admin of its own organization but cannot create or promote
+// administrators, mint API tokens or reach other organizations.
 func TestClientActorCannotGrantAdmin(t *testing.T) {
 	c := newCast(t)
-	cl, _, err := c.svc.CreateClient(c.ctx, actor(c.super), c.a.ID, service.ClientInput{Name: ptr("scim"), SCIM: ptr(true),
-		RedirectURIs: ptr([]string{"https://x.example.com/cb"})})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := service.ActorForClient(cl, "1.2.3.4")
+	cl, a := newServiceAccount(t, c, c.a.ID, "scim")
 	if a.Role != model.RoleAdmin || !a.HasScope(service.ScopeSCIM) || a.HasScope(service.ScopeAdmin) || a.ClientID != cl.ID {
 		t.Fatalf("unexpected client actor %+v", a)
 	}
@@ -51,8 +46,7 @@ func TestClientActorCannotGrantAdmin(t *testing.T) {
 // sets a password for anyone.
 func TestProvisioningClientCannotTouchAdmins(t *testing.T) {
 	c := newCast(t)
-	cl := &model.Client{Meta: model.Meta{ID: "scim-client"}, OrgID: c.aAdmin.OrgID, Name: "prov", SCIM: true}
-	a := service.ActorForClient(cl, "")
+	_, a := newServiceAccount(t, c, c.a.ID, "scim")
 	f := false
 	role := model.RoleUser
 	for name, in := range map[string]service.UserInput{
@@ -90,12 +84,7 @@ func TestProvisioningClientCannotTouchAdmins(t *testing.T) {
 // tags (or deletion) of a group they belong to.
 func TestClientCannotManageAdminsThroughGroups(t *testing.T) {
 	c := newCast(t)
-	cl, _, err := c.svc.CreateClient(c.ctx, actor(c.super), c.a.ID, service.ClientInput{Name: ptr("scim"), SCIM: ptr(true),
-		RedirectURIs: ptr([]string{"https://x.example.com/cb"})})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := service.ActorForClient(cl, "1.2.3.4")
+	_, a := newServiceAccount(t, c, c.a.ID, "scim")
 	g, err := c.svc.CreateGroup(c.ctx, a, c.a.ID, service.GroupInput{DisplayName: ptr("staff")})
 	if err != nil {
 		t.Fatal(err)

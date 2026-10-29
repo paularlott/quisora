@@ -79,12 +79,12 @@ func TestPrivilegedSignInResetIsSuperAdminOnly(t *testing.T) {
 	_, _, err = e.svc.CreateInvite(e.ctx, a, viaSSO.ID)
 	refused("invite a manager who signs in through a provider", err)
 
-	// a provisioning client cannot lower a manager's role either
-	cl, _, err := e.svc.CreateClient(e.ctx, service.System, org.ID, service.ClientInput{Name: ptr("dir"), GrantTypes: ptr([]string{"client_credentials"})})
+	// a provisioning service account cannot lower a manager's role either
+	cl, _, err := e.svc.CreateServiceAccount(e.ctx, service.System, org.ID, service.ServiceAccountInput{Name: ptr("dir"), Scopes: ptr([]string{"scim"})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.svc.UpdateUser(e.ctx, service.ActorForClient(cl, ""), mgr.ID, service.UserInput{Role: ptr(model.RoleUser)})
+	_, err = e.svc.UpdateUser(e.ctx, service.ActorForServiceAccount(cl, cl.Scopes, ""), mgr.ID, service.UserInput{Role: ptr(model.RoleUser)})
 	refused("a provisioning client demoting a manager", err)
 
 	// a super admin can do all of it

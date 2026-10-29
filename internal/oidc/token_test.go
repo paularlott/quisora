@@ -420,8 +420,12 @@ func TestClientCredentials(t *testing.T) {
 			t.Errorf("%q: %v", bad, r.m)
 		}
 	}
-	// SCIM client gets the scim scope
-	sc, ssecret := h.newClient(func(in *service.ClientInput) { in.SCIM = ptr(true) })
+	// A service account gets the scopes it was granted
+	sc, ssecret, err := h.env.Svc.CreateServiceAccount(context.Background(), h.admin, h.env.Primary.ID,
+		service.ServiceAccountInput{Name: ptr("provisioner"), Scopes: ptr([]string{"scim"})})
+	if err != nil {
+		t.Fatal(err)
+	}
 	r = h.token(url.Values{"grant_type": {"client_credentials"}}, sc, ssecret)
 	if !slices.Contains(strings.Fields(r.str("scope")), "scim") {
 		t.Fatalf("scim scope missing: %v", r.m)
@@ -440,7 +444,7 @@ func TestClientCredentials(t *testing.T) {
 	if _, err := h.p.verifyAccessToken(context.Background(), h.token(url.Values{"grant_type": {"client_credentials"}}, sc, ssecret).str("access_token")); err != nil {
 		t.Fatal(err)
 	}
-	h.env.Svc.UpdateClient(context.Background(), h.admin, sc.ID, service.ClientInput{Enabled: ptr(false)})
+	h.env.Svc.UpdateServiceAccount(context.Background(), h.admin, h.env.Primary.ID, sc.ID, service.ServiceAccountInput{Enabled: ptr(false)})
 	h.p.InvalidateClient(sc.ID)
 	if _, err := h.p.verifyAccessToken(context.Background(), r.str("access_token")); err == nil {
 		t.Fatal("token of a disabled client verified")

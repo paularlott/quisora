@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminTenant" data-api="{{.Data.API}}/clients" data-base="{{.Data.API}}" data-page="{{.Data.Base}}/tenants" data-tenant="{{.Data.TenantID}}" data-issuer="{{.Data.Issuer}}" data-title="{{.Data.TenantDisplay}}" data-sort="name" data-noun="clients" data-live="client" data-live-text="Clients list updated" data-can-scim="{{if .Data.CanSCIM}}1{{else}}0{{end}}" class="stack-lg">
+<div x-data="adminTenant" data-api="{{.Data.API}}/clients" data-base="{{.Data.API}}" data-page="{{.Data.Base}}/tenants" data-tenant="{{.Data.TenantID}}" data-issuer="{{.Data.Issuer}}" data-title="{{.Data.TenantDisplay}}" data-sort="name" data-noun="clients" data-live="client" data-live-text="Clients list updated" data-can-first-party="{{if .Data.CanFirstParty}}1{{else}}0{{end}}" class="stack-lg">
   <nav class="crumbs glass" aria-label="Breadcrumb"><ol>
     <li><a href="{{.Data.Base}}/users">{{template "icon" "building"}}<span class="sr-only">Organization: </span>{{.Org.DisplayName}}</a></li>
     <li><a href="{{.Data.Base}}/tenants">Tenants</a></li>

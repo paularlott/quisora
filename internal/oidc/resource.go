@@ -422,6 +422,20 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	if !slices.Contains(cl.Aud, caller.ClientID()) && !(caller.IntrospectOrg && cl.Org == caller.OrgID) {
 		return inactive, nil
 	}
+	// A service account's token holds Quisora's own scopes (the management API, SCIM), as an API token with them
+	// does: no business of an application, introspect_org or not, whose own scopes may share their names.
+	if cl.Sub == cl.ClientID && cl.ClientID != caller.ClientID() {
+		ce, err := p.client(ctx, caller.OrgID, cl.ClientID)
+		if err != nil {
+			if gone(err) {
+				return inactive, nil
+			}
+			return nil, unavailable(err)
+		}
+		if ce.c.ServiceAccount {
+			return inactive, nil
+		}
+	}
 	// A user's token is active only while the user may still use the application (tokenAccess, as userinfo decides
 	// it): access to a members-only tenant's application taken away, or a self-registered application's resource
 	// closed to it, ends it here at once, not when it expires. A client_credentials token has no user to decide for.

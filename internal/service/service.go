@@ -56,6 +56,16 @@ type FieldError struct {
 func (e *FieldError) Error() string        { return e.Field + ": " + e.Msg }
 func (e *FieldError) Is(target error) bool { return target == ErrInvalid }
 
+// prefixField puts prefix before the field a FieldError names (the fields of a nested object, "service_account."),
+// leaving any other error as it is.
+func prefixField(prefix string, err error) error {
+	var fe *FieldError
+	if errors.As(err, &fe) {
+		return Invalid(prefix+fe.Field, fe.Msg)
+	}
+	return err
+}
+
 // mapStore converts store errors to service errors.
 func mapStore(err error) error {
 	switch {

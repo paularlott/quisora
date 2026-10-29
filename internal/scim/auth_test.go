@@ -71,19 +71,17 @@ func TestAuthentication(t *testing.T) {
 
 func TestClientCredentialsVerifier(t *testing.T) {
 	e := newEnv(t)
-	cl, _, err := e.Svc.CreateClient(e.ctx, service.ActorForUser(e.Admin, ""), e.orgA.ID, service.ClientInput{Name: ptr("entra"),
-		SCIM: ptr(true), GrantTypes: ptr([]string{"client_credentials"}), RedirectURIs: ptr([]string{})})
+	cl, _, err := e.Svc.CreateServiceAccount(e.ctx, service.ActorForUser(e.Admin, ""), e.orgA.ID, service.ServiceAccountInput{Name: ptr("entra"),
+		Scopes: ptr([]string{"scim"})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.verify = func(_ *http.Request, _, b string) (*service.Actor, error) {
 		if b == "jwt-for-entra" {
-			return service.ActorForClient(cl, ""), nil
+			return service.ActorForServiceAccount(cl, cl.Scopes, ""), nil
 		}
 		if b == "jwt-no-scope" {
-			a := service.ActorForClient(cl, "")
-			a.Scopes = []string{"openid"}
-			return a, nil
+			return service.ActorForServiceAccount(cl, []string{"openid"}, ""), nil
 		}
 		return nil, service.ErrBadToken
 	}

@@ -168,7 +168,7 @@ organization**, and choose the organization whose users sign in (S) from the lis
 - **Button label** defaults to S's display name. Scopes, client ID and secret are not entered.
 - **Link existing users by verified email** is **off** (unlike other providers), **Create accounts automatically** is
   off, and **counts as a second factor** is off. Allowed email domains work as for any provider. Linking by email is off
-  because S's managers, administrators and SCIM clients can set a user's email address and mark it verified: with it on,
+  because S's managers, administrators and service accounts (with the `users` or `scim` scope) can set a user's email address and mark it verified: with it on,
   any of them could create a user in S with the address of one of B's users and sign in to B as them. Turning it on is a
   super admin's decision to trust S's staff with the addresses they assert (see below).
 
@@ -198,7 +198,7 @@ chooses **Continue with …** on B's sign-in page, signs in at S if they are not
 second factor) and returns to B. Quisora links the two accounts by that verified address, as for any provider
 ([who signs in as whom](#who-signs-in-as-whom)): the link is S's user id, so changing the address later does not break
 it. Someone S knows but B has not added is refused (`not_linked`). Linking by email is off by default for an
-organization provider because it trusts S to say whose address is whose: S's managers, administrators and SCIM clients
+organization provider because it trusts S to say whose address is whose: S's managers, administrators and service accounts
 can mark any address verified, so each of them could then sign in to B as any of B's users (below administrator).
 Switch it on only for an organization whose staff you trust that far; with it off, an existing user of B is never
 matched to a guest by address.

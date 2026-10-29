@@ -89,6 +89,7 @@
       {{if $.IsAdmin}}
       <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/service-accounts"{{if eq $.Nav "service-accounts"}} aria-current="page"{{end}}>{{template "icon" "key"}} Service accounts</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
       {{end}}
       {{end}}

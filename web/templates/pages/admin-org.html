@@ -42,7 +42,7 @@
       {{template "address" (dict "id" "addr-signin" "label" "Sign-in page" "what" "sign-in page address" "value" .Data.SignInURL)}}
       {{template "address" (dict "id" "addr-issuer" "label" "Issuer (for applications)" "what" "issuer" "value" .Data.Issuer)}}
       {{template "address" (dict "id" "addr-discovery" "label" "Discovery URL (OpenID configuration)" "what" "discovery URL" "value" (printf "%s/.well-known/openid-configuration" .Data.Issuer))}}
-      {{if .Data.SCIMURL}}{{template "address" (dict "id" "addr-scim" "label" "SCIM base URL (for provisioning tools)" "what" "SCIM base URL" "value" .Data.SCIMURL)}}{{end}}
+      {{template "address" (dict "id" "addr-scim" "label" "SCIM base URL (for provisioning tools)" "what" "SCIM base URL" "value" .Data.SCIMURL)}}
     </dl>
   </section>
 

@@ -549,10 +549,3 @@ func ActorForToken(t *model.APIToken, u *model.User, ip string) *Actor {
 func ActorForUser(u *model.User, ip string) *Actor {
 	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, IP: ip, Unscoped: true}
 }
-
-// ActorForClient builds the actor for a SCIM provisioning client (client_credentials): an admin of its org that
-// can manage users and groups but never grant roles above manager.
-func ActorForClient(c *model.Client, ip string) *Actor {
-	return &Actor{OrgID: c.OrgID, Role: model.RoleAdmin, Name: "client:" + c.Name, ClientID: c.ID,
-		Scopes: []string{ScopeSCIM}, IP: ip}
-}

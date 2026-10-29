@@ -177,6 +177,8 @@ export const PAGES = [
     }] },
   { name: 'providers', path: `${A}/providers`, as: 'admin', steps: [waitRows] },
   { name: 'providers-new', path: `${A}/providers`, as: 'admin', steps: [waitRows, open('New provider')], dialog: true },
+  { name: 'service-accounts', path: `${A}/service-accounts`, as: 'admin', steps: [async (p) => { await p.locator('tbody tr, .empty-state:visible').first().waitFor() }] },
+  { name: 'service-accounts-new', path: `${A}/service-accounts`, as: 'admin', dialog: true, steps: [open('New service account')] },
   { name: 'audit', path: `${A}/audit`, as: 'admin', steps: [waitRows] },
   { name: 'audit-org-super', path: `${A}/audit`, as: 'super', steps: [waitRows] },
   { name: 'audit-all', path: '/admin/audit', as: 'super', steps: [waitRows] },

@@ -41,6 +41,20 @@ func TestIntrospection(t *testing.T) {
 	if h.introspect(other, osecret, rt)["active"] != false {
 		t.Fatal("refresh token visible to another client")
 	}
+	// a service account's token holds Quisora's own scopes: no application sees it, introspect_org or not; the
+	// account itself does
+	sa, sasecret, err := h.env.Svc.CreateServiceAccount(context.Background(), service.System, h.env.Primary.ID,
+		service.ServiceAccountInput{Name: ptr("deploy"), Scopes: &[]string{"users"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sat := h.token(url.Values{"grant_type": {"client_credentials"}}, sa, sasecret).str("access_token")
+	if m := h.introspect(rs, rsecret, sat); m["active"] != false {
+		t.Fatalf("a service account's token seen by an introspect_org client: %v", m)
+	}
+	if m := h.introspect(sa, sasecret, sat); m["active"] != true || m["scope"] != "users" {
+		t.Fatalf("a service account's token seen by itself: %v", m)
+	}
 	// API token
 	_, plain, err := h.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(h.user, ""), service.APITokenInput{Name: "t", Scopes: []string{"api"}, Expires: 30})
 	if err != nil {

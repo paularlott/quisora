@@ -163,8 +163,30 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 			t.Errorf("route %s is missing from the OpenAPI document", key)
 			continue
 		}
-		if _, ok := ops[strings.ToLower(rt.Method)]; !ok {
+		op, ok := ops[strings.ToLower(rt.Method)]
+		if !ok {
 			t.Errorf("route %s: method missing from the OpenAPI document", key)
+			continue
+		}
+		// The serviceAccount requirement is the route's scope: [scope], [] for any service account, absent for none.
+		var sec struct {
+			Security []map[string][]string `json:"security"`
+		}
+		if err := json.Unmarshal(op, &sec); err != nil {
+			t.Fatal(err)
+		}
+		got, listed := "", false
+		for _, req := range sec.Security {
+			if sc, ok := req["serviceAccount"]; ok {
+				listed, got = true, strings.Join(sc, " ")
+			}
+		}
+		want, wantListed := rt.Scope, rt.Scope != ""
+		if rt.Scope == web.AnyScope {
+			want = ""
+		}
+		if listed != wantListed || got != want {
+			t.Errorf("route %s: serviceAccount security %q (listed %v), route scope %q", key, got, listed, rt.Scope)
 		}
 	}
 	// SCIM is described from scim.Routes, which the scim package tests against its handler.

@@ -18,25 +18,25 @@ type RoleOption struct {
 
 // View is the Data of every admin page.
 type View struct {
-	API        string // base URL of the management API for this page's scope
-	Base       string // page URL of the administered organization, /admin/orgs/<name>
-	OrgName    string
-	OrgDisplay string
-	IsPrimary  bool
-	CanSCIM    bool // super admins only: the SCIM and first-party switches, and managing such clients
-	UserID     string
-	Self       bool // the user page is the viewer's own: read-only addresses, connections on the account page
-	Roles      []RoleOption
+	API           string // base URL of the management API for this page's scope
+	Base          string // page URL of the administered organization, /admin/orgs/<name>
+	OrgName       string
+	OrgDisplay    string
+	IsPrimary     bool
+	CanFirstParty bool // super admins only: the first-party switch, and managing first-party clients
+	UserID        string
+	Self          bool // the user page is the viewer's own: read-only addresses, connections on the account page
+	Roles         []RoleOption
 	// FilterRoles are the roles the users list may be filtered by: the viewer's own and lower (super admins only for
 	// super admins, on the primary organization: nobody else sees any).
 	FilterRoles []RoleOption
 
 	// Addresses an organization is shared and configured with (config.OrgIssuer, web.OrgPath): the overview page shows
-	// the sign-in page, the issuer and (super admins) the SCIM base URL, each to copy; the tenant page needs the issuer
+	// the sign-in page, the issuer and the SCIM base URL, each to copy; the tenant page needs the issuer
 	// for the client dialog.
 	Issuer    string
 	SignInURL string
-	SCIMURL   string // super admins only
+	SCIMURL   string
 
 	// Tenant page (/admin/orgs/{org}/tenants/{tenant}).
 	TenantID      string
@@ -110,6 +110,7 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/orgs/{org}/tenants/{tenant}", m.pageTenant)
 	page("GET /admin/orgs/{org}/clients", m.pageClientsMoved)
 	page("GET /admin/orgs/{org}/providers", m.orgPage("admin-providers", "Providers", "providers", true, nil))
+	page("GET /admin/orgs/{org}/service-accounts", m.orgPage("admin-service-accounts", "Service accounts", "service-accounts", true, nil))
 	page("GET /admin/orgs/{org}/audit", m.orgPage("admin-audit", "Audit log", "audit", true, nil))
 	page("GET /admin/audit", m.pageAllAudit)
 	page("GET /admin/system", m.systemPage("admin-system", "System overview", "system"))
@@ -187,9 +188,7 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 	}
 	pub := m.s.Cfg.Server.PublicURL
 	v.SignInURL = pub + web.OrgPath(org.Name, "/login")
-	if v.CanSCIM {
-		v.SCIMURL = pub + "/scim/v2/" + org.Name
-	}
+	v.SCIMURL = pub + "/scim/v2/" + org.Name
 	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }
 
@@ -238,7 +237,7 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 	}
 	esc := url.PathEscape(org.Name)
 	v := &View{API: "/api/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
-		IsPrimary: org.Primary, CanSCIM: a.IsSuper(), Issuer: m.s.Cfg.OrgIssuer(org.ID),
+		IsPrimary: org.Primary, CanFirstParty: a.IsSuper(), Issuer: m.s.Cfg.OrgIssuer(org.ID),
 		Roles: assignableRoles(a, org), FilterRoles: filterRoles(a, org)}
 	return org, v, true
 }

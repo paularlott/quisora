@@ -158,7 +158,7 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		return nil, err
 	}
 	a.Server = srv
-	srv.Bearer = bearer(a.Svc)
+	srv.Bearer = bearer(a)
 	srv.Health = &health{node: node, svc: a.Svc, keyReported: a.keyReportCurrent}
 	// The master key this node seals with is reported before anything it seals can be stored (the signing keys made at
 	// start-up, below): a rotation's re-sealing waits for every node whose report counts (service.MasterKeyAgreed). A
