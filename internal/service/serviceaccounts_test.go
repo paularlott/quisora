@@ -147,16 +147,16 @@ func TestServiceAccountRoles(t *testing.T) {
 		t.Errorf("users: changes an admin: %v", err)
 	}
 	if err := mk(admins, model.RoleAdmin); err != nil {
-		t.Errorf("admins: admin: %v", err)
+		t.Errorf("manage_admins: admin: %v", err)
 	}
 	if err := mk(admins, model.RoleSuperAdmin); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("admins: super admin: %v", err)
+		t.Errorf("manage_admins: super admin: %v", err)
 	}
 	if _, err := c.svc.UpdateUser(c.ctx, admins, c.aAdmin.ID, service.UserInput{FamilyName: ptr("X")}); err != nil {
-		t.Errorf("admins: changes an admin: %v", err)
+		t.Errorf("manage_admins: changes an admin: %v", err)
 	}
 	if _, err := c.svc.UpdateUser(c.ctx, admins, c.aManager.ID, service.UserInput{Role: ptr(model.RoleAdmin)}); err != nil {
-		t.Errorf("admins: promotes: %v", err)
+		t.Errorf("manage_admins: promotes: %v", err)
 	}
 }
 
