@@ -23,7 +23,7 @@ test('create shows client ID, token endpoint and the secret once, each to copy; 
   const dlg = page.getByRole('dialog', { name: 'Service account created' })
 
   // create
-  await page.getByRole('button', { name: 'New service account' }).first().click()
+  await page.getByRole('button', { name: 'New service account' }).click()
   const form = page.getByRole('dialog', { name: 'New service account' })
   await form.getByLabel('Name', { exact: false }).first().fill(name)
   await form.getByRole('checkbox', { name: /users/ }).first().check()
@@ -101,7 +101,7 @@ test('a service account with a private key has no secret to show or rotate', asy
   await signIn(page, 'admin')
   await page.goto(`${A}/service-accounts`, { waitUntil: 'load' })
   const name = uniq('Keyed bot ')
-  await page.getByRole('button', { name: 'New service account' }).first().click()
+  await page.getByRole('button', { name: 'New service account' }).click()
   const form = page.getByRole('dialog', { name: 'New service account' })
   await form.getByLabel('Name').first().fill(name)
   await form.getByRole('checkbox', { name: /groups/ }).check()
@@ -124,7 +124,7 @@ test('a service account with a private key has no secret to show or rotate', asy
 test('only super admins are offered the import scope; the organizations scopes only on the primary organization', async ({ page }) => {
   const open = async (path) => {
     await page.goto(path, { waitUntil: 'load' })
-    await page.getByRole('button', { name: 'New service account' }).first().click()
+    await page.getByRole('button', { name: 'New service account' }).click()
     return page.getByRole('dialog', { name: 'New service account' })
   }
   await signIn(page, 'admin')
