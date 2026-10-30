@@ -328,7 +328,6 @@
     {{template "textarea-field" (dict "name" "jwks" "label" "Public keys (JWKS)" "rows" 4 "show" "isJwt" "help" "The client's public keys as a JSON Web Key Set. Or give a JWKS URI below.")}}
     {{template "field" (dict "name" "jwks_uri" "label" "JWKS URI" "show" "isJwt" "autocomplete" "off")}}
     {{if .Data.CanFirstParty}}{{template "check-field" (dict "name" "first_party" "label" "First-party application" "switch" true "help" "Skips the consent screen. Only for applications you control.")}}{{end}}
-    {{template "check-field" (dict "name" "enabled" "label" "Client is enabled" "switch" true)}}
     {{template "check-field" (dict "name" "rotate_refresh_tokens" "label" "Rotate refresh tokens" "switch" true "show" "notPublic" "help" "One-time refresh tokens; reuse revokes the grant. Costs a write per refresh.")}}
     {{template "check-field" (dict "name" "introspect_org" "label" "May introspect every token of the organization" "switch" true "show" "notPublic" "help" "For an API that serves several applications. Otherwise introspection reports only tokens issued for this client as active.")}}
     {{template "check-field" (dict "name" "accepts_api_tokens" "label" "Accepts personal API tokens" "switch" true "show" "notPublic" "help" "People in the organization may make API tokens for this application, which it checks through introspection. The organization chooses who may make them.")}}
@@ -337,6 +336,7 @@
     {{template "check-field" (dict "name" "dpop_bound_access_tokens" "label" "Require DPoP-bound tokens" "switch" true "help" "Every token request must carry a DPoP proof (RFC 9449), so access tokens only work together with a key the application holds. Turn on only if the application supports DPoP.")}}
     {{template "check-field" (dict "name" "device_privileged_users" "label" "Managers and administrators may approve device sign-ins" "switch" true "show" "usesDevice" "help" "Off: only users without an administrative role can sign in on a device with this application, so a code someone is tricked into entering never gives a device an administrator's access.")}}
     {{template "check-field" (dict "name" "fapi2_security_profile" "label" "FAPI 2.0 Security Profile" "switch" true "show" "isJwt" "help" "For high-security APIs (open banking and the like). Also requires pushed authorization requests and DPoP-bound tokens, stops refresh tokens rotating, limits codes to 60 seconds, and accepts only client assertions with the issuer as their audience and no RS256.")}}
+    {{template "check-field" (dict "name" "enabled" "label" "Client is enabled" "switch" true)}}
   </div>
   {{template "form-foot" (dict "label" "clientSubmitLabel" "default" "Save")}}
 </form>
