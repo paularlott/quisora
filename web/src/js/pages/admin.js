@@ -625,6 +625,11 @@ function clientDialogMixin(Alpine) {
         none: 'Public client: no secret. For single-page apps, mobile and desktop apps and CLIs. PKCE protects the flow.' }[this.form.token_endpoint_auth_method] || ''
     },
     get isJwt() { return this.form.token_endpoint_auth_method === 'private_key_jwt' },
+    get grantsHelp() {
+      return this.isPublic
+        ? 'Public clients use the authorization code grant or device sign-in, with refresh tokens; refresh tokens always rotate.'
+        : 'An application that signs nobody in, such as an API calling other APIs, needs neither Authorization code nor Refresh token: untick them, and it needs no redirect URIs.'
+    },
     get clientDialogTitle() { return this.editingClient ? 'Edit client' : 'New client' },
     get clientSubmitLabel() { return this.busy ? 'Saving…' : this.editingClient ? 'Save changes' : 'Create client' },
     clientToForm(c) {

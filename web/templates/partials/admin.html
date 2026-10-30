@@ -303,10 +303,6 @@
       <p class="help" id="h-token_endpoint_auth_method" x-text="methodHelp"></p>
       <p class="field-error" id="e-token_endpoint_auth_method" x-text="errors.token_endpoint_auth_method"></p>
     </div>
-    {{template "list-field" (dict "name" "redirect_uris" "label" "Redirect URIs" "item" "Redirect URI" "add" "Add URI" "mono" true "placeholder" "https://app.example.com/callback" "show" "usesRedirects" "help" "Where the application receives the sign-in result. Use https; http is allowed for localhost. Native apps may use a reverse-domain scheme such as com.example.app:/callback.")}}
-    {{template "list-field" (dict "name" "post_logout_redirect_uris" "label" "Post-logout redirect URIs" "item" "Post-logout redirect URI" "add" "Add URI" "mono" true "optional" true "placeholder" "https://app.example.com/signed-out" "show" "usesRedirects" "help" "Where users may be sent after signing out. Same rules as redirect URIs.")}}
-    {{template "field" (dict "name" "backchannel_logout_uri" "label" "Back-channel logout URI" "type" "url" "autocomplete" "off" "placeholder" "https://app.example.com/logout" "help" "Optional. An https address Quisora calls when a user's session ends, so the application can sign them out too.")}}
-    {{template "list-field" (dict "name" "resources" "label" "Resources (APIs)" "item" "Resource" "add" "Add resource" "mono" true "optional" true "placeholder" "https://api.example.com/" "help" "Optional. The APIs this application may ask access tokens for with the resource parameter (RFC 8707); they become the token's audience. A request naming any other is refused.")}}
     <fieldset class="fieldset" aria-describedby="h-grants">
       <legend>Grant types</legend>
       <label class="check"><input class="checkbox" type="checkbox" value="authorization_code" x-model="form.grant_types"><span class="check-text">Authorization code<span class="help">Sign users in (always with PKCE).</span></span></label>
@@ -314,9 +310,13 @@
       <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="client_credentials" x-model="form.grant_types"><span class="check-text">Client credentials<span class="help">The application acts as itself, without a user.</span></span></label>
       <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:token-exchange" x-model="form.grant_types"><span class="check-text">Token exchange<span class="help">Trade a user's access token issued for this client for one to call other APIs on their behalf (RFC 8693).</span></span></label>
       <label class="check"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:device_code" x-model="form.grant_types"><span class="check-text">Device sign-in<span class="help">For CLIs, TVs and other devices without a browser: the device shows a code, and the user approves it on their phone or computer (RFC 8628). Turn on only if the application needs it: someone can be tricked into entering a code an attacker sent.</span></span></label>
-      <p class="help" id="h-grants" x-show="isPublic" x-cloak>Public clients use the authorization code grant or device sign-in, with refresh tokens; refresh tokens always rotate.</p>
+      <p class="help" id="h-grants" x-text="grantsHelp"></p>
       <p class="field-error" id="e-grant_types" x-text="errors.grant_types"></p>
     </fieldset>
+    {{template "list-field" (dict "name" "redirect_uris" "label" "Redirect URIs" "item" "Redirect URI" "add" "Add URI" "mono" true "placeholder" "https://app.example.com/callback" "show" "usesRedirects" "help" "Where the application receives the sign-in result. Use https; http is allowed for localhost. Native apps may use a reverse-domain scheme such as com.example.app:/callback.")}}
+    {{template "list-field" (dict "name" "post_logout_redirect_uris" "label" "Post-logout redirect URIs" "item" "Post-logout redirect URI" "add" "Add URI" "mono" true "optional" true "placeholder" "https://app.example.com/signed-out" "show" "usesRedirects" "help" "Where users may be sent after signing out. Same rules as redirect URIs.")}}
+    {{template "field" (dict "name" "backchannel_logout_uri" "label" "Back-channel logout URI" "type" "url" "autocomplete" "off" "placeholder" "https://app.example.com/logout" "help" "Optional. An https address Quisora calls when a user's session ends, so the application can sign them out too.")}}
+    {{template "list-field" (dict "name" "resources" "label" "Resources (APIs)" "item" "Resource" "add" "Add resource" "mono" true "optional" true "placeholder" "https://api.example.com/" "help" "Optional. The APIs this application may ask access tokens for with the resource parameter (RFC 8707); they become the token's audience. A request naming any other is refused.")}}
     <fieldset class="fieldset" aria-describedby="h-std_scopes">
       <legend>Allowed scopes</legend>
       <p class="help" id="h-std_scopes">What the application may ask users to release.</p>
