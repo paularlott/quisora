@@ -99,18 +99,28 @@ user's own (authenticator app, passkey, or a code by email) after the provider, 
 application can tell which kind of account the person used.
 
 What the provider says about how the person signed in to it (its ID token's `amr`, such as Microsoft's
-`["pwd","mfa"]`) is passed on: the tokens' `amr` is Quisora's own values and then the provider's, so after a Microsoft
-sign-in with Microsoft's MFA and no second factor from Quisora it is `["fed","pwd","mfa"]`, and after Quisora's own
-code as well `["fed","otp","mfa","pwd"]`. The provider's values are taken as they are (up to 16 short values; others
-are left out), and they decide nothing in Quisora: its second-factor step, its MFA requirements, the tokens' `acr`
-(`urn:quisora:acr:mfa` only when Quisora verified or trusts a second factor) and SSH certificates read only Quisora's
-own values. An application that needs to know a second factor was used should check `acr`; `amr` tells it how. A
-provider that sends no `amr` (GitHub never does; others send it only in some setups) adds nothing. Refreshed and exchanged tokens keep the same values.
+`["pwd","mfa"]`) is passed on, except its `mfa`: the tokens' `amr` is Quisora's own values and then the provider's,
+and says `mfa` only when Quisora's own values do, because Quisora asked for a second factor or trusts the provider's.
 
-**Sign-in through this provider counts as a second factor** changes that for plain users: Quisora asks them for no
-second factor after this provider, even where one is required, and the session's `amr` is `["fed","mfa"]`. Turn it on
-only when the provider itself makes everyone use a second factor (your company SSO enforcing MFA). Managers and
-administrators always give their own. Only super admins can change it.
+| Microsoft's `amr` | Provider trusted? | Quisora's second factor | Tokens' `amr` | `acr` |
+|---|---|---|---|---|
+| `["pwd","mfa"]` | no | asked (required) | `["fed","otp","mfa","pwd"]` | mfa |
+| `["pwd","mfa"]` | no | not required | `["fed","pwd"]` | basic |
+| `["pwd","mfa"]` | yes | not asked | `["fed","mfa","pwd"]` | mfa |
+| `["pwd"]` | yes | asked, as untrusted | `["fed","otp","mfa","pwd"]` | mfa |
+| none | yes | not asked | `["fed","mfa"]` | mfa |
+
+The provider's values are taken as they are (up to 16 short values; others are left out), and they decide nothing in
+Quisora but the trust below: its second-factor step, its MFA requirements, the tokens' `acr` and SSH certificates read
+only Quisora's own values. A provider that sends no `amr` (GitHub never does; others send it only in some setups) adds
+nothing. Refreshed and exchanged tokens keep the same values.
+
+**Sign-in through this provider counts as a second factor** changes that for plain users: when the provider's ID
+token says a second factor was used (`mfa` in its `amr`), or says nothing of how (no `amr`), Quisora asks them for no
+second factor after this provider, even where one is required, and the session's `amr` is `["fed","mfa"]`. When its
+`amr` is there without `mfa`, the trust does not apply: the user gives their own second factor as after any provider.
+Turn it on only when the provider itself makes everyone use a second factor (your company SSO enforcing MFA). Managers
+and administrators always give their own. Only super admins can change it.
 
 ## Leavers
 
@@ -216,7 +226,9 @@ matched to a guest by address.
 ### Second factors and leavers
 
 A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
-factor where one is required, and the person gives the second factor they have in B. The provider is *not* trusted to
+factor where one is required, and the person gives the second factor they have in B. B's tokens add what S's ID token
+said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code at S), with `idp` `organization` and
+`acr` from B's own values only. The provider is *not* trusted to
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 

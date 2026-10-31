@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -107,10 +108,12 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// The provider sign-in is a first factor: the user's own second factor follows when they have one or MFA is
 	// required (the sign-in page continues with the step). A provider trusted to ask for a second factor itself
-	// (TrustMFA) counts as both for plain users; managers and above always give their own second factor here.
+	// (TrustMFA) counts as both for plain users, when it says it did: an ID token whose amr lacks "mfa" gets the user's
+	// own second factor as an untrusted provider's does (one that sends no amr at all, as many do not, is taken at
+	// its trust). Managers and above always give their own second factor here.
 	amr := []string{"fed"}
 	var step stepResp
-	if res.Provider.TrustMFA && !res.User.Role.Privileged() {
+	if trustedMFA(res.Provider, res.User, res.Claims.AMR) {
 		amr = append(amr, "mfa")
 	} else {
 		step, err = m.secondFactor(r, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID,
@@ -213,4 +216,10 @@ func sepFor(u string) string {
 		}
 	}
 	return "?"
+}
+
+// trustedMFA reports whether sign-in through provider p counts as a second factor for u: p is trusted to ask for one
+// (TrustMFA), u is a plain user, and p's ID token says one was used ("mfa" in its amr) or says nothing of how.
+func trustedMFA(p *model.Provider, u *model.User, upstream []string) bool {
+	return p.TrustMFA && !u.Role.Privileged() && (len(upstream) == 0 || slices.Contains(upstream, "mfa"))
 }

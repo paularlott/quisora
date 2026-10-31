@@ -347,7 +347,8 @@ func (p *Provider) handleSSHSign(w http.ResponseWriter, r *http.Request) {
 	issued, err := p.svc.SignUserSSH(ctx, service.SSHUserRequest{
 		Actor: service.ActorForUser(u, web.ClientIP(r)), User: u, TenantID: t.ID, ClientID: cl.ClientID,
 		PublicKey: in.PublicKey, Principals: in.Principals, TTL: time.Duration(min(in.TTL, maxSSHTTL)) * time.Second,
-		AMR: grant.amr, AuthTime: time.Unix(int64(cl.AuthTime), 0), Via: "cli", // (the token's amr also has the provider's say-so) SessionEpoch: grant.epoch, Stamp: grant.stamp,
+		// the grant's amr, as Quisora verified the sign-in: the token's amr also has what an upstream provider said
+		AMR: grant.amr, AuthTime: time.Unix(int64(cl.AuthTime), 0), Via: "cli", SessionEpoch: grant.epoch, Stamp: grant.stamp,
 	})
 	var refusal *service.SSHRefusal
 	var field *service.FieldError

@@ -391,7 +391,7 @@ func (p *Provider) pendingDevice(ctx context.Context, orgID, code string) (*devi
 
 // decideDevice records the user's decision on the device sign-in a flow approves; it reports false when the sign-in
 // has expired or was decided already (another browser with the same code). Its user code stops working either way.
-func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User) bool {
+func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User, idp string) bool {
 	raw, err := p.s.Eph.Get(ctx, nsDevice, f.Device)
 	if err != nil {
 		return false
@@ -410,7 +410,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 	if allow {
 		d.Decision = "allow"
 		d.UserID, d.OrgID, d.SessionID, d.AuthTime, d.AMR = u.ID, u.OrgID, sess.ID, sess.AuthTime.Unix(), sess.AMR
-		d.IdP, d.Upstream = p.upstreamType(ctx, sess), sess.UpstreamAMR
+		d.IdP, d.Upstream = idp, sess.UpstreamAMR
 	}
 	b, _ := json.Marshal(d)
 	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil
@@ -422,7 +422,7 @@ func (p *Provider) deviceRespond(w http.ResponseWriter, r *http.Request, f *flow
 	switch params.Get("error") {
 	case "access_denied":
 		if f.Device != "" {
-			p.decideDevice(r.Context(), f, false, nil, nil)
+			p.decideDevice(r.Context(), f, false, nil, nil, "")
 		}
 		p.message(w, r, http.StatusOK, "Device sign-in cancelled", "Your device was not signed in",
 			"You can close this page.")

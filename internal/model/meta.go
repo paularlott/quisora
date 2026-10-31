@@ -212,11 +212,13 @@ func CleanAMR(v any) []string {
 }
 
 // TokenAMR is the amr of tokens issued for a sign-in: Quisora's own references (amr, what its decisions read) and
-// then those the upstream provider reported (upstream) that are not among them.
+// then those the upstream provider reported (upstream) that are not among them, except "mfa": a token says a second
+// factor was used only when Quisora's own references do (Quisora asked for one, or trusts the provider's), never on
+// the provider's word alone, which applications reading amr for "mfa" would take for a fact.
 func TokenAMR(amr, upstream []string) []string {
 	out := slices.Clone(amr)
 	for _, a := range upstream {
-		if !slices.Contains(out, a) {
+		if a != "mfa" && !slices.Contains(out, a) {
 			out = append(out, a)
 		}
 	}

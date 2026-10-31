@@ -1061,3 +1061,41 @@ func TestSSHKRLLogsBuildFailures(t *testing.T) {
 		t.Errorf("nothing logged: %v", log.GetEntries())
 	}
 }
+
+// A certificate stands on its token's grant, with the grant's session epoch and sign-out stamp: an account whose
+// sessions were ended once (a password reset, a disabling), in an organization that pulled the emergency sign-out
+// lever once, still gets one after signing in afresh, recorded with what that sign-in holds.
+func TestSSHSignAfterSessionsEnded(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	e := h.sshTenant("prod", service.SSHSettingsInput{})
+	ctx := context.Background()
+	u, err := h.env.Svc.Users.Get(ctx, h.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.SessionEpoch = service.NewCredEpoch()
+	if err := h.env.Svc.Users.Update(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.env.Svc.SignOutOrg(ctx, service.System, h.env.Primary.ID, service.SignOutOptions{Reason: "drill"}); err != nil {
+		t.Fatal(err)
+	}
+	h.env.Svc.InvalidateOrgs()
+	e.p.InvalidateUser(u.ID)
+	u, _ = h.env.Svc.Users.Get(ctx, u.ID)
+	stamp, err := h.env.Svc.SessionStamp(ctx, u.OrgID)
+	if err != nil || stamp.Org == 0 {
+		t.Fatalf("test set-up: the sign-out stamp %+v %v", stamp, err)
+	}
+
+	key, _ := sshKey(t)
+	st, m, _ := e.sign(e.mfaToken(u), map[string]any{"public_key": key})
+	if st != 200 {
+		t.Fatalf("sign: %d %v", st, m)
+	}
+	certs, err := h.env.Svc.SSHCertsOf(ctx, u)
+	if err != nil || len(certs) != 1 || certs[0].SessionEpoch != u.SessionEpoch || !certs[0].Stamp.Current(stamp) {
+		t.Fatalf("the certificate's record: %+v %v (epoch %d, stamp %+v)", certs, err, u.SessionEpoch, stamp)
+	}
+}

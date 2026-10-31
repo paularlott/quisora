@@ -95,9 +95,9 @@ curl -s "$ISSUER/oauth/token" \
 - **ID token**: who signed in, for the application itself (with `openid`). Check its signature against
   the organization's `/oauth/jwks`, `iss` (the organization's issuer), `aud` (your client ID), `exp` and `nonce`. `amr` says how the user signed in (`pwd`, `hwk`
   or `swk` for a passkey with `user` when it verified the user, `otp`, `mfa` when two factors were used, `fed` for an
-  upstream provider, followed by the provider's own `amr` values when it sent any:
-  [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor: decide on `acr`,
-  since the provider's values are its say-so.
+  upstream provider, followed by the provider's own `amr` values when it sent any, but never its `mfa`:
+  [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor. `mfa` in `amr`
+  and `urn:quisora:acr:mfa` say the same thing.
   After a sign-in through an upstream provider, `idp` names its type (`microsoft`, `google`, `github`, `gitlab`,
   `auth0`, `oidc` or `organization`); it is absent otherwise. Refreshed tokens keep it.
 - **Refresh token**: with the refresh grant on the client. See [refreshing](#refreshing).

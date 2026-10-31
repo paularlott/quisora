@@ -191,10 +191,12 @@ func TestCleanAMR(t *testing.T) {
 	}
 }
 
-// Tokens carry Quisora's own references first, then the provider's that are not among them.
+// Tokens carry Quisora's own references first, then the provider's that are not among them, but never the
+// provider's "mfa": a token says mfa only when Quisora's own references do.
 func TestTokenAMR(t *testing.T) {
 	for _, c := range []struct{ amr, upstream, want []string }{
-		{[]string{"fed"}, []string{"pwd", "mfa"}, []string{"fed", "pwd", "mfa"}},
+		{[]string{"fed"}, []string{"pwd", "mfa"}, []string{"fed", "pwd"}},
+		{[]string{"fed", "mfa"}, []string{"pwd", "mfa"}, []string{"fed", "mfa", "pwd"}}, // a trusted provider
 		{[]string{"fed", "otp", "mfa"}, []string{"pwd", "mfa"}, []string{"fed", "otp", "mfa", "pwd"}},
 		{[]string{"pwd"}, nil, []string{"pwd"}},
 		{nil, nil, nil},

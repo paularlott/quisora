@@ -627,8 +627,8 @@ func (h *harness) sessionFor(amr []string, provider string) *http.Client {
 }
 
 // signedInThrough records on the session of browser c that it signed in through the upstream provider (an id), which
-// said the person signed in to it as upstream (Session.UpstreamAMR).
-func (h *harness) signedInThrough(c *http.Client, provider string, upstream []string) {
+// said the person signed in to it as upstream (Session.UpstreamAMR), and, given, Quisora's own amr for it.
+func (h *harness) signedInThrough(c *http.Client, provider string, upstream []string, amr ...string) {
 	h.t.Helper()
 	pu, _ := url.Parse(h.env.URL)
 	for _, ck := range c.Jar.Cookies(pu) {
@@ -639,6 +639,9 @@ func (h *harness) signedInThrough(c *http.Client, provider string, upstream []st
 				h.t.Fatal(err)
 			}
 			s.Provider, s.UpstreamAMR = provider, upstream
+			if amr != nil {
+				s.AMR = amr
+			}
 			if err := h.env.Svc.Sessions.Update(context.Background(), s); err != nil {
 				h.t.Fatal(err)
 			}

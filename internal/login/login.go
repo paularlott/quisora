@@ -18,7 +18,8 @@
 // enrolment step until they register an authenticator app or a passkey; a user with a passkey and no TOTP must use
 // the passkey as the second factor; a passkey sign-in on its own satisfies the requirement. An upstream (federated)
 // sign-in is a first factor like a password and gets the same second-factor step, unless its provider is trusted for
-// the second factor (Provider.TrustMFA, plain users only: ["fed","mfa"]).
+// the second factor (Provider.TrustMFA, plain users only, when its ID token's amr has "mfa" or there is none:
+// ["fed","mfa"]).
 //
 // So a password-only sign-in is ["pwd"], password+TOTP is ["pwd","otp","mfa"], a passkey is ["hwk","user","mfa"] or
 // ["swk","user","mfa"] (["hwk"] without user verification), and a password followed by a passkey (an org that

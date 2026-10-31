@@ -35,9 +35,10 @@ func amrOf(t *testing.T, tok string) []string {
 }
 
 // After a sign-in through an upstream provider the tokens' amr is Quisora's own references, then those the provider
-// reported (its ID token's amr): an application sees how the person signed in to Microsoft. acr is decided from
-// Quisora's own alone, so a provider's "mfa" never makes a token claim the second factor Quisora did not ask for or
-// trust. The provider's references stay with the grant: refreshed and exchanged tokens say the same.
+// reported (its ID token's amr): an application sees how the person signed in to Microsoft. A token says "mfa" only
+// when Quisora's own references do (it asked for a second factor, or trusts the provider's), never on the provider's
+// word, and acr is decided from Quisora's own alone. The provider's references stay with the grant: refreshed and
+// exchanged tokens say the same.
 func TestUpstreamAMRIsPassedOn(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
@@ -73,9 +74,9 @@ func TestUpstreamAMRIsPassedOn(t *testing.T) {
 		}
 	}
 
-	// Microsoft said password and MFA; Quisora, not trusting it for the second factor, verified neither
+	// Microsoft said password and MFA; Quisora, not trusting it for the second factor, asked for none: no mfa
 	r := signIn([]string{"fed"}, []string{"pwd", "mfa"})
-	want := []string{"fed", "pwd", "mfa"}
+	want := []string{"fed", "pwd"}
 	check("ID token", r.str("id_token"), want, acrBasic)
 	check("access token", r.str("access_token"), want, acrBasic)
 	if m := h.introspect(api, apiSecret, r.str("access_token")); !slices.Equal(anyStrings(m["amr"]), want) {
@@ -95,6 +96,10 @@ func TestUpstreamAMRIsPassedOn(t *testing.T) {
 	// Quisora asked for its own second factor after the provider: that is the MFA, the provider's references follow
 	r = signIn([]string{"fed", "otp", "mfa"}, []string{"pwd", "mfa"})
 	check("after Quisora's code", r.str("id_token"), []string{"fed", "otp", "mfa", "pwd"}, acrMFA)
+
+	// a provider trusted for the second factor, which said it used one: mfa, Quisora's own
+	r = signIn([]string{"fed", "mfa"}, []string{"pwd", "mfa"})
+	check("trusted provider", r.str("id_token"), []string{"fed", "mfa", "pwd"}, acrMFA)
 
 	// a provider that says nothing (GitHub, Google) leaves Quisora's own
 	r = signIn([]string{"fed"}, nil)
@@ -116,8 +121,8 @@ func TestSSHSignIgnoresUpstreamMFA(t *testing.T) {
 		c := e.sessionWith(h.user, amr, time.Now())
 		h.signedInThrough(c, ms.ID, []string{"pwd", "mfa"})
 		tok := e.tokenIn(e.cl, c, nil).str("access_token")
-		if got := amrOf(t, tok); !slices.Contains(got, "mfa") {
-			t.Fatalf("test set-up: the token's amr %v carries no mfa", got)
+		if got := amrOf(t, tok); slices.Contains(got, "mfa") != slices.Contains(amr, "mfa") {
+			t.Fatalf("the token's amr %v: mfa only where Quisora's own %v has it", got, amr)
 		}
 		return tok
 	}
@@ -127,6 +132,62 @@ func TestSSHSignIgnoresUpstreamMFA(t *testing.T) {
 	}
 	if st, m, _ := e.sign(tokenFrom([]string{"fed", "otp", "mfa"}), map[string]any{"public_key": key}); st != 200 {
 		t.Errorf("Quisora's own code after the provider: %d %v", st, m)
+	}
+}
+
+// A device sign-in approved in a browser that signed in through a provider carries what the provider said into the
+// device's tokens and its refresh grant, as a browser sign-in does.
+func TestDeviceGrantPassesUpstreamAMROn(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ms := h.microsoft()
+	cl := h.deviceClient(nil)
+	dc, uc := h.startDevice(cl, "openid offline_access")
+	b, csrf := h.session(h.user)
+	h.signedInThrough(b, ms.ID, []string{"pwd", "mfa"}, "fed")
+	if status, page := h.consentDevice(b, csrf, uc, true); status != 200 || !strings.Contains(page, "Your device is signed in") {
+		t.Fatalf("approving: %d %s", status, page)
+	}
+	r := h.pollDevice(cl, dc)
+	if r.status != 200 {
+		t.Fatalf("tokens: %d %v", r.status, r.m)
+	}
+	want := []string{"fed", "pwd"}
+	for name, tok := range map[string]string{"ID token": r.str("id_token"), "access token": r.str("access_token")} {
+		c := claimsOf(t, tok)
+		if got := amrOf(t, tok); !slices.Equal(got, want) || c["acr"] != acrBasic || c["idp"] != model.ProviderMicrosoft {
+			t.Errorf("%s: amr %v acr %v idp %v", name, got, c["acr"], c["idp"])
+		}
+	}
+	refreshed := h.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r.str("refresh_token")}}, cl, "")
+	if refreshed.status != 200 {
+		t.Fatalf("refresh: %d %v", refreshed.status, refreshed.m)
+	}
+	if got := amrOf(t, refreshed.str("access_token")); !slices.Equal(got, want) {
+		t.Errorf("refreshed: amr %v", got)
+	}
+}
+
+// The idp claim is kept with the grant for good, so a provider that cannot be read is not taken for "no provider":
+// the sign-in is answered server_error, to be tried again, rather than given tokens without idp. A provider removed
+// since the sign-in gives none.
+func TestIdPClaimFailsClosedOnAProviderReadFailure(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ms := h.microsoft()
+	cl, _ := h.newClient(nil)
+	c := h.sessionFor([]string{"fed"}, ms.ID)
+	_, ch := pkce()
+
+	good := h.env.Svc.Providers.S
+	h.env.Svc.Providers.S = failReads(good, model.KindProvider)
+	u := h.authorize(c, authzQuery(cl, ch, nil))
+	h.env.Svc.Providers.S = good
+	if u.Query().Get("code") != "" || u.Query().Get("error") != "server_error" {
+		t.Fatalf("a provider that cannot be read: %s", u)
+	}
+	if code := h.getCode(c, cl, ch, nil); code == "" {
+		t.Fatal("no code once the provider can be read")
 	}
 }
 

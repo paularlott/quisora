@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -640,7 +641,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
 		if f.Device != "" {
-			p.decideDevice(ctx, f, false, nil, nil)
+			p.decideDevice(ctx, f, false, nil, nil, "")
 		}
 		if none {
 			p.redirectError(w, r, f, "access_denied", errNoAccess.Error())
@@ -655,7 +656,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	if f.Device != "" && user.Role.Privileged() && !c.DevicePrivileged {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
-		p.decideDevice(ctx, f, false, nil, nil)
+		p.decideDevice(ctx, f, false, nil, nil, "")
 		p.message(w, r, http.StatusForbidden, "Not allowed", "Managers and administrators cannot sign in on devices with "+c.Name,
 			"You are signed in as "+user.Email+". Your device was not signed in. Ask your administrator if you need this.")
 		return
@@ -688,10 +689,21 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		}
 	}
 
+	// the idp claim, read before the flow (or its pushed request) is used up, so that a failed read can be tried again
+	idp, err := p.upstreamType(ctx, sess)
+	if err != nil {
+		if f.Device != "" {
+			p.message(w, r, http.StatusServiceUnavailable, "Try again", "This could not be finished just now",
+				"Try again in a moment: the code still works.")
+			return
+		}
+		p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+		return
+	}
 	if f.Device != "" {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
-		if !p.decideDevice(ctx, f, true, sess, user) {
+		if !p.decideDevice(ctx, f, true, sess, user, idp) {
 			p.message(w, r, http.StatusBadRequest, "Code expired", "This code can no longer be used",
 				"It has expired, or it was already used. Start again on your device to get a new code.")
 			return
@@ -709,7 +721,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
-		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: p.upstreamType(ctx, sess), UpstreamAMR: sess.UpstreamAMR, Scopes: f.Scopes,
+		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Scopes: f.Scopes,
 		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
@@ -726,16 +738,20 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 }
 
 // upstreamType is the type of the upstream provider the session signed in through ("microsoft", "google", ...), for
-// the idp claim: empty for a sign-in of Quisora's own, and when the provider cannot be read (it was removed since).
-func (p *Provider) upstreamType(ctx context.Context, sess *model.Session) string {
+// the idp claim: empty for a sign-in of Quisora's own, and for a provider removed since. A provider that could not be
+// read is an error: the grant keeps its idp for good, so a read that failed is not taken for "none".
+func (p *Provider) upstreamType(ctx context.Context, sess *model.Session) (string, error) {
 	if sess.Provider == "" {
-		return ""
+		return "", nil
 	}
 	prov, err := p.svc.Providers.Get(ctx, sess.Provider)
-	if err != nil {
-		return ""
+	if errors.Is(err, store.ErrNotFound) {
+		return "", nil
 	}
-	return prov.Type
+	if err != nil {
+		return "", unavailable(err)
+	}
+	return prov.Type, nil
 }
 
 // methodAllowed reports whether the way the session was authenticated is among the sign-in methods the client's

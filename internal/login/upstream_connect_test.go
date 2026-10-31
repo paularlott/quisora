@@ -108,6 +108,17 @@ func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
 	if !ok {
 		t.Fatalf("sessions: %+v", sessionsOf(t, u.env, kim))
 	}
+
+	// Trusted, but its ID token says no second factor was used (amr without "mfa"): the trust does not apply, and the
+	// user's own code is asked for, as after an untrusted provider. (One that sends no amr at all, as above, is
+	// taken at its trust.)
+	b3 := u.browser(t)
+	said = claims("sub-t", "kim@corp.example")
+	said["amr"] = []string{"pwd"}
+	res = b3.viaTenant(t, u, trusted, "acme", "default", "/x", said)
+	if loc := res.Header.Get("Location"); res.StatusCode != 303 || !strings.Contains(loc, "step=1") || b3.hasSession() {
+		t.Fatalf("trusted provider without mfa in its amr: %d %q session=%v", res.StatusCode, loc, b3.hasSession())
+	}
 }
 
 // A sign-in through a provider trusted as a second factor (TrustMFA) skips the user's own code, so it does not count
