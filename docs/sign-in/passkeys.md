@@ -47,8 +47,9 @@ only way to sign in at all.
 
 - **On its own:** the sign-in page's **Sign in with a passkey** button, or the passkey offered by the browser's
   autofill in the email field. No password and no further second factor are asked: the session's `amr` is
-  `["hwk","user"]` (a device-bound key) or `["swk","user"]` (a synced one), which counts as a second factor for
-  applications and the console.
+  `["hwk","user","mfa"]` (a device-bound key) or `["swk","user","mfa"]` (a synced one): the key and the PIN or
+  biometrics that unlocked it are two factors, for applications (which look for `mfa`) and the console. A passkey that
+  did not verify its user gives `["hwk"]` or `["swk"]`, one factor.
 - **As the second factor after a password:** an account with a passkey and no authenticator app is asked *"Your
   organization asks for your passkey as well as your password"* (**Confirm with your passkey**). One with an
   authenticator app is offered **Use your passkey instead** under **Try another way**. The session's `amr` is then

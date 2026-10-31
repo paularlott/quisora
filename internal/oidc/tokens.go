@@ -16,11 +16,12 @@ import (
 // Authentication context.
 //
 // amr values (RFC 8176) set by the sign-in module and copied to tokens: "pwd" password, "otp" TOTP code, "hwk"
-// hardware-bound passkey, "swk" software/synced passkey, "mfa" two or more factors were used. A session satisfies
-// an organization's RequireMFA policy when its amr contains "mfa", "hwk" or "swk" (a passkey with user verification
-// is two factors in one), or both "pwd" and "otp".
+// hardware-bound passkey, "swk" software/synced passkey, "user" the passkey verified its user, "mfa" two or more
+// factors were used. A session satisfies an organization's RequireMFA policy when its amr shows two factors
+// (model.MFA). After an upstream provider, the tokens' amr adds what the provider said (model.TokenAMR), which
+// decides nothing here.
 //
-// acr is "urn:quisora:acr:mfa" when that predicate holds and "urn:quisora:acr:basic" otherwise.
+// acr is "urn:quisora:acr:mfa" when that predicate holds of Quisora's own amr and "urn:quisora:acr:basic" otherwise.
 const (
 	acrMFA   = "urn:quisora:acr:mfa"
 	acrBasic = "urn:quisora:acr:basic"
@@ -54,14 +55,18 @@ type issue struct {
 	sid, gid  string
 	authTime  time.Time
 	amr       []string
-	nonce     string
-	tenant    *model.Tenant      // the client's tenant (resolved by mint when nil)
-	app       *service.AppAccess // the user's access to the client (decided by mint when nil)
-	claimsUI  []string           // claims requested individually for userinfo (carried in the access token)
-	claimsID  []string           // ... and for the ID token
-	act       string             // act claim, raw JSON (token exchange)
-	expires   time.Time          // the access token expires no later than this (zero: its usual lifetime)
-	jkt       string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
+	idp       string // type of the upstream provider signed in through (the idp claim; Grant.IdP)
+	// upstreamAMR is how that provider said the person signed in (Grant.UpstreamAMR): added to amr in the tokens
+	// (model.TokenAMR), never to what acr is decided from (amr, Quisora's own)
+	upstreamAMR []string
+	nonce       string
+	tenant      *model.Tenant      // the client's tenant (resolved by mint when nil)
+	app         *service.AppAccess // the user's access to the client (decided by mint when nil)
+	claimsUI    []string           // claims requested individually for userinfo (carried in the access token)
+	claimsID    []string           // ... and for the ID token
+	act         string             // act claim, raw JSON (token exchange)
+	expires     time.Time          // the access token expires no later than this (zero: its usual lifetime)
+	jkt         string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
 }
 
 // accessExpiry is when the access token of is expires.
@@ -110,7 +115,8 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 	if is.user != nil {
 		o.num("auth_time", is.authTime.Unix())
 		o.str("acr", acrFor(is.amr))
-		o.strs("amr", nonNil(is.amr))
+		o.strs("amr", nonNil(model.TokenAMR(is.amr, is.upstreamAMR)))
+		o.strIf("idp", is.idp)
 		o.strIf("sid", is.sid)
 		o.strIf("gid", is.gid)
 		if len(is.claimsUI) > 0 {
@@ -257,7 +263,8 @@ func (p *Provider) idToken(ctx context.Context, key *keyEntry, is *issue, now ti
 	o.num("auth_time", is.authTime.Unix())
 	o.strIf("nonce", is.nonce)
 	o.str("acr", acrFor(is.amr))
-	o.strs("amr", nonNil(is.amr))
+	o.strs("amr", nonNil(model.TokenAMR(is.amr, is.upstreamAMR)))
+	o.strIf("idp", is.idp)
 	o.strIf("sid", is.sid)
 	// The organization, tenant and Quisora role are claims of the "org" scope, the tags and application roles of the
 	// "roles" scope (as at userinfo); access tokens always carry them all, for resource servers.

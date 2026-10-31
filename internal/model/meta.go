@@ -4,6 +4,7 @@ package model
 import (
 	"encoding/binary"
 	"math/bits"
+	"slices"
 	"strings"
 	"time"
 
@@ -183,6 +184,44 @@ func NewClientID() string { return ClientIDPrefix + NewID() }
 // full-width "ａｄｍｉｎ" or a ligature claims the same key as "admin" instead of passing for another name. The value
 // itself is stored as given.
 func Lower(s string) string { return strings.ToLower(norm.NFKC.String(strings.TrimSpace(s))) }
+
+// UpstreamAMRMax is the most authentication method references kept from an upstream provider's ID token.
+const UpstreamAMRMax = 16
+
+// CleanAMR returns the authentication method references an upstream provider reported (its ID token's amr claim, a
+// list of strings: RFC 8176 values such as "pwd" and "mfa", or the provider's own), as Quisora passes them on in its
+// tokens: values of 1 to 32 letters, digits, '_', '-', '.' or ':', each once, in the provider's order, at most
+// UpstreamAMRMax of them; anything else is left out, and nil when nothing is left. They are what the provider says,
+// never what Quisora's own decisions read (Session.AMR).
+func CleanAMR(v any) []string {
+	list, _ := v.([]any)
+	var out []string
+	for _, x := range list {
+		s, ok := x.(string)
+		if !ok || len(s) == 0 || len(s) > 32 || len(out) == UpstreamAMRMax || slices.Contains(out, s) {
+			continue
+		}
+		if strings.IndexFunc(s, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_-.:", r))
+		}) >= 0 {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// TokenAMR is the amr of tokens issued for a sign-in: Quisora's own references (amr, what its decisions read) and
+// then those the upstream provider reported (upstream) that are not among them.
+func TokenAMR(amr, upstream []string) []string {
+	out := slices.Clone(amr)
+	for _, a := range upstream {
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
 
 // MFA reports whether a sign-in's amr shows two factors: "mfa", a password with a one-time code, or a passkey that
 // verified its user ("hwk"/"swk" with "user"; a passkey without user verification is one factor).

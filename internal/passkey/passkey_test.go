@@ -134,7 +134,7 @@ func TestRegisterAndDiscoverableLogin(t *testing.T) {
 	if res.User.ID != e.user.ID || !res.UserVerified {
 		t.Fatalf("bad result %+v", res)
 	}
-	if got := res.AMR(); len(got) != 2 || got[0] != "hwk" || got[1] != "user" {
+	if got := strings.Join(res.AMR(), " "); got != "hwk user mfa" {
 		t.Fatalf("amr %v", got)
 	}
 	list, _ = e.svc.Passkeys.All(e.ctx, e.user.ID)
@@ -343,9 +343,9 @@ func TestLoginResultAMR(t *testing.T) {
 		want string
 	}{
 		{passkey.LoginResult{}, "hwk"},
-		{passkey.LoginResult{UserVerified: true}, "hwk user"},
+		{passkey.LoginResult{UserVerified: true}, "hwk user mfa"}, // the key and the PIN or biometrics: two factors
 		{passkey.LoginResult{BackupEligible: true}, "swk"},
-		{passkey.LoginResult{BackupEligible: true, UserVerified: true}, "swk user"},
+		{passkey.LoginResult{BackupEligible: true, UserVerified: true}, "swk user mfa"},
 	} {
 		if got := strings.Join(c.r.AMR(), " "); got != c.want {
 			t.Errorf("AMR %+v = %q want %q", c.r, got, c.want)

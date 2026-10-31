@@ -3,7 +3,9 @@ package model
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -151,5 +153,59 @@ func BenchmarkIsID(b *testing.B) {
 		if !IsID(id) {
 			b.Fatal(id)
 		}
+	}
+}
+
+// What an upstream provider says about how the person signed in is passed on as it is, as far as it is a list of
+// plain short values: anything else (a string instead of a list, numbers, spaces, over-long or repeated values,
+// past the cap) is left out.
+func TestCleanAMR(t *testing.T) {
+	many := make([]any, 0, UpstreamAMRMax+5)
+	for i := range UpstreamAMRMax + 5 {
+		many = append(many, fmt.Sprintf("m%d", i))
+	}
+	for _, c := range []struct {
+		name string
+		in   any
+		want []string
+	}{
+		{"Microsoft", []any{"pwd", "mfa"}, []string{"pwd", "mfa"}},
+		{"provider values", []any{"ngcmfa", "rsa", "wia", "urn:x:y.z"}, []string{"ngcmfa", "rsa", "wia", "urn:x:y.z"}},
+		{"repeated", []any{"pwd", "pwd", "mfa"}, []string{"pwd", "mfa"}},
+		{"not strings", []any{"pwd", 7, true, nil, []any{"mfa"}}, []string{"pwd"}},
+		{"odd values", []any{"", "has space", "semi;colon", "ünïcode", strings.Repeat("x", 33), strings.Repeat("y", 32)},
+			[]string{strings.Repeat("y", 32)}},
+		{"a string, not a list", "pwd", nil},
+		{"absent", nil, nil},
+		{"too many", many, func() []string {
+			var out []string
+			for i := range UpstreamAMRMax {
+				out = append(out, fmt.Sprintf("m%d", i))
+			}
+			return out
+		}()},
+	} {
+		if got := CleanAMR(c.in); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Tokens carry Quisora's own references first, then the provider's that are not among them.
+func TestTokenAMR(t *testing.T) {
+	for _, c := range []struct{ amr, upstream, want []string }{
+		{[]string{"fed"}, []string{"pwd", "mfa"}, []string{"fed", "pwd", "mfa"}},
+		{[]string{"fed", "otp", "mfa"}, []string{"pwd", "mfa"}, []string{"fed", "otp", "mfa", "pwd"}},
+		{[]string{"pwd"}, nil, []string{"pwd"}},
+		{nil, nil, nil},
+	} {
+		if got := TokenAMR(c.amr, c.upstream); !slices.Equal(got, c.want) {
+			t.Errorf("TokenAMR(%v, %v) = %v, want %v", c.amr, c.upstream, got, c.want)
+		}
+	}
+	amr := []string{"fed"}
+	_ = TokenAMR(amr, []string{"pwd"})
+	if len(amr) != 1 {
+		t.Error("TokenAMR changed its argument")
 	}
 }

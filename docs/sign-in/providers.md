@@ -95,7 +95,17 @@ their page and can disconnect them (`GET`/`DELETE /api/orgs/acme/users/<id>/prov
 A sign-in through a provider is a first factor, like a password: Quisora never trusts what the provider says about its
 own second factors. Where a second factor is required, or for managers and administrators, Quisora asks for the
 user's own (authenticator app, passkey, or a code by email) after the provider, as after a password. The session's
-`amr` is `["fed", …]`.
+`amr` is `["fed", …]`, and the tokens' `idp` claim names the provider's type (`microsoft`, `google`, …), so an
+application can tell which kind of account the person used.
+
+What the provider says about how the person signed in to it (its ID token's `amr`, such as Microsoft's
+`["pwd","mfa"]`) is passed on: the tokens' `amr` is Quisora's own values and then the provider's, so after a Microsoft
+sign-in with Microsoft's MFA and no second factor from Quisora it is `["fed","pwd","mfa"]`, and after Quisora's own
+code as well `["fed","otp","mfa","pwd"]`. The provider's values are taken as they are (up to 16 short values; others
+are left out), and they decide nothing in Quisora: its second-factor step, its MFA requirements, the tokens' `acr`
+(`urn:quisora:acr:mfa` only when Quisora verified or trusts a second factor) and SSH certificates read only Quisora's
+own values. An application that needs to know a second factor was used should check `acr`; `amr` tells it how. A
+provider that sends no `amr` (GitHub never does; others send it only in some setups) adds nothing. Refreshed and exchanged tokens keep the same values.
 
 **Sign-in through this provider counts as a second factor** changes that for plain users: Quisora asks them for no
 second factor after this provider, even where one is required, and the session's `amr` is `["fed","mfa"]`. Turn it on

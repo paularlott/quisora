@@ -76,6 +76,9 @@ type Claims struct {
 	GivenName      string
 	FamilyName     string
 	Username       string
+	// AMR is how the provider says the person signed in to it (its ID token's amr, model.CleanAMR): passed on in
+	// Quisora's tokens, never read for Quisora's own decisions. Empty for providers that send none (GitHub).
+	AMR []string
 }
 
 // Result is a completed upstream sign-in.

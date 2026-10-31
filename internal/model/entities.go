@@ -991,19 +991,23 @@ func IdentityKey(providerID, subject string) string { return providerID + "/" + 
 type Session struct {
 	Meta
 	// Epoch is the account's session epoch it was made in (User.SessionEpoch): it works only while that is current.
-	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
-	UserID    string    `msgpack:"ui" json:"user_id"`
-	OrgID     string    `msgpack:"o" json:"org_id"`
-	AMR       []string  `msgpack:"amr" json:"amr"`
-	Provider  string    `msgpack:"pv" json:"provider_id,omitempty"` // upstream provider used to sign in, if any
-	Passkey   string    `msgpack:"pk" json:"-"`                     // passkey used to sign in, if any (deleting it ends the session)
-	AuthTime  time.Time `msgpack:"at" json:"auth_time"`
-	Expires   time.Time `msgpack:"ex" json:"expires"`
-	IdleTTL   int       `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
-	LastSeen  time.Time `msgpack:"ls" json:"last_seen"`
-	IP        string    `msgpack:"ip" json:"ip"`
-	UserAgent string    `msgpack:"ua" json:"user_agent"`
-	CSRF      string    `msgpack:"cs" json:"-"`
+	Epoch    uint64   `msgpack:"ep,omitempty" json:"-"`
+	UserID   string   `msgpack:"ui" json:"user_id"`
+	OrgID    string   `msgpack:"o" json:"org_id"`
+	AMR      []string `msgpack:"amr" json:"amr"`
+	Provider string   `msgpack:"pv" json:"provider_id,omitempty"` // upstream provider used to sign in, if any
+	// UpstreamAMR is how that provider said the person signed in to it (its ID token's amr, model.CleanAMR). Tokens
+	// pass it on (model.TokenAMR); Quisora's own decisions (MFA policies, acr) read only AMR, what Quisora verified,
+	// or the provider's say-so when it is trusted for the second factor (Provider.TrustMFA: "mfa" in AMR).
+	UpstreamAMR []string  `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
+	Passkey     string    `msgpack:"pk" json:"-"` // passkey used to sign in, if any (deleting it ends the session)
+	AuthTime    time.Time `msgpack:"at" json:"auth_time"`
+	Expires     time.Time `msgpack:"ex" json:"expires"`
+	IdleTTL     int       `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
+	LastSeen    time.Time `msgpack:"ls" json:"last_seen"`
+	IP          string    `msgpack:"ip" json:"ip"`
+	UserAgent   string    `msgpack:"ua" json:"user_agent"`
+	CSRF        string    `msgpack:"cs" json:"-"`
 	// CookieHash is set once the session was re-authenticated (web.Sessions.Upgrade): the browser's cookie is then
 	// "<id>.<secret>" and this is the hash of the secret, so the cookie value from before the upgrade no longer works
 	// (no session fixation) while the id, which grants and tokens name as "sid", stays the same.
@@ -1042,15 +1046,21 @@ type Grant struct {
 	Meta
 	// Epoch is the session epoch of the sign-in it was granted in (User.SessionEpoch): it works only while that is
 	// current.
-	Epoch     uint64    `msgpack:"ep,omitempty" json:"-"`
-	ClientID  string    `msgpack:"ci" json:"client_id"`
-	UserID    string    `msgpack:"ui" json:"user_id"`
-	OrgID     string    `msgpack:"o" json:"org_id"`
-	SessionID string    `msgpack:"si" json:"session_id"`
-	Scopes    []string  `msgpack:"sc" json:"scopes"`
-	AMR       []string  `msgpack:"amr" json:"amr"`
-	AuthTime  time.Time `msgpack:"at" json:"auth_time"`
-	Counter   uint64    `msgpack:"n" json:"-"`
+	Epoch     uint64   `msgpack:"ep,omitempty" json:"-"`
+	ClientID  string   `msgpack:"ci" json:"client_id"`
+	UserID    string   `msgpack:"ui" json:"user_id"`
+	OrgID     string   `msgpack:"o" json:"org_id"`
+	SessionID string   `msgpack:"si" json:"session_id"`
+	Scopes    []string `msgpack:"sc" json:"scopes"`
+	AMR       []string `msgpack:"amr" json:"amr"`
+	// IdP is the type of the upstream provider the sign-in went through (Provider.Type, such as "microsoft"), empty
+	// for a sign-in of Quisora's own: the idp claim of the tokens issued from the grant.
+	IdP string `msgpack:"idp,omitempty" json:"idp,omitempty"`
+	// UpstreamAMR is how that provider said the person signed in to it (Session.UpstreamAMR): the tokens' amr is AMR
+	// and then these (model.TokenAMR), while acr and Quisora's own checks read AMR alone.
+	UpstreamAMR []string  `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
+	AuthTime    time.Time `msgpack:"at" json:"auth_time"`
+	Counter     uint64    `msgpack:"n" json:"-"`
 	// Rotated is when Counter last moved: the retry grace of the token before the current one runs from it, never
 	// from Updated, which other changes (a re-seal of Key) move too.
 	Rotated time.Time `msgpack:"rt,omitempty" json:"-"`

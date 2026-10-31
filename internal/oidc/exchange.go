@@ -118,8 +118,20 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	if oe != nil {
 		return nil, oe
 	}
+	// The sign-in as Quisora verified it comes from the subject token's grant: the token's amr also carries what the
+	// upstream provider said (model.TokenAMR), which acr is never decided from.
+	if cl.GID == "" {
+		return nil, invalid
+	}
+	grant, err := p.grantStateOf(ctx, cl.GID, u)
+	if err != nil {
+		return nil, serverError(err)
+	}
+	if !grant.alive {
+		return nil, invalid
+	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cl.SID, gid: cl.GID,
-		authTime: time.Unix(int64(cl.AuthTime), 0), amr: cl.AMR, app: app, act: act,
+		authTime: time.Unix(int64(cl.AuthTime), 0), amr: grant.amr, upstreamAMR: grant.upstreamAMR, idp: cl.IdP, app: app, act: act,
 		expires: time.Unix(int64(cl.Exp), 0), jkt: jkt}
 	tr, err := p.mint(ctx, is, false)
 	if err != nil {

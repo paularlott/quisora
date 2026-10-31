@@ -2,6 +2,7 @@ package upstream_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -95,9 +96,13 @@ func TestMicrosoftProvider(t *testing.T) {
 	if err != nil || !strings.HasPrefix(authURL, e.oidc.Srv.URL+"/authorize") {
 		t.Fatalf("begin: %v %s", err, authURL)
 	}
-	res, err := e.signIn(p, ms(tidA, tidA, "obj-1", map[string]any{"xms_edov": true}))
+	res, err := e.signIn(p, ms(tidA, tidA, "obj-1", map[string]any{"xms_edov": true, "amr": []string{"pwd", "mfa", "bad value"}}))
 	if err != nil || res.Claims.Subject != tidA+":obj-1" || !res.Claims.EmailVerified || res.User == nil {
 		t.Fatalf("allowed tenant: %v %+v", err, res)
+	}
+	// how the person signed in to Microsoft, as the ID token says, for Quisora's tokens to pass on (model.CleanAMR)
+	if !slices.Equal(res.Claims.AMR, []string{"pwd", "mfa"}) {
+		t.Errorf("amr from the ID token: %v", res.Claims.AMR)
 	}
 	if _, err := e.signIn(p, ms(tidB, tidB, "obj-2", map[string]any{"xms_edov": true})); !errors.Is(err, upstream.ErrUpstream) {
 		t.Errorf("a tenant that is not allowed: %v", err)

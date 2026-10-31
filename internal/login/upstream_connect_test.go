@@ -76,10 +76,12 @@ func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
 		t.Fatalf("a new organization's default tenant should require a second factor: %+v %v", d, err)
 	}
 
-	// Not trusted: the tenant's requirement holds after the provider.
+	// Not trusted: the tenant's requirement holds after the provider, whatever the provider says it did.
 	plain := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Plain SSO") })
 	b := u.browser(t)
-	res := b.viaTenant(t, u, plain, "acme", "default", "/x", claims("sub-p", "lee@corp.example"))
+	said := claims("sub-p", "lee@corp.example")
+	said["amr"] = []string{"pwd", "mfa"}
+	res := b.viaTenant(t, u, plain, "acme", "default", "/x", said)
 	if loc := res.Header.Get("Location"); res.StatusCode != 303 || !strings.Contains(loc, "step=1") || b.hasSession() {
 		t.Fatalf("untrusted provider: %d %q session=%v", res.StatusCode, loc, b.hasSession())
 	}
@@ -92,13 +94,16 @@ func TestUpstreamTrustedProviderCountsAsSecondFactor(t *testing.T) {
 	kim, _ := u.Svc.FindUserByEmail(ctx, u.org.ID, "kim@corp.example")
 	u.giveTOTP(t, kim)
 	b2 := u.browser(t)
-	res = b2.viaTenant(t, u, trusted, "acme", "default", "/x", claims("sub-t", "kim@corp.example"))
+	said = claims("sub-t", "kim@corp.example")
+	said["amr"] = []string{"pwd", "mfa"}
+	res = b2.viaTenant(t, u, trusted, "acme", "default", "/x", said)
 	if res.StatusCode != 303 || res.Header.Get("Location") != u.at("/x") || !b2.hasSession() {
 		t.Fatalf("trusted provider: %d %q session=%v", res.StatusCode, res.Header.Get("Location"), b2.hasSession())
 	}
 	ok := false
 	for _, s := range sessionsOf(t, u.env, kim) {
-		ok = ok || (slices.Contains(s.AMR, "fed") && model.MFA(s.AMR) && s.Provider == trusted.ID)
+		ok = ok || (slices.Equal(s.AMR, []string{"fed", "mfa"}) && model.MFA(s.AMR) && s.Provider == trusted.ID &&
+			slices.Equal(s.UpstreamAMR, []string{"pwd", "mfa"}))
 	}
 	if !ok {
 		t.Fatalf("sessions: %+v", sessionsOf(t, u.env, kim))

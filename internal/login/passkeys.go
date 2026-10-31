@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
@@ -142,7 +143,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	amr := res.AMR()
 	next := res.Extra["next"]
-	provider := ""
+	provider, upstream := "", []string(nil)
 
 	if tid := res.Extra["ticket"]; tid != "" {
 		// Second factor after a verified password: the ticket must still bind to the account the passkey just
@@ -159,8 +160,11 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 			ticketFailed(w, err)
 			return
 		}
-		amr = append(append(append([]string{}, t.AMR...), amr...), "mfa")
-		next, provider = t.Next, t.Provider
+		amr = append(append([]string{}, t.AMR...), amr...)
+		if !slices.Contains(amr, "mfa") { // the first factor and the passkey
+			amr = append(amr, "mfa")
+		}
+		next, provider, upstream = t.Next, t.Provider, t.UpstreamAMR
 	} else {
 		if res.Extra["org"] != org.ID { // a ceremony begun at another organization's page
 			m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
@@ -177,7 +181,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: res.Passkey.ID, Provider: provider}, next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: res.Passkey.ID, Provider: provider, UpstreamAMR: upstream}, next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return

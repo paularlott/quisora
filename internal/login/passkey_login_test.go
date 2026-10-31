@@ -38,7 +38,7 @@ func TestPasskeyRegisterAndLogin(t *testing.T) {
 			got = s.AMR
 		}
 	}
-	if strings.Join(got, ",") != "hwk,user" {
+	if strings.Join(got, ",") != "hwk,user,mfa" { // a verified passkey is two factors, which applications read as "mfa"
 		t.Fatalf("passkey amr %v (sessions %+v)", got, sess)
 	}
 	if n := len(e.audits(t, "login.success")); n != 1 {

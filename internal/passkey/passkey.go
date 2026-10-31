@@ -389,14 +389,15 @@ type LoginResult struct {
 }
 
 // AMR returns the authentication method references for the sign-in: "hwk" (hardware-bound key) or "swk"
-// (synced/software key), plus "user" when the authenticator verified the user (PIN or biometrics).
+// (synced/software key), plus "user" and "mfa" when the authenticator verified the user (PIN or biometrics): the
+// passkey and the user's PIN or biometrics are two factors, which applications look for as "mfa".
 func (r *LoginResult) AMR() []string {
 	a := "hwk"
 	if r.BackupEligible {
 		a = "swk"
 	}
 	if r.UserVerified {
-		return []string{a, "user"}
+		return []string{a, "user", "mfa"}
 	}
 	return []string{a}
 }

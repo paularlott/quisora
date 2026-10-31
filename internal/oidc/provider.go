@@ -306,7 +306,7 @@ func (p *Provider) grantStateOf(ctx context.Context, id string, u *model.User) (
 			return grantState{}, unavailable(err)
 		}
 		if err == nil {
-			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch, amr: g.AMR, upstreamAMR: g.UpstreamAMR}
 		}
 		p.grants.PutIf(id, st, tok)
 	}
@@ -320,6 +320,9 @@ type grantState struct {
 	org   string
 	stamp model.SignOutStamp
 	epoch uint64 // the session epoch it was granted in
+	// amr is the grant's sign-in as Quisora verified it, what decisions read (a token's amr claim also carries what
+	// the upstream provider said, upstreamAMR: model.TokenAMR)
+	amr, upstreamAMR []string
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -379,7 +382,7 @@ func (p *Provider) buildDiscovery(orgID string) []byte {
 		"client_id_metadata_document_supported": true,
 		"scopes_supported": []string{"openid", "profile", "email", "phone", "groups", "org", "roles", "enterprise", "offline_access",
 			service.ScopeSCIM}, // scim: client credentials tokens of SCIM provisioning clients
-		"claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "sid", "org",
+		"claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "idp", "sid", "org",
 			"org_name", "tenant", "tenant_name", "org_role", "email", "email_verified", "name", "preferred_username", "given_name", "family_name",
 			"locale", "zoneinfo", "updated_at", "phone_number", "phone_number_verified", "groups", "tags", "roles", "enterprise"},
 		"prompt_values_supported":                        []string{"none", "login", "consent", "select_account"},

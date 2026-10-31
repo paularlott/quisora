@@ -709,7 +709,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
-		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, Scopes: f.Scopes,
+		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: p.upstreamType(ctx, sess), UpstreamAMR: sess.UpstreamAMR, Scopes: f.Scopes,
 		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
@@ -723,6 +723,19 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		p.svc.NoteSelfRegisteredUse(ctx, c, tenant) // a metadata-document application is stored now
 	}
 	p.respond(w, r, f, url.Values{"code": {code}})
+}
+
+// upstreamType is the type of the upstream provider the session signed in through ("microsoft", "google", ...), for
+// the idp claim: empty for a sign-in of Quisora's own, and when the provider cannot be read (it was removed since).
+func (p *Provider) upstreamType(ctx context.Context, sess *model.Session) string {
+	if sess.Provider == "" {
+		return ""
+	}
+	prov, err := p.svc.Providers.Get(ctx, sess.Provider)
+	if err != nil {
+		return ""
+	}
+	return prov.Type
 }
 
 // methodAllowed reports whether the way the session was authenticated is among the sign-in methods the client's

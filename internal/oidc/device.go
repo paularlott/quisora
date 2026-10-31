@@ -64,7 +64,9 @@ type deviceGrant struct {
 	SessionID string   `json:"s,omitempty"`
 	AuthTime  int64    `json:"at,omitempty"`
 	AMR       []string `json:"amr,omitempty"`
-	GrantID   string   `json:"g,omitempty"` // codeData.GrantID
+	IdP       string   `json:"idp,omitempty"`  // codeData.IdP
+	Upstream  []string `json:"uamr,omitempty"` // codeData.UpstreamAMR
+	GrantID   string   `json:"g,omitempty"`    // codeData.GrantID
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -276,7 +278,7 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, Scopes: d.Scopes, Resources: d.Resources, GrantID: d.GrantID}
+		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Scopes: d.Scopes, Resources: d.Resources, GrantID: d.GrantID}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, jkt, "device_code")
 	return tr, restore(oe)
 }
@@ -408,6 +410,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 	if allow {
 		d.Decision = "allow"
 		d.UserID, d.OrgID, d.SessionID, d.AuthTime, d.AMR = u.ID, u.OrgID, sess.ID, sess.AuthTime.Unix(), sess.AMR
+		d.IdP, d.Upstream = p.upstreamType(ctx, sess), sess.UpstreamAMR
 	}
 	b, _ := json.Marshal(d)
 	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil

@@ -94,7 +94,12 @@ curl -s "$ISSUER/oauth/token" \
   [resources](#tokens-for-an-api-resource-indicators)).
 - **ID token**: who signed in, for the application itself (with `openid`). Check its signature against
   the organization's `/oauth/jwks`, `iss` (the organization's issuer), `aud` (your client ID), `exp` and `nonce`. `amr` says how the user signed in (`pwd`, `hwk`
-  or `swk` for a passkey, `otp`, `mfa`, `fed` for an upstream provider) and `acr` whether a second factor was used.
+  or `swk` for a passkey with `user` when it verified the user, `otp`, `mfa` when two factors were used, `fed` for an
+  upstream provider, followed by the provider's own `amr` values when it sent any:
+  [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor: decide on `acr`,
+  since the provider's values are its say-so.
+  After a sign-in through an upstream provider, `idp` names its type (`microsoft`, `google`, `github`, `gitlab`,
+  `auth0`, `oidc` or `organization`); it is absent otherwise. Refreshed tokens keep it.
 - **Refresh token**: with the refresh grant on the client. See [refreshing](#refreshing).
 
 A code presented a second time fails, and everything issued from it the first time is revoked: someone else had it.
@@ -121,7 +126,8 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | `offline_access` | No claims: the refresh tokens outlive the user's browser session ([refreshing](#refreshing)). |
 
 Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
-`tags` and `roles`, plus `groups` and `enterprise` with those scopes, and `acr`, `amr` and `auth_time`.
+`tags` and `roles`, plus `groups` and `enterprise` with those scopes, and `acr`, `amr`, `idp` (after an upstream
+provider sign-in) and `auth_time`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's
 access list arrive in `roles`.

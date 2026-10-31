@@ -73,7 +73,12 @@ func (e *sshEnv) token(u *model.User, amr []string, authTime time.Time, extra ur
 
 func (e *sshEnv) tokenFor(cl *model.Client, u *model.User, amr []string, authTime time.Time, extra url.Values) tokResp {
 	e.t.Helper()
-	c := e.sessionWith(u, amr, authTime)
+	return e.tokenIn(cl, e.sessionWith(u, amr, authTime), extra)
+}
+
+// tokenIn is tokenFor with the browser session c.
+func (e *sshEnv) tokenIn(cl *model.Client, c *http.Client, extra url.Values) tokResp {
+	e.t.Helper()
 	v, ch := pkce()
 	port := 20000 + int(binary.BigEndian.Uint16(randBytes(2)))%40000 // the CLI lets the system choose
 	redirect := "http://127.0.0.1:" + strconv.Itoa(port) + "/callback"

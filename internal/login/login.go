@@ -20,8 +20,10 @@
 // sign-in is a first factor like a password and gets the same second-factor step, unless its provider is trusted for
 // the second factor (Provider.TrustMFA, plain users only: ["fed","mfa"]).
 //
-// So a password-only sign-in is ["pwd"], password+TOTP is ["pwd","otp","mfa"], a passkey is ["hwk","user"] or
-// ["swk","user"], and a password followed by a passkey (an org that requires MFA) is ["pwd","swk","user","mfa"].
+// So a password-only sign-in is ["pwd"], password+TOTP is ["pwd","otp","mfa"], a passkey is ["hwk","user","mfa"] or
+// ["swk","user","mfa"] (["hwk"] without user verification), and a password followed by a passkey (an org that
+// requires MFA) is ["pwd","swk","user","mfa"]. A federated sign-in also keeps what the provider said about it
+// (Session.UpstreamAMR) apart from these: tokens pass it on, nothing here decides on it.
 //
 // Security properties implemented here: sign-in requests carry the anonymous double-submit CSRF token; failures
 // look identical for unknown users, inactive users and wrong passwords and cost an argon2 hash either way; failed
@@ -500,8 +502,10 @@ type ticket struct {
 	AMR     []string `json:"a"`
 	Pending string   `json:"p,omitempty"` // sealed TOTP secret being enrolled
 	Tenant  string   `json:"t,omitempty"` // tenant name the sign-in is for
-	// Provider is the upstream provider of a federated first factor (recorded on the session it ends in).
-	Provider string `json:"pv,omitempty"`
+	// Provider is the upstream provider of a federated first factor (recorded on the session it ends in), and
+	// UpstreamAMR how the provider said the person signed in to it (passed on in tokens, never decided on).
+	Provider    string   `json:"pv,omitempty"`
+	UpstreamAMR []string `json:"ua,omitempty"`
 	// Gen is the account's security generation (model.User.SecurityGen) when the first factor was verified, and Stamp
 	// the sign-out counters then (model.SignOutStamp). Every later step checks both against the account as it is now
 	// (ticketCurrent): a ticket whose password has since been changed, whose account set up a second factor

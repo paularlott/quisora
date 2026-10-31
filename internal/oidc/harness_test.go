@@ -622,6 +622,14 @@ func (h *harness) tenantClient(tn *model.Tenant, edit func(*service.ClientInput)
 func (h *harness) sessionFor(amr []string, provider string) *http.Client {
 	h.t.Helper()
 	c := h.sessionWith(h.user, amr, time.Now())
+	h.signedInThrough(c, provider, nil)
+	return c
+}
+
+// signedInThrough records on the session of browser c that it signed in through the upstream provider (an id), which
+// said the person signed in to it as upstream (Session.UpstreamAMR).
+func (h *harness) signedInThrough(c *http.Client, provider string, upstream []string) {
+	h.t.Helper()
 	pu, _ := url.Parse(h.env.URL)
 	for _, ck := range c.Jar.Cookies(pu) {
 		if ck.Name == web.SessionCookieFor(h.env.Primary.ID) {
@@ -630,14 +638,13 @@ func (h *harness) sessionFor(amr []string, provider string) *http.Client {
 			if err != nil {
 				h.t.Fatal(err)
 			}
-			s.Provider = provider
+			s.Provider, s.UpstreamAMR = provider, upstream
 			if err := h.env.Svc.Sessions.Update(context.Background(), s); err != nil {
 				h.t.Fatal(err)
 			}
 			h.env.Server.Sessions.Evict(id, "")
 		}
 	}
-	return c
 }
 
 func (h *harness) setOrg(s model.OrgSettings) {

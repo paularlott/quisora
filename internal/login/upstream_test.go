@@ -403,8 +403,9 @@ func TestProviderRequestsAreGuarded(t *testing.T) {
 }
 
 // A provider sign-in is a first factor: a user with an Authenticator App enters its code before the session starts
-// (the provider's own MFA claims are not trusted), and the session still records the provider. The step's ticket
-// travels in a cookie, never the URL.
+// (the provider's own MFA claims are not trusted), and the session still records the provider, and keeps what the
+// provider said (its amr) apart from what Quisora verified, for the tokens to pass on. The step's ticket travels in a
+// cookie, never the URL.
 func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 	u := newUpEnv(t, nil)
 	p := u.oidcProvider(t, nil)
@@ -443,7 +444,8 @@ func TestUpstreamSignInNeedsSecondFactor(t *testing.T) {
 			fed = s
 		}
 	}
-	if fed == nil || fed.Provider != p.ID || !slices.Contains(fed.AMR, "mfa") {
+	if fed == nil || fed.Provider != p.ID || !slices.Equal(fed.AMR, []string{"fed", "otp", "mfa"}) ||
+		!slices.Equal(fed.UpstreamAMR, []string{"mfa", "otp"}) {
 		t.Fatalf("session after provider + code: %+v", fed)
 	}
 }

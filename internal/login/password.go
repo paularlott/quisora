@@ -310,7 +310,7 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider}, t.Next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR}, t.Next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return
@@ -383,7 +383,7 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 	}
 	// A one-time code as the second factor (RFC 8176 "otp"), as an authenticator code is.
 	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider}, t.Next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR}, t.Next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return

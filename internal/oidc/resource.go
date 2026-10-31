@@ -492,6 +492,7 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 		o.num("auth_time", int64(cl.AuthTime))
 		o.strIf("acr", cl.ACR)
 		o.strs("amr", nonNil(cl.AMR))
+		o.strIf("idp", cl.IdP)
 		o.strIf("sid", cl.SID)
 		o.strIf("org_role", cl.Role)
 		if cl.Groups != nil {

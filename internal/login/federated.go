@@ -113,7 +113,8 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	if res.Provider.TrustMFA && !res.User.Role.Privileged() {
 		amr = append(amr, "mfa")
 	} else {
-		step, err = m.secondFactor(r, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID})
+		step, err = m.secondFactor(r, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID,
+			UpstreamAMR: res.Claims.AMR})
 	}
 	if errors.Is(err, errFactorLost) {
 		m.audit(r, "login.failure", res.Org, res.User, "", map[string]string{"reason": "second factor unusable",
@@ -134,7 +135,7 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, u+sepFor(u)+"step=1", http.StatusSeeOther)
 		return
 	}
-	dest, err := m.completeWith(w, r, res.User, res.Org, web.SessionOptions{AMR: amr, Provider: res.Provider.ID}, res.Next)
+	dest, err := m.completeWith(w, r, res.User, res.Org, web.SessionOptions{AMR: amr, Provider: res.Provider.ID, UpstreamAMR: res.Claims.AMR}, res.Next)
 	if err != nil {
 		m.s.Log.Error("create session", "error", err)
 		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "failed"), http.StatusFound)

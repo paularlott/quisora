@@ -35,6 +35,8 @@ type codeData struct {
 	OrgID       string   `json:"o"`
 	AuthTime    int64    `json:"at"`
 	AMR         []string `json:"amr"`
+	IdP         string   `json:"idp,omitempty"`  // upstream provider type (Grant.IdP)
+	UpstreamAMR []string `json:"uamr,omitempty"` // how the provider said the person signed in (Grant.UpstreamAMR)
 	Scopes      []string `json:"sc"`
 	Resources   []string `json:"res,omitempty"`
 	ClaimsUI    []string `json:"cu,omitempty"`
@@ -361,7 +363,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Resources: cd.Resources,
 		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -408,7 +410,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
 	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: cd.AMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
+		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, "", serverError(err)
@@ -754,7 +756,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		return nil, invalid
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: g.AMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
+		authTime: g.AuthTime, amr: g.AMR, idp: g.IdP, upstreamAMR: g.UpstreamAMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
 		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {

@@ -112,7 +112,7 @@ func TestInviteSignUpWithPasskey(t *testing.T) {
 		t.Fatalf("passkeys %+v", list)
 	}
 	sess, _ := e.Svc.Sessions.All(context.Background(), u.ID)
-	if len(sess) != 1 || strings.Join(sess[0].AMR, ",") != "hwk,user" {
+	if len(sess) != 1 || strings.Join(sess[0].AMR, ",") != "hwk,user,mfa" {
 		t.Fatalf("amr %+v", sess)
 	}
 	fresh, _ := e.Svc.Users.Get(context.Background(), u.ID)

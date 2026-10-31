@@ -186,7 +186,7 @@ func (m *Module) inviteComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		amr := []string{k}
 		if pk.UserVerified {
-			amr = append(amr, "user")
+			amr = append(amr, "user", "mfa")
 		}
 		dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: pk.ID}, "")
 		if err != nil {
