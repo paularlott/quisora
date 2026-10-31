@@ -5,9 +5,15 @@ import (
 	"encoding/json"
 )
 
-// MarkReauth records a fresh re-authentication for a session, at its user's current security generation (tests in
-// package login_test cannot reach the ephemeral namespace).
-func (m *Module) MarkReauth(sessionID string) {
+// MarkReauth records a fresh re-authentication for a session, at its user's current security generation, as one with a
+// second factor (tests in package login_test cannot reach the ephemeral namespace).
+func (m *Module) MarkReauth(sessionID string) { m.markReauthWith(sessionID, true) }
+
+// MarkReauthPasswordOnly is MarkReauth for an account without a second factor of its own: its re-authentication
+// is the password alone.
+func (m *Module) MarkReauthPasswordOnly(sessionID string) { m.markReauthWith(sessionID, false) }
+
+func (m *Module) markReauthWith(sessionID string, secondFactor bool) {
 	ctx := context.Background()
 	sess, err := m.s.Svc.Sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -17,7 +23,7 @@ func (m *Module) MarkReauth(sessionID string) {
 	if err != nil {
 		return
 	}
-	m.markReauth(ctx, sessionID, u.SecurityGen)
+	m.markReauth(ctx, sessionID, u.SecurityGen, secondFactor)
 }
 
 // PutEnrolTicket creates a sign-in ticket at the enrol step for a user (as a verified password would), bound to the

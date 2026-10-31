@@ -25,7 +25,7 @@ import (
 // sweepKinds are the kinds the sweep reads, in turn.
 var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
 	model.KindClient, model.KindProvider, model.KindPasskey, model.KindIdentity, model.KindAPIToken, model.KindSignIn,
-	model.KindSession, model.KindGrant, model.KindLock}
+	model.KindSession, model.KindGrant, model.KindLock, model.KindSSHKey, model.KindSSHCert}
 
 // sweepMinAge is how old a record must be before the sweep may remove it: well past the store's staleness bound, so
 // its owner, made elsewhere at the same time, is visible here.
@@ -91,6 +91,12 @@ func owners(e model.Entity) []ownerRef {
 		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.Grant:
 		return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindClient, id: v.ClientID}}
+	case *model.SSHKey:
+		return []ownerRef{{kind: model.KindTenant, id: v.TenantID}}
+	case *model.SSHCert:
+		// Not its user: a deleted user's certificate works until it expires, and is on the tenant's KRL for that long
+		// (SSHRevoked); removing the record would take it off the list. It expires on its own.
+		return []ownerRef{{kind: model.KindTenant, id: v.TenantID}}
 	case *model.Lock: // an organization's open deletion guard (SweepOrphans judges every other lock by its lease)
 		return []ownerRef{{kind: model.KindOrg, id: v.ID}}
 	}

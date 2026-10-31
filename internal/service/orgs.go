@@ -311,6 +311,15 @@ func (s *Service) DeleteOrg(ctx context.Context, a *Actor, id string, cascade bo
 	if o.Primary {
 		return ErrPrimaryOrg
 	}
+	// Not while a tenant of it has SSH certificates on: turned off first, its servers fetch a revocation list that
+	// revokes every certificate, which they could not once the organization is gone.
+	on, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: o.ID, Limit: 1, Filters: []store.Filter{{Field: "ssh_enabled", Value: true}}})
+	if err != nil {
+		return mapStore(err)
+	}
+	if len(on) > 0 {
+		return sshOnError(on[0])
+	}
 	n, err := s.closeOrg(ctx, id, cascade)
 	if err != nil {
 		return err

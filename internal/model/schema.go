@@ -98,6 +98,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true},
 		{Name: "created", Type: FieldTime, Sort: true},
+		{Name: "ssh_enabled", Type: FieldBool, Index: true}, // the tenants with SSH on (housekeeping: EnsureSSHKeys)
 	}},
 	KindAccess: {KindAccess, []Field{
 		{Name: "tenant_id", Type: FieldString, Index: true}, // a tenant's access entries (ListAccess)
@@ -130,7 +131,27 @@ var Schemas = map[Kind]Schema{
 	KindAPIToken: {KindAPIToken, []Field{
 		{Name: "created", Type: FieldTime, Sort: true}, // the console lists the newest first
 	}},
-	KindKey:       {KindKey, nil},
+	KindKey: {KindKey, nil},
+	// A tenant's CA keys, listed by tenant (the published keys, rotation); the certificates by tenant (user certificates
+	// under tenant_id, host certificates under host_tenant_id: the KRL reads the first and the revoked of the second),
+	// by user (the account page, the user's access ending) and the revoked ones, and searched by key id, fingerprint,
+	// serial and principal (the tenant's certificate list).
+	KindSSHKey: {KindSSHKey, []Field{
+		{Name: "tenant_id", Type: FieldString, Index: true},
+	}},
+	KindSSHCert: {KindSSHCert, []Field{
+		{Name: "tenant_id", Type: FieldString, Index: true},
+		{Name: "host_tenant_id", Type: FieldString, Index: true},
+		{Name: "user_id", Type: FieldString, Index: true},
+		{Name: "revoked", Type: FieldBool, Index: true},
+		{Name: "created", Type: FieldTime, Sort: true},
+		// the console's search: the key id (it starts with the username), the key's fingerprint and the serial by their
+		// start; a principal, one of the words of principals, by the whole of it
+		{Name: "key_id", Type: FieldString, Search: true},
+		{Name: "fingerprint", Type: FieldString, Search: true},
+		{Name: "serial", Type: FieldString, Search: true},
+		{Name: "principals", Type: FieldString, Words: true},
+	}},
 	KindEphemeral: {KindEphemeral, nil},
 	KindLink:      {KindLink, nil},
 	KindSignIn:    {KindSignIn, nil},
@@ -172,7 +193,8 @@ const (
 
 // expiries is the Expiry of the kinds that are not NeverExpires.
 var expiries = map[Kind]Expiry{
-	KindMember: MayExpire, KindAPIToken: MayExpire, KindKey: MayExpire, KindEphemeral: MayExpire,
+	KindMember: MayExpire, KindAPIToken: MayExpire, KindKey: MayExpire, KindSSHKey: MayExpire, KindEphemeral: MayExpire,
+	KindSSHCert: AlwaysExpires,
 	KindSession: AlwaysExpires, KindGrant: AlwaysExpires, KindLink: AlwaysExpires, KindAudit: AlwaysExpires,
 	KindReplay: AlwaysExpires, KindQueue: AlwaysExpires,
 }
@@ -190,7 +212,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindAPIToken, KindKey, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral, KindQueue}
+		KindGrant, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindLock, KindReplay, KindEphemeral, KindQueue}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -224,6 +246,10 @@ func NewEntity(k Kind) Entity {
 		return &APIToken{}
 	case KindKey:
 		return &SigningKey{}
+	case KindSSHKey:
+		return &SSHKey{}
+	case KindSSHCert:
+		return &SSHCert{}
 	case KindAudit:
 		return &Audit{}
 	case KindLink:

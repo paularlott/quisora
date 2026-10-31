@@ -93,7 +93,7 @@ test('client: accepting personal API tokens is a setting of the application, off
   await page.goto(`${A}/tenants`, { waitUntil: 'load' })
   const slug = uniq('at')
   const t = await apiCall(page, 'POST', `${API}/tenants`, { name: slug, display_name: 'Tokens ' + slug })
-  await page.goto(`${A}/tenants/${slug}`, { waitUntil: 'load' })
+  await page.goto(`${A}/tenants/${slug}/clients`, { waitUntil: 'load' })
   await page.getByRole('button', { name: 'New client' }).click()
   const dlg = page.getByRole('dialog', { name: 'New client' })
   const accepts = dlg.getByRole('switch', { name: /Accepts personal API tokens/ })

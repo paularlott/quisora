@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/logger"
+
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -64,8 +66,14 @@ func setup(t testing.TB, cfgFn func(*config.Config)) *harness { return setupKey(
 // setupKey is setup with a chosen master key.
 func setupKey(t testing.TB, cfgFn func(*config.Config), masterKey []byte) *harness {
 	t.Helper()
+	return setupLogged(t, cfgFn, masterKey, nil)
+}
+
+// setupLogged is setupKey with the server's log (nil: none kept).
+func setupLogged(t testing.TB, cfgFn func(*config.Config), masterKey []byte, log logger.Logger) *harness {
+	t.Helper()
 	var p *Provider
-	env := webtest.New(t, webtest.Options{Configure: cfgFn, MasterKey: masterKey, Modules: func(s *web.Server) []web.Module {
+	env := webtest.New(t, webtest.Options{Configure: cfgFn, MasterKey: masterKey, Log: log, Modules: func(s *web.Server) []web.Module {
 		p = New(s)
 		return []web.Module{p}
 	}})

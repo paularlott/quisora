@@ -11,7 +11,7 @@ async function freshTenant(page) {
   await page.goto(`${A}/tenants`, { waitUntil: 'load' })
   const slug = uniq('lf')
   const t = await apiCall(page, 'POST', `${API}/tenants`, { name: slug, display_name: 'List ' + slug })
-  await page.goto(`${A}/tenants/${slug}`, { waitUntil: 'load' })
+  await page.goto(`${A}/tenants/${slug}/clients`, { waitUntil: 'load' })
   await page.getByRole('button', { name: 'New client' }).waitFor()
   return { slug, id: t.id }
 }
@@ -64,7 +64,7 @@ test('list editor: add with the button and Enter, remove with the delete button,
   await expect(addLogout).toBeFocused()
   // custom scopes are chips (a pasted space-separated list becomes several, a repeat is ignored); the word still
   // being typed is added on save; standard scopes are checkboxes with descriptions
-  await expect(dlg.getByText("The user’s group names and tags")).toBeVisible()
+  await expect(dlg.getByText("The user’s group names.")).toBeVisible()
   await dlg.getByRole('checkbox', { name: /^groups/ }).check()
   const custom = page.locator('#f-custom_scopes')
   await custom.fill('orders:read orders:read ')

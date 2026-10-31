@@ -726,29 +726,9 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 }
 
 // methodAllowed reports whether the way the session was authenticated is among the sign-in methods the client's
-// tenant allows for the user's org: a password step needs Password (a passkey used as the second factor after it
-// does not need passkey sign-in), a passkey alone needs Passkey, and a federated sign-in needs its provider.
+// tenant allows for the user's org (service.SignInMethods.AllowsSession).
 func methodAllowed(eff *service.SignInMethods, sess *model.Session) bool {
-	var pwd, pk, fed bool
-	for _, a := range sess.AMR {
-		switch a {
-		case "pwd":
-			pwd = true
-		case "hwk", "swk":
-			pk = true
-		case "fed":
-			fed = true
-		}
-	}
-	switch {
-	case fed:
-		return sess.Provider != "" && eff.AllowsProvider(sess.Provider)
-	case pwd:
-		return eff.Password
-	case pk:
-		return eff.Passkey
-	}
-	return false
+	return eff.AllowsSession(sess.AMR, sess.Provider)
 }
 
 // hasConsent reports whether the user already authorized this client for these scopes and resources (a live grant

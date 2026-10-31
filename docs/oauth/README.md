@@ -29,6 +29,7 @@ Each guide explains one feature, with curl examples you can run against a server
 | Choose how a client proves who it is | [Client authentication](client-authentication.md): secrets, private key JWT, public clients |
 | Call an API from a job or a service, with no user | [Client credentials](client-credentials.md) |
 | Sign in on a CLI, a TV or another device without a browser | [Device sign-in](device.md) |
+| Log in to servers with short-lived SSH certificates | [SSH certificates](../ssh/README.md): Quisora as the tenant's SSH certificate authority |
 | Call another API for the user, from an API | [Token exchange](token-exchange.md) |
 | Keep sign-in parameters out of the browser | [Pushed authorization requests](par.md) |
 | Make stolen tokens useless | [DPoP](dpop.md) |
@@ -58,7 +59,7 @@ to its applications (everyone in the organization, or only the people and groups
 (passwords, passkeys, which upstream providers, whether a second factor is required). So the first question when
 adding an application is which tenant it belongs in.
 
-Make a client in the console: the organization → **Tenants** → the tenant → **Clients** → **New client**. Choose:
+Make a client in the console: the organization → **Tenants** → the tenant's **Clients** (the count in the list, or **Manage clients** on the tenant's page) → **New client**. Choose:
 
 - **Authentication**: a secret for a server-side app, **Public** for one that cannot keep a secret (a single-page app,
   a mobile or desktop app, a CLI), or **Private key JWT** ([client authentication](client-authentication.md)).

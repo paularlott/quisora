@@ -614,6 +614,29 @@ func consistently(t testing.TB, d time.Duration, what string, cond func() bool) 
 	}
 }
 
+// readyWithin waits up to d for every node given to report Ready, and fails with the reason one last gave: a node
+// starved of CPU (a loaded test run) can briefly have heard no owner of a partition lately, which passes, while what
+// stays (a diverged partition) is reported.
+func readyWithin(t testing.TB, d time.Duration, nodes ...*tnode) {
+	t.Helper()
+	why := ""
+	for deadline := time.Now().Add(d); ; time.Sleep(25 * time.Millisecond) {
+		why = ""
+		for _, tn := range nodes {
+			if ok, w := tn.n.Ready(); !ok {
+				why = fmt.Sprintf("node %d: %s", tn.idx, w)
+				break
+			}
+		}
+		if why == "" || time.Now().After(deadline) {
+			break
+		}
+	}
+	if why != "" {
+		t.Fatal(why)
+	}
+}
+
 // waitReady waits until every node given (default: all) reports Ready.
 func (c *tcluster) waitReady(nodes ...*tnode) {
 	c.t.Helper()

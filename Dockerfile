@@ -25,7 +25,8 @@ COPY web/ ./
 RUN npm run build
 
 FROM golang:${GO_VERSION}-alpine@${GO_DIGEST} AS build
-ARG VERSION=dev
+# the version is in internal/build/version.go; the build stamps the commit
+ARG COMMIT=
 # "onepassword" links the 1Password SDK for service accounts (secrets.onepassword.service_account_token)
 ARG GO_TAGS=
 WORKDIR /src
@@ -34,7 +35,7 @@ RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 go build -trimpath -tags "${GO_TAGS}" \
-      -ldflags "-s -w -X github.com/paularlott/quisora/internal/build.Version=${VERSION}" \
+      -ldflags "-s -w -X github.com/paularlott/quisora/internal/build.Commit=${COMMIT}" \
       -o /out/quisora . \
  && mkdir -p /out/data
 

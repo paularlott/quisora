@@ -251,6 +251,11 @@ func sealedKeys(rec *store.Record, need map[string]bool) {
 		if store.Decode(rec, &k) == nil {
 			vals = []string{k.PrivateKey}
 		}
+	case model.KindSSHKey:
+		var k model.SSHKey
+		if store.Decode(rec, &k) == nil {
+			vals = []string{k.PrivateKey}
+		}
 	case model.KindIdentity:
 		var id model.Identity
 		if store.Decode(rec, &id) == nil {

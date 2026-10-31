@@ -192,7 +192,7 @@ test('create, edit and delete an organization through the modal + confirm dialog
 
 test('client secret is shown once with a copy button; a public client\'s dialog has no secret', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  await gotoRows(page, `${A}/tenants/customers`)
+  await gotoRows(page, `${A}/tenants/customers/clients`)
   await page.getByRole('button', { name: 'New client' }).click()
   await page.locator('#f-name').fill('Secret test')
   await page.getByLabel('Redirect URI 1', { exact: true }).fill('https://x.example/cb')
@@ -274,9 +274,9 @@ test('tenant dialog: keyboard, provider checklist, org-disabled methods, delete 
   await expect(page.getByRole('row', { name: /customers/ })).toBeVisible()
 })
 
-test('clients: the tenant page lists only its own clients, with the tenant preset in the new-client dialog', async ({ page }) => {
-  await gotoRows(page, `${A}/tenants/staff`)
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Tenant: Staff tools')
+test('clients: the tenant\'s clients page lists only its own clients, with the tenant preset in the new-client dialog', async ({ page }) => {
+  await gotoRows(page, `${A}/tenants/staff/clients`)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Clients: Staff tools')
   await expect(page.getByRole('row', { name: /Internal tool 1/ })).toBeVisible()
   await expect(page.getByRole('row', { name: /Customer portal/ })).toHaveCount(0)
   await expect(page.getByRole('columnheader', { name: 'Tenant' })).toHaveCount(0)
@@ -343,7 +343,7 @@ test('401 from the API redirects to sign-in', async ({ page, context }) => {
   await page.waitForURL(/\/login\?next=/)
 })
 
-for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/providers', '/audit']) {
+for (const path of ['/users', '/groups', '/tenants', '/tenants/staff', '/tenants/staff/clients', '/tenants/servers/ssh', '/providers', '/audit']) {
   test(`reflows at 320px without horizontal page scroll: ${path}`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 })
     await signIn(page, 'admin')
@@ -827,7 +827,7 @@ test('admin user page: add and remove an email address from the keyboard', async
 
   // a good one: Enter submits, the row appears (unverified: the demo has email on, so the user is mailed a link,
   // which can be sent again) and focus returns
-  const address = 'kbd' + Date.now().toString(36) + '@the7thdream.example'
+  const address = 'kbd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + '@the7thdream.example'
   await input.fill(address)
   await page.keyboard.press('Enter')
   const row = list.getByRole('listitem').filter({ hasText: address })

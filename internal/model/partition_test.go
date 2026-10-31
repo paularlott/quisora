@@ -25,6 +25,8 @@ func TestPartitionKeyOfEveryKind(t *testing.T) {
 		KindGrant:     &Grant{Meta: meta, OrgID: org, UserID: "u"},
 		KindAPIToken:  &APIToken{Meta: meta, OrgID: org, UserID: "u"},
 		KindKey:       &SigningKey{Meta: meta},
+		KindSSHKey:    &SSHKey{Meta: meta, OrgID: org},
+		KindSSHCert:   &SSHCert{Meta: meta, OrgID: org},
 		KindAudit:     &Audit{Meta: meta, OrgID: org},
 		KindLink:      &LinkToken{Meta: meta, OrgID: org, UserID: "u", TokenHash: "h"},
 		KindSignIn:    &SignIn{Meta: meta, OrgID: org},

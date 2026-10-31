@@ -165,16 +165,24 @@ func testStaleCopyUpdateIsRefused(t *testing.T, c *tcluster) {
 		t.Fatal(err)
 	}
 	c.waitUser(t, u.ID, func(x *model.User) bool { return x.Version == u.Version })
-	stale, _ := users(c.nodes[1]).Get(bg, u.ID)
+	stale, err := users(c.nodes[1]).Get(bg, u.ID)
+	if err != nil {
+		t.Fatalf("node 1's copy: %v", err)
+	}
 
 	c.lagBehind(1, true)
-	admin, _ := users(c.nodes[0]).Get(bg, u.ID)
+	admin, err := users(c.nodes[0]).Get(bg, u.ID)
+	if err != nil {
+		t.Fatalf("node 0's copy: %v", err)
+	}
 	admin.Active = false
 	if err := users(c.nodes[0]).Update(bg, admin); err != nil {
 		t.Fatalf("the administrator's change: %v", err)
 	}
-	if r, _ := users(c.nodes[1]).Get(bg, u.ID); !r.Active {
-		t.Fatal("test set-up: node 1 must not have the change yet")
+	// node 1's own copy: through the cluster store its read may already be refused (store.ErrUnavailable), once a
+	// heartbeat has told it of the commit it cannot apply, which is the gate doing its job
+	if r, err := localUsers(c.nodes[1]).Get(bg, u.ID); err != nil || !r.Active {
+		t.Fatalf("test set-up: node 1 must not have the change yet: %+v, %v", r, err)
 	}
 	stale.GivenName = "signed in"
 	begin := time.Now()
@@ -207,7 +215,10 @@ func testConcurrentUpdatesFromAllNodes(t *testing.T, c *tcluster) {
 		errs := make([]error, 3)
 		wrote := make([]*model.User, 3)
 		for i := range 3 {
-			x, _ := users(c.nodes[i]).Get(bg, u.ID)
+			x, err := users(c.nodes[i]).Get(bg, u.ID)
+			if err != nil {
+				t.Fatalf("round %d, node %d's copy: %v", round, i, err)
+			}
 			x.GivenName = fmt.Sprintf("round %d node %d", round, i)
 			wrote[i] = x
 			wg.Add(1)

@@ -14,9 +14,14 @@ vars:
     - darwin/arm64
     - windows/amd64
     - windows/arm64
+  # the version is kept in internal/build/version.go (raised for a release); the build stamps the commit and the date
   VERSION:
-    sh: git describe --tags --always 2>/dev/null || echo dev
-  BUILD_FLAGS: '-ldflags="-s -w -X github.com/paularlott/quisora/internal/build.Version={{.VERSION}}" -trimpath'
+    sh: go run ./scripts/getversion
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || true
+  BUILT_AT:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+  BUILD_FLAGS: '-ldflags="-s -w -X github.com/paularlott/quisora/internal/build.Commit={{.COMMIT}} -X github.com/paularlott/quisora/internal/build.Date={{.BUILT_AT}}" -trimpath'
   OUTPUT_DIR: bin
 
 tasks:
@@ -70,6 +75,30 @@ tasks:
       CGO_ENABLED: "0"
     cmds:
       - go build -tags onepassword {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} .
+
+  tag:
+    desc: Tag the current commit v<version> (internal/build/version.go) and push the tag
+    preconditions:
+      - sh: test -z "$(git status --porcelain)"
+        msg: "the working tree has uncommitted changes: commit them first, so the tag names the code that is built"
+    cmds:
+      - git tag -a v{{.VERSION}} -m "Release {{.VERSION}}"
+      - git push origin v{{.VERSION}}
+    status:
+      - git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null # tagged already
+
+  release:
+    desc: "Release the version in internal/build/version.go: tag it (task tag, skipped when the tag exists), build every platform (task all), and create the GitHub release v<version> with the binaries and their SHA-256 checksums (needs gh)"
+    preconditions:
+      - sh: test -z "$(git status --porcelain)"
+        msg: "the working tree has uncommitted changes: commit them first, so the release is the tagged code"
+      - sh: '! git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null || test "$(git rev-list -n 1 v{{.VERSION}})" = "$(git rev-parse HEAD)"'
+        msg: "v{{.VERSION}} already tags another commit: raise Version in internal/build/version.go"
+    cmds:
+      - task: tag
+      - task: all
+      - cd {{.OUTPUT_DIR}} && rm -f SHA256SUMS && shasum -a 256 {{.PROJECT_NAME}}-* > SHA256SUMS
+      - gh release create v{{.VERSION}} {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-* {{.OUTPUT_DIR}}/SHA256SUMS -t "Quisora {{.VERSION}}" --generate-notes
 
   conformance-tools:
     desc: Build the OpenID conformance harness tools (bin/seed, bin/fakeidp); see conformance/README.md
@@ -172,6 +201,11 @@ tasks:
     cmds:
       - go vet ./...
       - go test -race $(go list ./... | grep -v /internal/cluster)
+
+  test-ssh-e2e:
+    desc: Runs the SSH end-to-end test against a real sshd in Docker (an Ubuntu 24.04 container that trusts a tenant's user and host CA; needs Docker and OpenSSH's ssh and ssh-keygen, about a minute)
+    cmds:
+      - QUISORA_SSH_E2E=1 go test -race -count=1 -timeout 15m -run E2E -v ./internal/sshe2e/
 
   test-cluster:
     desc: "The cluster package with the race detector (one test after another, the slow part), the store conformance suite against cluster.Store (every store keeps the same promises), and the tests that use fault hooks and counters (-tags faults, not built into a release)"

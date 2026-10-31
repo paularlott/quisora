@@ -24,6 +24,7 @@ type View struct {
 	OrgDisplay    string
 	IsPrimary     bool
 	CanFirstParty bool // super admins only: the first-party switch, and managing first-party clients
+	CanSSH        bool // administrators of the organization (and super admins), who manage SSH: a user's certificates on the user page
 	UserID        string
 	Self          bool // the user page is the viewer's own: read-only addresses, connections on the account page
 	Roles         []RoleOption
@@ -38,7 +39,7 @@ type View struct {
 	SignInURL string
 	SCIMURL   string
 
-	// Tenant page (/admin/orgs/{org}/tenants/{tenant}).
+	// Tenant page (/admin/orgs/{org}/tenants/{tenant}), and its clients and SSH pages (.../clients, .../ssh).
 	TenantID      string
 	TenantName    string
 	TenantDisplay string
@@ -107,7 +108,9 @@ func (m *Module) registerPages(s *web.Server) {
 		func(v *View, r *http.Request) { v.UserID = r.PathValue("id"); v.Self = v.UserID == web.Actor(r).UserID }))
 	page("GET /admin/orgs/{org}/groups", m.orgPage("admin-groups", "Groups", "groups", false, nil))
 	page("GET /admin/orgs/{org}/tenants", m.orgPage("admin-tenants", "Tenants", "tenants", true, nil))
-	page("GET /admin/orgs/{org}/tenants/{tenant}", m.pageTenant)
+	page("GET /admin/orgs/{org}/tenants/{tenant}", m.tenantPage("admin-tenant", "Tenant"))
+	page("GET /admin/orgs/{org}/tenants/{tenant}/clients", m.tenantPage("admin-tenant-clients", "Clients"))
+	page("GET /admin/orgs/{org}/tenants/{tenant}/ssh", m.tenantPage("admin-tenant-ssh", "SSH certificates"))
 	page("GET /admin/orgs/{org}/clients", m.pageClientsMoved)
 	page("GET /admin/orgs/{org}/providers", m.orgPage("admin-providers", "Providers", "providers", true, nil))
 	page("GET /admin/orgs/{org}/service-accounts", m.orgPage("admin-service-accounts", "Service accounts", "service-accounts", true, nil))
@@ -237,7 +240,7 @@ func (m *Module) orgGate(w http.ResponseWriter, r *http.Request, adminOnly bool)
 	}
 	esc := url.PathEscape(org.Name)
 	v := &View{API: "/api/orgs/" + esc, Base: "/admin/orgs/" + esc, OrgName: org.Name, OrgDisplay: org.DisplayName,
-		IsPrimary: org.Primary, CanFirstParty: a.IsSuper(), Issuer: m.s.Cfg.OrgIssuer(org.ID),
+		IsPrimary: org.Primary, CanFirstParty: a.IsSuper(), CanSSH: m.s.Svc.CanAdminOrg(a, org.ID), Issuer: m.s.Cfg.OrgIssuer(org.ID),
 		Roles: assignableRoles(a, org), FilterRoles: filterRoles(a, org)}
 	return org, v, true
 }
@@ -252,24 +255,27 @@ func (m *Module) renderOrgPage(w http.ResponseWriter, r *http.Request, org *mode
 	m.s.Render.Render(w, http.StatusOK, name, p)
 }
 
-// pageTenant is the page of one tenant: its sign-in rules and its clients. Unknown tenants and tenants of other
+// tenantPage builds the handler of a page of one tenant (/admin/orgs/{org}/tenants/{tenant}...): the tenant's sign-in
+// rules, its clients or its SSH certificates, titled "<title>: <tenant>". Unknown tenants and tenants of other
 // organizations are a 404; the role rules are those of the tenants list (org admins and super admins).
-func (m *Module) pageTenant(w http.ResponseWriter, r *http.Request) {
-	org, v, ok := m.orgGate(w, r, true)
-	if !ok {
-		return
+func (m *Module) tenantPage(name, title string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		org, v, ok := m.orgGate(w, r, true)
+		if !ok {
+			return
+		}
+		tn := r.PathValue("tenant")
+		t, err := m.s.Svc.Tenants.GetByUnique(r.Context(), model.TenantNameKey(org.ID, tn))
+		if err != nil && strings.EqualFold(tn, model.DefaultTenantName) {
+			t, err = m.s.Svc.DefaultTenant(r.Context(), org.ID)
+		}
+		if err != nil || t.OrgID != org.ID {
+			m.errorPage(w, r, http.StatusNotFound)
+			return
+		}
+		v.TenantID, v.TenantName, v.TenantDisplay = t.ID, t.Name, t.DisplayName
+		m.renderOrgPage(w, r, org, name, title+": "+t.DisplayName, "tenants", v)
 	}
-	name := r.PathValue("tenant")
-	t, err := m.s.Svc.Tenants.GetByUnique(r.Context(), model.TenantNameKey(org.ID, name))
-	if err != nil && strings.EqualFold(name, model.DefaultTenantName) {
-		t, err = m.s.Svc.DefaultTenant(r.Context(), org.ID)
-	}
-	if err != nil || t.OrgID != org.ID {
-		m.errorPage(w, r, http.StatusNotFound)
-		return
-	}
-	v.TenantID, v.TenantName, v.TenantDisplay = t.ID, t.Name, t.DisplayName
-	m.renderOrgPage(w, r, org, "admin-tenant", "Tenant: "+t.DisplayName, "tenants", v)
 }
 
 // pageClientsMoved keeps old /clients links working: clients live under tenants.

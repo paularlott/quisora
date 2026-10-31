@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,10 @@ type deviceGrant struct {
 	Resources []string `json:"res,omitempty"`
 	UserCode  string   `json:"uc"`
 	Expires   int64    `json:"x"` // unix seconds
+	// MFA and MaxAge are what the device asked for with acr_values and max_age, which the sign-in that approves it
+	// meets as an authorization request's do (flow.MFA, flow.MaxAge); MaxAge nil: not asked.
+	MFA    bool `json:"mfa,omitempty"`
+	MaxAge *int `json:"ma,omitempty"`
 	// Decision is "" while pending, then "allow" (with the approving user's sign-in below) or "deny".
 	Decision  string   `json:"d,omitempty"`
 	UserID    string   `json:"u,omitempty"`
@@ -116,7 +121,8 @@ func normUserCode(s string) string {
 
 // handleDeviceAuthorization is POST /o/<org>/oauth/device_authorization (RFC 8628 §3.1): client authentication (or a
 // public client's client_id), scope and resource -> device_code, user_code, verification URIs, lifetime and poll
-// interval.
+// interval. acr_values and max_age are taken as an authorization request takes them: they decide the sign-in the user
+// approves with (a second factor, a recent sign-in).
 func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
@@ -167,6 +173,15 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		writeOAuthError(w, oerr("invalid_target", "the resource is not registered for this client"))
 		return
 	}
+	var maxAge *int
+	if v := form.Get("max_age"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeOAuthError(w, oerr("invalid_request", "max_age must be a non-negative integer"))
+			return
+		}
+		maxAge = &n
+	}
 	// A fresh user code: one already waiting is never handed out twice.
 	var userCode string
 	for range 5 {
@@ -184,7 +199,8 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		writeOAuthError(w, serverError(errors.New("no free user code")))
 		return
 	}
-	d := deviceGrant{GrantID: model.NewID(), ClientID: c.ID, Scopes: scopes, Resources: res, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix()}
+	d := deviceGrant{GrantID: model.NewID(), ClientID: c.ID, Scopes: scopes, Resources: res, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix(),
+		MFA: demandsMFA(strings.Fields(form.Get("acr_values"))), MaxAge: maxAge}
 	b, _ := json.Marshal(d)
 	deviceCode, err := p.s.Eph.New(ctx, nsDevice, b, deviceTTL)
 	if err == nil { // kept by the node that holds the sign-in (the device code names it)
@@ -332,8 +348,11 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 		render(http.StatusBadRequest, "That code is not valid. It may have expired: check the code on your device, or start again there.")
 		return
 	}
-	f := &flow{Org: c.OrgID, ClientID: c.ClientID(), Scopes: d.Scopes, Resources: d.Resources, MaxAge: -1, Mode: "query",
+	f := &flow{Org: c.OrgID, ClientID: c.ClientID(), Scopes: d.Scopes, Resources: d.Resources, MaxAge: -1, MFA: d.MFA, Mode: "query",
 		Created: time.Now().UnixNano(), Device: deviceCode}
+	if d.MaxAge != nil {
+		f.MaxAge = *d.MaxAge
+	}
 	secret, bind := newFlowSecret()
 	f.Bind = bind
 	b, _ := json.Marshal(f)

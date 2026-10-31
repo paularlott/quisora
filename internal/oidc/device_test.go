@@ -497,3 +497,69 @@ func (h *harness) adminBrowser() (*http.Client, string) {
 	browser.Jar.SetCookies(pu, c.Jar.Cookies(pu))
 	return browser, csrf
 }
+
+// startDeviceWith is startDevice with more parameters of the device authorization request.
+func (h *harness) startDeviceWith(c *model.Client, extra url.Values) (deviceCode, userCode string) {
+	h.t.Helper()
+	form := url.Values{"client_id": {c.ID}, "scope": {"openid profile"}}
+	for k, v := range extra {
+		form[k] = v
+	}
+	r := h.post(h.orgBase+"/oauth/device_authorization", form, "", "")
+	if r.status != 200 {
+		h.t.Fatalf("device authorization: %d %v", r.status, r.m)
+	}
+	return r.str("device_code"), r.str("user_code")
+}
+
+// The sign-in that approves a device meets the acr_values and max_age the device asked for, as an authorization
+// request's does: a password-only session is sent to step up (a second factor) and an older one to sign in again,
+// where without them the session goes straight to the consent screen.
+func TestDeviceGrantAcrValuesAndMaxAge(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	toLogin := func(c *http.Client, extra url.Values) *url.URL {
+		t.Helper()
+		_, uc := h.startDeviceWith(cl, extra)
+		resp := h.get(c, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("device page: %d %s", resp.StatusCode, body(resp))
+		}
+		return loc(t, resp)
+	}
+	wantConsent := func(what string, u *url.URL) {
+		t.Helper()
+		if u.Path != h.orgBase+"/oauth/consent" {
+			t.Errorf("%s: expected the consent screen: %s", what, u)
+		}
+	}
+	wantSignIn := func(what string, u *url.URL) {
+		t.Helper()
+		if !strings.HasSuffix(u.Path, "/login") || u.Query().Get("reauth") != "1" ||
+			!strings.Contains(u.Query().Get("next"), h.orgBase+"/oauth/authorize/resume") {
+			t.Errorf("%s: expected a new sign-in: %s", what, u)
+		}
+	}
+
+	pwd := h.sessionWith(h.user, []string{"pwd"}, time.Now())
+	mfa := h.sessionWith(h.user, mfaAMR, time.Now())
+	wantConsent("password session, nothing asked", toLogin(pwd, nil))
+	wantSignIn("password session, acr_values mfa", toLogin(pwd, url.Values{"acr_values": {acrMFA}}))
+	wantConsent("password session, acr_values basic", toLogin(pwd, url.Values{"acr_values": {acrBasic}}))
+	wantConsent("mfa session, acr_values mfa", toLogin(mfa, url.Values{"acr_values": {acrMFA}}))
+
+	old := h.sessionWith(h.user, mfaAMR, time.Now().Add(-2*time.Hour))
+	wantConsent("old session, nothing asked", toLogin(old, nil))
+	wantSignIn("old session, max_age 3600", toLogin(old, url.Values{"max_age": {"3600"}}))
+	wantConsent("old session, max_age 86400", toLogin(old, url.Values{"max_age": {"86400"}}))
+	wantSignIn("fresh session, max_age 0", toLogin(h.sessionWith(h.user, mfaAMR, time.Now().Add(-time.Second)), url.Values{"max_age": {"0"}}))
+
+	// a max_age that is not a number of seconds is refused
+	for _, bad := range []string{"-1", "soon", "1.5"} {
+		r := h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {cl.ID}, "scope": {"openid"}, "max_age": {bad}}, "", "")
+		if r.status != 400 || r.str("error") != "invalid_request" {
+			t.Errorf("max_age %q: %d %v", bad, r.status, r.m)
+		}
+	}
+}

@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"net"
@@ -25,9 +27,11 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/sshca"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 	"github.com/paularlott/quisora/internal/web"
+	"golang.org/x/crypto/ssh"
 )
 
 func main() {
@@ -284,6 +288,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	customers := tenant("customers", "Customer apps", "Public-facing applications",
 		model.TenantSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true})
 	_ = tenant("partners", "Partners", "", model.TenantSettings{PasswordLogin: true, PasswordReset: true, AllProviders: true})
+	servers := tenant("servers", "Servers", "Machines people reach over SSH",
+		model.TenantSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true})
+	seedSSH(ctx, svc, servers, out["user"], members)
 	curTenant := customers.ID
 
 	client := func(name, desc, method string, grants []string, uris []string) *model.Client {
@@ -398,4 +405,67 @@ func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool
 		p.publish(rec)
 	}
 	return applied, err
+}
+
+// seedSSH turns SSH certificates on for tenant t (user and host CA keys, host certificates for *.acme.example) and
+// issues some: ten for members (so the list has a second page), two for "pam" and one for "pia", whose certificates
+// browser tests revoke, two for user, one of them revoked, and one for a host.
+func seedSSH(ctx context.Context, svc *service.Service, t *model.Tenant, user *model.User, members []*model.User) {
+	sys := service.System
+	_, err := svc.UpdateTenantSSH(ctx, sys, t.ID, service.SSHSettingsInput{Enabled: ptr(true), HostCerts: ptr(true),
+		HostPatterns: &[]string{"*.acme.example"}, PrincipalRoles: ptr(true), SourceAddresses: &[]string{"203.0.113.0/24"}})
+	must(err)
+	t, err = svc.Tenants.Get(ctx, t.ID)
+	must(err)
+	newKey := func() string {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must(err)
+		k, err := ssh.NewPublicKey(pub)
+		must(err)
+		return sshca.AuthorizedKey(k) + " demo@laptop"
+	}
+	stamp, err := svc.SessionStamp(ctx, t.OrgID)
+	must(err)
+	issued := 0
+	for _, m := range members { // the first ten active users (managers and administrators get none unless the tenant allows it)
+		if issued == 10 {
+			break
+		}
+		if m.Role != model.RoleUser || !m.Active {
+			continue
+		}
+		_, err := svc.SignUserSSH(ctx, service.SSHUserRequest{User: m, TenantID: t.ID, ClientID: t.SSH.ClientID, PublicKey: newKey(),
+			AMR: []string{"pwd", "otp", "mfa"}, AuthTime: time.Now().Add(-time.Minute), Via: "cli",
+			SessionEpoch: m.SessionEpoch, Stamp: stamp})
+		must(err)
+		issued++
+	}
+	// users browser tests revoke certificates of (the shared demo keeps the others as they are)
+	for _, who := range []struct {
+		name  string
+		certs int
+	}{{"pam", 2}, {"pia", 1}} {
+		u, err := svc.CreateUser(ctx, sys, t.OrgID, service.UserInput{Username: ptr(who.name), Email: ptr(who.name + "@acme.example"),
+			GivenName: ptr(strings.ToUpper(who.name[:1]) + who.name[1:]), FamilyName: ptr("Tester"), Role: ptr(model.RoleUser), Password: ptr(secure.RandomToken(15))})
+		must(err)
+		for range who.certs {
+			_, err := svc.SignUserSSH(ctx, service.SSHUserRequest{User: u, TenantID: t.ID, ClientID: t.SSH.ClientID, PublicKey: newKey(),
+				AMR: []string{"pwd", "otp", "mfa"}, AuthTime: time.Now().Add(-time.Minute), Via: "cli",
+				SessionEpoch: u.SessionEpoch, Stamp: stamp})
+			must(err)
+		}
+	}
+	var first *model.SSHCert
+	for i := range 2 {
+		got, err := svc.SignUserSSH(ctx, service.SSHUserRequest{User: user, TenantID: t.ID, ClientID: t.SSH.ClientID, PublicKey: newKey(),
+			AMR: []string{"pwd", "otp", "mfa"}, AuthTime: time.Now().Add(-time.Minute), Via: "cli",
+			SessionEpoch: user.SessionEpoch, Stamp: stamp})
+		must(err)
+		if i == 0 {
+			first = got.Cert
+		}
+	}
+	must(svc.RevokeSSHCert(ctx, sys, t.OrgID, first.ID))
+	_, err = svc.SignHostSSH(ctx, sys, t.ID, service.SSHHostRequest{PublicKey: newKey(), Principals: []string{"web1.acme.example"}})
+	must(err)
 }

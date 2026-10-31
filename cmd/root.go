@@ -51,7 +51,7 @@ func newRoot(cfg *config.Config) *cli.Command {
 		Commands: []*cli.Command{serveCmd(cfg, flags.For("serve")), bootstrapCmd(cfg, flags.For("bootstrap")),
 			forceStartCmd(cfg, flags.For("force-start")), signOutCmd(cfg, flags.For("sign-out")),
 			inviteCmd(cfg, flags.For("invite")), backupCmd(cfg, flags.For("backup")), restoreCmd(cfg, flags.For("restore")),
-			healthcheckCmd(cfg, flags.For("healthcheck")), genkeyCmd()},
+			healthcheckCmd(cfg, flags.For("healthcheck")), genkeyCmd(), sshCmd()},
 	}
 }
 

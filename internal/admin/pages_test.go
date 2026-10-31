@@ -127,6 +127,17 @@ func TestPages(t *testing.T) {
 	html(ad, "/admin/orgs/globex/users", 404)
 	html(ad, "/admin/orgs/nope/users", 404)
 	html(ad, "/admin/orgs/acme/users/not-a-user", 200) // the page loads; the API reports the missing user
+	// a user's SSH certificates card is on the page for administrators of the organization, not for managers
+	userPage := "/admin/orgs/acme/users/" + w.users["user"].ID
+	if b := html(ad, userPage, 200); !strings.Contains(b, `x-data="adminUserSSH"`) || !strings.Contains(b, `aria-label="SSH certificates of this user"`) {
+		t.Error("admin: the user page has no SSH certificates card")
+	}
+	if b := html(su, userPage, 200); !strings.Contains(b, `x-data="adminUserSSH"`) {
+		t.Error("super admin: the user page has no SSH certificates card")
+	}
+	if b := html(mg, userPage, 200); strings.Contains(b, "adminUserSSH") || strings.Contains(b, "SSH certificates") {
+		t.Error("manager: the user page shows SSH certificates")
+	}
 	// an organization's overview, with its emergency sign-out: its administrators and super admins; managers go to users
 	if b := html(ad, "/admin/orgs/acme", 200); !strings.Contains(b, `x-data="adminOrg"`) ||
 		!strings.Contains(b, `href="/admin/orgs/acme" aria-current="page"`) || !strings.Contains(b, `id="signout-dialog"`) {

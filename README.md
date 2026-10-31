@@ -28,6 +28,10 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
   document, personal API tokens with scopes, and service accounts for automation that belongs to no person. Keys and passwords can be read from HashiCorp Vault or 1Password
   (Connect, or a service account in the 1Password build) and rotated without a restart.
+- **SSH certificate authority.** Per tenant, Quisora signs short-lived OpenSSH certificates for people who signed in with
+  a second factor (from `quisora ssh login` or their account page), and host certificates for servers. Servers trust the
+  tenant's CA key instead of a list of user keys, who may log in as which account follows the people's groups, and a
+  revocation list ends access within a minute or two. Guide: [docs/ssh](docs/ssh/README.md).
 - **Roles.** Super admin, admin, manager and user. Managers look after plain users: they create and change them and
   add them to groups and take them out, but create, rename, retag or delete no group, and change nothing for a
   manager or administrator. Managers and above always use a second factor. Only a super admin
@@ -63,6 +67,11 @@ Or build the container image:
 ```bash
 docker build -t quisora .
 ```
+
+The version is kept in `internal/build/version.go` (`quisora --version` shows it); a build stamps the git commit and
+the date. To release, raise `Version` there, commit, and run `task release`: it tags the commit `v<version>` and pushes
+the tag (`task tag` does only that), builds every platform, and creates the GitHub release with the binaries and their
+SHA-256 checksums. Both refuse while the working tree has uncommitted changes.
 
 ## Run a single node
 
@@ -103,7 +112,7 @@ organizations): [docs/SERVICE-ACCOUNTS.md](docs/SERVICE-ACCOUNTS.md). MCP server
 [docs/MCP.md](docs/MCP.md).
 Connecting applications (sign-in, client credentials, device sign-in, token exchange, PAR, DPoP, FAPI 2.0):
 [docs/oauth](docs/oauth/README.md). How people sign in (passkeys, upstream providers, recovery codes, codes by email):
-[docs/sign-in](docs/sign-in/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md).
+[docs/sign-in](docs/sign-in/README.md). SSH certificates for servers: [docs/ssh](docs/ssh/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md).
 Keys and passwords in Vault or 1Password: [docs/secret-stores.md](docs/secret-stores.md). What to check before a
 release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 [SECURITY.md](SECURITY.md).
@@ -117,6 +126,7 @@ release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 | `quisora backup`, `quisora restore` | Online backups, encrypted with a password, of the whole store; a restore is verified before anything is written ([Backup and restore](docs/RUNNING.md#backup-and-restore)) |
 | `quisora force-start` | Start a gossip node whose disk was lost once by copying from whichever nodes answer, when too few others are up for a majority ([docs/REPLICATION.md](docs/REPLICATION.md)) |
 | `quisora healthcheck [--ready]` | Exit 0 when this node is alive (or ready): for container health checks |
+| `quisora ssh login`, `status`, `logout`, `host-sign`, `fetch` | Get SSH certificates from a tenant's certificate authority, and keep a server's trusted CA keys and revocation list current; a plain client that needs no configuration or master key ([docs/ssh](docs/ssh/README.md)) |
 | `quisora genkey` | A new master key, cluster key or BadgerDB encryption key |
 | `/healthz`, `/readyz` | Liveness, and readiness for load balancers (with the clock offset and cluster state) |
 | `/metrics` | Prometheus metrics, with `metrics.token` as a bearer token ([Metrics](docs/RUNNING.md#metrics)) |

@@ -11,6 +11,7 @@ import { tagsMixin } from '../lib/tags.js'
 import { pickerMixin } from '../lib/picker.js'
 import { comboMixin, localeSource, zoneSource, userTypeSource } from '../lib/combo.js'
 import accessComponent from './access.js'
+import sshComponent, { certNote, CERT_STATUS } from './ssh.js'
 import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
@@ -457,7 +458,7 @@ function userDialogMixin(Alpine) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Tenants (shared by the tenants list and the tenant page)
+// Tenants (shared by the tenants list and the pages of one tenant)
 const clientsText = (n) => (n === 1 ? '1 client' : n + ' clients')
 // Provider types (internal/model ProviderTypes): label, and the address field each takes.
 const PROVIDER_TYPES = {
@@ -476,6 +477,9 @@ const providerTypeText = (t) => (PROVIDER_TYPES[t] || PROVIDER_TYPES.oidc).text
 const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : p.issuer
 const shapeProvider = (p) => ({ id: p.id, name: p.name, enabled: p.enabled, typeText: providerTypeText(p.type), stateText: p.enabled ? 'enabled' : 'disabled' })
 
+// Whether a tenant signs SSH certificates, as the tenants list shows it (the list API gives the settings once SSH was ever turned on).
+const sshState = (t) => (t.ssh && t.ssh.enabled ? { sshText: 'On', sshClass: 'badge badge-success' } : { sshText: 'Off', sshClass: 'badge badge-plain' })
+
 function methodsText(t) {
   const s = t.settings
   const parts = []
@@ -487,7 +491,7 @@ function methodsText(t) {
 }
 
 // The tenant create/edit dialog (partials/admin.html "tenant-dialog"). Form keys tenant_name / tenant_description keep
-// the element ids distinct from the client dialog's name / description on the tenant page.
+// the element ids distinct from the client dialog's name / description.
 function tenantDialogMixin(Alpine) {
   return {
     editingTenant: null, apiBase: '', providers: [], orgPassword: true, orgReset: true, orgPasskey: true, orgMFA: false, _form: 'tenant',
@@ -554,8 +558,63 @@ function tenantDialogMixin(Alpine) {
   }
 }
 
+// What the pages of one tenant share (the tenant page, its clients and its SSH certificates): the tenant's record, kept
+// current for the title, the breadcrumb and the notice that someone else deleted it. A page that needs more fetched with
+// the record gives tenantExtra, which answers {sig, use}: what changing means a new answer (sig) and what to do with it
+// (use). pathSuffix is what follows the tenant in the page's address, kept when the tenant is renamed.
+function tenantPageMixin() {
+  return {
+    tenant: null, tenantId: '', slug: '', pageBase: '', pathSuffix: '', gone: false, tenantError: '', _tsig: '', _tlive: null, titleText: '',
+    async initTenantPage(kinds) {
+      const d = this.$el.dataset
+      this.apiBase = d.base
+      this.pageBase = d.page
+      this.tenantId = d.tenant
+      this.slug = d.slug
+      this.titleText = d.title
+      this._tlive = liveRunner(() => this.refreshTenant(true))
+      subscribe(kinds, () => this._tlive.trigger())
+      await this.refreshTenant(false)
+    },
+    async tenantExtra() { return { sig: null, use() {} } },
+    async refreshTenant(quiet) {
+      try {
+        const [t, extra] = await Promise.all([getOrNull(`${this.apiBase}/tenants/${enc(this.tenantId)}`), this.tenantExtra()])
+        if (t === null) {
+          if (!this.gone) { this.gone = true; this.tenant = null; announce('This tenant was deleted by someone else.', 'assertive') }
+          return
+        }
+        const sig = JSON.stringify([t, extra.sig])
+        if (quiet && sig === this._tsig) return
+        this._tsig = sig
+        const before = this.tenant
+        this.gone = false
+        this.tenantError = ''
+        this.tenant = t
+        extra.use(t)
+        this.titleText = t.display_name
+        document.title = document.title.replace(/^([^:]+): [^·]*/, '$1: ' + t.display_name + ' ')
+        if (before && before.name !== t.name) history.replaceState(null, '', `${this.pageBase}/${enc(t.name)}${this.pathSuffix}`)
+        if (quiet && before) announceUpdate('Tenant updated')
+      } catch (e) { if (!quiet) this.tenantError = e.message }
+    },
+    get showTenant() { return this.tenant !== null },
+    get tenantGone() { return this.gone },
+    get hasTenantError() { return this.tenantError !== '' },
+    get tenantTitle() { return this.titleText },
+    get tenantDescription() { return this.tenant && this.tenant.description ? this.tenant.description : '' },
+    get hasTenantDescription() { return this.tenantDescription !== '' },
+    get isDefaultTenant() { return !!this.tenant && this.tenant.name === 'default' },
+    get tenantSlug() { return this.tenant ? this.tenant.name : '' },
+    // the tenant's pages (the address name is what they are under)
+    get tenantHref() { return `${this.pageBase}/${enc(this.tenant ? this.tenant.name : this.slug)}` },
+    get clientsHref() { return this.tenant ? `${this.pageBase}/${enc(this.tenant.name)}/clients` : '' },
+    get sshHref() { return this.tenant ? `${this.pageBase}/${enc(this.tenant.name)}/ssh` : '' },
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
-// Client dialogs (create / edit / the client's details, its secret shown once); used on the tenant page.
+// Client dialogs (create / edit / the client's details, its secret shown once); used on the tenant's clients page.
 const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange'
 const DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code'
 const GRANTS = ['authorization_code', 'refresh_token', 'client_credentials', TOKEN_EXCHANGE, DEVICE_CODE]
@@ -762,6 +821,45 @@ function userTokensComponent(Alpine) {
   }))
 }
 
+// The SSH certificates card of the user page: the user's certificates that have not expired, across the tenants, each
+// revocable at once. Only administrators of the organization have the card (the page leaves it out for anyone else).
+function userSSHComponent(Alpine) {
+  Alpine.data('adminUserSSH', () => ({
+    items: [], loading: true, loadError: '',
+    init() { liveUser(this.$el, ['sshcert'], () => this.load()); return this.load() },
+    url(s = '') { const d = this.$el.closest('[data-user]').dataset; return `${d.base}/users/${enc(d.user)}/ssh-certificates${s}` },
+    async load() {
+      try {
+        const tenants = this.$el.closest('[data-user]').dataset.tenants
+        const r = await get(this.url())
+        this.items = r.items.map((c) => {
+          const st = CERT_STATUS[c.status] || CERT_STATUS.expired
+          return { ...c, principalsText: (c.principals || []).join(', '), expiresText: fmtDateTime(c.valid_before), statusText: st.text, statusClass: st.cls,
+            statusNote: certNote(c), active: c.status === 'active', href: `${tenants}/${enc(c.tenant_name)}/ssh`,
+            revokeLabel: `Revoke the certificate for ${c.tenant} (${(c.principals || []).join(', ')})` }
+        })
+        this.loadError = ''
+      } catch (e) { this.loadError = e.message } finally { this.loading = false }
+    },
+    // Nothing is shown for a user with no certificate that is still valid.
+    get visible() { return this.items.length > 0 || this.loadError !== '' },
+    get hasItems() { return this.items.length > 0 },
+    get hasLoadError() { return this.loadError !== '' },
+    async revoke(ev) {
+      const c = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      if (!c) return
+      const yes = await confirmAction(Alpine, { title: 'Revoke certificate?', message: `Revoke the certificate for ${c.tenant} (${c.principalsText})?`,
+        detail: 'It goes on the revocation list servers fetch, so it stops working within a minute or two. The user can ask for a new certificate straight away.', confirmLabel: 'Revoke certificate' })
+      if (!yes) return
+      try {
+        await post(`${this.$el.closest('[data-user]').dataset.base}/tenants/${enc(c.tenant_id)}/ssh/certificates/${enc(c.id)}/revoke`)
+        toast('Certificate revoked.')
+        await this.load()
+      } catch (e) { toast(e.message, 'error') }
+    },
+  }))
+}
+
 // What the user is connected to, for whoever sorts their account out and for yourself: where they are signed in, the
 // applications they allowed (removing one signs them out of it) and their sign-in providers. Your own sensitive
 // changes (disconnecting a provider) ask for a recent re-authentication through the shared dialog.
@@ -896,8 +994,10 @@ function userConnectionsComponents(Alpine) {
 export default function (Alpine) {
   userEmailsComponent(Alpine)
   userTokensComponent(Alpine)
+  userSSHComponent(Alpine)
   userConnectionsComponents(Alpine)
   accessComponent(Alpine)
+  sshComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
   const API_GROUP_LIMIT = 20 // the server's bound on the groups chosen to make API tokens
   Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), pickerMixin({
@@ -1344,7 +1444,8 @@ export default function (Alpine) {
     transform(t) {
       return { ...t, methodsText: methodsText(t), mfaText: this.orgMFA || t.settings.require_mfa ? 'Requires a second factor' : '', clientsText: clientsText(t.clients),
         editLabel: 'Edit ' + t.display_name, deleteLabel: 'Delete ' + t.display_name, isDefault: t.name === 'default', hasDescription: !!t.description,
-        href: `${this.pageBase}/${enc(t.name)}`, clientsLabel: clientsText(t.clients) + ' in ' + t.display_name }
+        href: `${this.pageBase}/${enc(t.name)}`, clientsHref: `${this.pageBase}/${enc(t.name)}/clients`, clientsLabel: 'Clients of ' + t.display_name + ': ' + clientsText(t.clients),
+        ...sshState(t), sshHref: `${this.pageBase}/${enc(t.name)}/ssh`, sshLabel: 'SSH certificates of ' + t.display_name + ': ' + sshState(t).sshText }
     },
     openCreate(ev) { this.openCreateTenant(ev.currentTarget) },
     edit(ev) { this.openEditTenant(this.rowFromEvent(ev), ev.currentTarget) },
@@ -1352,7 +1453,7 @@ export default function (Alpine) {
     async remove(ev) {
       const t = this.rowFromEvent(ev)
       const yes = await confirmAction(Alpine, { title: 'Delete tenant?', message: `Delete the tenant “${t.display_name}”?`,
-        detail: 'A tenant that still has clients cannot be deleted. This cannot be undone.', confirmLabel: 'Delete tenant' })
+        detail: 'A tenant that still has clients, or has SSH certificates on, cannot be deleted. This cannot be undone.', confirmLabel: 'Delete tenant' })
       if (!yes) return
       try { await del(`${this.apiBase}/tenants/${enc(t.id)}`); toast(`Tenant “${t.display_name}” deleted.`); this.load() } catch (e) { toast(e.message, 'error') }
     },
@@ -1395,60 +1496,28 @@ export default function (Alpine) {
     },
   }))
 
-  Alpine.data('adminTenant', () => mix(tableMixin(), formMixin(), dialogMixin(), tenantDialogMixin(Alpine), clientDialogMixin(Alpine), {
-    tenant: null, tenantId: '', pageBase: '', gone: false, tenantError: '', _tsig: '', _tlive: null, titleText: '',
+  // The tenant page: its sign-in rules, access and self-registered apps, with the numbers that lead to its clients and SSH
+  // certificates pages.
+  Alpine.data('adminTenant', () => mix(formMixin(), dialogMixin(), listFieldMixin(), tenantDialogMixin(Alpine), tenantPageMixin(), {
     async init() {
-      const d = this.$el.dataset
-      this.apiBase = d.base
-      this.pageBase = d.page
-      this.tenantId = d.tenant
-      this.titleText = d.title
-      this.canFirstParty = d.canFirstParty === '1'
-      this.issuer = d.issuer
-      this.scope = { tenant: this.tenantId }
-      this.initTable()
-      this._tlive = liveRunner(() => this.refreshTenant(true))
-      subscribe(['tenant', 'client', 'provider', 'org'], () => this._tlive.trigger())
-      await this.refreshTenant(false)
+      this.canFirstParty = this.$el.dataset.canFirstParty === '1'
+      await this.initTenantPage(['tenant', 'client', 'provider', 'org'])
     },
-    // The tenant record, with what the summary needs (organization methods, provider names, all tenants for the move select).
-    async refreshTenant(quiet) {
-      try {
-        const [t, org, provs, tenants] = await Promise.all([
-          getOrNull(`${this.apiBase}/tenants/${enc(this.tenantId)}`), get(this.apiBase),
-          get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`), get(`${this.apiBase}/tenants${qs({ sort: 'name', limit: 100 })}`)])
-        if (t === null) {
-          if (!this.gone) { this.gone = true; this.tenant = null; announce('This tenant was deleted by someone else.', 'assertive') }
-          return
-        }
-        const sig = JSON.stringify([t, org.settings, provs.items.map((p) => [p.id, p.name, p.enabled, p.updated]), tenants.items.map((x) => [x.id, x.display_name])])
-        if (quiet && sig === this._tsig) return
-        this._tsig = sig
-        const before = this.tenant
-        this.gone = false
-        this.tenantError = ''
-        this.tenant = t
-        Alpine.store('tenantPage').tenant = t // read by the Access card (pages/access.js)
+    // The summary needs the organization's methods and the providers' names.
+    async tenantExtra() {
+      const [org, provs] = await Promise.all([get(this.apiBase), get(`${this.apiBase}/providers${qs({ sort: 'name', limit: 100 })}`)])
+      return { sig: [org.settings, provs.items.map((p) => [p.id, p.name, p.enabled, p.updated])], use: () => {
+        Alpine.store('tenantPage').tenant = this.tenant // read by the Access card (pages/access.js)
         this.orgPassword = org.settings.password_login
         this.orgReset = org.settings.password_login && !!org.settings.password_reset
         this.orgPasskey = org.settings.passkey_login
         this.providers = provs.items.map(shapeProvider)
-        this.tenants = tenants.items
-        this.titleText = t.display_name
-        document.title = document.title.replace(/^Tenant: [^·]*/, 'Tenant: ' + t.display_name + ' ')
-        if (before && before.name !== t.name) history.replaceState(null, '', `${this.pageBase}/${enc(t.name)}`)
-        if (quiet && before) announceUpdate('Tenant updated')
-      } catch (e) { if (!quiet) this.tenantError = e.message }
+      } }
     },
-    get showTenant() { return this.tenant !== null },
-    get tenantGone() { return this.gone },
-    get hasTenantError() { return this.tenantError !== '' },
-    get tenantTitle() { return this.titleText },
-    get tenantDescription() { return this.tenant && this.tenant.description ? this.tenant.description : '' },
-    get hasTenantDescription() { return this.tenantDescription !== '' },
-    get isDefaultTenant() { return !!this.tenant && this.tenant.name === 'default' },
-    get tenantSlug() { return this.tenant ? this.tenant.name : '' },
     get clientCountText() { return this.tenant ? clientsText(this.tenant.clients) : '' },
+    get sshOn() { return !!(this.tenant && this.tenant.ssh && this.tenant.ssh.enabled) },
+    get sshText() { return this.sshOn ? 'On' : 'Off' },
+    get sshClass() { return this.sshOn ? 'badge badge-success' : 'badge badge-plain' },
     get summaryRows() {
       if (!this.tenant) return []
       const s = this.tenant.settings
@@ -1472,6 +1541,8 @@ export default function (Alpine) {
             note: s.require_mfa ? 'Every sign-in to this tenant\u2019s applications needs one, unless the provider used counts as one.' : '' },
         { label: 'Self-registered apps', text: s.self_registration ? 'Allowed' : 'Not allowed', cls: s.self_registration ? 'badge badge-warning' : 'badge badge-plain',
           note: (this.tenant.resources || []).length ? 'For ' + this.tenant.resources.join(', ') : s.self_registration ? 'No resources listed yet: none can sign in.' : '' },
+        { label: 'SSH certificates', text: this.sshText, cls: this.sshOn ? 'badge badge-success' : 'badge badge-plain',
+          note: this.sshOn ? 'Manage them on the ' : 'Turn them on from the ', link: { text: 'SSH certificates page', href: this.sshHref } },
       ]
     },
     // tenant dialog
@@ -1480,7 +1551,26 @@ export default function (Alpine) {
       if (res.name !== this.tenant.name) { window.location.replace(`${this.pageBase}/${enc(res.name)}`); return }
       await this.refreshTenant(false)
     },
-    // clients table
+  }))
+
+  // The tenant's clients page: the applications that sign users in through it, with their dialogs.
+  Alpine.data('adminTenantClients', () => mix(tableMixin(), formMixin(), dialogMixin(), clientDialogMixin(Alpine), tenantPageMixin(), {
+    pathSuffix: '/clients', _form: 'client',
+    async init() {
+      const d = this.$el.dataset
+      this.canFirstParty = d.canFirstParty === '1'
+      this.issuer = d.issuer
+      this.scope = { tenant: d.tenant }
+      this.initTable()
+      await this.initTenantPage(['tenant', 'client'])
+    },
+    errorKey(f) { return f === 'scopes' ? 'custom_scopes' : f }, // shown on the scopes chip field
+    // all the tenants, for the move select of the client dialog
+    async tenantExtra() {
+      const tenants = await get(`${this.apiBase}/tenants${qs({ sort: 'name', limit: 100 })}`)
+      return { sig: tenants.items.map((x) => [x.id, x.display_name]), use: () => { this.tenants = tenants.items } }
+    },
+    get clientCountText() { return this.tenant ? clientsText(this.tenant.clients) : '' },
     transform(c) { return this.shapeClient(c) },
     openCreate(ev) { this.openCreateClient(ev.currentTarget) },
     edit(ev) { this.openEditClient(this.rowFromEvent(ev), ev.currentTarget) },
@@ -1490,6 +1580,12 @@ export default function (Alpine) {
       this.load()
       this.refreshTenant(true)
     },
+  }))
+
+  // The tenant's SSH page: the SSH certificates card (pages/ssh.js) under the tenant's title.
+  Alpine.data('adminTenantSSH', () => mix(tenantPageMixin(), {
+    pathSuffix: '/ssh',
+    init() { return this.initTenantPage(['tenant']) },
   }))
 
   // ---- Providers --------------------------------------------------------------------------------------------------
@@ -1619,6 +1715,8 @@ export default function (Alpine) {
     { value: 'tenants', help: 'Tenants.' },
     { value: 'clients', help: 'Applications.' },
     { value: 'access', help: 'Tenant access lists.' },
+    { value: 'ssh', help: 'Tenants’ SSH certificate authorities: settings, keys and certificates.' },
+    { value: 'ssh:host', help: 'Sign SSH host certificates.' },
     { value: 'import', help: 'Password hashes, authenticator secrets and provider links when creating users.', superOnly: true },
     { value: 'scim', help: 'The SCIM API.' },
     { value: 'service_accounts', help: 'This organization’s service accounts, granting no more than it holds.' },
@@ -1720,7 +1818,7 @@ export default function (Alpine) {
     { value: 'login.', label: 'Sign-in' }, { value: 'password.', label: 'Password resets' }, { value: 'invite.', label: 'Invitations' },
     { value: 'account.', label: 'Own account changes' }, { value: 'user.', label: 'Users' }, { value: 'group.', label: 'Groups' },
     { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'client.', label: 'Applications' },
-    { value: 'service_account.', label: 'Service accounts' },
+    { value: 'service_account.', label: 'Service accounts' }, { value: 'ssh.', label: 'SSH certificates' },
     { value: 'oauth.', label: 'Application sign-ins and tokens' }, { value: 'provider.', label: 'Sign-in providers' }, { value: 'identity.', label: 'Linked sign-ins' },
     { value: 'passkey.', label: 'Passkeys' }, { value: 'apitoken.', label: 'API tokens' }, { value: 'keys.', label: 'Signing keys' },
     { value: 'signout.', label: 'Sign-out sweeps' }, { value: 'backup.', label: 'Backups' }, { value: 'cluster.', label: 'Cluster' },
@@ -1740,7 +1838,9 @@ export default function (Alpine) {
     'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary', 'org.signout',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',
     'provider.update', 'server.signout', 'service_account.create', 'service_account.delete',
-    'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'tenant.access.add', 'tenant.access.remove',
+    'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'ssh.ca.create', 'ssh.ca.remove',
+    'ssh.ca.rotate', 'ssh.cert.issue', 'ssh.cert.refused', 'ssh.cert.revoke', 'ssh.host.issue', 'ssh.host.refused',
+    'ssh.settings.update', 'tenant.access.add', 'tenant.access.remove',
     'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update', 'user.app.revoke',
     'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove', 'user.email.verify',
     'user.expire', 'user.invite', 'user.invite.break_glass', 'user.locked_out', 'user.passkey.remove',

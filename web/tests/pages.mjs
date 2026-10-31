@@ -4,6 +4,10 @@ import { apiCall, uniq } from './helpers.mjs'
 const A = '/admin/orgs/acme'
 const open = (name) => async (p) => { await p.getByRole('button', { name }).first().click(); await p.waitForTimeout(450) }
 const waitRows = async (p) => { await p.waitForSelector('tbody tr', { timeout: 5000 }) }
+// a tenant page: its summary and the cards leading to its clients and SSH pages
+const waitSummary = async (p) => { await p.getByRole('link', { name: 'Manage clients' }).waitFor(); await p.getByRole('link', { name: 'Manage SSH certificates' }).waitFor(); await p.waitForTimeout(300) }
+// the SSH page of a tenant with certificates: the commands, and the certificates table filled
+const waitSSH = async (p) => { await p.locator('#ssh-server-snippet').waitFor(); await p.locator('section[aria-labelledby="ssh-h"] table tbody tr').first().waitFor(); await p.waitForTimeout(300) }
 
 const userStep = [waitRows, async (p) => { await p.getByRole('link', { name: 'Alan Turing' }).click(); await p.waitForSelector('text=Profile') }]
 
@@ -102,6 +106,15 @@ export const PAGES = [
       await p.getByRole('button', { name: 'Disconnect Acme SSO' }).click()
       await p.getByRole('dialog', { name: 'Disconnect provider?' }).waitFor(); await p.waitForTimeout(450)
     }] },
+  // the SSH certificates of Alan Turing, who has one live and one revoked in the demo's Servers tenant
+  { name: 'user-ssh', path: `${A}/users`, as: 'admin', steps: [...userStep, async (p) => {
+      const card = p.getByRole('region', { name: 'SSH certificates', exact: true })
+      await card.locator('tbody tr').first().waitFor(); await card.scrollIntoViewIfNeeded(); await p.waitForTimeout(300)
+    }] },
+  { name: 'user-ssh-revoke', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, async (p) => {
+      await p.getByRole('button', { name: /^Revoke the certificate for Servers/ }).first().click()
+      await p.getByRole('dialog', { name: 'Revoke certificate?' }).waitFor(); await p.waitForTimeout(450)
+    }] },
   { name: 'user-emails-add', path: `${A}/users`, as: 'admin', steps: [...userEmailsStep, async (p) => {
       await p.getByRole('button', { name: 'Add email' }).click(); await p.locator('#f-em_address').waitFor(); await p.waitForTimeout(300)
     }] },
@@ -154,26 +167,44 @@ export const PAGES = [
   { name: 'tenants-new', path: `${A}/tenants`, as: 'admin', steps: [waitRows, open('New tenant')], dialog: true },
   { name: 'tenants-new-org-mfa', path: '/admin/orgs/northwind/tenants', as: 'super', steps: [waitRows, open('New tenant')], dialog: true },
   { name: 'tenants-edit', path: `${A}/tenants`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('searchbox', { name: 'Search tenants' }).fill('Staff tools') }, open('Edit Staff tools')], dialog: true },
-  { name: 'tenant', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows] },
-  { name: 'tenant-customers', path: `${A}/tenants/customers`, as: 'admin', steps: [waitRows] },
-  { name: 'tenant-empty', path: `${A}/tenants/partners`, as: 'admin', steps: [async (p) => { await p.getByText('No clients in this tenant yet').waitFor() }] },
-  { name: 'tenant-super', path: `${A}/tenants/staff`, as: 'super', steps: [waitRows] },
-  { name: 'tenant-edit-rules', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit sign-in rules')], dialog: true },
-  { name: 'tenant-client-new', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('New client')], dialog: true },
-  { name: 'tenant-client-edit', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, open('Edit Internal tool 1')], dialog: true },
+  // the tenant page: sign-in rules, access and the summary cards; its clients and SSH certificates have pages of their own
+  { name: 'tenant', path: `${A}/tenants/staff`, as: 'admin', steps: [waitSummary] },
+  { name: 'tenant-customers', path: `${A}/tenants/customers`, as: 'admin', steps: [waitSummary] },
+  { name: 'tenant-empty', path: `${A}/tenants/partners`, as: 'admin', steps: [waitSummary] },
+  { name: 'tenant-ssh-on', path: `${A}/tenants/servers`, as: 'admin', steps: [waitSummary] },
+  { name: 'tenant-super', path: `${A}/tenants/staff`, as: 'super', steps: [waitSummary] },
+  { name: 'tenant-edit-rules', path: `${A}/tenants/staff`, as: 'admin', steps: [waitSummary, open('Edit sign-in rules')], dialog: true },
+  { name: 'tenant-clients', path: `${A}/tenants/staff/clients`, as: 'admin', steps: [waitRows] },
+  { name: 'tenant-clients-customers', path: `${A}/tenants/customers/clients`, as: 'admin', steps: [waitRows] },
+  { name: 'tenant-clients-empty', path: `${A}/tenants/partners/clients`, as: 'admin', steps: [async (p) => { await p.getByText('No clients in this tenant yet').waitFor() }] },
+  { name: 'tenant-clients-super', path: `${A}/tenants/staff/clients`, as: 'super', steps: [waitRows] },
+  { name: 'tenant-client-new', path: `${A}/tenants/staff/clients`, as: 'admin', steps: [waitRows, open('New client')], dialog: true },
+  { name: 'tenant-client-edit', path: `${A}/tenants/staff/clients`, as: 'admin', steps: [waitRows, open('Edit Internal tool 1')], dialog: true },
   // device sign-in ticked: the switch for managers and administrators appears
-  { name: 'tenant-client-device', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, open('New client'), async (p) => {
+  { name: 'tenant-client-device', path: `${A}/tenants/staff/clients`, as: 'admin', dialog: true, steps: [waitRows, open('New client'), async (p) => {
     await p.getByRole('checkbox', { name: /Device sign-in/ }).check()
     await p.getByRole('switch', { name: /Managers and administrators may approve device sign-ins/ }).scrollIntoViewIfNeeded()
   }] },
-  { name: 'tenant-client-secret', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+  { name: 'tenant-client-secret', path: `${A}/tenants/staff/clients`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
       await p.getByRole('button', { name: 'Rotate secret of Internal tool 2' }).click()
       await p.getByRole('button', { name: 'Rotate secret', exact: true }).click()
       await p.getByRole('dialog', { name: 'New client secret' }).waitFor(); await p.waitForTimeout(450)
     }] },
-  { name: 'tenant-client-delete', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+  { name: 'tenant-client-delete', path: `${A}/tenants/staff/clients`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
       await p.getByRole('button', { name: 'Delete Internal tool 3' }).click()
       await p.getByRole('dialog', { name: 'Delete client?' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  // SSH certificates: the demo's "servers" tenant has them on, with keys and certificates (one revoked, one for a host, a
+  // second page of them); a tenant that never had them shows the switch alone.
+  { name: 'tenant-ssh', path: `${A}/tenants/servers/ssh`, as: 'admin', steps: [waitSSH] },
+  { name: 'tenant-ssh-off', path: `${A}/tenants/partners/ssh`, as: 'admin', steps: [async (p) => { await p.getByRole('switch', { name: 'Enable SSH certificates' }).waitFor() }] },
+  { name: 'tenant-ssh-super', path: `${A}/tenants/servers/ssh`, as: 'super', steps: [waitSSH] },
+  { name: 'tenant-ssh-searched', path: `${A}/tenants/servers/ssh`, as: 'admin', steps: [waitSSH, async (p) => { await p.getByRole('searchbox', { name: 'Search certificates' }).fill('zzznobody'); await p.locator('p.muted', { hasText: 'No certificates match' }).waitFor() }] },
+  { name: 'tenant-ssh-settings', path: `${A}/tenants/servers/ssh`, as: 'admin', dialog: true, steps: [waitSSH, open('Edit SSH settings')] },
+  { name: 'tenant-ssh-rotate', path: `${A}/tenants/servers/ssh`, as: 'admin', dialog: true, steps: [waitSSH, open('Rotate user key')] },
+  { name: 'tenant-ssh-revoke', path: `${A}/tenants/servers/ssh`, as: 'admin', dialog: true, steps: [waitSSH, async (p) => {
+      await p.getByRole('button', { name: /^Revoke certificate/ }).first().click()
+      await p.getByRole('dialog', { name: 'Revoke certificate?' }).waitFor(); await p.waitForTimeout(450)
     }] },
   { name: 'providers', path: `${A}/providers`, as: 'admin', steps: [waitRows] },
   { name: 'providers-new', path: `${A}/providers`, as: 'admin', steps: [waitRows, open('New provider')], dialog: true },
@@ -258,7 +289,7 @@ import { INVITE_PAGES, INVITE_NO_PASSKEY } from './pages-invite.mjs'
 PAGES.push(...INVITE_PAGES)
 
 // The live-updates switch in its paused state (last: the choice is remembered per browser).
-PAGES.push({ name: 'tenant-live-paused', path: `${A}/tenants/staff`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('button', { name: 'Pause live updates' }).click(); await p.waitForTimeout(200) }] })
+PAGES.push({ name: 'tenant-live-paused', path: `${A}/tenants/staff/clients`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('button', { name: 'Pause live updates' }).click(); await p.waitForTimeout(200) }] })
 // Client dialog list editors (see pages-clients.mjs).
 import { CLIENT_PAGES } from "./pages-clients.mjs"
 PAGES.push(...CLIENT_PAGES)

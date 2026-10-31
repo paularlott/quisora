@@ -152,7 +152,7 @@ test('edit dialog: a change by someone else shows a notice without moving focus;
   } finally { await close() }
 })
 
-test('tenant page: clients created, moved and deleted elsewhere update the list; the tenants list follows', async ({ browser, baseURL }) => {
+test('tenant pages: clients created, moved and deleted elsewhere update the summary and the clients list; the tenants list follows', async ({ browser, baseURL }) => {
   const { a, b, close } = await twoAdmins(browser, baseURL, `${A}/tenants`)
   try {
     await a.waitForSelector('tbody tr')
@@ -164,25 +164,60 @@ test('tenant page: clients created, moved and deleted elsewhere update the list;
     const t1 = (await apiCall(b, 'GET', `${API}/tenants?q=${tn}`)).items[0]
     await apiCall(b, 'POST', `${API}/tenants`, { name: other, display_name: 'Other ' + other })
     const t2 = (await apiCall(b, 'GET', `${API}/tenants?q=${other}`)).items[0]
-    // open its page from the list link
+    // open its page from the list link: the summary counts its clients
     await a.getByRole('link', { name: 'Live ' + tn, exact: true }).click()
     await expect(a.getByRole('heading', { level: 1 })).toHaveText('Tenant: Live ' + tn)
-    await expect(a.getByText('No clients in this tenant yet')).toBeVisible()
+    await expect(a.locator('#clients-h .badge')).toHaveText('0 clients')
     const c = await apiCall(b, 'POST', `${API}/clients`, { name: 'Live client', tenant_id: t1.id, redirect_uris: ['https://l.example/cb'] })
-    await expect(a.getByRole('row', { name: /Live client/ })).toBeVisible({ timeout: 3500 })
-    await expect(a.locator('#clients-h .badge')).toHaveText('1 client')
-    // moved to another tenant: it leaves this list
-    await apiCall(b, 'PATCH', `${API}/clients/${c.id}`, { tenant_id: t2.id })
-    await expect(a.getByRole('row', { name: /Live client/ })).toHaveCount(0, { timeout: 3500 })
-    await expect(a.getByText('No clients in this tenant yet')).toBeVisible()
+    await expect(a.locator('#clients-h .badge')).toHaveText('1 client', { timeout: 3500 })
     // the tenant itself changed elsewhere: the summary follows
     await apiCall(b, 'PATCH', `${API}/tenants/${t1.id}`, { settings: { password_login: false, passkey_login: true, all_providers: true, providers: [], require_mfa: true } })
     await expect(a.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('Required', { timeout: 3500 })
+    // its clients page lists the client, and follows
+    await a.getByRole('link', { name: 'Manage clients' }).click()
+    await expect(a).toHaveURL(`${A}/tenants/${tn}/clients`)
+    await expect(a.getByRole('row', { name: /Live client/ })).toBeVisible()
+    const c2 = await apiCall(b, 'POST', `${API}/clients`, { name: 'Second live client', tenant_id: t1.id, redirect_uris: ['https://l.example/cb'] })
+    await expect(a.getByRole('row', { name: /Second live client/ })).toBeVisible({ timeout: 3500 })
+    await expect(a.locator('#clients-h .badge')).toHaveText('2 clients', { timeout: 3500 })
+    // moved to another tenant: it leaves this list
+    await apiCall(b, 'PATCH', `${API}/clients/${c.id}`, { tenant_id: t2.id })
+    await expect(a.getByRole('row', { name: /Live client/ })).toHaveCount(1, { timeout: 3500 }) // only the second one is left
+    await apiCall(b, 'DELETE', `${API}/clients/${c2.id}`)
+    await expect(a.getByRole('row', { name: /Live client/ })).toHaveCount(0, { timeout: 3500 })
+    await expect(a.getByText('No clients in this tenant yet')).toBeVisible()
     // deleted elsewhere
     await apiCall(b, 'DELETE', `${API}/tenants/${t1.id}`)
     await expect(a.locator('.alert', { hasText: 'This tenant was deleted by someone else' })).toBeVisible({ timeout: 3500 })
     await apiCall(b, 'DELETE', `${API}/clients/${c.id}`)
     await apiCall(b, 'DELETE', `${API}/tenants/${t2.id}`)
+  } finally { await close() }
+})
+
+test('tenant pages: SSH turned on and off elsewhere updates the summary card and the SSH page', async ({ browser, baseURL }) => {
+  const { a, b, close } = await twoAdmins(browser, baseURL, `${A}/tenants`)
+  try {
+    const tn = uniq('ls')
+    const t = await apiCall(b, 'POST', `${API}/tenants`, { name: tn, display_name: 'Live SSH ' + tn })
+    await a.goto(`${A}/tenants/${tn}`, { waitUntil: 'load' })
+    const card = a.getByRole('region', { name: /^SSH certificates/ })
+    await expect(card.getByRole('heading')).toContainText('Off')
+    await apiCall(b, 'PATCH', `${API}/tenants/${t.id}/ssh`, { enabled: true })
+    await expect(card.getByRole('heading')).toContainText('On', { timeout: 4000 })
+    await expect(a.getByRole('region', { name: 'Sign-in rules' }).locator('.kv')).toContainText('Manage them on the SSH certificates page')
+    // its SSH page follows the switch
+    await card.getByRole('link', { name: 'Manage SSH certificates' }).click()
+    const sw = a.getByRole('switch', { name: 'Enable SSH certificates' })
+    await expect(sw).toBeChecked()
+    await apiCall(b, 'PATCH', `${API}/tenants/${t.id}/ssh`, { enabled: false })
+    await expect(sw).not.toBeChecked({ timeout: 4000 })
+    await apiCall(b, 'PATCH', `${API}/tenants/${t.id}/ssh`, { enabled: true })
+    await expect(sw).toBeChecked({ timeout: 4000 })
+    await apiCall(b, 'PATCH', `${API}/tenants/${t.id}/ssh`, { enabled: false })
+    await expect(sw).not.toBeChecked({ timeout: 4000 })
+    // a tenant deleted elsewhere is said on the page
+    await apiCall(b, 'DELETE', `${API}/tenants/${t.id}`)
+    await expect(a.locator('.alert', { hasText: 'This tenant was deleted by someone else' })).toBeVisible({ timeout: 4000 })
   } finally { await close() }
 })
 

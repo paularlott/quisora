@@ -11,6 +11,7 @@ Quisora is in [Connecting applications](../oauth/README.md).)
 | [Upstream providers](providers.md) | "Continue with" Google, Microsoft, GitHub, GitLab, Auth0 or your own single sign-on |
 | [Recovery codes](recovery-codes.md) | One-time codes for when the second factor is not at hand |
 | [Codes by email](email-codes.md) | A second factor by email, for organizations that allow it |
+| [SSH certificates](../ssh/README.md) | Signing in to servers with a short-lived certificate, after a second-factor sign-in |
 | [Emergency sign-out and lock-out](../emergency-sign-out.md) | Ending everyone's sessions at once, or one person's access |
 
 ## Where people sign in

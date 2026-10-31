@@ -176,6 +176,9 @@ func (s *Service) resealSteps(p *resealPass) []func() (bool, error) {
 		resealTable(p, s.Keys, func(k *model.SigningKey) []sealedValue {
 			return []sealedValue{{SigningKeyBinding(k.ID), &k.PrivateKey}}
 		}),
+		resealTable(p, s.SSHCAKeys, func(k *model.SSHKey) []sealedValue {
+			return []sealedValue{{SSHKeyBinding(k.ID), &k.PrivateKey}}
+		}),
 		resealTable(p, s.Identities, func(id *model.Identity) []sealedValue {
 			return []sealedValue{{IdentityRefreshBinding(id.ID), &id.Refresh}}
 		}),

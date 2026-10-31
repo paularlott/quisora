@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/logger"
+
 	"github.com/paularlott/quisora/internal/admin"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
@@ -35,8 +37,14 @@ func newWorld(t *testing.T) *world { t.Helper(); return newWorldWith(t, nil) }
 // newWorldWith is newWorld with a configuration hook.
 func newWorldWith(t *testing.T, cfgFn func(*config.Config)) *world {
 	t.Helper()
+	return newWorldLogged(t, cfgFn, nil)
+}
+
+// newWorldLogged is newWorldWith with the server's log (nil: none kept).
+func newWorldLogged(t *testing.T, cfgFn func(*config.Config), log logger.Logger) *world {
+	t.Helper()
 	w := &world{t: t, mod: admin.New(), users: map[string]*model.User{}}
-	w.env = webtest.New(t, webtest.Options{Configure: cfgFn, Modules: func(s *web.Server) []web.Module {
+	w.env = webtest.New(t, webtest.Options{Configure: cfgFn, Log: log, Modules: func(s *web.Server) []web.Module {
 		s.Mux.Handle("/", admin.NotFound(s))
 		return []web.Module{w.mod}
 	}})

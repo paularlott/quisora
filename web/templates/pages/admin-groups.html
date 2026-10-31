@@ -47,7 +47,7 @@
   <form @submit.prevent="submit" novalidate>
     <div class="dialog-body">
       {{template "edit-notice"}}
-      {{template "field" (dict "name" "display_name" "label" "Group name" "required" true "autofocus" true "autocomplete" "off")}}
+      {{template "field" (dict "name" "display_name" "label" "Group name" "required" true "autofocus" true "autocomplete" "off" "help" "For SSH certificates, use only letters, digits and . _ @ -")}}
       {{template "field" (dict "name" "external_id" "label" "External ID" "autocomplete" "off" "help" "Optional identifier from another system (used by SCIM).")}}
       {{template "tag-field" (dict "help" "Every member of the group receives these in their tags claim.")}}
     </div>

@@ -129,7 +129,7 @@ func (m *Module) fromService(err error) *Error {
 		// RFC 7644 §3.12: 413, the request is larger than the server processes; the client splits it.
 		return errf(413, "", "%s", web.Capitalise(err.Error()))
 	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
-		errors.Is(err, service.ErrTenantInUse):
+		errors.Is(err, service.ErrTenantInUse), errors.Is(err, service.ErrSSHOn):
 		return errf(409, "", "%s", web.Capitalise(err.Error()))
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		// Sent, but the node that decides it was lost before it answered: a retry of a create would find the resource

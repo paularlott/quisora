@@ -23,7 +23,7 @@ indexes), so that lists and filters run without decoding `data`.
 | `users`              | User accounts, including service accounts.                                                                                         |
 | `user_groups`        | Groups of users. A group's record is also the commit point for changes to its member list.                                         |
 | `group_members`      | Group memberships, one row per user per group. A removed membership is kept for a while, then expires.                             |
-| `tenants`            | Tenants: an organization's applications grouped under shared sign-in rules.                                                       |
+| `tenants`            | Tenants: an organization's applications grouped under shared sign-in rules, with the tenant's SSH certificate settings. Its `ssh_enabled` column (indexed) is true while SSH certificates are on: housekeeping lists the tenants with SSH on by it. |
 | `tenant_access`      | Who may use a tenant's applications: a user or a group, for all of them or for listed ones, with the roles and tags its tokens carry. |
 | `clients`            | Applications: OAuth 2 / OpenID Connect clients.                                                                                    |
 | `identity_providers` | Upstream identity providers an organization signs in with (OIDC, Google, Microsoft, GitHub, GitLab, Auth0, another organization). Client secrets are sealed with the master key. |
@@ -33,6 +33,8 @@ indexes), so that lists and filters run without decoding `data`.
 | `refresh_grants`     | Refresh-token grants: what an application was granted in a sign-in, valid while the session it came from is.                      |
 | `api_tokens`         | API tokens (`qsr_…`) for the management API and SCIM.                                                                              |
 | `signing_keys`       | Token signing keys, with private keys sealed by the master key. Kept until they are no longer published.                          |
+| `ssh_ca_keys`        | Tenants' SSH certificate authority keys, with private keys sealed by the master key; indexed by `tenant_id`. Kept until they are no longer published. A key removed by hand stays as a tombstone (`Removed` set, private key dropped) until every certificate it could have signed has expired (24 hours and 10 minutes for a user key, 365 days and 10 minutes for a host key): the tenant's revocation list revokes the key itself meanwhile. |
+| `ssh_certificates`   | SSH certificates issued, until they expire: what a tenant's revocation list and the certificate lists are made from. Indexed by `user_id` and `revoked` (and sortable by `created`), and by the tenant under `tenant_id` for a user certificate and under `host_tenant_id` for a host certificate (so the revocation list reads a tenant's user certificates without its host certificates). |
 | `audit_events`       | The audit log, kept for its retention period.                                                                                      |
 | `link_tokens`        | Single-use emailed links (invitation, password reset, email verification). Only a hash of each link is stored.                    |
 | `sign_ins`           | A user's sign-in stamps (last sign-in, the TOTP step last used), kept apart from the user so that a sign-in never overwrites an administrator's change. |

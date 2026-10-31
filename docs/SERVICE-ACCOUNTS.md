@@ -59,6 +59,8 @@ operation's `serviceAccount` security requirement.
 | `tenants` | Create, change and delete tenants | any |
 | `clients` | Manage applications (OAuth clients) and the self-registered ones | any |
 | `access` | Manage tenants' access lists | any |
+| `ssh` | Manage tenants' SSH certificate authorities: settings, CA keys and issued certificates ([SSH certificates](ssh/README.md)) | any |
+| `ssh:host` | Only sign SSH host certificates, for the machines that need one (`quisora ssh host-sign`: [host certificates](ssh/README.md#host-certificates)) | any |
 | `import` | With `users`, create users with a password hash, an authenticator secret or provider links from another system ([API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)) | any |
 | `scim` | Use the SCIM API, `/scim/v2/<org>/…` | any |
 | `service_accounts` | Manage the organization's service accounts, granting none more than it holds | any |
@@ -104,7 +106,7 @@ account on the primary organization, made by a super admin:
      "display_name": "Customer 42",
      "service_account": {
        "name": "setup",
-       "scopes": ["users", "manage_admins", "groups", "providers", "tenants", "clients", "access", "import", "service_accounts"]
+       "scopes": ["users", "manage_admins", "groups", "providers", "tenants", "clients", "access", "ssh", "ssh:host", "import", "service_accounts"]
      }
    }'
    ```

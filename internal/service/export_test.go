@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"time"
+
+	"github.com/paularlott/quisora/internal/model"
 )
 
 // SweepAll runs the orphan sweep (SweepOrphans) once over every kind, judging records of any age: what a deletion
@@ -27,3 +29,17 @@ var SelfRegRedirect = selfRegRedirect
 
 // WeakPassword is passwordcheck's test of a password against what it must not contain.
 var WeakPassword = weakPassword
+
+// RotateSSHScheduled is the scheduled rotation of tenant t's user CA key (EnsureSSHKeys makes it for a tenant that is
+// due), without the check that the tenant has a key.
+func (s *Service) RotateSSHScheduled(ctx context.Context, t *model.Tenant) (*model.SSHKey, error) {
+	return s.rotateSSH(ctx, System, t, model.SSHPurposeUser, false, true)
+}
+
+// EnsureSSHKeysNow is EnsureSSHKeys that treats every leftover SSH application as old enough to remove.
+func (s *Service) EnsureSSHKeysNow(ctx context.Context) error {
+	saved := sweepMinAge
+	sweepMinAge = -time.Hour
+	defer func() { sweepMinAge = saved }()
+	return s.EnsureSSHKeys(ctx)
+}

@@ -275,7 +275,7 @@ func (s *Service) issueSignInClient(ctx context.Context, a *Actor, p *model.Prov
 	in := ClientInput{Name: &name, Description: &desc, FirstParty: &firstParty,
 		RedirectURIs: &[]string{s.Cfg.Server.PublicURL + model.ProviderCallbackPath(p.OrgID, p.ID)},
 		GrantTypes:   &[]string{"authorization_code"}, Scopes: &orgProviderScopes}
-	c, secret, err := s.createClient(ctx, a, p.SourceOrg, in, p.ID)
+	c, secret, err := s.createClient(ctx, a, p.SourceOrg, in, clientMade{provider: p.ID})
 	if err != nil {
 		return err
 	}

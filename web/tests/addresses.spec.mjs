@@ -60,7 +60,7 @@ test('organizations list: each row copies its sign-in link', async ({ page, cont
 test('client dialog: a confidential client shows client ID, issuer, discovery URL and secret; a public one no secret', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await signIn(page, 'admin')
-  await page.goto(`${A}/tenants/customers`, { waitUntil: 'load' })
+  await page.goto(`${A}/tenants/customers/clients`, { waitUntil: 'load' })
   const org = await apiCall(page, 'GET', API)
   const pub = new URL(page.url()).origin
   const dlg = page.getByRole('dialog', { name: 'Client created' })

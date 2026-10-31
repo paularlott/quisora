@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
@@ -12,6 +13,15 @@ import (
 )
 
 var ErrTenantInUse = errors.New("the tenant still has clients")
+
+// ErrSSHOn refuses deleting a tenant with SSH certificates on, or an organization with such a tenant: SSH must be
+// turned off first, so that the servers fetch a revocation list that revokes every certificate before its endpoints go.
+var ErrSSHOn = errors.New("SSH certificates are on")
+
+// sshOnError is ErrSSHOn for tenant t, saying what to do.
+func sshOnError(t *model.Tenant) error {
+	return fmt.Errorf("%w for the tenant %s: turn SSH off first, so that its servers fetch a revocation list that revokes every certificate", ErrSSHOn, t.Name)
+}
 
 // TenantInput is the editable part of a tenant.
 type TenantInput struct {
@@ -193,17 +203,21 @@ func (s *Service) DeleteTenant(ctx context.Context, a *Actor, id string) error {
 	if err != nil {
 		return err
 	}
-	_, n, err := s.Clients.List(ctx, store.ListQuery{Scope: t.OrgID, Limit: 1,
-		Filters: []store.Filter{{Field: "tenant_id", Value: t.ID}}})
-	if err != nil {
-		return err
+	if t.SSH != nil && t.SSH.Enabled {
+		return sshOnError(t)
 	}
-	if n > 0 {
+	// Its own SSH applications (SSH off: the current one, and any an enabling left) do not keep it: they go with the
+	// tenant, deleted as the system (they are first party, which only super admins delete by hand). Any other
+	// application does.
+	if others, err := s.removeSSHApps(ctx, t, "", 0); err != nil {
+		return err
+	} else if others {
 		return ErrTenantInUse
 	}
 	// Its access entries stand on it: a deleted tenant has no clients (ErrTenantInUse above), so nothing decides access
-	// from them, and the orphan sweep removes them.
-	return mapStore(s.audited(ctx, a, t.OrgID, "tenant.delete", t.Name, nil, func() error { return s.Tenants.Delete(ctx, id) }))
+	// from them, and the orphan sweep removes them (and its SSH CA keys and certificates). It is deleted as it was read:
+	// SSH turned on meanwhile makes the deletion fail (ErrStale), not go ahead.
+	return mapStore(s.audited(ctx, a, t.OrgID, "tenant.delete", t.Name, nil, func() error { return s.Tenants.DeleteIf(ctx, t.ID, t.Version) }))
 }
 
 // DefaultTenant returns the org's "default" tenant, creating it if missing (an org whose default tenant was renamed
@@ -253,6 +267,32 @@ func (m *SignInMethods) AllowsProvider(providerID string) bool {
 		if p.ID == providerID {
 			return true
 		}
+	}
+	return false
+}
+
+// AllowsSession reports whether the way a session was authenticated (its amr, and the provider of a federated sign-in)
+// is among these methods: a password step needs Password (a passkey used as the second factor after it does not need
+// passkey sign-in), a passkey alone needs Passkey, and a federated sign-in needs its provider.
+func (m *SignInMethods) AllowsSession(amr []string, provider string) bool {
+	var pwd, pk, fed bool
+	for _, a := range amr {
+		switch a {
+		case "pwd":
+			pwd = true
+		case "hwk", "swk":
+			pk = true
+		case "fed":
+			fed = true
+		}
+	}
+	switch {
+	case fed:
+		return provider != "" && m.AllowsProvider(provider)
+	case pwd:
+		return m.Password
+	case pk:
+		return m.Passkey
 	}
 	return false
 }

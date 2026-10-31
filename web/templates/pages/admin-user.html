@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminUser" data-base="{{.Data.API}}" data-user="{{.Data.UserID}}"{{if .Data.Self}} data-self{{end}} data-list="{{.Data.Base}}/users" class="stack-lg" @user-emails-changed.window="reloadUser" @user-signin-changed.window="reloadUser">
+<div x-data="adminUser" data-base="{{.Data.API}}" data-user="{{.Data.UserID}}"{{if .Data.Self}} data-self{{end}} data-list="{{.Data.Base}}/users" data-tenants="{{.Data.Base}}/tenants" class="stack-lg" @user-emails-changed.window="reloadUser" @user-signin-changed.window="reloadUser">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <nav class="crumbs glass" aria-label="Breadcrumb"><ol>
       <li><a href="{{.Data.Base}}/users">{{template "icon" "building"}}<span class="sr-only">Organization: </span>{{.Org.DisplayName}}</a></li><li><a href="{{.Data.Base}}/users">Users</a></li><li><span aria-current="page" x-text="user ? user.title : 'User'">User</span></li></ol></nav>
@@ -190,6 +190,30 @@
         </table>
       </div>
     </section>
+
+    {{if .Data.CanSSH}}
+    {{/* Only administrators of the organization manage SSH; the card shows only while the user has a certificate that has not expired. */}}
+    <section class="glass-card" aria-labelledby="ssh-h" x-data="adminUserSSH" x-show="visible" x-cloak>
+      <h2 class="section-title mb-1" id="ssh-h" tabindex="-1">SSH certificates</h2>
+      <p class="muted mb-4">Certificates this user holds for logging in to servers that trust a tenant of this organization, across its tenants. Revoking one puts it on the revocation list servers fetch, so it stops working within a minute or two; the user can ask for a new one.</p>
+      <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+      <div class="table-wrap" role="region" aria-label="SSH certificates of this user" tabindex="0" x-show="hasItems" x-cloak>
+        <table class="table">
+          <caption class="sr-only">SSH certificates of this user that have not expired</caption>
+          <thead><tr><th scope="col">Tenant</th><th scope="col">Principals</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            <template x-for="row in items" :key="row.id"><tr>
+              <th scope="row" class="cell-title"><a :href="row.href" x-text="row.tenant"></a></th>
+              <td x-text="row.principalsText"></td>
+              <td class="whitespace-nowrap" x-text="row.expiresText"></td>
+              <td><span :class="row.statusClass" x-text="row.statusText"></span><span class="cell-sub block mt-1" x-show="row.statusNote !== ''" x-text="row.statusNote"></span></td>
+              <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.active" :aria-label="row.revokeLabel" :title="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {{end}}
 
     {{if not .Data.Self}}
     <section class="glass-card" aria-labelledby="lockout-h">

@@ -73,6 +73,10 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("POST /api-internal/account/tokens/{id}/regenerate", m.regenerateToken)
 	h("PATCH /api-internal/account/tokens/{id}", m.updateToken)
 
+	h("GET /api-internal/account/ssh", m.getSSH)
+	h("POST /api-internal/account/ssh/sign", m.signSSH)
+	h("POST /api-internal/account/ssh/certificates/{id}/revoke", m.revokeSSHCert)
+
 	h("GET /api-internal/account/providers", m.listProviders)
 	h("POST /api-internal/account/providers/{id}/connect", m.connectProvider)
 	h("DELETE /api-internal/account/providers/{id}", m.disconnectProvider)
@@ -511,9 +515,40 @@ func (m *Module) endOtherSessions(ctx context.Context, a acct) (int, error) {
 // Re-authentication (needed before turning off the authenticator app)
 
 // markReauth records that the session confirmed the account's credentials as they are at security generation gen
-// (model.User.SecurityGen): the mark is good for reauthTTL, and only while the account stays at that generation.
-func (m *Module) markReauth(ctx context.Context, sessID string, gen uint64) {
-	_ = m.s.Eph.Set(ctx, nsReauth, sessID, []byte(strconv.FormatUint(gen, 10)), reauthTTL)
+// (model.User.SecurityGen), now: the mark is good for reauthTTL, and only while the account stays at that generation.
+// secondFactor says whether the confirmation used a second factor of the account's own (an authenticator code or a
+// passkey): an account that has none confirms with its password alone, which proves less than the sign-in did.
+// The value is "<generation>@<unix seconds of the confirmation>@<1 with a second factor, 0 without>".
+func (m *Module) markReauth(ctx context.Context, sessID string, gen uint64, secondFactor bool) {
+	m.setReauth(ctx, sessID, gen, time.Now(), secondFactor)
+}
+
+func (m *Module) setReauth(ctx context.Context, sessID string, gen uint64, at time.Time, secondFactor bool) {
+	f := "0"
+	if secondFactor {
+		f = "1"
+	}
+	_ = m.s.Eph.Set(ctx, nsReauth, sessID, []byte(strconv.FormatUint(gen, 10)+"@"+strconv.FormatInt(at.Unix(), 10)+"@"+f), reauthTTL)
+}
+
+// readReauth returns the security generation, the time and whether it used a second factor of a session's standing
+// re-authentication (a mark without that part, from before it was recorded, did not count as having used one).
+func (m *Module) readReauth(ctx context.Context, sessID string) (gen uint64, at time.Time, secondFactor, ok bool) {
+	b, err := m.s.Eph.Get(ctx, nsReauth, sessID)
+	if err != nil {
+		return 0, time.Time{}, false, false
+	}
+	parts := strings.Split(string(b), "@")
+	gen, err = strconv.ParseUint(parts[0], 10, 64)
+	if err != nil {
+		return 0, time.Time{}, false, false
+	}
+	if len(parts) > 1 {
+		if sec, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+			at = time.Unix(sec, 0)
+		}
+	}
+	return gen, at, len(parts) > 2 && parts[2] == "1", true
 }
 
 // reauthed reports whether the session re-authenticated within reauthTTL against the account as it still is. A
@@ -522,16 +557,25 @@ func (m *Module) markReauth(ctx context.Context, sessID string, gen uint64) {
 // page asks again, now for the factor that was added. The user is read afresh (the request's copy is a per-node
 // cache): a change made on another node must count at once, not after the cache turns over.
 func (m *Module) reauthed(ctx context.Context, a acct) bool {
-	b, err := m.s.Eph.Get(ctx, nsReauth, a.sess.ID)
-	if err != nil {
-		return false
-	}
-	gen, err := strconv.ParseUint(string(b), 10, 64)
-	if err != nil {
+	gen, _, _, ok := m.readReauth(ctx, a.sess.ID)
+	if !ok {
 		return false
 	}
 	u, err := m.s.Svc.Users.Get(ctx, a.sess.UserID)
 	return err == nil && u.SecurityGen == gen
+}
+
+// authTime is when the session last confirmed who it is with what its sign-in showed: its sign-in, or a later
+// re-authentication still standing that used a second factor. Of an account without a second factor of its own (its
+// second factor came from a provider trusted for it) a re-authentication is the password alone; it keeps the account
+// page's dialogs out of the way but must not make an old sign-in with that provider's second factor look new, so it
+// does not count here. (What a certificate relies on is the sign-in's amr, which only a sign-in changes.)
+func (m *Module) authTime(ctx context.Context, a acct) time.Time {
+	t := a.sess.AuthTime
+	if _, at, second, ok := m.readReauth(ctx, a.sess.ID); ok && second && at.After(t) && m.reauthed(ctx, a) {
+		t = at
+	}
+	return t
 }
 
 // refreshReauth carries a session's standing re-authentication over to generation gen, which a change this very
@@ -539,8 +583,8 @@ func (m *Module) reauthed(ctx context.Context, a acct) bool {
 // change does not spend it, and the person can go on (add a second passkey, make recovery codes) without the dialog
 // again. A session without a standing confirmation gets none.
 func (m *Module) refreshReauth(ctx context.Context, sessID string, gen uint64) {
-	if _, err := m.s.Eph.Get(ctx, nsReauth, sessID); err == nil {
-		m.markReauth(ctx, sessID, gen)
+	if _, at, second, ok := m.readReauth(ctx, sessID); ok {
+		m.setReauth(ctx, sessID, gen, at, second) // the time stays that of the confirmation
 	}
 }
 
@@ -680,7 +724,7 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		writeErr(w, http.StatusUnprocessableEntity, "Enter your password.", "password")
 		return
 	}
-	m.markReauth(ctx, a.sess.ID, u.SecurityGen)
+	m.markReauth(ctx, a.sess.ID, u.SecurityGen, u.HasTOTP()) // (the password alone is for an account with no factor of its own)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
 }
 
@@ -728,7 +772,7 @@ func (m *Module) reauthPasskeyFinish(w http.ResponseWriter, r *http.Request, a a
 		writeErr(w, http.StatusUnprocessableEntity, msgBadPasskey, "")
 		return
 	}
-	m.markReauth(r.Context(), a.sess.ID, res.User.SecurityGen)
+	m.markReauth(r.Context(), a.sess.ID, res.User.SecurityGen, true)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
 }
 

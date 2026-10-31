@@ -367,11 +367,9 @@ func TestMixedBackendsConverge(t *testing.T) {
 		t.Fatalf("re-creating a deleted id: %v", err)
 	}
 	waitFor(t, 15*time.Second, "re-creation converged", same(model.KindGroup, g.ID))
-	for i, tn := range c.nodes {
-		if ok, why := tn.n.Ready(); !ok {
-			t.Fatalf("node %d: %s", i, why)
-		}
-	}
+	// every node is ready: re-creating a deleted id diverged no partition here. A node starved of CPU (a loaded test
+	// run) can briefly have heard no owner of a partition lately, which passes; a divergence stays until an operator acts
+	readyWithin(t, 15*time.Second, c.nodes...)
 	g2 := &model.Group{Meta: model.Meta{ID: model.NewID(), Created: created}, OrgID: primary, DisplayName: "nanos"}
 	if err := svc1.Groups.Create(bg, g2); err != nil {
 		t.Fatal(err)

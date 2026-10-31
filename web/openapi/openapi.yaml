@@ -34,6 +34,8 @@ tags:
     description: Groups of applications that share sign-in rules and resources.
   - name: Tenant access
     description: Which users and groups may use a tenant's applications, with their roles, tags and end dates.
+  - name: SSH certificates
+    description: "A tenant's SSH certificate authority: its settings, CA keys, issued certificates, and signing host certificates. Servers trust the tenant's CA keys (TrustedUserCAKeys); the public endpoints under /o/{org}/ssh/{tenant} serve them, and `quisora ssh` is the client."
   - name: Clients
     description: "OAuth 2 / OpenID Connect clients: the applications that sign users in through this server."
   - name: Providers
@@ -176,7 +178,7 @@ paths:
     delete:
       tags: [Organizations]
       summary: Delete an organization
-      description: Delete an organization (super admin, or a service account with the orgs:delete scope, which may delete only organizations it created). ?cascade=1 also deletes its users, groups, clients and providers; they stop working at once, and their records are removed in the background within about a day
+      description: Delete an organization (super admin, or a service account with the orgs:delete scope, which may delete only organizations it created). ?cascade=1 also deletes its users, groups, clients and providers; they stop working at once, and their records are removed in the background within about a day. 409 while SSH certificates are on for one of its tenants (turn SSH off there first)
       operationId: delete_orgs_org
       security:
         - session: []
@@ -1109,6 +1111,40 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/ssh-certificates:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [SSH certificates, Users]
+      summary: List the user's SSH certificates that have not expired
+      description: The user's certificates that have not expired (active ones, and revoked ones until they expire), newest first, across the organization's tenants, each with its tenant's name and whether it is active or revoked and why. Every one, without paging. Revoke one with the tenant's certificate revoke operation, using its tenant_id. Organization administrators, and service accounts with the ssh scope; 403 for anyone else, managers included.
+      operationId: get_orgs_org_users_id_ssh_certificates
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserSSHCertificateList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}/tokens/{token}:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -1539,7 +1575,7 @@ paths:
     delete:
       tags: [Tenants]
       summary: Delete a tenant
-      description: Delete a tenant; 409 while it still has clients
+      description: Delete a tenant; 409 while it still has clients, or while SSH certificates are on for it (turn SSH off first, so its servers fetch a revocation list that revokes every certificate). With SSH off, the tenant's own SSH application does not count and is deleted with it
       operationId: delete_orgs_org_tenants_id
       security:
         - session: []
@@ -1792,6 +1828,287 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [SSH certificates]
+      summary: Get the tenant's SSH settings and CA keys
+      description: The tenant's SSH certificate authority settings (the defaults while SSH has never been enabled), its CA keys, and the addresses servers and people use (the discovery URL that `quisora ssh login` and `quisora ssh fetch` start from, the CA key lists, the revocation list, and where host certificates are signed). Organization administrators, and service accounts with the ssh scope.
+      operationId: get_orgs_org_tenants_id_ssh
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SSH"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [SSH certificates]
+      summary: Change the tenant's SSH settings
+      description: "Change the settings named in the body; the others keep their values. Enabling SSH for the first time makes the tenant's user CA key (and the host CA key when host certificates are on) and its SSH application (a public first-party client named SSH, which the console links to); enabling again makes nothing twice. Field errors are named ssh.cert_ttl and so on. While SSH is on at least one of principal_username, principal_groups and principal_roles must be on (422, field ssh.principal_username), and the lists (source_addresses, host_patterns) hold at most 32 entries. Turning SSH off keeps the keys and revokes every certificate of the tenant: signing and the discovery of `quisora ssh login` are refused, while the CA keys and the revocation list stay published, and the list then revokes every CA key of the tenant, so servers drop its certificates when they next fetch it. Turning SSH on again makes the certificates that were not revoked otherwise valid again. A tenant (or an organization with a tenant) with SSH on cannot be deleted."
+      operationId: patch_orgs_org_tenants_id_ssh
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SSHInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SSH"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh/rotate:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [SSH certificates]
+      summary: Rotate a CA key
+      description: "Make the tenant's user or host CA key a successor. A user key's successor is published at once and signs seven days later, so servers that fetch the CA key list daily have it first; a host key's signs at once and the old one stays published until removed. immediate: the successor signs at once and the old key retires now (a user key stays published one more day, for the certificates it signed); use it, then remove the old key, when a key may have been exposed. 422 (field immediate) while a scheduled rotation is under way."
+      operationId: post_orgs_org_tenants_id_ssh_rotate
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SSHRotateInput"}
+        required: true
+      responses:
+        "201":
+          description: The new key
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SSHKey"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh/keys/{key}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - name: key
+        in: path
+        required: true
+        description: CA key id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [SSH certificates]
+      summary: Remove a retired CA key
+      description: Remove a CA key that no longer signs, at once rather than when it expires. It is no longer published, and the tenant's revocation list revokes the key itself until every certificate it signed has expired, so servers stop trusting it when they next fetch the list, even with a stale CA key file. 422 for a key that signs now or has not started signing.
+      operationId: delete_orgs_org_tenants_id_ssh_keys_key
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh/certificates:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [SSH certificates]
+      summary: List the tenant's SSH certificates
+      description: "The certificates issued until they expire (they are kept an hour past their end), newest first, a page at a time as the users are listed (offset and limit; 25 by default, at most 100), each with whether it is active, expired or revoked and why. total counts every certificate that matches, not only those in the page. q searches, by the start of the text and ignoring case: the username or name of the user (as it is now), a principal (the whole of it, such as paul, group:ops or web1.example.com), the fingerprint of the certified key (SHA256:...), the serial and the key id (which starts with the username the certificate was issued to). There is no sort order: certificates are always newest first."
+      operationId: get_orgs_org_tenants_id_ssh_certificates
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: user
+          in: query
+          description: only this user's certificates (user id)
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: only certificates in this state (default all)
+          schema:
+            type: string
+            enum: [active, revoked, expired, all]
+        - name: host
+          in: query
+          description: only host certificates (true) or only user certificates (false)
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SSHCertificateList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh/certificates/{cert}/revoke:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - name: cert
+        in: path
+        required: true
+        description: certificate record id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [SSH certificates]
+      summary: Revoke a certificate
+      description: Revoke a certificate of the tenant. It is on the revocation list servers fetch within a minute. Revoking one already revoked changes nothing.
+      operationId: post_orgs_org_tenants_id_ssh_certificates_cert_revoke
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/tenants/{id}/ssh/host-certificates:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: tenant id or name
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [SSH certificates]
+      summary: Sign a host certificate
+      description: "Sign an OpenSSH host certificate for a server's public key. Every host name must match one of the tenant's host_patterns, and host certificates must be on (403 otherwise). It lasts ttl_days, at most the tenant's host_ttl_days (the default). At most 32 host names, and 120 requests a minute for each administrator or service account (429, with Retry-After). Organization administrators, and service accounts with the ssh:host scope (`quisora ssh host-sign`)."
+      operationId: post_orgs_org_tenants_id_ssh_host_certificates
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [ssh:host]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SSHHostCertificateInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SSHHostCertificate"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: Too many host certificates were requested by this caller in a minute
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/clients:
     parameters:
@@ -3384,7 +3701,7 @@ components:
       scheme: bearer
       type: http
     serviceAccount:
-      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization, never as a super admin, and holds only the scopes it was granted. Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create and orgs:delete (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
+      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization, never as a super admin, and holds only the scopes it was granted. Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), ssh (tenants' SSH certificate authorities: settings, keys and certificates), ssh:host (signing host certificates only), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create and orgs:delete (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
       flows:
         clientCredentials:
           scopes:
@@ -3395,6 +3712,8 @@ components:
             tenants: Tenants
             clients: Applications (OAuth clients) and the self-registered ones
             access: Tenants' access lists
+            ssh: Tenants' SSH certificate authorities (settings, keys, certificates)
+            "ssh:host": Sign SSH host certificates
             import: With users, password hashes, authenticator secrets and provider links on user create (granted by super admins)
             scim: SCIM provisioning
             service_accounts: The organization's service accounts
@@ -4526,6 +4845,301 @@ components:
           items: {$ref: "#/components/schemas/Provider"}
         total:
           type: integer
+    SSH:
+      description: A tenant's SSH certificate authority settings (the names the PATCH takes), with its CA keys and endpoints
+      allOf:
+        - {$ref: "#/components/schemas/SSHSettings"}
+        - type: object
+          properties:
+            keys:
+              type: array
+              description: the published CA keys, user keys first, oldest first
+              items: {$ref: "#/components/schemas/SSHKey"}
+            endpoints: {$ref: "#/components/schemas/SSHEndpoints"}
+    SSHCertificate:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        ca_key_id:
+          type: string
+          description: the CA key that signed it
+        fingerprint:
+          type: string
+          description: "SHA256:... of the certified public key"
+        host:
+          type: boolean
+          description: a host certificate (otherwise a user certificate)
+        issued_by:
+          type: string
+          description: host certificates, the actor that asked for it
+        key_id:
+          type: string
+          description: the certificate's key id, as sshd logs it
+        principals:
+          type: array
+          description: "user certificates: the user's username, group:<name> for each of the user's groups and role:<role> for each application role, as the tenant's settings choose; host certificates: host names"
+          items:
+            type: string
+        extensions:
+          type: array
+          description: user certificates, the OpenSSH extensions it grants
+          items:
+            type: string
+        source_addresses:
+          type: array
+          description: user certificates, the addresses it works from (the critical option source-address); absent, anywhere
+          items:
+            type: string
+        reason:
+          type: string
+          description: "when revoked, why: revoked (by hand), ca_key_removed, user_deleted, user_disabled, sessions_ended, signed_out, role_not_allowed, app_unavailable (the tenant's SSH application is disabled or missing), access_removed, principals_changed, ssh_off (SSH is turned off for the tenant) or settings_changed (it grants more than the tenant's settings now would: a longer lifetime, an extension no longer permitted, other source addresses). A certificate found revoked for access_removed, principals_changed or role_not_allowed stays revoked when the user gets the access back (revoked is then true, revoked_by system)"
+          enum: [revoked, ca_key_removed, user_deleted, user_disabled, sessions_ended, signed_out, role_not_allowed, app_unavailable, access_removed, principals_changed, ssh_off, settings_changed]
+        revoked:
+          type: boolean
+          description: "revoked for good: by hand (revoked_by the actor), or written down by Quisora when it found the certificate's user had lost access, a role or a principal (revoked_by system, with that reason)"
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_by:
+          type: string
+        serial:
+          type: string
+          description: the certificate's serial number, a decimal string
+        status:
+          type: string
+          enum: [active, expired, revoked]
+        user_id:
+          type: string
+          description: user certificates
+        username:
+          type: string
+          description: user certificates, the user's username now
+        valid_after:
+          type: string
+          format: date-time
+        valid_before:
+          type: string
+          format: date-time
+        via:
+          type: string
+          description: "how it was asked for: cli (the sign endpoint), account (the account page) or api (a host certificate)"
+          enum: [cli, account, api]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    SSHCertificateList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/SSHCertificate"}
+        total:
+          type: integer
+    SSHEndpoints:
+      type: object
+      description: where servers and people reach the tenant's SSH authority
+      properties:
+        ca_pub:
+          type: string
+          description: the user CA public keys, one authorized_keys line each (TrustedUserCAKeys)
+        discovery:
+          type: string
+          description: the discovery document that `quisora ssh login` and `quisora ssh fetch` start from
+        host_sign:
+          type: string
+          description: where host certificates are signed (the host-certificates operation)
+        known_hosts:
+          type: string
+          description: "@cert-authority lines for the host CA keys"
+        krl:
+          type: string
+          description: the key revocation list (RevokedKeys)
+    SSHHostCertificate:
+      type: object
+      properties:
+        certificate:
+          type: string
+          description: "the certificate, authorized_keys form (ssh-ed25519-cert-v01@openssh.com AAAA...): a server's HostCertificate"
+        key_id:
+          type: string
+        principals:
+          type: array
+          items:
+            type: string
+        serial:
+          type: string
+          description: a decimal string
+        valid_after:
+          type: string
+          format: date-time
+        valid_before:
+          type: string
+          format: date-time
+    SSHHostCertificateInput:
+      type: object
+      required: [public_key, principals]
+      properties:
+        principals:
+          type: array
+          description: the host names (no wildcards) the certificate is for, 1 to 32, each matching one of the tenant's host_patterns
+          items:
+            type: string
+        public_key:
+          type: string
+          description: the server's public key, an authorized_keys line (ssh_host_ed25519_key.pub)
+        ttl_days:
+          type: integer
+          description: how long it lasts, 1 to the tenant's host_ttl_days (the default)
+    SSHInput:
+      type: object
+      description: The settings to change; omitted ones keep their values
+      properties:
+        allow_privileged:
+          type: boolean
+          description: managers and administrators may get user certificates (also lets them use the device flow of the SSH application)
+        cert_ttl:
+          type: integer
+          description: user certificate lifetime in seconds, 300 to 86400 (default 28800)
+        enabled:
+          type: boolean
+          description: true the first time makes the CA key and the SSH application; false revokes every certificate of the tenant until it is true again
+        host_certs:
+          type: boolean
+          description: host certificates may be signed (needs host_patterns)
+        host_patterns:
+          type: array
+          description: patterns host names must match, such as *.example.com; required when host_certs is on, at most 32
+          items:
+            type: string
+        host_ttl_days:
+          type: integer
+          description: host certificate lifetime in days, 1 to 365 (default 90)
+        max_auth_age:
+          type: integer
+          description: how old, in seconds, the sign-in may be when it asks for a certificate, 60 to 86400 (default 3600)
+        permit_agent_forwarding:
+          type: boolean
+        permit_port_forwarding:
+          type: boolean
+        permit_pty:
+          type: boolean
+        permit_user_rc:
+          type: boolean
+        permit_x11_forwarding:
+          type: boolean
+        principal_groups:
+          type: boolean
+          description: "put group:<name> for each of the user's groups in the certificate (group:ops)"
+        principal_roles:
+          type: boolean
+          description: "put role:<role> for each application role the tenant's access list gives the user in the certificate (role:deploy)"
+        principal_username:
+          type: boolean
+          description: put the user's username in the certificate
+        rotation_days:
+          type: integer
+          description: rotate the user CA key every this many days, 8 to 3650; 0 rotates by hand only
+        source_addresses:
+          type: array
+          description: addresses or CIDRs the certificates work from (the source-address critical option); none means anywhere, at most 32
+          items:
+            type: string
+    SSHKey:
+      type: object
+      properties:
+        id:
+          type: string
+        alg:
+          type: string
+          enum: [ssh-ed25519]
+        expires:
+          type: string
+          format: date-time
+          description: "when it leaves the published list (absent: kept until removed)"
+        fingerprint:
+          type: string
+          description: "SHA256:..."
+        not_before:
+          type: string
+          format: date-time
+          description: when it starts signing
+        public_key:
+          type: string
+          description: authorized_keys form
+        purpose:
+          type: string
+          enum: [user, host]
+        retire_at:
+          type: string
+          format: date-time
+          description: "when it stops signing (absent: until a successor starts)"
+        state:
+          type: string
+          description: "next (published, not signing yet), active (signs now) or retired (no longer signs; may be removed)"
+          enum: [next, active, retired]
+    SSHRotateInput:
+      type: object
+      required: [purpose]
+      properties:
+        immediate:
+          type: boolean
+          description: the successor signs at once and the old key retires now
+        purpose:
+          type: string
+          enum: [user, host]
+    SSHSettings:
+      type: object
+      properties:
+        allow_privileged:
+          type: boolean
+        cert_ttl:
+          type: integer
+        client_id:
+          type: string
+          description: the tenant's SSH application (made when SSH is first enabled)
+        enabled:
+          type: boolean
+        host_certs:
+          type: boolean
+        host_patterns:
+          type: array
+          items:
+            type: string
+        host_ttl_days:
+          type: integer
+        max_auth_age:
+          type: integer
+        permit_agent_forwarding:
+          type: boolean
+        permit_port_forwarding:
+          type: boolean
+        permit_pty:
+          type: boolean
+        permit_user_rc:
+          type: boolean
+        permit_x11_forwarding:
+          type: boolean
+        principal_groups:
+          type: boolean
+        principal_roles:
+          type: boolean
+        principal_username:
+          type: boolean
+        rotation_days:
+          type: integer
+        source_addresses:
+          type: array
+          items:
+            type: string
     ScimDiscovery:
       type: object
       description: ServiceProviderConfig, or a ListResponse of ResourceTypes or Schemas (RFC 7644 §4).
@@ -4733,10 +5347,10 @@ components:
           description: shown in the audit log as service:<name>
         scopes:
           type: array
-          description: "what the account may do; see the serviceAccount security scheme. At least one. users, manage_admins, groups, providers, tenants, clients, access, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
+          description: "what the account may do; see the serviceAccount security scheme. At least one. users, manage_admins, groups, providers, tenants, clients, access, ssh, ssh:host, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
           items:
             type: string
-            enum: [users, manage_admins, groups, providers, tenants, clients, access, import, scim, service_accounts, orgs:create, orgs:delete]
+            enum: [users, manage_admins, groups, providers, tenants, clients, access, import, scim, service_accounts, ssh, "ssh:host", orgs:create, orgs:delete]
         token_endpoint_auth_method:
           type: string
           description: "how the account authenticates at the token endpoint: client_secret_post (default) or client_secret_basic with a secret Quisora issues, or private_key_jwt with keys it holds"
@@ -4780,10 +5394,10 @@ components:
           description: shown in the audit log as service:<name>
         scopes:
           type: array
-          description: "what the account may do; see the serviceAccount security scheme. At least one. users, manage_admins, groups, providers, tenants, clients, access, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
+          description: "what the account may do; see the serviceAccount security scheme. At least one. users, manage_admins, groups, providers, tenants, clients, access, ssh, ssh:host, import, scim and service_accounts are for any organization; orgs:create and orgs:delete for the primary organization alone"
           items:
             type: string
-            enum: [users, manage_admins, groups, providers, tenants, clients, access, import, scim, service_accounts, orgs:create, orgs:delete]
+            enum: [users, manage_admins, groups, providers, tenants, clients, access, import, scim, service_accounts, ssh, "ssh:host", orgs:create, orgs:delete]
         token_endpoint_auth_method:
           type: string
           description: "how the account authenticates at the token endpoint: client_secret_post (default) or client_secret_basic with a secret Quisora issues, or private_key_jwt with keys it holds"
@@ -4832,6 +5446,10 @@ components:
           items:
             type: string
         settings: {$ref: "#/components/schemas/TenantSettings"}
+        ssh:
+          description: the tenant's SSH certificate authority settings (see SSH certificates); absent until SSH has been enabled
+          allOf:
+            - {$ref: "#/components/schemas/SSHSettings"}
         created:
           type: string
           format: date-time
@@ -5348,6 +5966,27 @@ components:
         items:
           type: array
           items: {$ref: "#/components/schemas/UserPasskey"}
+        total:
+          type: integer
+    UserSSHCertificate:
+      description: One of a user's certificates, as the user's page lists it
+      allOf:
+        - {$ref: "#/components/schemas/SSHCertificate"}
+        - type: object
+          properties:
+            tenant:
+              type: string
+              description: the tenant's display name
+            tenant_name:
+              type: string
+              description: the tenant's address name (what its console pages are under)
+    UserSSHCertificateList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/UserSSHCertificate"}
         total:
           type: integer
     UserSession:

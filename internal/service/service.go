@@ -180,11 +180,15 @@ type Service struct {
 	Grants     *store.Table[model.Grant, *model.Grant]
 	APITokens  *store.Table[model.APIToken, *model.APIToken]
 	Keys       *store.Table[model.SigningKey, *model.SigningKey]
+	SSHCAKeys  *store.Table[model.SSHKey, *model.SSHKey]
+	SSHCerts   *store.Table[model.SSHCert, *model.SSHCert]
 	Audits     *store.Table[model.Audit, *model.Audit]
 	Links      *store.Table[model.LinkToken, *model.LinkToken]
 	SignIns    *store.Table[model.SignIn, *model.SignIn]
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
+
+	ssh sshState // key changes and the revocation lists made on this node (ssh_keys.go, ssh_krl.go)
 
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
@@ -237,6 +241,8 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Grants:     store.NewTable[model.Grant](s),
 		APITokens:  store.NewTable[model.APIToken](s),
 		Keys:       store.NewTable[model.SigningKey](s),
+		SSHCAKeys:  store.NewTable[model.SSHKey](s),
+		SSHCerts:   store.NewTable[model.SSHCert](s),
 		Audits:     store.NewTable[model.Audit](s),
 		Links:      store.NewTable[model.LinkToken](s),
 		SignIns:    store.NewTable[model.SignIn](s),
@@ -437,5 +443,6 @@ func isSelfService(ctx context.Context) bool { v, _ := ctx.Value(selfServiceKey{
 func TOTPBinding(userID string) string        { return "user/" + userID + "/totp" }
 func ProviderSecretBinding(id string) string  { return "provider/" + id + "/client_secret" }
 func SigningKeyBinding(id string) string      { return "key/" + id + "/private" }
+func SSHKeyBinding(id string) string          { return "sshkey/" + id + "/private" }
 func IdentityRefreshBinding(id string) string { return "identity/" + id + "/refresh" }
 func GrantKeyBinding(id string) string        { return "grant/" + id + "/refresh_key" }

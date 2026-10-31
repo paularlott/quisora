@@ -27,7 +27,7 @@ application. Turn it on only for applications that need it.
 
 ## Turning it on for an application
 
-In the console: the tenant's **Clients** → the client (or **New client**) → under **Grant types**, tick **Device
+In the console: the tenant's **Clients** page → the client (or **New client**) → under **Grant types**, tick **Device
 sign-in**. The client can be public (no secret: the usual choice for a CLI installed on people's machines) or
 confidential; it cannot use the FAPI 2.0 profile. It needs no redirect URIs. Tick **Refresh token** too if the device
 should stay signed in, and allow the `offline_access` scope (see [How long it stays signed in](#how-long-it-stays-signed-in)).
@@ -48,7 +48,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   "$QUISORA/api/orgs/acme/clients"
 ```
 
-The answer's `id` is the client ID the device uses.
+The answer's `id` is the client ID the device uses. (Quisora's own `quisora ssh login --device` is a device sign-in too: the tenant's
+[SSH application](../ssh/README.md#turning-it-on-for-a-tenant) has it turned on, and the same risk applies. It sends `acr_values` and `max_age` with the request, so the session that approves the code is stepped up to a second factor.)
 
 ## The device's side, step by step
 
@@ -60,6 +61,10 @@ export CLIENT_ID=c_…   # the client ID from the console
 **1. Ask for a code.** A public client sends its `client_id`; a confidential one authenticates as it does at the token
 endpoint ([client authentication](client-authentication.md)). `scope` is optional (without it, every scope the client
 is allowed), and so is `resource` ([resource indicators](sign-in.md#tokens-for-an-api-resource-indicators)).
+`acr_values` and `max_age` are optional too and mean what they do in an authorization request: `acr_values=urn:quisora:acr:mfa`
+makes the user who approves the code sign in with a second factor (a password-only session is sent to step up),
+and `max_age` (seconds, not negative) makes a session older than that sign in again. Without them an existing session
+goes straight on.
 
 ```bash
 curl -s "$ISSUER/oauth/device_authorization" \
@@ -138,7 +143,8 @@ request, as at any token request.
 1. They open `https://id.example.com/o/<org id>/device` (or scan the QR code) and type the code. Capital letters and the dash do
    not matter: `prfl nxbm` works.
 2. They sign in, as for any application of the client's tenant: its sign-in methods, second factor and access lists
-   apply. Someone already signed in in that browser goes straight on.
+   apply, and so do the `acr_values` and `max_age` the device asked for. Someone already signed in in that browser goes
+   straight on, unless those ask for more than their session has.
 3. A consent screen names the application and what it asks for, shows the code, and warns: *"Allow only if you
    started this yourself on a device in front of you that shows the code … If someone sent you the code, choose
    Deny."*

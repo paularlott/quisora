@@ -69,6 +69,12 @@ Ended, at once, on every node:
 - with the option, every personal API token, for good. (Turning off the organization's setting for who may make `api`
   tokens only stops them while it is off; see [API-TOKENS.md](API-TOKENS.md#who-may-make-api-tokens).)
 
+The [SSH certificates](ssh/README.md#revocation) the organizations' tenants issued before it go on their revocation
+lists within 30 seconds, and a server refuses them when it next fetches the list (a minute or two with the timer in
+the guide), and a session already open on a server stays open. Host certificates are not affected. (Ending a single session,
+or revoking one application's grant, does not revoke certificates already issued; signing a person out everywhere, a
+lock-out or this does.)
+
 Applications are told through back-channel logout, and the ended records are deleted in the background. Signing in
 again works straight away: nothing about the accounts changes.
 
@@ -113,7 +119,9 @@ It disables the account and, at once:
 - signs them out everywhere: sessions and refresh grants end (and the consent they gave applications with them), and
   applications are told;
 - removes every way they had to sign in: password, authenticator app, passkeys, recovery codes, linked providers;
-- removes their personal API tokens and any unused invitation, reset and verification links.
+- removes their personal API tokens and any unused invitation, reset and verification links;
+- puts their [SSH certificates](ssh/README.md#revocation) on the revocation list, so servers refuse them within a
+  minute or two (a session already open stays open).
 
 The account itself stays, for the audit log. Enabling it again brings none of that back: send them a **New invitation
 link** to set up their sign-in again. It is audited as `user.locked_out`, with the reason. You cannot lock yourself

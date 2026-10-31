@@ -373,6 +373,61 @@ func TestEveryAuditedChangeRecordsAnUnknownOutcome(t *testing.T) {
 			}
 			return func() error { return e.svc.RevokeSelfRegisteredApp(e.ctx, service.System, org.ID, app.ID) }
 		}},
+		{"ssh.settings.update", model.KindTenant, func(e *env, org *model.Org) run {
+			ten := e.tenant(org.ID, "ssh1")
+			return func() error {
+				_, err := e.svc.UpdateTenantSSH(e.ctx, service.System, ten.ID, service.SSHSettingsInput{CertTTL: ptr(3600)})
+				return err
+			}
+		}},
+		{"ssh.ca.create", model.KindSSHKey, func(e *env, org *model.Org) run {
+			ten := e.tenant(org.ID, "ssh2")
+			return func() error {
+				_, err := e.svc.UpdateTenantSSH(e.ctx, service.System, ten.ID, service.SSHSettingsInput{Enabled: ptr(true)})
+				return err
+			}
+		}},
+		{"ssh.ca.rotate", model.KindSSHKey, func(e *env, org *model.Org) run {
+			ten := e.sshTenant(org.ID, "ssh3")
+			return func() error {
+				_, err := e.svc.RotateSSHKey(e.ctx, service.System, ten.ID, "user", true)
+				return err
+			}
+		}},
+		{"ssh.ca.remove", model.KindSSHKey, func(e *env, org *model.Org) run {
+			ten := e.sshTenant(org.ID, "ssh4")
+			keys, err := e.svc.SSHKeys(e.ctx, ten.ID, "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.svc.RotateSSHKey(e.ctx, service.System, ten.ID, "user", true); err != nil {
+				t.Fatal(err)
+			}
+			return func() error { return e.svc.RemoveSSHKey(e.ctx, service.System, ten.ID, keys[0].ID) }
+		}},
+		{"ssh.cert.issue", model.KindSSHCert, func(e *env, org *model.Org) run {
+			ten, u := e.sshTenant(org.ID, "ssh5"), e.user(org.ID, "sshu1", model.RoleUser)
+			return func() error { _, err := e.svc.SignUserSSH(e.ctx, e.sshRequest(ten, u)); return err }
+		}},
+		{"ssh.cert.revoke", model.KindSSHCert, func(e *env, org *model.Org) run {
+			ten, u := e.sshTenant(org.ID, "ssh6"), e.user(org.ID, "sshu2", model.RoleUser)
+			c, err := e.svc.SignUserSSH(e.ctx, e.sshRequest(ten, u))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return func() error { return e.svc.RevokeSSHCert(e.ctx, service.System, org.ID, c.Cert.ID) }
+		}},
+		{"ssh.host.issue", model.KindSSHCert, func(e *env, org *model.Org) run {
+			ten := e.sshTenant(org.ID, "ssh7")
+			if _, err := e.svc.UpdateTenantSSH(e.ctx, service.System, ten.ID, service.SSHSettingsInput{HostCerts: ptr(true),
+				HostPatterns: &[]string{"*.example.com"}}); err != nil {
+				t.Fatal(err)
+			}
+			return func() error {
+				_, err := e.svc.SignHostSSH(e.ctx, service.System, ten.ID, service.SSHHostRequest{PublicKey: newPub(t), Principals: []string{"a.example.com"}})
+				return err
+			}
+		}},
 		{"provider.create", model.KindProvider, func(e *env, org *model.Org) run {
 			return func() error {
 				_, err := e.svc.CreateProvider(e.ctx, service.System, org.ID, goodProvider("sso-new"))
@@ -435,6 +490,32 @@ func (e *env) tenant(orgID, name string) *model.Tenant {
 		e.t.Fatal(err)
 	}
 	return t
+}
+
+// sshTenant is an open tenant with SSH enabled.
+func (e *env) sshTenant(orgID, name string) *model.Tenant {
+	e.t.Helper()
+	ten := e.tenant(orgID, name)
+	open := ten.Settings
+	open.MembersOnly = false
+	if _, err := e.svc.UpdateTenant(e.ctx, service.System, ten.ID, service.TenantInput{Settings: &open}); err != nil {
+		e.t.Fatal(err)
+	}
+	ten, err := e.svc.UpdateTenantSSH(e.ctx, service.System, ten.ID, service.SSHSettingsInput{Enabled: ptr(true)})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return ten
+}
+
+// sshRequest is a good request for u's certificate of ten (signed in with a second factor a minute ago).
+func (e *env) sshRequest(ten *model.Tenant, u *model.User) service.SSHUserRequest {
+	stamp, err := e.svc.SessionStamp(e.ctx, u.OrgID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return service.SSHUserRequest{User: u, TenantID: ten.ID, ClientID: ten.SSH.ClientID, PublicKey: newPub(e.t),
+		AMR: []string{"pwd", "otp"}, AuthTime: time.Now().Add(-time.Minute), Via: "cli", SessionEpoch: u.SessionEpoch, Stamp: stamp}
 }
 
 func (e *env) clientInput(name string) service.ClientInput {

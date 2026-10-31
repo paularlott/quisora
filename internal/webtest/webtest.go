@@ -38,7 +38,8 @@ type Options struct {
 	Store     store.Store          // default: memstore
 	Configure func(*config.Config) // edit config before start
 	Modules   func(*web.Server) []web.Module
-	MasterKey []byte // default: a random one
+	MasterKey []byte        // default: a random one
+	Log       logger.Logger // default: a null logger
 }
 
 // New starts a server. The TLS server's certificate is trusted by Client().
@@ -86,7 +87,11 @@ func New(t testing.TB, o Options) *Env {
 		NoTenantMFA(t, svc, p.ID)
 	}
 	eph := ephemeral.NewLocal("n1")
-	srv, err := web.New(cfg, svc, eph, logger.NewNullLogger())
+	log := o.Log
+	if log == nil {
+		log = logger.NewNullLogger()
+	}
+	srv, err := web.New(cfg, svc, eph, log)
 	if err != nil {
 		t.Fatal(err)
 	}

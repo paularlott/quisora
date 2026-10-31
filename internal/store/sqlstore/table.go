@@ -38,6 +38,8 @@ var tableNames = map[model.Kind]string{
 	model.KindGrant:     "refresh_grants",
 	model.KindAPIToken:  "api_tokens",
 	model.KindKey:       "signing_keys",
+	model.KindSSHKey:    "ssh_ca_keys",
+	model.KindSSHCert:   "ssh_certificates",
 	model.KindAudit:     "audit_events",
 	model.KindLink:      "link_tokens",
 	model.KindSignIn:    "sign_ins",

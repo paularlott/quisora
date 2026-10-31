@@ -24,6 +24,8 @@ var streamed = map[model.Kind]bool{
 	model.KindOrg: true, model.KindUser: true, model.KindGroup: true, model.KindMember: true,
 	model.KindTenant: true, model.KindAccess: true, model.KindClient: true, model.KindProvider: true, model.KindAudit: true,
 	model.KindKey: true,
+	// a tenant's SSH CA keys and the certificates it issued (the tenant page's SSH card)
+	model.KindSSHKey: true, model.KindSSHCert: true,
 	// a user's own records (the admin user page's cards); scoped by the user, so the hub looks up their organization
 	model.KindSession: true, model.KindPasskey: true, model.KindAPIToken: true, model.KindIdentity: true, model.KindGrant: true,
 }
@@ -37,8 +39,8 @@ var userScoped = map[model.Kind]bool{
 type Event struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id,omitempty"`
-	// User is the owning user of a user's own record (session, passkey, API token, provider link, grant), so a page
-	// showing one user refetches only for theirs. Sent only with the ID.
+	// User is the owning user of a user's own record (session, passkey, API token, provider link, grant, and an SSH
+	// certificate of theirs), so a page showing one user refetches only for theirs. Sent only with the ID.
 	User string `json:"user,omitempty"`
 	Op   string `json:"op"` // "put" or "delete"
 	org  string // organization id; "" when unknown (deletions replicated without their scope)
@@ -136,6 +138,9 @@ func (h *Hub) Publish(rec *store.Record) {
 	if rec.Kind == model.KindKey {
 		ev.org = ""
 	}
+	if rec.Kind == model.KindSSHCert { // org-scoped, and its user's own too (the account page lists them)
+		ev.User, _ = rec.Fields["user_id"].(string)
+	}
 	if rec.Deleted {
 		ev.Op = "delete"
 	}
@@ -173,7 +178,7 @@ func (s *subscriber) wants(ev Event) bool {
 }
 
 // ownChange: is ev about the personal stream's user? Their user record, a membership of theirs, or one of their own
-// records (sessions, passkeys, API tokens, provider links, grants), in their organization.
+// records (sessions, passkeys, API tokens, provider links, grants, SSH certificates), in their organization.
 func (s *subscriber) ownChange(ev Event) bool {
 	if ev.org != s.orgID {
 		return false
@@ -183,7 +188,7 @@ func (s *subscriber) ownChange(ev Event) bool {
 		return ev.ID == s.self
 	case ev.Kind == string(model.KindMember):
 		return strings.HasSuffix(ev.ID, ":"+s.self)
-	case userScoped[model.Kind(ev.Kind)]:
+	case userScoped[model.Kind(ev.Kind)], ev.Kind == string(model.KindSSHCert):
 		return ev.User == s.self
 	}
 	return false

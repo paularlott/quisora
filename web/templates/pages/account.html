@@ -315,5 +315,93 @@
     {{template "dialog-end"}}
   </section>
 
+  <!-- SSH certificates ------------------------------------------------------------------------------------- -->
+  {{/* Shown only when a tenant has SSH on for you: one you can get certificates for, or one you have access to that
+       says why you cannot (the account API lists none otherwise). */}}
+  <section class="glass-card" id="ssh" aria-labelledby="ssh-h" x-data="accountSSH" x-show="visible" x-cloak>
+    <div class="card-head">
+      <div>
+        <h2 class="section-title" id="ssh-h" tabindex="-1">SSH certificates</h2>
+        <p class="muted">Short-lived certificates for signing in to servers that trust your organization, so no key has to be added to each server. You need a second factor to get one.</p>
+      </div>
+      <button type="button" class="btn btn-primary" :disabled="cannotGet" @click="openGet">{{template "icon" "plus"}} Get a certificate</button>
+    </div>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <div class="alert alert-info mb-4" role="status" x-show="noMfa" x-cloak>{{template "icon" "info"}}<span>You signed in with a password only. To get a certificate, sign out and sign in again with a one-time code or a passkey.</span></div>
+
+    <div x-show="hasTenants" x-cloak>
+    <h3 class="label mb-2">Where you can use one</h3>
+    <ul class="stack mb-6" role="list">
+      <template x-for="t in tenants" :key="t.id"><li class="stack">
+        <p><strong x-text="t.name"></strong><br><span class="muted" x-text="t.detail"></span></p>
+        <div class="code-box" x-data="copyFrom"><code :id="t.cmdId" :aria-label="t.cmdLabel" x-text="t.command"></code>
+          <button type="button" class="btn btn-secondary btn-sm" :data-source="t.cmdId" data-what="command" :aria-label="t.copyLabel" @click="copy"><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+      </li></template>
+    </ul>
+    <p class="help mb-6">Run the command in a terminal with <span class="mono">quisora</span> installed to get a certificate without pasting anything. Or paste a public key here with Get a certificate.</p>
+    </div>
+    <div x-show="hasUnavailable" x-cloak>
+    <h3 class="label mb-2">Where you cannot get one</h3>
+    <ul class="stack mb-6" role="list">
+      <template x-for="t in unavailable" :key="t.id"><li><p><strong x-text="t.name"></strong><br><span class="muted" x-text="t.why"></span></p></li></template>
+    </ul>
+    </div>
+
+    <h3 class="label mb-2">Your certificates</h3>
+    <p class="muted" x-show="isEmpty" x-cloak>You have no certificates that are still valid.</p>
+    <div class="table-wrap" role="region" aria-label="Your SSH certificates" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Your SSH certificates that have not expired</caption>
+        <thead><tr><th scope="col">Tenant</th><th scope="col">Principals</th><th scope="col">Expires</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row" class="cell-title" x-text="row.tenant"></th>
+            <td x-text="row.principalsText"></td>
+            <td x-text="row.expiresText"></td>
+            <td><span :class="row.statusClass" x-text="row.statusText"></span><p class="help" x-show="row.hasReason" x-cloak x-text="row.reasonText"></p></td>
+            <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.active" :aria-label="row.revokeLabel" :title="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+
+    {{template "dialog-start" (dict "id" "ssh-dialog" "title" "Get a certificate" "titleBind" "dialogTitle" "size" "sm")}}
+    <form @submit.prevent="submit" novalidate x-show="!hasCert">
+      <div class="dialog-body">
+        <div class="field" x-show="manyTenants" x-cloak>
+          <label class="label" for="f-ssh_tenant">Tenant</label>
+          <select class="select" id="f-ssh_tenant" name="ssh_tenant" x-model="form.ssh_tenant" aria-describedby="h-ssh_tenant">
+            <template x-for="t in tenants" :key="t.id"><option :value="t.id" x-text="t.name"></option></template>
+          </select>
+          <p class="help" id="h-ssh_tenant" x-text="tenantHelp"></p>
+        </div>
+        <p class="help" x-show="!manyTenants" x-text="tenantHelp"></p>
+        <div class="field">
+          <label class="label" for="f-ssh_public_key">Public key <span class="req" aria-hidden="true">*</span></label>
+          <textarea class="textarea input mono" id="f-ssh_public_key" name="ssh_public_key" rows="4" x-model="form.ssh_public_key" :aria-invalid="invalid.ssh_public_key" aria-describedby="e-ssh_public_key h-ssh_public_key" aria-required="true" placeholder="ssh-ed25519 AAAA… you@laptop" spellcheck="false" autocomplete="off" data-autofocus></textarea>
+          <p class="help" id="h-ssh_public_key">Paste the contents of your public key file: run <span class="mono">cat ~/.ssh/id_ed25519.pub</span> and copy the line. Never paste a private key. No key yet? <span class="mono">ssh-keygen -t ed25519</span> makes one.</p>
+          <p class="field-error" id="e-ssh_public_key" x-text="errors.ssh_public_key"></p>
+        </div>
+      </div>
+      {{template "form-foot" (dict "label" "submitLabel" "default" "Get certificate")}}
+    </form>
+    <div x-show="hasCert" x-cloak>
+      <div class="dialog-body">
+        <div class="alert alert-success" role="status">{{template "icon" "check"}}<span x-text="issuedText"></span></div>
+        <div class="code-box" x-data="copyFrom"><code id="ssh-cert" aria-label="Certificate" x-text="cert"></code>
+          <button type="button" class="btn btn-secondary btn-sm" data-source="ssh-cert" data-what="certificate" @click="copy"><span x-show="!done">{{template "icon" "copy"}} Copy</span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied</span></button></div>
+        <div>
+          <p><strong>How to use it</strong></p>
+          <p class="help">Save it next to your private key as <span class="mono" x-text="fileName"></span> (the download has that name) and connect as usual: <span class="mono">ssh</span> uses it by itself. Or run <span class="mono">ssh-add</span> on your key to load both into your agent.</p>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button type="button" class="btn btn-secondary" @click="download">{{template "icon" "download"}} Download</button>
+        <button type="button" class="btn btn-primary" @click="closeThis" data-autofocus>Done</button>
+      </div>
+    </div>
+    {{template "dialog-end"}}
+  </section>
+
 </div>
 {{end}}

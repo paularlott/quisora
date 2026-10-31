@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,7 @@ import (
 // env is a throwaway installation: a config file and data directory in a temp directory.
 type env struct {
 	dir, conf, key string
+	public         string // server.public_url: an address nothing answers at (freePublicURL)
 }
 
 func newEnv(t *testing.T, extra string) env {
@@ -23,12 +25,25 @@ func newEnv(t *testing.T, extra string) env {
 	t.Setenv("HOME", dir) // no ~/.config/quisora/quisora.toml of the developer
 	key := base64.StdEncoding.EncodeToString(secure.RandomBytes(32))
 	conf := filepath.Join(dir, "quisora.toml")
-	body := "[server]\nlisten = \"127.0.0.1:0\"\npublic_url = \"https://127.0.0.1:8443\"\ndata_dir = \"" +
+	public := freePublicURL(t)
+	body := "[server]\nlisten = \"127.0.0.1:0\"\npublic_url = \"" + public + "\"\ndata_dir = \"" +
 		filepath.Join(dir, "data") + "\"\nmaster_key = \"" + key + "\"\n[log]\nlevel = \"error\"\n" + extra
 	if err := os.WriteFile(conf, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return env{dir, conf, key}
+	return env{dir, conf, key, public}
+}
+
+// freePublicURL returns a public URL at a port nothing listens on: the operator commands try a running server at
+// server.public_url first, and the one a developer runs (https://127.0.0.1:8443, say) must not be the one they reach.
+func freePublicURL(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return "https://" + l.Addr().String()
 }
 
 // run executes the command tree with args (after --config) and returns what it wrote to stdout and stderr.

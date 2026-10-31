@@ -274,7 +274,212 @@
 </section>
 {{end}}
 
-{{/* The client create / edit dialog and the secret-shown-once dialog (tenant page). Dot = the page. */}}
+{{/* The tenant's SSH page: the SSH certificates card with its switch, settings, setting servers up, CA keys and a searchable,
+     paged list of the issued certificates, and the settings and rotate dialogs (pages/ssh.js). Dot = the page. */}}
+{{define "ssh-code"}}<div class="field"><span class="label" id="{{.id}}-l">{{.label}}</span>
+  <div class="code-box code-box-block" x-data="copyFrom"><pre id="{{.id}}" role="region" aria-labelledby="{{.id}}-l" tabindex="0" x-text="{{.bind}}"></pre>
+    <button type="button" class="btn btn-secondary btn-sm" data-source="{{.id}}" data-what="{{.what}}" @click="copy">
+      <span x-show="!done">{{template "icon" "copy"}} Copy<span class="sr-only"> {{.what}}</span></span><span x-show="done" x-cloak>{{template "icon" "check"}} Copied<span class="sr-only"> {{.what}}</span></span></button></div></div>
+{{end}}
+
+{{define "tenant-ssh"}}
+<section class="glass-card" aria-labelledby="ssh-h" x-data="tenantSSH" data-base="{{.Data.API}}" data-tenant="{{.Data.TenantID}}">
+  <div class="card-head">
+    <div>
+      <h2 class="section-title" id="ssh-h">SSH certificates <span :class="stateClass" class="badge badge-plain ml-1" x-text="stateText" x-show="ready" x-cloak></span></h2>
+      <p class="muted mt-1 max-w-prose">Servers trust this tenant’s CA key instead of a list of user keys. People who signed in with a second factor get a short-lived certificate for their username, groups or roles, and the servers decide from those who may log in as which account.</p>
+    </div>
+    <label class="check" for="ssh-enabled" x-show="ready" x-cloak>
+      <input type="checkbox" role="switch" class="switch" id="ssh-enabled" :checked="enabled" :disabled="switchBusy" @change="toggle">
+      <span class="check-text">Enable SSH certificates</span>
+    </label>
+  </div>
+  <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<div><strong>The SSH settings could not be loaded.</strong> <span x-text="loadError"></span>
+    <button type="button" class="btn btn-secondary btn-sm ml-2" @click="load">Try again</button></div></div>
+  <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+
+  <div class="stack-lg" x-show="ready" x-cloak>
+    <p class="muted" x-show="!enabled" x-text="offNote"></p>
+
+    <div x-show="enabled" x-cloak>
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <h3 class="font-semibold" id="ssh-settings-h">Settings</h3>
+        <button type="button" class="btn btn-secondary btn-sm" @click="openSettings">{{template "icon" "pencil"}} Edit SSH settings</button>
+      </div>
+      <dl class="kv" aria-labelledby="ssh-settings-h">
+        <template x-for="r in summaryRows" :key="r.label"><div>
+          <dt x-text="r.label"></dt>
+          <dd x-text="r.text"></dd>
+          <dd class="cell-sub" x-show="r.note !== ''" x-text="r.note"></dd>
+        </div></template>
+      </dl>
+      <p class="mt-4" x-show="hasClient" x-cloak>People get certificates through this tenant’s SSH application (client ID <code class="mono" x-text="clientId"></code>), listed on the <a :href="clientsHref">clients page</a>.</p>
+    </div>
+
+    <div x-show="enabled" x-cloak>
+      <h3 class="font-semibold mb-1" id="ssh-setup-h">Set up servers and people</h3>
+      <p class="muted mb-3">Run this on each server that should accept the tenant’s certificates. <span x-text="principalsNote"></span></p>
+      {{template "ssh-code" (dict "id" "ssh-server-snippet" "label" "Server" "bind" "serverSnippet" "what" "server set-up commands")}}
+      <div x-show="hostOn" x-cloak>
+        <p class="muted mt-4 mb-3">Host certificates let people’s ssh clients trust a server without asking about its key: add the tenant’s host CA lines from the known hosts address below to <code class="mono">~/.ssh/known_hosts</code>.</p>
+        {{template "ssh-code" (dict "id" "ssh-host-snippet" "label" "Host certificate" "bind" "hostSnippet" "what" "host certificate commands")}}
+        {{template "copy-box" (dict "id" "ssh-known-hosts" "label" "Known hosts address" "bind" "ssh.endpoints.known_hosts" "what" "known hosts address")}}
+      </div>
+      {{template "copy-box" (dict "id" "ssh-login-command" "label" "Command for people who need a certificate" "bind" "loginCommand" "what" "login command")}}
+    </div>
+
+    <div x-show="everEnabled" x-cloak>
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-1">
+        <h3 class="font-semibold" id="ssh-keys-h">CA keys</h3>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="btn btn-secondary btn-sm" data-purpose="user" x-show="enabled" x-cloak @click="openRotate">{{template "icon" "refresh"}} Rotate user key</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-purpose="host" x-show="enabled && (hostOn || hasHostKey)" x-cloak @click="openRotate">{{template "icon" "refresh"}} Rotate host key</button>
+        </div>
+      </div>
+      <p class="muted mb-3 max-w-prose" x-text="keysNote"></p>
+      <div class="table-wrap" role="region" aria-label="SSH CA keys table" tabindex="0" x-show="hasKeys" x-cloak>
+        <table class="table">
+          <caption class="sr-only">SSH CA keys of this tenant</caption>
+          <thead><tr>
+            <th scope="col">Purpose</th>
+            <th scope="col">State</th>
+            <th scope="col">Fingerprint</th>
+            <th scope="col">Signs from</th>
+            <th scope="col">Stops signing</th>
+            <th scope="col">Published until</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <template x-for="k in keys" :key="k.id"><tr>
+              <td x-text="k.purposeText"></td>
+              <td><span :class="k.stateClass" x-text="k.stateText"></span><span class="cell-sub block mt-1" x-text="k.stateNote"></span></td>
+              <td><code class="mono break-all" x-text="k.fingerprint"></code></td>
+              <td class="whitespace-nowrap" x-text="k.fromText"></td>
+              <td class="whitespace-nowrap" x-text="k.stopText"></td>
+              <td class="whitespace-nowrap" x-text="k.untilText"></td>
+              <td class="actions">
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyButton" :data-copy="k.public_key" data-what="public key" :aria-label="k.copyLabel" @click="copy"><span x-show="iconCopy">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="k.removable" :aria-label="k.removeLabel" :data-id="k.id" @click="removeKey">{{template "icon" "trash"}}</button>
+              </td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <template x-if="everEnabled"><div x-data="sshCertificates" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/ssh/certificates" data-noun="certificates" data-live="sshcert sshkey tenant" data-live-text="Certificates list updated" data-search="ssh-cert-search" @ssh-changed.window="load">
+      <h3 class="font-semibold mb-3" id="ssh-certs-h">Certificates</h3>
+      <div class="toolbar mb-4">
+        {{template "search" (dict "id" "ssh-cert-search" "region" "Certificates" "label" "Search certificates" "placeholder" "Search by user, principal, fingerprint, serial or key ID")}}
+        <div class="toolbar-group">
+          <div class="field"><label class="sr-only" for="ssh-cert-status">Show</label>
+            <select class="select" id="ssh-cert-status" data-filter="status" @change="setFilter">
+              <option value="active" selected>Active certificates</option>
+              <option value="revoked">Revoked certificates</option>
+              <option value="expired">Expired certificates</option>
+              <option value="all">All certificates</option>
+            </select></div>
+        </div>
+      </div>
+      <div class="table-wrap" role="region" aria-label="SSH certificates table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+        <table class="table">
+          <caption class="sr-only">SSH certificates issued by this tenant</caption>
+          <thead><tr>
+            <th scope="col">Issued to</th>
+            <th scope="col">Principals</th>
+            <th scope="col">Serial</th>
+            <th scope="col">Issued</th>
+            <th scope="col">Expires</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <template x-for="row in items" :key="row.id"><tr>
+              <td><div class="cell-title"><span x-text="row.whoText"></span> <span class="badge badge-plain" x-show="row.isHost">Host</span></div><div class="cell-sub" x-text="row.keyIdText"></div></td>
+              <td x-text="row.principalsText"></td>
+              <td><code class="mono" x-text="row.serial"></code></td>
+              <td class="whitespace-nowrap" x-text="row.issuedText"></td>
+              <td class="whitespace-nowrap" x-text="row.expiresText"></td>
+              <td><span :class="row.statusClass" x-text="row.statusText"></span><span class="cell-sub block mt-1" x-show="row.statusNote !== ''" x-text="row.statusNote"></span></td>
+              <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.canRevoke" :aria-label="row.revokeLabel" :title="row.revokeLabel" :data-id="row.id" @click="revoke">{{template "icon" "trash"}}</button></td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+      {{template "skeleton"}}
+      <p class="muted" x-show="noCerts" x-cloak x-text="noCertsText"></p>
+      <div class="alert alert-error" role="alert" x-show="loadError !== ''" x-cloak>{{template "icon" "alert"}}<div><strong>The certificates could not be loaded.</strong> <span x-text="loadError"></span>
+        <button type="button" class="btn btn-secondary btn-sm ml-2" @click="load">Try again</button></div></div>
+      {{template "pager"}}
+    </div></template>
+  </div>
+
+  {{template "dialog-start" (dict "id" "ssh-dialog" "title" "SSH settings" "size" "lg")}}
+  <form @submit.prevent="submitSettings" novalidate>
+    <div class="dialog-body">
+      <fieldset class="fieldset">
+        <legend>User certificates</legend>
+        <div class="field-row">
+          {{template "field" (dict "name" "ssh_cert_ttl" "label" "Certificate lifetime (minutes)" "type" "number" "autofocus" true "autocomplete" "off" "inputmode" "numeric" "help" "5 to 1440 minutes. People may ask for a shorter one.")}}
+          {{template "field" (dict "name" "ssh_max_auth_age" "label" "Sign-in age (minutes)" "type" "number" "autocomplete" "off" "inputmode" "numeric" "help" "How recent a sign-in must be to get a certificate: 1 to 1440 minutes.")}}
+        </div>
+        <fieldset class="fieldset" aria-describedby="h-ssh-principals">
+          <legend>Principals</legend>
+          <p class="help" id="h-ssh-principals">What goes in a certificate for servers to decide on. Turn on at least one.</p>
+          {{template "check-field" (dict "name" "ssh_principal_username" "label" "Username" "switch" true)}}
+          {{template "check-field" (dict "name" "ssh_principal_groups" "label" "Names of the user’s groups" "switch" true "help" "As group:<name>, such as group:ops.")}}
+          {{template "check-field" (dict "name" "ssh_principal_roles" "label" "Application roles" "switch" true "help" "The roles this tenant’s access list gives the user, as role:<role>, such as role:deploy.")}}
+        </fieldset>
+        <fieldset class="fieldset" aria-describedby="h-ssh-permits">
+          <legend>What a session may use</legend>
+          <p class="help" id="h-ssh-permits">Limits the server enforces for sessions started with a certificate.</p>
+          {{template "check-field" (dict "name" "ssh_permit_pty" "label" "Terminal (pty)" "switch" true)}}
+          {{template "check-field" (dict "name" "ssh_permit_user_rc" "label" "~/.ssh/rc" "switch" true)}}
+          {{template "check-field" (dict "name" "ssh_permit_port_forwarding" "label" "Port forwarding" "switch" true)}}
+          {{template "check-field" (dict "name" "ssh_permit_agent_forwarding" "label" "Agent forwarding" "switch" true)}}
+          {{template "check-field" (dict "name" "ssh_permit_x11_forwarding" "label" "X11 forwarding" "switch" true)}}
+        </fieldset>
+        {{template "textarea-field" (dict "name" "ssh_source_addresses" "label" "Source addresses" "rows" 2 "help" "Optional. One address or CIDR range per line, such as 203.0.113.0/24. Certificates work only from these; empty means from anywhere.")}}
+        {{template "check-field" (dict "name" "ssh_allow_privileged" "label" "Managers and administrators may get certificates" "switch" true "help" "Off keeps the people who manage Quisora out of servers by default.")}}
+        {{template "field" (dict "name" "ssh_rotation_days" "label" "Rotate the user CA key every (days)" "type" "number" "autocomplete" "off" "inputmode" "numeric" "help" "8 to 3650, or 0 to rotate by hand only.")}}
+      </fieldset>
+
+      <fieldset class="fieldset">
+        <legend>Host certificates</legend>
+        {{template "check-field" (dict "name" "ssh_host_certs" "label" "Sign host certificates" "switch" true "help" "Lets servers get a certificate for their host key, so ssh clients trust them without asking.")}}
+        <div class="stack" x-show="hostFields" x-cloak>
+          {{template "field" (dict "name" "ssh_host_ttl_days" "label" "Host certificate lifetime (days)" "type" "number" "autocomplete" "off" "inputmode" "numeric" "help" "1 to 365 days.")}}
+          {{template "textarea-field" (dict "name" "ssh_host_patterns" "label" "Host names allowed" "rows" 3 "help" "One pattern per line, such as *.example.com or db1.internal. A host certificate is signed only for names that match.")}}
+        </div>
+      </fieldset>
+    </div>
+    {{template "form-foot" (dict "label" "settingsSubmitLabel" "default" "Save settings")}}
+  </form>
+  {{template "dialog-end"}}
+
+  {{template "dialog-start" (dict "id" "ssh-rotate-dialog" "title" "Rotate the CA key" "titleBind" "rotateTitle" "size" "md")}}
+  <form @submit.prevent="submitRotate" novalidate>
+    <div class="dialog-body">
+      <p x-text="rotateIntro"></p>
+      <fieldset class="fieldset" x-show="isUserRotation" x-cloak>
+        <legend>When the new key signs</legend>
+        <label class="check" for="f-ssh-rotate-scheduled">
+          <input type="radio" class="radio" id="f-ssh-rotate-scheduled" name="ssh_rotate_mode" value="scheduled" x-model="form.ssh_rotate_mode" aria-describedby="h-ssh-rotate-scheduled">
+          <span class="check-text">In seven days<span class="help" id="h-ssh-rotate-scheduled">The new key is published now. The old key keeps signing until the new one starts, so nothing breaks for servers that fetch the key list daily.</span></span>
+        </label>
+        <label class="check" for="f-ssh-rotate-immediate">
+          <input type="radio" class="radio" id="f-ssh-rotate-immediate" name="ssh_rotate_mode" value="immediate" x-model="form.ssh_rotate_mode" aria-describedby="h-ssh-rotate-immediate">
+          <span class="check-text">Immediately<span class="help" id="h-ssh-rotate-immediate">The new key signs at once and the old one stops now; it stays published for a day for the certificates it signed. Servers that have not fetched the key list yet refuse new certificates until they do. If the old key may have been exposed, rotate immediately, then remove the old key.</span></span>
+        </label>
+      </fieldset>
+    </div>
+    {{template "form-foot" (dict "label" "rotateSubmitLabel" "default" "Rotate key")}}
+  </form>
+  {{template "dialog-end"}}
+</section>
+{{end}}
+
+{{/* The client create / edit dialog and the secret-shown-once dialog (the tenant's clients page). Dot = the page. */}}
 {{define "client-dialogs"}}
 {{template "dialog-start" (dict "id" "client-dialog" "title" "Client" "titleBind" "clientDialogTitle" "size" "lg")}}
 <form @submit.prevent="submitClient" novalidate>

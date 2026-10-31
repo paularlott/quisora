@@ -135,3 +135,43 @@ func TestStreamsCappedPerViewer(t *testing.T) {
 		t.Fatal("viewer of an anonymous actor")
 	}
 }
+
+// A tenant's SSH CA keys and certificates are streamed to their organization (the tenant page's SSH card).
+func TestHubSSHKinds(t *testing.T) {
+	h := NewHub()
+	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
+	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b"}
+	h.add(a)
+	h.add(b)
+	h.Publish(&store.Record{Kind: model.KindSSHKey, ID: "k1", Scope: "org-a"})
+	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c1", Scope: "org-a"})
+	if got := drain(a); got != "sshkey:k1:put sshcert:c1:put" {
+		t.Errorf("org-a got %q", got)
+	}
+	if got := drain(b); got != "" {
+		t.Errorf("org-b got %q", got)
+	}
+}
+
+// An SSH certificate is the organization's (the tenant page) and its user's own (the account page): the personal stream
+// gets the changes of the user's certificates and no one else's.
+func TestHubSSHCertsReachTheirUser(t *testing.T) {
+	h := NewHub()
+	me := &subscriber{ch: make(chan Event, 8), orgID: "org-a", self: "u1"}
+	admin := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
+	h.add(me)
+	h.add(admin)
+	cert := func(id, user string) *store.Record {
+		return &store.Record{Kind: model.KindSSHCert, ID: id, Scope: "org-a", Fields: map[string]any{"user_id": user}}
+	}
+	h.Publish(cert("c1", "u1"))
+	h.Publish(cert("c2", "u2"))
+	h.Publish(cert("c3", "")) // a host certificate
+	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c4", Scope: "org-b", Fields: map[string]any{"user_id": "u1"}})
+	if got := drain(me); got != "sshcert:c1:put" {
+		t.Errorf("personal stream got %q", got)
+	}
+	if got := drain(admin); got != "sshcert:c1:put sshcert:c2:put sshcert:c3:put" {
+		t.Errorf("the organization's stream got %q", got)
+	}
+}

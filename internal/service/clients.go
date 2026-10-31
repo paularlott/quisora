@@ -347,12 +347,18 @@ func (s *Service) GetClient(ctx context.Context, a *Actor, id string) (*model.Cl
 
 // CreateClient creates a client and returns it with its secret (shown once).
 func (s *Service) CreateClient(ctx context.Context, a *Actor, orgID string, in ClientInput) (*model.Client, string, error) {
-	return s.createClient(ctx, a, orgID, in, "")
+	return s.createClient(ctx, a, orgID, in, clientMade{})
 }
 
-// createClient is CreateClient for a client that may be the sign-in application of an organization provider
-// (Client.ProviderID; "" for every other).
-func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in ClientInput, providerID string) (*model.Client, string, error) {
+// clientMade says what made a client Quisora makes for itself, and why, for its client.create event.
+type clientMade struct {
+	provider string // the organization provider it is the sign-in application of (Client.ProviderID)
+	sshApp   bool   // a tenant's SSH application (Client.SSHApp)
+	detail   map[string]string
+}
+
+// createClient is CreateClient for a client that may be one Quisora makes for itself (made; zero for every other).
+func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in ClientInput, made clientMade) (*model.Client, string, error) {
 	if !s.canAdminOrg(a, orgID) {
 		return nil, "", ErrForbidden
 	}
@@ -360,7 +366,7 @@ func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in C
 	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
 		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
-		ProviderID: providerID}
+		ProviderID: made.provider, SSHApp: made.sshApp}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")
 	}
@@ -379,7 +385,11 @@ func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in C
 		secret = "qsrs_" + secure.RandomToken(32)
 		c.SecretHash = string(secure.HashSecret(secret))
 	}
-	if err := s.audited(ctx, a, orgID, "client.create", c.Name, map[string]string{"client_id": c.ID},
+	detail := map[string]string{"client_id": c.ID}
+	for k, v := range made.detail {
+		detail[k] = v
+	}
+	if err := s.audited(ctx, a, orgID, "client.create", c.Name, detail,
 		func() error { return s.Clients.Create(ctx, c) }); err != nil {
 		return nil, "", mapStore(err)
 	}

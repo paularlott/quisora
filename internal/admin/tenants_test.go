@@ -221,6 +221,50 @@ func TestTenantPage(t *testing.T) {
 	if code, _, _ = get(ad, "/admin/orgs/acme/tenants/default"); code != 200 {
 		t.Errorf("default tenant page: %d", code)
 	}
+	// the tenant's clients and SSH certificates have pages of their own, under the tenant's: same rules, own title and
+	// component, the breadcrumb back to the tenant
+	for _, sub := range []struct{ path, comp, title, crumb string }{
+		{"clients", "adminTenantClients", "Clients: Staff tools", `<span aria-current="page">Clients</span>`},
+		{"ssh", "adminTenantSSH", "SSH certificates: Staff tools", `<span aria-current="page">SSH certificates</span>`},
+	} {
+		code, body, _ := get(ad, "/admin/orgs/acme/tenants/staff/"+sub.path)
+		if code != 200 {
+			t.Fatalf("%s page: %d", sub.path, code)
+		}
+		for _, s := range []string{`x-data="` + sub.comp + `"`, `aria-label="Breadcrumb"`, sub.crumb, sub.title, `data-tenant="` + st.str("id") + `"`,
+			`data-slug="staff"`, `/api/orgs/acme`, `href="/admin/orgs/acme/tenants"`} {
+			if !strings.Contains(body, s) {
+				t.Errorf("%s page missing %q", sub.path, s)
+			}
+		}
+		if code, _, _ = get(ad, "/admin/orgs/acme/tenants/default/"+sub.path); code != 200 {
+			t.Errorf("default tenant's %s page: %d", sub.path, code)
+		}
+		if code, _, _ = get(su, "/admin/orgs/globex/tenants/theirs/"+sub.path); code != 200 {
+			t.Errorf("super admin, other org, %s: %d", sub.path, code)
+		}
+		for _, p := range []string{"/admin/orgs/acme/tenants/nope/", "/admin/orgs/acme/tenants/theirs/", "/admin/orgs/globex/tenants/staff/", "/admin/orgs/nope/tenants/staff/"} {
+			if code, _, _ = get(su, p+sub.path); code != 404 {
+				t.Errorf("%s%s (super): %d want 404", p, sub.path, code)
+			}
+		}
+		if code, _, _ = get(ad, "/admin/orgs/globex/tenants/theirs/"+sub.path); code != 404 {
+			t.Errorf("admin of another org, %s: %d want 404", sub.path, code)
+		}
+		for _, c := range []*caller{mg, us} {
+			if code, _, _ = get(c, "/admin/orgs/acme/tenants/staff/"+sub.path); code != 403 {
+				t.Errorf("non-admin, %s: %d want 403", sub.path, code)
+			}
+		}
+		if code, _, l := get(w.anon(), "/admin/orgs/acme/tenants/staff/"+sub.path); code != 303 || !strings.HasPrefix(l, "/o/acme/login?next=") {
+			t.Errorf("anonymous, %s: %d %q", sub.path, code, l)
+		}
+	}
+	// the tenant page itself leads to them, and no longer holds the clients table or the SSH card
+	if _, body, _ := get(ad, "/admin/orgs/acme/tenants/staff"); strings.Contains(body, `aria-label="Clients table"`) || strings.Contains(body, `x-data="tenantSSH"`) ||
+		!strings.Contains(body, `Manage clients`) || !strings.Contains(body, `Manage SSH certificates`) {
+		t.Error("the tenant page does not lead to its clients and SSH pages")
+	}
 	if code, _, _ = get(su, "/admin/orgs/acme/tenants/staff"); code != 200 {
 		t.Errorf("super admin: %d", code)
 	}

@@ -22,7 +22,7 @@ func TestOperatorCommandsEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bootstrap: %v\n%s", err, errOut)
 		}
-		if !strings.HasPrefix(strings.TrimSpace(out), "https://127.0.0.1:8443/") || !strings.Contains(errOut, "admin@example.com") {
+		if !strings.HasPrefix(strings.TrimSpace(out), e.public+"/") || !strings.Contains(errOut, "admin@example.com") {
 			t.Fatalf("bootstrap output: %q / %q", out, errOut)
 		}
 		// a second run changes nothing and says so

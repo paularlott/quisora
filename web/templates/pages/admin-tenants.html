@@ -10,7 +10,7 @@
     <div>
       <p class="eyebrow">{{.Org.DisplayName}} · Tenants</p>
       <h1 class="page-title">Tenants</h1>
-      <p class="page-sub">Each tenant groups applications (clients) and decides which of the organization's sign-in methods they may use. Open a tenant to manage its clients.</p>
+      <p class="page-sub">Each tenant groups applications (clients) and decides which of the organization's sign-in methods they may use. Open a tenant to manage its sign-in rules, its clients and its SSH certificates.</p>
     </div>
     <div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New tenant</button></div>
   </div>
@@ -24,13 +24,15 @@
           {{template "sort-th" (dict "key" "display_name" "label" "Tenant")}}
           <th scope="col">Sign-in methods</th>
           <th scope="col">Clients</th>
+          <th scope="col">SSH</th>
           <th scope="col"><span class="sr-only">Actions</span></th>
         </tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
             <td><a class="cell-title" :href="row.href" x-text="row.display_name"></a> <span class="badge badge-info ml-1" x-show="row.isDefault">Built-in</span><div class="cell-sub"><code class="mono" x-text="row.name"></code><span x-show="row.hasDescription"> · <span x-text="row.description"></span></span></div></td>
             <td><div x-text="row.methodsText"></div><div class="cell-sub" x-text="row.mfaText"></div></td>
-            <td><a class="clients-link" :href="row.href" :aria-label="row.clientsLabel"><span x-text="row.clientsText"></span>{{template "icon" "chevron-right"}}</a></td>
+            <td><a class="clients-link" :href="row.clientsHref" :aria-label="row.clientsLabel"><span x-text="row.clientsText"></span>{{template "icon" "chevron-right"}}</a></td>
+            <td><a class="clients-link" :href="row.sshHref" :aria-label="row.sshLabel"><span :class="row.sshClass" x-text="row.sshText"></span>{{template "icon" "chevron-right"}}</a></td>
             <td class="actions">
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>

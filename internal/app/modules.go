@@ -36,6 +36,10 @@ func modules(ctx context.Context, a *App) []web.Module {
 			op.InvalidateUser(rec.ID)
 		case model.KindTenant:
 			op.InvalidateTenant(rec.ID)
+			a.Svc.InvalidateSSHKRLOf(rec.ID) // SSH turned off or on, its settings changed
+		case model.KindSSHCert, model.KindSSHKey:
+			// a revocation, a CA key removed or rotated, here or on another node: the tenant's list is made afresh
+			sshKRLChanged(a.Svc, rec)
 		case model.KindGrant:
 			op.InvalidateGrant(rec.ID)
 		case model.KindKey:
@@ -129,6 +133,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 					"every node (keep the old keys only with backups made before the rotation)", "key", a.Svc.Sealer.ActiveKeyID())
 			}
 			hk.ok("signing key rotation", op.EnsureKeys(ctx))
+			hk.ok("ssh ca rotation", a.Svc.EnsureSSHKeys(ctx))
 			if n, err := a.Svc.ExpireUsers(ctx); hk.ok("user end dates", err) && n > 0 {
 				a.Log.Info("users past their end date disabled", "count", n)
 			}
@@ -298,4 +303,23 @@ func (a *App) reportKey(ctx context.Context) error {
 func (a *App) keyReportCurrent() bool {
 	at := a.keyReported.Load()
 	return at != 0 && time.Since(time.Unix(0, at)) < service.MasterKeyReportTTL
+}
+
+// sshKRLChanged drops the revocation lists an SSH certificate or CA key record rec may change: its tenant's, from its
+// index fields; when it carries none (a deletion, a change notice of a node sharing the database) those of its
+// organization (its scope), or of every tenant when that is not known either. A certificate that is not revoked is on
+// no list: one just signed changes nothing.
+func sshKRLChanged(svc *service.Service, rec *store.Record) {
+	if rec.Kind == model.KindSSHCert && !rec.Deleted {
+		if revoked, ok := rec.Fields["revoked"].(bool); ok && !revoked {
+			return
+		}
+	}
+	for _, f := range []string{"tenant_id", "host_tenant_id"} {
+		if id, _ := rec.Fields[f].(string); id != "" {
+			svc.InvalidateSSHKRLOf(id)
+			return
+		}
+	}
+	svc.InvalidateSSHKRLIn(rec.Scope)
 }

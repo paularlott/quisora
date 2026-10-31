@@ -1,11 +1,15 @@
 // Modal dialogs on the native <dialog> element: showModal() gives a real focus trap, inert background, Esc to close
 // and top-layer stacking. This module adds focus return and focus-first-control behaviour (clicking outside does nothing).
 const openers = new WeakMap()
+// Focus is returned at once, not from the close event: that event comes a task later, and focus moved in between (the
+// next control a keyboard user goes to) would be taken back to the opener.
+const restored = new WeakSet()
 
 export function openDialog(id, opener) {
   const d = typeof id === 'string' ? document.getElementById(id) : id
   if (!d || d.open) return d
   openers.set(d, opener || document.activeElement)
+  restored.delete(d) // a close event still to come from an earlier closing must not count for this one
   d.showModal()
   // Focus: an element marked data-autofocus, else the first form control, else the dialog's title heading.
   const visible = (el) => el.offsetParent !== null || getComputedStyle(el).position === 'fixed'
@@ -17,11 +21,13 @@ export function openDialog(id, opener) {
 
 export function closeDialog(id) {
   const d = typeof id === 'string' ? document.getElementById(id) : id
-  if (d && d.open) d.close()
+  if (d && d.open) { d.close(); restoreFocus(d); restored.add(d) }
 }
 
-// Restore focus to whatever opened the dialog; if that is gone (row deleted) use the page's fallback.
+// Restore focus to whatever opened the dialog; if that is gone (row deleted) use the page's fallback. Once per closing:
+// the close event after closeDialog finds it done.
 export function restoreFocus(d) {
+  if (restored.has(d)) { restored.delete(d); return }
   const o = openers.get(d)
   openers.delete(d)
   if (o && o.isConnected && typeof o.focus === 'function' && o.offsetParent !== null) { o.focus(); return }
@@ -37,7 +43,7 @@ export function dialogMixin() {
   return {
     openDlg(id, opener) { return openDialog(id, opener) },
     closeDlg(id) { closeDialog(id) },
-    closeThis(ev) { const d = ev.currentTarget.closest('dialog'); if (d) d.close() },
+    closeThis(ev) { const d = ev.currentTarget.closest('dialog'); if (d) closeDialog(d) },
     onDialogClose(ev) { restoreFocus(ev.currentTarget); if (this.stopWatchEdit) this.stopWatchEdit(); if (this.afterClose) this.afterClose(ev.currentTarget.id) },
   }
 }

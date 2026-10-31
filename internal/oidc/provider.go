@@ -233,6 +233,13 @@ func (p *Provider) Register(s *web.Server) {
 	fn("POST", "/oauth/revoke", p.handleRevoke)
 	fn("POST", "/oauth/register", p.handleRegister)
 
+	// A tenant's SSH certificate authority: what servers and the CLI fetch, and the signing of user certificates.
+	fn("GET", "/ssh/{tenant}", p.handleSSHDiscovery)
+	fn("GET", "/ssh/{tenant}/ca.pub", p.handleSSHUserCA)
+	fn("GET", "/ssh/{tenant}/known_hosts", p.handleSSHKnownHosts)
+	fn("GET", "/ssh/{tenant}/krl", p.handleSSHKRL)
+	fn("POST", "/ssh/{tenant}/sign", p.handleSSHSign)
+
 	fn("GET", "/oauth/logout", p.handleLogout)
 	fn("POST", "/oauth/logout", p.handleLogout)
 	endpoint("POST", "/oauth/logout/confirm", s.WithSession(http.HandlerFunc(p.handleLogoutConfirm)))
@@ -274,17 +281,9 @@ func (p *Provider) clientTenant(ctx context.Context, c *model.Client) (*model.Te
 // be read (the grant, or the sign-out counters its stamp is compared with): the caller answers 503, never "alive"
 // on a guess nor "ended" for a token that may well be good. Only an answer is cached: a failed read is asked again.
 func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bool, error) {
-	st, ok := p.grants.Get(id)
-	if !ok {
-		tok := p.grants.Token(id)
-		g, err := p.svc.Grants.GetIn(ctx, u.OrgID, id) // a grant is in its user's organization's partition
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return false, unavailable(err)
-		}
-		if err == nil {
-			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
-		}
-		p.grants.PutIf(id, st, tok)
+	st, err := p.grantStateOf(ctx, id, u)
+	if err != nil {
+		return false, err
 	}
 	if !st.alive || !u.SessionHolds(st.epoch) { // (a grant of an ended session epoch: model.User.SessionEpoch)
 		return false, nil
@@ -295,6 +294,23 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 		return false, unavailable(err)
 	}
 	return st.stamp.Current(want), nil
+}
+
+// grantStateOf returns what is known of grant id of user u: from the grant cache, else read (and cached).
+func (p *Provider) grantStateOf(ctx context.Context, id string, u *model.User) (grantState, error) {
+	st, ok := p.grants.Get(id)
+	if !ok {
+		tok := p.grants.Token(id)
+		g, err := p.svc.Grants.GetIn(ctx, u.OrgID, id) // a grant is in its user's organization's partition
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return grantState{}, unavailable(err)
+		}
+		if err == nil {
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch}
+		}
+		p.grants.PutIf(id, st, tok)
+	}
+	return st, nil
 }
 
 // grantState is what the grant cache knows of a grant: whether it exists (not revoked), and its organization and

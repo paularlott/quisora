@@ -144,6 +144,11 @@ func users(tn *tnode) *store.Table[model.User, *model.User] {
 	return store.NewTable[model.User](tn.st())
 }
 
+// localUsers reads the node's own copy, past the staleness gate: what it holds, whether or not it would serve it.
+func localUsers(tn *tnode) *store.Table[model.User, *model.User] {
+	return store.NewTable[model.User](tn.st().Inner())
+}
+
 func newUser(org, name string) *model.User {
 	return &model.User{OrgID: org, Username: name, Email: name + "@example.com", Role: model.RoleUser, Active: true}
 }

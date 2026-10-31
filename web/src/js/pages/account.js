@@ -1,4 +1,4 @@
-// Account page: profile, password, passkeys, Authenticator App, sessions, API tokens, connected apps. Every form
+// Account page: profile, password, passkeys, Authenticator App, sessions, API tokens, SSH certificates, connected apps. Every form
 // submits through the account API (accountApi: session + CSRF); errors appear inline next to the field and are announced.
 import { ApiError, accountApi, get, post, patch, del } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
@@ -26,6 +26,30 @@ export function describeAgent(ua) {
 const SCOPE_TEXT = { api: 'Your organization’s applications (they check the token with Quisora)', scim: 'Provisioning (SCIM)', admin: 'Administration API',
   backup: 'Backups of the whole server (expires within 30 days)',
   import: 'Import users with a password hash from another system (with Administration API)' }
+
+// The name OpenSSH gives a private key of a type; its certificate is <that>-cert.pub, beside it.
+const SSH_KEY_FILES = { 'ssh-ed25519': 'id_ed25519', 'ssh-rsa': 'id_rsa', 'ecdsa-sha2-nistp256': 'id_ecdsa', 'ecdsa-sha2-nistp384': 'id_ecdsa',
+  'ecdsa-sha2-nistp521': 'id_ecdsa', 'sk-ssh-ed25519@openssh.com': 'id_ed25519_sk', 'sk-ecdsa-sha2-nistp256@openssh.com': 'id_ecdsa_sk' }
+const sshFileName = (key) => SSH_KEY_FILES[(key || '').trim().split(/\s+/)[0]] || 'id_ed25519'
+
+// Why a certificate stopped counting (the service's reasons).
+// Why the account page offers no certificate for a tenant with SSH on (the account API's unavailable[].reason).
+const SSH_BLOCKED = {
+  role: 'This tenant gives no certificates to managers and administrators. An administrator can allow it in the tenant’s SSH settings.',
+  sign_in_method: 'Not after the way you signed in: the tenant’s sign-in rules do not allow it. Sign out and sign in another way.',
+  no_principals: 'Its settings give you no principal (no username, group or role it uses), so a certificate would let you log in nowhere. Ask an administrator.',
+}
+const SSH_REASON = { revoked: 'Revoked by you or an administrator.', ca_key_removed: 'The key that signed it was removed.', user_deleted: 'Your account was deleted.',
+  user_disabled: 'Your account is disabled.', sessions_ended: 'You were signed out everywhere.', signed_out: 'Everyone was signed out.',
+  role_not_allowed: 'Your role may no longer get certificates here.', access_removed: 'You lost access to this tenant\u2019s SSH.',
+  principals_changed: 'Your principals changed.', ssh_off: 'SSH certificates are turned off for this tenant.',
+  app_unavailable: 'This tenant\u2019s SSH application is disabled.', settings_changed: 'It grants more than this tenant now allows: get a new one.' }
+
+const ttlText = (secs) => {
+  if (secs % 3600 === 0) { const h = secs / 3600; return h === 1 ? '1 hour' : h + ' hours' }
+  const m = Math.round(secs / 60)
+  return m === 1 ? '1 minute' : m + ' minutes'
+}
 
 // Sensitive actions (changing the email address, adding or deleting a passkey, creating an API token, removing the
 // Authenticator App) need a recent re-authentication. The server answers 403 with field "reauth"; withReauth opens
@@ -658,6 +682,86 @@ export default function (Alpine) {
       try { await del(accountApi('/tokens/') + enc(t.id)); toast('Token deleted.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },
     afterClose(id) { if (id === 'token-secret-dialog') { this.created = ''; this.regenerated = false } },
+  }))
+
+  // ---- SSH certificates --------------------------------------------------------------------------------------
+  // The section is shown when the account API lists a tenant with SSH for the user. A certificate is made from a
+  // pasted public key; it needs a second factor (the session's) and a recent re-authentication, like an API token.
+  Alpine.data('accountSSH', () => mix(formMixin(), dialogMixin(), scoped(), {
+    tenants: [], unavailable: [], items: [], mfa: true, loading: true, loadError: '', cert: '', issued: null, fileName: 'id_ed25519-cert.pub',
+    // an administrator revoking one of the user's certificates (or a revocation Quisora wrote down) shows at once
+    init() { liveSelf(['sshcert'], () => this.load()); return this.load() },
+    async load() {
+      try {
+        const r = await get(accountApi('/ssh'))
+        this.mfa = r.mfa
+        this.tenants = r.tenants.map((t) => ({ ...t, cmdId: 'ssh-cmd-' + t.id, cmdLabel: 'Command for ' + t.name, copyLabel: 'Copy the command for ' + t.name,
+          detail: `You would get the principals ${t.principals.join(', ')}. A certificate lasts ${ttlText(t.cert_ttl)}.` }))
+        this.unavailable = (r.unavailable || []).map((t) => ({ ...t, why: SSH_BLOCKED[t.reason] || 'You cannot get a certificate here.' }))
+        this.items = r.certificates.map((c) => ({ ...c, principalsText: c.principals.join(', '), expiresText: fmtDateTime(c.valid_before),
+          active: c.status === 'active', statusText: c.status === 'active' ? 'Active' : 'Revoked',
+          statusClass: c.status === 'active' ? 'badge badge-success' : 'badge badge-danger', reasonText: SSH_REASON[c.reason] || '', hasReason: !!SSH_REASON[c.reason],
+          revokeLabel: `Revoke the certificate for ${c.tenant} (${c.principals.join(', ')})` }))
+        this.loadError = ''
+      } catch (e) { this.loadError = e.message } finally { this.loading = false }
+    },
+    // also where SSH is on for the user but they get no certificate, to say why (an administrator would otherwise see nothing)
+    get visible() { return this.tenants.length > 0 || this.unavailable.length > 0 },
+    get hasTenants() { return this.tenants.length > 0 },
+    get hasUnavailable() { return this.unavailable.length > 0 },
+    get cannotGet() { return this.noMfa || !this.hasTenants },
+    get noMfa() { return !this.mfa },
+    get hasItems() { return this.items.length > 0 },
+    get isEmpty() { return !this.loading && this.items.length === 0 && this.loadError === '' },
+    get hasLoadError() { return this.loadError !== '' },
+    get manyTenants() { return this.tenants.length > 1 },
+    get hasCert() { return this.cert !== '' },
+    get dialogTitle() { return this.hasCert ? 'Your certificate' : 'Get a certificate' },
+    get submitLabel() { return this.busy ? 'Signing…' : 'Get certificate' },
+    get chosen() { return this.tenants.find((t) => t.id === this.form.ssh_tenant) || this.tenants[0] || null },
+    get tenantHelp() { return this.chosen ? this.chosen.detail : '' },
+    get issuedText() {
+      const c = this.issued
+      return c ? `Certificate for ${c.principals.join(', ')}, valid until ${fmtDateTime(c.valid_before)}.` : ''
+    },
+    openGet(ev) {
+      this.cert = ''
+      this.issued = null
+      this.resetForm({ ssh_tenant: this.tenants.length ? this.tenants[0].id : '', ssh_public_key: '' })
+      this.openDlg('ssh-dialog', ev.currentTarget)
+    },
+    async submit() {
+      const f = this.form
+      const key = (f.ssh_public_key || '').trim()
+      const opener = document.activeElement
+      const res = await this.runIn('ssh_', () => withReauth(Alpine, () => post(accountApi('/ssh/sign'),
+        { tenant_id: f.ssh_tenant, public_key: key }), opener, this))
+      if (!res) return
+      this.cert = res.certificate.trim()
+      this.issued = res
+      this.fileName = sshFileName(key) + '-cert.pub'
+      announce('Certificate ready.')
+      await this.load()
+      this.$nextTick(() => { const b = document.querySelector('#ssh-dialog [data-autofocus]:not(textarea)'); if (b) b.focus() })
+    },
+    // download saves the certificate as a file named for the key: OpenSSH reads <key>-cert.pub beside the key.
+    download() {
+      const url = URL.createObjectURL(new Blob([this.cert + '\n'], { type: 'text/plain' }))
+      const a = Object.assign(document.createElement('a'), { href: url, download: this.fileName })
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    },
+    async revoke(ev) {
+      const c = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      if (!c) return
+      const ok = await Alpine.store('confirm').ask({ title: 'Revoke certificate', message: `Revoke the certificate for ${c.tenant} (${c.principalsText})?`,
+        detail: 'Servers stop accepting it once they have the tenant\u2019s latest revocation list. You can get a new one at any time.', confirmLabel: 'Revoke certificate' })
+      if (!ok) return
+      try { await post(accountApi('/ssh/certificates/') + enc(c.id) + '/revoke', {}); toast('Certificate revoked.'); await this.load() } catch (e) { toast(e.message, 'error') }
+    },
+    afterClose(id) { if (id === 'ssh-dialog') { this.cert = ''; this.issued = null } },
   }))
 
   // ---- Connected apps ----------------------------------------------------------------------------------------

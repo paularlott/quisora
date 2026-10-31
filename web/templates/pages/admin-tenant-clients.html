@@ -1,0 +1,71 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminTenantClients" data-api="{{.Data.API}}/clients" data-base="{{.Data.API}}" data-page="{{.Data.Base}}/tenants" data-tenant="{{.Data.TenantID}}" data-slug="{{.Data.TenantName}}" data-issuer="{{.Data.Issuer}}" data-title="{{.Data.TenantDisplay}}" data-sort="name" data-noun="clients" data-live="client" data-live-text="Clients list updated" data-can-first-party="{{if .Data.CanFirstParty}}1{{else}}0{{end}}" class="stack-lg">
+  <nav class="crumbs glass" aria-label="Breadcrumb"><ol>
+    <li><a href="{{.Data.Base}}/users">{{template "icon" "building"}}<span class="sr-only">Organization: </span>{{.Org.DisplayName}}</a></li>
+    <li><a href="{{.Data.Base}}/tenants">Tenants</a></li>
+    <li><a :href="tenantHref" x-text="tenantTitle">{{.Data.TenantDisplay}}</a></li>
+    <li><span aria-current="page">Clients</span></li>
+  </ol></nav>
+
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Org.DisplayName}} · Clients</p>
+      <h1 class="page-title">Clients: <span x-text="tenantTitle">{{.Data.TenantDisplay}}</span></h1>
+      <p class="page-sub page-sub-wide">The applications that sign users in through this tenant.
+        {{- /* The organization's addresses applications are configured with (the same for every tenant; also in a new
+               client's dialog and on the organization page): named, not shown, to keep the line short. */}}
+        <span class="copy-id">· <span id="tenant-issuer" hidden>{{.Data.Issuer}}</span>Issuer URL{{template "copy-icon" (dict "source" "tenant-issuer" "what" "issuer URL")}}</span>
+        <span class="copy-id">· <span id="tenant-discovery" hidden>{{.Data.Issuer}}/.well-known/openid-configuration</span>Discovery URL{{template "copy-icon" (dict "source" "tenant-discovery" "what" "discovery URL")}}</span></p>
+    </div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasTenantError" x-cloak>{{template "icon" "alert"}}<span x-text="tenantError"></span></div>
+  <div role="status" class="status-slot">
+    <div class="alert alert-warning" x-show="tenantGone" x-cloak>{{template "icon" "alert"}}<span>This tenant was deleted by someone else. <a href="{{.Data.Base}}/tenants">Back to all tenants</a></span></div>
+  </div>
+
+  <template x-if="showTenant"><div class="stack-lg">
+    <section class="glass-card" aria-labelledby="clients-h">
+      <div class="card-head">
+        <div>
+          <h2 class="section-title" id="clients-h">Clients <span class="badge badge-plain ml-1" x-text="clientCountText"></span></h2>
+          <p class="muted mt-1 max-w-prose">Clients are the applications that sign users in through this tenant.</p>
+        </div>
+        <button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New client</button>
+      </div>
+      <div class="toolbar mb-4">{{template "search" (dict "region" "Clients" "label" "Search clients" "placeholder" "Search clients")}}</div>
+      <div class="table-wrap" role="region" aria-label="Clients table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
+        <table class="table">
+          <caption class="sr-only">Clients of this tenant</caption>
+          <thead><tr>
+            {{template "sort-th" (dict "key" "name" "label" "Client")}}
+            <th scope="col">Client ID</th>
+            {{template "sort-th" (dict "key" "auth_method" "label" "Authentication")}}
+            <th scope="col">Status</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <template x-for="row in items" :key="row.id"><tr>
+              <td><div class="cell-title" x-text="row.name"></div><div class="cell-sub" x-text="row.sub"></div></td>
+              <td><span class="copy-id"><code class="mono" x-text="row.id"></code>{{template "copy-row" (dict "value" "id" "what" "client ID" "label" "copyLabel")}}</span></td>
+              <td x-text="row.methodText"></td>
+              <td><span :class="row.statusClass" x-text="row.statusText"></span> <span class="badge badge-info" x-show="row.first_party">First party</span></td>
+              <td class="actions">
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" x-show="row.canChange" @click="edit">{{template "icon" "pencil"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.rotateLabel" :data-id="row.id" x-show="row.canRotate" @click="rotate">{{template "icon" "key"}}</button>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" x-show="row.canChange" @click="remove">{{template "icon" "trash"}}</button>
+              </td>
+            </tr></template>
+          </tbody>
+        </table>
+      </div>
+      {{template "skeleton"}}
+      {{template "empty" (dict "icon" "app" "title" "No clients in this tenant yet")}}
+      {{template "pager"}}
+    </section>
+  </div></template>
+
+  {{template "client-dialogs" .}}
+</div>
+{{end}}

@@ -15,7 +15,8 @@ backup. It does not defend against someone who controls a node's host, its proce
 | Internet → HTTPS | TLS 1.2+ only; strict CSP and HSTS; `__Host-` cookies (one session cookie per organization); CSRF tokens plus Origin checks; rate limits and lockouts; load shedding; passwords of at least `limits.password_min_length` characters (15 by default), refused when they are a common word dressed up, a keyboard or alphabet run, a repeated pattern, or built on the person's name, email or organization (offline checks, nothing is looked up elsewhere; there is no list of breached passwords) | A real certificate (or a TLS proxy), `server.trust_proxy` behind a load balancer |
 | Applications (OAuth clients) | Exact redirect URIs, PKCE, single-use codes, rotating refresh tokens with reuse detection, audience-bound introspection; every organization is its own authorization server (its own issuer and endpoints: a client of another organization is unknown, and a token of one is not valid at another's) | Least-privilege clients: scopes, tenants, `introspect_org` only for resource servers; `accepts_api_tokens` only for applications that check personal API tokens |
 | Organizations and tenants | One authorization layer in the service; organization checked on every read and write; each organization has its own address space, `/o/<org>/…`, and its own browser session, and its unique values are its own | Few super admins; reviewed access |
-| Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
+| SSH certificates | Certificates only after a second-factor sign-in, short-lived, with principals from the user's username, `group:` groups and `role:` roles (a username holds no colon, so none can be named like a group); a revocation list worked out from the user's state, which also revokes CA keys outright; the CA keys sealed with the master key | `AuthorizedPrincipalsFile` on every server, privileged accounts mapped by group and never by username; the fetch timer and its [monitoring](ssh/README.md#monitoring); `RevokedHostKeys` on clients and short host certificates; a login that works while Quisora does not ([guide](ssh/README.md#if-quisora-is-not-reachable)) |
+| Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, tenants' SSH CA keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
 | Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused; a catch-up stream goes from the database to the other node's database without touching the disk in between | `cluster.key` kept like the master key; the gossip port reachable by cluster members only; BadgerDB with `storage.badgerdb.sync_writes = true` |
 | Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private or loopback addresses but the networks in `allowed_networks` (or all of them with `allow_private_networks`), and never metadata, link-local or special-purpose addresses | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
@@ -39,6 +40,24 @@ its total and its search leave them out. Each event is marked when it is written
 not their names: a rename reveals nothing), and never re-marked: what a user did before they were made a super admin
 stays visible to the admins who saw it then. An event names a user in its actor, target and detail; only the first two
 are judged, so a super admin named only in an event's detail (a group membership change) is still shown by id.
+
+**SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
+
+- Ending a single session, or revoking a single grant, does not revoke certificates already issued. Signing the person out
+  everywhere, a credential reset, a lock-out, an emergency sign-out or revoking the certificate does.
+- Open sessions on a server stay open, and sshd's `RevokedKeys` covers user logins only: a host certificate that is
+  revoked, or whose CA key is removed or SSH is turned off, is refused only by clients that fetch the revocation list and set
+  `RevokedHostKeys`. Keep host certificates short.
+- The SSH application uses bearer access tokens, not DPoP-bound ones: a token that leaks in the minutes it lives
+  (`tokens.access_ttl`) can be used to ask for a certificate for another key.
+- CA key rotation is not atomic across nodes: two nodes acting in the same instant can each make a key, and both are
+  published. After a rotation, check the tenant's CA keys and remove an extra one.
+- An emailed one-time code counts as a second factor. Where that is too weak for servers, limit the tenant's sign-in methods
+  (to passkeys, say).
+- A username principal is a login name, and managers can create and rename users and add people to groups: always match
+  certificates to accounts with `AuthorizedPrincipalsFile`, and do not map privileged accounts by username.
+- Certificates already issued outlast a Quisora outage, but no new one is signed during it.
+- Restoring an older backup can republish a removed CA key, undo revocations, and forget certificates issued after it.
 
 ## Hardening checklist
 
@@ -65,6 +84,10 @@ Before production:
    access reviewed periodically from the user lists.
 9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
    the mailboxes are at least as well protected as the passwords.
+10. **SSH certificates** (if you use them): `AuthorizedPrincipalsFile` on every server, with `group:` principals for
+    privileged accounts; the fetch timer alerting on failure and on a revocation list older than 5 minutes; a break-glass
+    login that does not depend on Quisora; host certificates of a few weeks, with `RevokedHostKeys` on the clients;
+    the CA key fingerprints checked against the console on first use ([SSH certificates](ssh/README.md)).
 
 ## Incident response
 
@@ -103,12 +126,37 @@ then **Remove** on the old key (`DELETE /api/keys/{id}`). The new key signs at o
 stop verifying here at once, and in applications once they fetch the key set again. Applications get new tokens
 through their refresh tokens: nobody is signed out. Without the removal they keep working until they expire.
 
+**A person's SSH access must end, or an SSH certificate may be stolen.** Lock the person out or disable them, sign them
+out everywhere, or revoke the certificate (the tenant's **SSH certificates** card, or
+`POST /api/orgs/{org}/tenants/{id}/ssh/certificates/{cert}/revoke`): the certificates go on the tenant's revocation
+list and servers refuse them when they next fetch it, in a minute or two. Signing out one session, or revoking one
+application's grant, is **not** enough: it leaves the certificates asked for under it valid. An
+[emergency sign-out](emergency-sign-out.md) revokes every certificate issued before it the same way. Sessions already
+open on a server stay open: end them there. Look in the audit log for `ssh.cert.issue` by that person and in sshd's log
+for the certificate's key id and serial ([SSH certificates](ssh/README.md#revocation)).
+
+**An SSH CA key may be exposed.** Anyone holding it can sign a certificate for any principal, and no list of serials names
+such a certificate. In the tenant's **SSH certificates** card (or `POST /api/orgs/{org}/tenants/{id}/ssh/rotate` with
+`{"purpose": "user", "immediate": true}`, from the console or a service account: a personal API token cannot) rotate
+the key **immediately**, then **remove** the old key. Rotating alone leaves the old key published and trusted; removing it
+makes the revocation list revoke the key itself, so every server that fetches the list distrusts the key and everything
+it signed, forged certificates included, whether or not its CA file changed. Everyone signs in again for a new
+certificate. For a host key, also re-sign the hosts and refresh the clients' `known_hosts`; clients refuse the old host key
+only if they fetch the list and set `RevokedHostKeys` ([CA key rotation](ssh/README.md#ca-key-rotation)). The CA keys
+are sealed with the master key, so a leaked master key together with a copy of the database exposes them too: rotate and
+remove them for every tenant that uses SSH. After a restore from backup do the same
+([Backup and restore](ssh/README.md#backup-and-restore)).
+
+**A tenant's SSH access must stop altogether.** Turn SSH **off** (not delete the SSH application, which Quisora makes again
+within a minute): the revocation list then revokes every certificate and every CA key of the tenant. Delete the tenant only
+after the servers have fetched that list ([turning it off](ssh/README.md#turning-it-off-and-removing-a-tenant)).
+
 **The master key may be exposed.** [Rotate it](RUNNING.md#rotating-the-master-key) and remove the old key as soon as the
 re-seal is done. A rotation re-seals what the key seals without changing it: sessions and relying parties' refresh
 tokens keep working (each grant's key is re-sealed, not replaced), and so does any refresh token that whoever holds a
 copy of the database from before the rotation, and the old key, makes from it. So pull the [emergency sign-out](emergency-sign-out.md) for every
 organization too (`quisora sign-out --all`, with `--api-tokens`: it ends every session and refresh grant), rotate the
-signing keys (above), and have users with an authenticator app set it up again; the list under
+signing keys (above), the SSH CA keys of every tenant (above), and have users with an authenticator app set it up again; the list under
 [the rotation](RUNNING.md#rotating-the-master-key) has the rest. Treat the backups made with the old key as exposed only if their
 passwords may be too: a backup's encryption does not use the master key.
 
@@ -128,7 +176,8 @@ their password: reset it, and check who can read their mailbox.
 
 **A user approved a device sign-in they did not start** (they entered a code someone sent them). Find the
 `oauth.device.approve` and the `oauth.grant` after it, revoke that grant (the user's **Applications**, or sign the
-user out everywhere), and consider whether the application needs device sign-in at all. Managers and administrators
+user out everywhere), and consider whether the application needs device sign-in at all. For a tenant's SSH application (`quisora ssh login --device`)
+the attacker may already hold a certificate: revoke the person's certificates too (above). Managers and administrators
 cannot be caught this way unless the client allows them to approve device sign-ins.
 
 **Nobody can get into the console** (break-glass: the last super admin lost their password, authenticator and

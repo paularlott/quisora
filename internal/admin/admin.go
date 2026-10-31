@@ -117,6 +117,7 @@ func (m *Module) routes() []Route {
 		{"DELETE", o + "/users/{id}/sessions", m.revokeSessions, service.ScopeUsers},
 		{"GET", o + "/users/{id}/tokens", m.listUserTokens, service.ScopeUsers},
 		{"DELETE", o + "/users/{id}/tokens/{token}", m.revokeUserToken, service.ScopeUsers},
+		{"GET", o + "/users/{id}/ssh-certificates", m.listUserSSHCerts, service.ScopeSSH},
 
 		{"GET", o + "/groups", m.listGroups, service.ScopeGroups},
 		{"POST", o + "/groups", m.createGroup, service.ScopeGroups},
@@ -139,6 +140,14 @@ func (m *Module) routes() []Route {
 		{"GET", o + "/tenants/{id}/access/{aid}", m.getAccess, service.ScopeAccess},
 		{"PATCH", o + "/tenants/{id}/access/{aid}", m.updateAccess, service.ScopeAccess},
 		{"DELETE", o + "/tenants/{id}/access/{aid}", m.removeAccess, service.ScopeAccess},
+
+		{"GET", o + "/tenants/{id}/ssh", m.getSSH, service.ScopeSSH},
+		{"PATCH", o + "/tenants/{id}/ssh", m.updateSSH, service.ScopeSSH},
+		{"POST", o + "/tenants/{id}/ssh/rotate", m.rotateSSH, service.ScopeSSH},
+		{"DELETE", o + "/tenants/{id}/ssh/keys/{key}", m.removeSSHKey, service.ScopeSSH},
+		{"GET", o + "/tenants/{id}/ssh/certificates", m.listSSHCerts, service.ScopeSSH},
+		{"POST", o + "/tenants/{id}/ssh/certificates/{cert}/revoke", m.revokeSSHCert, service.ScopeSSH},
+		{"POST", o + "/tenants/{id}/ssh/host-certificates", m.signHostSSH, service.ScopeSSHHost},
 
 		{"GET", o + "/clients", m.listClients, web.AnyScope},
 		{"POST", o + "/clients", m.createClient, service.ScopeClients},

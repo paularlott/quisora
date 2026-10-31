@@ -316,7 +316,7 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 // gatedScope passes a listing or count of the records of kind in scope through the staleness gate: a node that trails
 // a partition must not answer "none" or a short list to a caller that decides on it (deleting a non-empty
 // organization, ending a user's sessions). The kinds held only in the global partition need it readable; a scope that
-// is an organization (users, groups, memberships, tenants, access entries, applications and providers are scoped by
+// is an organization (users, groups, memberships, tenants, access entries, applications, providers, SSH CA keys and certificates are scoped by
 // their organization, which is their partition) needs that partition; any other listing (a user's credentials and
 // sessions, an unscoped one) may hold records of any partition, and needs every one (readable, p < 0). Node-local kinds
 // are exempt.
@@ -328,7 +328,8 @@ func (s *Store) gatedScope(ctx context.Context, kind model.Kind, scope string) e
 		return s.n.readable(ctx, globalPartition)
 	}
 	switch kind {
-	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindClient, model.KindProvider:
+	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindClient, model.KindProvider,
+		model.KindSSHKey, model.KindSSHCert:
 		if scope != "" {
 			return s.n.readable(ctx, partitionNum(scope))
 		}

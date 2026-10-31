@@ -12,8 +12,8 @@ async function ownTenant(p) {
   return { slug, id: t.id }
 }
 
-async function gotoTenant(p, slug) {
-  await p.goto(new URL(`${A}/tenants/${slug}`, p.url()).href, { waitUntil: "load" })
+async function gotoTenant(p, slug, sub = '') {
+  await p.goto(new URL(`${A}/tenants/${slug}${sub}`, p.url()).href, { waitUntil: "load" })
   await p.waitForTimeout(300)
 }
 
@@ -36,8 +36,8 @@ export const CLIENT_PAGES = [
       await p.keyboard.press('Enter')
       await p.waitForTimeout(400)
     }] },
-  { name: 'tenant-client-new-rows', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [
-    async (p) => { const t = await ownTenant(p); await gotoTenant(p, t.slug) },
+  { name: 'tenant-client-new-rows', path: `${A}/tenants/staff/clients`, as: 'admin', dialog: true, steps: [
+    async (p) => { const t = await ownTenant(p); await gotoTenant(p, t.slug, '/clients') },
     async (p) => {
       await p.getByRole('button', { name: 'New client' }).click()
       await p.locator('#f-name').fill('Row demo')
@@ -53,14 +53,14 @@ export const CLIENT_PAGES = [
       await p.locator('#f-redirect_uris .field-error:not(:empty)').first().waitFor()
       await p.waitForTimeout(450)
     }] },
-  { name: 'tenant-client-edit-rows', path: `${A}/tenants/staff`, as: 'admin', dialog: true, steps: [
+  { name: 'tenant-client-edit-rows', path: `${A}/tenants/staff/clients`, as: 'admin', dialog: true, steps: [
     async (p) => {
       const t = await ownTenant(p)
       await apiCall(p, 'POST', `${API}/clients`, { name: 'Many rows', tenant_id: t.id,
         redirect_uris: ['https://app.example.com/callback', 'https://staging.example.com/callback', 'http://localhost:3000/callback', 'com.example.app:/callback'],
         post_logout_redirect_uris: ['https://app.example.com/signed-out', 'https://staging.example.com/signed-out'],
         backchannel_logout_uri: 'https://app.example.com/backchannel', scopes: ['openid', 'profile', 'groups', 'orders:read', 'billing.write'] })
-      await gotoTenant(p, t.slug)
+      await gotoTenant(p, t.slug, '/clients')
       await p.waitForSelector('tbody tr')
       await p.getByRole('button', { name: 'Edit Many rows' }).click()
       await p.waitForTimeout(450)

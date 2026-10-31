@@ -1,0 +1,28 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminTenantSSH" data-base="{{.Data.API}}" data-page="{{.Data.Base}}/tenants" data-tenant="{{.Data.TenantID}}" data-slug="{{.Data.TenantName}}" data-title="{{.Data.TenantDisplay}}" class="stack-lg">
+  <nav class="crumbs glass" aria-label="Breadcrumb"><ol>
+    <li><a href="{{.Data.Base}}/users">{{template "icon" "building"}}<span class="sr-only">Organization: </span>{{.Org.DisplayName}}</a></li>
+    <li><a href="{{.Data.Base}}/tenants">Tenants</a></li>
+    <li><a :href="tenantHref" x-text="tenantTitle">{{.Data.TenantDisplay}}</a></li>
+    <li><span aria-current="page">SSH certificates</span></li>
+  </ol></nav>
+
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Org.DisplayName}} · SSH certificates</p>
+      <h1 class="page-title">SSH certificates: <span x-text="tenantTitle">{{.Data.TenantDisplay}}</span></h1>
+      <p class="page-sub page-sub-wide">The tenant’s SSH certificate authority: its settings, how to set servers up, its CA keys and the certificates it has issued.</p>
+    </div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasTenantError" x-cloak>{{template "icon" "alert"}}<span x-text="tenantError"></span></div>
+  <div role="status" class="status-slot">
+    <div class="alert alert-warning" x-show="tenantGone" x-cloak>{{template "icon" "alert"}}<span>This tenant was deleted by someone else. <a href="{{.Data.Base}}/tenants">Back to all tenants</a></span></div>
+  </div>
+
+  <template x-if="showTenant"><div class="stack-lg">
+    {{template "tenant-ssh" $}}
+  </div></template>
+</div>
+{{end}}

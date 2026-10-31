@@ -29,13 +29,17 @@ const (
 	ScopeAccess       = "access"        // tenants' access lists
 	// ScopeServiceAccounts manages the organization's service accounts, giving none more than the account holds.
 	ScopeServiceAccounts = "service_accounts"
+	// ScopeSSH manages the SSH certificate authority of the organization's tenants: settings, keys and certificates
+	// (docs/design/ssh-ca.md); ScopeSSHHost only signs host certificates, for the machines that need one.
+	ScopeSSH     = "ssh"
+	ScopeSSHHost = "ssh:host"
 )
 
 // ServiceAccountScopes are the scopes a service account of any organization may hold (ScopeImport with ScopeUsers or
 // ScopeSCIM); PrimaryServiceAccountScopes only one of the primary organization.
 var (
 	ServiceAccountScopes = []string{ScopeUsers, ScopeManageAdmins, ScopeGroups, ScopeProviders, ScopeTenants, ScopeClients,
-		ScopeAccess, ScopeImport, ScopeSCIM, ScopeServiceAccounts}
+		ScopeAccess, ScopeImport, ScopeSCIM, ScopeServiceAccounts, ScopeSSH, ScopeSSHHost}
 	PrimaryServiceAccountScopes = []string{ScopeOrgsCreate, ScopeOrgsDelete}
 )
 

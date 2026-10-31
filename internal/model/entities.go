@@ -542,6 +542,8 @@ type Tenant struct {
 	// the organization (another organization may own the same URL). A self-registered application asking for one of
 	// them is governed by this tenant.
 	Resources []string `msgpack:"res,omitempty" json:"resources"`
+	// SSH is the tenant's SSH certificate authority settings (docs/design/ssh-ca.md); nil: never enabled.
+	SSH *TenantSSH `msgpack:"ssh,omitempty" json:"ssh,omitempty"`
 }
 
 func (t *Tenant) Kind() Kind { return KindTenant }
@@ -554,7 +556,8 @@ func (t *Tenant) Index() Index {
 		Scope:     t.OrgID,
 		Partition: t.OrgID,
 		Unique:    uniq,
-		Fields:    map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created},
+		Fields: map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created,
+			"ssh_enabled": t.SSH != nil && t.SSH.Enabled},
 	}
 }
 
@@ -586,6 +589,50 @@ func CanonicalResource(s string) string {
 	}
 	u.RawPath = ""
 	return u.String()
+}
+
+// TenantSSH is a tenant's SSH certificate authority: whether it signs, for whom and for how long (docs/design/ssh-ca.md).
+// Servers trust the tenant's CA key, and who may log in as which account is decided by the principals in the
+// certificates, which come from the user's username, groups and application roles.
+type TenantSSH struct {
+	// Enabled off: signing is refused and the discovery document says so; the CA keys and the revocation list (which
+	// then revokes every certificate) are still served, so that turning SSH off reaches the servers. The keys are kept.
+	Enabled bool `msgpack:"en" json:"enabled"`
+	// ClientID is the tenant's SSH application, made when SSH is first enabled (service.UpdateTenantSSH).
+	ClientID string `msgpack:"ci,omitempty" json:"client_id,omitempty"`
+
+	// User certificates.
+	CertTTL    int `msgpack:"ttl" json:"cert_ttl"`     // seconds, 300..86400
+	MaxAuthAge int `msgpack:"maa" json:"max_auth_age"` // seconds a sign-in may be old when it asks for a certificate, 60..86400
+	// Where the principals come from.
+	PrincipalUsername bool `msgpack:"pu" json:"principal_username"`
+	PrincipalGroups   bool `msgpack:"pg" json:"principal_groups"`
+	PrincipalRoles    bool `msgpack:"pr" json:"principal_roles"` // the application roles the tenant's access list gives the user
+	// What the certificate lets the session do (OpenSSH extensions).
+	PermitPTY             bool `msgpack:"pty" json:"permit_pty"`
+	PermitUserRC          bool `msgpack:"prc" json:"permit_user_rc"`
+	PermitPortForwarding  bool `msgpack:"ppf" json:"permit_port_forwarding"`
+	PermitAgentForwarding bool `msgpack:"paf" json:"permit_agent_forwarding"`
+	PermitX11Forwarding   bool `msgpack:"px" json:"permit_x11_forwarding"`
+	// SourceAddresses are CIDRs or addresses the certificate works from (the critical option source-address); none:
+	// anywhere.
+	SourceAddresses []string `msgpack:"sa,omitempty" json:"source_addresses"`
+	// AllowPrivileged lets managers and administrators get user certificates.
+	AllowPrivileged bool `msgpack:"ap" json:"allow_privileged"`
+	// RotationDays is the user CA's scheduled rotation; 0: by hand only.
+	RotationDays int `msgpack:"rot" json:"rotation_days"`
+
+	// Host certificates.
+	HostCerts    bool     `msgpack:"hc" json:"host_certs"`
+	HostTTLDays  int      `msgpack:"htd" json:"host_ttl_days"` // 1..365
+	HostPatterns []string `msgpack:"hp,omitempty" json:"host_patterns"`
+}
+
+// DefaultTenantSSH is what enabling SSH starts from: eight-hour certificates for the user's username and groups, with
+// a terminal and ~/.ssh/rc but no forwarding, and no host certificates.
+func DefaultTenantSSH() TenantSSH {
+	return TenantSSH{CertTTL: 28800, MaxAuthAge: 3600, PrincipalUsername: true, PrincipalGroups: true,
+		PermitPTY: true, PermitUserRC: true, HostTTLDays: 90}
 }
 
 // Access subject types.
@@ -697,6 +744,9 @@ type Client struct {
 	// application of: made and removed with it, never by hand. A client whose provider is gone or no longer uses it is
 	// an orphan the sweep removes.
 	ProviderID string `msgpack:"pv,omitempty" json:"-"`
+	// SSHApp marks the SSH application Quisora made for its tenant (TenantSSH.ClientID names the current one): it goes
+	// with the tenant, and one the tenant no longer names is removed by housekeeping.
+	SSHApp bool `msgpack:"ssh,omitempty" json:"-"`
 
 	// SelfRegistered marks an application that registered itself (RFC 7591), or whose client_id is the URL of its
 	// metadata document (Client ID Metadata Document): an AI client connecting to an MCP server, say. It belongs to
@@ -1082,6 +1132,111 @@ type SigningKey struct {
 func (k *SigningKey) Kind() Kind { return KindKey }
 func (k *SigningKey) Index() Index {
 	return Index{Partition: "", Expires: k.Expires}
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// SSH certificate authority
+
+// SSH CA key purposes (SSHKey.Purpose).
+const (
+	SSHPurposeUser = "user"
+	SSHPurposeHost = "host"
+)
+
+// SSHAlgEd25519 is the algorithm of every SSH CA key made.
+const SSHAlgEd25519 = "ssh-ed25519"
+
+// SSHKey is a tenant's SSH CA key: it signs the tenant's user (or host) certificates, and servers trust its public
+// half. Like a signing key it is published from Created, signs from NotBefore until RetireAt, and is published until
+// Expires (zero: kept until removed by hand). A key removed by hand keeps its record, without its private half, as a
+// tombstone (Removed set) until every certificate it could have signed has expired: the tenant's revocation list
+// revokes the key itself meanwhile, for servers whose CA file still lists it.
+type SSHKey struct {
+	Meta
+	OrgID     string `msgpack:"o" json:"org_id"`
+	TenantID  string `msgpack:"t" json:"tenant_id"`
+	Purpose   string `msgpack:"pu" json:"purpose"` // SSHPurposeUser or SSHPurposeHost
+	Alg       string `msgpack:"a" json:"alg"`
+	PublicKey string `msgpack:"pub" json:"public_key"` // authorized_keys form, no comment
+	// PrivateKey is sealed (service.SSHKeyBinding): the key in OpenSSH PEM form.
+	PrivateKey string    `msgpack:"pk" json:"-"`
+	NotBefore  time.Time `msgpack:"nb" json:"not_before"`
+	RetireAt   time.Time `msgpack:"ra" json:"retire_at,omitzero"` // stops signing (zero: until a successor starts)
+	Expires    time.Time `msgpack:"ex" json:"expires,omitzero"`
+	// Removed is when the key was removed (a tombstone: no longer published, never signs, revoked by the KRL).
+	Removed time.Time `msgpack:"rm,omitempty" json:"removed,omitzero"`
+}
+
+func (k *SSHKey) Kind() Kind { return KindSSHKey }
+func (k *SSHKey) Index() Index {
+	return Index{
+		Scope:     k.OrgID,
+		Partition: k.OrgID,
+		Fields:    map[string]any{"tenant_id": k.TenantID},
+		Expires:   k.Expires,
+	}
+}
+
+// SSHCert is a certificate issued, kept until it has expired: the KRL and the console's list are made from them.
+type SSHCert struct {
+	Meta
+	OrgID       string    `msgpack:"o" json:"org_id"`
+	TenantID    string    `msgpack:"t" json:"tenant_id"`
+	UserID      string    `msgpack:"ui,omitempty" json:"user_id,omitempty"` // "" for a host certificate
+	Host        bool      `msgpack:"h,omitempty" json:"host,omitempty"`
+	Serial      uint64    `msgpack:"sn" json:"serial,string"` // random, non-zero
+	KeyID       string    `msgpack:"k" json:"key_id"`         // the certificate's key id, as sshd logs it
+	CAKeyID     string    `msgpack:"ca" json:"ca_key_id"`     // the SSHKey that signed it
+	Principals  []string  `msgpack:"p" json:"principals"`
+	Fingerprint string    `msgpack:"fp" json:"fingerprint"` // SHA256:… of the certified public key
+	ValidAfter  time.Time `msgpack:"va" json:"valid_after"`
+	ValidBefore time.Time `msgpack:"vb" json:"valid_before"`
+	// Extensions and SourceAddresses are what a user certificate grants: the names of its OpenSSH extensions, sorted,
+	// and the addresses of its critical option source-address (none: anywhere). A certificate that grants more than the
+	// tenant's settings now would is revoked (SSHReasonSettingsChanged).
+	Extensions      []string `msgpack:"ext,omitempty" json:"extensions,omitempty"`
+	SourceAddresses []string `msgpack:"sa,omitempty" json:"source_addresses,omitempty"`
+	// SessionEpoch and Stamp are the session epoch and sign-out counters the certificate was asked for under: those of
+	// the access token's grant (the sign endpoint) or of the session (the account page), never the current ones. The
+	// certificate counts only while they would (user certificates).
+	SessionEpoch uint64       `msgpack:"se,omitempty" json:"-"`
+	Stamp        SignOutStamp `msgpack:"st" json:"-"`
+	Via          string       `msgpack:"via" json:"via"`                          // "cli", "account" or "api"
+	IssuedBy     string       `msgpack:"ib,omitempty" json:"issued_by,omitempty"` // the actor, for host certificates
+	Revoked      bool         `msgpack:"rv,omitempty" json:"revoked"`
+	RevokedAt    time.Time    `msgpack:"rva,omitempty" json:"revoked_at,omitzero"`
+	RevokedBy    string       `msgpack:"rvb,omitempty" json:"revoked_by,omitempty"`
+	// RevokedReason is why, when Quisora found it revoked (RevokedBy "system": the user lost access, a role or a
+	// principal it carries); "" for one revoked by hand. Listed as the reason of the certificate (SSHCertView).
+	RevokedReason string `msgpack:"rvr,omitempty" json:"-"`
+}
+
+func (c *SSHCert) Kind() Kind { return KindSSHCert }
+
+// Index lists a user certificate by its tenant (tenant_id) and a host certificate by its tenant under another field
+// (host_tenant_id), so the revocation list reads the user certificates of a tenant without its host certificates, of
+// which it needs only those revoked by hand.
+func (c *SSHCert) Index() Index {
+	userTenant, hostTenant := c.TenantID, ""
+	if c.Host {
+		userTenant, hostTenant = "", c.TenantID
+	}
+	return Index{
+		Scope:     c.OrgID,
+		Partition: c.OrgID,
+		Fields: map[string]any{"tenant_id": userTenant, "host_tenant_id": hostTenant, "user_id": c.UserID, "revoked": c.Revoked,
+			"created": c.Created, "key_id": clipRunes(c.KeyID, 255), "fingerprint": c.Fingerprint, "serial": strconv.FormatUint(c.Serial, 10),
+			"principals": clipRunes(strings.Join(c.Principals, " "), MaxTagsText)},
+		Expires: c.ValidBefore.Add(time.Hour),
+	}
+}
+
+// clipRunes cuts s to at most n characters: a queryable field longer than its column is refused with the record.
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // ---------------------------------------------------------------------------------------------------------------

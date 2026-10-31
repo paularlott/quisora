@@ -40,7 +40,10 @@ func testFreshReadsSeeWhatThisNodeLacks(t *testing.T, c *tcluster) {
 	if err := users(c.nodes[0]).Create(bg, second); err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := users(c.nodes[0]).Get(bg, first.ID)
+	changed, err := users(c.nodes[0]).Get(bg, first.ID)
+	if err != nil {
+		t.Fatalf("node 0's copy: %v", err)
+	}
 	changed.GivenName = "changed"
 	if err := users(c.nodes[0]).Update(bg, changed); err != nil {
 		t.Fatal(err)
@@ -419,6 +422,13 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 	p := partitionNum(org)
 	ids := writeN(t, c.nodes[0], org, 3)
 	c.waitHas(ids[2])
+	// node 2 has recorded everything the owner committed: the data of a write arrives before its commit, and a write
+	// made at a position the owner has committed would be taken for the owner's own (one owner writes each position of
+	// its epoch), not for a divergence
+	owner := c.nodes[0].n.Status().Partitions[p].Committed
+	waitFor(t, 15*time.Second, "node 2 to commit what the owner committed", func() bool {
+		return c.nodes[2].n.Status().Partitions[p].Committed >= owner
+	})
 
 	// node 2's database gets a write of the partition nobody else has
 	dir := c.nodes[2].dir
@@ -429,12 +439,27 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ps.Committed.Seq < owner {
+		t.Fatalf("test set-up: node 2 stopped with position %d committed, the owner had %d", ps.Committed.Seq, owner)
+	}
 	rogue := newOrgRec(org)
 	if err := pst.ApplyPartition(bg, p, []*store.Record{rogue}, store.PartitionPos{Epoch: ps.Committed.Epoch,
 		Seq: ps.Committed.Seq + 1}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
+	// Until node 2 has found its copy diverged it takes no part in a promise round, either way: a round (one runs as it
+	// rejoins, by the owner or by node 2 itself) takes the highest committed position it hears as the majority's, so the
+	// rogue write would pass for a commit the others missed and be adopted (or node 2 would lead with it) before node 2
+	// saw it was ahead. A real divergence is a write no majority acknowledged, which a promise round does not hear of;
+	// once found, nothing takes it (asked again below, with the network whole).
+	isolate := func(on bool) {
+		for j := range 2 {
+			c.drop(j, 2, on, gossip.PartPromiseMsg, gossip.PartClaimMsg, gossip.PartCatchUpMsg)
+			c.drop(2, j, on, gossip.PartPromiseMsg, gossip.PartClaimMsg)
+		}
+	}
+	isolate(true)
 	c.nodes[2] = c.build(2, dir, nil)
 	c.start(c.nodes[2])
 
@@ -442,6 +467,7 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 		st := c.nodes[2].n.Status()
 		return st.PartitionsDiverged == 1 && st.Partitions[p].Diverged && st.Divergences >= 1
 	})
+	isolate(false)
 	waitFor(t, 5*time.Second, "node 2 not ready", func() bool {
 		ok, why := c.nodes[2].n.Ready()
 		return !ok && strings.Contains(why, "diverged")
@@ -449,13 +475,16 @@ func TestDivergedPartitionMakesTheNodeNotReady(t *testing.T) {
 	if _, err := c.nodes[2].st().Get(bg, dataKind, ids[0]); !errors.Is(err, store.ErrUnavailable) {
 		t.Fatalf("a record of the diverged partition served: %v", err)
 	}
+	// the others are ready (once they hear owners again: node 2 took part in no promise round meanwhile), and with the
+	// network whole none takes the diverged write
+	readyWithin(t, 15*time.Second, c.nodes[:2]...)
 	for _, tn := range c.nodes[:2] {
-		if ok, why := tn.n.Ready(); !ok {
-			t.Fatalf("node %d: %s", tn.idx, why)
-		}
 		if _, err := tn.n.st.inner.Get(bg, dataKind, rogue.ID); err == nil {
 			t.Fatalf("node %d holds the diverged write", tn.idx)
 		}
+	}
+	if st := c.nodes[2].n.Status(); !st.Partitions[p].Diverged {
+		t.Fatal("node 2's partition stopped being diverged")
 	}
 }
 

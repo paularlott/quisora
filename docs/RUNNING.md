@@ -578,7 +578,7 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, tenants' SSH certificate authorities (`ssh.settings.update`, `ssh.ca.create`, `ssh.ca.rotate`, `ssh.ca.remove`, `ssh.cert.issue`, `ssh.cert.revoke`, `ssh.cert.refused`, `ssh.host.issue`, `ssh.host.refused`: [SSH certificates](ssh/README.md#what-is-recorded)), `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
 | API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
@@ -790,6 +790,12 @@ quisora restore quisora.bak                   # into the configured store, witho
     their partitions, of a new data set, which the other nodes adopt and copy.
   - A restored node that meets a cluster of another data set exchanges nothing with it and refuses to serve ("another data set
     is in view").
+- **Tenants that use [SSH certificates](ssh/README.md) need steps after a restore from an older backup.** The backup holds
+  the CA keys, certificate records and revocations as they were then, so a restore can republish a CA key that was removed
+  since (and its private half), undo revocations made since, and know nothing of the certificates issued after the backup,
+  which then cannot be revoked by serial. For each such tenant: rotate the user CA key (and the host key) immediately,
+  remove the old keys, which makes the revocation list revoke them outright on every server that fetches it, re-revoke
+  what was revoked since, and have everyone sign in again ([Backup and restore](ssh/README.md#backup-and-restore)).
 
 ## Upgrading
 
@@ -926,6 +932,9 @@ Alerts worth having:
   server is down or refusing it, or the queue is not keeping up. `quisora_mail_queued` growing says the same earlier.
   Likewise `increase(quisora_backchannel_logout_failed_total[1h]) > 0` for applications that are not told of a sign-out.
 - `rate(quisora_http_shed_total[5m]) > 0`: the node is overloaded.
+- For tenants that use SSH certificates: a log line `oidc: making an SSH revocation list` at error level (the tenant's
+  revocation list could not be made; its address answers 503 and servers keep their old list), and, on every server that
+  fetches it, the fetch unit failing or the revocation list file older than 5 minutes ([SSH monitoring](ssh/README.md#monitoring)).
 
 ### Access log
 

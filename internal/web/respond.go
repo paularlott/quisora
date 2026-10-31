@@ -48,7 +48,7 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrTooLarge):
 		WriteJSON(w, http.StatusRequestEntityTooLarge, ErrorBody{Error: Capitalise(err.Error()) + "."})
 	case errors.Is(err, service.ErrNotEmpty), errors.Is(err, service.ErrPrimaryOrg),
-		errors.Is(err, service.ErrTenantInUse):
+		errors.Is(err, service.ErrTenantInUse), errors.Is(err, service.ErrSSHOn):
 		WriteJSON(w, http.StatusConflict, ErrorBody{Error: Capitalise(err.Error()) + "."})
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		w.Header().Set("Retry-After", "5")

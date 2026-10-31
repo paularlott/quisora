@@ -59,8 +59,19 @@ export function emailsMixin(cfg) {
     get atLimit() { return this.manage && !this.emailsLoading && this.items.length >= 10 },
     get addLabel() { return this.busy ? 'Adding…' : 'Add' },
 
-    // Later than the close handler of a dialog that was open (re-authentication, confirmation), which restores focus itself.
-    focusAddButton() { setTimeout(() => { const b = document.getElementById('email-add-btn'); if (b && b.offsetParent !== null) b.focus(); else { const h = document.getElementById('emails-h'); if (h) h.focus() } }, 80) },
+    // Later than the close handler of a dialog that was open (re-authentication, confirmation), which restores focus itself
+    // to the button that opened it, or to the page's fallback when that is gone. Only focus that was lost is moved (that
+    // button went with its row or is hidden now, or the fallback took it): focus on a control still in view is where the
+    // dialog or the user put it, and is left there.
+    focusAddButton() {
+      setTimeout(() => {
+        const a = document.activeElement
+        const lost = !a || a === document.body || a.id === 'main' || a.hasAttribute('data-return-focus') || !a.isConnected || a.offsetParent === null
+        if (!lost) return
+        const b = document.getElementById('email-add-btn')
+        if (b && b.offsetParent !== null) b.focus(); else { const h = document.getElementById('emails-h'); if (h) h.focus() }
+      }, 80)
+    },
     openAdd(ev) {
       this.resetForm({ em_address: '' })
       openDialog('email-add-dialog', ev.currentTarget)

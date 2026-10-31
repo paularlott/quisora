@@ -30,6 +30,7 @@ var sealedBy = map[string]struct {
 	"PasswordBinding":       {model.KindUser, "PasswordHash"},
 	"ProviderSecretBinding": {model.KindProvider, "ClientSecret"},
 	"SigningKeyBinding":     {model.KindKey, "PrivateKey"},
+	"SSHKeyBinding":         {model.KindSSHKey, "PrivateKey"},
 	"GrantKeyBinding":       {model.KindGrant, "Key"},
 	"refreshBinding":        {model.KindIdentity, "Refresh"},
 }
