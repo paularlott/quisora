@@ -12,6 +12,7 @@ import { mix } from '../lib/mix.js'
 import { pickerMixin } from '../lib/picker.js'
 import { subscribe, liveRunner } from '../lib/live.js'
 import { fmtDate } from '../lib/format.js'
+import { detailsText, parseDetails } from '../lib/authdetails.js'
 
 const enc = encodeURIComponent
 const PICK_LIMIT = 8
@@ -64,7 +65,7 @@ export default function (Alpine) {
 
     // ---- the table
     get membersOnly() { const t = Alpine.store('tenantPage').tenant; return !!(t && t.settings.members_only) },
-    get accessIntro() { return 'Only these users and groups can sign in to this tenant’s applications. Roles and tags are sent to the applications in tokens.' },
+    get accessIntro() { return 'Only these users and groups can sign in to this tenant’s applications. Roles, tags and authorization details are sent to the applications in tokens.' },
     get accessCountText() { return this.total === 1 ? '1 entry' : this.total + ' entries' },
     get accessEmptyText() { return 'Nobody can sign in to this tenant’s applications until you give a user or group access.' },
     clientName(id) { const c = this.clients.find((x) => x.id === id); return c ? c.name : 'Removed application' },
@@ -98,7 +99,7 @@ export default function (Alpine) {
 
     openAdd(ev) {
       this.editing = null
-      this.resetForm({ acc_subject: '', roles: [], tags: [], acc_all: true, acc_clients: [], acc_expires: '' })
+      this.resetForm({ acc_subject: '', roles: [], tags: [], authorization_details: '', acc_all: true, acc_clients: [], acc_expires: '' })
       this.resetChipText()
       this.resetPicker()
       this.openDlg('access-dialog', ev.currentTarget)
@@ -107,7 +108,7 @@ export default function (Alpine) {
       const row = this.rowFromEvent(ev)
       if (!row) return
       this.editing = row
-      this.resetForm({ acc_subject: row.subject_id, roles: [...(row.roles || [])], tags: [...(row.tags || [])],
+      this.resetForm({ acc_subject: row.subject_id, roles: [...(row.roles || [])], tags: [...(row.tags || [])], authorization_details: detailsText(row.authorization_details),
         acc_all: !!row.all_clients, acc_clients: [...(row.clients || [])], acc_expires: timeToDay(row.expires) })
       this.resetChipText()
       this.openDlg('access-dialog', ev.currentTarget)
@@ -115,7 +116,12 @@ export default function (Alpine) {
     async submitAccess() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
-      const body = { roles: f.roles, tags: f.tags, all_clients: f.acc_all, clients: f.acc_all ? [] : f.acc_clients, expires: dayToTime(f.acc_expires) }
+      const details = parseDetails(f.authorization_details)
+      if (details.error) {
+        this.setErrors(new ApiError(422, { error: details.error, field: 'authorization_details' }))
+        return
+      }
+      const body = { roles: f.roles, tags: f.tags, authorization_details: details.value, all_clients: f.acc_all, clients: f.acc_all ? [] : f.acc_clients, expires: dayToTime(f.acc_expires) }
       if (!this.editing) {
         if (!this.pickChoice) {
           this.setErrors(new ApiError(422, { error: 'Choose a user or group from the list.', field: 'acc_subject' }))

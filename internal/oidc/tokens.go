@@ -67,6 +67,10 @@ type issue struct {
 	act         string             // act claim, raw JSON (token exchange)
 	expires     time.Time          // the access token expires no later than this (zero: its usual lifetime)
 	jkt         string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
+	// adTypes are the authorization details types the request asked for (authdetails.go); nil: it asked for none,
+	// and the token carries every type the client is registered for.
+	adTypes []string
+	details []byte // the access token's authorization_details (authDetails), set by mint
 }
 
 // accessExpiry is when the access token of is expires.
@@ -111,6 +115,9 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 		c := newObj(64)
 		c.str("jkt", is.jkt)
 		o.raw("cnf", string(c.bytes()))
+	}
+	if is.details != nil {
+		o.raw("authorization_details", string(is.details))
 	}
 	if is.user != nil {
 		o.num("auth_time", is.authTime.Unix())
@@ -368,6 +375,8 @@ type tokenResponse struct {
 	scopes              []string
 	issuedType          string // issued_token_type (token exchange)
 	dpop                bool   // token_type DPoP: the access token is bound to a key
+	// details is the authorization_details issued (RFC 9396 §7): a JSON array, nil to leave it out
+	details []byte
 }
 
 func writeTokens(w http.ResponseWriter, t *tokenResponse) {
@@ -387,6 +396,10 @@ func writeTokens(w http.ResponseWriter, t *tokenResponse) {
 	if t.issuedType != "" {
 		b = append(b, `,"issued_token_type":`...)
 		b = appendJSONString(b, t.issuedType)
+	}
+	if t.details != nil {
+		b = append(b, `,"authorization_details":`...)
+		b = append(b, t.details...)
 	}
 	if t.refresh != "" {
 		b = append(b, `,"refresh_token":"`...)
@@ -426,13 +439,17 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 		}
 		is.app = app
 	}
+	is.details = p.authDetails(is)
 	now := time.Now()
 	at, err := p.accessToken(ctx, key, is, now)
 	if err != nil {
 		return nil, err
 	}
 	tr := &tokenResponse{access: at, expiresIn: int(p.accessExpiry(is, now).Sub(now) / time.Second), scopes: is.scopes,
-		dpop: is.jkt != ""}
+		dpop: is.jkt != "", details: is.details}
+	if tr.details == nil && is.adTypes != nil {
+		tr.details = []byte("[]") // asked for, none granted
+	}
 	if withID && is.user != nil && is.has("openid") {
 		if tr.id, err = p.idToken(ctx, key, is, now, at); err != nil {
 			return nil, err

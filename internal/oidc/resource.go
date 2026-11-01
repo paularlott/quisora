@@ -481,6 +481,9 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 	if len(cl.Act) > 0 { // signed by this server: embedded as it is
 		o.raw("act", string(cl.Act))
 	}
+	if len(cl.AuthorizationDetails) > 0 { // as the token holds them (RFC 9396 §9.2), signed by this server
+		o.raw("authorization_details", string(cl.AuthorizationDetails))
+	}
 	o.strIf("org", cl.Org)
 	o.strIf("org_name", cl.OrgName)
 	o.strIf("tenant", cl.Tenant)

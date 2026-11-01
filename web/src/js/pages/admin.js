@@ -16,6 +16,7 @@ import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
+import { detailsText, parseDetails } from '../lib/authdetails.js'
 
 // newId makes an id as the server does (model.NewID): the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, the
 // version and variant bits, random bits) read as one big-endian number and written in base 62 (digits, then upper,
@@ -633,8 +634,10 @@ const STD_SCOPES = [
 ]
 const STD_NAMES = STD_SCOPES.map((s) => s.value)
 // Server field -> the list editor that shows it.
-const LIST_OF_FIELD = { redirect_uris: 'redirect_uris', post_logout_redirect_uris: 'post_logout_redirect_uris', resources: 'resources' }
-const LIST_ITEMS = { redirect_uris: 'Redirect URI', post_logout_redirect_uris: 'Post-logout redirect URI', resources: 'Resource' }
+const LIST_OF_FIELD = { redirect_uris: 'redirect_uris', post_logout_redirect_uris: 'post_logout_redirect_uris', resources: 'resources',
+  authorization_details_types: 'authorization_details_types' }
+const LIST_ITEMS = { redirect_uris: 'Redirect URI', post_logout_redirect_uris: 'Post-logout redirect URI', resources: 'Resource',
+  authorization_details_types: 'Authorization details type' }
 function clientDialogMixin(Alpine) {
   return mix(listFieldMixin(), tagsMixin(), {
     stdScopes: STD_SCOPES.map((s) => ({ ...s, id: 'f-scope-' + s.value })),
@@ -663,6 +666,7 @@ function clientDialogMixin(Alpine) {
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
     get usesDevice() { return (this.form.grant_types || []).includes(DEVICE_CODE) },
+    get usesClientCredentials() { return this.form.token_endpoint_auth_method !== 'none' && (this.form.grant_types || []).includes('client_credentials') },
     editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canFirstParty: false, tenants: [], tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
@@ -696,6 +700,7 @@ function clientDialogMixin(Alpine) {
       return { tenant_id: c.tenant_id || '', name: c.name, description: c.description || '',
         redirect_uris: listRows(c.redirect_uris, LIST_ITEMS.redirect_uris), post_logout_redirect_uris: listRows(c.post_logout_redirect_uris, LIST_ITEMS.post_logout_redirect_uris, true),
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
+        authorization_details_types: listRows(c.authorization_details_types, LIST_ITEMS.authorization_details_types, true), authorization_details: detailsText(c.authorization_details),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
         first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
         dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile,
@@ -723,6 +728,7 @@ function clientDialogMixin(Alpine) {
       const redirects = this.usesRedirects
       const b = { name: f.name, description: f.description, redirect_uris: redirects ? listValues(f.redirect_uris) : [], post_logout_redirect_uris: redirects ? listValues(f.post_logout_redirect_uris) : [],
         backchannel_logout_uri: f.backchannel_logout_uri.trim(), resources: listValues(f.resources),
+        authorization_details_types: listValues(f.authorization_details_types),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && CONFIDENTIAL_GRANTS.includes(g))),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
         enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, accepts_api_tokens: pub ? false : f.accepts_api_tokens, require_pkce: pub ? true : f.require_pkce,
@@ -737,8 +743,14 @@ function clientDialogMixin(Alpine) {
     },
     async submitClient() {
       if (!this.clientListsValid()) return
+      const details = parseDetails(this.usesClientCredentials ? this.form.authorization_details : '')
+      if (details.error) {
+        this.setErrors(new ApiError(422, { error: details.error, field: 'authorization_details' }))
+        return
+      }
       const edit = this.editingClient
       const body = this.clientBody()
+      body.authorization_details = details.value
       const res = await this.run(() => edit ? patch(`${this.apiBase}/clients/${enc(edit.id)}`, body) : post(`${this.apiBase}/clients`, body))
       if (!res) return
       this.closeDlg('client-dialog')

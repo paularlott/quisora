@@ -1780,7 +1780,7 @@ paths:
     patch:
       tags: [Tenant access]
       summary: Change an access entry
-      description: Change roles, tags, applications or the end date (subject_type and subject_id are ignored)
+      description: Change roles, tags, authorization details, applications or the end date (subject_type and subject_id are ignored)
       operationId: patch_orgs_org_tenants_id_access_aid
       security:
         - session: []
@@ -3776,6 +3776,19 @@ components:
           type: string
         all_clients:
           type: boolean
+        authorization_details:
+          type: array
+          description: "authorization details (RFC 9396) for the access tokens of the applications this access covers that are
+            registered for their types (authorization_details_types): JSON objects, each with a type, at most 16 and 8 KB;
+            string values may hold {{sub}} (the user's id), {{org}} and {{tenant}}; an object with locations goes only into
+            tokens whose audience holds one of them; absent: none; [] removes them"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+            additionalProperties: true
         clients:
           type: array
           description: client ids, when all_clients is false
@@ -3833,6 +3846,19 @@ components:
         all_clients:
           type: boolean
           description: default true
+        authorization_details:
+          type: array
+          description: "authorization details (RFC 9396) for the access tokens of the applications this access covers that are
+            registered for their types (authorization_details_types): JSON objects, each with a type, at most 16 and 8 KB;
+            string values may hold {{sub}} (the user's id), {{org}} and {{tenant}}; an object with locations goes only into
+            tokens whose audience holds one of them; absent: none; [] removes them"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+            additionalProperties: true
         clients:
           type: array
           description: client ids of this tenant, when all_clients is false
@@ -3978,6 +4004,25 @@ components:
           description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
             dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
             no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
+        authorization_details_types:
+          type: array
+          description: "authorization details types (RFC 9396) the client uses, at most 16, each up to 256 characters without
+            spaces: the only types its authorization_details requests may name (invalid_authorization_details otherwise),
+            and the only ones its access tokens carry"
+          items:
+            type: string
+        authorization_details:
+          type: array
+          description: "authorization details (RFC 9396) of the client's own client_credentials tokens: JSON objects, each with
+            a type, at most 16 and 8 KB; string values may hold {{sub}} (the client id), {{org}} and {{tenant}}; an object
+            with locations goes only into tokens whose audience holds one of them; [] removes them"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+            additionalProperties: true
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -4062,6 +4107,25 @@ components:
           description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
             dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
             no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
+        authorization_details_types:
+          type: array
+          description: "authorization details types (RFC 9396) the client uses, at most 16, each up to 256 characters without
+            spaces: the only types its authorization_details requests may name (invalid_authorization_details otherwise),
+            and the only ones its access tokens carry"
+          items:
+            type: string
+        authorization_details:
+          type: array
+          description: "authorization details (RFC 9396) of the client's own client_credentials tokens: JSON objects, each with
+            a type, at most 16 and 8 KB; string values may hold {{sub}} (the client id), {{org}} and {{tenant}}; an object
+            with locations goes only into tokens whose audience holds one of them; [] removes them"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+            additionalProperties: true
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most
@@ -4153,6 +4217,25 @@ components:
           description: "FAPI 2.0 Security Profile: needs private_key_jwt; turns on require_pushed_authorization_requests and
             dpop_bound_access_tokens and turns off rotate_refresh_tokens; client assertions must have the issuer alone as aud;
             no RS256 for assertions, DPoP proofs or ID tokens; codes last at most 60 seconds"
+        authorization_details_types:
+          type: array
+          description: "authorization details types (RFC 9396) the client uses, at most 16, each up to 256 characters without
+            spaces: the only types its authorization_details requests may name (invalid_authorization_details otherwise),
+            and the only ones its access tokens carry"
+          items:
+            type: string
+        authorization_details:
+          type: array
+          description: "authorization details (RFC 9396) of the client's own client_credentials tokens: JSON objects, each with
+            a type, at most 16 and 8 KB; string values may hold {{sub}} (the client id), {{org}} and {{tenant}}; an object
+            with locations goes only into tokens whose audience holds one of them; [] removes them"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+            additionalProperties: true
         resources:
           type: array
           description: "resource indicators (RFC 8707) the client may ask tokens for: absolute URIs without a fragment, at most

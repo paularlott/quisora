@@ -51,6 +51,7 @@ type deviceGrant struct {
 	ClientID  string   `json:"c"`
 	Scopes    []string `json:"sc"`
 	Resources []string `json:"res,omitempty"`
+	ADTypes   []string `json:"adt,omitempty"` // authorization details types asked for (authdetails.go)
 	UserCode  string   `json:"uc"`
 	Expires   int64    `json:"x"` // unix seconds
 	// MFA and MaxAge are what the device asked for with acr_values and max_age, which the sign-in that approves it
@@ -175,6 +176,11 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		writeOAuthError(w, oerr("invalid_target", "the resource is not registered for this client"))
 		return
 	}
+	ad, e := parseAuthDetailsParam(form.Get("authorization_details"), c)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
 	var maxAge *int
 	if v := form.Get("max_age"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -201,7 +207,7 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		writeOAuthError(w, serverError(errors.New("no free user code")))
 		return
 	}
-	d := deviceGrant{GrantID: model.NewID(), ClientID: c.ID, Scopes: scopes, Resources: res, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix(),
+	d := deviceGrant{GrantID: model.NewID(), ClientID: c.ID, Scopes: scopes, Resources: res, ADTypes: ad, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix(),
 		MFA: demandsMFA(strings.Fields(form.Get("acr_values"))), MaxAge: maxAge}
 	b, _ := json.Marshal(d)
 	deviceCode, err := p.s.Eph.New(ctx, nsDevice, b, deviceTTL)
@@ -233,7 +239,7 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 
 // deviceToken is the token endpoint's device_code grant (RFC 8628 §3.4, §3.5): authorization_pending until the user
 // decides (slow_down for a device polling faster than its interval), then the tokens once, or access_denied.
-func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode, jkt string) (*tokenResponse, *oauthError) {
+func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode string, ad []string, jkt string) (*tokenResponse, *oauthError) {
 	if deviceCode == "" || len(deviceCode) > 200 {
 		return nil, oerr("invalid_request", "device_code is required")
 	}
@@ -255,6 +261,12 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 	case "deny":
 		_ = p.s.Eph.Delete(ctx, nsDevice, deviceCode)
 		return nil, oerr("access_denied", "the user denied the sign-in")
+	}
+	// Checked before the approval is taken: a request that asks for more than the device did is refused, and the
+	// next poll can still have the tokens.
+	ad, oe := narrowAuthDetails(ad, d.ADTypes)
+	if oe != nil {
+		return nil, oe
 	}
 	// Approved: the tokens are issued once, whichever poll takes them first. A failure of ours (5xx) puts the
 	// approval back for the next poll, rather than making the user approve again.
@@ -278,8 +290,8 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode,
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Scopes: d.Scopes, Resources: d.Resources, GrantID: d.GrantID}
-	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, jkt, "device_code")
+		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID}
+	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, ad, jkt, "device_code")
 	return tr, restore(oe)
 }
 

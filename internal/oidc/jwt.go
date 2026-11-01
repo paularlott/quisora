@@ -313,6 +313,8 @@ type Claims struct {
 	Act json.RawMessage `json:"act"`
 	// Cnf binds a DPoP access token to the key of its proofs (RFC 9449 §6).
 	Cnf *Confirmation `json:"cnf"`
+	// AuthorizationDetails are the access token's RFC 9396 authorization details (authdetails.go).
+	AuthorizationDetails json.RawMessage `json:"authorization_details"`
 }
 
 // Confirmation is the cnf claim (RFC 7800): the thumbprint of the DPoP key the token is bound to.

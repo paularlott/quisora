@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -22,17 +24,21 @@ type ClientInput struct {
 	GrantTypes     *[]string `json:"grant_types"`
 	Scopes         *[]string `json:"scopes"`
 	Resources      *[]string `json:"resources"` // resource indicators (RFC 8707) the client may ask for
-	AuthMethod     *string   `json:"token_endpoint_auth_method"`
-	SigningAlg     *string   `json:"id_token_signed_response_alg"`
-	JWKS           *string   `json:"jwks"`
-	JWKSURI        *string   `json:"jwks_uri"`
-	FirstParty     *bool     `json:"first_party"`
-	RotateRefresh  *bool     `json:"rotate_refresh_tokens"`
-	IntrospectOrg  *bool     `json:"introspect_org"`
-	RequirePKCE    *bool     `json:"require_pkce"` // false only for confidential clients
-	RequirePAR     *bool     `json:"require_pushed_authorization_requests"`
-	DPoPBound      *bool     `json:"dpop_bound_access_tokens"`
-	FAPI           *bool     `json:"fapi2_security_profile"`
+	// AuthorizationDetailsTypes are the RFC 9396 authorization details types the client uses.
+	AuthorizationDetailsTypes *[]string `json:"authorization_details_types"`
+	// AuthorizationDetails are the authorization details of its client_credentials tokens; [] removes them.
+	AuthorizationDetails *json.RawMessage `json:"authorization_details"`
+	AuthMethod           *string          `json:"token_endpoint_auth_method"`
+	SigningAlg           *string          `json:"id_token_signed_response_alg"`
+	JWKS                 *string          `json:"jwks"`
+	JWKSURI              *string          `json:"jwks_uri"`
+	FirstParty           *bool            `json:"first_party"`
+	RotateRefresh        *bool            `json:"rotate_refresh_tokens"`
+	IntrospectOrg        *bool            `json:"introspect_org"`
+	RequirePKCE          *bool            `json:"require_pkce"` // false only for confidential clients
+	RequirePAR           *bool            `json:"require_pushed_authorization_requests"`
+	DPoPBound            *bool            `json:"dpop_bound_access_tokens"`
+	FAPI                 *bool            `json:"fapi2_security_profile"`
 	// DevicePrivileged lets managers and above approve device sign-ins (RFC 8628).
 	DevicePrivileged *bool `json:"device_privileged_users"`
 	Enabled          *bool `json:"enabled"`
@@ -105,6 +111,25 @@ func ValidResource(v string) bool {
 	u, err := url.Parse(v)
 	return err == nil && u.IsAbs() && u.Fragment == "" && !strings.Contains(v, "#") && (u.Host != "" || u.Opaque != "") &&
 		len(v) <= 512 && strings.TrimSpace(v) == v
+}
+
+// checkAuthDetailTypes trims, validates and de-duplicates a client's authorization details types.
+func checkAuthDetailTypes(list []string) ([]string, error) {
+	out := []string{}
+	for _, v := range list {
+		v = strings.TrimSpace(v)
+		if v == "" || slices.Contains(out, v) {
+			continue
+		}
+		if !model.ValidAuthDetailType(v) {
+			return nil, Invalid("authorization_details_types", strconv.Quote(v)+" is not a valid type: use up to 256 characters without spaces")
+		}
+		out = append(out, v)
+	}
+	if len(out) > model.MaxAuthDetailTypes {
+		return nil, Invalid("authorization_details_types", "at most "+itoa(model.MaxAuthDetailTypes)+" types are allowed")
+	}
+	return out, nil
 }
 
 // checkResources trims, validates and de-duplicates a client's resource list.
@@ -217,6 +242,16 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 			return err
 		}
 		c.Resources = res
+	}
+	if in.AuthorizationDetailsTypes != nil {
+		types, err := checkAuthDetailTypes(*in.AuthorizationDetailsTypes)
+		if err != nil {
+			return err
+		}
+		c.AuthorizationDetailsTypes = types
+	}
+	if err := applyAuthDetails(&c.AuthorizationDetails, in.AuthorizationDetails); err != nil {
+		return err
 	}
 	if in.AuthMethod != nil {
 		if !slices.Contains(validAuthMethods, *in.AuthMethod) {

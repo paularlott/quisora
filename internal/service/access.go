@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sort"
@@ -23,9 +24,12 @@ type AccessInput struct {
 	SubjectID   string    `json:"subject_id"`
 	Roles       *[]string `json:"roles"`
 	Tags        *[]string `json:"tags"`
-	AllClients  *bool     `json:"all_clients"`
-	Clients     *[]string `json:"clients"`
-	Expires     *string   `json:"expires"` // RFC 3339 time or a date (YYYY-MM-DD, ends at the start of that day UTC); "" = no end
+	// AuthorizationDetails are RFC 9396 authorization details for the access tokens of the applications registered
+	// for their types (model.NormAuthDetails); [] removes them.
+	AuthorizationDetails *json.RawMessage `json:"authorization_details"`
+	AllClients           *bool            `json:"all_clients"`
+	Clients              *[]string        `json:"clients"`
+	Expires              *string          `json:"expires"` // RFC 3339 time or a date (YYYY-MM-DD, ends at the start of that day UTC); "" = no end
 }
 
 // AccessEntry is a TenantAccess with the subject resolved for display.
@@ -58,11 +62,27 @@ func applyRoles(dst *[]string, in *[]string) error {
 	return nil
 }
 
+// applyAuthDetails validates authorization details and stores them normalized (model.NormAuthDetails).
+func applyAuthDetails(dst *json.RawMessage, in *json.RawMessage) error {
+	if in == nil {
+		return nil
+	}
+	ad, err := model.NormAuthDetails(*in)
+	if err != nil {
+		return Invalid("authorization_details", err.Error())
+	}
+	*dst = ad
+	return nil
+}
+
 func (s *Service) applyAccess(ctx context.Context, t *model.Tenant, acc *model.TenantAccess, in AccessInput) error {
 	if err := applyRoles(&acc.Roles, in.Roles); err != nil {
 		return err
 	}
 	if err := applyTags(&acc.Tags, in.Tags); err != nil {
+		return err
+	}
+	if err := applyAuthDetails(&acc.AuthorizationDetails, in.AuthorizationDetails); err != nil {
 		return err
 	}
 	if in.AllClients != nil {
@@ -258,7 +278,7 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	return &AccessEntry{TenantAccess: acc, Name: name, Detail: detail, Expired: !acc.Live(time.Now())}, nil
 }
 
-// UpdateAccess changes the roles, tags, applications or end of an access.
+// UpdateAccess changes the roles, tags, authorization details, applications or end of an access.
 func (s *Service) UpdateAccess(ctx context.Context, a *Actor, tenantID, id string, in AccessInput) (*AccessEntry, error) {
 	e, err := s.GetAccess(ctx, a, tenantID, id)
 	if err != nil {
@@ -293,12 +313,13 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 		func() error { return s.Access.Delete(ctx, id) }))
 }
 
-// AppAccess is what a user gets for one application: whether they may sign in to it, and the roles and tags that
-// their live access entries for it carry.
+// AppAccess is what a user gets for one application: whether they may sign in to it, and the roles, tags and
+// authorization details (placeholders filled in, duplicates dropped) that their live access entries for it carry.
 type AppAccess struct {
 	Allowed bool
 	Roles   []string
 	Tags    []string
+	Details []model.AuthDetail
 }
 
 // ClientAccess decides a user's access to client c of tenant t: the union of the user's own entry and
@@ -333,6 +354,13 @@ func (s *Service) ClientAccess(ctx context.Context, t *model.Tenant, c *model.Cl
 		res.Allowed = true
 		roles = append(roles, acc.Roles)
 		tags = append(tags, acc.Tags)
+		// Validated when saved, so one that no longer reads is skipped rather than failing the user's sign-in.
+		ds, _ := model.ExpandAuthDetails(acc.AuthorizationDetails, model.AuthDetailVars{Sub: u.ID, Org: t.OrgID, Tenant: t.ID})
+		for _, d := range ds {
+			if !slices.ContainsFunc(res.Details, func(x model.AuthDetail) bool { return string(x.JSON) == string(d.JSON) }) {
+				res.Details = append(res.Details, d)
+			}
+		}
 	}
 	res.Roles = model.MergeTags(roles...)
 	res.Tags = model.MergeTags(tags...)

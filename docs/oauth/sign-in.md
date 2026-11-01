@@ -130,7 +130,8 @@ Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name
 provider sign-in) and `auth_time`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's
-access list arrive in `roles`.
+access list arrive in `roles`, and the [authorization details](authorization-details.md) given there (RFC 9396), for
+applications registered for their types, in `authorization_details`.
 
 ## Userinfo
 

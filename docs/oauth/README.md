@@ -31,6 +31,7 @@ Each guide explains one feature, with curl examples you can run against a server
 | Sign in on a CLI, a TV or another device without a browser | [Device sign-in](device.md) |
 | Log in to servers with short-lived SSH certificates | [SSH certificates](../ssh/README.md): Quisora as the tenant's SSH certificate authority |
 | Call another API for the user, from an API | [Token exchange](token-exchange.md) |
+| Put fine-grained permissions (topics, accounts) in access tokens | [Authorization details](authorization-details.md) (RFC 9396) |
 | Keep sign-in parameters out of the browser | [Pushed authorization requests](par.md) |
 | Make stolen tokens useless | [DPoP](dpop.md) |
 | Meet the FAPI 2.0 Security Profile (open banking and the like) | [FAPI 2.0](fapi2.md) |

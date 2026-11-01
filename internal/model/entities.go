@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -643,19 +644,22 @@ const (
 
 // TenantAccess gives a user, or every member of a group, access to a tenant's applications: all of them or the
 // listed clients, until Expires (zero: no end). Roles and Tags go into the tokens issued for those applications (the
-// "roles" claim, and merged into "tags"). ID is AccessID(tenantID, subjectID), so checking a user's access is a few
+// "roles" claim, and merged into "tags"), and AuthorizationDetails into the access tokens of those registered for
+// their types (authdetails.go). ID is AccessID(tenantID, subjectID), so checking a user's access is a few
 // direct reads (the user's own record and one per group) rather than a scan.
 type TenantAccess struct {
 	Meta
-	OrgID       string    `msgpack:"o" json:"org_id"`
-	TenantID    string    `msgpack:"t" json:"tenant_id"`
-	SubjectType string    `msgpack:"st" json:"subject_type"` // SubjectUser or SubjectGroup
-	SubjectID   string    `msgpack:"si" json:"subject_id"`
-	Roles       []string  `msgpack:"r" json:"roles"`
-	Tags        []string  `msgpack:"tg" json:"tags"`
-	AllClients  bool      `msgpack:"ac" json:"all_clients"`
-	Clients     []string  `msgpack:"cl" json:"clients"` // client ids, when AllClients is false
-	Expires     time.Time `msgpack:"e" json:"expires,omitzero"`
+	OrgID       string   `msgpack:"o" json:"org_id"`
+	TenantID    string   `msgpack:"t" json:"tenant_id"`
+	SubjectType string   `msgpack:"st" json:"subject_type"` // SubjectUser or SubjectGroup
+	SubjectID   string   `msgpack:"si" json:"subject_id"`
+	Roles       []string `msgpack:"r" json:"roles"`
+	Tags        []string `msgpack:"tg" json:"tags"`
+	// AuthorizationDetails are RFC 9396 authorization details (NormAuthDetails: a JSON array; nil for none).
+	AuthorizationDetails json.RawMessage `msgpack:"ad,omitempty" json:"authorization_details,omitempty"`
+	AllClients           bool            `msgpack:"ac" json:"all_clients"`
+	Clients              []string        `msgpack:"cl" json:"clients"` // client ids, when AllClients is false
+	Expires              time.Time       `msgpack:"e" json:"expires,omitzero"`
 }
 
 func (a *TenantAccess) Kind() Kind { return KindAccess }
@@ -723,6 +727,13 @@ type Client struct {
 	// Resources are the resource indicators (RFC 8707) the client may ask tokens for: absolute URIs of the APIs the
 	// access tokens are meant for (their aud). A request may name only these; none listed: no resource parameter.
 	Resources []string `msgpack:"res,omitempty" json:"resources"`
+	// AuthorizationDetailsTypes are the RFC 9396 authorization details types the client uses (its
+	// authorization_details_types metadata): the only ones its requests may name, and the only ones its access tokens
+	// carry (authdetails.go).
+	AuthorizationDetailsTypes []string `msgpack:"adt,omitempty" json:"authorization_details_types"`
+	// AuthorizationDetails are the authorization details of the client's own client_credentials tokens
+	// (NormAuthDetails: a JSON array; nil for none).
+	AuthorizationDetails json.RawMessage `msgpack:"ad,omitempty" json:"authorization_details,omitempty"`
 	// PKCEOptional lets a confidential client make authorization requests without PKCE (unset: PKCE required, as
 	// OAuth 2.1 does; public clients always need it). The management API shows it as require_pkce.
 	PKCEOptional bool `msgpack:"po" json:"-"`
@@ -1069,6 +1080,9 @@ type Grant struct {
 	Key string `msgpack:"rk,omitempty" json:"-"`
 	// Resources are the resource indicators (RFC 8707) the user authorized; a refresh may narrow them, never widen.
 	Resources []string `msgpack:"rs" json:"resources,omitempty"`
+	// AuthDetailTypes are the authorization details types (RFC 9396) the authorization request named; a token request
+	// may narrow them, never widen. Empty: it named none, and the tokens carry every type the client is registered for.
+	AuthDetailTypes []string `msgpack:"adt,omitempty" json:"authorization_details_types,omitempty"`
 	// ClaimsUI and ClaimsID are claims requested one by one (the claims request parameter) for userinfo and for
 	// the ID token, beyond those of the scopes.
 	ClaimsUI []string  `msgpack:"cu,omitempty" json:"claims_userinfo,omitempty"`

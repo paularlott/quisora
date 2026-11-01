@@ -39,6 +39,7 @@ type codeData struct {
 	UpstreamAMR []string `json:"uamr,omitempty"` // how the provider said the person signed in (Grant.UpstreamAMR)
 	Scopes      []string `json:"sc"`
 	Resources   []string `json:"res,omitempty"`
+	ADTypes     []string `json:"adt,omitempty"` // authorization details types the authorization request named
 	ClaimsUI    []string `json:"cu,omitempty"`
 	ClaimsID    []string `json:"ci,omitempty"`
 	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt of the authorization request
@@ -110,6 +111,11 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, e)
 		return
 	}
+	ad, e := parseAuthDetailsParam(r.PostForm.Get("authorization_details"), ce.c)
+	if e != nil {
+		writeOAuthError(w, e)
+		return
+	}
 	var (
 		tr *tokenResponse
 		oe *oauthError
@@ -117,15 +123,15 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	switch gt {
 	case "authorization_code":
 		tr, oe = p.exchangeCode(r.Context(), ce.c, r.PostForm.Get("code"), r.PostForm.Get("redirect_uri"),
-			r.PostForm.Get("code_verifier"), r.PostForm["resource"], jkt)
+			r.PostForm.Get("code_verifier"), r.PostForm["resource"], ad, jkt)
 	case "refresh_token":
-		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
+		tr, oe = p.refresh(r.Context(), ce.c, r.PostForm.Get("refresh_token"), r.PostForm.Get("scope"), r.PostForm["resource"], ad, jkt)
 	case service.GrantTokenExchange:
-		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm, jkt)
+		tr, oe = p.tokenExchange(r.Context(), ce.c, r.PostForm, ad, jkt)
 	case service.GrantDeviceCode:
-		tr, oe = p.deviceToken(r.Context(), ce.c, r.PostForm.Get("device_code"), jkt)
+		tr, oe = p.deviceToken(r.Context(), ce.c, r.PostForm.Get("device_code"), ad, jkt)
 	default:
-		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"], jkt)
+		tr, oe = p.clientCredentials(r.Context(), ce.c, r.PostForm.Get("scope"), r.PostForm["resource"], ad, jkt)
 	}
 	if oe != nil {
 		p.tokenFailed(r, failKey, oe)
@@ -234,7 +240,7 @@ func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code strin
 	return oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 }
 
-func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource []string, jkt string) (*tokenResponse, *oauthError) {
+func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource, ad []string, jkt string) (*tokenResponse, *oauthError) {
 	if code == "" || len(code) > 200 {
 		return nil, oerr("invalid_request", "code is required")
 	}
@@ -284,13 +290,17 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	} else if !subset(res, cd.Resources) {
 		return nil, oerr("invalid_target", "resource was not part of the authorization request")
 	}
+	ad, oe := narrowAuthDetails(ad, cd.ADTypes)
+	if oe != nil {
+		return nil, oe
+	}
 	if c, _, err = p.forResources(ctx, c, cd.Resources); err != nil {
 		if !gone(err) {
 			return nil, serverError(unavailable(err))
 		}
 		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
 	}
-	tr, gid, oe := p.userGrant(ctx, c, &cd, res, jkt, "")
+	tr, gid, oe := p.userGrant(ctx, c, &cd, res, ad, jkt, "")
 	switch {
 	case oe != nil && oe.status >= 500:
 		// Nothing was decided (a store that could not be read or written): the code is put back for the client's
@@ -312,7 +322,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 // naming its grant type) and issues its tokens for res, checking again that the user, their session and their access
 // to the application are still there. It returns the grant's id. The grant's id is cd.GrantID, so a retry of an
 // exchange that failed on our side makes the same grant, and issues its tokens from the one an earlier attempt made.
-func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res []string, jkt, via string) (*tokenResponse, string, *oauthError) {
+// userGrant makes the refresh grant of an approved authorization (cd) and issues its tokens, for the resources res
+// and the authorization details types ad (nil: those of the grant, which keeps cd's).
+func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res, ad []string, jkt, via string) (*tokenResponse, string, *oauthError) {
 	// Each of these is a decision: a read that fails (as opposed to one that finds the record gone) makes none, and
 	// says so (503), rather than telling the client the user, session or organization is gone.
 	u, err := p.user(ctx, cd.UserID)
@@ -364,7 +376,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	}
 	now := time.Now().UTC()
 	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Resources: cd.Resources,
-		ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
+		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
 		g.DPoPJKT = jkt // a public client's refresh tokens need the same key from now on (RFC 9449 §5)
@@ -410,7 +422,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
 	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt}
+		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, "", serverError(err)
@@ -605,7 +617,7 @@ func (p *Provider) authentic(pr parsedRefresh, g *model.Grant) bool {
 	return subtle.ConstantTimeCompare(pr.secret, key) == 1
 }
 
-func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
+func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope string, resource, ad []string, jkt string) (*tokenResponse, *oauthError) {
 	invalid := oerr("invalid_grant", "the refresh token is invalid, expired or revoked")
 	pr, ok := parseRefresh(token)
 	if !ok {
@@ -688,6 +700,10 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	} else if !subset(res, g.Resources) || !subset(res, c.Resources) {
 		return nil, oerr("invalid_target", "resource was not part of the authorization")
 	}
+	ad, oe := narrowAuthDetails(ad, g.AuthDetailTypes)
+	if oe != nil {
+		return nil, oe
+	}
 	var newRefresh string
 	switch {
 	case (c.RotateRefresh || c.Public()) && pr.counted && isRefreshRetry(c, g, pr.counter):
@@ -757,7 +773,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
 		authTime: g.AuthTime, amr: g.AMR, idp: g.IdP, upstreamAMR: g.UpstreamAMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
-		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt}
+		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, serverError(err)
@@ -773,7 +789,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 // ---------------------------------------------------------------------------------------------------------------
 // client_credentials
 
-func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource []string, jkt string) (*tokenResponse, *oauthError) {
+func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope string, resource, ad []string, jkt string) (*tokenResponse, *oauthError) {
 	// A service account's scopes are all Quisora's own, whatever they share a name with: its groups is the management
 	// API's, not the OpenID Connect scope a token without a user never carries.
 	allowed := make([]string, 0, len(c.Scopes))
@@ -803,7 +819,7 @@ func (p *Provider) clientCredentials(ctx context.Context, c *model.Client, scope
 		}
 		return nil, oerr("invalid_client", "the client's organization no longer exists")
 	}
-	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res, jkt: jkt}, false)
+	tr, err := p.mint(ctx, &issue{client: c, org: org, scopes: scopes, resources: res, jkt: jkt, adTypes: ad}, false)
 	if err == nil && p.cfg.Audit.Tokens {
 		p.auditClient(ctx, c, nil, "oauth.client_credentials", map[string]string{"scopes": strings.Join(scopes, " ")})
 	}

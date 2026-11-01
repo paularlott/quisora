@@ -454,7 +454,7 @@ func TestDevicePollDuringApprovalStaysPending(t *testing.T) {
 		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{}, "")
 	}()
 	g.waitHeld(t)
-	_, oe := p.deviceToken(ctx, &model.Client{Meta: model.Meta{ID: "client"}}, id, "")
+	_, oe := p.deviceToken(ctx, &model.Client{Meta: model.Meta{ID: "client"}}, id, nil, "")
 	g.open()
 	if !<-done {
 		t.Fatal("approval failed")

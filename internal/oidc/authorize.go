@@ -37,7 +37,8 @@ type flow struct {
 	LoginHint   string   `json:"lh,omitempty"`
 	Mode        string   `json:"m"` // query | form_post
 	Resources   []string `json:"res,omitempty"`
-	Created     int64    `json:"t"` // unix nanos
+	ADTypes     []string `json:"adt,omitempty"` // authorization details types asked for (authdetails.go)
+	Created     int64    `json:"t"`             // unix nanos
 	Logins      int      `json:"lg,omitempty"`
 	Decision    string   `json:"d,omitempty"` // "allow" or "deny"
 	DecidedBy   string   `json:"db,omitempty"`
@@ -481,6 +482,11 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 		return nil, oerr("invalid_target", "the resource is not registered for this client")
 	}
 	f.Resources = res
+	ad, e := parseAuthDetailsParam(q.Get("authorization_details"), c)
+	if e != nil {
+		return nil, e
+	}
+	f.ADTypes = ad
 	cp, err := parseClaimsParam(q.Get("claims"), c.Scopes)
 	if err != nil {
 		return nil, oerr("invalid_request", err.Error())
@@ -722,7 +728,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Scopes: f.Scopes,
-		Resources: f.Resources, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
+		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
 	if err != nil {
