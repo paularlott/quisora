@@ -13,7 +13,8 @@ client_credentials tokens). Applications cannot ask for more than that; they can
 ## Setting up
 
 1. **Register the types on the application.** On the client, under **Authorization details types**, list the types
-   it uses (at most 16, each up to 256 characters without spaces). Its access tokens carry only details of these
+   it uses, exactly as its APIs name them: a URN (`urn:example:admin`) or a URL (`https://example.com/topics`), at
+   most 16, each up to 256 characters without spaces. Its access tokens carry only details of these
    types, and its requests may name only these. An application with no types gets no details at all.
 2. **Give the details through access.** In the tenant's **Access** list (a tenant whose **Who can sign in** is set to
    the people on the list), edit a user's or group's entry and fill in **Authorization details**: a JSON array, at
