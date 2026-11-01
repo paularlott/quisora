@@ -78,6 +78,21 @@
   .input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] { border-color: var(--danger); border-width: 2px; }
   .input:disabled, .select:disabled, .textarea:disabled { opacity: 0.6; cursor: not-allowed; }
   .input[readonly] { background: var(--glass-inset); }
+  /* the box of an authorization details editor (lib/ace.js draws the editor in it, which then sizes it to its lines);
+     until then, about the height of its ten lines */
+  .details-editor {
+    width: 100%;
+    border-radius: var(--radius-ctl);
+    border: 1.5px solid var(--ctl-border);
+    background: var(--ctl-bg);
+    box-shadow: var(--ctl-shadow);
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .details-editor:hover { border-color: var(--fg); }
+  .details-editor:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .details-editor[data-invalid="true"] { border-color: var(--danger); border-width: 2px; }
+  .details-editor:not(.ace_editor) { min-height: 14rem; }
   /* A value shown among a form's fields but not editable here: the field's height (rows line up), no box. */
   .input.input-static { background: transparent; border-color: transparent; box-shadow: none; padding-inline: 0; cursor: default; }
   .input.input-static:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }

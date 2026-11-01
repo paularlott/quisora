@@ -16,7 +16,7 @@ import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
-import { detailsText, parseDetails } from '../lib/authdetails.js'
+import { detailsText, checkDetails, describeProblem } from '../lib/authdetails.js'
 
 // newId makes an id as the server does (model.NewID): the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, the
 // version and variant bits, random bits) read as one big-endian number and written in base 62 (digits, then upper,
@@ -666,6 +666,8 @@ function clientDialogMixin(Alpine) {
     },
     get usesRedirects() { return (this.form.grant_types || []).includes('authorization_code') },
     get usesDevice() { return (this.form.grant_types || []).includes(DEVICE_CODE) },
+    // The types listed above the client's own authorization details (the details field checks against them).
+    get detailTypes() { return listValues(this.form.authorization_details_types || []) },
     get usesClientCredentials() { return this.form.token_endpoint_auth_method !== 'none' && (this.form.grant_types || []).includes('client_credentials') },
     editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canFirstParty: false, tenants: [], tenantId: '',
     shapeClient(c) {
@@ -743,9 +745,10 @@ function clientDialogMixin(Alpine) {
     },
     async submitClient() {
       if (!this.clientListsValid()) return
-      const details = parseDetails(this.usesClientCredentials ? this.form.authorization_details : '')
-      if (details.error) {
-        this.setErrors(new ApiError(422, { error: details.error, field: 'authorization_details' }))
+      const details = checkDetails(this.usesClientCredentials ? this.form.authorization_details : '')
+      if (!details.value) {
+        const first = details.problems.find((p) => p.severity === 'error')
+        this.setErrors(new ApiError(422, { error: describeProblem(first), field: 'authorization_details' }))
         return
       }
       const edit = this.editingClient

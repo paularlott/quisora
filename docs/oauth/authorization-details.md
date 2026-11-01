@@ -19,6 +19,9 @@ client_credentials tokens). Applications cannot ask for more than that; they can
 2. **Give the details through access.** In the tenant's **Access** list (a tenant whose **Who can sign in** is set to
    the people on the list), edit a user's or group's entry and fill in **Authorization details**: a JSON array, at
    most 16 objects and 8 KB. They go into the access tokens of the applications the entry covers.
+   The console's editor completes the common fields, the application's types (after `"type": `) and the placeholders
+   (after `{{`), and marks mistakes as you type: JSON errors and what the server would refuse, and, as warnings,
+   details of a type the application does not list, which its tokens would leave out.
 3. **For a service that acts as itself** (a publisher, say), fill in **Authorization details of its own tokens** on
    its client (shown when **Client credentials** is ticked). They go into its client_credentials tokens.
 

@@ -1,0 +1,39 @@
+/* The Ace editor's theme (lib/ace.js): drawn from the design tokens, so it follows light and dark and any skin. Text
+   colours are the ones the contrast budget covers (tokens.css): --fg, --fg-muted, --accent and --danger. Loaded with
+   the editor, not with the main stylesheet. */
+
+.ace-quisora.ace_editor {
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+.ace-quisora .ace_gutter { background: var(--glass-inset); color: var(--fg-muted); }
+.ace-quisora .ace_gutter-active-line { background: transparent; }
+.ace-quisora .ace_cursor { color: var(--fg); }
+.ace-quisora .ace_marker-layer .ace_selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.ace-quisora.ace_multiselect .ace_selection.ace_start { box-shadow: none; }
+.ace-quisora .ace_marker-layer .ace_bracket { border: 1px solid var(--fg-muted); margin: -1px 0 0 -1px; }
+.ace-quisora .ace_marker-layer .ace_selected-word { border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.ace-quisora .ace_placeholder { color: var(--fg-muted); font-family: var(--font-mono); opacity: 1; transform: none; padding: 0 0 0 4px; white-space: pre; }
+
+/* JSON: field names in the accent colour, strings in the text colour, literals muted, mistakes in the danger colour */
+.ace-quisora .ace_variable { color: var(--accent); }
+.ace-quisora .ace_string { color: var(--fg); }
+.ace-quisora .ace_constant { color: var(--fg-muted); font-weight: 600; }
+.ace-quisora .ace_paren, .ace-quisora .ace_punctuation { color: var(--fg-muted); }
+.ace-quisora .ace_invalid { color: var(--danger); text-decoration: underline wavy; }
+
+/* the completion popup and tooltips sit outside the dialog: solid surfaces */
+.ace-quisora.ace_autocomplete, .ace_autocomplete.ace-quisora {
+  background: var(--glass-solid);
+  color: var(--fg);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-item);
+  box-shadow: var(--glass-shadow);
+}
+.ace-quisora.ace_autocomplete .ace_completion-highlight { color: var(--accent); font-weight: 700; text-shadow: none; }
+.ace-quisora.ace_autocomplete .ace_line-hover { background: var(--row-hover); border: 0; }
+.ace-quisora.ace_autocomplete .ace_selected, .ace-quisora.ace_autocomplete .ace_marker-layer .ace_active-line { background: var(--row-hover); }
+.ace-quisora.ace_autocomplete .ace_completion-meta, .ace-quisora.ace_autocomplete .ace_rightAlignedText { color: var(--fg-muted); opacity: 1; }
+.ace_tooltip { background: var(--glass-solid); color: var(--fg); border: 1px solid var(--edge); font-family: var(--font-sans); }

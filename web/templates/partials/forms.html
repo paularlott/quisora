@@ -14,6 +14,17 @@
   <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
 </div>{{end}}
 
+{{/* Authorization details (RFC 9396): a JSON code editor (lib/detailsfield.js) bound to form.<name>, whose input
+     textarea takes id f-<name>. dict: name, label, help, placeholder, show, types (a getter of the page component: the
+     application's authorization details types, for the check). */}}
+{{define "details-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}} x-data="detailsField" data-name="{{.name}}"{{with .types}} data-types="{{.}}"{{end}}{{with .placeholder}} data-placeholder="{{.}}"{{end}}>
+  <label class="label" id="l-{{.name}}" for="f-{{.name}}">{{.label}}</label>
+  <div class="details-editor" x-ref="host" :data-invalid="invalidAttr"></div>
+  {{with .help}}<p class="help" id="h-{{$.name}}">{{.}}</p>{{end}}
+  <p class="help" id="p-{{.name}}" x-show="hasProblems" x-text="problemsText"></p>
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
 {{/* "options" is a slice of structs/maps with Value and Label. */}}
 {{define "select-field"}}<div class="field"{{with .show}} x-show="{{.}}"{{end}}>
   <label class="label" for="f-{{.name}}">{{.label}}{{if .required}} <span class="req" aria-hidden="true">*</span>{{end}}</label>

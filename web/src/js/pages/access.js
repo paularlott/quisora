@@ -12,7 +12,7 @@ import { mix } from '../lib/mix.js'
 import { pickerMixin } from '../lib/picker.js'
 import { subscribe, liveRunner } from '../lib/live.js'
 import { fmtDate } from '../lib/format.js'
-import { detailsText, parseDetails } from '../lib/authdetails.js'
+import { detailsText, checkDetails, describeProblem } from '../lib/authdetails.js'
 
 const enc = encodeURIComponent
 const PICK_LIMIT = 8
@@ -58,7 +58,7 @@ export default function (Alpine) {
     async loadClients() {
       try {
         const r = await get(`${this.apiBase}/clients${qs({ tenant: this.tenantId, sort: 'name', limit: 100 })}`)
-        this.clients = r.items.map((c) => ({ id: c.id, name: c.name }))
+        this.clients = r.items.map((c) => ({ id: c.id, name: c.name, types: c.authorization_details_types || [] }))
         if (this.items.length) this.items = this.items.map((i) => this.transform(i)) // client names in the table
       } catch (e) { /* the table still works; names show as ids */ }
     },
@@ -93,6 +93,11 @@ export default function (Alpine) {
     get pickClients() { return !this.form.acc_all },
     get hasClients() { return this.clients.length > 0 },
     get noClients() { return this.clients.length === 0 },
+    // The authorization details types of the applications the entry covers (the details field checks against them).
+    get detailTypes() {
+      const covered = this.form.acc_all ? this.clients : this.clients.filter((c) => (this.form.acc_clients || []).includes(c.id))
+      return [...new Set(covered.flatMap((c) => c.types))]
+    },
     errorKey(f) {
       return { subject_id: 'acc_subject', subject_type: 'acc_subject', expires: 'acc_expires', clients: 'acc_clients', all_clients: 'acc_clients' }[f] || f
     },
@@ -116,9 +121,10 @@ export default function (Alpine) {
     async submitAccess() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
-      const details = parseDetails(f.authorization_details)
-      if (details.error) {
-        this.setErrors(new ApiError(422, { error: details.error, field: 'authorization_details' }))
+      const details = checkDetails(f.authorization_details)
+      if (!details.value) {
+        const first = details.problems.find((p) => p.severity === 'error')
+        this.setErrors(new ApiError(422, { error: describeProblem(first), field: 'authorization_details' }))
         return
       }
       const body = { roles: f.roles, tags: f.tags, authorization_details: details.value, all_clients: f.acc_all, clients: f.acc_all ? [] : f.acc_clients, expires: dayToTime(f.acc_expires) }
