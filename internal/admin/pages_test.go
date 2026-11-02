@@ -196,7 +196,7 @@ func TestNotFound(t *testing.T) {
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 	// signed out: how to sign in, as a 404
-	if res.StatusCode != 404 || !strings.Contains(string(b), "Sign in through your application") || !strings.Contains(string(b), "does not exist") ||
+	if res.StatusCode != 404 || !strings.Contains(string(b), "Sign in through your application") || !strings.Contains(string(b), "lead to a page here") ||
 		!strings.Contains(res.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("html 404 signed out: %d %s", res.StatusCode, b)
 	}

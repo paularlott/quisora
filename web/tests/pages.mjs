@@ -247,6 +247,9 @@ PAGES.push(
     await p.getByText('Signing in a device').waitFor()
   }] },
   { name: 'login-org', path: '/o/acme/login', as: 'none' },
+  // where to sign in instead: the server's address, and an organization that does not exist (a 404)
+  { name: 'landing', path: '/', as: 'none' },
+  { name: 'no-such-org', path: '/o/nosuchorg/login', as: 'none' },
   // the second-factor step (the password step's answer stubbed): "Try another way", then a recovery code
   { name: 'login-another-way', path: '/o/acme/login', as: 'none', steps: [secondFactorStep, async (p) => {
     await p.getByRole('button', { name: 'Try another way' }).first().click()

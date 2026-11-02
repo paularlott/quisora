@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -73,6 +74,29 @@ func TestBranding(t *testing.T) {
 	want(t, anon.get("/o/acme/branding/logo-light"), 404)
 	if page := string(w.as("admin").get("/admin/orgs/acme").Raw); strings.Contains(page, "brand.css") {
 		t.Error("still branded")
+	}
+}
+
+// The page that sends a signed-out visitor to their application or sign-in link carries the primary organization's
+// branding, the server's own: for a page that does not exist, and for an organization's page when there is no such
+// organization (rather than a bare 404).
+func TestSignInElsewhereBranded(t *testing.T) {
+	w := newWorld(t)
+	uri := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svgLogo))
+	want(t, w.as("super").patch("/api/orgs/"+w.env.Primary.ID+"/branding", map[string]any{"logo_light": uri, "primary_color": "#0f766e"}), 200)
+	anon := w.anon()
+	for _, p := range []string{"/no/such/page", "/o/" + model.NewID() + "/branding/brand.css", "/o/nosuchorg/branding/logo-light"} {
+		r := anon.get(p)
+		page := string(r.Raw)
+		if r.Status != 404 || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/html") ||
+			!strings.Contains(page, "Sign in through your application") || !strings.Contains(page, "lead to a page here") {
+			t.Fatalf("%s: %d %.300s", p, r.Status, page)
+		}
+		for _, s := range []string{"/o/" + w.env.Primary.ID + "/branding/logo-light?v=", "/o/" + w.env.Primary.ID + "/branding/brand.css?v=0f766e", "data-brand"} {
+			if !strings.Contains(page, s) {
+				t.Errorf("%s lacks the primary organization's %q", p, s)
+			}
+		}
 	}
 }
 

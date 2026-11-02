@@ -85,8 +85,8 @@ bin/quisora serve --public-url https://localhost:8443
 1. `bootstrap` creates the `primary` organization and a super admin (`admin@example.com`) with no password, and
    prints a single-use invitation link.
 2. Open the link (accept the self-signed certificate), set a password or create a passkey, then a second factor.
-3. The admin console is at `https://localhost:8443/admin`. `https://localhost:8443/` takes users to the primary organization's sign-in page;
-   an organization's own is `/o/<org id or name>/login`.
+3. The admin console is at `https://localhost:8443/admin`. Users sign in through their application, or their organization's sign-in
+   page, `/o/<org id or name>/login`; `https://localhost:8443/` tells them so.
 
 This runs on BadgerDB in `./data` with a self-signed certificate. For a real deployment, set:
 

@@ -125,13 +125,18 @@ func TestPagesRender(t *testing.T) {
 	e := newEnv(t, nil)
 	b := e.browser(t)
 
-	// A plain visit goes to the primary organization's sign-in page; there is no organization picker.
-	res, _ := b.getAbs("/")
-	if res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login" {
-		t.Fatalf("landing: %d %q", res.StatusCode, res.Header.Get("Location"))
+	// A plain visit is told to sign in through the application or the organization's link: nothing here says which
+	// organization the visitor belongs to (a 200, not the 404 of a page that does not exist). Signed in, it is the
+	// account page.
+	for _, path := range []string{"/", "/?next=/oauth/authorize/resume"} {
+		res, body := b.getAbs(path)
+		if res.StatusCode != 200 || !strings.Contains(body, "Sign in through your application") || strings.Contains(body, "lead to a page here") {
+			t.Fatalf("landing %s: %d %.300s", path, res.StatusCode, body)
+		}
 	}
-	if res, _ = b.getAbs("/?next=/oauth/authorize/resume"); res.StatusCode != 303 || res.Header.Get("Location") != e.primaryBase()+"/login" {
-		t.Fatalf("landing with next: %d %q", res.StatusCode, res.Header.Get("Location"))
+	u := e.user(t, e.org(t, "landing", nil), "pat", model.RoleUser)
+	if res, _ := e.signedIn(t, u).getAbs("/"); res.StatusCode != 303 || res.Header.Get("Location") != "/o/"+u.OrgID+"/account" {
+		t.Fatalf("landing signed in: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	// The sign-in page, by the organization's name or its id: the same page, whose links are by id.
 	for _, ref := range []string{"primary", e.Primary.ID} {

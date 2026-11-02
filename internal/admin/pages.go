@@ -311,7 +311,7 @@ func NotFound(s *web.Server) http.Handler {
 			return
 		}
 		if web.User(r) == nil { // signed out: how to sign in, as a 404
-			s.Render.Render(w, http.StatusNotFound, "not-found", s.Page(w, r, "Not found", "", nil))
+			s.SignInElsewhere(w, r, http.StatusNotFound)
 			return
 		}
 		renderError(s, w, r, http.StatusNotFound)

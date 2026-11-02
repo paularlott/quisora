@@ -38,12 +38,15 @@ func setSessionCookie(w http.ResponseWriter, s *model.Session, raw string) {
 type ctxOrgKey struct{}
 
 // InOrg serves next for the organization its path names ({org}: an id or a name): Org(r) is that organization, and the
-// request's session is its session only. An organization that does not exist is not found; one that cannot be read
-// now is unavailable (503), never "not found".
+// request's session is its session only. An organization that does not exist is not found (s.NotFound); one that
+// cannot be read now is unavailable (503), never "not found".
 func (s *Server) InOrg(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		org, err := s.Svc.OrgByRef(r.Context(), r.PathValue("org"))
 		switch {
+		case errors.Is(err, service.ErrNotFound) && s.NotFound != nil:
+			s.NotFound.ServeHTTP(w, r)
+			return
 		case errors.Is(err, service.ErrNotFound):
 			http.NotFound(w, r)
 			return

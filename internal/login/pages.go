@@ -23,17 +23,15 @@ func (m *Module) anonPage(w http.ResponseWriter, r *http.Request, title string, 
 
 func wantsReauth(r *http.Request) bool { return r.URL.Query().Get("reauth") == "1" }
 
-// landing handles GET /: on to the primary organization's sign-in page, the one an installation's first visitor means.
-// Every other organization has its own address (/o/<org>/login), which an application or the organization's own
-// link leads to.
+// landing handles GET /. Signed out, it says how to sign in: through the application, or the organization's own link
+// (/o/<org>/login), never here, since nothing here says which organization the visitor belongs to. Signed in, it is
+// the account page.
 func (m *Module) landing(w http.ResponseWriter, r *http.Request) {
-	org, err := m.s.Svc.PrimaryOrg(r.Context())
-	if err != nil {
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, "This server cannot serve its sign-in page right now. Please try again shortly.", http.StatusServiceUnavailable)
+	if u := web.User(r); u != nil {
+		http.Redirect(w, r, web.OrgPath(u.OrgID, "/account"), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, web.OrgPath(org.ID, "/login"), http.StatusSeeOther)
+	m.s.SignInElsewhere(w, r, http.StatusOK)
 }
 
 type providerButton struct {

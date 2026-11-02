@@ -185,7 +185,8 @@ func modules(ctx context.Context, a *App) []web.Module {
 		adm.Mailer = adminMail
 	}
 	a.Admin = adm
-	a.Server.Mux.Handle("/", admin.NotFound(a.Server))
+	a.Server.NotFound = admin.NotFound(a.Server)
+	a.Server.Mux.Handle("/", a.Server.NotFound)
 	return []web.Module{op, lm, &scim.Module{TokenVerifier: scimVerifier(a)}, adm, &events.Module{Hub: hub}, commandModule{a}}
 }
 

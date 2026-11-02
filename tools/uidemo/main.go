@@ -106,7 +106,8 @@ func main() {
 	srv.Use(adm)
 	srv.Use(&events.Module{Hub: hub})
 	extraModules(srv, adm)
-	srv.Mux.Handle("/", admin.NotFound(srv))
+	srv.NotFound = admin.NotFound(srv)
+	srv.Mux.Handle("/", srv.NotFound)
 	srv.Mux.HandleFunc("GET /__demo/device-client", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(demoDeviceClient)) })
 	srv.Mux.HandleFunc("GET /__demo/login", func(w http.ResponseWriter, r *http.Request) {
 		u := demo[r.URL.Query().Get("as")]
