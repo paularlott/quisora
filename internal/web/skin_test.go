@@ -47,11 +47,11 @@ func TestLoadSkin(t *testing.T) {
 	if s, err = LoadSkin(dir); err != nil || s.LogoDark == nil || s.LogoDark.Type != "image/svg+xml" {
 		t.Fatalf("folder with both logos: %+v %v", s, err)
 	}
-	// A stylesheet written for another name (the folder was renamed) would style nothing: refused, naming both.
+	// A stylesheet written for another name (the folder was renamed) still loads: the server warns of it (New).
 	other := filepath.Join(t.TempDir(), "acme-skin")
 	must(t, os.Rename(dir, other))
-	if _, err := LoadSkin(other); err == nil || !strings.Contains(err.Error(), `"acme"`) || !strings.Contains(err.Error(), `"acme-skin"`) {
-		t.Errorf("stylesheet for another name: %v", err)
+	if s, err := LoadSkin(other); err != nil || s.Name != "acme-skin" {
+		t.Errorf("stylesheet for another name: %+v %v", s, err)
 	}
 }
 
@@ -115,22 +115,22 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// A skin's stylesheet is refused only when its data-skin selectors all name another skin: the selector's spacing and
-// flags as CSS allows them, and a stylesheet that names no skin, are its own.
-func TestSkinNamed(t *testing.T) {
-	for css, ok := range map[string]bool{
-		`:root[data-skin="acme"]{}`:                  true,
-		`:root[data-skin=acme]{}`:                    true,
-		`:root[data-skin='acme']{}`:                  true,
-		`:root[ data-skin = "acme" ]{}`:              true,
-		`:root[data-skin="acme" i]{}`:                true,
-		`:root{--accent:#123456}`:                    true,
-		`[data-skin=other] a{} [data-skin="acme"]{}`: true,
-		`:root[data-skin="other"]{}`:                 false,
-		`:root[data-skin = "acme-skin"]{}`:           false,
+// A skin's stylesheet styles another name only when its data-skin selectors all name another skin: the selector's
+// spacing and flags as CSS allows them, and a stylesheet that names no skin, are its own.
+func TestSkinOtherName(t *testing.T) {
+	for css, other := range map[string]string{
+		`:root[data-skin="acme"]{}`:                  "",
+		`:root[data-skin=acme]{}`:                    "",
+		`:root[data-skin='acme']{}`:                  "",
+		`:root[ data-skin = "acme" ]{}`:              "",
+		`:root[data-skin="acme" i]{}`:                "",
+		`:root{--accent:#123456}`:                    "",
+		`[data-skin=other] a{} [data-skin="acme"]{}`: "",
+		`:root[data-skin="other"]{}`:                 "other",
+		`:root[data-skin = "acme-skin"]{}`:           "acme-skin",
 	} {
-		if err := skinNamed([]byte(css), "acme"); (err == nil) != ok {
-			t.Errorf("%s: %v", css, err)
+		if got := skinOtherName([]byte(css), "acme"); got != other {
+			t.Errorf("%s: %q, want %q", css, got, other)
 		}
 	}
 }

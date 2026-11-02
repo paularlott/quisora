@@ -71,9 +71,6 @@ func LoadSkin(v string) (*Skin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ui.skin: %w", err)
 	}
-	if err := skinNamed(css, name); err != nil {
-		return nil, fmt.Errorf("ui.skin %s: %w", v, err)
-	}
 	sum := sha256.Sum256(css)
 	s := &Skin{Name: name, CSS: css, Version: hex.EncodeToString(sum[:6])}
 	if s.LogoLight, err = skinLogo(fsys, "logo-light"); err != nil {
@@ -92,24 +89,21 @@ func LoadSkin(v string) (*Skin, error) {
 // "=" and a flag after the value as CSS allows.
 var skinSelector = regexp.MustCompile(`\[\s*data-skin\s*=\s*["']?([^"'\]\s]+)`)
 
-// skinNamed refuses a stylesheet whose data-skin selectors all name another skin than its folder's: one written for
-// another name, as when the folder was renamed, would apply nothing, without a word. A stylesheet that names no skin
-// (:root { ... }) applies as it is: it is loaded only for this skin.
-func skinNamed(css []byte, name string) error {
-	var names []string
+// skinOtherName returns the skin name a stylesheet's data-skin selectors use when none is the skin's own (its
+// folder's), as when the folder was renamed: the stylesheet would then style nothing, without a word. "" when one is
+// its own, or when it names no skin (:root { ... }: it is loaded only for this skin). It reads the text, not the CSS
+// (a selector in a comment counts), so New only warns of it.
+func skinOtherName(css []byte, name string) string {
+	other := ""
 	for _, m := range skinSelector.FindAllSubmatch(css, -1) {
 		if string(m[1]) == name {
-			return nil
+			return ""
 		}
-		if n := string(m[1]); !slices.Contains(names, n) {
-			names = append(names, n)
+		if other == "" {
+			other = string(m[1])
 		}
 	}
-	if len(names) == 0 {
-		return nil
-	}
-	return fmt.Errorf(`skin.css styles data-skin=%q, but the skin's name is its folder's, %q: rename the folder %s, or `+
-		`the selectors`, names[0], name, names[0])
+	return other
 }
 
 func skinLogo(fsys fs.FS, base string) (*SkinFile, error) {

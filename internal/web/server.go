@@ -111,6 +111,10 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		Site: SiteFromConfig(cfg), Mux: http.NewServeMux(), skin: skin}
 	if skin != nil {
 		s.Site.Skin, s.Site.SkinCSS = skin.Name, "/branding/skin.css?v="+skin.Version
+		if other := skinOtherName(skin.CSS, skin.Name); other != "" {
+			log.Warn("ui.skin: skin.css styles data-skin=\""+other+"\", but the skin's name is its folder's: rename the "+
+				"folder, or the selectors, or the skin may style nothing", "skin", cfg.UI.Skin, "name", skin.Name)
+		}
 	}
 	s.baseRoutes()
 	return s, nil
