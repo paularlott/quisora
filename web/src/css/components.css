@@ -392,6 +392,16 @@
   }
 
   .avatar-lg { width: 4rem; height: 4rem; font-size: 1.5rem; }
+  /* An organization's logo as its branding card previews it, on the background of the theme it is for in both themes. */
+  .logo-preview { display: flex; align-items: center; min-height: 5rem; padding: 0.75rem 1rem; border-radius: var(--radius-inner); border: 1px solid var(--edge); }
+  .logo-preview img { max-width: 100%; max-height: 3.5rem; width: auto; }
+  .logo-preview-light { background: #ffffff; color: #334155; }
+  .logo-preview-dark { background: #0f172a; color: #e2e8f0; }
+  /* The native colour picker beside the text field of a colour. */
+  .input.color-input { width: 3.5rem; flex: none; padding: 0.25rem; }
+  .color-input::-webkit-color-swatch-wrapper { padding: 0; }
+  .color-input::-webkit-color-swatch { border: 0; border-radius: 0.4rem; }
+  .color-input::-moz-color-swatch { border: 0; border-radius: 0.4rem; }
   /* The account a sign-in step is for (the password step): who, and the way back to change it. */
   .account-chip { display: flex; align-items: center; gap: 0.7rem; min-height: 3.25rem; padding: 0.4rem 0.4rem 0.4rem 0.55rem;
     border-radius: var(--radius-ctl); border: 1px solid var(--edge); background: var(--glass-inset); }

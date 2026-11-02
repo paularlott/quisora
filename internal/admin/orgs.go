@@ -13,8 +13,16 @@ import (
 // to super admins).
 type orgView struct {
 	*model.Org
-	Primary bool `json:"primary"`
-	Users   *int `json:"users,omitempty"`
+	Primary  bool         `json:"primary"`
+	Users    *int         `json:"users,omitempty"`
+	Branding brandingView `json:"branding"`
+}
+
+// brandingView is an organization's branding with the URLs of its logo (none: omitted).
+type brandingView struct {
+	PrimaryColor string `json:"primary_color"`
+	LogoLight    string `json:"logo_light,omitempty"`
+	LogoDark     string `json:"logo_dark,omitempty"`
 }
 
 // viewOf is o as a sees it: the last emergency sign-out (who pulled it, and why) is for those who manage the
@@ -25,7 +33,8 @@ func (m *Module) viewOf(a *service.Actor, o *model.Org) orgView {
 		cp.LastSignOut = nil
 		o = &cp
 	}
-	return orgView{Org: o, Primary: o.Primary}
+	return orgView{Org: o, Primary: o.Primary, Branding: brandingView{PrimaryColor: o.Branding.PrimaryColor,
+		LogoLight: web.OrgLogoURL(o, false), LogoDark: web.OrgLogoURL(o, true)}}
 }
 
 func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +72,8 @@ func (m *Module) createOrg(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		orgView
 		ServiceAccount *createdServiceAccount `json:"service_account,omitempty"`
-	}{orgView: orgView{Org: o, Primary: o.Primary, Users: &zero}}
+	}{orgView: m.viewOf(web.Actor(r), o)}
+	out.Users = &zero
 	if sa != nil {
 		out.ServiceAccount = &createdServiceAccount{m.serviceAccountViewOf(sa), secret}
 	}
@@ -96,7 +106,25 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, orgView{Org: upd, Primary: upd.Primary})
+	web.WriteJSON(w, http.StatusOK, m.viewOf(a, upd))
+}
+
+// updateBranding changes the organization's logo and primary colour (its admins; never a service account).
+func (m *Module) updateBranding(w http.ResponseWriter, r *http.Request) {
+	o, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	var in service.BrandingInput
+	if !web.DecodeJSON(w, r, &in) {
+		return
+	}
+	upd, err := m.s.Svc.UpdateBranding(r.Context(), a, o.ID, in)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, m.viewOf(a, upd))
 }
 
 // deleteOrg deletes an organization; ?cascade=1 allows one with users (they, its groups, clients and providers stop

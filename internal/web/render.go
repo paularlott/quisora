@@ -24,6 +24,8 @@ type Site struct {
 	LogoDark     string        // URL (falls back to LogoLight)
 	Skin         string        // ui.skin's name (data-skin on <html>), or ""
 	SkinCSS      string        // URL of the skin's stylesheet, or ""
+	OrgLogo      bool          // the logo is the organization's (Site.For), and Name its name
+	BrandCSS     string        // URL of the organization's primary colour stylesheet (Site.For), or ""
 	Footer       template.HTML // ui.footer, limited to links and text emphasis (FooterHTML)
 	PublicURL    string
 	Mail         bool // an SMTP server is configured (config.Mail.Enabled)

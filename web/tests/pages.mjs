@@ -55,6 +55,16 @@ export const PAGES = [
   { name: 'master-key', path: '/admin/system/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
   { name: 'org', path: A, as: 'admin', steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }] },
+  // The branding card with a logo and a dark logo chosen, and a colour the server refuses
+  { name: 'org-branding', path: A, as: 'admin', steps: [async (p) => {
+      const card = p.getByRole('region', { name: 'Branding' })
+      await card.locator('#f-logo_light').setInputFiles({ name: 'logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#4338ca"/></svg>') })
+      await card.locator('#f-logo_dark').setInputFiles({ name: 'logo-dark.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#e0e7ff"/></svg>') })
+      await card.locator('#f-primary_color').fill('#fde047')
+      await card.getByRole('button', { name: 'Save branding' }).click()
+      await card.locator('#e-primary_color').filter({ hasText: /./ }).waitFor()
+      await card.scrollIntoViewIfNeeded(); await p.waitForTimeout(300)
+    }] },
   { name: 'org-signout', path: A, as: 'admin', dialog: true, steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }, open('Sign everyone out…')] },
   { name: 'users', path: `${A}/users`, as: 'admin', steps: [waitRows] },
   { name: 'users-new', path: `${A}/users`, as: 'admin', steps: [waitRows, open('New user')], dialog: true },

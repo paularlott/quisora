@@ -112,6 +112,11 @@ account on the primary organization, made by a super admin:
    ```
 
    If the account cannot be created, the organization is not left behind, so a retry starts clean.
+
+   The request may also carry `branding` (`logo_light`, `logo_dark`, `primary_color`: the organization's logo and
+   colour, [web/skins](../web/skins/README.md#organization-branding)). Invalid branding is a 422 and nothing is
+   created. Service accounts cannot change branding afterwards (`PATCH /api/orgs/{org}/branding` is for the
+   organization's administrators and super admins): later changes are a person's.
 3. The pipeline gets a token from the new organization's token endpoint (`service_account.token_endpoint` in the
    response, which names the organization by its id) with that account, and sets the organization up: users (with
    `import`, their password hashes and authenticator secrets), tenants, applications, providers, and the organization's

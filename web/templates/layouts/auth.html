@@ -1,17 +1,18 @@
 {{/* Centred glass card for sign-in and consent pages. Pages begin with {{template "auth" .}} and define "content". */}}
 {{define "auth"}}<!doctype html>
-<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="auth"{{with .Site.Skin}} data-skin="{{.}}"{{end}}{{with .Org}} data-org-base="/o/{{.ID}}"{{end}}>
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="auth"{{with .Site.Skin}} data-skin="{{.}}"{{end}}{{if .Site.BrandCSS}} data-brand{{end}}{{with .Org}} data-org-base="/o/{{.ID}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="{{.CSRF}}">
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}} · {{.Site.Name}}</title>
-<link rel="icon" href="/branding/logo-light" media="(prefers-color-scheme: light)">
-<link rel="icon" href="/branding/logo-dark" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="{{.Site.LogoLight}}" media="(prefers-color-scheme: light)">
+<link rel="icon" href="{{.Site.LogoDark}}" media="(prefers-color-scheme: dark)">
 <script src="{{asset "theme-boot.js"}}"></script>
 <link rel="stylesheet" href="{{asset "main.css"}}">
 {{with .Site.SkinCSS}}<link rel="stylesheet" href="{{.}}">
+{{end}}{{with .Site.BrandCSS}}<link rel="stylesheet" href="{{.}}">
 {{end}}<script type="module" src="{{asset "main.js"}}"></script>
 {{block "head" .}}{{end}}
 </head>
@@ -24,7 +25,7 @@
     <div class="auth-logo">
       <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="48" height="48">
       <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="48" height="48">
-      <span class="eyebrow">{{.Site.Name}}</span>
+      {{if not .Site.OrgLogo}}<span class="eyebrow">{{.Site.Name}}</span>{{end}}
     </div>
     {{template "content" .}}
   </main>

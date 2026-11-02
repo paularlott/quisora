@@ -182,6 +182,7 @@ func (s *Server) baseRoutes() {
 		static.ServeHTTP(w, r)
 	}))
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
+	s.Mux.Handle("GET /o/{org}/branding/{name}", s.InOrg(http.HandlerFunc(s.orgBranding)))
 	s.Mux.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
 	})
@@ -328,6 +329,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.CSRF = s.AnonCSRF(w, r)
 		p.Org = Org(r) // an organization's own pages (sign-in, device, sign-out) name it signed out too
 	}
+	p.Site = p.Site.For(p.Org) // its branding (an admin page then names the organization it administers: p.Org)
 	return p
 }
 

@@ -36,6 +36,7 @@ const (
 	KindAudit    Kind = "audit"
 	KindLink     Kind = "link"
 	KindSignIn   Kind = "signin" // a user's sign-in stamps (SignIn)
+	KindOrgLogo  Kind = "logo"   // an organization's logo (OrgLogo)
 	KindLock     Kind = "lock"   // leases (Lock), such as each node's master key report
 	KindReplay   Kind = "replay" // single-use values seen, until they expire (Replay)
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so

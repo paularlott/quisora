@@ -90,6 +90,7 @@ func (m *Module) routes() []Route {
 		{"POST", "/api/orgs", m.createOrg, service.ScopeOrgsCreate},
 		{"GET", o, m.getOrg, web.AnyScope},
 		{"PATCH", o, m.updateOrg, ""},
+		{"PATCH", o + "/branding", m.updateBranding, ""},
 		{"DELETE", o, m.deleteOrg, service.ScopeOrgsDelete},
 		{"POST", o + "/sign-out", m.signOutOrg, ""},
 

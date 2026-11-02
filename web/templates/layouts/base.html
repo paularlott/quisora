@@ -2,7 +2,7 @@
      (extra <head> markup) and "scripts" (extra script tags) blocks. On admin pages .Org is the organization being
      administered. */}}
 {{define "base"}}<!doctype html>
-<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="app"{{with .Site.Skin}} data-skin="{{.}}"{{end}} data-mail="{{if .Site.Mail}}1{{else}}0{{end}}" data-me="{{with .User}}{{.ID}}{{end}}"{{with .User}} data-org-base="/o/{{.OrgID}}"{{end}}>
+<html lang="en" data-default-theme="{{.Site.DefaultTheme}}" data-layout="app"{{with .Site.Skin}} data-skin="{{.}}"{{end}}{{if .Site.BrandCSS}} data-brand{{end}} data-mail="{{if .Site.Mail}}1{{else}}0{{end}}" data-me="{{with .User}}{{.ID}}{{end}}"{{with .User}} data-org-base="/o/{{.OrgID}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,11 +10,12 @@
 <meta name="color-scheme" content="light dark">
 {{with .Org}}<meta name="live-org" content="{{.Name}}">
 {{end}}<title>{{.Title}} · {{.Site.Name}}</title>
-<link rel="icon" href="/branding/logo-light" media="(prefers-color-scheme: light)">
-<link rel="icon" href="/branding/logo-dark" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="{{.Site.LogoLight}}" media="(prefers-color-scheme: light)">
+<link rel="icon" href="{{.Site.LogoDark}}" media="(prefers-color-scheme: dark)">
 <script src="{{asset "theme-boot.js"}}"></script>
 <link rel="stylesheet" href="{{asset "main.css"}}">
 {{with .Site.SkinCSS}}<link rel="stylesheet" href="{{.}}">
+{{end}}{{with .Site.BrandCSS}}<link rel="stylesheet" href="{{.}}">
 {{end}}<script type="module" src="{{asset "main.js"}}"></script>
 {{block "head" .}}{{end}}
 </head>

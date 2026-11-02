@@ -79,6 +79,8 @@ type OrgInput struct {
 	Settings    *model.OrgSettings `json:"settings"`
 	// ServiceAccount, when creating an organization, is its first service account (CreateOrgWithServiceAccount).
 	ServiceAccount *ServiceAccountInput `json:"service_account"`
+	// Branding, when creating an organization, is its logo and primary colour (later, UpdateBranding changes them).
+	Branding *BrandingInput `json:"branding"`
 }
 
 func validateOrgName(name string) error {
@@ -227,6 +229,13 @@ func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in 
 		}
 		o.Settings = *in.Settings
 	}
+	var logo *model.OrgLogo
+	if in.Branding != nil {
+		var err error
+		if logo, err = applyBranding(o, nil, *in.Branding); err != nil {
+			return nil, nil, "", prefixField("branding.", err)
+		}
+	}
 	var (
 		sa     *model.Client
 		secret string
@@ -243,13 +252,22 @@ func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in 
 	if _, err := s.DefaultTenant(ctx, o.ID); err != nil {
 		return nil, nil, "", err
 	}
+	// What goes with it is written after it; when that fails, the organization is removed again.
+	undo := func(why string, err error) (*model.Org, *model.Client, string, error) {
+		if _, cerr := s.closeOrg(ctx, o.ID, true); cerr == nil {
+			_ = s.deleteOrgRecord(ctx, a, o, map[string]string{"reason": why})
+		}
+		return nil, nil, "", err
+	}
+	if logo != nil {
+		if err := s.writeLogo(ctx, o.ID, logo); err != nil {
+			return undo("its logo could not be stored", err)
+		}
+	}
 	if sa != nil {
 		sa.OrgID = o.ID
 		if err := s.createServiceAccount(ctx, a, sa); err != nil {
-			if _, cerr := s.closeOrg(ctx, o.ID, true); cerr == nil {
-				_ = s.deleteOrgRecord(ctx, a, o, map[string]string{"reason": "its service account could not be created"})
-			}
-			return nil, nil, "", err
+			return undo("its service account could not be created", err)
 		}
 	}
 	return o, sa, secret, nil
