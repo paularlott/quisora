@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -70,6 +71,9 @@ func LoadSkin(v string) (*Skin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ui.skin: %w", err)
 	}
+	if err := skinNamed(css, name); err != nil {
+		return nil, fmt.Errorf("ui.skin %s: %w", v, err)
+	}
 	sum := sha256.Sum256(css)
 	s := &Skin{Name: name, CSS: css, Version: hex.EncodeToString(sum[:6])}
 	if s.LogoLight, err = skinLogo(fsys, "logo-light"); err != nil {
@@ -82,6 +86,28 @@ func LoadSkin(v string) (*Skin, error) {
 		s.LogoDark = s.LogoLight
 	}
 	return s, nil
+}
+
+// skinSelector finds the skin names a stylesheet styles: [data-skin="<name>"] (or unquoted).
+var skinSelector = regexp.MustCompile(`\[data-skin=["']?([^"'\]]+)["']?\]`)
+
+// skinNamed refuses a stylesheet that styles nothing under the skin's name (its folder's): one written for another
+// name, as when the folder was renamed, would apply nothing, without a word.
+func skinNamed(css []byte, name string) error {
+	var names []string
+	for _, m := range skinSelector.FindAllSubmatch(css, -1) {
+		if string(m[1]) == name {
+			return nil
+		}
+		if n := string(m[1]); !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return fmt.Errorf(`skin.css styles nothing under :root[data-skin="%s"] (the skin's name is its folder's)`, name)
+	}
+	return fmt.Errorf(`skin.css styles data-skin=%q, but the skin's name is its folder's, %q: rename the folder %s, or `+
+		`the selectors`, names[0], name, names[0])
 }
 
 func skinLogo(fsys fs.FS, base string) (*SkinFile, error) {

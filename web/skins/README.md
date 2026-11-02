@@ -28,8 +28,9 @@ Neither ships a logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a s
 
 A value with a `/` in it is a folder: absolute, or relative to the working directory the server starts in. A bare name
 (`acme`) is always a built-in skin, so write a folder in the working directory as `./acme`. The folder's name is the
-skin's name: lowercase letters, digits and dashes. The files are read once at start-up, so restart the server after
-changing them.
+skin's name: lowercase letters, digits and dashes, and the selectors of its `skin.css` must use it (a stylesheet
+written for another name, as after renaming the folder, is refused at start-up). The files are read once at start-up,
+so restart the server after changing them.
 
 Use fixed colours in logos. A logo is shown as an `<img>`, where `prefers-color-scheme` follows the operating system
 rather than the theme the user picked, so the light and dark variants are separate files.

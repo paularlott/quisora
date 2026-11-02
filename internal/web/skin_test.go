@@ -47,6 +47,12 @@ func TestLoadSkin(t *testing.T) {
 	if s, err = LoadSkin(dir); err != nil || s.LogoDark == nil || s.LogoDark.Type != "image/svg+xml" {
 		t.Fatalf("folder with both logos: %+v %v", s, err)
 	}
+	// A stylesheet written for another name (the folder was renamed) would style nothing: refused, naming both.
+	other := filepath.Join(t.TempDir(), "acme-skin")
+	must(t, os.Rename(dir, other))
+	if _, err := LoadSkin(other); err == nil || !strings.Contains(err.Error(), `"acme"`) || !strings.Contains(err.Error(), `"acme-skin"`) {
+		t.Errorf("stylesheet for another name: %v", err)
+	}
 }
 
 // The skin's stylesheet is served under a content-hashed URL; its logos are used unless ui.logo_* are set.
