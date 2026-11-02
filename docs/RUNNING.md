@@ -330,7 +330,7 @@ Every backend passes the same store conformance suite. BadgerDB is the fastest; 
 long it may wait for a lock:
 
 | Database   | Statement                                     | Lock wait                      |
-| ---------- | --------------------------------------------- | ------------------------------ |
+| ---------- | ----------------------------------------------- | ------------------------------ |
 | PostgreSQL | `statement_timeout` 10 s                      | `lock_timeout` 5 s             |
 | MySQL      | `max_execution_time` 10 s (bounds SELECTs only) | `innodb_lock_wait_timeout` 5 s |
 | MariaDB    | `max_statement_time` 10 s                     | `innodb_lock_wait_timeout` 5 s |
@@ -531,12 +531,12 @@ previous_keys = ["<old>"]     # rounds 1 and 2 only
 Every audit event is written to the structured log (`log.format = "json"` for log shippers). The admin console's audit
 pages read it from one of two places:
 
-|                           | Database (default)                                                                            | VictoriaLogs                                  |
-| ------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| For                       | Development, home labs, testing                                                               | Production; required for SOC 2                |
-| Kept                      | `audit.retention_days` (7)                                                                    | VictoriaLogs' `-retentionPeriod`              |
-| One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database |
-| Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads              |
+|                           | Database (default)                                                                            | VictoriaLogs                                    |
+| ------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| For                       | Development, home labs, testing                                                               | Production; required for a retained audit trail |
+| Kept                      | `audit.retention_days` (7)                                                                    | VictoriaLogs' `-retentionPeriod`                |
+| One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database   |
+| Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads                |
 
 Admins see their own organization's events, except those that name a super admin as actor or target user (a sign-in, a
 change made to one, a super admin's work in the organization): super admins are invisible below them everywhere, so the
@@ -558,7 +558,8 @@ In a gossip cluster with the database trail, an event is on the node that record
 answer (3 s), is missing from a page (the page says how many nodes answered), and a node whose disk is lost takes its events
 with it.
 
-**Production, and any deployment that needs SOC 2, must use VictoriaLogs.** The database audit trail keeps events for
+**Production, and any deployment whose compliance standard or security policy requires a retained audit trail, must
+use VictoriaLogs.** The database audit trail keeps events for
 days, not the year or more an audit period needs; it is per node in a gossip cluster; and it has no protection against
 someone with write access to the database. With
 VictoriaLogs:

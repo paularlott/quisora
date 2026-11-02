@@ -49,7 +49,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 ## Requirements
 
 **Every node's clock must be synchronised with NTP** (chrony, systemd-timesyncd, or the cloud provider's time
-service), keeping the nodes within milliseconds of each other. SOC 2 requires it anyway (consistent audit
+service), keeping the nodes within milliseconds of each other. Compliance standards expect it anyway (consistent audit
 timestamps), and Quisora relies on it: record versions come from the writers' clocks, and a cluster stays consistent
 across restarts because no node's clock is more than 5 seconds off (`store.MaxSkew`). Every node compares its clock
 with the others' every few seconds: one more than 5 seconds off refuses to serve, and logs why, until its clock is
@@ -149,7 +149,8 @@ not replicated: each node keeps the events it records in its own database, and t
 what they answer (a node that is down is missing from the page, which says so). That built-in audit trail is for development, home labs and testing:
 its pages read through every event they search (fine for thousands of users, not for millions).
 
-**Production, and any deployment that needs SOC 2, must send audit events to VictoriaLogs**, with retention set there
+**Production, and any deployment whose compliance standard or security policy requires a retained audit trail, must
+send audit events to VictoriaLogs**, with retention set there
 (typically a year or more). Each node writes every event to a disk spool in its data directory, synced before the
 action that recorded it completes, and removes it once VictoriaLogs has taken it. The guarantee: an event whose
 write to the spool succeeded is on disk, complete, and will reach VictoriaLogs, through an outage of VictoriaLogs, a
