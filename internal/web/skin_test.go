@@ -114,3 +114,23 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// A skin's stylesheet is refused only when its data-skin selectors all name another skin: the selector's spacing and
+// flags as CSS allows them, and a stylesheet that names no skin, are its own.
+func TestSkinNamed(t *testing.T) {
+	for css, ok := range map[string]bool{
+		`:root[data-skin="acme"]{}`:                  true,
+		`:root[data-skin=acme]{}`:                    true,
+		`:root[data-skin='acme']{}`:                  true,
+		`:root[ data-skin = "acme" ]{}`:              true,
+		`:root[data-skin="acme" i]{}`:                true,
+		`:root{--accent:#123456}`:                    true,
+		`[data-skin=other] a{} [data-skin="acme"]{}`: true,
+		`:root[data-skin="other"]{}`:                 false,
+		`:root[data-skin = "acme-skin"]{}`:           false,
+	} {
+		if err := skinNamed([]byte(css), "acme"); (err == nil) != ok {
+			t.Errorf("%s: %v", css, err)
+		}
+	}
+}

@@ -338,15 +338,18 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 
 // SignInElsewhere renders the page of a signed-out visitor who did not come from an application or a sign-in link: they
 // sign in through those, never here. It carries the primary organization's branding, the server's own. status is 404
-// for a page that does not exist, which the page says.
+// for a page that does not exist, which the page says. The organization is the cached one (service.Org): every
+// request for something that is not here comes this way.
 func (s *Server) SignInElsewhere(w http.ResponseWriter, r *http.Request, status int) {
 	title, notFound := "Sign in", status == http.StatusNotFound
 	if notFound {
 		title = "Not found"
 	}
 	p := s.Page(w, r, title, "", notFound)
-	if o, err := s.Svc.PrimaryOrg(r.Context()); err == nil {
-		p.Site = p.Site.For(o)
+	if id, err := s.Svc.PrimaryOrgID(r.Context()); err == nil {
+		if o, err := s.Svc.Org(r.Context(), id); err == nil {
+			p.Site = p.Site.For(o)
+		}
 	}
 	s.Render.Render(w, status, "not-found", p)
 }

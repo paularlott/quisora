@@ -1,12 +1,15 @@
 package admin_test
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 const svgLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>`
@@ -97,6 +100,38 @@ func TestSignInElsewhereBranded(t *testing.T) {
 				t.Errorf("%s lacks the primary organization's %q", p, s)
 			}
 		}
+	}
+}
+
+// countingOrgReads is a store that counts its reads of one organization.
+type countingOrgReads struct {
+	store.Store
+	id string
+	n  *atomic.Int32
+}
+
+func (s countingOrgReads) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindOrg && id == s.id {
+		s.n.Add(1)
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// Every request for something that is not here renders that page: the primary organization comes from the cache, not
+// a read of the store each time.
+func TestSignInElsewhereCached(t *testing.T) {
+	w := newWorld(t)
+	anon := w.anon()
+	want(t, anon.get("/no/such/page"), 404)
+	n := new(atomic.Int32)
+	good := w.env.Svc.Orgs.S
+	w.env.Svc.Orgs.S = countingOrgReads{good, w.env.Primary.ID, n}
+	defer func() { w.env.Svc.Orgs.S = good }()
+	for range 5 {
+		want(t, anon.get("/no/such/page"), 404)
+	}
+	if n.Load() != 0 {
+		t.Errorf("the primary organization was read %d times", n.Load())
 	}
 }
 

@@ -88,11 +88,13 @@ func LoadSkin(v string) (*Skin, error) {
 	return s, nil
 }
 
-// skinSelector finds the skin names a stylesheet styles: [data-skin="<name>"] (or unquoted).
-var skinSelector = regexp.MustCompile(`\[data-skin=["']?([^"'\]]+)["']?\]`)
+// skinSelector finds the skin names a stylesheet styles: [data-skin="<name>"], quoted or not, with space around the
+// "=" and a flag after the value as CSS allows.
+var skinSelector = regexp.MustCompile(`\[\s*data-skin\s*=\s*["']?([^"'\]\s]+)`)
 
-// skinNamed refuses a stylesheet that styles nothing under the skin's name (its folder's): one written for another
-// name, as when the folder was renamed, would apply nothing, without a word.
+// skinNamed refuses a stylesheet whose data-skin selectors all name another skin than its folder's: one written for
+// another name, as when the folder was renamed, would apply nothing, without a word. A stylesheet that names no skin
+// (:root { ... }) applies as it is: it is loaded only for this skin.
 func skinNamed(css []byte, name string) error {
 	var names []string
 	for _, m := range skinSelector.FindAllSubmatch(css, -1) {
@@ -104,7 +106,7 @@ func skinNamed(css []byte, name string) error {
 		}
 	}
 	if len(names) == 0 {
-		return fmt.Errorf(`skin.css styles nothing under :root[data-skin="%s"] (the skin's name is its folder's)`, name)
+		return nil
 	}
 	return fmt.Errorf(`skin.css styles data-skin=%q, but the skin's name is its folder's, %q: rename the folder %s, or `+
 		`the selectors`, names[0], name, names[0])
