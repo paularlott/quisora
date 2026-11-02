@@ -28,14 +28,14 @@ func OrgLogoURL(o *model.Org, dark bool) string {
 	return OrgPath(o.ID, name) + "?v=" + o.Branding.Logo
 }
 
-// For is the site as the pages of organization o show it (nil: the server's): with its logo, under its name, when
-// it has a logo; in its primary colour when it has one.
+// For is the site as the pages of organization o show it (nil: the server's): with its logo, under its name (Brand;
+// the footer stays the server's), when it has a logo; in its primary colour when it has one.
 func (st Site) For(o *model.Org) Site {
 	if o == nil {
 		return st
 	}
 	if o.Branding.Logo != "" {
-		st.LogoLight, st.Name, st.OrgLogo = OrgLogoURL(o, false), o.DisplayName, true
+		st.LogoLight, st.Brand, st.OrgLogo = OrgLogoURL(o, false), o.DisplayName, true
 		st.LogoDark = cmp.Or(OrgLogoURL(o, true), st.LogoLight)
 	}
 	if c := o.Branding.PrimaryColor; c != "" {

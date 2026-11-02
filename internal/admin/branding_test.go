@@ -48,7 +48,8 @@ func TestBranding(t *testing.T) {
 
 	// The console of the organization's users carries its logo, name and colour; another organization's, the server's.
 	page := string(w.as("admin").get("/admin/orgs/acme").Raw)
-	for _, s := range []string{light, "/o/" + w.acme.ID + "/branding/brand.css?v=", "· Acme</title>", "data-brand"} {
+	footer := `<footer class="app-footer"><p>` + w.env.Server.Site.Name + `</p></footer>` // the server's, not the organization's
+	for _, s := range []string{light, "/o/" + w.acme.ID + "/branding/brand.css?v=", "· Acme</title>", "data-brand", footer} {
 		if !strings.Contains(page, s) {
 			t.Errorf("acme's console lacks %q", s)
 		}

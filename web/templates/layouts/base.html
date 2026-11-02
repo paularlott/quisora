@@ -9,7 +9,7 @@
 <meta name="csrf-token" content="{{.CSRF}}">
 <meta name="color-scheme" content="light dark">
 {{with .Org}}<meta name="live-org" content="{{.Name}}">
-{{end}}<title>{{.Title}} · {{.Site.Name}}</title>
+{{end}}<title>{{.Title}} · {{.Site.Brand}}</title>
 <link rel="icon" href="{{.Site.LogoLight}}" media="(prefers-color-scheme: light)">
 <link rel="icon" href="{{.Site.LogoDark}}" media="(prefers-color-scheme: dark)">
 <script src="{{asset "theme-boot.js"}}"></script>
@@ -28,7 +28,7 @@
   <a class="brand" href="{{if .User}}/o/{{.User.OrgID}}/account{{else}}/{{end}}">
     <img class="brand-light" src="{{.Site.LogoLight}}" alt="" width="32" height="32">
     <img class="brand-dark" src="{{.Site.LogoDark}}" alt="" width="32" height="32">
-    <span>{{.Site.Name}}</span>
+    <span>{{.Site.Brand}}</span>
   </a>
   <span class="header-spacer"></span>
   <div class="header-actions">
