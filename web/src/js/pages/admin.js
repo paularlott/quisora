@@ -1064,8 +1064,17 @@ export default function (Alpine) {
       try { this.pending[key] = await readDataUrl(file) } catch (e) { input.value = ''; this.setErrors(e); return }
       this.clearErrors()
     },
-    removeLogo(ev) {
+    // A saved logo is removed (on saving) only once confirmed; a logo chosen and not yet saved is just set aside.
+    async removeLogo(ev) {
       const key = ev.currentTarget.dataset.logo
+      if (this.b[key]) {
+        const light = key === 'logo_light'
+        const yes = await confirmAction(Alpine, { title: 'Remove the logo?', message: `Remove the ${light ? 'light' : 'dark'} theme’s logo?`,
+          detail: (light ? 'The server’s logo and name are shown instead' + (this.b.logo_dark ? ', and the dark theme’s logo goes with it' : '')
+            : 'The light theme’s logo is shown in the dark theme too') + '. It is removed when you save.',
+          confirmLabel: 'Remove logo' })
+        if (!yes) return
+      }
       this.pending[key] = this.b[key] ? '' : null
       this.$refs[key].value = ''
       if (key === 'logo_light') { this.pending.logo_dark = null; this.$refs.logo_dark.value = '' } // the dark logo goes with it

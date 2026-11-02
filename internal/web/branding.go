@@ -86,7 +86,7 @@ func brandCSS(c string) string {
 	return ":root[data-brand] {\n" +
 		"  --accent: " + text + ";\n  --focus: " + text + ";\n" +
 		"  --accent-solid: " + c + ";\n  --accent-solid-2: " + c + ";\n  --on-accent: #ffffff;\n" +
-		"  --sk-accent: " + c + ";\n  --sk-accent-2: " + c + ";\n  --sk-on-accent: #ffffff;\n  --sk-accent-text: " + text + ";\n}\n"
+		"  --sk-accent: " + c + ";\n  --sk-accent-text: " + text + ";\n}\n"
 }
 
 // readable is c mixed toward `toward` in steps of 5% until it has a contrast of 4.5:1 with bg.

@@ -16,7 +16,7 @@ func TestLoadSkin(t *testing.T) {
 	if s, err := LoadSkin(""); s != nil || err != nil {
 		t.Fatalf("no skin: %v %v", s, err)
 	}
-	if got := BuiltinSkins(); !slices.Equal(got, []string{"corporate", "modern"}) {
+	if got := BuiltinSkins(); !slices.Equal(got, []string{"corporate"}) {
 		t.Errorf("built-in skins: %v", got)
 	}
 	for _, name := range BuiltinSkins() {
@@ -28,7 +28,7 @@ func TestLoadSkin(t *testing.T) {
 			t.Errorf("%s: %q %q", name, s.Name, s.Version)
 		}
 	}
-	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "corporate, modern") {
+	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "built in: corporate") {
 		t.Errorf("unknown skin: %v", err)
 	}
 

@@ -68,8 +68,13 @@ test('an admin saves a logo, a dark logo and a colour, and removes them again', 
     await expect(card.getByAltText('Preview of the light logo')).toHaveAttribute('src', b.logo_light)
     await expect(card.locator('#f-primary_color')).toHaveValue('#065f46')
 
-    // the dark logo alone removed: the light one stays
+    // the dark logo alone removed, once confirmed: the light one stays
     await card.getByRole('button', { name: 'Remove dark logo' }).click()
+    const sure = page.getByRole('dialog', { name: 'Remove the logo?' })
+    await sure.getByRole('button', { name: 'Cancel' }).click() // not confirmed: nothing changes
+    await expect(card.getByText('It is removed when you save.')).toHaveCount(0)
+    await card.getByRole('button', { name: 'Remove dark logo' }).click()
+    await sure.getByRole('button', { name: 'Remove logo' }).click()
     await card.getByRole('button', { name: 'Save branding' }).click()
     await expect(card.getByText('None: the light logo is shown in the dark theme.')).toBeVisible()
     const light = (await apiCall(page, 'GET', API)).branding
@@ -83,6 +88,7 @@ test('an admin saves a logo, a dark logo and a colour, and removes them again', 
     await expect(card.locator('#f-primary_color')).toBeFocused()
     await expect(card.locator('#f-primary_color')).toHaveValue('')
     await card.getByRole('button', { name: 'Remove light logo' }).click()
+    await page.getByRole('dialog', { name: 'Remove the logo?' }).getByRole('button', { name: 'Remove logo' }).click()
     await expect(card.getByText('It is removed when you save.')).toBeVisible()
     await expect(card.getByText('None: the server’s logo is shown.')).toBeVisible()
     await expect(card.locator('#f-logo_dark')).toBeDisabled()

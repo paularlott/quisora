@@ -75,7 +75,7 @@ type UI struct {
 	DefaultTheme string `toml:"default_theme" flag:"default-theme" usage:"Default theme: light, dark or system"`
 	LogoLight    string `toml:"logo_light" flag:"logo-light" usage:"Logo absolute file path or https URL (default: built-in)"`
 	LogoDark     string `toml:"logo_dark" flag:"logo-dark" usage:"Dark-theme logo (default: logo-light)"`
-	Skin         string `toml:"skin" flag:"skin" usage:"Look of the UI: a built-in skin (corporate or modern) or the path of a skin folder, such as ./acme (default: the built-in look)"`
+	Skin         string `toml:"skin" flag:"skin" usage:"Look of the UI: a built-in skin (corporate) or the path of a skin folder, such as ./acme (default: the built-in look)"`
 	Footer       string `toml:"footer" flag:"footer" usage:"Footer line; may hold links (<a href>) and <strong>, <em>, <small>, <span>, <br>"`
 }
 

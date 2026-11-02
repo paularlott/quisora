@@ -1,12 +1,13 @@
-/* Corporate skin: restrained and built to be trusted. Opaque surfaces with a hairline border instead of glass, one navy
-   accent throughout, square-ish corners, a solid header, no decoration behind the page.
+/* Corporate skin: crisp and built to be trusted. Opaque cards with a hairline border and a soft lift instead of glass,
+   one royal-blue accent throughout (a stripe along the top of the header and the sign-in card), square-ish corners,
+   compact switches, and light frosted glass for dialogs only. No decoration behind the page.
 
    The palette (--sk-*) is mapped onto Quisora's tokens once below. Colours use light-dark(light, dark): the theme sets
    color-scheme on <html>, so one declaration covers light, dark and the no-JavaScript OS preference.
    Every pair keeps WCAG 2.2 AA on its surface (text >= 4.5:1, controls >= 3:1): check again if you change a value. */
 
 :root[data-skin="corporate"] {
-  --sk-canvas: light-dark(#f3f5f8, #0b1120);
+  --sk-canvas: light-dark(#eef2f7, #0b1120);
   --sk-surface: light-dark(#ffffff, #111a2c);
   --sk-surface-2: light-dark(#f7f8fa, #16213a);
   --sk-surface-3: light-dark(#eef1f5, #1c2944);
@@ -14,10 +15,13 @@
   --sk-line-strong: light-dark(#7d879a, #67749a);
   --sk-fg: light-dark(#0f172a, #e6ebf4);
   --sk-fg-muted: light-dark(#4b5567, #a5afc3);
-  --sk-accent: light-dark(#1e3a8a, #2f5fd0);         /* fills: white text 10:1 / 5.7:1 */
-  --sk-accent-text: light-dark(#1e40af, #9db6f5);
-  --sk-accent-soft: light-dark(#e8eef9, #1a2a4c);
+  --sk-accent: light-dark(#1d4ed8, #2563eb);         /* fills: white text 6.7:1 / 5.2:1 */
+  --sk-accent-text: light-dark(#1d4ed8, #9db6f5);
+  --sk-accent-soft: light-dark(#e6edfc, #172a4f);
   --sk-shadow: 0 1px 2px light-dark(rgb(15 23 42 / 0.06), rgb(0 0 0 / 0.35));
+  /* cards and the header: a hairline shadow and a soft lift off the canvas */
+  --sk-lift: 0 1px 2px light-dark(rgb(15 23 42 / 0.05), rgb(0 0 0 / 0.4)),
+    0 6px 16px -8px light-dark(rgb(15 23 42 / 0.16), rgb(0 0 0 / 0.6));
 
   --page-bg: var(--sk-canvas);
   --fg: var(--sk-fg);
@@ -42,16 +46,17 @@
   --glass-bg-header: var(--sk-surface);
   --glass-bg-footer: transparent;
   --glass-bg-toast: var(--sk-surface);
-  --glass-bg-dialog: var(--sk-surface);
   --glass-solid: var(--sk-surface);
   --glass-blur: 0px;
   --glass-sat: 1;
   --glass-sheen: none;
   --glass-rim: linear-gradient(var(--sk-line), var(--sk-line)); /* a 1px border */
-  --glass-shadow: var(--sk-shadow);
+  --glass-shadow: var(--sk-lift);
   --glass-inset: var(--sk-surface-2);
   --edge: var(--sk-line);
-  --scrim: light-dark(rgb(15 23 42 / 0.5), rgb(2 6 16 / 0.65));
+  --scrim: light-dark(rgb(15 23 42 / 0.3), rgb(2 6 16 / 0.55));
+  /* dialogs are light frosted glass over the scrim (see below): text keeps AA on the darkest that can show through */
+  --glass-bg-dialog: light-dark(rgb(255 255 255 / 0.8), rgb(17 26 44 / 0.84));
 
   --radius-glass: 0.5rem;
   --radius-ctl: 0.375rem;
@@ -67,7 +72,7 @@
 
   --ctl-bg: var(--sk-surface);
   --ctl-border: var(--sk-line-strong);
-  --ctl-hover: var(--sk-surface-3);
+  --ctl-hover: light-dark(rgb(29 78 216 / 0.1), rgb(157 182 245 / 0.16)); /* a tint of the accent: shows on any surface, the glass of a dialog too */
   --row-hover: var(--sk-surface-2);
   --th-bg: var(--sk-surface-2);
 
@@ -89,6 +94,10 @@
   --thumb-bg-active: #ffffff;
   --thumb-fg: #0f172a;
   --thumb-shadow: 0 0 0 1px rgb(15 23 42 / 0.1), 0 1px 2px rgb(15 23 42 / 0.3);
+  --switch-w: 2.5rem;
+  --switch-h: 1.4rem;
+  --thumb-size: 1.45rem;
+  --thumb-travel: 0.9rem;
   --toggle-on-bg: var(--sk-accent);
   --toggle-on-border: var(--sk-accent);
   --avatar-bg: var(--sk-accent);
@@ -111,3 +120,16 @@
 :root[data-skin="corporate"] .stack-lg > h2.section-title { background: none; box-shadow: none; padding-inline: 0; }
 :root[data-skin="corporate"] .stack-lg > h2.section-title::before,
 :root[data-skin="corporate"] .stack-lg > h2.section-title::after { display: none; }
+
+/* The accent's stripe along the top of the header and the sign-in card: a border, outside the layers that paint their
+   surface (glass.css), so nothing covers it. */
+:root[data-skin="corporate"] :is(.app-header, .auth-card) { border-top: 3px solid var(--sk-accent); }
+
+/* Dialogs: light frosted glass, a bright rim and a deeper shadow, over the lighter scrim. Users who ask for less
+   transparency or more contrast get the solid surface (tokens.css). */
+:root[data-skin="corporate"] .dialog-panel {
+  --glass-blur: 24px;
+  --glass-sat: 1.5;
+  --glass-rim: linear-gradient(light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14)), light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14)));
+  --glass-shadow: 0 0 0 1px light-dark(rgb(15 23 42 / 0.08), rgb(0 0 0 / 0.45)), 0 24px 48px -16px rgb(15 23 42 / 0.45);
+}

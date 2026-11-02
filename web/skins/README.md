@@ -14,9 +14,8 @@ skin = "corporate"                 # a built-in skin (a folder here, compiled in
 | Skin | |
 | --- | --- |
 | `corporate` | Restrained: opaque surfaces with hairline borders, one navy accent, square-ish corners, a solid header. |
-| `modern` | Crisp: zinc neutrals going near-black in the dark theme, a teal-to-cyan accent, soft corners, a translucent header, a faint glow and dot grid behind the page. |
 
-Neither ships a logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a skin folder of your own.
+It ships no logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a skin folder of your own.
 
 ## What a skin holds
 
@@ -55,11 +54,10 @@ and comes later, so it wins:
 - Use `light-dark(light, dark)` for colours that differ between the themes. The theme sets `color-scheme` on `<html>`,
   so one declaration covers light, dark and visitors without JavaScript (who get their OS preference). It works only
   for colours: set non-colour tokens once, or under `:root[data-skin="<name>"][data-theme="dark"]`.
-- Start from a copy of `corporate/skin.css` or `modern/skin.css`: each defines a small palette (`--sk-*`) and maps it
-  onto every token once.
+- Start from a copy of `corporate/skin.css`: it defines a small palette (`--sk-*`) and maps it onto every token once.
 - Every colour, shadow, radius and surface treatment the components use is a token: buttons, switches, the avatar,
   the current navigation link and so on. Prefer tokens to restyling components. A skin may add plain rules too, as
-  the built-in skins do to replace the aurora backdrop.
+  the built-in skin does to replace the aurora backdrop.
 - Plain CSS only: the file is served as is, so there is no Tailwind (`@apply`, utilities) and no `@import`. Load
   nothing from other origins (fonts, images): the server works on networks without internet access, and the
   Content-Security-Policy would block them anyway.
