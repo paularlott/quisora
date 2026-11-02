@@ -1015,7 +1015,91 @@ export default function (Alpine) {
   sshComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
   const API_GROUP_LIMIT = 20 // the server's bound on the groups chosen to make API tokens
-  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), pickerMixin({
+  // ---- Branding fields (the organization dialog, and the branding card on the organization's page) ----------------
+  // b is the saved branding; pending, the logos chosen since: null (nothing), '' (remove) or the new image as a data:
+  // URI; form.primary_color, the colour (the component's form holds it).
+  const LOGO_MAX = 256 * 1024 // what the server takes of a logo, decoded
+  const HEX_COLOR = /^#[0-9a-f]{6}$/i
+  const readDataUrl = (file) => new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(file)
+  })
+  const brandingMixin = () => ({
+    b: {}, pending: { logo_light: null, logo_dark: null },
+    resetBranding(b) {
+      this.b = b || {}
+      this.pending = { logo_light: null, logo_dark: null }
+      this.$refs.logo_light.value = ''
+      this.$refs.logo_dark.value = ''
+    },
+    // What a logo's preview shows: the chosen image, else the saved one.
+    logo(key, kind, src, emptyText) {
+      const p = this.pending[key]
+      return { src, has: src !== '', none: src === '', emptyText, locked: false, removeLabel: `Remove ${kind} logo`,
+        note: p === null ? '' : p === '' ? 'It is removed when you save.' : 'Chosen: it is saved when you save.' }
+    },
+    get lightLogo() {
+      const p = this.pending.logo_light
+      return this.logo('logo_light', 'light', p === null ? this.b.logo_light || '' : p, 'None: the server’s logo is shown.')
+    },
+    // The dark logo needs a light one; without a dark one of its own the light one shows in the dark theme.
+    get darkLogo() {
+      const locked = !this.lightLogo.has
+      const p = this.pending.logo_dark
+      const src = locked ? '' : p === null ? this.b.logo_dark || '' : p
+      return { ...this.logo('logo_dark', 'dark', src, locked ? 'Add a logo first.' : 'None: the light logo is shown in the dark theme.'), locked }
+    },
+    async pickLogo(ev) {
+      const input = ev.target
+      const key = input.dataset.logo
+      const file = input.files[0]
+      if (!file) return
+      if (file.size > LOGO_MAX) {
+        input.value = ''
+        this.setErrors(new ApiError(422, { error: `That image is ${Math.ceil(file.size / 1024)} KB; the most is 256 KB.`, field: key }))
+        return
+      }
+      try { this.pending[key] = await readDataUrl(file) } catch (e) { input.value = ''; this.setErrors(e); return }
+      this.clearErrors()
+    },
+    // A saved logo is removed (on saving) only once confirmed; a logo chosen and not yet saved is just set aside.
+    async removeLogo(ev) {
+      const key = ev.currentTarget.dataset.logo
+      if (this.b[key]) {
+        const light = key === 'logo_light'
+        const yes = await confirmAction(Alpine, { title: 'Remove the logo?', message: `Remove the ${light ? 'light' : 'dark'} theme’s logo?`,
+          detail: (light ? 'The server’s logo and name are shown instead' + (this.b.logo_dark ? ', and the dark theme’s logo goes with it' : '')
+            : 'The light theme’s logo is shown in the dark theme too') + '. It is removed when you save.',
+          confirmLabel: 'Remove logo' })
+        if (!yes) return
+      }
+      this.pending[key] = this.b[key] ? '' : null
+      this.$refs[key].value = ''
+      if (key === 'logo_light') { this.pending.logo_dark = null; this.$refs.logo_dark.value = '' } // the dark logo goes with it
+      this.clearErrors()
+      this.$refs[key].focus()
+    },
+    get colorChanged() { return (this.form.primary_color || '').trim() !== (this.b.primary_color || '') },
+    get pickerValue() { return HEX_COLOR.test(this.form.primary_color) ? this.form.primary_color.toLowerCase() : '#000000' },
+    get usesDefaultColor() { return !this.form.primary_color },
+    pickColor(ev) { this.form.primary_color = ev.target.value },
+    useDefaultColor() {
+      this.form.primary_color = ''
+      this.$refs.primary_color.focus()
+    },
+    get brandingChanged() { return this.colorChanged || this.pending.logo_light !== null || this.pending.logo_dark !== null },
+    // the changes, as PATCH <org>/branding and the branding of a new organization take them
+    brandingBody() {
+      const body = {}
+      for (const key of ['logo_light', 'logo_dark']) if (this.pending[key] !== null) body[key] = this.pending[key]
+      if (this.colorChanged) body.primary_color = this.form.primary_color.trim()
+      return body
+    },
+  })
+
+  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), brandingMixin(), pickerMixin({
     // the groups of the organization being edited
     async search(q) {
       const r = await get(`/api/orgs/${enc(this.editing.name)}/groups${qs({ q, limit: 8 })}`)
@@ -1075,7 +1159,8 @@ export default function (Alpine) {
       const gs = await Promise.all(ids.map((id) => getOrNull(`/api/orgs/${enc(o.name)}/groups/${enc(id)}`)))
       if (this.editing === o) this.groupNames = Object.fromEntries(ids.map((id, i) => [id, gs[i] && gs[i].display_name]).filter(([, n]) => n))
     },
-    errorKey(f) { return f === 'api_token_groups' ? 'api_group' : f },
+    // a new organization's branding is refused as branding.<field>
+    errorKey(f) { return f === 'api_token_groups' ? 'api_group' : f.replace(/^branding\./, '') },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
     get resetOff() { return !this.form.password_login },
     // Codes by email need the server to send email. Without it the switch can only be turned off (it was on when the
@@ -1091,11 +1176,13 @@ export default function (Alpine) {
       return { name: o.name, display_name: o.display_name, password_login: !!s.password_login, password_reset: !!s.password_reset,
         passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes,
         api_tokens: s.api_tokens || 'off', api_token_groups: [...(s.api_token_groups || [])],
-        session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '' }
+        session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '',
+        primary_color: (o.branding && o.branding.primary_color) || '' }
     },
     openCreate(ev) {
       this.editing = null
       this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false } }))
+      this.resetBranding({})
       this.groupNames = {}
       this.resetPicker()
       this.openDlg('org-dialog', ev.currentTarget)
@@ -1104,6 +1191,7 @@ export default function (Alpine) {
       const o = this.rowFromEvent(ev)
       this.editing = o
       this.resetForm(this.orgToForm(o))
+      this.resetBranding(o.branding)
       this.groupNames = {}
       this.resetPicker()
       this.loadGroupNames(o)
@@ -1125,8 +1213,13 @@ export default function (Alpine) {
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
-        // the primary organization's sign-in settings need a recent re-authentication (the server asks)
-        return edit ? withReauth(Alpine, () => patch(`/api/orgs/${enc(edit.name)}`, body), null, this) : post('/api/orgs', body)
+        // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
+        // have renamed it). The primary organization's sign-in settings need a recent re-authentication (the server asks).
+        if (!edit) return post('/api/orgs', this.brandingChanged ? { ...body, branding: this.brandingBody() } : body)
+        return withReauth(Alpine, async () => {
+          const o = await patch(`/api/orgs/${enc(edit.name)}`, body)
+          return this.brandingChanged ? patch(`/api/orgs/${enc(edit.id)}/branding`, this.brandingBody()) : o
+        }, null, this)
       })
       if (!res) return
       this.closeDlg('org-dialog')
@@ -2108,6 +2201,29 @@ export default function (Alpine) {
     },
     get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
     get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },
+  }))
+
+  // ---- An organization's branding (its administrators): PATCH <org>/branding --------------------------------------
+  // The branding card on the organization's page; the organization dialog has the same fields (brandingMixin).
+  Alpine.data('adminBranding', () => mix(formMixin(), brandingMixin(), {
+    loaded: false, apiBase: '',
+    async init() {
+      this.apiBase = this.$el.dataset.api
+      try { this.show(await get(this.apiBase)) } catch { /* the page's own load of the organization reports it */ }
+    },
+    show(org) {
+      this.resetForm({ primary_color: org.branding.primary_color })
+      this.resetBranding(org.branding)
+      this.loaded = true
+    },
+    get saveBlocked() { return this.busy || !this.brandingChanged },
+    get saveLabel() { return this.busy ? 'Saving…' : 'Save branding' },
+    async save() {
+      const org = await this.run(() => patch(`${this.apiBase}/branding`, this.brandingBody()))
+      if (!org) return
+      this.show(org)
+      toast('Branding saved.')
+    },
   }))
 
   // ---- System overview (super admins): the server as a whole, and its emergency sign-out --------------------------

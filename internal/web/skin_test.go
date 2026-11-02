@@ -16,7 +16,7 @@ func TestLoadSkin(t *testing.T) {
 	if s, err := LoadSkin(""); s != nil || err != nil {
 		t.Fatalf("no skin: %v %v", s, err)
 	}
-	if got := BuiltinSkins(); !slices.Equal(got, []string{"corporate", "modern"}) {
+	if got := BuiltinSkins(); !slices.Equal(got, []string{"corporate"}) {
 		t.Errorf("built-in skins: %v", got)
 	}
 	for _, name := range BuiltinSkins() {
@@ -28,7 +28,7 @@ func TestLoadSkin(t *testing.T) {
 			t.Errorf("%s: %q %q", name, s.Name, s.Version)
 		}
 	}
-	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "corporate, modern") {
+	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "built in: corporate") {
 		t.Errorf("unknown skin: %v", err)
 	}
 
@@ -46,6 +46,12 @@ func TestLoadSkin(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(dir, "logo-dark.svg"), []byte("<svg/>"), 0o644))
 	if s, err = LoadSkin(dir); err != nil || s.LogoDark == nil || s.LogoDark.Type != "image/svg+xml" {
 		t.Fatalf("folder with both logos: %+v %v", s, err)
+	}
+	// A stylesheet written for another name (the folder was renamed) still loads: the server warns of it (New).
+	other := filepath.Join(t.TempDir(), "acme-skin")
+	must(t, os.Rename(dir, other))
+	if s, err := LoadSkin(other); err != nil || s.Name != "acme-skin" {
+		t.Errorf("stylesheet for another name: %+v %v", s, err)
 	}
 }
 
@@ -106,5 +112,25 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A skin's stylesheet styles another name only when its data-skin selectors all name another skin: the selector's
+// spacing and flags as CSS allows them, and a stylesheet that names no skin, are its own.
+func TestSkinOtherName(t *testing.T) {
+	for css, other := range map[string]string{
+		`:root[data-skin="acme"]{}`:                  "",
+		`:root[data-skin=acme]{}`:                    "",
+		`:root[data-skin='acme']{}`:                  "",
+		`:root[ data-skin = "acme" ]{}`:              "",
+		`:root[data-skin="acme" i]{}`:                "",
+		`:root{--accent:#123456}`:                    "",
+		`[data-skin=other] a{} [data-skin="acme"]{}`: "",
+		`:root[data-skin="other"]{}`:                 "other",
+		`:root[data-skin = "acme-skin"]{}`:           "acme-skin",
+	} {
+		if got := skinOtherName([]byte(css), "acme"); got != other {
+			t.Errorf("%s: %q, want %q", css, got, other)
+		}
 	}
 }

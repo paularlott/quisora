@@ -62,6 +62,7 @@ type Org struct {
 	Name        string      `msgpack:"n" json:"name"`
 	DisplayName string      `msgpack:"dn" json:"display_name"`
 	Settings    OrgSettings `msgpack:"s" json:"settings"`
+	Branding    OrgBranding `msgpack:"b" json:"branding"`
 	// Primary marks the server's own organization, the first one ("quisora bootstrap" makes it, with an id of its own
 	// like any other): its super admins administer the server. It is set only there and never changes, and it claims
 	// the unique value PrimaryOrgKey, so a data set has at most one. Being stored, the mark goes wherever the
@@ -79,6 +80,30 @@ type Org struct {
 }
 
 func (o *Org) Kind() Kind { return KindOrg }
+
+// OrgBranding is how the organization's pages look (its sign-in pages, and the console for its users): its logo,
+// kept in a record of its own (OrgLogo) because every page reads the organization, and its primary colour. Unset,
+// the server's.
+type OrgBranding struct {
+	PrimaryColor string `msgpack:"pc,omitempty" json:"primary_color"` // #rrggbb, dark enough for white text on it
+	// Logo is the version of the organization's OrgLogo (a hash of its images, for the pages' URLs); "" for none.
+	Logo string `msgpack:"lg,omitempty" json:"-"`
+	// LogoDark says whether the logo has a dark-theme image (OrgLogo.Dark).
+	LogoDark bool `msgpack:"ld,omitempty" json:"-"`
+}
+
+// OrgLogo is an organization's logo (OrgBranding): ID is the organization's. Dark, when set, is shown in the dark
+// theme instead of Light.
+type OrgLogo struct {
+	Meta
+	Light     []byte `msgpack:"l" json:"-"`
+	LightType string `msgpack:"lt" json:"-"` // image/png, image/jpeg, image/webp or image/svg+xml
+	Dark      []byte `msgpack:"d,omitempty" json:"-"`
+	DarkType  string `msgpack:"dt,omitempty" json:"-"`
+}
+
+func (l *OrgLogo) Kind() Kind   { return KindOrgLogo }
+func (l *OrgLogo) Index() Index { return Index{Partition: l.ID} } // read by the organization's id only
 
 func (o *Org) Index() Index {
 	uq := []string{OrgNameKey(o.Name)}

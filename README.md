@@ -38,7 +38,8 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   can reset a manager's or administrator's sign-in (a new invitation, removing the password, an authenticator app,
   a passkey or a provider link) or lower their role, so one administrator cannot take over another's account, and
   only a super admin can sign out the primary organization, which holds the super admins.
-- **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs.
+- **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs. A skin for the whole server, and a logo and
+  colour of their own for each organization ([web/skins](web/skins/README.md#organization-branding)).
 - **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL or MariaDB.
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip: the data
   is split into partitions, each owned by one node that commits every write on a majority of the cluster.
@@ -84,8 +85,8 @@ bin/quisora serve --public-url https://localhost:8443
 1. `bootstrap` creates the `primary` organization and a super admin (`admin@example.com`) with no password, and
    prints a single-use invitation link.
 2. Open the link (accept the self-signed certificate), set a password or create a passkey, then a second factor.
-3. The admin console is at `https://localhost:8443/admin`. `https://localhost:8443/` takes users to the primary organization's sign-in page;
-   an organization's own is `/o/<org id or name>/login`.
+3. The admin console is at `https://localhost:8443/admin`. Users sign in through their application, or their organization's sign-in
+   page, `/o/<org id or name>/login`; `https://localhost:8443/` tells them so.
 
 This runs on BadgerDB in `./data` with a self-signed certificate. For a real deployment, set:
 

@@ -575,6 +575,41 @@
 {{define "copy-icon"}}<button type="button" class="btn btn-ghost btn-icon btn-sm" x-data="copyFrom" data-source="{{.source}}" data-what="{{.what}}"
   aria-label="Copy {{.what}}" title="Copy {{.what}}" @click="copy"><span x-show="!done">{{template "icon" "copy"}}</span><span x-show="done" x-cloak>{{template "icon" "check"}}</span></button>{{end}}
 
+{{/* A logo of the branding fields (brandingMixin): its preview on the background of the theme it is for, a file input
+     with Remove (an icon, disabled when there is nothing to remove) beside it, then the help text, so the two logos'
+     controls line up whatever the length of their help. dict: name (logo_light, logo_dark), theme (light, dark), label,
+     help, view (the component's getter that describes it: src, has, none, emptyText, locked, note, removeLabel). */}}
+{{define "logo-field"}}<div class="field">
+  <label class="label" for="f-{{.name}}">{{.label}}</label>
+  <div class="logo-preview logo-preview-{{.theme}}">
+    <img :src="{{.view}}.src" alt="Preview of the {{.theme}} logo" x-show="{{.view}}.has" x-cloak>
+    <span x-show="{{.view}}.none" x-text="{{.view}}.emptyText"></span>
+  </div>
+  <div class="flex items-center gap-2">
+    <input class="input min-w-0 flex-1" id="f-{{.name}}" name="{{.name}}" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" data-logo="{{.name}}" x-ref="{{.name}}" :disabled="{{.view}}.locked" @change="pickLogo" :aria-invalid="invalid.{{.name}}" aria-describedby="e-{{.name}} h-{{.name}} s-{{.name}}">
+    <button type="button" class="btn btn-ghost btn-icon" data-logo="{{.name}}" :aria-label="{{.view}}.removeLabel" :title="{{.view}}.removeLabel" :disabled="{{.view}}.none" @click="removeLogo">{{template "icon" "trash"}}</button>
+  </div>
+  <p class="help" id="h-{{.name}}">{{.help}}</p>
+  <p class="help" id="s-{{.name}}" role="status" x-text="{{.view}}.note"></p>
+  <p class="field-error" id="e-{{.name}}" x-text="errors.{{.name}}"></p>
+</div>{{end}}
+
+{{/* The branding fields (brandingMixin): both logos and the primary colour. */}}
+{{define "branding-fields"}}<div class="field-row">
+  {{template "logo-field" (dict "name" "logo_light" "theme" "light" "label" "Logo (light theme)" "view" "lightLogo" "help" "PNG, JPEG, WebP or SVG, up to 256 KB.")}}
+  {{template "logo-field" (dict "name" "logo_dark" "theme" "dark" "label" "Logo (dark theme)" "view" "darkLogo" "help" "Optional: without it the light theme's logo is shown. Same formats and size.")}}
+</div>
+<div class="field">
+  <label class="label" for="f-primary_color">Primary colour</label>
+  <div class="flex flex-wrap items-center gap-3">
+    <input class="input color-input" id="f-primary_color_picker" type="color" aria-label="Pick the primary colour" :value="pickerValue" @input="pickColor">
+    <input class="input mono w-40" id="f-primary_color" name="primary_color" type="text" x-model="form.primary_color" x-ref="primary_color" :aria-invalid="invalid.primary_color" aria-describedby="e-primary_color h-primary_color" placeholder="Server default" maxlength="7" autocomplete="off" spellcheck="false">
+    <button type="button" class="btn btn-secondary btn-sm" :disabled="usesDefaultColor" @click="useDefaultColor">Use the server's colour</button>
+  </div>
+  <p class="help" id="h-primary_color">Written as #rrggbb. Used for buttons and links, so it must be dark enough for white text on it.</p>
+  <p class="field-error" id="e-primary_color" x-text="errors.primary_color"></p>
+</div>{{end}}
+
 {{/* One address of an organization to copy, in a card's <dl>: id, label, what (named in the announcement), value. */}}
 {{define "address"}}
 <div><dt id="{{.id}}-l">{{.label}}</dt>

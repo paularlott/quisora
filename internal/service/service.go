@@ -185,6 +185,7 @@ type Service struct {
 	Audits     *store.Table[model.Audit, *model.Audit]
 	Links      *store.Table[model.LinkToken, *model.LinkToken]
 	SignIns    *store.Table[model.SignIn, *model.SignIn]
+	OrgLogos   *store.Table[model.OrgLogo, *model.OrgLogo]
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
@@ -246,6 +247,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Audits:     store.NewTable[model.Audit](s),
 		Links:      store.NewTable[model.LinkToken](s),
 		SignIns:    store.NewTable[model.SignIn](s),
+		OrgLogos:   store.NewTable[model.OrgLogo](s),
 		Locks:      store.NewTable[model.Lock](s),
 		Replays:    store.NewTable[model.Replay](s),
 		orgCache:   ttlcache.New[*model.Org](orgTTL, 20_000),

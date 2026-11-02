@@ -97,6 +97,12 @@
           </div>
         </div>
       </fieldset>
+
+      <fieldset class="fieldset" aria-describedby="h-org-branding">
+        <legend>Branding</legend>
+        <p class="help" id="h-org-branding">The logo and colour show on the organization's sign-in pages and in the console for its users. Without a logo, the server's logo and name are shown.</p>
+        {{template "branding-fields"}}
+      </fieldset>
     </div>
     {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}
   </form>

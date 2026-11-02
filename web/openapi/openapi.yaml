@@ -204,6 +204,35 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/branding:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    patch:
+      tags: [Organizations]
+      summary: Change an organization's logo and colour
+      description: "Change the logo and primary colour the organization's sign-in pages and console show (the organization's administrators and super admins; not service accounts: updates need a human). A field left out keeps its value; an empty string removes it. A logo is a data: URI of a PNG, JPEG, WebP or SVG image, at most 256 KB decoded, whose content must be the type the URI names. A dark logo needs a light one, and removing the light logo removes the dark one too. The colour is #rrggbb and dark enough for white text on it at a contrast of 4.5:1 (WCAG 2.2 AA). Quisora serves the logos and a stylesheet for the colour itself (/o/{org}/branding/); without a logo or colour the pages show the server's. Returns the organization. Audited as org.branding."
+      operationId: patch_orgs_org_branding
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BrandingInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Org"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/sign-out:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -3942,6 +3971,35 @@ components:
           items: {$ref: "#/components/schemas/Audit"}
         total:
           type: integer
+    Branding:
+      type: object
+      description: The logo and colour an organization's sign-in pages and console show. Without a logo or colour they show the server's
+      properties:
+        primary_color:
+          type: string
+          description: "#rrggbb, or empty for the server's colour"
+        logo_light:
+          type: string
+          description: URL of the logo, served by Quisora; absent without one
+          readOnly: true
+        logo_dark:
+          type: string
+          description: URL of the logo for the dark theme; absent without one (the light logo is shown then)
+          readOnly: true
+    BrandingInput:
+      type: object
+      properties:
+        logo_light:
+          type: string
+          description: "data: URI of a PNG, JPEG, WebP or SVG image, at most 256 KB decoded, whose content is the type the URI names; \"\" removes the logo (and the dark one)"
+          example: data:image/png;base64,iVBORw0KGgo=
+        logo_dark:
+          type: string
+          description: "the logo for the dark theme, as logo_light; needs a light logo; \"\" removes it"
+        primary_color:
+          type: string
+          description: "#rrggbb with a contrast of at least 4.5:1 against white text; \"\" removes it"
+          example: "#134e4a"
     Client:
       type: object
       properties:
@@ -4683,6 +4741,7 @@ components:
         primary:
           type: boolean
         settings: {$ref: "#/components/schemas/OrgSettings"}
+        branding: {$ref: "#/components/schemas/Branding"}
         last_sign_out: {$ref: "#/components/schemas/SignOutEvent"}
         users:
           type: integer
@@ -4762,6 +4821,9 @@ components:
         name:
           type: string
         settings: {$ref: "#/components/schemas/OrgSettings"}
+        branding:
+          description: "when creating an organization: its logo and primary colour, as for PATCH /api/orgs/{org}/branding (invalid branding is 422, field branding.primary_color and so on, and nothing is created); ignored when changing an organization, whose branding only people change"
+          $ref: "#/components/schemas/BrandingInput"
         service_account:
           description: "when creating an organization: its first service account, with any of the service account scopes, import included; ignored when changing an organization"
           $ref: "#/components/schemas/ServiceAccountInput"

@@ -45,7 +45,8 @@ func newWorldLogged(t *testing.T, cfgFn func(*config.Config), log logger.Logger)
 	t.Helper()
 	w := &world{t: t, mod: admin.New(), users: map[string]*model.User{}}
 	w.env = webtest.New(t, webtest.Options{Configure: cfgFn, Log: log, Modules: func(s *web.Server) []web.Module {
-		s.Mux.Handle("/", admin.NotFound(s))
+		s.NotFound = admin.NotFound(s) // as the app does
+		s.Mux.Handle("/", s.NotFound)
 		return []web.Module{w.mod}
 	}})
 	// Sessions here count as recently re-authenticated (the dangerous changes need it: stepUp); tests of the

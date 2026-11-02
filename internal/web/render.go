@@ -18,12 +18,15 @@ import (
 
 // Site is the branding passed to every page.
 type Site struct {
-	Name         string
+	Name         string        // ui.site_name: the server's (the footer's, without ui.footer)
+	Brand        string        // the name shown with the logo and in page titles: Name, or the organization's (Site.For)
 	DefaultTheme string        // light, dark or system
 	LogoLight    string        // URL
 	LogoDark     string        // URL (falls back to LogoLight)
 	Skin         string        // ui.skin's name (data-skin on <html>), or ""
 	SkinCSS      string        // URL of the skin's stylesheet, or ""
+	OrgLogo      bool          // the logo is the organization's (Site.For), and Brand its name
+	BrandCSS     string        // URL of the organization's primary colour stylesheet (Site.For), or ""
 	Footer       template.HTML // ui.footer, limited to links and text emphasis (FooterHTML)
 	PublicURL    string
 	Mail         bool // an SMTP server is configured (config.Mail.Enabled)
@@ -150,7 +153,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, p *Pag
 
 // SiteFromConfig builds the branding block.
 func SiteFromConfig(c *config.Config) Site {
-	s := Site{Name: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
+	s := Site{Name: c.UI.SiteName, Brand: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
 		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(),
 		PasswordMin: c.Limits.PasswordMinLength}
 	return s

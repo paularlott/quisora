@@ -3,7 +3,7 @@
 <div class="stack">
   <div>
     <h1 class="page-title">Sign in through your application</h1>
-    <p class="page-sub">This page does not exist, or you need to sign in first.</p>
+    {{if .Data}}<p class="page-sub">That link doesn't lead to a page here.</p>{{end}}
   </div>
   <ul class="stack" role="list">
     <li class="flex gap-3">{{template "icon" "app"}}<span><strong>Open the application you want to use.</strong> It brings you here to sign in and takes you back when you're done.</span></li>

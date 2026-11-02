@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -82,6 +83,27 @@ func LoadSkin(v string) (*Skin, error) {
 		s.LogoDark = s.LogoLight
 	}
 	return s, nil
+}
+
+// skinSelector finds the skin names a stylesheet styles: [data-skin="<name>"], quoted or not, with space around the
+// "=" and a flag after the value as CSS allows.
+var skinSelector = regexp.MustCompile(`\[\s*data-skin\s*=\s*["']?([^"'\]\s]+)`)
+
+// skinOtherName returns the skin name a stylesheet's data-skin selectors use when none is the skin's own (its
+// folder's), as when the folder was renamed: the stylesheet would then style nothing, without a word. "" when one is
+// its own, or when it names no skin (:root { ... }: it is loaded only for this skin). It reads the text, not the CSS
+// (a selector in a comment counts), so New only warns of it.
+func skinOtherName(css []byte, name string) string {
+	other := ""
+	for _, m := range skinSelector.FindAllSubmatch(css, -1) {
+		if string(m[1]) == name {
+			return ""
+		}
+		if other == "" {
+			other = string(m[1])
+		}
+	}
+	return other
 }
 
 func skinLogo(fsys fs.FS, base string) (*SkinFile, error) {

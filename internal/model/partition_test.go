@@ -30,6 +30,7 @@ func TestPartitionKeyOfEveryKind(t *testing.T) {
 		KindAudit:     &Audit{Meta: meta, OrgID: org},
 		KindLink:      &LinkToken{Meta: meta, OrgID: org, UserID: "u", TokenHash: "h"},
 		KindSignIn:    &SignIn{Meta: meta, OrgID: org},
+		KindOrgLogo:   &OrgLogo{Meta: Meta{ID: org}}, // its id is the organization's
 		KindLock:      &Lock{Meta: meta},
 		KindReplay:    &Replay{Meta: meta},
 		KindEphemeral: &Ephemeral{Meta: meta},

@@ -21,8 +21,10 @@ Organizations are self-contained: each has its own address space, `/o/<org>/`, w
 name (a name can never be an id, and `o` is reserved).
 The sign-in page is `/o/<org>/login`, with `/o/<org>/account`, `/o/<org>/invite`, `/o/<org>/reset`,
 `/o/<org>/verify-email` and `/o/<org>/logout` beside it; the links in invitation, reset and verification emails are
-`/o/<org id>/…`. `https://id.example.com/` redirects to the primary organization's sign-in page (`/o/<its id>/login`:
-its id is made when the server is set up).
+`/o/<org id>/…`. `https://id.example.com/` signs no one in: it tells a signed-out visitor to start from their application or
+their organization's sign-in link, as does a page that does not exist, or an organization's when there is no such
+organization (a 404). It carries the primary organization's logo and colour, if it has them. Signed in, it is the
+account page. Administrators of the primary organization sign in at `/admin`.
 
 A browser keeps one session per organization (a cookie of its own for each): being signed in to one organization is not
 being signed in to another. The console (`/admin`) and the management API (`/api`) are the server's, not an

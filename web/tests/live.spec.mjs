@@ -158,6 +158,9 @@ test('tenant pages: clients created, moved and deleted elsewhere update the summ
     await a.waitForSelector('tbody tr')
     const tn = uniq('lt')
     const other = uniq('ot')
+    // narrowed to it first: other tests add tenants to the same server, and a new one may sort past the first page
+    await a.getByRole('searchbox', { name: 'Search tenants' }).fill(tn)
+    await expect(a.getByRole('heading', { name: 'Nothing matches your search' })).toBeVisible()
     await apiCall(b, 'POST', `${API}/tenants`, { name: tn, display_name: 'Live ' + tn })
     // the tenants list shows the new tenant
     await expect(a.getByRole('link', { name: 'Live ' + tn, exact: true })).toBeVisible({ timeout: 3500 })

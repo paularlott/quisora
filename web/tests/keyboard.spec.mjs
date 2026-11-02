@@ -223,6 +223,9 @@ test('client secret is shown once with a copy button; a public client\'s dialog 
 test('tenant dialog: keyboard, provider checklist, org-disabled methods, delete rules', async ({ page }) => {
   await gotoRows(page, `${A}/tenants`)
   await expect(page.locator('a[aria-current="page"]')).toHaveText(/Tenants/)
+  // each tenant is searched for first: other tests add tenants to the same server, which may push it past the first page
+  const search = (q) => page.getByRole('searchbox', { name: 'Search tenants' }).fill(q)
+  await search('Staff tools')
   // edit dialog opens focused on the first field, Tab stays inside, Esc returns focus to the opener
   const edit = page.getByRole('button', { name: 'Edit Staff tools' })
   await edit.focus()
@@ -247,6 +250,7 @@ test('tenant dialog: keyboard, provider checklist, org-disabled methods, delete 
   await expect(edit).toBeFocused()
 
   // create, with a validation error, then success
+  await search('Kbd tenant')
   await page.getByRole('button', { name: 'New tenant' }).click()
   await expect(page.locator('#f-display_name')).toBeFocused()
   await page.locator('#f-display_name').fill('Kbd tenant')
@@ -268,6 +272,7 @@ test('tenant dialog: keyboard, provider checklist, org-disabled methods, delete 
   await expect(page.getByRole('row', { name: /kbd-tenant/ })).toHaveCount(0)
 
   // a tenant with clients cannot be deleted
+  await search('Customer apps')
   await page.getByRole('button', { name: 'Delete Customer apps' }).click()
   await page.getByRole('dialog', { name: 'Delete tenant?' }).getByRole('button', { name: 'Delete tenant' }).click()
   await expect(page.locator('.toasts')).toContainText('still has clients')

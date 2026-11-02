@@ -1,4 +1,4 @@
-// Package login is the sign-in and self-service HTTP module: the landing redirect, per-organization sign-in (password
+// Package login is the sign-in and self-service HTTP module: the landing page, per-organization sign-in (password
 // with optional TOTP, passkeys, upstream providers), password reset and invitation pages, logout, and the account
 // JSON API behind the account page. Every page and endpoint of it is in an organization's own address space,
 // /o/{org}/... (web.Server.InOrg): the organization is the one the path names, the browser's session there is that
@@ -137,7 +137,7 @@ func (m *Module) Register(s *web.Server) {
 		mux.Handle(method+" /o/{org}"+path, s.InOrg(h))
 	}
 	// pages
-	mux.HandleFunc("GET /{$}", m.landing)
+	mux.Handle("GET /{$}", s.WithSession(http.HandlerFunc(m.landing)))
 	inOrg("GET /login", s.WithSession(http.HandlerFunc(m.loginPage)))
 	inOrg("GET /login/provider/{id}", http.HandlerFunc(m.providerStart))
 	inOrg("GET /login/callback/{provider}", http.HandlerFunc(m.providerCallback))

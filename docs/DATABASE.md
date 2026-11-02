@@ -20,6 +20,7 @@ indexes), so that lists and filters run without decoding `data`.
 | Table                | Holds                                                                                                                              |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `organizations`      | Organizations and their settings.                                                                                                  |
+| `organization_logos` | An organization's logos (light and dark) and their image types: a record of their own, so that the organization's record stays small. Served by Quisora at `/o/<org>/branding/`. |
 | `users`              | User accounts, including service accounts.                                                                                         |
 | `user_groups`        | Groups of users. A group's record is also the commit point for changes to its member list.                                         |
 | `group_members`      | Group memberships, one row per user per group. A removed membership is kept for a while, then expires.                             |

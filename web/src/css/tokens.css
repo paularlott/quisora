@@ -132,6 +132,11 @@
   --thumb-bg-active: radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.55));
   --thumb-fg: #0b1220;
   --thumb-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.9), 0 3px 8px rgba(15, 23, 60, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  /* A form switch's size: the track, its thumb (drawn at 78%), and how far the thumb moves when on. */
+  --switch-w: 3.25rem;
+  --switch-h: 1.85rem;
+  --thumb-size: 1.9rem;
+  --thumb-travel: 1.2rem;
   --toggle-on-bg: linear-gradient(135deg, #312e81, #4c1d95); /* the theme toggle in its dark position */
   --toggle-on-border: #a5b4fc;
   --avatar-bg: linear-gradient(135deg, #4338ca, #7c3aed);

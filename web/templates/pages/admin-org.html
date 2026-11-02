@@ -35,6 +35,19 @@
     </dl>
   </section>
 
+  {{if .IsAdmin}}
+  <section class="glass-card" aria-labelledby="brand-h" x-data="adminBranding" data-api="{{.Data.API}}" x-show="loaded" x-cloak>
+    <h2 class="section-title mb-1" id="brand-h">Branding</h2>
+    <p class="muted mb-4">The logo and colour show on this organization's sign-in pages and in the console for its users. Without a logo, the server's logo and name are shown.</p>
+    <form class="stack" @submit.prevent="save" novalidate>
+      {{template "branding-fields"}}
+      <div>
+        <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="saveBlocked"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save branding</span></button>
+      </div>
+    </form>
+  </section>
+  {{end}}
+
   <section class="glass-card" aria-labelledby="addr-h">
     <h2 class="section-title mb-1" id="addr-h">Addresses</h2>
     <p class="muted mb-4">To share and to configure. Applications find every other endpoint at the discovery URL; some ask for it, others for the issuer and add the rest themselves.</p>

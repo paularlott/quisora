@@ -55,6 +55,9 @@ type Server struct {
 	Reauthed func(r *http.Request) bool
 	// Status is the cluster summary /readyz reports (counts only: /readyz is unauthenticated). Nil: none.
 	Status func() any
+	// NotFound answers a request for something that is not here (set by the app): the routes no module serves, and an
+	// organization's pages and endpoints when it does not exist (InOrg). Nil: a plain 404.
+	NotFound http.Handler
 
 	skin    *Skin // ui.skin, or nil
 	httpSrv *http.Server
@@ -108,6 +111,10 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		Site: SiteFromConfig(cfg), Mux: http.NewServeMux(), skin: skin}
 	if skin != nil {
 		s.Site.Skin, s.Site.SkinCSS = skin.Name, "/branding/skin.css?v="+skin.Version
+		if other := skinOtherName(skin.CSS, skin.Name); other != "" {
+			log.Warn("ui.skin: skin.css styles data-skin=\""+other+"\", but the skin's name is its folder's: rename the "+
+				"folder, or the selectors, or the skin may style nothing", "skin", cfg.UI.Skin, "name", skin.Name)
+		}
 	}
 	s.baseRoutes()
 	return s, nil
@@ -182,6 +189,7 @@ func (s *Server) baseRoutes() {
 		static.ServeHTTP(w, r)
 	}))
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
+	s.Mux.Handle("GET /o/{org}/branding/{name}", s.InOrg(http.HandlerFunc(s.orgBranding)))
 	s.Mux.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
 	})
@@ -328,7 +336,26 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.CSRF = s.AnonCSRF(w, r)
 		p.Org = Org(r) // an organization's own pages (sign-in, device, sign-out) name it signed out too
 	}
+	p.Site = p.Site.For(p.Org) // its branding (an admin page then names the organization it administers: p.Org)
 	return p
+}
+
+// SignInElsewhere renders the page of a signed-out visitor who did not come from an application or a sign-in link: they
+// sign in through those, never here. It carries the primary organization's branding, the server's own. status is 404
+// for a page that does not exist, which the page says. The organization is the cached one (service.Org): every
+// request for something that is not here comes this way.
+func (s *Server) SignInElsewhere(w http.ResponseWriter, r *http.Request, status int) {
+	title, notFound := "Sign in", status == http.StatusNotFound
+	if notFound {
+		title = "Not found"
+	}
+	p := s.Page(w, r, title, "", notFound)
+	if id, err := s.Svc.PrimaryOrgID(r.Context()); err == nil {
+		if o, err := s.Svc.Org(r.Context(), id); err == nil {
+			p.Site = p.Site.For(o)
+		}
+	}
+	s.Render.Render(w, status, "not-found", p)
 }
 
 // anonCSRFCookie carries the double-submit token for requests made before sign-in.
