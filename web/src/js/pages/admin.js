@@ -475,7 +475,9 @@ const PROVIDER_TYPES = {
   organization: { text: 'Organization', name: 'the organization\u2019s name' },
 }
 const providerTypeText = (t) => (PROVIDER_TYPES[t] || PROVIDER_TYPES.oidc).text
-const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : p.issuer
+// The issuer's host alone (accounts.google.com, not https://accounts.google.com): the full address is in the edit dialog.
+const issuerHost = (u) => { try { return new URL(u).host || u } catch { return u || '' } }
+const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : issuerHost(p.issuer)
 const shapeProvider = (p) => ({ id: p.id, name: p.name, enabled: p.enabled, typeText: providerTypeText(p.type), stateText: p.enabled ? 'enabled' : 'disabled' })
 
 // Whether a tenant signs SSH certificates, as the tenants list shows it (the list API gives the settings once SSH was ever turned on).
@@ -1717,7 +1719,7 @@ export default function (Alpine) {
       const b = activeBadge(p.enabled, 'Enabled', 'Disabled')
       return { ...p, copyCallbackLabel: 'Copy callback URL of ' + p.name, createdText: fmtDate(p.created), statusText: b.text, statusClass: b.cls, typeText: providerTypeText(p.type),
         editLabel: 'Edit ' + p.name, deleteLabel: 'Delete ' + p.name, sub: providerSub(p),
-        readOnly: p.type === 'organization' && !this.isSuper, // an organization provider writes into another organization: super admins only
+        hasCallback: p.type !== 'organization', readOnly: p.type === 'organization' && !this.isSuper, // an organization provider writes into another organization: super admins only
         domainsText: (p.allowed_domains || []).join(', ') || 'Any', provisionText: (p.auto_provision ? 'Creates accounts' : 'Existing users only') + (p.trust_mfa ? '; counts as a second factor' : '') }
     },
     get isEdit() { return this.editing !== null },

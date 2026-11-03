@@ -344,6 +344,8 @@
   .table .actions { text-align: right; white-space: nowrap; width: 1%; }
   .cell-title { font-weight: 650; }
   .cell-sub { font-size: 0.8125rem; color: var(--fg-muted); }
+  /* A long value (an address, a tenant ID) ends in an ellipsis rather than widen the table past its actions. */
+  .cell-clip { max-width: 20rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .th-sort {
     display: inline-flex; align-items: center; gap: 0.35rem; min-height: 2.25rem; margin: -0.4rem -0.6rem; padding: 0.3rem 0.6rem;

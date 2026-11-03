@@ -24,12 +24,12 @@
         </tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
-            <td><div class="cell-title" x-text="row.name"></div><div class="cell-sub" x-text="row.sub"></div>
-              <div class="cell-sub copy-id"><span class="sr-only">Callback URL: </span><code class="mono" x-text="row.callback_url"></code>{{template "copy-row" (dict "value" "callback_url" "what" "callback URL" "label" "copyCallbackLabel")}}</div></td>
+            <td><div class="cell-title cell-clip" x-text="row.name" :title="row.name"></div><div class="cell-sub cell-clip" x-text="row.sub" :title="row.sub"></div></td>
             <td x-text="row.typeText"></td>
             <td><div x-text="row.domainsText"></div><div class="cell-sub" x-text="row.provisionText"></div></td>
             <td><span :class="row.statusClass" x-text="row.statusText"></span></td>
             <td class="actions">
+              <template x-if="row.hasCallback">{{template "copy-row" (dict "value" "callback_url" "what" "callback URL" "label" "copyCallbackLabel")}}</template>
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.editLabel" :data-id="row.id" @click="edit" x-show="!row.readOnly">{{template "icon" "pencil"}}</button>
               <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove" x-show="!row.readOnly">{{template "icon" "trash"}}</button>
             </td>

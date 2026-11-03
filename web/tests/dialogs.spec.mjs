@@ -81,7 +81,7 @@ test('group members: type to find users, arrow keys and Enter add one, members a
   await expect(list).toBeHidden()
 })
 
-test('providers: each has its own callback URL, shown in the list and the dialog (before saving a new one) and copyable', async ({ page, context }) => {
+test('providers: each has its own callback URL, copyable from the list and shown in the dialog (before saving a new one)', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await signIn(page, 'admin')
   await page.goto(`${A}/providers`, { waitUntil: 'load' })
@@ -89,7 +89,7 @@ test('providers: each has its own callback URL, shown in the list and the dialog
   const first = (await apiCall(page, 'GET', `${API}/providers?sort=name`)).items[0]
   expect(first.callback_url).toMatch(new RegExp('^https://[^/]+/o/' + ID_RE + '/login/callback/' + first.id + '$'))
   const row = page.getByRole('row', { name: new RegExp(first.name) })
-  await expect(row).toContainText(first.callback_url)
+  await expect(row).not.toContainText(first.callback_url) // the list keeps narrow: the address is in the dialog
   await row.getByRole('button', { name: 'Copy callback URL of ' + first.name }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first.callback_url)
 
