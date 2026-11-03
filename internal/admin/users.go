@@ -325,6 +325,29 @@ func (m *Module) removePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// removeUserTOTP handles DELETE /users/{id}/totp: removes the user's authenticator app (a lost or replaced phone),
+// with their recovery codes when it was their last second factor, after a recent re-authentication: the account is
+// left with its password alone until they set one up again (at their next sign-in, where a second factor is
+// required). See service.RemoveTOTP: a manager's or administrator's, only a super admin.
+func (m *Module) removeUserTOTP(w http.ResponseWriter, r *http.Request) {
+	u, a, found := m.connectionsUser(w, r)
+	if !found {
+		return
+	}
+	if u.ID != a.UserID && !m.stepUp(w, r) {
+		return
+	}
+	ctx, proceed := m.selfCtx(w, r, a, u, true)
+	if !proceed {
+		return
+	}
+	if err := m.s.Svc.RemoveTOTP(ctx, a, u.ID); err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // lockOutUser handles POST /users/{id}/lock-out: disables the user and removes every way they had to sign in (a
 // compromised account, or a leaver), after a recent re-authentication. See service.LockOutUser.
 func (m *Module) lockOutUser(w http.ResponseWriter, r *http.Request) {

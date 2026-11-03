@@ -168,8 +168,10 @@ hashes are argon2id: do everything under the master key above, and reset passwor
 cluster runs ([rotating the cluster key](RUNNING.md#rotating-the-cluster-key)), finish the last round promptly, and
 check who could reach the gossip port.
 
-**A user lost their authenticator app or passkey.** With recovery codes they sign in with one of those and set up a
-new factor; without, an administrator sends them an invitation (which replaces every credential). A
+**A user lost their authenticator app or passkey.** With recovery codes they sign in with one of those (or, still
+signed in, confirm a change with one) and set up a new factor; without, an administrator removes the authenticator app
+on the user's page (**Remove authenticator app**: they keep their password) or a lost passkey from its list, or sends
+them an invitation (which replaces every credential). A
 `login.recovery_code` they did not make means someone has their password and their codes: lock the account out.
 Where the organization allows codes by email, a `login.email_code.sent` the user did not ask for means someone has
 their password: reset it, and check who can read their mailbox.

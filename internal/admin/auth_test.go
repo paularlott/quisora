@@ -135,6 +135,15 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 		return u.ID
 	}
 	demoted, disabled, deleted, ended := peer("demoted"), peer("disabled"), peer("deleted"), peer("ended")
+	lostPhone := peer("lostphone")
+	if u, err := w.env.Svc.Users.Get(context.Background(), lostPhone); err != nil {
+		t.Fatal(err)
+	} else {
+		u.TOTPSecret = w.env.Svc.Sealer.SealFor(service.TOTPBinding(u.ID), []byte("JBSWY3DPEHPK3PXP"))
+		if err := w.env.Svc.Users.Update(context.Background(), u); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for name, call := range map[string]func(c *caller) resp{
 		"demote an administrator":  func(c *caller) resp { return c.patch(AU+"/"+demoted, map[string]any{"role": "user"}) },
 		"disable an administrator": func(c *caller) resp { return c.patch(AU+"/"+disabled, map[string]any{"active": false}) },
@@ -152,7 +161,8 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 		"create an administrator": func(c *caller) resp {
 			return c.post(AU, map[string]any{"username": "boss", "email": "boss@x.example", "given_name": "B", "role": "admin"})
 		},
-		"remove another user's password": func(c *caller) resp { return c.delete(AU + "/" + victim + "/password") },
+		"remove another user's password":          func(c *caller) resp { return c.delete(AU + "/" + victim + "/password") },
+		"remove another user's authenticator app": func(c *caller) resp { return c.delete(AU + "/" + lostPhone + "/totp") },
 		"sign an organization out": func(c *caller) resp {
 			return c.post("/api/orgs/acme/sign-out", map[string]any{"reason": "test"})
 		},

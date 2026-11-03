@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 )
 
 func TestSensitiveActionsNeedReauth(t *testing.T) {
@@ -283,4 +284,99 @@ func TestReauthWithPasskey(t *testing.T) {
 	if _, out = b.api("GET", "/api-internal/account/reauth", nil); out["valid"] != true {
 		t.Fatal("not re-authenticated")
 	}
+}
+
+// A lost authenticator app: the password and a recovery code confirm it is you in its place, so the app can be
+// removed and set up again without signing out. Wrong codes count towards the lockout; a use is audited and mailed,
+// and spends the code.
+func TestReauthWithRecoveryCode(t *testing.T) {
+	withCodes := func(t *testing.T, e *env, u *model.User) []string {
+		t.Helper()
+		e.giveTOTP(t, u)
+		fresh, err := e.Svc.Users.Get(context.Background(), u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		codes, err := e.Svc.CreateRecoveryCodes(context.Background(), service.System, fresh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return codes
+	}
+	valid := func(b *browser) bool { _, v := b.api("GET", "/api-internal/account/reauth", nil); return v["valid"] == true }
+
+	t.Run("confirms in place of the authenticator code", func(t *testing.T) {
+		e, org := accountEnv(t, 0)
+		pat := e.user(t, org, "pat", model.RoleUser)
+		codes := withCodes(t, e, pat)
+		b := e.signedIn(t, pat)
+		for _, step := range []struct {
+			body  map[string]any
+			field string
+		}{
+			{map[string]any{"recovery_code": codes[0]}, "password"},
+			{map[string]any{"password": "wrong-password", "recovery_code": codes[0]}, "password"},
+			{map[string]any{"password": userPassword, "recovery_code": "AAAA-AAAA-AAAA-AAAA"}, "recovery_code"},
+		} {
+			res, out := b.api("POST", "/api-internal/account/reauth", step.body)
+			wantStatus(t, res, out, 422)
+			if str(out, "field") != step.field || valid(b) {
+				t.Fatalf("%v: field %q, valid %v", step.body, str(out, "field"), valid(b))
+			}
+		}
+		res, out := b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "recovery_code": strings.ToLower(codes[0])})
+		wantStatus(t, res, out, 200)
+		if !valid(b) {
+			t.Fatal("not re-authenticated")
+		}
+		if l := e.audits(t, "login.recovery_code"); len(l) != 1 || l[0].Detail["during"] != "reauth" || l[0].Detail["left"] != "9" {
+			t.Fatalf("audit: %+v", l)
+		}
+		if m := e.nextMail(t); !strings.Contains(m.Subject, "recovery code was used") {
+			t.Fatalf("notice: %q", m.Subject)
+		}
+		// the lost app can go now
+		res, out = b.api("DELETE", "/api-internal/account/totp", nil)
+		wantStatus(t, res, out, 204)
+
+		// the code is spent
+		e.Mod.ClearReauth(b.sessionID())
+		pat2 := e.user(t, org, "pat2", model.RoleUser)
+		codes2 := withCodes(t, e, pat2)
+		b2 := e.signedIn(t, pat2)
+		res, out = b2.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "recovery_code": codes2[1]})
+		wantStatus(t, res, out, 200)
+		e.Mod.ClearReauth(b2.sessionID())
+		res, out = b2.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "recovery_code": codes2[1]})
+		wantStatus(t, res, out, 422)
+	})
+
+	t.Run("wrong codes count toward the lockout", func(t *testing.T) {
+		e, org := accountEnv(t, 2)
+		pat := e.user(t, org, "pat", model.RoleUser)
+		codes := withCodes(t, e, pat)
+		b := e.signedIn(t, pat)
+		for _, want := range []int{422, 422, 429} {
+			code := "AAAA-AAAA-AAAA-AAAA"
+			if want == 429 {
+				code = codes[0] // the right one, refused once locked
+			}
+			res, out := b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "recovery_code": code})
+			wantStatus(t, res, out, want)
+		}
+		if valid(b) {
+			t.Fatal("re-authenticated while locked")
+		}
+	})
+
+	t.Run("not without a second factor to stand in for", func(t *testing.T) {
+		e, org := accountEnv(t, 0)
+		pat := e.user(t, org, "pat", model.RoleUser)
+		b := e.signedIn(t, pat)
+		res, out := b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "recovery_code": "AAAA-AAAA-AAAA-AAAA"})
+		wantStatus(t, res, out, 422)
+		if str(out, "field") != "recovery_code" || valid(b) {
+			t.Fatalf("%v", out["_raw"])
+		}
+	})
 }

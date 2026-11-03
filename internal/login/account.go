@@ -627,14 +627,16 @@ func (m *Module) reauthStatus(w http.ResponseWriter, r *http.Request, a acct) {
 }
 
 type reauthReq struct {
-	Password string `json:"password"`
-	Code     string `json:"code"`
+	Password     string `json:"password"`
+	Code         string `json:"code"`
+	RecoveryCode string `json:"recovery_code"`
 }
 
-// reauthPassword handles POST /o/{org}/api-internal/account/reauth: {password, code}. Re-authentication asks for what the account
-// signs in with, second factor included: the password alone only for an account without one; the password and the
-// authenticator code for an account with the app (the code alone when it has no password); an account whose second
-// factor is a passkey confirms with the passkey (reauthPasskeyBegin / Finish).
+// reauthPassword handles POST /o/{org}/api-internal/account/reauth: {password, code} or {password, recovery_code}.
+// Re-authentication asks for what the account signs in with, second factor included: the password alone only for an
+// account without one; the password and the authenticator code for an account with the app (the code alone when it
+// has no password); an account whose second factor is a passkey confirms with the passkey (reauthPasskeyBegin /
+// Finish). A recovery code stands in for either second factor, as at sign-in (reauthRecovery).
 func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) {
 	var in reauthReq
 	if !decode(w, r, &in) {
@@ -644,6 +646,10 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 	u, err := m.fresh(ctx, a)
 	if err != nil {
 		web.WriteError(w, err)
+		return
+	}
+	if in.RecoveryCode != "" {
+		m.reauthRecovery(w, r, a, u, in)
 		return
 	}
 	lockKey := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
@@ -725,6 +731,66 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		return
 	}
 	m.markReauth(ctx, a.sess.ID, u.SecurityGen, u.HasTOTP()) // (the password alone is for an account with no factor of its own)
+	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
+}
+
+// reauthRecovery confirms with a recovery code in place of the account's second factor (a lost authenticator app or
+// passkey), with the password as well when the account has one: so the person can remove the lost factor and set up
+// a new one without signing out. As at sign-in (recovery), a wrong code counts towards the lockout, and a use is
+// audited and mailed to the owner.
+func (m *Module) reauthRecovery(w http.ResponseWriter, r *http.Request, a acct, u *model.User, in reauthReq) {
+	ctx := r.Context()
+	pk, err := m.s.Svc.UsablePasskeys(ctx, u, "")
+	if err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
+	if !u.HasTOTP() && pk == 0 { // nothing for the code to stand in for (and the codes go with the last factor)
+		writeErr(w, http.StatusUnprocessableEntity, "Your account has no second factor for a recovery code to stand in for.", "recovery_code")
+		return
+	}
+	if u.PasswordHash != "" {
+		if in.Password == "" {
+			writeErr(w, http.StatusUnprocessableEntity, "Enter your password.", "password")
+			return
+		}
+		if !m.verifyPassword(w, r, u, in.Password, "password") {
+			return
+		}
+	}
+	lockKey := m.lockKeyFor(r, u, u.ID)
+	n, open, err := m.charge(ctx, lockKey)
+	if err != nil { // the counter failed: refused, but not a lockout
+		unavailableResponse(w)
+		return
+	}
+	if !open {
+		m.lockedResponse(w)
+		return
+	}
+	wrong := false
+	defer m.settle(ctx, lockKey, &wrong)
+	used, left, err := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.RecoveryCode)
+	if err != nil { // the use could not be recorded (or may have been): try again, not a wrong code, no failure counted
+		m.internalError(w, r, "record recovery code", err)
+		return
+	}
+	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	if !used {
+		wrong = true
+		if m.tripped(n) {
+			m.audit(r, "login.lockout", org, u, u.Username, nil)
+		}
+		writeErr(w, http.StatusUnprocessableEntity, "That recovery code is incorrect or has already been used.", "recovery_code")
+		return
+	}
+	m.audit(r, "login.recovery_code", org, u, u.Username, map[string]string{"left": strconv.Itoa(left), "during": "reauth"})
+	if m.Mail != nil && u.Email != "" && org != nil {
+		if err := m.Mail.SendRecoveryUsed(ctx, u, org, left); err != nil {
+			m.s.Log.Error("send recovery code notice", "error", err)
+		}
+	}
+	m.markReauth(ctx, a.sess.ID, u.SecurityGen, true)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "valid_for": int(reauthTTL.Seconds())})
 }
 

@@ -45,3 +45,39 @@ test('admin user page: passkeys listed and removable', async ({ page }) => {
   await expect.poll(() => reloads.some((p) => p.endsWith('/sessions'))).toBe(true)
   expect(reloads.some((p) => !p.endsWith('/sessions'))).toBe(true)
 })
+
+// Removing someone's authenticator app (a lost phone): the Sign-in card offers it only when they have one. The
+// removal is stubbed, as the demo server is shared.
+test('admin user page: an authenticator app can be removed for a lost phone', async ({ page }) => {
+  // an organization's administrator removes a plain user's (a manager's or administrator's is a super admin's change)
+  await signIn(page, 'admin')
+  let enrolled = '2026-01-02T03:04:05Z'
+  await page.route(/\/api\/orgs\/[^/]+\/users\/[^/?]+(\?.*)?$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const res = await route.fetch()
+    const body = await res.json()
+    body.mfa_enrolled_at = enrolled
+    return route.fulfill({ response: res, json: body })
+  })
+  let deleted = ''
+  await page.route('**/users/*/totp', (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback()
+    deleted = route.request().url()
+    enrolled = null
+    return route.fulfill({ status: 204 })
+  })
+  await page.goto('/admin/orgs/acme/users', { waitUntil: 'load' })
+  await page.waitForSelector('tbody tr')
+  await page.getByRole('link', { name: 'Alan Turing' }).click()
+  const button = page.getByRole('button', { name: 'Remove authenticator app' })
+  await expect(button).toBeVisible()
+  await button.click()
+  const confirm = page.getByRole('dialog', { name: 'Remove authenticator app?' })
+  await expect(confirm).toContainText('They keep their password')
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+  await confirm.getByRole('button', { name: 'Remove authenticator app' }).click()
+  await expect(page.getByText('Authenticator app removed.').first()).toBeVisible()
+  expect(deleted).toMatch(/\/users\/[^/]+\/totp$/)
+  await expect(button).toBeHidden()
+})

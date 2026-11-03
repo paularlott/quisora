@@ -121,18 +121,19 @@ administrators):
 - making someone an administrator or super admin, or creating one;
 - demoting, disabling or deleting another administrator or super admin (management API only: a directory offboarding
   an administrator through SCIM still can, within the service's rules: it never touches a super admin);
-- removing another user's password;
+- removing another user's password or authenticator app;
 - issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
 
 **Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
 provider, an API token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second
 factor. A sign-in through a provider trusted for the second factor does not count when the account has one of its own,
-and an account whose second factor is a passkey confirms with the passkey, not the password alone.
+and an account whose second factor is a passkey confirms with the passkey, not the password alone. A
+[recovery code](recovery-codes.md#confirming-it-is-you) stands in for a lost authenticator app or passkey here too.
 
 ## Protecting administrators
 
 - **Resetting an administrator's sign-in is a super admin's change.** Sending an established manager or administrator
-  a new invitation, removing their password, lowering their role, or changing their primary email address (where
+  a new invitation, removing their password or authenticator app, lowering their role, or changing their primary email address (where
   password resets go) needs a super admin. A manager or administrator who has not signed in yet gets the next
   invitation only from whoever issued the current one, or from a super admin. So one administrator cannot take over
   another's account.

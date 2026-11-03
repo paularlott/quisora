@@ -60,9 +60,10 @@ async function totp(secret) {
   return String((h.readUInt32BE(o) & 0x7fffffff) % 1000000).padStart(6, '0')
 }
 
-test('MFA-required organization: after the password the authenticator set-up shows at once (no choice screen)', async ({ page }) => {
-  // The demo's primary organization requires MFA; its admin has no second factor yet.
-  await page.goto('/__demo/invite?as=admin')
+test('second factor required: after the password the authenticator set-up shows at once (no choice screen)', async ({ page }) => {
+  // A manager always needs a second factor, and the demo's "sally" has none yet. She is this test's alone: accepting
+  // the invitation ends her sessions, which would sign out any other test signed in as her.
+  await page.goto('/__demo/invite?as=sally')
   await page.locator('#f-password').fill('correct horse battery staple')
   await page.locator('#f-confirm').fill('correct horse battery staple')
   await page.locator('#f-confirm').press('Enter')

@@ -206,3 +206,54 @@ func TestUserAPITokensAPI(t *testing.T) {
 		t.Fatal("revocation not audited")
 	}
 }
+
+// Whoever manages a user can remove their authenticator app (a lost phone): the recovery codes go with it when it
+// was the last second factor, the password stays. Never your own here (the account page does that), and a manager's
+// or administrator's only by a super admin.
+func TestUserTOTPAPI(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	giveTOTP := func(u *model.User) *model.User {
+		t.Helper()
+		fresh, err := w.env.Svc.Users.Get(ctx, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh.TOTPSecret = w.env.Svc.Sealer.SealFor(service.TOTPBinding(fresh.ID), []byte("JBSWY3DPEHPK3PXP"))
+		now := time.Now().UTC()
+		fresh.MFAEnrolledAt = &now
+		if err := w.env.Svc.Users.Update(ctx, fresh); err != nil {
+			t.Fatal(err)
+		}
+		return fresh
+	}
+	u := giveTOTP(w.users["user"])
+	if _, err := w.env.Svc.CreateRecoveryCodes(ctx, service.System, u); err != nil {
+		t.Fatal(err)
+	}
+	U := AU + "/" + u.ID + "/totp"
+	mg := w.as("manager")
+
+	want(t, w.as("other").delete(U), 404) // another organization's user
+	want(t, mg.delete(AU+"/"+giveTOTP(w.users["admin"]).ID+"/totp"), 403)
+	want(t, mg.delete(U), 204)
+	after, err := w.env.Svc.Users.Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HasTOTP() || after.MFAEnrolledAt != nil || len(after.RecoveryCodes) != 0 || after.PasswordHash == "" {
+		t.Fatalf("after removal: totp %v, enrolled %v, codes %d, password %v", after.HasTOTP(), after.MFAEnrolledAt, len(after.RecoveryCodes), after.PasswordHash != "")
+	}
+	if after.SecurityGen == u.SecurityGen {
+		t.Fatal("security generation not moved on")
+	}
+	if len(auditActions(t, w, "user.totp.remove")) != 1 {
+		t.Error("no audit entry")
+	}
+	want(t, mg.delete(U), 409) // nothing left to remove
+
+	// a manager's: a super admin only
+	mgr := giveTOTP(w.users["manager"])
+	want(t, w.as("admin").delete(AU+"/"+mgr.ID+"/totp"), 422)
+	want(t, w.as("super").delete(AU+"/"+mgr.ID+"/totp"), 204)
+}

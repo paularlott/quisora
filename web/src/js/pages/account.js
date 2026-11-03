@@ -139,17 +139,20 @@ export default function (Alpine) {
 
   // ---- Re-authentication dialog (shared) ---------------------------------------------------------------------
   Alpine.data('accountReauth', () => mix(formMixin(), dialogMixin(), scoped(), {
-    hasPassword: true, hasPasskeys: false, passkeyOk: false, totp: false, resolve: null,
+    hasPassword: true, hasPasskeys: false, passkeyOk: false, totp: false, passkeyFactor: false, recoveryLeft: 0, useRecovery: false, resolve: null,
     init() { this.passkeyOk = passkeysSupported(); Alpine.store('reauth').comp = this },
     get reauthLabel() { return this.busy ? 'Checking…' : 'Confirm' },
     // Re-authentication asks for what the account signs in with: the password, plus the code when the account has
-    // the authenticator app; an account whose second factor is a passkey confirms with the passkey only.
-    get askPassword() { return this.hasPassword && (this.totp || !this.hasPasskeys) },
-    get askCode() { return this.totp },
-    get canUsePasskey() { return this.hasPasskeys && this.passkeyOk },
+    // the authenticator app; an account whose second factor is a passkey confirms with the passkey only. A recovery
+    // code stands in for either (the password as well, when there is one).
+    get askPassword() { return this.hasPassword && (this.useRecovery || this.totp || !this.hasPasskeys) },
+    get askCode() { return this.totp && !this.useRecovery },
+    get canUsePasskey() { return this.hasPasskeys && this.passkeyOk && !this.useRecovery },
+    get canUseRecovery() { return (this.totp || this.passkeyFactor) && this.recoveryLeft > 0 && !this.useRecovery },
+    get recoveryLinkText() { return this.totp ? 'Lost your authenticator app? Use a recovery code' : 'Lost your passkey? Use a recovery code' },
     // nothing to confirm with on this page (e.g. signed in through a provider only): sign in again instead
-    get mustSignIn() { return !this.askPassword && !this.askCode && !this.canUsePasskey },
-    get canConfirm() { return this.askPassword || this.askCode },
+    get mustSignIn() { return !this.askPassword && !this.askCode && !this.canUsePasskey && !this.canUseRecovery },
+    get canConfirm() { return this.askPassword || this.askCode || this.useRecovery },
     async ask(opener) {
       this.settle(false)
       try {
@@ -157,12 +160,22 @@ export default function (Alpine) {
         this.hasPassword = r.security.has_password
         this.totp = r.security.totp
         this.hasPasskeys = r.security.passkeys > 0 && r.security.passkeys_available
+        this.passkeyFactor = r.security.passkeys > 0
+        this.recoveryLeft = r.security.recovery_left || 0
       } catch { /* the dialog still works with the defaults */ }
       return new Promise((resolve) => {
         this.resolve = resolve
-        this.resetForm({ ra_password: '', ra_code: '' })
+        this.useRecovery = false
+        this.resetForm({ ra_password: '', ra_code: '', ra_recovery_code: '' })
         this.openDlg('reauth-dialog', opener)
       })
+    },
+    startRecovery() { this.switchTo(true, 'f-ra_recovery_code') },
+    stopRecovery() { this.switchTo(false, this.askPassword ? 'f-ra_password' : 'f-ra_code') },
+    switchTo(on, focusId) {
+      this.useRecovery = on
+      this.clearErrors()
+      this.$nextTick(() => document.getElementById(focusId)?.focus())
     },
     settle(v) { const r = this.resolve; this.resolve = null; if (r) r(v) },
     done() { const r = this.resolve; this.resolve = null; this.closeDlg('reauth-dialog'); if (r) r(true) },
@@ -171,6 +184,7 @@ export default function (Alpine) {
       const body = {}
       if (this.askPassword) body.password = this.form.ra_password
       if (this.askCode) body.code = this.form.ra_code
+      if (this.useRecovery) body.recovery_code = this.form.ra_recovery_code
       const res = await this.runIn('ra_', () => post(accountApi('/reauth'), body))
       if (res) this.done()
     },

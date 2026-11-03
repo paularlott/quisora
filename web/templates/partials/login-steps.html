@@ -28,7 +28,7 @@
   <div class="stack" x-show="isChooser" x-cloak>
     <h2 class="section-title" id="another-way-h" tabindex="-1" data-step-focus>Try another way</h2>
     <div class="stack" role="group" aria-labelledby="another-way-h">
-      <button type="button" class="btn btn-secondary w-full" x-show="altPasskey" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Use your passkey instead</button>
+      <button type="button" class="btn btn-secondary w-full" x-show="altPasskey" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="confirmWithPasskey">{{template "icon" "key"}} Use your passkey</button>
       <button type="button" class="btn btn-secondary w-full" x-show="altEmail" x-cloak :aria-busy="busyAttr" :disabled="busy" @click="chooseEmailCode">{{template "icon" "mail"}} <span x-text="emailOptionText">Email me a code</span></button>
       <button type="button" class="btn btn-secondary w-full" x-show="altRecovery" x-cloak @click="startRecovery">{{template "icon" "lock"}} Use a recovery code</button>
     </div>
@@ -56,6 +56,6 @@
       {{template "otp-field" (dict "name" "ecode" "stepfocus" true)}}
       <button type="submit" class="btn btn-primary w-full" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="verifyLabel">Verify</span></button>
     </form>
-    <button type="button" class="btn btn-secondary w-full" x-show="canEnrolPasskey" x-cloak :disabled="busy" @click="enrolPasskey">{{template "icon" "key"}} Use a passkey instead</button>
+    <button type="button" class="btn btn-secondary w-full" x-show="canEnrolPasskey" x-cloak :disabled="busy" @click="enrolPasskey">{{template "icon" "key"}} Use a passkey</button>
   </div>
 {{end}}

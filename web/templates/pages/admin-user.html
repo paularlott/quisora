@@ -81,10 +81,11 @@
         <div><dt>Authenticator app</dt><dd x-text="user.mfaText"></dd></div>
         <div><dt>Passkeys</dt><dd x-text="passkeysText"></dd></div>
       </dl>
-      <p class="help mb-3" x-show="resetNoteShown" x-cloak>Only a super admin can send a manager or administrator a new invitation link or remove their password.</p>
+      <p class="help mb-3" x-show="resetNoteShown" x-cloak>Only a super admin can send a manager or administrator a new invitation link, or remove their password or authenticator app.</p>
       <div class="flex flex-wrap gap-3" x-show="manageable">
         <button type="button" class="btn btn-secondary" x-show="canResetSignIn" @click="newInvite">{{template "icon" "key"}} New invitation link</button>
         <button type="button" class="btn btn-secondary" x-show="canRemovePassword" @click="removePassword">{{template "icon" "trash"}} Remove password</button>
+        <button type="button" class="btn btn-secondary" x-show="canRemoveTOTP" x-cloak @click="removeTOTP">{{template "icon" "trash"}} Remove authenticator app</button>
         <button type="button" class="btn btn-secondary" @click="revoke">{{template "icon" "logout"}} Sign out everywhere</button>
       </div>
     </section>

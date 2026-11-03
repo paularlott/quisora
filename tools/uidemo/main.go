@@ -172,8 +172,11 @@ func ptr[T any](v T) *T { return &v }
 // seed fills the store and returns one user per demo role (super, admin, manager, user), all in the "acme" org
 // except the super admin, and every seeded user by username (for /__demo/invite).
 //
-// Besides the acme users with passwords, it seeds: "iris" (acme, no password yet), and the org "northwind" where
-// passwords are off (passkey and the org's sign-in provider only) with "pat" (has a passkey) and "quinn" (nothing set up).
+// Besides the acme users with passwords, it seeds: "iris" (acme, no password yet), "sally" (an acme manager with no
+// password or second factor yet, reserved for the browser test that accepts her invitation: accepting one replaces
+// every way in and ends the account's sessions, so no test may invite an account others sign in as), and the org
+// "northwind" where passwords are off (passkey and the org's sign-in provider only) with "pat" (has a passkey) and
+// "quinn" (nothing set up).
 func seed(ctx context.Context, svc *service.Service, super *model.User) (map[string]*model.User, map[string]*model.User) {
 	sys := service.System
 	mk := func(name, display string) *model.Org {
@@ -186,7 +189,7 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	mk("initech", "Initech")
 	mk("umbrella", "Umbrella Labs")
 
-	byName := map[string]*model.User{"admin": super}
+	byName := map[string]*model.User{}
 	mkUser := func(org *model.Org, username, display string, role model.Role, active bool, withPassword bool) *model.User {
 		given, family, _ := strings.Cut(display, " ")
 		in := service.UserInput{Username: ptr(username), Email: ptr(username + "@" + org.Name + ".example"),
@@ -229,6 +232,7 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 		"Evelyn Boyd Granville", "Leslie Lamport", "Shafi Goldwasser", "Ada Yonath", "Whitfield Diffie", "Adele Goldberg",
 		"Anita Borg", "Yukihiro Matsumoto", "Dorothy Vaughan", "Peter Norvig", "Tove Jansson", "Mae Jemison", "Ivan Sutherland"}
 	mkUser(acme, "iris", "Iris Apfel", model.RoleUser, true, false)
+	mkUser(acme, "sally", "Sally Ride", model.RoleManager, true, false)
 	var members []*model.User
 	for i, n := range names {
 		role := model.RoleUser

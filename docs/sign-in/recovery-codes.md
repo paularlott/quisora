@@ -35,6 +35,15 @@ account's lock-out, as wrong authenticator codes do.
 Once in, the user should set up their second factor again (a new phone, a new passkey) on the account page and, if
 few codes are left, make new ones.
 
+## Confirming it is you
+
+A recovery code also stands in for the second factor in the **Confirm it is you** dialog that account changes ask
+for: **Lost your authenticator app? Use a recovery code** (or **Lost your passkey?**, for an account whose second
+factor is a passkey) asks for the password, when the account has one, and a recovery code. So a user who is still
+signed in when they lose their phone removes the authenticator app and sets it up again without signing out. The
+link shows only while codes are left. As at sign-in, wrong codes count towards the lock-out, and the use is audited
+(`login.recovery_code`, with `during: reauth`) and emailed.
+
 ## When someone else uses one
 
 Every use is audited (`login.recovery_code`) and emailed to the user, with the number of codes left, so a code
@@ -49,9 +58,12 @@ and their codes: [lock the account out](../emergency-sign-out.md#locking-out-one
 
 ## A user with no codes and no second factor
 
-They cannot sign in on their own: **Try another way** says to ask an administrator for a new invitation. An
-administrator makes one on the user's page (**New invitation link**); accepting it sets up a password or passkey and a second
-factor again. Only a super admin can send a manager or administrator a new invitation link.
+They cannot sign in on their own: **Try another way** says to ask an administrator. For a lost authenticator app, an
+administrator removes it on the user's page (**Sign-in → Remove authenticator app**, after confirming it is them; the
+recovery codes go with it when it was the last second factor). The user keeps their password and sets up a new
+authenticator app on their account page, or at their next sign-in where a second factor is required. When the
+password is lost too, **New invitation link** replaces every way the user signs in instead. Only a super admin can do
+either for a manager or administrator.
 
 ## Reference
 
@@ -60,5 +72,5 @@ factor again. Only a super admin can send a manager or administrator a new invit
 | Number | 10 per set |
 | Use | Once each, in place of the second factor |
 | Stored | As hashes |
-| Audit | `login.recovery_code` (and an email to the user) |
+| Audit | `login.recovery_code` (and an email to the user; `during: reauth` when it confirmed a change) |
 | Account API | `POST /api-internal/account/recovery-codes` (the account page; needs a recent re-authentication) |

@@ -25,7 +25,7 @@ Passkeys need nothing in the configuration. They are tied to the host name of `s
   factor, Quisora asks them to confirm it is them first. Up to 20 passkeys per account.
 - **When accepting an invitation:** **Create a passkey** (where the organization allows passkey sign-in), instead of
   or as well as a password.
-- **When a second factor is required and the user has none:** **Use a passkey instead** at the set-up step.
+- **When a second factor is required and the user has none:** **Use a passkey** at the set-up step.
 
 Every passkey must verify the user (a PIN, fingerprint or face): a security key without a PIN is refused with *the
 authenticator did not verify the user (set up a PIN or biometrics on it)*. The same authenticator cannot be added
@@ -52,9 +52,9 @@ only way to sign in at all.
   did not verify its user gives `["hwk"]` or `["swk"]`, one factor.
 - **As the second factor after a password:** an account with a passkey and no authenticator app is asked *"Your
   organization asks for your passkey as well as your password"* (**Confirm with your passkey**). One with an
-  authenticator app is offered **Use your passkey instead** under **Try another way**. The session's `amr` is then
+  authenticator app is offered **Use your passkey** under **Try another way**. The session's `amr` is then
   `["pwd","swk","user","mfa"]` or similar.
-- **To confirm it is them** before a sensitive change: **Use a passkey instead** in the "Confirm it is you" dialog. An
+- **To confirm it is them** before a sensitive change: **Use a passkey** in the "Confirm it is you" dialog. An
   account whose second factor is a passkey must confirm with it, not with the password alone.
 
 A passkey belongs to one organization's account: used at another organization's sign-in page it is refused. The same

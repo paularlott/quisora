@@ -1376,7 +1376,20 @@ export default function (Alpine) {
     get canResetSignIn() { return this.user.can_reset_sign_in !== false },
     get resetBySuperOnly() { return this.user.can_reset_sign_in === false },
     get canRemovePassword() { return this.hasPassword && this.canResetSignIn },
+    // someone else's: your own is removed on your account page, which keeps your last second factor where one is required
+    get canRemoveTOTP() { return !!this.user.mfa_enrolled_at && this.canResetSignIn && !this.isSelf },
     newInvite(ev) { this.openInvite(this.user, null, ev.currentTarget) },
+    async removeTOTP(ev) {
+      const yes = await confirmAction(Alpine, { title: 'Remove authenticator app?', message: `Remove the authenticator app of ${this.user.title}?`,
+        detail: 'For a lost or replaced phone. Their codes stop working now, and so do their recovery codes if it was their only second factor. They keep their password, and set up an authenticator app again on their account page, or when they next sign in if a second factor is required.',
+        confirmLabel: 'Remove authenticator app' })
+      if (!yes) return
+      try {
+        await withReauth(Alpine, () => del(`${this.apiBase}/users/${enc(this.userId)}/totp`), ev.currentTarget || ev.target)
+        toast('Authenticator app removed.')
+        await this.refresh()
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+    },
     async removePassword(ev) {
       const yes = await confirmAction(Alpine, { title: 'Remove password?', message: `Remove the password of ${this.user.title}?`,
         detail: 'They can no longer sign in with a password until they accept a new invitation. Their sessions end now.', confirmLabel: 'Remove password' })

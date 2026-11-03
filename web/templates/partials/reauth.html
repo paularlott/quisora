@@ -13,9 +13,18 @@
       </div>
       {{template "field" (dict "name" "ra_password" "label" "Password" "type" "password" "autocomplete" "current-password" "autofocus" true "show" "askPassword")}}
       {{template "otp-field" (dict "name" "ra_code" "label" "Authenticator code" "show" "askCode")}}
-      <div x-show="canUsePasskey" x-cloak>
-        <button type="button" class="btn btn-secondary w-full" :disabled="busy" @click="reauthPasskey">{{template "icon" "key"}} Use a passkey instead</button>
+      {{/* A recovery code in place of the authenticator code or passkey: the way back in to a lost one. */}}
+      <div class="field" x-show="useRecovery" x-cloak>
+        <label class="label" for="f-ra_recovery_code">Recovery code <span class="req" aria-hidden="true">*</span></label>
+        <input class="input mono" id="f-ra_recovery_code" name="ra_recovery_code" type="text" autocomplete="off" autocapitalize="characters" x-model="form.ra_recovery_code" :aria-invalid="invalid.ra_recovery_code" aria-describedby="h-ra_recovery_code e-ra_recovery_code" aria-required="true" spellcheck="false">
+        <p class="help" id="h-ra_recovery_code">One of the recovery codes you saved. Each only works once.</p>
+        <p class="field-error" id="e-ra_recovery_code" x-text="errors.ra_recovery_code"></p>
       </div>
+      <div x-show="canUsePasskey" x-cloak>
+        <button type="button" class="btn btn-secondary w-full" :disabled="busy" @click="reauthPasskey">{{template "icon" "key"}} Use a passkey</button>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm self-start" x-show="canUseRecovery" x-cloak @click="startRecovery">{{template "icon" "lock"}} <span x-text="recoveryLinkText">Lost your second factor? Use a recovery code</span></button>
+      <button type="button" class="btn btn-ghost btn-sm self-start" x-show="useRecovery" x-cloak @click="stopRecovery">{{template "icon" "chevron-left"}} Back</button>
     </div>
     <div class="dialog-foot">
       <button type="button" class="btn btn-secondary" @click="closeThis">Cancel</button>

@@ -466,6 +466,40 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/users/{id}/totp:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - name: id
+        in: path
+        required: true
+        description: id
+        schema:
+          type: string
+      - {$ref: "#/components/parameters/ApiVersion"}
+    delete:
+      tags: [Users]
+      summary: Remove the user's authenticator app
+      description: Remove the user's authenticator app (a lost or replaced phone), and their recovery codes when it was
+        their last second factor. They keep their password and set up a second factor again on their account page, or
+        at their next sign-in where one is required. Needs a recent re-authentication; a manager's or administrator's
+        only a super admin may remove
+      operationId: delete_orgs_org_users_id_totp
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [users]
+      responses:
+        "204":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}/lock-out:
     parameters:
       - {$ref: "#/components/parameters/Org"}

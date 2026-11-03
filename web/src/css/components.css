@@ -503,15 +503,17 @@
   /* One input over six boxes: every length is in ch of the same monospace font, so each digit lands in the middle
      of its box (pitch = 2.5ch box + 0.75ch gap = 1ch glyph + 2.25ch letter-spacing; the 0.75ch left padding is half
      of the box's spare width). The font size is derived from the form's width (container
-     query units) so the boxes fill it, up to a cap, beyond which the group is centred. */
+     query units) so the boxes fill it edge to edge, in line with the inputs above and below, up to a cap, beyond
+     which the group is centred. */
   .otp { container-type: inline-size; width: 100%; }
-  /* sized to the six boxes (6 × 2.5ch + 5 × 0.75ch = 18.75ch) plus 6px for the focus ring (3px + 2px offset). The
-     input is wider than the boxes (trailing letter-spacing after the 6th digit); paint containment clips that
-     overhang so it can never make a dialog scroll sideways. The font fills the width for this monospace font
-     (1ch ≈ 0.586em: 1 / (18.75 × 0.586) ≈ 0.091). */
+  /* sized to the six boxes (6 × 2.5ch + 5 × 0.75ch = 18.75ch) plus 6px each side for the focus ring (3px + 2px
+     offset), which sits outside the field's edges (the negative margin) so the boxes line up with them. The input is
+     wider than the boxes (trailing letter-spacing after the 6th digit); paint containment clips that overhang so it
+     can never make a dialog scroll sideways. The system monospace fonts differ in width (SF Mono and Menlo 0.6em a
+     digit, Consolas 0.55em), so font-size-adjust makes 1ch 0.6em in every one of them: 1 / (18.75 × 0.6) ≈ 0.0889. */
   .otp-inner {
-    position: relative; width: calc(18.75ch + 12px); padding: 6px; margin-inline: auto; contain: paint;
-    font: 600 min(2.4rem, calc((100cqw - 12px) * 0.0905))/1 var(--font-mono);
+    position: relative; width: calc(18.75ch + 12px); padding: 6px; margin-inline: max(-6px, calc((100cqw - 18.75ch - 12px) / 2));
+    contain: paint; font: 600 min(2.4rem, calc(100cqw * 0.0888))/1 var(--font-mono); font-size-adjust: ch-width 0.6;
   }
   .otp-input {
     position: relative; z-index: 1; display: block; width: calc(6 * 3.25ch + 0.75ch); height: 2em; margin: 0;
