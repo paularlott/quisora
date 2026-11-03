@@ -91,6 +91,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	if id, err := m.s.Svc.Identities.GetByUnique(ctx, key); err == nil && id.Authority == model.ProviderAuthority(res.Provider) {
 		switch {
 		case id.UserID == u.ID && u.Counts(id):
+			m.Upstream.KeepConnected(ctx, res) // connected again: the provider's newer token
 			back("connected")
 			return
 		case id.UserID == u.ID:
@@ -128,6 +129,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		m.internalError(w, r, "identity", err)
 		return
 	}
+	m.Upstream.KeepConnected(ctx, res)
 	// A connected provider is a new way in: the account's security generation moves on (ending what was in flight
 	// for it), and the re-authentication this session gave to connect it carries over to the new generation.
 	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, u.ID); err == nil {

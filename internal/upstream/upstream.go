@@ -91,8 +91,10 @@ type Result struct {
 	Provisioned bool
 	Claims      Claims
 	// Connect is the user who started connecting this provider to their account (BeginConnect); the user was not
-	// resolved and nobody is signed in: the caller attaches the identity.
+	// resolved and nobody is signed in: the caller attaches the identity, then calls KeepConnected.
 	Connect string
+	// grant is the provider's refresh token and its scopes, for a connection to keep (KeepConnected).
+	grant grant
 }
 
 // Service runs upstream sign-ins.
@@ -217,12 +219,13 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft,
 		model.ProviderOrganization:
 		base = d.AuthorizationEndpoint
-		scopes := p.Scopes
-		if !contains(scopes, "openid") {
-			scopes = append([]string{"openid"}, scopes...)
-		}
-		q.Set("scope", strings.Join(scopes, " "))
+		q.Set("scope", strings.Join(requestedScopes(p), " "))
 		q.Set("nonce", st.Nonce)
+		if p.Type == model.ProviderGoogle {
+			// Google gives a refresh token (kept: leavers.go) only for offline access, asked for with this rather than
+			// the offline_access scope. Only when it shows its consent screen: a first sign-in, or new scopes.
+			q.Set("access_type", "offline")
+		}
 	case model.ProviderGitHub:
 		base = s.GitHubAuthURL
 		q.Set("scope", strings.Join(p.Scopes, " "))
@@ -235,6 +238,14 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 		sep = "&"
 	}
 	return base + sep + q.Encode(), id, nil
+}
+
+// requestedScopes are the scopes an OpenID Connect sign-in with p asks for: the provider's, with openid.
+func requestedScopes(p *model.Provider) []string {
+	if contains(p.Scopes, "openid") {
+		return p.Scopes
+	}
+	return append([]string{"openid"}, p.Scopes...)
 }
 
 func contains(l []string, v string) bool {
@@ -281,11 +292,11 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 		return fail, fmt.Errorf("upstream: provider secret: %w", err)
 	}
 	var claims Claims
-	var refresh string
+	var g grant
 	switch p.Type {
 	case model.ProviderOIDC, model.ProviderGoogle, model.ProviderGitLab, model.ProviderAuth0, model.ProviderMicrosoft,
 		model.ProviderOrganization:
-		claims, refresh, err = s.oidcSignIn(ctx, p, string(secret), code, st)
+		claims, g, err = s.oidcSignIn(ctx, p, string(secret), code, st)
 	case model.ProviderGitHub:
 		claims, err = s.githubClaims(ctx, p, string(secret), code, st)
 	default:
@@ -298,14 +309,14 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 		if claims.Subject == "" {
 			return fail, ErrUpstream
 		}
-		return &Result{Org: org, Provider: p, Next: st.Next, Claims: claims, Connect: st.Connect}, nil
+		return &Result{Org: org, Provider: p, Next: st.Next, Claims: claims, Connect: st.Connect, grant: g}, nil
 	}
 	u, provisioned, err := s.resolve(ctx, org, p, claims)
 	if err != nil {
 		return fail, err
 	}
-	if refresh != "" {
-		s.keepRefresh(ctx, p, claims.Subject, refresh)
+	if g.refresh != "" {
+		s.keepRefresh(ctx, p, claims.Subject, g)
 	}
 	return &Result{User: u, Org: org, Provider: p, Next: st.Next, Tenant: st.Tenant, Provisioned: provisioned, Claims: claims}, nil
 }

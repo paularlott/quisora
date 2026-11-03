@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,22 +26,51 @@ import (
 // provider unreachable, a server error, a misconfigured client) is tolerated and tried again next time. A provider
 // that rotates refresh tokens returns a new one with each use; it replaces the stored one.
 
+// grant is a provider's refresh token and the scopes it was granted with.
+type grant struct {
+	refresh string
+	scopes  []string
+}
+
+// grantOf is what the provider granted with a refresh token (none without one): the scopes its token response named,
+// else (RFC 6749 §5.1: left out when they are the ones asked for) those asked for.
+func grantOf(p *model.Provider, refresh, scope string) grant {
+	if refresh == "" {
+		return grant{}
+	}
+	scopes := strings.Fields(scope)
+	if len(scopes) == 0 {
+		scopes = slices.Clone(requestedScopes(p))
+	}
+	slices.Sort(scopes)
+	return grant{refresh: refresh, scopes: slices.Compact(scopes)}
+}
+
 // refreshBinding is the sealing binding of an identity's refresh token.
 func refreshBinding(identityID string) string { return service.IdentityRefreshBinding(identityID) }
 
-// keepRefresh stores the provider's refresh token on the identity just used to sign in (best effort: without it the
-// sessions are simply not checked).
-func (s *Service) keepRefresh(ctx context.Context, p *model.Provider, subject, refresh string) {
+// keepRefresh stores the provider's refresh token, and the scopes it was granted with, on the identity just used to
+// sign in or just connected (best effort: without it the sessions are simply not checked).
+func (s *Service) keepRefresh(ctx context.Context, p *model.Provider, subject string, g grant) {
 	for range 4 {
 		id, err := s.Svc.Identities.GetByUnique(ctx, model.IdentityKey(p.ID, subject))
 		if err != nil {
 			return
 		}
-		id.Refresh = s.Svc.Sealer.SealFor(refreshBinding(id.ID), []byte(refresh))
+		id.Refresh = s.Svc.Sealer.SealFor(refreshBinding(id.ID), []byte(g.refresh))
+		id.Scopes = g.scopes
 		id.RefreshChecked = s.Now().UTC()
 		if err := s.Svc.Identities.Update(ctx, id); !errors.Is(err, store.ErrStale) {
 			return
 		}
+	}
+}
+
+// KeepConnected keeps the provider's refresh token from a connection (Result.Connect) on the identity the caller made
+// for it, as a sign-in through the provider keeps its own: the identity is checked for leavers from then on.
+func (s *Service) KeepConnected(ctx context.Context, res *Result) {
+	if res.Connect != "" && res.grant.refresh != "" {
+		s.keepRefresh(ctx, res.Provider, res.Claims.Subject, res.grant)
 	}
 }
 
@@ -193,7 +223,7 @@ func (s *Service) leaver(ctx context.Context, id *model.Identity, p *model.Provi
 	actor := &service.Actor{OrgID: p.OrgID, Role: model.RoleManager, Name: "provider:" + p.Name}
 	s.Svc.AuditUser(ctx, actor, s.Svc.AuditTargetUser(ctx, p.OrgID, id.UserID), "identity.refresh.refused", map[string]string{"provider": p.Name, "result": result})
 	for range 4 {
-		cur.Refresh, cur.RefreshChecked = "", s.Now().UTC()
+		cur.Refresh, cur.Scopes, cur.RefreshChecked = "", nil, s.Now().UTC()
 		if err := s.Svc.Identities.Update(ctx, cur); !errors.Is(err, store.ErrStale) {
 			return
 		}

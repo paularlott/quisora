@@ -988,6 +988,9 @@ type Identity struct {
 	Refresh string `msgpack:"rt,omitempty" json:"-"`
 	// RefreshChecked is when Refresh was stored or last replayed.
 	RefreshChecked time.Time `msgpack:"rc,omitempty" json:"-"`
+	// Scopes are what the provider granted with Refresh (its token response's scope, else the scopes asked for, sorted):
+	// what the token may be used for. Stored and cleared with it.
+	Scopes []string `msgpack:"gs,omitempty" json:"granted_scopes,omitempty"`
 }
 
 // ProviderCallbackPath is the path of provider providerID's callback address in organization orgID's address space: where

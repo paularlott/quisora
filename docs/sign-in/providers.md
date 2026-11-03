@@ -126,8 +126,12 @@ and administrators always give their own. Only super admins can change it.
 
 When someone leaves, their account at the provider is disabled, but a Quisora session they started through it would
 otherwise carry on. With `offline_access` in the provider's scopes, Quisora keeps the refresh token the provider gives
-at sign-in (sealed) and replays it every `session.upstream_check_minutes` (60 by default; 0 turns it off) while the user
-has a session that came through that provider. If the provider refuses it (`invalid_grant`), Quisora ends all of that
+at sign-in, or when a user connects it to their account (sealed), and replays it every `session.upstream_check_minutes`
+(60 by default; 0 turns it off) while the user has a session that came through that provider. Google ignores
+`offline_access`: Quisora always asks it for offline access (`access_type=offline`), and Google gives a refresh token
+whenever it shows its consent screen, at a user's first sign-in and when the provider's scopes change, so a user who
+signed in before gets one the next time Google asks them to consent. The scopes the token was granted with are kept
+beside it, as the identity's `granted_scopes`: those the provider's token response names, else those asked for. If the provider refuses it (`invalid_grant`), Quisora ends all of that
 user's sessions and refresh grants, and applications are told (`identity.refresh.refused`). The account is not
 disabled: lock it out or end-date it in Quisora for that. GitHub gives no refresh tokens, so this does not apply to it.
 

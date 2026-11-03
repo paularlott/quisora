@@ -27,10 +27,21 @@ func TestConnectProviderToAccount(t *testing.T) {
 	// connecting needs a recent re-authentication
 	res, out := b.post("/api-internal/account/providers/"+p.ID+"/connect", nil)
 	wantStatus(t, res, out, 403)
+	u.oidc.Mu.Lock()
+	u.oidc.IssueRefresh, u.oidc.GrantScope = true, "openid email"
+	u.oidc.Mu.Unlock()
 	authURL := u.connectURL(t, b, p)
 	if loc := u.connectCallback(t, b, p, authURL, claims("ada-sub", "ada@elsewhere.example")); loc != u.at("/account?provider=connected#providers") {
 		t.Fatalf("connect callback: %q", loc)
 	}
+	// the provider's refresh token is kept, as after a sign-in through it
+	if id, err := u.Svc.Identities.GetByUnique(context.Background(), model.IdentityKey(p.ID, "ada-sub")); err != nil ||
+		id.Refresh == "" || !slices.Equal(id.Scopes, []string{"email", "openid"}) {
+		t.Fatalf("connected identity's refresh token: %+v %v", id, err)
+	}
+	u.oidc.Mu.Lock()
+	u.oidc.IssueRefresh, u.oidc.GrantScope = false, ""
+	u.oidc.Mu.Unlock()
 	res, out = b.api("GET", "/api-internal/account/providers", nil)
 	if it := items(t, out); len(it) != 1 || it[0]["connected"] != true {
 		t.Fatalf("providers: %v", out["_raw"])

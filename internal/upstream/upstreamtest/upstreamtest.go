@@ -56,6 +56,7 @@ type FakeOIDC struct {
 	RefreshFail   int
 	RefreshCalls  int
 	RefreshDelay  time.Duration   // how long a refresh request waits before it is answered (a slow provider)
+	GrantScope    string          // the scope a code exchange's token response names ("": it names none)
 	refresh       map[string]bool // live refresh tokens
 	refreshSeq    int
 }
@@ -174,6 +175,9 @@ func NewFakeOIDC(t *testing.T) *FakeOIDC {
 		f.Mu.Lock()
 		if f.IssueRefresh {
 			out["refresh_token"] = f.newRefreshLocked()
+		}
+		if f.GrantScope != "" {
+			out["scope"] = f.GrantScope
 		}
 		f.Mu.Unlock()
 		_ = json.NewEncoder(w).Encode(out)

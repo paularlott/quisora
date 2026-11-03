@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,7 +43,7 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 	p := e.oidcProvider(t, nil)
 	_, sess := e.signedInThrough(t, p, "lee", "lee@corp.example")
 	ident, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(p.ID, "lee"))
-	if err != nil || ident.Refresh == "" {
+	if err != nil || ident.Refresh == "" || len(ident.Scopes) == 0 {
 		t.Fatalf("refresh token not kept: %+v %v", ident, err)
 	}
 
@@ -86,7 +88,7 @@ func TestCheckSessionsLifecycle(t *testing.T) {
 	if _, err := e.svc.Sessions.Get(e.ctx, sess.ID); err == nil {
 		t.Fatal("the leaver's session survived")
 	}
-	if id, _ := e.svc.Identities.Get(e.ctx, ident.ID); id == nil || id.Refresh != "" {
+	if id, _ := e.svc.Identities.Get(e.ctx, ident.ID); id == nil || id.Refresh != "" || id.Scopes != nil {
 		t.Fatalf("refused token kept: %+v", id)
 	}
 	if !e.audited(t, "identity.refresh.refused") {
@@ -310,5 +312,85 @@ func TestRotatedTokenIsKeptWhenTenureIsLostMidReplay(t *testing.T) {
 	e.advance(2 * time.Hour)
 	if r, err := e.up.CheckSessions(e.ctx, time.Hour, time.Minute); err != nil || r.Checked != 1 || r.Ended != 0 {
 		t.Fatalf("the rotated token was not kept: %+v %v", r, err)
+	}
+}
+
+// The scopes a refresh token was granted with are kept beside it: those the provider's token response names, else
+// (RFC 6749 §5.1) those asked for; sorted. No refresh token, no scopes.
+func TestGrantedScopesAreKeptWithTheRefreshToken(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	p := e.oidcProvider(t, func(in *service.ProviderInput) { in.Scopes = &[]string{"email", "offline_access", "profile"} })
+	scopesOf := func(sub string) []string {
+		t.Helper()
+		id, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(p.ID, sub))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id.Scopes
+	}
+
+	// Named by the token response: as granted, which may be less than asked for.
+	e.oidc.Mu.Lock()
+	e.oidc.GrantScope = "profile openid email profile"
+	e.oidc.Mu.Unlock()
+	e.signedInThrough(t, p, "named", "named@corp.example")
+	if got := scopesOf("named"); !slices.Equal(got, []string{"email", "openid", "profile"}) {
+		t.Fatalf("named scopes: %v", got)
+	}
+
+	// Not named: those asked for, with openid.
+	e.oidc.Mu.Lock()
+	e.oidc.GrantScope = ""
+	e.oidc.Mu.Unlock()
+	e.signedInThrough(t, p, "asked", "asked@corp.example")
+	if got := scopesOf("asked"); !slices.Equal(got, []string{"email", "offline_access", "openid", "profile"}) {
+		t.Fatalf("requested scopes: %v", got)
+	}
+
+	// No refresh token: nothing kept.
+	e.oidc.Mu.Lock()
+	e.oidc.IssueRefresh, e.oidc.GrantScope = false, "openid email"
+	e.oidc.Mu.Unlock()
+	e.signedInThrough(t, p, "none", "none@corp.example")
+	if got := scopesOf("none"); got != nil {
+		t.Fatalf("scopes without a refresh token: %v", got)
+	}
+}
+
+// Google gives a refresh token only for offline access, which it is asked for with access_type=offline; other
+// providers are not sent it.
+func TestGoogleIsAskedForOfflineAccess(t *testing.T) {
+	e := setup(t)
+	e.oidc.IssueRefresh = true
+	g, err := e.svc.CreateProvider(e.ctx, service.System, e.org.ID, service.ProviderInput{Type: ptr(model.ProviderGoogle),
+		Name: ptr("Google"), ClientID: ptr("cid"), ClientSecret: ptr("s3cret"), AutoProvision: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Issuer = e.oidc.Srv.URL // Google's issuer is fixed: the fake plays it
+	if err := e.svc.Providers.Update(e.ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	offline := func(p *model.Provider) string {
+		t.Helper()
+		authURL, _, err := e.up.BeginTenant(e.ctx, e.org, p, "/next", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, _ := url.Parse(authURL)
+		return u.Query().Get("access_type")
+	}
+	if got := offline(g); got != "offline" {
+		t.Fatalf("Google access_type %q", got)
+	}
+	if got := offline(e.oidcProvider(t, nil)); got != "" {
+		t.Fatalf("OpenID Connect provider access_type %q", got)
+	}
+
+	// The refresh token it gives is kept, for the leaver checks.
+	e.signedInThrough(t, g, "goo", "goo@corp.example")
+	if id, err := e.svc.Identities.GetByUnique(e.ctx, model.IdentityKey(g.ID, "goo")); err != nil || id.Refresh == "" {
+		t.Fatalf("Google refresh token not kept: %+v %v", id, err)
 	}
 }

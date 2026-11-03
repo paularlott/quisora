@@ -276,11 +276,12 @@ func boolish(v any) bool {
 	return false
 }
 
-// oidcSignIn exchanges the code and returns the identity, and the provider's refresh token when it gave one.
-func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, code string, st state) (Claims, string, error) {
+// oidcSignIn exchanges the code and returns the identity, and the provider's refresh token and its scopes when it
+// gave one.
+func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, code string, st state) (Claims, grant, error) {
 	d, err := s.discoverFor(ctx, p)
 	if err != nil {
-		return Claims{}, "", err
+		return Claims{}, grant{}, err
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {s.CallbackURL(p.OrgID, p.ID)},
 		"code_verifier": {st.Verifier}}
@@ -295,16 +296,17 @@ func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, cod
 		IDToken      string `json:"id_token"`
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		Scope        string `json:"scope"`
 	}
 	if err := s.postForm(ctx, d.TokenEndpoint, form, basic, &tok); err != nil {
-		return Claims{}, "", err
+		return Claims{}, grant{}, err
 	}
 	if tok.IDToken == "" {
-		return Claims{}, "", fmt.Errorf("%w: no id_token in the token response", ErrUpstream)
+		return Claims{}, grant{}, fmt.Errorf("%w: no id_token in the token response", ErrUpstream)
 	}
 	c, err := s.verifyIDToken(ctx, d, p, tok.IDToken, st.Nonce)
 	if err != nil {
-		return Claims{}, "", fmt.Errorf("%w: %v", ErrUpstream, err)
+		return Claims{}, grant{}, fmt.Errorf("%w: %v", ErrUpstream, err)
 	}
 	out := Claims{Subject: str(c, "sub"), Email: str(c, "email"), EmailVerified: boolish(c["email_verified"]),
 		Name: str(c, "name"), GivenName: str(c, "given_name"), FamilyName: str(c, "family_name"),
@@ -315,7 +317,7 @@ func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, cod
 		// domain (xms_edov, an optional claim to enable); a sign-in name standing in for it never does.
 		oid := strings.ToLower(str(c, "oid"))
 		if oid == "" {
-			return Claims{}, "", fmt.Errorf("%w: the Microsoft ID token has no object ID", ErrUpstream)
+			return Claims{}, grant{}, fmt.Errorf("%w: the Microsoft ID token has no object ID", ErrUpstream)
 		}
 		out.Subject = strings.ToLower(str(c, "tid")) + ":" + oid
 		out.EmailVerified = out.Email != "" && boolish(c["xms_edov"])
@@ -342,5 +344,5 @@ func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, cod
 			}
 		}
 	}
-	return out, tok.RefreshToken, nil
+	return out, grantOf(p, tok.RefreshToken, tok.Scope), nil
 }
