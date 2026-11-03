@@ -1,6 +1,6 @@
 # Quisora
 
-> Quisora (pronounced "kwih-SOR-ah") comes from the Latin *quis? ōrā*, meaning "who? speak", a sentry's challenge at the gate.
+> **Quisora** (kwih-SOR-ah) is a coined name inspired by Latin *quis*, “who?”, and *ōrā*, “speak!”—evoking a sentry’s challenge at the gate.
 
 Quisora is a clustered identity provider in one binary: OpenID Connect and OAuth 2 for your applications, passkeys and
 multi-factor sign-in for your users, SCIM 2.0 and a REST API for automation, and a multi-organization admin console.
