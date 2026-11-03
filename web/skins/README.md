@@ -9,6 +9,21 @@ skin = "matte"                     # a built-in skin (a folder here, compiled in
 # skin = "/etc/quisora/skins/acme" # or the path of a skin folder (./acme: relative to the working directory)
 ```
 
+## Light, dark or system
+
+Every page comes in a light and a dark theme. `ui.default_theme` (`--default-theme`, `QUISORA_DEFAULT_THEME`) picks
+which one a browser gets until its user chooses:
+
+```toml
+[ui]
+default_theme = "system"           # the default: follow the device's light or dark mode, and switch when it does
+# default_theme = "dark"           # or always "light" or "dark"
+```
+
+The switch in the header is the user's own choice, kept in that browser (not on the account), and it wins over the
+default. **Match system theme** in the user menu forgets it again. The default is the server's: organizations do not
+set one of their own.
+
 ## Built-in skins
 
 Every folder here is a built-in skin, named after the folder: adding one needs no code change, only a row below.

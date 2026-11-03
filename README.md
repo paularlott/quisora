@@ -139,7 +139,8 @@ addresses come from `X-Forwarded-For` only then), and `server.shutdown_drain` to
 traffic to a node that is stopping. `server.allowed_networks` lists the private networks sign-in providers and applications
 may be on (calls to other private addresses are refused; `server.allow_private_networks` allows them all, for a home
 lab), and `server.extra_ca_file` adds private CA roots for them; `server.restore_from` restores a backup at the first start of an empty node. The console's look is a
-skin (`ui.skin`, with a logo and a footer: [web/skins](web/skins/README.md)). Every setting:
+skin (`ui.skin`, with a logo and a footer: [web/skins](web/skins/README.md)), in a light or dark theme that follows
+the device's unless `ui.default_theme` says otherwise ([light, dark or system](web/skins/README.md#light-dark-or-system)). Every setting:
 [quisora.toml.example](quisora.toml.example) and `quisora serve --help`.
 
 ## Audit log and VictoriaLogs
