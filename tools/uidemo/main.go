@@ -37,7 +37,7 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:18443", "listen address")
 	theme := flag.String("theme", "system", "default theme: light, dark or system")
-	skin := flag.String("skin", "", "UI skin: a built-in one (corporate) or the path of a skin folder (./acme)")
+	skin := flag.String("skin", "", "UI skin: a built-in one (web/skins) or the path of a skin folder (./acme)")
 	rotation := flag.Bool("rotation", false, "show a master key rotation in progress (the master key rotation page)")
 	clustered := flag.Bool("cluster", false, "show a three-node gossip cluster on the system overview (a made-up status)")
 	flag.Parse()

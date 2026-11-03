@@ -58,14 +58,14 @@ func TestSkinSetting(t *testing.T) {
 	}
 	for v, want := range map[string]string{
 		"":                              "",
-		"corporate":                     "corporate",
+		"some-skin":                     "some-skin",
 		good:                            good,
 		"./acme":                        good,
 		"./acme/":                       good,
 		"empty/../acme":                 good,
-		"Corporate":                     "error",
+		"Some-Skin":                     "error",
 		"acme_1":                        "error",
-		"./corporate":                   "error",
+		"./some-skin":                   "error",
 		"../acme":                       "error",
 		bare:                            "error",
 		filepath.Join(root, "Bad_Name"): "error",

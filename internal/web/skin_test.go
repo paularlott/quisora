@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -16,8 +15,8 @@ func TestLoadSkin(t *testing.T) {
 	if s, err := LoadSkin(""); s != nil || err != nil {
 		t.Fatalf("no skin: %v %v", s, err)
 	}
-	if got := BuiltinSkins(); !slices.Equal(got, []string{"corporate"}) {
-		t.Errorf("built-in skins: %v", got)
+	if len(BuiltinSkins()) == 0 {
+		t.Error("no built-in skins")
 	}
 	for _, name := range BuiltinSkins() {
 		s, err := LoadSkin(name)
@@ -28,7 +27,7 @@ func TestLoadSkin(t *testing.T) {
 			t.Errorf("%s: %q %q", name, s.Name, s.Version)
 		}
 	}
-	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "built in: corporate") {
+	if _, err := LoadSkin("nope"); err == nil || !strings.Contains(err.Error(), "built in: "+strings.Join(BuiltinSkins(), ", ")) {
 		t.Errorf("unknown skin: %v", err)
 	}
 

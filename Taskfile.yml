@@ -195,6 +195,7 @@ tasks:
         --password-min-length 10
         --allow-private-networks
         --log-level debug
+        --skin matte
 
   test:
     desc: "The everyday loop: vet, and every Go test with the race detector but the cluster package's (task test-cluster): the store drivers' conformance suite and every layer above them (set the QUISORA_TEST_* variables for database servers)"

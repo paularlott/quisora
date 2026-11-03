@@ -5,17 +5,19 @@ glass look. Choose one with `ui.skin` (`--skin`):
 
 ```toml
 [ui]
-skin = "corporate"                 # a built-in skin (a folder here, compiled into the binary)
+skin = "matte"                     # a built-in skin (a folder here, compiled into the binary)
 # skin = "/etc/quisora/skins/acme" # or the path of a skin folder (./acme: relative to the working directory)
 ```
 
 ## Built-in skins
 
+Every folder here is a built-in skin, named after the folder: adding one needs no code change, only a row below.
+
 | Skin | |
 | --- | --- |
-| `corporate` | Restrained: opaque surfaces with hairline borders, one navy accent, square-ish corners, a solid header. |
+| `matte` | Restrained: opaque surfaces with hairline borders, one royal-blue accent, square-ish corners, a solid header. |
 
-It ships no logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a skin folder of your own.
+None ships a logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a skin folder of your own.
 
 ## What a skin holds
 
@@ -55,7 +57,7 @@ and comes later, so it wins:
 - Use `light-dark(light, dark)` for colours that differ between the themes. The theme sets `color-scheme` on `<html>`,
   so one declaration covers light, dark and visitors without JavaScript (who get their OS preference). It works only
   for colours: set non-colour tokens once, or under `:root[data-skin="<name>"][data-theme="dark"]`.
-- Start from a copy of `corporate/skin.css`: it defines a small palette (`--sk-*`) and maps it onto every token once.
+- Start from a copy of `matte/skin.css`: it defines a small palette (`--sk-*`) and maps it onto every token once.
 - Every colour, shadow, radius and surface treatment the components use is a token: buttons, switches, the avatar,
   the current navigation link and so on. Prefer tokens to restyling components. A skin may add plain rules too, as
   the built-in skin does to replace the aurora backdrop.

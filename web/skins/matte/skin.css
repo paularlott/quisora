@@ -1,4 +1,4 @@
-/* Corporate skin: crisp and built to be trusted. Opaque cards with a hairline border and a soft lift instead of glass,
+/* Matte skin: crisp and built to be trusted. Opaque cards with a hairline border and a soft lift instead of glass,
    one royal-blue accent throughout (a stripe along the top of the header and the sign-in card), square-ish corners,
    compact switches, and light frosted glass for dialogs only. No decoration behind the page.
 
@@ -6,7 +6,7 @@
    color-scheme on <html>, so one declaration covers light, dark and the no-JavaScript OS preference.
    Every pair keeps WCAG 2.2 AA on its surface (text >= 4.5:1, controls >= 3:1): check again if you change a value. */
 
-:root[data-skin="corporate"] {
+:root[data-skin="matte"] {
   --sk-canvas: light-dark(#eef2f7, #0b1120);
   --sk-surface: light-dark(#ffffff, #111a2c);
   --sk-surface-2: light-dark(#f7f8fa, #16213a);
@@ -110,24 +110,24 @@
 }
 
 /* Sign-in, consent and the other end-user pages: the same palette over a faint navy wash. */
-:root[data-skin="corporate"][data-layout="auth"] .aurora {
+:root[data-skin="matte"][data-layout="auth"] .aurora {
   background: linear-gradient(180deg, light-dark(rgb(30 58 138 / 0.07), rgb(47 95 208 / 0.12)), transparent 22rem), var(--page-bg);
 }
 
 /* No aurora, no blur, and bare section headings rather than chips: the canvas is opaque. */
-:root[data-skin="corporate"] .aurora i { display: none; }
-:root[data-skin="corporate"] .glass-panel { --glass-blur: 0px; }
-:root[data-skin="corporate"] .stack-lg > h2.section-title { background: none; box-shadow: none; padding-inline: 0; }
-:root[data-skin="corporate"] .stack-lg > h2.section-title::before,
-:root[data-skin="corporate"] .stack-lg > h2.section-title::after { display: none; }
+:root[data-skin="matte"] .aurora i { display: none; }
+:root[data-skin="matte"] .glass-panel { --glass-blur: 0px; }
+:root[data-skin="matte"] .stack-lg > h2.section-title { background: none; box-shadow: none; padding-inline: 0; }
+:root[data-skin="matte"] .stack-lg > h2.section-title::before,
+:root[data-skin="matte"] .stack-lg > h2.section-title::after { display: none; }
 
 /* The accent's stripe along the top of the header and the sign-in card: a border, outside the layers that paint their
    surface (glass.css), so nothing covers it. */
-:root[data-skin="corporate"] :is(.app-header, .auth-card) { border-top: 3px solid var(--sk-accent); }
+:root[data-skin="matte"] :is(.app-header, .auth-card) { border-top: 3px solid var(--sk-accent); }
 
 /* Dialogs: light frosted glass, a bright rim and a deeper shadow, over the lighter scrim. Users who ask for less
    transparency or more contrast get the solid surface (tokens.css). */
-:root[data-skin="corporate"] .dialog-panel {
+:root[data-skin="matte"] .dialog-panel {
   --glass-blur: 24px;
   --glass-sat: 1.5;
   --glass-rim: linear-gradient(light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14)), light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14)));
