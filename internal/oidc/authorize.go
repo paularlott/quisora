@@ -158,7 +158,9 @@ type ConsentData struct {
 	// SelfRegistered: the application registered itself (nobody in the organization set it up); RedirectHost is
 	// where it sends the result, so the user can tell a look-alike name from the real thing.
 	SelfRegistered bool
-	RedirectHost   string
+	// Remembered: allowing it is remembered (service.RemembersConsent), so the page says it will not ask again.
+	Remembered   bool
+	RedirectHost string
 	// UserCode: the flow approves a device sign-in (device.go) showing this code.
 	UserCode string
 }
@@ -688,7 +690,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	} else if !c.FirstParty || f.Device != "" {
 		// A device sign-in is always confirmed: the code may have come from someone else.
 		consented := false
-		if !f.has("consent") && !c.Public() && f.Device == "" {
+		if !f.has("consent") && service.RemembersConsent(c) && f.Device == "" {
 			consented = p.hasConsent(ctx, user.ID, c.ID, f.consent(), f.Resources)
 		}
 		if !consented {
@@ -773,9 +775,13 @@ func methodAllowed(eff *service.SignInMethods, sess *model.Session) bool {
 	return eff.AllowsSession(sess.AMR, sess.Provider)
 }
 
-// hasConsent reports whether the user already authorized this client for these scopes and resources (a live grant
-// covers them: consent is remembered per scope set and per resource set).
+// hasConsent reports whether the user already authorized this client for these scopes and resources: their remembered
+// consent (model.Consent) or a live grant covers them, in one approval (consent is remembered per scope set and per
+// resource set).
 func (p *Provider) hasConsent(ctx context.Context, userID, clientID string, scopes, resources []string) bool {
+	if p.svc.ConsentCovers(ctx, userID, clientID, scopes, resources) {
+		return true
+	}
 	gs, err := p.svc.Grants.All(ctx, userID)
 	if err != nil {
 		return false
@@ -922,7 +928,8 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := web.User(r)
-	data := ConsentData{Flow: id, ClientName: c.Name, Username: u.FullName(), ReturnURL: returnURL(f.RedirectURI)}
+	data := ConsentData{Flow: id, ClientName: c.Name, Username: u.FullName(), ReturnURL: returnURL(f.RedirectURI),
+		Remembered: service.RemembersConsent(c) && f.Device == ""}
 	if t, err := p.clientTenant(r.Context(), c); err == nil && t.Name != model.DefaultTenantName {
 		data.Tenant = t.DisplayName
 	}
@@ -982,8 +989,17 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 		f.Decision = "allow"
 	}
 	p.saveFlow(r.Context(), in.Flow, f)
-	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, map[string]string{"client_id": c.ClientID(),
-		"decision": f.Decision, "scopes": strings.Join(f.consent(), " ")})
+	detail := map[string]string{"client_id": c.ClientID(), "decision": f.Decision, "scopes": strings.Join(f.consent(), " ")}
+	// Remembered (model.Consent): the application signs the user in again without asking, signed out or not, until
+	// they or an administrator remove its access. A failure to remember only means being asked again next time.
+	if in.Approve && service.RemembersConsent(c) && f.Device == "" {
+		if err := p.svc.RememberConsent(r.Context(), u, c.ID, f.consent(), f.Resources); err != nil {
+			p.log.WithError(err).Warn("oidc: consent not remembered", "client", c.ID, "user", u.ID)
+		} else {
+			detail["remembered"] = "true"
+		}
+	}
+	p.svc.Audit(r.Context(), web.Actor(r), u.OrgID, "oauth.consent", c.Name, detail)
 	web.WriteJSON(w, http.StatusOK, map[string]string{"redirect": resumePath(c.OrgID, in.Flow)})
 }
 

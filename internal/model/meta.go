@@ -30,6 +30,7 @@ const (
 	KindSession  Kind = "session"
 	KindGrant    Kind = "grant"
 	KindAPIToken Kind = "apitoken"
+	KindConsent  Kind = "consent" // what a user allowed an application, remembered until removed (Consent)
 	KindKey      Kind = "key"
 	KindSSHKey   Kind = "sshkey"  // a tenant's SSH CA keys (SSHKey)
 	KindSSHCert  Kind = "sshcert" // the SSH certificates issued, until they expire (SSHCert)
@@ -69,7 +70,7 @@ type Index struct {
 	// hashed to a partition by the cluster layer. A record never changes its key. Per kind:
 	//
 	//   - everything scoped to an organization (an entity with an OrgID: users, groups, memberships, tenants, access,
-	//     clients, providers, passkeys, identities, sessions, grants, API tokens, SSH CA keys and certificates, audit
+	//     clients, providers, passkeys, identities, sessions, grants, consents, API tokens, SSH CA keys and certificates, audit
 	//     events, link tokens, sign-in records): the OrgID, so an organization's records, and every unique value scoped to it, share a partition.
 	//     An entity whose OrgID is empty (a server-level audit event) is global;
 	//   - KindOrg and KindKey (organizations, signing keys): "". They are read by every organization and by pages that

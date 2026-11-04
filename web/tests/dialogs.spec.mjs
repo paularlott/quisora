@@ -305,6 +305,34 @@ test('clients: Require PKCE is on by default, can be turned off for a confidenti
   expect(c.require_pkce).toBe(false)
 })
 
+test('clients: Remember consent is on by default, hidden for public and first-party clients, and saved', async ({ page }) => {
+  await signIn(page, 'super') // the First-party switch is for super admins only
+  await page.goto(`${A}/tenants`, { waitUntil: 'load' })
+  const slug = uniq('rc')
+  const t = await apiCall(page, 'POST', `${API}/tenants`, { name: slug, display_name: 'Consent ' + slug })
+  await page.goto(`${A}/tenants/${slug}/clients`, { waitUntil: 'load' })
+  await page.getByRole('button', { name: 'New client' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New client' })
+  const remember = dlg.getByRole('switch', { name: /Remember consent/ })
+  await expect(remember).toBeChecked()
+  await page.locator('#f-token_endpoint_auth_method').selectOption('none')
+  await expect(remember).toBeHidden()
+  await page.locator('#f-token_endpoint_auth_method').selectOption('client_secret_basic')
+  const firstParty = dlg.getByRole('switch', { name: /First-party application/ })
+  await firstParty.check()
+  await expect(remember).toBeHidden()
+  await firstParty.uncheck()
+  await remember.uncheck()
+  await page.locator('#f-name').fill('Asks every time')
+  await page.getByLabel('Redirect URI 1', { exact: true }).fill('https://asks.example/cb')
+  await dlg.getByRole('button', { name: 'Create client' }).click()
+  await expect(page.getByRole('dialog', { name: 'Client created' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  const c = (await apiCall(page, 'GET', `${API}/clients?tenant=${t.id}`)).items[0]
+  expect(c.remember_consent).toBe(false)
+  expect(c.first_party).toBe(false)
+})
+
 test('clients: token exchange is offered only to confidential clients; Require pushed authorization requests is saved', async ({ page }) => {
   await signIn(page, 'admin')
   await page.goto(`${A}/tenants`, { waitUntil: 'load' })

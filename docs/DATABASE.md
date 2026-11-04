@@ -32,6 +32,7 @@ indexes), so that lists and filters run without decoding `data`.
 | `linked_identities`  | A user's accounts at upstream identity providers, linked to the user.                                                              |
 | `sessions`           | Browser sign-in sessions.                                                                                                          |
 | `refresh_grants`     | Refresh-token grants: what an application was granted in a sign-in, valid while the session it came from is.                      |
+| `app_consents`       | What each user allowed each application on its consent screen, one row per user and application, kept until the user or an administrator removes the application's access. Indexed by `client_id`. |
 | `api_tokens`         | API tokens (`qsr_…`) for the management API and SCIM.                                                                              |
 | `signing_keys`       | Token signing keys, with private keys sealed by the master key. Kept until they are no longer published.                          |
 | `ssh_ca_keys`        | Tenants' SSH certificate authority keys, with private keys sealed by the master key; indexed by `tenant_id`. Kept until they are no longer published. A key removed by hand stays as a tombstone (`Removed` set, private key dropped) until every certificate it could have signed has expired (24 hours and 10 minutes for a user key, 365 days and 10 minutes for a host key): the tenant's revocation list revokes the key itself meanwhile. |

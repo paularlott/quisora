@@ -116,8 +116,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 It disables the account and, at once:
 
-- signs them out everywhere: sessions and refresh grants end (and the consent they gave applications with them), and
-  applications are told;
+- signs them out everywhere: sessions and refresh grants end, and applications are told; the consent they gave
+  applications is forgotten, so each asks again;
 - removes every way they had to sign in: password, authenticator app, passkeys, recovery codes, linked providers;
 - removes their personal API tokens and any unused invitation, reset and verification links;
 - puts their [SSH certificates](ssh/README.md#revocation) on the revocation list, so servers refuse them within a

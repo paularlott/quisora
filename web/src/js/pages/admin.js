@@ -691,6 +691,8 @@ function clientDialogMixin(Alpine) {
     get isEditClient() { return this.editingClient !== null },
     get isPublic() { return this.form.token_endpoint_auth_method === 'none' },
     get notPublic() { return this.form.token_endpoint_auth_method !== 'none' },
+    // Remembering consent: confidential clients only, and moot for a first-party one (it never asks).
+    get showRememberConsent() { return this.notPublic && !this.form.first_party },
     get methodHelp() {
       return { client_secret_post: 'The secret is sent in the request body. The default for server-side apps.', client_secret_basic: 'The secret is sent in an HTTP Basic header. Many client libraries only do this.',
         private_key_jwt: 'The client signs a JWT with its private key; you register the public keys. For high-assurance server apps.',
@@ -711,7 +713,7 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         authorization_details_types: listRows(c.authorization_details_types, LIST_ITEMS.authorization_details_types, true), authorization_details: detailsText(c.authorization_details),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
-        first_party: !!c.first_party, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
+        first_party: !!c.first_party, remember_consent: c.remember_consent !== false, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
         dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile,
         device_privileged_users: !!c.device_privileged_users }
     },
@@ -740,7 +742,7 @@ function clientDialogMixin(Alpine) {
         authorization_details_types: listValues(f.authorization_details_types),
         grant_types: GRANTS.filter((g) => f.grant_types.includes(g) && !(pub && CONFIDENTIAL_GRANTS.includes(g))),
         scopes: [...STD_NAMES.filter((n) => f.std_scopes.includes(n)), ...f.custom_scopes], token_endpoint_auth_method: f.token_endpoint_auth_method,
-        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, accepts_api_tokens: pub ? false : f.accepts_api_tokens, require_pkce: pub ? true : f.require_pkce,
+        enabled: f.enabled, rotate_refresh_tokens: pub ? true : f.rotate_refresh_tokens, introspect_org: pub ? false : f.introspect_org, accepts_api_tokens: pub ? false : f.accepts_api_tokens, remember_consent: pub ? false : f.remember_consent, require_pkce: pub ? true : f.require_pkce,
         require_pushed_authorization_requests: redirects && f.require_pushed_authorization_requests,
         dpop_bound_access_tokens: f.dpop_bound_access_tokens,
         device_privileged_users: this.usesDevice && f.device_privileged_users,
@@ -928,7 +930,7 @@ function userConnectionsComponents(Alpine) {
   }))
 
   Alpine.data('adminUserApps', () => mix(listState(), { // mix keeps listState's getters live (a spread would copy values)
-    init() { liveUser(this.$el, ['grant', 'client'], () => this.load()); return this.load() },
+    init() { liveUser(this.$el, ['grant', 'consent', 'client'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(base(this.$el, '/apps'))
@@ -942,7 +944,7 @@ function userConnectionsComponents(Alpine) {
       const a = this.items.find((i) => i.client_id === opener.dataset.id)
       if (!a) return
       const yes = await confirmAction(Alpine, { title: 'Remove access?', message: `Remove this user\u2019s access to ${a.name}?`,
-        detail: `${a.name} is told to sign them out, and its tokens stop working now. They can sign in to it again, and allow it again if it asks.`, confirmLabel: 'Remove access' })
+        detail: `${a.name} is told to sign them out, and its tokens stop working now. They can sign in to it again; it asks them to allow it again.`, confirmLabel: 'Remove access' })
       if (!yes) return
       try {
         await withReauth(Alpine, () => del(base(this.$el, '/apps/' + enc(a.client_id))), opener)

@@ -84,9 +84,17 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 The answer is the client, with its `id` and, once, its `secret`. Every field is in the API reference at
 `/api-docs/`.
 
-**Consent.** Users approve what an application asks for the first time; a confidential client's approval is
-remembered while its grant lives, a public client's never is. **First-party application** (super admins only) skips
-the screen, for applications you run yourselves.
+**Consent.** Users approve what an application asks for on a consent screen. Each client chooses how often:
+
+- **First-party application** (super admins only) never asks, for applications you run yourselves.
+- **Remember consent** (on for a new client) asks each user once. The approval is kept, signing out or not, until the
+  user removes the application under **Connected apps** on their account page, a manager does on the admin user page,
+  or the account is locked out. The application is asked about again only for scopes or resources not yet allowed, or
+  when it sends `prompt=consent`.
+- Neither: users are asked at every sign-in.
+
+A public client, a self-registered application and a device sign-in always ask, whatever the setting: anyone can claim
+a public `client_id`, and a device code may have come from someone else.
 
 ## Endpoints
 

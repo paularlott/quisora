@@ -178,6 +178,7 @@ type Service struct {
 	Identities *store.Table[model.Identity, *model.Identity]
 	Sessions   *store.Table[model.Session, *model.Session]
 	Grants     *store.Table[model.Grant, *model.Grant]
+	Consents   *store.Table[model.Consent, *model.Consent]
 	APITokens  *store.Table[model.APIToken, *model.APIToken]
 	Keys       *store.Table[model.SigningKey, *model.SigningKey]
 	SSHCAKeys  *store.Table[model.SSHKey, *model.SSHKey]
@@ -240,6 +241,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Identities: store.NewTable[model.Identity](s),
 		Sessions:   store.NewTable[model.Session](s),
 		Grants:     store.NewTable[model.Grant](s),
+		Consents:   store.NewTable[model.Consent](s),
 		APITokens:  store.NewTable[model.APIToken](s),
 		Keys:       store.NewTable[model.SigningKey](s),
 		SSHCAKeys:  store.NewTable[model.SSHKey](s),

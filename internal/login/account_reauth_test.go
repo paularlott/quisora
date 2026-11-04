@@ -303,7 +303,10 @@ func TestReauthWithRecoveryCode(t *testing.T) {
 		}
 		return codes
 	}
-	valid := func(b *browser) bool { _, v := b.api("GET", "/api-internal/account/reauth", nil); return v["valid"] == true }
+	valid := func(b *browser) bool {
+		_, v := b.api("GET", "/api-internal/account/reauth", nil)
+		return v["valid"] == true
+	}
 
 	t.Run("confirms in place of the authenticator code", func(t *testing.T) {
 		e, org := accountEnv(t, 0)

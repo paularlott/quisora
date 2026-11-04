@@ -9,9 +9,9 @@ import (
 )
 
 // LockOutUser disables a user and removes every way they had to sign in, for a compromised account or a leaver:
-// their sessions and refresh grants end (applications are told, and remembered consent goes with the grants), and
-// their password, authenticator app, passkeys, linked sign-in providers, personal API tokens and unused invitation,
-// reset and verification links go. The account stays, for the audit log. Enabling it again brings none of that back:
+// their sessions and refresh grants end (applications are told), and their password, authenticator app, passkeys,
+// linked sign-in providers, personal API tokens, remembered consent (every application asks again) and unused
+// invitation, reset and verification links go. The account stays, for the audit log. Enabling it again brings none of that back:
 // it then needs a new invitation. The rules are those of removing someone's password and of disabling them.
 func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason string) (*model.User, error) {
 	u, err := s.Users.Get(ctx, userID)
@@ -39,6 +39,13 @@ func (s *Service) LockOutUser(ctx context.Context, a *Actor, userID, reason stri
 			if err := s.Links.Delete(ctx, l.ID); err != nil && !errors.Is(err, store.ErrStale) {
 				errs = append(errs, err)
 			}
+		}
+	}
+	consents, cerr := s.Consents.All(ctx, userID)
+	errs = append(errs, cerr)
+	for _, c := range consents {
+		if err := s.Consents.Delete(ctx, c.ID); err != nil && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, err)
 		}
 	}
 	err = errors.Join(errs...)

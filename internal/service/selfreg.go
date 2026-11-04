@@ -219,7 +219,7 @@ func (s *Service) RefreshMetadataClient(ctx context.Context, fresh *model.Client
 func InTenant(c *model.Client, t *model.Tenant) *model.Client {
 	cp := *c
 	cp.TenantID, cp.Resources = t.ID, slices.Clone(t.Resources)
-	cp.FirstParty, cp.IntrospectOrg = false, false
+	cp.FirstParty, cp.IntrospectOrg, cp.RememberConsent = false, false, false
 	return &cp
 }
 

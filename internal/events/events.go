@@ -28,11 +28,13 @@ var streamed = map[model.Kind]bool{
 	model.KindSSHKey: true, model.KindSSHCert: true,
 	// a user's own records (the admin user page's cards); scoped by the user, so the hub looks up their organization
 	model.KindSession: true, model.KindPasskey: true, model.KindAPIToken: true, model.KindIdentity: true, model.KindGrant: true,
+	model.KindConsent: true,
 }
 
 // userScoped are the streamed kinds whose record scope is the owning user's id, not an organization's.
 var userScoped = map[model.Kind]bool{
 	model.KindSession: true, model.KindPasskey: true, model.KindAPIToken: true, model.KindIdentity: true, model.KindGrant: true,
+	model.KindConsent: true,
 }
 
 // Event is one change notification.

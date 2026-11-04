@@ -832,7 +832,7 @@ export default function (Alpine) {
 
   Alpine.data('accountApps', () => ({
     items: [], loading: true, loadError: '',
-    init() { liveSelf(['grant'], () => this.load()); return this.load() },
+    init() { liveSelf(['grant', 'consent'], () => this.load()); return this.load() },
     async load() {
       try {
         const r = await get(accountApi('/apps'))
@@ -848,7 +848,7 @@ export default function (Alpine) {
       const a = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
       if (!a) return
       const ok = await Alpine.store('confirm').ask({ title: 'Remove access', message: `Remove access for ${a.name}?`,
-        detail: 'It will no longer be able to refresh its access to your account. You may be asked to approve it again next time.', confirmLabel: 'Remove access' })
+        detail: 'It is signed out and will no longer be able to refresh its access to your account. It will ask for your approval again next time.', confirmLabel: 'Remove access' })
       if (!ok) return
       try { await del(accountApi('/apps/') + enc(a.id)); toast('Access removed.'); await this.load() } catch (e) { toast(e.message, 'error') }
     },

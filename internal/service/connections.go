@@ -16,7 +16,8 @@ import (
 // account. The user sees and ends both from the account page; managers and up see and end them on the admin user page
 // for the users they manage (to sort things out for someone in a mess) and for themselves.
 
-// AppGrant is an application the user granted access to: their live refresh grants for one client, together.
+// AppGrant is an application the user granted access to: their live refresh grants for one client and the consent
+// remembered for it (model.Consent), together.
 type AppGrant struct {
 	ClientID string    `json:"client_id"`
 	Name     string    `json:"name"`
@@ -24,40 +25,64 @@ type AppGrant struct {
 	Since    time.Time `json:"since"`
 	LastUsed time.Time `json:"last_used"`
 	Grants   int       `json:"grants"`
+	// Remembered: the user's consent is remembered, so the application signs them in without asking again.
+	Remembered bool `json:"remembered"`
 }
 
-// ConnectedApps lists the applications the user granted access to (live refresh grants grouped by client), by name.
+// ConnectedApps lists the applications the user granted access to (live refresh grants and remembered consent,
+// grouped by client), by name.
 func (s *Service) ConnectedApps(ctx context.Context, userID string) ([]AppGrant, error) {
 	grants, err := s.Grants.All(ctx, userID)
 	if err != nil {
 		return nil, mapStore(err)
 	}
+	consents, err := s.Consents.All(ctx, userID)
+	if err != nil {
+		return nil, mapStore(err)
+	}
 	now := time.Now()
 	by := map[string]*AppGrant{}
-	for _, g := range grants {
-		if !g.Expires.IsZero() && now.After(g.Expires) {
-			continue
-		}
-		it := by[g.ClientID]
+	app := func(clientID string, since time.Time) *AppGrant {
+		it := by[clientID]
 		if it == nil {
-			it = &AppGrant{ClientID: g.ClientID, Name: "Removed application", Scopes: []string{}, Since: g.Created}
-			if c, err := s.Clients.Get(ctx, g.ClientID); err == nil {
+			it = &AppGrant{ClientID: clientID, Name: "Removed application", Scopes: []string{}, Since: since}
+			if c, err := s.Clients.Get(ctx, clientID); err == nil {
 				it.Name = c.Name
 			}
-			by[g.ClientID] = it
+			by[clientID] = it
 		}
-		it.Grants++
-		if g.Created.Before(it.Since) {
-			it.Since = g.Created
+		if since.Before(it.Since) {
+			it.Since = since
 		}
-		if g.Updated.After(it.LastUsed) {
-			it.LastUsed = g.Updated
-		}
-		for _, sc := range g.Scopes {
+		return it
+	}
+	addScopes := func(it *AppGrant, scopes []string) {
+		for _, sc := range scopes {
 			if !slices.Contains(it.Scopes, sc) {
 				it.Scopes = append(it.Scopes, sc)
 			}
 		}
+	}
+	for _, c := range consents {
+		it := app(c.ClientID, c.Created)
+		it.Remembered = true
+		if c.Updated.After(it.LastUsed) {
+			it.LastUsed = c.Updated
+		}
+		for _, set := range c.Allowed {
+			addScopes(it, set.Scopes)
+		}
+	}
+	for _, g := range grants {
+		if !g.Expires.IsZero() && now.After(g.Expires) {
+			continue
+		}
+		it := app(g.ClientID, g.Created)
+		it.Grants++
+		if g.Updated.After(it.LastUsed) {
+			it.LastUsed = g.Updated
+		}
+		addScopes(it, g.Scopes)
 	}
 	out := make([]AppGrant, 0, len(by))
 	for _, it := range by {
@@ -499,4 +524,89 @@ func (s *Service) SetTOTP(ctx context.Context, u *model.User, secret []byte, ste
 		return err
 	}
 	return s.NoteTOTPStep(ctx, u, step)
+}
+
+// Remembered consent (model.Consent): what a user allowed an application on its consent screen, kept until they or an
+// administrator remove the application's access (RevokeAppAccess). Only the consent of a confidential,
+// administrator-registered application set to remember it is remembered (RemembersConsent).
+
+// maxConsentSets bounds the sets of one consent record: the oldest go first. An application asking for ever new
+// combinations of scopes and resources is asked again for an old one, nothing worse.
+const maxConsentSets = 16
+
+// RemembersConsent reports whether c's consent is remembered: when it is set to (Client.RememberConsent), never for a
+// public client, whose identity is not proven (another app can send its client_id and redirect to it), nor a
+// self-registered one, which always asks. Not remembered, the application asks at every sign-in.
+func RemembersConsent(c *model.Client) bool { return c.RememberConsent && !c.Public() && !c.SelfRegistered }
+
+// ConsentCovers reports whether user userID has allowed client clientID everything in scopes for resources, in one
+// approval. A failed read answers false: the user is asked.
+func (s *Service) ConsentCovers(ctx context.Context, userID, clientID string, scopes, resources []string) bool {
+	c, err := s.Consents.Get(ctx, model.ConsentID(userID, clientID))
+	if err != nil || c.UserID != userID || c.ClientID != clientID {
+		return false
+	}
+	want := model.ConsentSet{Scopes: scopes, Resources: resources}
+	for _, set := range c.Allowed {
+		if setCovers(set, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// setCovers reports whether set holds every scope and resource of want.
+func setCovers(set, want model.ConsentSet) bool {
+	for _, sc := range want.Scopes {
+		if !slices.Contains(set.Scopes, sc) {
+			return false
+		}
+	}
+	for _, r := range want.Resources {
+		if !slices.Contains(set.Resources, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// RememberConsent records that user u allowed client clientID scopes for resources: added to their consent for it
+// (made if they have none), dropping the approvals it covers. Already covered, nothing is written.
+func (s *Service) RememberConsent(ctx context.Context, u *model.User, clientID string, scopes, resources []string) error {
+	set := model.ConsentSet{Scopes: sortedSet(scopes), Resources: sortedSet(resources)}
+	id := model.ConsentID(u.ID, clientID)
+	for attempt := 0; ; attempt++ {
+		c, err := s.Consents.Get(ctx, id)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			c = &model.Consent{Meta: model.Meta{ID: id}, UserID: u.ID, OrgID: u.OrgID, ClientID: clientID,
+				Allowed: []model.ConsentSet{set}}
+			err = s.Consents.Create(ctx, c)
+		case err != nil:
+			return mapStore(err)
+		default:
+			if slices.ContainsFunc(c.Allowed, func(have model.ConsentSet) bool { return setCovers(have, set) }) {
+				return nil
+			}
+			kept := slices.DeleteFunc(c.Allowed, func(have model.ConsentSet) bool { return setCovers(set, have) })
+			if len(kept) >= maxConsentSets {
+				kept = kept[len(kept)-maxConsentSets+1:]
+			}
+			c.Allowed = append(kept, set)
+			err = s.Consents.Update(ctx, c)
+		}
+		if !errors.Is(err, store.ErrStale) || attempt == 4 {
+			return mapStore(err)
+		}
+	}
+}
+
+// sortedSet is v sorted with duplicates dropped (nil for none).
+func sortedSet(v []string) []string {
+	if len(v) == 0 {
+		return nil
+	}
+	out := slices.Clone(v)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

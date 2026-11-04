@@ -4047,6 +4047,9 @@ components:
           type: boolean
         first_party:
           type: boolean
+        remember_consent:
+          type: boolean
+          description: remember each user's consent until their access is removed (default true for a new client); off, users are asked at every sign-in. Confidential clients only; a first-party client never asks
         grant_types:
           type: array
           description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
@@ -4152,6 +4155,9 @@ components:
           type: boolean
         first_party:
           type: boolean
+        remember_consent:
+          type: boolean
+          description: remember each user's consent until their access is removed (default true for a new client); off, users are asked at every sign-in. Confidential clients only; a first-party client never asks
         grant_types:
           type: array
           description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
@@ -4260,6 +4266,9 @@ components:
           type: boolean
         first_party:
           type: boolean
+        remember_consent:
+          type: boolean
+          description: remember each user's consent until their access is removed (default true for a new client); off, users are asked at every sign-in. Confidential clients only; a first-party client never asks
         grant_types:
           type: array
           description: "authorization_code, refresh_token, client_credentials, urn:ietf:params:oauth:grant-type:token-exchange
@@ -4493,6 +4502,9 @@ components:
           format: date-time
         name:
           type: string
+        remembered:
+          type: boolean
+          description: the user's consent is remembered, so the application signs them in without asking again until their access is removed
         scopes:
           type: array
           items:

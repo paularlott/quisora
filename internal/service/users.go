@@ -1044,10 +1044,11 @@ func (s *Service) endUserSessions(ctx context.Context, userID string, a *Actor) 
 }
 
 // RevokeAppAccess removes everything a user granted one application (the account page's "remove access"): its
-// refresh grants and remembered consent, once the OnAppAccessEnding hook has told the application to sign the user
-// out (back-channel logout). It returns how many grants it removed; 0 with no error means the user had granted that
-// application nothing. Every grant is tried even when one fails, and the failures are returned together with the
-// count of those that did go, so the caller can say the removal is partly done (a grant left behind still refreshes).
+// refresh grants and remembered consent (model.Consent), once the OnAppAccessEnding hook has told the application to
+// sign the user out (back-channel logout). It returns how many records it removed (grants, and the consent); 0 with no
+// error means the user had granted that application nothing. Every removal is tried even when one fails, and the
+// failures are returned together with the count of those that did go, so the caller can say the removal is partly done
+// (a grant left behind still refreshes; a consent left behind still skips the consent screen).
 func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) (int, error) {
 	grants, err := s.Grants.All(ctx, userID)
 	if err != nil {
@@ -1059,10 +1060,14 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 			mine = append(mine, g)
 		}
 	}
-	if len(mine) == 0 {
+	consent, err := s.Consents.Get(ctx, model.ConsentID(userID, clientID))
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return 0, mapStore(err)
+	}
+	if len(mine) == 0 && consent == nil {
 		return 0, nil
 	}
-	if s.OnAppAccessEnding != nil {
+	if len(mine) > 0 && s.OnAppAccessEnding != nil {
 		s.OnAppAccessEnding(ctx, userID, clientID)
 	}
 	n := 0
@@ -1073,6 +1078,13 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 			continue
 		}
 		n++
+	}
+	if consent != nil {
+		if err := s.Consents.Delete(ctx, consent.ID); err != nil && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, mapStore(err))
+		} else {
+			n++
+		}
 	}
 	return n, errors.Join(errs...)
 }

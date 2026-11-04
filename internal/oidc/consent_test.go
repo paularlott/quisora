@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -155,5 +156,182 @@ func TestConsentNamesScopesWithoutDescription(t *testing.T) {
 	}
 	if page := body(h.get(c, u.RequestURI())); !strings.Contains(page, "Access: api") {
 		t.Fatalf("consent page: %s", page)
+	}
+}
+
+// Consent is remembered past signing out (model.Consent), per approval, until the application's access is removed;
+// never for a public client.
+func TestConsentRememberedAcrossSignOut(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	cl, _ := h.newClient(func(in *service.ClientInput) {
+		in.FirstParty = ptr(false)
+		in.Scopes = &[]string{"openid", "profile", "email", "offline_access", "api"}
+	})
+	approve := func(c *http.Client, csrf string, extra url.Values) {
+		t.Helper()
+		_, ch := pkce()
+		u := h.authorize(c, authzQuery(cl, ch, extra))
+		if u.Path != h.orgBase+"/oauth/consent" {
+			t.Fatalf("expected consent: %s", u)
+		}
+		if st, _ := h.decideConsent(c, csrf, u.Query().Get("flow"), true); st != 200 {
+			t.Fatalf("consent api %d", st)
+		}
+	}
+	asks := func(c *http.Client, extra url.Values) bool {
+		t.Helper()
+		_, ch := pkce()
+		u := h.authorize(c, authzQuery(cl, ch, extra))
+		if u.Path == h.orgBase+"/oauth/consent" {
+			return true
+		}
+		if u.Query().Get("code") == "" {
+			t.Fatalf("neither consent nor a code: %s", u)
+		}
+		return false
+	}
+	signOutEverywhere := func() (*http.Client, string) {
+		t.Helper()
+		if err := h.env.Svc.RevokeSessions(ctx, h.admin, h.user.ID); err != nil {
+			t.Fatal(err)
+		}
+		u, err := h.env.Svc.Users.Get(ctx, h.user.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h.session(u)
+	}
+
+	c, csrf := h.session(h.user)
+	_, ch0 := pkce()
+	if u := h.authorize(c, authzQuery(cl, ch0, nil)); !strings.Contains(body(h.get(c, u.RequestURI())), "will not ask again, even after you sign out") {
+		t.Fatal("the consent page does not say it is remembered")
+	}
+	approve(c, csrf, nil) // no code exchanged: nothing but the approval is remembered
+	c, csrf = signOutEverywhere()
+	if asks(c, nil) {
+		t.Fatal("consent not remembered after signing out")
+	}
+	// a scope never allowed is asked for, and then remembered too; prompt=consent still asks
+	if !asks(c, url.Values{"scope": {"openid api"}}) {
+		t.Fatal("a new scope was not asked for")
+	}
+	approve(c, csrf, url.Values{"scope": {"openid api"}})
+	if asks(c, url.Values{"scope": {"openid api"}}) || asks(c, nil) {
+		t.Fatal("approvals not remembered")
+	}
+	if !asks(c, url.Values{"prompt": {"consent"}}) {
+		t.Fatal("prompt=consent did not ask")
+	}
+	// the account's Connected apps list shows it, and removing access forgets it
+	apps, err := h.env.Svc.ConnectedApps(ctx, h.user.ID)
+	if err != nil || len(apps) != 1 || !apps[0].Remembered || apps[0].ClientID != cl.ID {
+		t.Fatalf("connected apps %+v %v", apps, err)
+	}
+	if n, err := h.env.Svc.RevokeAppAccess(ctx, h.user.ID, cl.ID); err != nil || n == 0 {
+		t.Fatalf("revoke %d %v", n, err)
+	}
+	if !asks(c, nil) {
+		t.Fatal("consent remembered after access was removed")
+	}
+	if n, err := h.env.Svc.RevokeAppAccess(ctx, h.user.ID, cl.ID); err != nil || n != 0 {
+		t.Fatalf("second revoke %d %v", n, err)
+	}
+
+	// a public client asks every time
+	pub := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	_, ch := pkce()
+	u := h.authorize(c, authzQuery(pub, ch, nil))
+	if u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("public client: expected consent: %s", u)
+	}
+	if strings.Contains(body(h.get(c, u.RequestURI())), "will not ask again") {
+		t.Fatal("a public client's consent page says it is remembered")
+	}
+	if st, _ := h.decideConsent(c, csrf, u.Query().Get("flow"), true); st != 200 {
+		t.Fatalf("consent api %d", st)
+	}
+	if u := h.authorize(c, authzQuery(pub, ch, nil)); u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("public client consent remembered: %s", u)
+	}
+	if ok := h.env.Svc.ConsentCovers(ctx, h.user.ID, pub.ID, []string{"openid"}, nil); ok {
+		t.Fatal("public client consent stored")
+	}
+}
+
+// One approval covers a request only with all of its scopes and resources: scopes allowed for one resource are not
+// allowed for another.
+func TestRememberConsentSets(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	svc, uid := h.env.Svc, h.user.ID
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "email"}, []string{"https://a"}))
+	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "api"}, []string{"https://b"}))
+	for _, tc := range []struct {
+		scopes, resources []string
+		want              bool
+	}{
+		{[]string{"openid"}, nil, true},
+		{[]string{"email"}, []string{"https://a"}, true},
+		{[]string{"api"}, []string{"https://b"}, true},
+		{[]string{"email"}, []string{"https://b"}, false},
+		{[]string{"email", "api"}, nil, false},
+		{[]string{"openid"}, []string{"https://a", "https://b"}, false},
+	} {
+		if got := svc.ConsentCovers(ctx, uid, "cl", tc.scopes, tc.resources); got != tc.want {
+			t.Errorf("covers %v %v = %v, want %v", tc.scopes, tc.resources, got, tc.want)
+		}
+	}
+	if svc.ConsentCovers(ctx, uid, "other", []string{"openid"}, nil) {
+		t.Error("another client covered")
+	}
+	// an approval covering earlier ones replaces them
+	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "email", "api"}, []string{"https://a", "https://b"}))
+	c, err := svc.Consents.Get(ctx, model.ConsentID(uid, "cl"))
+	if err != nil || len(c.Allowed) != 1 {
+		t.Fatalf("sets %+v %v", c, err)
+	}
+}
+
+// A client set not to remember consent asks at every sign-in, a live grant or not; the setting is moot for a public
+// client, which always asks.
+func TestConsentNotRemembered(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false); in.RememberConsent = ptr(false) })
+	c, csrf := h.session(h.user)
+	v, ch := pkce()
+	u := h.authorize(c, authzQuery(cl, ch, nil))
+	if u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("expected consent: %s", u)
+	}
+	if page := body(h.get(c, u.RequestURI())); strings.Contains(page, "will not ask again") {
+		t.Fatal("the consent page says it is remembered")
+	}
+	_, redirect := h.decideConsent(c, csrf, u.Query().Get("flow"), true)
+	code := loc(t, h.get(c, redirect)).Query().Get("code")
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
+		t.Fatal(r.m)
+	}
+	_, ch2 := pkce()
+	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("consent remembered: %s", u)
+	}
+	if h.env.Svc.ConsentCovers(context.Background(), h.user.ID, cl.ID, []string{"openid"}, nil) {
+		t.Fatal("consent stored")
+	}
+	// a public client cannot be set to remember
+	pub := h.publicClient(func(in *service.ClientInput) { in.RememberConsent = ptr(true) })
+	if pub.RememberConsent {
+		t.Fatal("public client set to remember consent")
 	}
 }

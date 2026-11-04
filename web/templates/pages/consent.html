@@ -18,7 +18,7 @@
       {{end}}
     </ul>
   </div>{{end}}
-  <p class="help">You can remove this access at any time from your account.</p>
+  <p class="help">{{if .Data.Remembered}}{{.Data.ClientName}} will not ask again, even after you sign out. {{end}}You can remove this access at any time from your account.</p>
   <div role="alert" class="status-slot"><div class="alert alert-error" x-show="error" x-cloak>{{template "icon" "alert"}}<span x-text="error"></span></div></div>
   <div class="toolbar" x-show="!closed">
     <button type="button" class="btn btn-primary" x-on:click="approve" x-bind:disabled="busy">Allow</button>

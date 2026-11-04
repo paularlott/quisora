@@ -735,8 +735,12 @@ type Client struct {
 	SigningAlg     string   `msgpack:"sa" json:"id_token_signed_response_alg"`
 	JWKS           string   `msgpack:"jw" json:"jwks,omitempty"` // for private_key_jwt
 	JWKSURI        string   `msgpack:"ju" json:"jwks_uri,omitempty"`
-	FirstParty     bool     `msgpack:"fp" json:"first_party"`           // skip consent
-	RotateRefresh  bool     `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
+	FirstParty     bool     `msgpack:"fp" json:"first_party"` // skip consent
+	// RememberConsent remembers each user's approval on the consent screen (Consent) until their access to the
+	// application is removed; off, the application asks at every sign-in. Confidential clients only (a public
+	// client's identity is not proven), and unused by a first-party one, which never asks.
+	RememberConsent bool `msgpack:"rmc,omitempty" json:"remember_consent"`
+	RotateRefresh   bool `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
 	// ServiceAccount marks a service account: a non-human principal of the organization (no tenant) that calls the
 	// management API and SCIM with client_credentials tokens. Scopes are what it was granted (ServiceAccountScopes),
 	// and GrantTypes only client_credentials. It is managed apart from the organization's applications.
@@ -1130,6 +1134,50 @@ func (g *Grant) Index() Index {
 		Partition: g.OrgID,
 		Fields:    map[string]any{"client_id": g.ClientID},
 		Expires:   g.Expires,
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Remembered consent
+
+// Consent is what a user allowed one application on its consent screen, remembered until the user or an
+// administrator removes the application's access (service.RevokeAppAccess), the application asks again
+// (prompt=consent) or either is deleted (the sweep). Signing out keeps it, as other identity providers do: the
+// application asks again only for what the user has not allowed yet. One record per user and application
+// (ConsentID). Only confidential clients' consent is remembered: a public client's identity is not proven, so another
+// app could claim it and inherit the consent (oidc hasConsent).
+type Consent struct {
+	Meta
+	UserID   string `msgpack:"ui" json:"user_id"`
+	OrgID    string `msgpack:"o" json:"org_id"`
+	ClientID string `msgpack:"ci" json:"client_id"`
+	// Allowed are the sets the user approved, each its scopes (with those of claims requested one by one: oidc
+	// consentScopes) and resource indicators. A request is covered when one set holds all it asks for: scopes allowed
+	// for one resource are not allowed for another. A new approval drops the sets it covers.
+	Allowed []ConsentSet `msgpack:"al" json:"allowed"`
+}
+
+// ConsentSet is one approval of a Consent.
+type ConsentSet struct {
+	Scopes    []string `msgpack:"sc" json:"scopes"`
+	Resources []string `msgpack:"rs,omitempty" json:"resources,omitempty"`
+}
+
+// ConsentID is the id of user userID's Consent for client clientID: derived from both, so there is at most one and
+// it is read by id.
+func ConsentID(userID, clientID string) string {
+	sum := sha256.Sum256([]byte("consent\x00" + userID + "\x00" + clientID))
+	var b [16]byte
+	copy(b[:], sum[:16])
+	return FormatID(b)
+}
+
+func (c *Consent) Kind() Kind { return KindConsent }
+func (c *Consent) Index() Index {
+	return Index{
+		Scope:     c.UserID,
+		Partition: c.OrgID,
+		Fields:    map[string]any{"client_id": c.ClientID},
 	}
 }
 

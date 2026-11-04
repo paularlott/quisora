@@ -33,6 +33,7 @@ type ClientInput struct {
 	JWKS                 *string          `json:"jwks"`
 	JWKSURI              *string          `json:"jwks_uri"`
 	FirstParty           *bool            `json:"first_party"`
+	RememberConsent      *bool            `json:"remember_consent"` // confidential clients only
 	RotateRefresh        *bool            `json:"rotate_refresh_tokens"`
 	IntrospectOrg        *bool            `json:"introspect_org"`
 	RequirePKCE          *bool            `json:"require_pkce"` // false only for confidential clients
@@ -283,6 +284,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		}
 		c.FirstParty = *in.FirstParty
 	}
+	if in.RememberConsent != nil {
+		c.RememberConsent = *in.RememberConsent
+	}
 	if in.RotateRefresh != nil {
 		c.RotateRefresh = *in.RotateRefresh
 	}
@@ -329,6 +333,7 @@ func settleClient(c *model.Client) error {
 		c.RotateRefresh = true     // public clients always get one-time refresh tokens
 		c.IntrospectOrg = false    // and cannot introspect at all
 		c.AcceptsAPITokens = false // so no api token is made for them
+		c.RememberConsent = false  // anyone can claim a public client_id: it asks every time
 	}
 	if c.FAPI {
 		// FAPI 2.0 Security Profile §5.3.2: the settings it requires follow from the profile; the ones the
@@ -398,9 +403,10 @@ func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in C
 		return nil, "", ErrForbidden
 	}
 	// Refresh tokens rotate by default: a copy that is used after the client used the token is detected and ends the
-	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
+	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token). Consent is
+	// remembered by default, as other identity providers do (remember_consent: false asks at every sign-in).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
-		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
+		RotateRefresh: true, RememberConsent: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
 		ProviderID: made.provider, SSHApp: made.sshApp}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")

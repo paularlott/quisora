@@ -128,6 +128,9 @@ var Schemas = map[Kind]Schema{
 	KindGrant: {KindGrant, []Field{
 		{Name: "client_id", Type: FieldString, Index: true}, // an application's users (self-registered apps)
 	}},
+	KindConsent: {KindConsent, []Field{
+		{Name: "client_id", Type: FieldString, Index: true}, // an application's users (self-registered apps)
+	}},
 	KindAPIToken: {KindAPIToken, []Field{
 		{Name: "created", Type: FieldTime, Sort: true}, // the console lists the newest first
 	}},
@@ -214,7 +217,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindLock, KindReplay, KindEphemeral, KindQueue}
+		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindLock, KindReplay, KindEphemeral, KindQueue}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -244,6 +247,8 @@ func NewEntity(k Kind) Entity {
 		return &Session{}
 	case KindGrant:
 		return &Grant{}
+	case KindConsent:
+		return &Consent{}
 	case KindAPIToken:
 		return &APIToken{}
 	case KindKey:
