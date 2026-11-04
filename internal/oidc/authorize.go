@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -383,11 +384,17 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		p.redirectError(w, r, f, "invalid_request", "this client must push its authorization requests (RFC 9126)")
 		return
 	}
-	c, e := p.checkAuthz(r.Context(), q, c, f)
+	checked, e := p.checkAuthz(r.Context(), q, c, f)
 	if e != nil {
+		// Not an audit event: nobody has signed in, and anyone who knows the client ID can cause one. Mostly the
+		// application asking for what its settings do not allow, which only its administrator can fix.
+		metrics.AuthorizeRefused.Inc(e.code)
+		p.log.Warn("oidc: authorization request refused", "org", org.ID, "client_id", c.ClientID(), "client", c.Name,
+			"error", e.code, "description", e.desc)
 		p.redirectError(w, r, f, e.code, e.desc)
 		return
 	}
+	c = checked
 	secret, bind := newFlowSecret()
 	f.Bind = bind
 	b, _ := json.Marshal(f)

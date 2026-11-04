@@ -901,6 +901,7 @@ endpoint. Every node serves its own.
 | `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
 | `quisora_mail_queued` | Emails this node has waiting to be sent |
 | `quisora_mail_failed_total{reason}` | Emails that never reached the mail server: `given_up` (every retry failed; the log names the recipient), `dropped` (kept past the queue's discard horizon, or unreadable) and `expired` (the sign-in code or link in it had expired while it waited) |
+| `quisora_authorize_refused_total{error}` | Authorization requests from a known application sent back with an error before anyone signed in, by error: `invalid_scope` (it asked for a scope its settings do not allow), `unauthorized_client` (a grant type it may not use), `invalid_request` and the others. Each is also logged as a warning (`oidc: authorization request refused`) naming the application, the error and why; not an audit event, as nobody has signed in and anyone who knows a client ID can cause one. A rise after an application's settings were changed is usually that change (its `client.update` audit event shows what changed) |
 | `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
 | `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped), or dropped unsent past the queue's discard horizon |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
@@ -917,6 +918,8 @@ endpoint. Every node serves its own.
 
 Alerts worth having:
 
+- `increase(quisora_authorize_refused_total{error=~"invalid_scope|unauthorized_client"}[15m]) > 0`: an application asks
+  for what its settings do not allow, so its users cannot sign in (the log names the application).
 - `quisora_ready == 0` or `quisora_writable == 0` for more than a few minutes; `quisora_cluster_alive_nodes <
   quisora_cluster_quorum`; `sum(quisora_partitions_owned) != 64` across the nodes (a partition nobody owns), or a steady
   `rate(quisora_partition_takeovers_total[10m])` (ownership flapping).

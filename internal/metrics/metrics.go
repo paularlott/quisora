@@ -144,6 +144,11 @@ var (
 		"action", "outcome")
 	AuditUndelivered = Default.NewCounter("quisora_audit_undelivered_total",
 		"Audit events VictoriaLogs will never receive (logged in full as audit.undelivered).")
+	AuthorizeRefused = Default.NewCounter("quisora_authorize_refused_total",
+		"Authorization requests from a known application sent back with an error before anyone signed in, by error "+
+			"(invalid_scope, unauthorized_client, invalid_request and the others): mostly an application asking for "+
+			"what its settings do not allow.",
+		"error")
 	BackchannelFailed = Default.NewCounter("quisora_backchannel_logout_failed_total",
 		"Back-channel logouts given up on: the relying party did not take them after every retry (or none could be queued), "+
 			"or they were dropped unsent past their discard horizon.")
