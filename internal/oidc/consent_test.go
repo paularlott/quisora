@@ -257,7 +257,7 @@ func TestConsentRememberedAcrossSignOut(t *testing.T) {
 	if u := h.authorize(c, authzQuery(pub, ch, nil)); u.Path != h.orgBase+"/oauth/consent" {
 		t.Fatalf("public client consent remembered: %s", u)
 	}
-	if ok := h.env.Svc.ConsentCovers(ctx, h.user.ID, pub.ID, []string{"openid"}, nil); ok {
+	if _, err := h.env.Svc.Consents.Get(ctx, model.ConsentID(h.user.ID, pub.ID)); err == nil {
 		t.Fatal("public client consent stored")
 	}
 }
@@ -275,8 +275,9 @@ func TestRememberConsentSets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "email"}, []string{"https://a"}))
-	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "api"}, []string{"https://b"}))
+	cl := &model.Client{Meta: model.Meta{ID: "cl"}, RememberConsent: true}
+	must(svc.RememberConsent(ctx, h.user, cl, []string{"openid", "email"}, []string{"https://a"}))
+	must(svc.RememberConsent(ctx, h.user, cl, []string{"openid", "api"}, []string{"https://b"}))
 	for _, tc := range []struct {
 		scopes, resources []string
 		want              bool
@@ -288,15 +289,15 @@ func TestRememberConsentSets(t *testing.T) {
 		{[]string{"email", "api"}, nil, false},
 		{[]string{"openid"}, []string{"https://a", "https://b"}, false},
 	} {
-		if got := svc.ConsentCovers(ctx, uid, "cl", tc.scopes, tc.resources); got != tc.want {
+		if got := svc.ConsentCovers(ctx, uid, cl, tc.scopes, tc.resources); got != tc.want {
 			t.Errorf("covers %v %v = %v, want %v", tc.scopes, tc.resources, got, tc.want)
 		}
 	}
-	if svc.ConsentCovers(ctx, uid, "other", []string{"openid"}, nil) {
+	if svc.ConsentCovers(ctx, uid, &model.Client{Meta: model.Meta{ID: "other"}, RememberConsent: true}, []string{"openid"}, nil) {
 		t.Error("another client covered")
 	}
 	// an approval covering earlier ones replaces them
-	must(svc.RememberConsent(ctx, h.user, "cl", []string{"openid", "email", "api"}, []string{"https://a", "https://b"}))
+	must(svc.RememberConsent(ctx, h.user, cl, []string{"openid", "email", "api"}, []string{"https://a", "https://b"}))
 	c, err := svc.Consents.Get(ctx, model.ConsentID(uid, "cl"))
 	if err != nil || len(c.Allowed) != 1 {
 		t.Fatalf("sets %+v %v", c, err)
@@ -332,7 +333,7 @@ func TestConsentNotRemembered(t *testing.T) {
 	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Query().Get("code") == "" {
 		t.Fatalf("asked again while signed in: %s", u)
 	}
-	if h.env.Svc.ConsentCovers(ctx, h.user.ID, cl.ID, []string{"openid"}, nil) {
+	if _, err := h.env.Svc.Consents.Get(ctx, model.ConsentID(h.user.ID, cl.ID)); err == nil {
 		t.Fatal("consent stored")
 	}
 	// signed out, it is asked again

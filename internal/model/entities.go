@@ -741,7 +741,11 @@ type Client struct {
 	// user signs out. Confidential clients only (a public client's identity is not proven), and unused by a first-party
 	// one, which never asks.
 	RememberConsent bool `msgpack:"rmc,omitempty" json:"remember_consent"`
-	RotateRefresh   bool `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
+	// RememberGen counts the times the client began remembering consent (service.RemembersConsent turned true). A
+	// Consent is honoured only while its Gen is the client's: one left from before remembering was last turned off
+	// (removing them is best effort) never comes back into effect.
+	RememberGen   int64 `msgpack:"rmg,omitempty" json:"-"`
+	RotateRefresh bool  `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
 	// ServiceAccount marks a service account: a non-human principal of the organization (no tenant) that calls the
 	// management API and SCIM with client_credentials tokens. Scopes are what it was granted (ServiceAccountScopes),
 	// and GrantTypes only client_credentials. It is managed apart from the organization's applications.
@@ -1156,6 +1160,8 @@ type Consent struct {
 	// consentScopes) and resource indicators. A request is covered when one set holds all it asks for: scopes allowed
 	// for one resource are not allowed for another. A new approval drops the sets it covers.
 	Allowed []ConsentSet `msgpack:"al" json:"allowed"`
+	// Gen is the client's RememberGen when the consent was recorded: another, and the consent is not honoured.
+	Gen int64 `msgpack:"g,omitempty" json:"-"`
 }
 
 // ConsentSet is one approval of a Consent.

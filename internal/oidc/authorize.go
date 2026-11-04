@@ -780,7 +780,7 @@ func methodAllowed(eff *service.SignInMethods, sess *model.Session) bool {
 // once per sign-in and again after signing out, or, for a client set to remember consent (service.RemembersConsent),
 // their remembered consent (model.Consent) does, signed out or not.
 func (p *Provider) hasConsent(ctx context.Context, userID string, c *model.Client, scopes, resources []string) bool {
-	if service.RemembersConsent(c) && p.svc.ConsentCovers(ctx, userID, c.ID, scopes, resources) {
+	if p.svc.ConsentCovers(ctx, userID, c, scopes, resources) {
 		return true
 	}
 	gs, err := p.svc.Grants.All(ctx, userID)
@@ -994,7 +994,7 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 	// Remembered (model.Consent): the application signs the user in again without asking, signed out or not, until
 	// they or an administrator remove its access. A failure to remember only means being asked again next time.
 	if in.Approve && service.RemembersConsent(c) && f.Device == "" {
-		if err := p.svc.RememberConsent(r.Context(), u, c.ID, f.consent(), f.Resources); err != nil {
+		if err := p.svc.RememberConsent(r.Context(), u, c, f.consent(), f.Resources); err != nil {
 			p.log.WithError(err).Warn("oidc: consent not remembered", "client", c.ID, "user", u.ID)
 		} else {
 			detail["remembered"] = "true"

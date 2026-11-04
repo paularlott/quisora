@@ -73,9 +73,9 @@ func (s *Service) ConnectedApps(ctx context.Context, userID string) ([]AppGrant,
 		}
 	}
 	for _, c := range consents {
-		// one the client no longer honours (it stopped remembering: forgetConsents) is left out; one of a removed
+		// one the client does not honour (it stopped remembering, perhaps since: forgetConsents) is left out; one of a removed
 		// client is shown, as a grant of one is, until the sweep removes it
-		if cl := client(c.ClientID); cl != nil && !RemembersConsent(cl) {
+		if cl := client(c.ClientID); cl != nil && !honours(cl, c) {
 			continue
 		}
 		it := app(c.ClientID, c.Created)
@@ -556,15 +556,23 @@ func RemembersConsent(c *model.Client) bool {
 	return c.RememberConsent && !c.Public() && !c.SelfRegistered
 }
 
-// ConsentCovers reports whether user userID has allowed client clientID everything in scopes for resources, in one
-// approval. A failed read answers false: the user is asked.
-func (s *Service) ConsentCovers(ctx context.Context, userID, clientID string, scopes, resources []string) bool {
-	c, err := s.Consents.Get(ctx, model.ConsentID(userID, clientID))
-	if err != nil {
+// honours reports whether client c honours consent cn: it remembers consent and has not stopped since cn was recorded.
+func honours(c *model.Client, cn *model.Consent) bool {
+	return RemembersConsent(c) && cn.Gen == c.RememberGen
+}
+
+// ConsentCovers reports whether user userID has allowed client c everything in scopes for resources, in one approval,
+// and c honours it. A failed read answers false: the user is asked.
+func (s *Service) ConsentCovers(ctx context.Context, userID string, c *model.Client, scopes, resources []string) bool {
+	if !RemembersConsent(c) {
+		return false
+	}
+	cn, err := s.Consents.Get(ctx, model.ConsentID(userID, c.ID))
+	if err != nil || !honours(c, cn) {
 		return false
 	}
 	want := model.ConsentSet{Scopes: scopes, Resources: resources}
-	for _, set := range c.Allowed {
+	for _, set := range cn.Allowed {
 		if setCovers(set, want) {
 			return true
 		}
@@ -587,20 +595,24 @@ func setCovers(set, want model.ConsentSet) bool {
 	return true
 }
 
-// RememberConsent records that user u allowed client clientID scopes for resources: added to their consent for it
-// (made if they have none), dropping the approvals it covers. Already covered, nothing is written.
-func (s *Service) RememberConsent(ctx context.Context, u *model.User, clientID string, scopes, resources []string) error {
+// RememberConsent records that user u allowed client cl scopes for resources: added to their consent for it (made if
+// they have none, started afresh if cl no longer honours it), dropping the approvals it covers. Already covered,
+// nothing is written.
+func (s *Service) RememberConsent(ctx context.Context, u *model.User, cl *model.Client, scopes, resources []string) error {
 	set := model.ConsentSet{Scopes: sortedSet(scopes), Resources: sortedSet(resources)}
-	id := model.ConsentID(u.ID, clientID)
+	id := model.ConsentID(u.ID, cl.ID)
 	for attempt := 0; ; attempt++ {
 		c, err := s.Consents.Get(ctx, id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			c = &model.Consent{Meta: model.Meta{ID: id}, UserID: u.ID, OrgID: u.OrgID, ClientID: clientID,
-				Allowed: []model.ConsentSet{set}}
+			c = &model.Consent{Meta: model.Meta{ID: id}, UserID: u.ID, OrgID: u.OrgID, ClientID: cl.ID,
+				Allowed: []model.ConsentSet{set}, Gen: cl.RememberGen}
 			err = s.Consents.Create(ctx, c)
 		case err != nil:
 			return mapStore(err)
+		case c.Gen != cl.RememberGen: // left from before the client last stopped remembering: none of it holds
+			c.Allowed, c.Gen = []model.ConsentSet{set}, cl.RememberGen
+			err = s.Consents.Update(ctx, c)
 		default:
 			if slices.ContainsFunc(c.Allowed, func(have model.ConsentSet) bool { return setCovers(have, set) }) {
 				return nil
@@ -618,20 +630,30 @@ func (s *Service) RememberConsent(ctx context.Context, u *model.User, clientID s
 	}
 }
 
-// forgetConsents removes every user's remembered consent for client clientID (a record id): the client stopped
-// remembering consent. Every removal is tried; the failures are returned together.
+// consentPage is how many consents forgetConsents reads at a time.
+const consentPage = 500
+
+// forgetConsents removes every user's remembered consent for client clientID (a record id), a page at a time: the
+// client stopped remembering consent. It is tidying only: the client's RememberGen already keeps any left from coming
+// back into effect. Every removal is tried; the failures are returned together.
 func (s *Service) forgetConsents(ctx context.Context, clientID string) error {
-	cs, _, err := s.Consents.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "client_id", Value: clientID}}})
-	if err != nil {
-		return mapStore(err)
-	}
 	var errs []error
-	for _, c := range cs {
-		if err := s.Consents.Delete(ctx, c.ID); err != nil && !errors.Is(err, store.ErrStale) {
-			errs = append(errs, mapStore(err))
+	for after := ""; ; {
+		ids, _, err := s.Consents.IDs(ctx, store.ListQuery{After: after, Limit: consentPage,
+			Filters: []store.Filter{{Field: "client_id", Value: clientID}}})
+		if err != nil {
+			return errors.Join(append(errs, mapStore(err))...)
 		}
+		for _, id := range ids {
+			if err := s.Consents.Delete(ctx, id); err != nil && !errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound) {
+				errs = append(errs, mapStore(err))
+			}
+		}
+		if len(ids) < consentPage {
+			return errors.Join(errs...)
+		}
+		after = ids[len(ids)-1]
 	}
-	return errors.Join(errs...)
 }
 
 // sortedSet is v sorted with duplicates dropped (nil for none).

@@ -452,6 +452,9 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
 	}
+	if !remembered && RemembersConsent(c) {
+		c.RememberGen++ // consents left from before it last stopped remembering stay out of effect
+	}
 	if err := s.audited(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c),
 		func() error { return s.Clients.Update(ctx, c) }); err != nil {
 		return nil, mapStore(err)

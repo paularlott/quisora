@@ -27,7 +27,7 @@ func TestLockOutUser(t *testing.T) {
 	if err := e.svc.Identities.Create(e.ctx, &model.Identity{UserID: alan.ID, OrgID: acme.ID, ProviderID: "p1", Subject: "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.svc.RememberConsent(e.ctx, alan, "some-client", []string{"openid"}, nil); err != nil {
+	if err := e.svc.RememberConsent(e.ctx, alan, &model.Client{Meta: model.Meta{ID: "some-client"}}, []string{"openid"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	link, _, err := e.svc.CreateInvite(e.ctx, actor(admin), alan.ID)
