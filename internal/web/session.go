@@ -88,7 +88,9 @@ type SessionOptions struct {
 	Provider string // upstream provider id for federated sign-ins
 	// UpstreamAMR is how the upstream provider said the person signed in to it (model.Session.UpstreamAMR).
 	UpstreamAMR []string
-	Passkey     string // passkey id, when a passkey was used
+	// Upstream is the account at that provider the person signed in with (model.Session.Upstream).
+	Upstream *model.UpstreamAccount
+	Passkey  string // passkey id, when a passkey was used
 }
 
 // Create starts a session for u after a successful sign-in and sets the cookie.
@@ -106,7 +108,7 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	raw := secure.RandomToken(32)
 	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr, Epoch: u.SessionEpoch,
 		AuthTime: now, Expires: now.Add(time.Duration(ttl) * time.Second), IdleTTL: idle, LastSeen: now, Provider: opt.Provider, Passkey: opt.Passkey,
-		UpstreamAMR: opt.UpstreamAMR, IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
+		UpstreamAMR: opt.UpstreamAMR, Upstream: opt.Upstream, IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
 	stamp, err := m.svc.SessionStamp(ctx, u.OrgID)
 	if err != nil {
 		return nil, err
@@ -209,7 +211,7 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 			return nil, err
 		}
 		now := time.Now().UTC()
-		s.AMR, s.AuthTime, s.Provider, s.Passkey, s.UpstreamAMR = opt.AMR, now, opt.Provider, opt.Passkey, opt.UpstreamAMR
+		s.AMR, s.AuthTime, s.Provider, s.Passkey, s.UpstreamAMR, s.Upstream = opt.AMR, now, opt.Provider, opt.Passkey, opt.UpstreamAMR, opt.Upstream
 		s.Expires, s.IdleTTL, s.LastSeen = now.Add(time.Duration(ttl)*time.Second), idle, now
 		s.IP, s.UserAgent, s.CSRF = ClientIP(r), truncate(r.UserAgent(), 300), secure.RandomToken(24)
 		s.CookieHash = secure.HashSecret(secret)

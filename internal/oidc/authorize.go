@@ -736,7 +736,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
-		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Scopes: f.Scopes,
+		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Upstream: upstreamAccount(idp, sess), Scopes: f.Scopes,
 		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
@@ -767,6 +767,15 @@ func (p *Provider) upstreamType(ctx context.Context, sess *model.Session) (strin
 		return "", unavailable(err)
 	}
 	return prov.Type, nil
+}
+
+// upstreamAccount is the account at the upstream provider sess was signed in through (Session.Upstream), when that
+// provider is still there to name (idp, upstreamType): an ID without the provider it belongs to identifies nothing.
+func upstreamAccount(idp string, sess *model.Session) *model.UpstreamAccount {
+	if idp == "" {
+		return nil
+	}
+	return sess.Upstream
 }
 
 // methodAllowed reports whether the way the session was authenticated is among the sign-in methods the client's
@@ -867,6 +876,7 @@ var scopeDescriptions = map[string]string{
 	"phone":          "Your phone number",
 	"groups":         "The groups you belong to",
 	"enterprise":     "Your work details: job title, department, manager, employee number and the like",
+	"idp":            "The account you signed in with at another provider, such as Microsoft or Google: its ID and sign-in name",
 	"org":            "Your organization, tenant and role in it",
 	"roles":          "Your roles and tags in this application",
 	"offline_access": "Stay signed in and act while you are away",

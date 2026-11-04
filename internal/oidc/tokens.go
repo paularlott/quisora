@@ -59,14 +59,16 @@ type issue struct {
 	// upstreamAMR is how that provider said the person signed in (Grant.UpstreamAMR): added to amr in the tokens
 	// (model.TokenAMR), never to what acr is decided from (amr, Quisora's own)
 	upstreamAMR []string
-	nonce       string
-	tenant      *model.Tenant      // the client's tenant (resolved by mint when nil)
-	app         *service.AppAccess // the user's access to the client (decided by mint when nil)
-	claimsUI    []string           // claims requested individually for userinfo (carried in the access token)
-	claimsID    []string           // ... and for the ID token
-	act         string             // act claim, raw JSON (token exchange)
-	expires     time.Time          // the access token expires no later than this (zero: its usual lifetime)
-	jkt         string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
+	// upstream is the account at that provider the person signed in with (Grant.Upstream): the idp scope's claims
+	upstream *model.UpstreamAccount
+	nonce    string
+	tenant   *model.Tenant      // the client's tenant (resolved by mint when nil)
+	app      *service.AppAccess // the user's access to the client (decided by mint when nil)
+	claimsUI []string           // claims requested individually for userinfo (carried in the access token)
+	claimsID []string           // ... and for the ID token
+	act      string             // act claim, raw JSON (token exchange)
+	expires  time.Time          // the access token expires no later than this (zero: its usual lifetime)
+	jkt      string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
 	// adTypes are the authorization details types the request asked for (authdetails.go); nil: it asked for none,
 	// and the token carries every type the client is registered for.
 	adTypes []string
@@ -137,6 +139,9 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 		}
 		if is.has("enterprise") {
 			enterpriseClaim(o, is.user)
+		}
+		if is.wantsUpstream() {
+			upstreamClaims(o, is.upstream, nil)
 		}
 	} else {
 		p.orgClaims(o, is)
@@ -335,6 +340,40 @@ func (p *Provider) profileClaims(ctx context.Context, o *obj, is *issue, u *mode
 	}
 	if want("enterprise") {
 		enterpriseClaim(o, u)
+	}
+	if is.upstream != nil {
+		upstreamClaims(o, is.upstream, want)
+	}
+}
+
+// wantsUpstream reports whether the access token of is carries the idp scope's claims: the scope was granted, or one
+// of them was requested by name for userinfo, which reads them from the access token.
+func (is *issue) wantsUpstream() bool {
+	if is.upstream == nil {
+		return false
+	}
+	return is.has("idp") || slices.ContainsFunc(is.claimsUI, func(c string) bool { return claimScopes[c] == "idp" })
+}
+
+// upstream is the account at the upstream provider the token's idp scope claims name (upstreamClaims); nil for none.
+func (c *Claims) upstream() *model.UpstreamAccount {
+	if c.IdPSub == "" {
+		return nil
+	}
+	return &model.UpstreamAccount{Subject: c.IdPSub, Tenant: c.IdPTenant, Login: c.IdPLogin}
+}
+
+// upstreamClaims adds the idp scope's claims of account a (model.UpstreamAccount), those want allows (nil: all):
+// idp_sub the provider's ID of the account, idp_tenant its Microsoft directory, idp_login the name it signs in with.
+func upstreamClaims(o *obj, a *model.UpstreamAccount, want func(string) bool) {
+	if want == nil || want("idp_sub") {
+		o.str("idp_sub", a.Subject)
+	}
+	if want == nil || want("idp_tenant") {
+		o.strIf("idp_tenant", a.Tenant)
+	}
+	if want == nil || want("idp_login") {
+		o.strIf("idp_login", a.Login)
 	}
 }
 

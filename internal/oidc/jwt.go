@@ -290,6 +290,9 @@ type Claims struct {
 	ACR        string                     `json:"acr"`
 	AMR        []string                   `json:"amr"`
 	IdP        string                     `json:"idp"`
+	IdPSub     string                     `json:"idp_sub"`    // the idp scope's claims (upstreamClaims)
+	IdPTenant  string                     `json:"idp_tenant"` // ...
+	IdPLogin   string                     `json:"idp_login"`  // ...
 	SID        string                     `json:"sid"`
 	GID        string                     `json:"gid"` // refresh grant the token was issued from (access tokens)
 	Org        string                     `json:"org"`

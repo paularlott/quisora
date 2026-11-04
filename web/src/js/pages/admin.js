@@ -637,6 +637,7 @@ const STD_SCOPES = [
   { value: 'groups', help: 'The user\u2019s group names.' },
   { value: 'org', help: 'The user\u2019s organization, tenant and Quisora role (org_role).' },
   { value: 'roles', help: 'The user\u2019s application roles and tags for this application.' },
+  { value: 'idp', help: 'The account the user signed in with at an upstream provider such as Microsoft or Google: idp_sub, idp_tenant and idp_login.' },
   { value: 'offline_access', help: 'Refresh tokens, so the application can stay signed in.' },
 ]
 const STD_NAMES = STD_SCOPES.map((s) => s.value)

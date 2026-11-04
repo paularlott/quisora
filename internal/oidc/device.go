@@ -59,15 +59,16 @@ type deviceGrant struct {
 	MFA    bool `json:"mfa,omitempty"`
 	MaxAge *int `json:"ma,omitempty"`
 	// Decision is "" while pending, then "allow" (with the approving user's sign-in below) or "deny".
-	Decision  string   `json:"d,omitempty"`
-	UserID    string   `json:"u,omitempty"`
-	OrgID     string   `json:"o,omitempty"`
-	SessionID string   `json:"s,omitempty"`
-	AuthTime  int64    `json:"at,omitempty"`
-	AMR       []string `json:"amr,omitempty"`
-	IdP       string   `json:"idp,omitempty"`  // codeData.IdP
-	Upstream  []string `json:"uamr,omitempty"` // codeData.UpstreamAMR
-	GrantID   string   `json:"g,omitempty"`    // codeData.GrantID
+	Decision  string                 `json:"d,omitempty"`
+	UserID    string                 `json:"u,omitempty"`
+	OrgID     string                 `json:"o,omitempty"`
+	SessionID string                 `json:"s,omitempty"`
+	AuthTime  int64                  `json:"at,omitempty"`
+	AMR       []string               `json:"amr,omitempty"`
+	IdP       string                 `json:"idp,omitempty"`  // codeData.IdP
+	Upstream  []string               `json:"uamr,omitempty"` // codeData.UpstreamAMR
+	Account   *model.UpstreamAccount `json:"upa,omitempty"`  // codeData.Upstream
+	GrantID   string                 `json:"g,omitempty"`    // codeData.GrantID
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -290,7 +291,7 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID}
+		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, ad, jkt, "device_code")
 	return tr, restore(oe)
 }
@@ -422,7 +423,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 	if allow {
 		d.Decision = "allow"
 		d.UserID, d.OrgID, d.SessionID, d.AuthTime, d.AMR = u.ID, u.OrgID, sess.ID, sess.AuthTime.Unix(), sess.AMR
-		d.IdP, d.Upstream = idp, sess.UpstreamAMR
+		d.IdP, d.Upstream, d.Account = idp, sess.UpstreamAMR, upstreamAccount(idp, sess)
 	}
 	b, _ := json.Marshal(d)
 	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil

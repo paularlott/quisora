@@ -503,10 +503,12 @@ type ticket struct {
 	AMR     []string `json:"a"`
 	Pending string   `json:"p,omitempty"` // sealed TOTP secret being enrolled
 	Tenant  string   `json:"t,omitempty"` // tenant name the sign-in is for
-	// Provider is the upstream provider of a federated first factor (recorded on the session it ends in), and
-	// UpstreamAMR how the provider said the person signed in to it (passed on in tokens, never decided on).
-	Provider    string   `json:"pv,omitempty"`
-	UpstreamAMR []string `json:"ua,omitempty"`
+	// Provider is the upstream provider of a federated first factor (recorded on the session it ends in),
+	// UpstreamAMR how the provider said the person signed in to it and Upstream the account there (both passed on in
+	// tokens, never decided on).
+	Provider    string                 `json:"pv,omitempty"`
+	UpstreamAMR []string               `json:"ua,omitempty"`
+	Upstream    *model.UpstreamAccount `json:"up,omitempty"`
 	// Gen is the account's security generation (model.User.SecurityGen) when the first factor was verified, and Stamp
 	// the sign-out counters then (model.SignOutStamp). Every later step checks both against the account as it is now
 	// (ticketCurrent): a ticket whose password has since been changed, whose account set up a second factor

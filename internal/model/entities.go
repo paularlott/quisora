@@ -872,6 +872,22 @@ const (
 	ProviderOrganization = "organization"
 )
 
+// UpstreamAccount is the account at an upstream provider that a sign-in went through, as that provider names it: what
+// the idp scope passes on to applications (the idp_sub, idp_tenant and idp_login claims), so one can tell which of the
+// user's linked accounts was used and match it against the provider's own APIs. Quisora decides nothing on it.
+type UpstreamAccount struct {
+	// Subject is the provider's stable ID of the account: the object ID (oid) for Microsoft, whose sub differs for each
+	// application; the sub for the other OpenID Connect providers (for an organization provider, the user's ID
+	// there); the user ID for GitHub.
+	Subject string `msgpack:"s" json:"s"`
+	// Tenant is the Microsoft directory (tid) the account is in; empty for the other providers.
+	Tenant string `msgpack:"t,omitempty" json:"t,omitempty"`
+	// Login is the name the person signs in to the provider with, a login_hint for it: the user principal name
+	// (preferred_username) for Microsoft, the username for GitHub, the email address for the others. A hint only:
+	// it can change, and it is never the account's identity (Subject is).
+	Login string `msgpack:"l,omitempty" json:"l,omitempty"`
+}
+
 // ProviderTypes lists the provider types in the order the admin console offers them.
 var ProviderTypes = []string{ProviderOIDC, ProviderGoogle, ProviderMicrosoft, ProviderGitHub, ProviderGitLab, ProviderAuth0,
 	ProviderOrganization}
@@ -1047,15 +1063,17 @@ type Session struct {
 	// UpstreamAMR is how that provider said the person signed in to it (its ID token's amr, model.CleanAMR). Tokens
 	// pass it on (model.TokenAMR); Quisora's own decisions (MFA policies, acr) read only AMR, what Quisora verified,
 	// or the provider's say-so when it is trusted for the second factor (Provider.TrustMFA: "mfa" in AMR).
-	UpstreamAMR []string  `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
-	Passkey     string    `msgpack:"pk" json:"-"` // passkey used to sign in, if any (deleting it ends the session)
-	AuthTime    time.Time `msgpack:"at" json:"auth_time"`
-	Expires     time.Time `msgpack:"ex" json:"expires"`
-	IdleTTL     int       `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
-	LastSeen    time.Time `msgpack:"ls" json:"last_seen"`
-	IP          string    `msgpack:"ip" json:"ip"`
-	UserAgent   string    `msgpack:"ua" json:"user_agent"`
-	CSRF        string    `msgpack:"cs" json:"-"`
+	UpstreamAMR []string `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
+	// Upstream is the account at that provider the person signed in with (the idp scope's claims).
+	Upstream  *UpstreamAccount `msgpack:"upa,omitempty" json:"-"`
+	Passkey   string           `msgpack:"pk" json:"-"` // passkey used to sign in, if any (deleting it ends the session)
+	AuthTime  time.Time        `msgpack:"at" json:"auth_time"`
+	Expires   time.Time        `msgpack:"ex" json:"expires"`
+	IdleTTL   int              `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
+	LastSeen  time.Time        `msgpack:"ls" json:"last_seen"`
+	IP        string           `msgpack:"ip" json:"ip"`
+	UserAgent string           `msgpack:"ua" json:"user_agent"`
+	CSRF      string           `msgpack:"cs" json:"-"`
 	// CookieHash is set once the session was re-authenticated (web.Sessions.Upgrade): the browser's cookie is then
 	// "<id>.<secret>" and this is the hash of the secret, so the cookie value from before the upgrade no longer works
 	// (no session fixation) while the id, which grants and tokens name as "sid", stays the same.
@@ -1106,9 +1124,12 @@ type Grant struct {
 	IdP string `msgpack:"idp,omitempty" json:"idp,omitempty"`
 	// UpstreamAMR is how that provider said the person signed in to it (Session.UpstreamAMR): the tokens' amr is AMR
 	// and then these (model.TokenAMR), while acr and Quisora's own checks read AMR alone.
-	UpstreamAMR []string  `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
-	AuthTime    time.Time `msgpack:"at" json:"auth_time"`
-	Counter     uint64    `msgpack:"n" json:"-"`
+	UpstreamAMR []string `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
+	// Upstream is the account at that provider the person signed in with (Session.Upstream): the idp_sub, idp_tenant
+	// and idp_login claims of the idp scope.
+	Upstream *UpstreamAccount `msgpack:"upa,omitempty" json:"-"`
+	AuthTime time.Time        `msgpack:"at" json:"auth_time"`
+	Counter  uint64           `msgpack:"n" json:"-"`
 	// Rotated is when Counter last moved: the retry grace of the token before the current one runs from it, never
 	// from Updated, which other changes (a re-seal of Key) move too.
 	Rotated time.Time `msgpack:"rt,omitempty" json:"-"`

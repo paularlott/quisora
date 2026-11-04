@@ -96,7 +96,8 @@ A sign-in through a provider is a first factor, like a password: Quisora never t
 own second factors. Where a second factor is required, or for managers and administrators, Quisora asks for the
 user's own (authenticator app, passkey, or a code by email) after the provider, as after a password. The session's
 `amr` is `["fed", …]`, and the tokens' `idp` claim names the provider's type (`microsoft`, `google`, …), so an
-application can tell which kind of account the person used.
+application can tell which kind of account the person used. With the `idp` scope it is also told which account:
+its ID at the provider and the name it signs in with ([the idp scope](../oauth/sign-in.md#which-upstream-account-the-idp-scope)).
 
 What the provider says about how the person signed in to it (its ID token's `amr`, such as Microsoft's
 `["pwd","mfa"]`) is passed on, except its `mfa`: the tokens' `amr` is Quisora's own values and then the provider's,

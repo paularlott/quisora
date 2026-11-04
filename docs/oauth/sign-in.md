@@ -99,7 +99,8 @@ curl -s "$ISSUER/oauth/token" \
   [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor. `mfa` in `amr`
   and `urn:quisora:acr:mfa` say the same thing.
   After a sign-in through an upstream provider, `idp` names its type (`microsoft`, `google`, `github`, `gitlab`,
-  `auth0`, `oidc` or `organization`); it is absent otherwise. Refreshed tokens keep it.
+  `auth0`, `oidc` or `organization`); it is absent otherwise. Refreshed tokens keep it. With the `idp` scope, the
+  tokens also say which account at that provider it was ([below](#which-upstream-account-the-idp-scope)).
 - **Refresh token**: with the refresh grant on the client. See [refreshing](#refreshing).
 
 A code presented a second time fails, and everything issued from it the first time is revoked: someone else had it.
@@ -123,15 +124,35 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | `org` | `org`, `org_name`, `tenant`, `tenant_name`, `org_role` (the user's Quisora role: `user`, `manager`, `admin`, `super_admin`) |
 | `roles` | `roles`: the application roles the user's access to this application gives them, and `tags` |
 | `enterprise` | `enterprise`: job title, department, manager, employee number and the like |
+| `idp` | `idp_sub`, `idp_tenant`, `idp_login`: the account at the upstream provider the user signed in with ([below](#which-upstream-account-the-idp-scope)) |
 | `offline_access` | No claims: the refresh tokens outlive the user's browser session ([refreshing](#refreshing)). |
 
 Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
-`tags` and `roles`, plus `groups` and `enterprise` with those scopes, and `acr`, `amr`, `idp` (after an upstream
-provider sign-in) and `auth_time`.
+`tags` and `roles`, plus `groups`, `enterprise` and the `idp` scope's claims with those scopes, and `acr`, `amr`,
+`idp` (after an upstream provider sign-in) and `auth_time`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's
 access list arrive in `roles`, and the [authorization details](authorization-details.md) given there (RFC 9396), for
 applications registered for their types, in `authorization_details`.
+
+### Which upstream account: the idp scope
+
+A user can have several accounts at upstream providers linked to theirs, a Microsoft and a Google one say. `idp` says
+which kind of provider a sign-in went through; the `idp` scope also says which account there, as the provider itself
+names it, so an application that calls the provider's own APIs (Microsoft Graph, Google's) can tell it is the same
+account:
+
+| Claim | Microsoft | Google, GitLab, Auth0, OpenID Connect | GitHub |
+| --- | --- | --- | --- |
+| `idp_sub` | the object ID (`oid`), as Graph's `/me` `id`; Microsoft's `sub` differs for each application | the provider's `sub` | the user ID |
+| `idp_tenant` | the directory (`tid`) | absent | absent |
+| `idp_login` | the user principal name (`preferred_username`) | the email address | the username |
+
+Match on `idp_sub` (with `idp_tenant` for Microsoft): it never changes. `idp_login` is for `login_hint`, so the
+provider's own sign-in starts at the right account; it can change, and another account can come to have it, so it is
+never an identity. All three are absent when the user signed in another way (a password, a passkey) and when the
+provider has since been removed; the consent screen names the scope. Refreshed tokens keep the account of the sign-in
+they came from.
 
 ## Userinfo
 

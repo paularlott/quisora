@@ -23,7 +23,7 @@ import (
 )
 
 // userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
-var userScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "roles", "enterprise", "offline_access"}
+var userScopes = []string{"openid", "profile", "email", "phone", "groups", "org", "roles", "enterprise", "idp", "offline_access"}
 
 // codeData is what an authorization code stands for (kept in ephemeral state, single use).
 type codeData struct {
@@ -38,12 +38,14 @@ type codeData struct {
 	AMR         []string `json:"amr"`
 	IdP         string   `json:"idp,omitempty"`  // upstream provider type (Grant.IdP)
 	UpstreamAMR []string `json:"uamr,omitempty"` // how the provider said the person signed in (Grant.UpstreamAMR)
-	Scopes      []string `json:"sc"`
-	Resources   []string `json:"res,omitempty"`
-	ADTypes     []string `json:"adt,omitempty"` // authorization details types the authorization request named
-	ClaimsUI    []string `json:"cu,omitempty"`
-	ClaimsID    []string `json:"ci,omitempty"`
-	DPoPJKT     string   `json:"jkt,omitempty"` // dpop_jkt of the authorization request
+	// Upstream is the account at that provider the person signed in with (Grant.Upstream).
+	Upstream  *model.UpstreamAccount `json:"upa,omitempty"`
+	Scopes    []string               `json:"sc"`
+	Resources []string               `json:"res,omitempty"`
+	ADTypes   []string               `json:"adt,omitempty"` // authorization details types the authorization request named
+	ClaimsUI  []string               `json:"cu,omitempty"`
+	ClaimsID  []string               `json:"ci,omitempty"`
+	DPoPJKT   string                 `json:"jkt,omitempty"` // dpop_jkt of the authorization request
 	// GrantID is the id of the grant the exchange of the code makes, chosen with the code: an exchange that failed on
 	// our side and is retried makes the same grant, and finds it made (userGrant), never a second one.
 	GrantID string `json:"g,omitempty"`
@@ -393,7 +395,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
 		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -445,7 +447,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
 	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt, adTypes: ad}
+		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, upstream: cd.Upstream, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, "", serverError(err)
@@ -795,7 +797,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 		return nil, invalid
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: g.AMR, idp: g.IdP, upstreamAMR: g.UpstreamAMR, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
+		authTime: g.AuthTime, amr: g.AMR, idp: g.IdP, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
 		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {

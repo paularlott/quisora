@@ -81,6 +81,38 @@ type Claims struct {
 	AMR []string
 }
 
+// upstreamValueMax bounds each value of an UpstreamAccount (carried in the session, grants and tokens).
+const upstreamValueMax = 256
+
+// AccountOf is the account c names at provider p, as the provider names it (model.UpstreamAccount); nil when it has
+// no usable ID. A Microsoft subject is "tenant:object" (oidcClaims): passed on as the two IDs Microsoft's APIs use.
+func AccountOf(p *model.Provider, c Claims) *model.UpstreamAccount {
+	a := &model.UpstreamAccount{Subject: c.Subject, Login: c.Email}
+	switch p.Type {
+	case model.ProviderMicrosoft:
+		tid, oid, ok := strings.Cut(c.Subject, ":")
+		if !ok {
+			return nil
+		}
+		a.Subject, a.Tenant = oid, tid
+		if c.Username != "" {
+			a.Login = c.Username
+		}
+	case model.ProviderGitHub:
+		a.Login = c.Username
+	}
+	if a.Login == "" {
+		a.Login = c.Username
+	}
+	if a.Subject == "" || len(a.Subject) > upstreamValueMax || len(a.Tenant) > upstreamValueMax {
+		return nil
+	}
+	if len(a.Login) > upstreamValueMax {
+		a.Login = ""
+	}
+	return a
+}
+
 // Result is a completed upstream sign-in.
 type Result struct {
 	User        *model.User

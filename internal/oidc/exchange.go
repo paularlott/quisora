@@ -131,7 +131,7 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 		return nil, invalid
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cl.SID, gid: cl.GID,
-		authTime: time.Unix(int64(cl.AuthTime), 0), amr: grant.amr, upstreamAMR: grant.upstreamAMR, idp: cl.IdP, app: app, act: act,
+		authTime: time.Unix(int64(cl.AuthTime), 0), amr: grant.amr, upstreamAMR: grant.upstreamAMR, upstream: grant.upstream, idp: cl.IdP, app: app, act: act,
 		expires: time.Unix(int64(cl.Exp), 0), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, false)
 	if err != nil {

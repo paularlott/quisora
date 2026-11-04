@@ -4128,7 +4128,7 @@ components:
           type: boolean
         scopes:
           type: array
-          description: "the OpenID Connect scopes Quisora defines (openid, profile, email, phone, groups, org, roles, enterprise, offline_access) and the application's own API scopes, passed through to its access tokens. org releases org, org_name, tenant, tenant_name and org_role (the user's Quisora role); roles releases roles (application roles) and tags"
+          description: "the OpenID Connect scopes Quisora defines (openid, profile, email, phone, groups, org, roles, enterprise, idp, offline_access) and the application's own API scopes, passed through to its access tokens. org releases org, org_name, tenant, tenant_name and org_role (the user's Quisora role); roles releases roles (application roles) and tags; idp releases idp_sub, idp_tenant and idp_login (the upstream provider account signed in with)"
           items:
             type: string
         tenant_id:
@@ -4234,7 +4234,7 @@ components:
           type: boolean
         scopes:
           type: array
-          description: "the OpenID Connect scopes Quisora defines (openid, profile, email, phone, groups, org, roles, enterprise, offline_access) and the application's own API scopes, passed through to its access tokens. org releases org, org_name, tenant, tenant_name and org_role (the user's Quisora role); roles releases roles (application roles) and tags"
+          description: "the OpenID Connect scopes Quisora defines (openid, profile, email, phone, groups, org, roles, enterprise, idp, offline_access) and the application's own API scopes, passed through to its access tokens. org releases org, org_name, tenant, tenant_name and org_role (the user's Quisora role); roles releases roles (application roles) and tags; idp releases idp_sub, idp_tenant and idp_login (the upstream provider account signed in with)"
           items:
             type: string
         tenant_id:

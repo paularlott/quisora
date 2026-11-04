@@ -157,7 +157,7 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	m.audit(r, "account.totp.enable", org, u, u.Username, map[string]string{"during": "sign-in"})
 	amr := append(append([]string{}, t.AMR...), "otp", "mfa")
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR}, t.Next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR, Upstream: t.Upstream}, t.Next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return
@@ -252,7 +252,7 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		amr = append(amr, "user")
 	}
 	amr = append(amr, "mfa")
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: pk.ID, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR}, t.Next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: pk.ID, Provider: t.Provider, UpstreamAMR: t.UpstreamAMR, Upstream: t.Upstream}, t.Next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return

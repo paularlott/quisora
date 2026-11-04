@@ -258,7 +258,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		bearerError(w, http.StatusUnauthorized, "invalid_token") // access taken away since the token was issued
 		return
 	}
-	is := &issue{scopes: cl.Scopes()}
+	is := &issue{scopes: cl.Scopes(), upstream: cl.upstream()}
 	o := newObj(384)
 	o.str("sub", u.ID)
 	p.profileClaims(r.Context(), o, is, u, cl.UserinfoClaims)
@@ -496,6 +496,9 @@ func (p *Provider) introspectJWT(ctx context.Context, caller *model.Client, tok 
 		o.strIf("acr", cl.ACR)
 		o.strs("amr", nonNil(cl.AMR))
 		o.strIf("idp", cl.IdP)
+		if a := cl.upstream(); a != nil {
+			upstreamClaims(o, a, nil)
+		}
 		o.strIf("sid", cl.SID)
 		o.strIf("org_role", cl.Role)
 		if cl.Groups != nil {

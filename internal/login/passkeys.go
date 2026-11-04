@@ -143,7 +143,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	amr := res.AMR()
 	next := res.Extra["next"]
-	provider, upstream := "", []string(nil)
+	provider, upstream, account := "", []string(nil), (*model.UpstreamAccount)(nil)
 
 	if tid := res.Extra["ticket"]; tid != "" {
 		// Second factor after a verified password: the ticket must still bind to the account the passkey just
@@ -164,7 +164,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		if !slices.Contains(amr, "mfa") { // the first factor and the passkey
 			amr = append(amr, "mfa")
 		}
-		next, provider, upstream = t.Next, t.Provider, t.UpstreamAMR
+		next, provider, upstream, account = t.Next, t.Provider, t.UpstreamAMR, t.Upstream
 	} else {
 		if res.Extra["org"] != org.ID { // a ceremony begun at another organization's page
 			m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
@@ -181,7 +181,8 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: res.Passkey.ID, Provider: provider, UpstreamAMR: upstream}, next)
+	dest, err := m.completeWith(w, r, u, org, web.SessionOptions{AMR: amr, Passkey: res.Passkey.ID, Provider: provider, UpstreamAMR: upstream,
+		Upstream: account}, next)
 	if err != nil {
 		m.internalError(w, r, "create session", err)
 		return
