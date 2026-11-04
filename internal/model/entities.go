@@ -736,9 +736,10 @@ type Client struct {
 	JWKS           string   `msgpack:"jw" json:"jwks,omitempty"` // for private_key_jwt
 	JWKSURI        string   `msgpack:"ju" json:"jwks_uri,omitempty"`
 	FirstParty     bool     `msgpack:"fp" json:"first_party"` // skip consent
-	// RememberConsent remembers each user's approval on the consent screen (Consent) until their access to the
-	// application is removed; off, the application asks at every sign-in. Confidential clients only (a public
-	// client's identity is not proven), and unused by a first-party one, which never asks.
+	// RememberConsent remembers each user's approval on the consent screen (Consent), signing out or not, until their
+	// access to the application is removed. Off (the default), the application asks once per sign-in: again after the
+	// user signs out. Confidential clients only (a public client's identity is not proven), and unused by a first-party
+	// one, which never asks.
 	RememberConsent bool `msgpack:"rmc,omitempty" json:"remember_consent"`
 	RotateRefresh   bool `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
 	// ServiceAccount marks a service account: a non-human principal of the organization (no tenant) that calls the

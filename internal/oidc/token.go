@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -187,6 +188,23 @@ func errString(err error) string {
 		return "canceled"
 	}
 	return "internal"
+}
+
+// grantAttempts bounds the writes of a code's grant (userGrant): each makes the grant together with its session, and
+// is refused when the session changed meanwhile, as it does when several codes of one browser session (applications
+// signed in to at once) are exchanged at the same moment. The pauses between them add up to well under a second.
+const grantAttempts = 6
+
+// sleepCtx waits for d, or until ctx is done (its error).
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -404,10 +422,15 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 			g = made
 			break
 		}
-		if !gone(gerr) || attempt == 2 {
+		if !gone(gerr) || attempt == grantAttempts-1 {
 			return nil, "", serverError(unavailable(fmt.Errorf("the grant of this code: %v", err)))
 		}
-		// The session changed since it was checked (a sign-in noted on it, a revocation under way): check it again.
+		// The session changed since it was checked (a sign-in noted on it, a revocation under way, or another code
+		// of it exchanged at the same moment, which writes it too): check it again, after a short random pause so
+		// exchanges racing on one session take turns rather than colliding again.
+		if err := sleepCtx(ctx, time.Duration(1+rand.IntN(4<<attempt))*time.Millisecond); err != nil {
+			return nil, "", serverError(err)
+		}
 		if sess, oe = session(); oe != nil {
 			return nil, "", oe
 		}

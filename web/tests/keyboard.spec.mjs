@@ -404,7 +404,9 @@ test('prefers-contrast: more makes glass opaque; the reduced-transparency rule s
 })
 
 test('account: Create token asks for re-authentication, keeps focus in the dialogs and retries after success', async ({ page }) => {
-  await signIn(page, 'user')
+  // its own demo user: the final check reads the page once settled, and changes other tests make to a shared account
+  // reload its lists live, under the check
+  await signIn(page, 'account')
   await page.goto('/o/acme/account', { waitUntil: 'load' })
   // The server demands a re-authentication on the first attempt only; the re-auth call itself is stubbed (the demo
   // user's password is random), the retried token request goes through to the real server for the "after" state.

@@ -128,26 +128,30 @@ func BenchmarkTokenClientCredentials(b *testing.B) {
 
 func BenchmarkTokenCodeExchange(b *testing.B) {
 	e := newBenchEnv(b, nil)
-	c, _ := e.session(e.user)
 	pu, _ := url.Parse(e.env.URL)
-	var sid string
-	for _, ck := range c.Jar.Cookies(pu) {
-		if ck.Name == web.SessionCookieFor(e.env.Primary.ID) {
-			sid = web.SessionID(ck.Value) // stored sessions are keyed by the cookie's hash
-		}
-	}
 	verifier, challenge := pkce()
-	cd, _ := json.Marshal(codeData{ClientID: e.cl.ID, RedirectURI: rpCallback, Challenge: challenge, Nonce: "n", SessionID: sid,
-		UserID: e.user.ID, OrgID: e.user.OrgID, AuthTime: time.Now().Unix(), AMR: []string{"pwd"},
-		Scopes: []string{"openid", "profile", "email", "offline_access"}})
 	ctx := context.Background()
+	// codeFor is the code data of a sign-in in a session of its own: each parallel worker exchanges the codes of its
+	// own browser session, as separate users do (one session's exchanges take turns: see grantAttempts).
+	codeFor := func() []byte {
+		c, _ := e.session(e.user)
+		var sid string
+		for _, ck := range c.Jar.Cookies(pu) {
+			if ck.Name == web.SessionCookieFor(e.env.Primary.ID) {
+				sid = web.SessionID(ck.Value) // stored sessions are keyed by the cookie's hash
+			}
+		}
+		cd, _ := json.Marshal(codeData{ClientID: e.cl.ID, RedirectURI: rpCallback, Challenge: challenge, Nonce: "n", SessionID: sid,
+			UserID: e.user.ID, OrgID: e.user.OrgID, AuthTime: time.Now().Unix(), AMR: []string{"pwd"},
+			Scopes: []string{"openid", "profile", "email", "offline_access"}})
+		return cd
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		cd := codeFor()
 		for pb.Next() {
-			b.StopTimer()
 			code, _ := e.p.s.Eph.New(ctx, nsCode, cd, time.Minute)
-			b.StartTimer()
 			status, body := e.call(e.orgBase+"/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code},
 				"redirect_uri": {rpCallback}, "code_verifier": {verifier}, "client_id": {e.cl.ID}, "client_secret": {e.secret}}, false)
 			if status != 200 {

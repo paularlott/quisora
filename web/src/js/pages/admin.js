@@ -713,7 +713,7 @@ function clientDialogMixin(Alpine) {
         backchannel_logout_uri: c.backchannel_logout_uri || '', grant_types: [...(c.grant_types || [])], resources: listRows(c.resources, LIST_ITEMS.resources, true),
         authorization_details_types: listRows(c.authorization_details_types, LIST_ITEMS.authorization_details_types, true), authorization_details: detailsText(c.authorization_details),
         std_scopes: STD_NAMES.filter((n) => scopes.includes(n)), custom_scopes: scopes.filter((x) => !STD_NAMES.includes(x)), token_endpoint_auth_method: c.token_endpoint_auth_method, jwks: c.jwks || '', jwks_uri: c.jwks_uri || '',
-        first_party: !!c.first_party, remember_consent: c.remember_consent !== false, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
+        first_party: !!c.first_party, remember_consent: !!c.remember_consent, enabled: c.enabled !== false, rotate_refresh_tokens: !!c.rotate_refresh_tokens, introspect_org: !!c.introspect_org, accepts_api_tokens: !!c.accepts_api_tokens, require_pkce: c.require_pkce !== false, require_pushed_authorization_requests: !!c.require_pushed_authorization_requests,
         dpop_bound_access_tokens: !!c.dpop_bound_access_tokens, fapi2_security_profile: !!c.fapi2_security_profile,
         device_privileged_users: !!c.device_privileged_users }
     },

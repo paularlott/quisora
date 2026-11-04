@@ -226,7 +226,7 @@
   <!-- Connected apps --------------------------------------------------------------------------------------- -->
   <section class="glass-card" id="apps" aria-labelledby="apps-h" x-data="accountApps">
     <h2 class="section-title mb-1" id="apps-h" tabindex="-1">Connected apps</h2>
-    <p class="muted mb-4">Applications you have allowed to sign you in. They do not ask again, even after you sign out, until you remove their access.</p>
+    <p class="muted mb-4">Applications you have allowed to sign you in. Removing access signs you out of one, and it asks for your approval again next time.</p>
     <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
     <p class="muted" x-show="isEmpty" x-cloak>No applications are connected to your account.</p>
     <div class="table-wrap" role="region" aria-label="Connected apps" tabindex="0" x-show="hasItems" x-cloak>

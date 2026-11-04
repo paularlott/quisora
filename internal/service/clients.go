@@ -333,7 +333,7 @@ func settleClient(c *model.Client) error {
 		c.RotateRefresh = true     // public clients always get one-time refresh tokens
 		c.IntrospectOrg = false    // and cannot introspect at all
 		c.AcceptsAPITokens = false // so no api token is made for them
-		c.RememberConsent = false  // anyone can claim a public client_id: it asks every time
+		c.RememberConsent = false  // anyone can claim a public client_id: it asks at every sign-in
 	}
 	if c.FAPI {
 		// FAPI 2.0 Security Profile §5.3.2: the settings it requires follow from the profile; the ones the
@@ -403,10 +403,9 @@ func (s *Service) createClient(ctx context.Context, a *Actor, orgID string, in C
 		return nil, "", ErrForbidden
 	}
 	// Refresh tokens rotate by default: a copy that is used after the client used the token is detected and ends the
-	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token). Consent is
-	// remembered by default, as other identity providers do (remember_consent: false asks at every sign-in).
+	// grant (rotate_refresh_tokens: false turns it off for a client that cannot keep the latest token).
 	c := &model.Client{Meta: model.Meta{ID: model.NewClientID()}, OrgID: orgID, AuthMethod: model.AuthMethodSecretPost, Enabled: true,
-		RotateRefresh: true, RememberConsent: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
+		RotateRefresh: true, GrantTypes: []string{"authorization_code", "refresh_token"}, Scopes: []string{"openid", "profile", "email", "groups", "org", "roles", "offline_access"},
 		ProviderID: made.provider, SSHApp: made.sshApp}
 	if in.Name == nil {
 		return nil, "", Invalid("name", "required")
@@ -449,12 +448,19 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 		return nil, err
 	}
 	was := snapshot(c)
+	remembered := RemembersConsent(c)
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
 	}
 	if err := s.audited(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c),
 		func() error { return s.Clients.Update(ctx, c) }); err != nil {
 		return nil, mapStore(err)
+	}
+	if remembered && !RemembersConsent(c) {
+		// No longer remembered: what users allowed goes, so turning it on again asks everyone afresh.
+		if err := s.forgetConsents(ctx, c.ID); err != nil {
+			s.Log.WithError(err).Error("not every remembered consent of the client could be removed", "client", c.ID)
+		}
 	}
 	return c, nil
 }

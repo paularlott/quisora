@@ -42,11 +42,20 @@ func (s *Service) ConnectedApps(ctx context.Context, userID string) ([]AppGrant,
 	}
 	now := time.Now()
 	by := map[string]*AppGrant{}
+	clients := map[string]*model.Client{} // read once each; nil: removed (or unreadable)
+	client := func(id string) *model.Client {
+		c, ok := clients[id]
+		if !ok {
+			c, _ = s.Clients.Get(ctx, id)
+			clients[id] = c
+		}
+		return c
+	}
 	app := func(clientID string, since time.Time) *AppGrant {
 		it := by[clientID]
 		if it == nil {
 			it = &AppGrant{ClientID: clientID, Name: "Removed application", Scopes: []string{}, Since: since}
-			if c, err := s.Clients.Get(ctx, clientID); err == nil {
+			if c := client(clientID); c != nil {
 				it.Name = c.Name
 			}
 			by[clientID] = it
@@ -64,6 +73,11 @@ func (s *Service) ConnectedApps(ctx context.Context, userID string) ([]AppGrant,
 		}
 	}
 	for _, c := range consents {
+		// one the client no longer honours (it stopped remembering: forgetConsents) is left out; one of a removed
+		// client is shown, as a grant of one is, until the sweep removes it
+		if cl := client(c.ClientID); cl != nil && !RemembersConsent(cl) {
+			continue
+		}
 		it := app(c.ClientID, c.Created)
 		it.Remembered = true
 		if c.Updated.After(it.LastUsed) {
@@ -534,16 +548,19 @@ func (s *Service) SetTOTP(ctx context.Context, u *model.User, secret []byte, ste
 // combinations of scopes and resources is asked again for an old one, nothing worse.
 const maxConsentSets = 16
 
-// RemembersConsent reports whether c's consent is remembered: when it is set to (Client.RememberConsent), never for a
-// public client, whose identity is not proven (another app can send its client_id and redirect to it), nor a
-// self-registered one, which always asks. Not remembered, the application asks at every sign-in.
-func RemembersConsent(c *model.Client) bool { return c.RememberConsent && !c.Public() && !c.SelfRegistered }
+// RemembersConsent reports whether c's consent is remembered past signing out: when it is set to
+// (Client.RememberConsent), never for a public client, whose identity is not proven (another app can send its client_id
+// and redirect to it), nor a self-registered one. Not remembered, a confidential client asks once per sign-in (while a
+// grant of it lives: oidc hasConsent) and a public one at every authorization.
+func RemembersConsent(c *model.Client) bool {
+	return c.RememberConsent && !c.Public() && !c.SelfRegistered
+}
 
 // ConsentCovers reports whether user userID has allowed client clientID everything in scopes for resources, in one
 // approval. A failed read answers false: the user is asked.
 func (s *Service) ConsentCovers(ctx context.Context, userID, clientID string, scopes, resources []string) bool {
 	c, err := s.Consents.Get(ctx, model.ConsentID(userID, clientID))
-	if err != nil || c.UserID != userID || c.ClientID != clientID {
+	if err != nil {
 		return false
 	}
 	want := model.ConsentSet{Scopes: scopes, Resources: resources}
@@ -599,6 +616,22 @@ func (s *Service) RememberConsent(ctx context.Context, u *model.User, clientID s
 			return mapStore(err)
 		}
 	}
+}
+
+// forgetConsents removes every user's remembered consent for client clientID (a record id): the client stopped
+// remembering consent. Every removal is tried; the failures are returned together.
+func (s *Service) forgetConsents(ctx context.Context, clientID string) error {
+	cs, _, err := s.Consents.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "client_id", Value: clientID}}})
+	if err != nil {
+		return mapStore(err)
+	}
+	var errs []error
+	for _, c := range cs {
+		if err := s.Consents.Delete(ctx, c.ID); err != nil && !errors.Is(err, store.ErrStale) {
+			errs = append(errs, mapStore(err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // sortedSet is v sorted with duplicates dropped (nil for none).

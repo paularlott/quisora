@@ -1,6 +1,6 @@
 // Command uidemo runs the admin UI over an in-memory store seeded with demo data. It exists for design work and for
 // the accessibility audit (web/tests): it serves HTTPS with a self-signed certificate and adds a development-only
-// sign-in shortcut, GET /__demo/login?as=super|admin|manager|user&next=/path.
+// sign-in shortcut, GET /__demo/login?as=super|admin|manager|user|otp|account&next=/path.
 //
 //	go run ./tools/uidemo -addr 127.0.0.1:18443
 package main
@@ -211,6 +211,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	out["user"] = user(acme, "alan", "Alan Turing", model.RoleUser, true)
 	// a plain user reserved for browser tests that change their own sign-in set-up (authenticator app)
 	out["otp"] = user(acme, "katherine", "Katherine Johnson", model.RoleUser, true)
+	// a plain user no other browser test signs in as or changes, for tests that check the account page once it has
+	// settled: a change to an account others use reloads its lists live (account page), re-rendering them under a check
+	out["account"] = user(acme, "dorothy", "Dorothy Vaughan", model.RoleUser, true)
 	// Linked addresses for the email section: one verified (added by an administrator), one the user added and has
 	// not verified yet.
 	{

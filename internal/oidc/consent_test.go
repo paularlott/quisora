@@ -159,14 +159,15 @@ func TestConsentNamesScopesWithoutDescription(t *testing.T) {
 	}
 }
 
-// Consent is remembered past signing out (model.Consent), per approval, until the application's access is removed;
-// never for a public client.
+// A client set to remember consent remembers it past signing out (model.Consent), per approval, until the
+// application's access is removed; never a public client.
 func TestConsentRememberedAcrossSignOut(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	ctx := context.Background()
 	cl, _ := h.newClient(func(in *service.ClientInput) {
 		in.FirstParty = ptr(false)
+		in.RememberConsent = ptr(true)
 		in.Scopes = &[]string{"openid", "profile", "email", "offline_access", "api"}
 	})
 	approve := func(c *http.Client, csrf string, extra url.Values) {
@@ -241,7 +242,7 @@ func TestConsentRememberedAcrossSignOut(t *testing.T) {
 	}
 
 	// a public client asks every time
-	pub := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	pub := h.publicClient(func(in *service.ClientInput) { in.FirstParty = ptr(false); in.RememberConsent = ptr(true) })
 	_, ch := pkce()
 	u := h.authorize(c, authzQuery(pub, ch, nil))
 	if u.Path != h.orgBase+"/oauth/consent" {
@@ -302,12 +303,16 @@ func TestRememberConsentSets(t *testing.T) {
 	}
 }
 
-// A client set not to remember consent asks at every sign-in, a live grant or not; the setting is moot for a public
-// client, which always asks.
+// By default (remember_consent off) consent works as it always has: asked once per sign-in, remembered while a grant of
+// it lives, and asked again after signing out; nothing is stored. The setting is moot for a public client.
 func TestConsentNotRemembered(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
-	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false); in.RememberConsent = ptr(false) })
+	ctx := context.Background()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	if cl.RememberConsent {
+		t.Fatal("a new client remembers consent by default")
+	}
 	c, csrf := h.session(h.user)
 	v, ch := pkce()
 	u := h.authorize(c, authzQuery(cl, ch, nil))
@@ -322,16 +327,37 @@ func TestConsentNotRemembered(t *testing.T) {
 	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
 		t.Fatal(r.m)
 	}
+	// while the sign-in's grant lives, it is not asked again
 	_, ch2 := pkce()
-	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Path != h.orgBase+"/oauth/consent" {
-		t.Fatalf("consent remembered: %s", u)
+	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Query().Get("code") == "" {
+		t.Fatalf("asked again while signed in: %s", u)
 	}
-	if h.env.Svc.ConsentCovers(context.Background(), h.user.ID, cl.ID, []string{"openid"}, nil) {
+	if h.env.Svc.ConsentCovers(ctx, h.user.ID, cl.ID, []string{"openid"}, nil) {
 		t.Fatal("consent stored")
+	}
+	// signed out, it is asked again
+	if err := h.env.Svc.RevokeSessions(ctx, h.admin, h.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := h.env.Svc.Users.Get(ctx, h.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ = h.session(fresh)
+	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("not asked after signing out: %s", u)
 	}
 	// a public client cannot be set to remember
 	pub := h.publicClient(func(in *service.ClientInput) { in.RememberConsent = ptr(true) })
 	if pub.RememberConsent {
 		t.Fatal("public client set to remember consent")
+	}
+	// the setting can be turned on and off again
+	on, off := true, false
+	if got, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{RememberConsent: &on}); err != nil || !got.RememberConsent {
+		t.Fatalf("turn on: %v", err)
+	}
+	if got, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{RememberConsent: &off}); err != nil || got.RememberConsent {
+		t.Fatalf("turn off: %v", err)
 	}
 }

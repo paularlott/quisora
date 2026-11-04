@@ -150,7 +150,7 @@
 
     <section class="glass-card" aria-labelledby="apps-h" x-data="adminUserApps">
       <h2 class="section-title mb-1" id="apps-h" tabindex="-1">Connected apps</h2>
-      <p class="muted mb-4">Applications this user has allowed to act for them; they do not ask again until their access is removed. Removing one signs them out of it (it is sent a back-channel logout), its tokens stop working, and it asks for their approval again next time.</p>
+      <p class="muted mb-4">Applications this user has allowed to act for them. Removing one signs them out of it (it is sent a back-channel logout), its tokens stop working, and it asks for their approval again next time.</p>
       <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
       <p class="muted" x-show="isEmpty" x-cloak>This user has not connected any applications.</p>
       <div class="table-wrap" role="region" aria-label="Applications this user connected" tabindex="0" x-show="hasItems" x-cloak>

@@ -690,8 +690,8 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	} else if !c.FirstParty || f.Device != "" {
 		// A device sign-in is always confirmed: the code may have come from someone else.
 		consented := false
-		if !f.has("consent") && service.RemembersConsent(c) && f.Device == "" {
-			consented = p.hasConsent(ctx, user.ID, c.ID, f.consent(), f.Resources)
+		if !f.has("consent") && !c.Public() && f.Device == "" {
+			consented = p.hasConsent(ctx, user.ID, c, f.consent(), f.Resources)
 		}
 		if !consented {
 			if none {
@@ -775,11 +775,12 @@ func methodAllowed(eff *service.SignInMethods, sess *model.Session) bool {
 	return eff.AllowsSession(sess.AMR, sess.Provider)
 }
 
-// hasConsent reports whether the user already authorized this client for these scopes and resources: their remembered
-// consent (model.Consent) or a live grant covers them, in one approval (consent is remembered per scope set and per
-// resource set).
-func (p *Provider) hasConsent(ctx context.Context, userID, clientID string, scopes, resources []string) bool {
-	if p.svc.ConsentCovers(ctx, userID, clientID, scopes, resources) {
+// hasConsent reports whether the user already authorized confidential client c for these scopes and resources, in one
+// approval (consent is remembered per scope set and per resource set): a live grant covers them, so the user is asked
+// once per sign-in and again after signing out, or, for a client set to remember consent (service.RemembersConsent),
+// their remembered consent (model.Consent) does, signed out or not.
+func (p *Provider) hasConsent(ctx context.Context, userID string, c *model.Client, scopes, resources []string) bool {
+	if service.RemembersConsent(c) && p.svc.ConsentCovers(ctx, userID, c.ID, scopes, resources) {
 		return true
 	}
 	gs, err := p.svc.Grants.All(ctx, userID)
@@ -787,7 +788,7 @@ func (p *Provider) hasConsent(ctx context.Context, userID, clientID string, scop
 		return false
 	}
 	for _, g := range gs {
-		if g.ClientID == clientID && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
+		if g.ClientID == c.ID && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
 			subset(resources, g.Resources) {
 			return true
 		}

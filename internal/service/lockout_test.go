@@ -27,6 +27,9 @@ func TestLockOutUser(t *testing.T) {
 	if err := e.svc.Identities.Create(e.ctx, &model.Identity{UserID: alan.ID, OrgID: acme.ID, ProviderID: "p1", Subject: "s1"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := e.svc.RememberConsent(e.ctx, alan, "some-client", []string{"openid"}, nil); err != nil {
+		t.Fatal(err)
+	}
 	link, _, err := e.svc.CreateInvite(e.ctx, actor(admin), alan.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +56,7 @@ func TestLockOutUser(t *testing.T) {
 		"identities": count(e.svc.Identities.Count(e.ctx, alan.ID)),
 		"api tokens": count(e.svc.APITokens.Count(e.ctx, alan.ID)),
 		"links":      count(e.svc.Links.Count(e.ctx, alan.ID)),
+		"consents":   count(e.svc.Consents.Count(e.ctx, alan.ID)),
 	} {
 		if n != 0 {
 			t.Errorf("%s left: %d", name, n)
