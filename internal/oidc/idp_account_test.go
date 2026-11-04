@@ -154,3 +154,80 @@ func TestIdPScopeIsDescribed(t *testing.T) {
 		}
 	}
 }
+
+// A device sign-in approved in a browser that signed in through a provider names that account in the device's tokens
+// and those of its refresh grant, as a browser sign-in does.
+func TestDeviceGrantNamesTheUpstreamAccount(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ms := h.microsoft()
+	cl := h.deviceClient(func(in *service.ClientInput) {
+		in.Scopes = &[]string{"openid", "idp", "offline_access"}
+	})
+	account := &model.UpstreamAccount{Subject: "oid-7", Tenant: "tid-7", Login: "ada@contoso.com"}
+	dc, uc := h.startDevice(cl, "openid idp offline_access")
+	b, csrf := h.session(h.user)
+	h.signedInThrough(b, ms.ID, nil, "fed")
+	h.withUpstreamAccount(b, account)
+	if status, page := h.consentDevice(b, csrf, uc, true); status != 200 {
+		t.Fatalf("approving: %d %s", status, page)
+	}
+	r := h.pollDevice(cl, dc)
+	if r.status != 200 {
+		t.Fatalf("tokens: %d %v", r.status, r.m)
+	}
+	refreshed := h.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r.str("refresh_token")}}, cl, "")
+	if refreshed.status != 200 {
+		t.Fatalf("refresh: %d %v", refreshed.status, refreshed.m)
+	}
+	for name, tok := range map[string]string{"ID token": r.str("id_token"), "access token": r.str("access_token"),
+		"refreshed access token": refreshed.str("access_token")} {
+		c := claimsOf(t, tok)
+		if c["idp_sub"] != account.Subject || c["idp_tenant"] != account.Tenant || c["idp_login"] != account.Login {
+			t.Errorf("%s: idp_sub %v idp_tenant %v idp_login %v", name, c["idp_sub"], c["idp_tenant"], c["idp_login"])
+		}
+	}
+}
+
+// A token exchanged for another API names the account its subject token's sign-in went through, when the exchange
+// asks for the idp scope, and not otherwise: the account comes from the grant, not from the token presented.
+func TestTokenExchangeNamesTheUpstreamAccount(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ms := h.microsoft()
+	app, asecret := h.newClient(func(in *service.ClientInput) {
+		in.Scopes = &[]string{"openid", "idp", "api", "offline_access"}
+	})
+	account := &model.UpstreamAccount{Subject: "oid-9", Tenant: "tid-9", Login: "ada@contoso.com"}
+	c := h.sessionFor([]string{"fed"}, ms.ID)
+	h.withUpstreamAccount(c, account)
+	v, ch := pkce()
+	code := h.getCode(c, app, ch, url.Values{"scope": {"openid idp api"}})
+	r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {app.RedirectURIs[0]},
+		"code_verifier": {v}}, app, asecret)
+	if r.status != 200 {
+		t.Fatalf("exchange of the code: %d %v", r.status, r.m)
+	}
+	api, apiSecret := h.newClient(func(in *service.ClientInput) {
+		withExchange(in)
+		in.IntrospectOrg = ptr(true)
+		in.Scopes = &[]string{"openid", "idp", "api"}
+		in.Resources = &[]string{"https://api.example/b"}
+	})
+	for _, tc := range []struct {
+		scope string
+		want  bool
+	}{{"openid idp api", true}, {"openid api", false}} {
+		x := h.exchange(api, apiSecret, r.str("access_token"), url.Values{"resource": {"https://api.example/b"}, "scope": {tc.scope}})
+		if x.status != 200 {
+			t.Fatalf("token exchange %q: %d %v", tc.scope, x.status, x.m)
+		}
+		xc := claimsOf(t, x.str("access_token"))
+		if got := xc["idp_sub"] == account.Subject && xc["idp_tenant"] == account.Tenant && xc["idp_login"] == account.Login; got != tc.want {
+			t.Errorf("token exchange %q: idp_sub %v idp_tenant %v idp_login %v", tc.scope, xc["idp_sub"], xc["idp_tenant"], xc["idp_login"])
+		}
+		if !tc.want && (xc["idp_sub"] != nil || xc["idp_login"] != nil) {
+			t.Errorf("token exchange %q released the account: %v", tc.scope, xc)
+		}
+	}
+}
