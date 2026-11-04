@@ -128,8 +128,8 @@ test('edit dialog: a change by someone else shows a notice without moving focus;
     const name = uniq('zzedit')
     const u = await apiCall(b, 'POST', `${API}/users`, { username: name, email: `${name}@acme.example`, given_name: 'Edit', family_name: 'Me' })
     await a.getByRole('searchbox', { name: 'Search users' }).fill(name)
-    await expect(a.getByRole('button', { name: 'Edit Edit Me' })).toBeVisible()
-    await a.getByRole('button', { name: 'Edit Edit Me' }).click()
+    await a.getByRole('link', { name: 'Edit Me' }).click()
+    await a.getByRole('button', { name: 'Edit user' }).click()
     const dlg = a.getByRole('dialog', { name: 'Edit user' })
     await expect(dlg).toBeVisible()
     await expect(dlg.getByRole('status').filter({ hasText: /./ })).toHaveCount(0)
@@ -148,7 +148,7 @@ test('edit dialog: a change by someone else shows a notice without moving focus;
     await expect(dlg.getByRole('button', { name: 'Save changes' })).toBeDisabled()
     expect(await a.evaluate(() => document.activeElement.id)).toBe('f-family_name')
     await a.keyboard.press('Escape')
-    await expect(a.getByRole('row', { name: new RegExp(name) })).toHaveCount(0, { timeout: 4000 })
+    await expect(a.getByRole('link', { name: 'Back to all users' })).toBeVisible({ timeout: 4000 })
   } finally { await close() }
 })
 

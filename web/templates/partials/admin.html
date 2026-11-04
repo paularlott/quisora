@@ -82,6 +82,7 @@
 <div class="dialog-foot">
   {{if .Site.Mail}}<button type="button" class="btn btn-ghost" x-show="canEmailInvite" x-cloak :disabled="inviteBusy" @click="sendInvite" x-text="inviteMailLabel">Send by email</button>{{end}}
   <button type="button" class="btn btn-primary" x-show="noInvite" :disabled="inviteBusy" @click="generateInvite" x-text="inviteGenLabel" id="invite-generate">Generate link</button>
+  <a class="btn btn-secondary" x-show="hasInvitePage" x-cloak :href="invitePage">Open user</a>
   <button type="button" class="btn btn-secondary" @click="closeThis">Done</button>
 </div>
 {{template "dialog-end"}}

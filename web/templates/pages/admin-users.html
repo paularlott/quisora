@@ -29,7 +29,6 @@
           {{template "sort-th" (dict "key" "role" "label" "Role")}}
           {{template "sort-th" (dict "key" "active" "label" "Status")}}
           <th scope="col">Last sign-in</th>
-          <th scope="col"><span class="sr-only">Actions</span></th>
         </tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
@@ -39,10 +38,6 @@
             <td><span :class="row.roleClass" x-text="row.roleText"></span></td>
             <td><span :class="row.statusClass" x-text="row.statusText"></span> <span class="badge badge-plain ml-1" x-show="row.noPassword">No password</span></td>
             <td x-text="row.lastLoginText"></td>
-            <td class="actions">
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.manageable" :aria-label="row.editLabel" :data-id="row.id" @click="edit">{{template "icon" "pencil"}}</button>
-              <button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="row.manageable" :aria-label="row.deleteLabel" :data-id="row.id" @click="remove">{{template "icon" "trash"}}</button>
-            </td>
           </tr></template>
         </tbody>
       </table>

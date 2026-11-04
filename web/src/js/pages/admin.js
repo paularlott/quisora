@@ -386,12 +386,14 @@ function userDialogMixin(Alpine) {
     },
     // ---- invitation link dialog (after creating a user, or from the user page) ----
     inviteUrl: '', inviteExpires: '', inviteName: '', inviteTo: '', inviteNote: '', inviteSent: false, inviteUserId: '', inviteBusy: false, inviteError: '',
+    invitePage: '', // after creating a user on the list: their page, for what comes next (groups, addresses)
     _emailWatch: false,
     get hasInvite() { return this.inviteUrl !== '' },
     get noInvite() { return this.inviteUrl === '' },
     get canEmailInvite() { return mailOn() && this.inviteUrl !== '' && this.inviteTo !== '' && !this.inviteSent },
     get hasInviteNote() { return this.inviteNote !== '' },
     get hasInviteError() { return this.inviteError !== '' },
+    get hasInvitePage() { return this.invitePage !== '' },
     get inviteExpiresText() { return this.inviteExpires ? fmtDateTime(this.inviteExpires) : '' },
     get inviteSentText() { return this.inviteSent ? `Emailed to ${this.inviteTo}.` : '' },
     get inviteTitle() { return this.inviteUrl ? 'Invitation link' : 'New invitation link' },
@@ -399,7 +401,7 @@ function userDialogMixin(Alpine) {
     get inviteGenLabel() { return this.inviteBusy ? 'Working…' : 'Generate link' },
     get inviteMailLabel() { return this.inviteBusy ? 'Sending…' : 'Send by email' },
     openInvite(u, res, opener) {
-      Object.assign(this, { inviteUserId: u.id, inviteName: u.name || u.username, inviteTo: u.email || '', inviteError: '', inviteBusy: false,
+      Object.assign(this, { inviteUserId: u.id, inviteName: u.name || u.username, inviteTo: u.email || '', inviteError: '', inviteBusy: false, invitePage: '',
         inviteUrl: res ? res.url || '' : '', inviteExpires: res ? res.expires || '' : '', inviteSent: !!(res && res.emailed), inviteNote: res ? res.email_warning || '' : '' })
       // let x-show reveal the right state first, then open and focus its main control
       this.$nextTick(() => {
@@ -452,7 +454,10 @@ function userDialogMixin(Alpine) {
       if (!res) return
       this.closeDlg('user-dialog')
       if (this.editingUser) toast('User saved.')
-      else setTimeout(() => this.openInvite(res, res.invite, null), 60) // after the user dialog's close handler returned focus
+      else {
+        // after the user dialog's close handler returned focus; the link is shown only now, so it stays on this page
+        setTimeout(() => { this.openInvite(res, res.invite, null); if (this.pageUrl) this.invitePage = `${this.pageUrl}/${enc(res.id)}` }, 60)
+      }
       await this.afterUserSaved(res)
     },
   })
@@ -1286,21 +1291,14 @@ export default function (Alpine) {
       const b = activeBadge(u.active)
       return { ...u, title: u.name || u.username, initial: (u.name || u.username || '?').slice(0, 1).toUpperCase(), sub: u.email || u.username, roleText: ROLE_LABEL[u.role] || u.role,
         roleClass: 'badge ' + (ROLE_BADGE[u.role] || 'badge-plain'), statusText: b.text, statusClass: b.cls,
-        lastLoginText: relTime(u.last_login), href: `${this.pageUrl}/${enc(u.id)}`, editLabel: 'Edit ' + (u.name || u.username),
-        deleteLabel: 'Delete ' + (u.name || u.username), createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users'),
-        manageable: u.can_manage !== false,
+        lastLoginText: relTime(u.last_login), href: `${this.pageUrl}/${enc(u.id)}`,
+        createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users'),
         // someone above the viewer: a directory entry, so whatever it does not carry is unknown, not "none"
         ...(u.directory ? { sub: '', noPassword: false, lastLoginText: '—' } : {}) }
     },
-    edit(ev) { this.openEditUser(this.rowFromEvent(ev), ev.currentTarget) },
+    // Each user is edited, deleted or locked out on their own page (the name links to it), where everything else
+    // about them is too; the list only finds them, and creates new ones.
     afterUserSaved() { return this.load() },
-    async remove(ev) {
-      const u = this.rowFromEvent(ev)
-      const yes = await confirmAction(Alpine, { title: 'Delete user?', message: `Delete ${u.title} (${u.username})?`,
-        detail: 'Their sessions, passkeys and API tokens are deleted too. This cannot be undone.', confirmLabel: 'Delete user' })
-      if (!yes) return
-      try { await del(`${this.apiBase}/users/${enc(u.id)}`); toast(`User ${u.title} deleted.`); this.load() } catch (e) { toast(e.message, 'error') }
-    },
   }))
 
   // ---- One user -------------------------------------------------------------------------------------------------

@@ -502,7 +502,11 @@ test('new user dialog has no password; the email checkbox follows the email fiel
   await page.keyboard.press('Escape')
   await expect(inv).toBeHidden()
   await page.getByRole('searchbox', { name: 'Search users' }).fill(name)
-  await expect(page.getByRole('row', { name: new RegExp(name) })).toContainText('No password')
+  const row = page.getByRole('row', { name: new RegExp(name) })
+  await expect(row).toContainText('No password')
+  // the list finds people; editing and deleting are on the user's page
+  await expect(row.getByRole('button')).toHaveCount(0)
+  await expect(row.getByRole('link', { name: 'Kbd' })).toBeVisible()
 })
 
 test('user page: sign-in section, remove password confirm and new invitation link dialog work from the keyboard', async ({ page, context }) => {
@@ -517,10 +521,9 @@ test('user page: sign-in section, remove password confirm and new invitation lin
   await page.locator('#f-given_name').fill('Sign')
   await page.locator('#f-family_name').fill(String(stamp))
   await page.keyboard.press('Enter')
-  await page.getByRole('dialog', { name: 'Invitation link' }).waitFor()
-  await page.keyboard.press('Escape')
-  await page.getByRole('searchbox', { name: 'Search users' }).fill(name)
-  await page.getByRole('link', { name: fullName, exact: true }).click()
+  // the invitation dialog after creating goes on to the new user's page
+  await page.getByRole('dialog', { name: 'Invitation link' }).getByRole('link', { name: 'Open user' }).click()
+  await expect(page.getByRole('heading', { name: fullName, level: 1 })).toBeVisible()
   await page.waitForSelector('text=Profile')
   const sec = page.getByRole('region', { name: 'Sign-in', exact: true })
   await expect(sec).toContainText('Not set')
@@ -538,6 +541,7 @@ test('user page: sign-in section, remove password confirm and new invitation lin
   await expect(dlg.locator('#invite-url')).toContainText('/invite?token=')
   await expect(dlg.getByRole('button', { name: /Copy/ })).toBeFocused()
   await expect(dlg.getByRole('button', { name: 'Send by email' })).toBeVisible() // every user has an email address
+  await expect(dlg.getByRole('link', { name: 'Open user' })).toBeHidden() // already on their page
   await page.keyboard.press('Escape')
   await expect(gen).toBeFocused()
 
@@ -795,7 +799,8 @@ test('tags can be edited in the user dialog and saved', async ({ page }) => {
   const row = page.getByRole('row', { name: new RegExp('Tag ' + id) })
   await expect(row).toBeVisible()
   await expect(row.getByRole('button', { name: /Show users tagged/ })).toHaveText(['a-tag', 'b-tag'])
-  await page.getByRole('button', { name: 'Edit Tag ' + id }).click()
+  await row.getByRole('link', { name: 'Tag ' + id }).click()
+  await page.getByRole('button', { name: 'Edit user' }).click()
   const edit = page.getByRole('dialog', { name: 'Edit user' })
   expect(await tagTexts(edit)).toEqual(['b-tag', 'a-tag'].sort())
 })
@@ -964,7 +969,8 @@ test('autocomplete fields', async ({ page }) => {
   await signIn(page, 'admin')
   await page.goto('/admin/orgs/acme/users', { waitUntil: 'load' })
   await page.waitForSelector('tbody tr')
-  await page.getByRole('button', { name: 'Edit Alan Turing' }).first().click()
+  await page.getByRole('link', { name: 'Alan Turing' }).first().click()
+  await page.getByRole('button', { name: 'Edit user' }).click()
   const lang = page.locator('#f-locale')
   await lang.fill('english (u')
   await expect(page.getByRole('listbox', { name: 'Language' })).toBeVisible()

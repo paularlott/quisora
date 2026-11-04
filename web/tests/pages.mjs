@@ -76,14 +76,14 @@ export const PAGES = [
       await p.locator('#f-tags').type('-bad'); await p.keyboard.press('Enter')
       await p.locator('#e-tags').filter({ hasText: 'is not a valid tag' }).waitFor(); await p.waitForTimeout(450)
     }] },
-  { name: 'users-edit-tags', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing')] },
+  { name: 'users-edit-tags', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, open('Edit user')] },
   // Work details open (Alan has some), and the language autocompleter showing its list.
-  { name: 'users-edit-work', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+  { name: 'users-edit-work', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, open('Edit user'), async (p) => {
       await p.locator('#f-work_title').waitFor({ state: 'visible' })
       await p.locator('#f-locale').fill('Eng')
       await p.getByRole('listbox', { name: 'Language' }).waitFor(); await p.waitForTimeout(300)
     }] },
-  { name: 'users-edit-manager', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+  { name: 'users-edit-manager', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, open('Edit user'), async (p) => {
       await p.locator('#f-manager_id').fill('ada')
       await p.getByRole('listbox', { name: 'Manager' }).waitFor(); await p.waitForTimeout(300)
     }] },
@@ -99,7 +99,7 @@ export const PAGES = [
       await p.waitForTimeout(450)
     }] },
   { name: 'user-disabled', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Dennis Ritchie' }).click(); await p.waitForSelector('text=Left the company') }] },
-  { name: 'users-edit-disable', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, open('Edit Alan Turing'), async (p) => {
+  { name: 'users-edit-disable', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, open('Edit user'), async (p) => {
     await p.locator('#f-active').uncheck(); await p.locator('#f-status_reason').fill('On leave'); await p.locator('#f-status_reason').scrollIntoViewIfNeeded() }] },
   { name: 'user-emails', path: `${A}/users`, as: 'admin', steps: userEmailsStep },
   { name: 'user-sessions', path: `${A}/users`, as: 'admin', steps: [...userEmailsStep, async (p) => {
@@ -147,7 +147,8 @@ export const PAGES = [
       const id = uniq('notice')
       const u = await apiCall(p, 'POST', '/api/orgs/acme/users', { username: id, email: id + '@acme.example', given_name: 'Notice', family_name: id })
       await p.getByRole('searchbox', { name: 'Search users' }).fill(id)
-      await p.getByRole('button', { name: 'Edit Notice ' + id }).click()
+      await p.getByRole('link', { name: 'Notice ' + id }).click()
+      await p.getByRole('button', { name: 'Edit user' }).click()
       await p.waitForTimeout(450)
       await apiCall(p, 'PATCH', `/api/orgs/acme/users/${u.id}`, { family_name: 'Renamed ' + id })
       await p.locator('.edit-notice .alert').waitFor({ timeout: 4000 })
