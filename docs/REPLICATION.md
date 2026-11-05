@@ -74,7 +74,7 @@ fact.
    and SQLite); the others (one end-to-end owner loss, concurrent updates and claims, force-start, lagging and diverged
    partitions, unconfirmed and slow writes, resizes, membership, clocks, key rotation and compatibility) each run on
    one of BadgerDB and SQLite, the two about evenly. The store conformance suite, with the partition operations every
-   backend implements, runs on every backend (`internal/service/consistency_test.go` covers the service's rules).
+   backend implements, runs on every backend (`internal/store/storetest`; the cluster's own suite is `internal/cluster/conformance_test.go`).
 
 ## Cluster size
 
@@ -935,14 +935,12 @@ with a clock so far off that it believes an expired lease is still its own) has 
 new holder's. Between that check and the write itself two housekeepers are harmless: key rotation at worst publishes a spare key, end
 dates are compare-and-swap updates and purging is idempotent. Keep clock skew between the nodes well under 10 s.
 
-**Queued items** (emails, back-channel logout retries) are in the database too, each as the record of the node that
-queued it (its scope names the node): a node reads and delivers its own only, so the nodes never contend for an
-item, nothing is claimed or locked, and no item is delivered by two nodes. Each node's caps (10,000 emails and 10,000
-logouts, 2,500 of each of one organization) count its own items in the database (in memory: it is the only writer of
-them), so the cluster holds up to that many per node. Items survive a node's restart; those of a node that is gone for good are not taken over by another node (it
-may come back, and would send them again): they are discarded at their horizon, a day past their last retry, when
-they would have been given up anyway, and the purge removes them. Queued items are not change notices
-(`cluster.notify`) either.
+**Queued items** (emails, back-channel logout retries) are each node's own here too ([records](#records-versions-and-generations)):
+in the shared database, a node reads and delivers its own only, so the nodes never contend for an item, nothing is
+claimed or locked, and no item is delivered by two nodes. The caps are per node, so the cluster holds up to that many
+per node. A node gone for good leaves its items to expire: another node does not take them over, since that node may
+come back and send them again. Queued items are not change notices (`cluster.notify`) either. What an operator sees:
+[Queued work](RUNNING.md#queued-work).
 
 ## Known limits
 

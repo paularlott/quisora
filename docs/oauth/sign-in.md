@@ -129,7 +129,9 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 
 Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
 `tags` and `roles`, plus `groups`, `enterprise` and the `idp` scope's claims with those scopes, and `acr`, `amr`,
-`idp` (after an upstream provider sign-in) and `auth_time`.
+`idp` (after an upstream provider sign-in) and `auth_time`. Besides those, an access token carries `jti`, `sid` (the
+browser session), `gid` (the refresh grant it was issued from) and, when claims were requested by name for userinfo,
+`userinfo_claims`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's
 access list arrive in `roles`, and the [authorization details](authorization-details.md) given there (RFC 9396), for

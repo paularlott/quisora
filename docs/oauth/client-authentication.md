@@ -89,14 +89,14 @@ curl -s "$ISSUER/oauth/token" -d grant_type=client_credentials \
 | Claim | Rule |
 | --- | --- |
 | `iss`, `sub` | Both the client ID. |
-| `aud` | The organization's issuer (`https://id.example.com/o/<org id>`) or its token endpoint (`https://id.example.com/o/<org id>/oauth/token`), at any of the endpoints above. A FAPI 2.0 client must use the issuer alone, as a string. |
+| `aud` | The organization's issuer (`https://id.example.com/o/<org id>`), its token endpoint (`https://id.example.com/o/<org id>/oauth/token`), or the endpoint the assertion is sent to (PAR, introspection, revocation; RFC 9126 §2), at any of the endpoints above. A FAPI 2.0 client must use the issuer alone, as a string. |
 | `exp` | Required, at most 5 minutes ahead. |
 | `iat`, `nbf` | Optional; not in the future. |
 | `jti` | Required, unique: each assertion is accepted once. |
 | Header `alg` | `EdDSA`, `ES256`, `PS256` or `RS256` (no RS256 for FAPI 2.0); `kid` picks the key when there are several. |
 
 A wrong assertion answers `invalid_client` with what was wrong (`assertion expired or valid for too long`,
-`assertion already used`, `assertion audience must be the token endpoint or issuer`…).
+`assertion already used`, `assertion audience must be the issuer, the token endpoint or the endpoint called`…).
 
 ## Public clients
 

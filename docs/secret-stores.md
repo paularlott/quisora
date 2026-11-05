@@ -4,8 +4,9 @@ Any secret setting can name its value in HashiCorp Vault (or OpenBao) or 1Passwo
 configuration file then holds no secrets at all, only references to them, and the keys can be rotated in the store.
 
 The secret settings are: `server.master_key` and `server.previous_master_keys`, `cluster.key` and
-`cluster.previous_keys`, the database DSNs and passwords, the SMTP password, `storage.badgerdb.encryption_key`,
-`server.restore_password`, and a VictoriaLogs URL with credentials in it.
+`cluster.previous_keys`, `cluster.notify.key`, the database DSNs and passwords, the SMTP password,
+`storage.badgerdb.encryption_key`, `server.restore_password`, `metrics.token`, and a VictoriaLogs URL with credentials
+in it.
 
 ## References
 

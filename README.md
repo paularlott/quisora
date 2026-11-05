@@ -145,33 +145,13 @@ the device's unless `ui.default_theme` says otherwise ([light, dark or system](w
 
 ## Audit log and VictoriaLogs
 
-By default audit events are kept in the database for 7 days (`audit.retention_days`). In a gossip cluster they are
-not replicated: each node keeps the events it records in its own database, and the audit page asks every node and merges
-what they answer (a node that is down is missing from the page, which says so). That built-in audit trail is for development, home labs and testing:
-its pages read through every event they search (fine for thousands of users, not for millions).
-
-**Production, and any deployment whose compliance standard or security policy requires a retained audit trail, must
-send audit events to VictoriaLogs**, with retention set there
-(typically a year or more). Each node writes every event to a disk spool in its data directory, synced before the
-action that recorded it completes, and removes it once VictoriaLogs has taken it. The guarantee: an event whose
-write to the spool succeeded is on disk, complete, and will reach VictoriaLogs, through an outage of VictoriaLogs, a
-restart or a crash (a write a crash or disk error cuts short is undone or left as a segment's last line, so it can
-never corrupt an event written after it), unless an outage outlasts the spool's space (the oldest events then leave
-it, each written in full to the structured log). The structured log (`audit.undelivered`, the event in full) is the
-fallback whenever the spool does not take an event: the disk did not answer within 2 seconds (the event is still
-spooled once it does, and then reaches VictoriaLogs as well), or the write failed (a full or failing disk: the log is
-then its only copy). Delivery is at least once — VictoriaLogs may hold an event twice, by `id`, never not at all — so
-ship the structured log and alert on `audit.undelivered`.
-Every node's audit page then reads from VictoriaLogs:
-
-```toml
-[audit]
-victorialogs_url = "http://victorialogs:9428"
-victorialogs_spool_max_mb = 256           # the spool is <data_dir>/auditspool, one per node
-```
-
-Details: [docs/RUNNING.md](docs/RUNNING.md#audit-log). Controls, evidence and the VictoriaLogs set-up for SOC 2 (vmauth,
-retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
+By default audit events are kept in the database for 7 days (`audit.retention_days`), which is for development, home
+labs and testing. **Production, and any deployment whose compliance standard or security policy requires a retained
+audit trail, must send audit events to VictoriaLogs** (`audit.victorialogs_url`), with retention set there: each node
+spools every event to disk before the action that recorded it completes, and it reaches VictoriaLogs through an
+outage, a restart or a crash.
+How it works, the delivery guarantee and what to alert on: [docs/RUNNING.md](docs/RUNNING.md#audit-log). Controls,
+evidence and the VictoriaLogs set-up for SOC 2 (vmauth, retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
 
 ## Development
 

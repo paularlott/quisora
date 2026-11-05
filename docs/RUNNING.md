@@ -182,8 +182,9 @@ docker kill --signal HUP quisora         # Kubernetes: kubectl exec <pod> -- kil
   alone and says so (the log, and the console's report): put them in the config file. Settings from environment
   variables cannot change either, since a running process keeps its environment; use the config file, or restart.
 - A reload is refused, and the keys in use stay, when the new keys do not include the key in use: a typo or the
-  wrong file cannot make a node seal with a key the others cannot open. The log says `master keys reloaded` or
-  `master keys not reloaded` with the reason.
+  wrong file cannot make a node seal with a key the others cannot open. The log says `master keys reloaded` (with
+  the key ids), or `configuration not (fully) reloaded` with `error` `master keys: <the reason>` and `applied` the
+  changes made before it.
 
 ### Is it done? When can the old key go?
 
@@ -258,11 +259,9 @@ a node started with only the old key refuses to start.
   remove it again afterwards. Make a new backup once the rotation is complete.
 - Device cookies (which let a browser that signed in before skip the per-address sign-in limit) are made with the
   active key only: each browser earns a new one at its next sign-in.
-- If the old key was exposed, so is everything it ever sealed: a copy of the database or a backup from before the
-  rotation can be opened with it. Rotating the master key does not change the secrets themselves. Also rotate the
-  signing keys (**Signing keys → Rotate now**), the sign-in providers' client secrets (at each provider, then in
-  Quisora), end the relying parties' refresh tokens (a rotation keeps them working: the emergency sign-out, `quisora
-  sign-out --all`, ends every session and refresh grant), and have users with an authenticator app set it up again.
+- If the old key was exposed, rotating it is not enough: a copy of the database or a backup from before the rotation
+  still opens with it, and the secrets it sealed are unchanged. Follow the list in
+  [incident response](SECURITY.md#incident-response) ("The master key may be exposed").
 - A secret that no configured key opens (the old key removed before the rotation completed, or a damaged value) is
   logged at error level (`secrets that no configured master key opens`); put the missing key back in
   `previous_master_keys`.
@@ -518,8 +517,8 @@ key = "<new>"
 previous_keys = ["<old>"]     # rounds 1 and 2 only
 ```
 
-- The log says `cluster keys reloaded` (with the key ids: 8 characters derived from each key, revealing nothing) or
-  `cluster keys not reloaded` with the reason. The system overview (and `GET /api/cluster`) lists each node's key ids
+- The log says `cluster keys reloaded` (with the key ids: 8 characters derived from each key, revealing nothing), or
+  `configuration not (fully) reloaded` with `error` `cluster keys: <the reason>`. The system overview (and `GET /api/cluster`) lists each node's key ids
   under `cluster_keys`, the one that encrypts first.
 - A reload is refused when the new keys do not include the key in use: a typo cannot cut a node off. Keys given on the
   command line cannot be reloaded.

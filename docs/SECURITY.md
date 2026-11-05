@@ -151,14 +151,23 @@ remove them for every tenant that uses SSH. After a restore from backup do the s
 within a minute): the revocation list then revokes every certificate and every CA key of the tenant. Delete the tenant only
 after the servers have fetched that list ([turning it off](ssh/README.md#turning-it-off-and-removing-a-tenant)).
 
-**The master key may be exposed.** [Rotate it](RUNNING.md#rotating-the-master-key) and remove the old key as soon as the
-re-seal is done. A rotation re-seals what the key seals without changing it: sessions and relying parties' refresh
-tokens keep working (each grant's key is re-sealed, not replaced), and so does any refresh token that whoever holds a
-copy of the database from before the rotation, and the old key, makes from it. So pull the [emergency sign-out](emergency-sign-out.md) for every
-organization too (`quisora sign-out --all`, with `--api-tokens`: it ends every session and refresh grant), rotate the
-signing keys (above), the SSH CA keys of every tenant (above), and have users with an authenticator app set it up again; the list under
-[the rotation](RUNNING.md#rotating-the-master-key) has the rest. Treat the backups made with the old key as exposed only if their
-passwords may be too: a backup's encryption does not use the master key.
+**The master key may be exposed.** Whoever holds it and a copy of the database, or a backup, from before the rotation
+can open everything it sealed, and a rotation re-seals those secrets without changing them. This is the whole list:
+
+1. [Rotate the master key](RUNNING.md#rotating-the-master-key), and remove the old key as soon as the re-seal is done.
+2. Pull the [emergency sign-out](emergency-sign-out.md) for every organization: `quisora sign-out --all --api-tokens`.
+   A rotation keeps sessions and relying parties' refresh tokens working (each grant's key is re-sealed, not
+   replaced), including any refresh token made with the old key from an old copy of the database; the sign-out ends
+   every session, refresh grant and personal API token.
+3. Rotate and remove the signing keys (above).
+4. Rotate and remove the SSH CA keys of every tenant that uses SSH (above).
+5. Rotate each sign-in provider's client secret, at the provider and then in Quisora: with the old one, the upstream
+   refresh tokens sealed beside it can be used at the provider.
+6. Have users with an authenticator app set it up again: the rotation leaves its secret as it was.
+
+Treat the backups made with the old key as exposed only if their passwords may be too: a backup's encryption does not
+use the master key. Keep the old key only with those backups, to restore them
+([after the rotation](RUNNING.md#after-the-rotation)).
 
 **A backup or the database leaked.** Password hashes and secrets are sealed with the master key: without it they are
 of no use, and there is nothing to guess passwords against offline. If the master key may have leaked as well, the
