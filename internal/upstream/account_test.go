@@ -10,7 +10,8 @@ import (
 
 // The account a sign-in went through is passed on as each provider names it: Microsoft's object and tenant IDs (its
 // sub differs per application) and user principal name, the sub and email of the other OpenID Connect providers,
-// GitHub's user ID and username. Nothing usable as an ID, nothing passed on.
+// GitHub's user ID and username, and for another organization the user's ID there, that organization and the address it
+// verified (never a username or an unverified address in its place). Nothing usable as an ID, nothing passed on.
 func TestAccountOf(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	for _, tc := range []struct {
@@ -30,11 +31,15 @@ func TestAccountOf(t *testing.T) {
 			&model.UpstreamAccount{Subject: "s", Login: "ada"}},
 		{"github", model.ProviderGitHub, upstream.Claims{Subject: "583231", Email: "ada@example.com", Username: "octo-ada"},
 			&model.UpstreamAccount{Subject: "583231", Login: "octo-ada"}},
+		{"organization", model.ProviderOrganization, upstream.Claims{Subject: "u1", Email: "ada@example.com", EmailVerified: true, Username: "ada"},
+			&model.UpstreamAccount{Subject: "u1", Tenant: "src-org", Login: "ada@example.com"}},
+		{"organization, unverified address", model.ProviderOrganization, upstream.Claims{Subject: "u1", Email: "ada@example.com", Username: "ada@example.com"},
+			&model.UpstreamAccount{Subject: "u1", Tenant: "src-org"}},
 		{"no subject", model.ProviderGoogle, upstream.Claims{Email: "ada@gmail.com"}, nil},
 		{"subject too long", model.ProviderGoogle, upstream.Claims{Subject: long}, nil},
 		{"login too long", model.ProviderGoogle, upstream.Claims{Subject: "s", Email: long}, &model.UpstreamAccount{Subject: "s"}},
 	} {
-		got := upstream.AccountOf(&model.Provider{Type: tc.typ}, tc.c)
+		got := upstream.AccountOf(&model.Provider{Type: tc.typ, SourceOrg: "src-org"}, tc.c)
 		if (got == nil) != (tc.want == nil) || got != nil && *got != *tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
 		}

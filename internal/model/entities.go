@@ -880,11 +880,13 @@ type UpstreamAccount struct {
 	// application; the sub for the other OpenID Connect providers (for an organization provider, the user's ID
 	// there); the user ID for GitHub.
 	Subject string `msgpack:"s" json:"s"`
-	// Tenant is the Microsoft directory (tid) the account is in; empty for the other providers.
+	// Tenant is the Microsoft directory (tid) the account is in, or for an organization provider the organization
+	// (Provider.SourceOrg); empty for the other providers.
 	Tenant string `msgpack:"t,omitempty" json:"t,omitempty"`
 	// Login is the name the person signs in to the provider with, a login_hint for it: the user principal name
-	// (preferred_username) for Microsoft, the username for GitHub, the email address for the others. A hint only:
-	// it can change, and it is never the account's identity (Subject is).
+	// (preferred_username) for Microsoft, the username for GitHub, the email address for the others - for an
+	// organization provider only one that organization verified, else none. A hint only: it can change, and it is
+	// never the account's identity (Subject is).
 	Login string `msgpack:"l,omitempty" json:"l,omitempty"`
 }
 

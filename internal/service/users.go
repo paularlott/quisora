@@ -443,6 +443,9 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	if in.Password != nil && a != System {
 		return nil, Invalid("password", "passwords are set by the user through their invitation link")
 	}
+	if in.ExternalID != nil && strings.TrimSpace(*in.ExternalID) != "" && !maySetExternalID(a) {
+		return nil, errExternalIDAdmins()
+	}
 	u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID, Role: role, Active: true}
 	if in.Email == nil || strings.TrimSpace(*in.Email) == "" {
 		return nil, Invalid("email", "is required")
@@ -776,10 +779,23 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	return u, nil
 }
 
+// maySetExternalID reports whether a may set or change a user's external id (User.ExternalID, SCIM's externalId):
+// administrators and above, and the service accounts and the system, which act as administrators. A provisioning
+// system finds its people by it, so a wrong one makes it match the wrong account or create a duplicate; a manager may
+// still send the value a user already has (a SCIM replace sends the whole resource).
+func maySetExternalID(a *Actor) bool { return a != nil && a.Role.Rank() >= model.RoleAdmin.Rank() }
+
+func errExternalIDAdmins() error {
+	return Invalid("external_id", "only administrators set the external ID")
+}
+
 // mayChange is who may make which change of u (updateUser): a may manage u, or u is a's own account and the change is
 // one a user may make to themselves; and what neither may make (someone else's password, a privileged account's
 // sign-in address without a sign-in reset, your own role, verification or work details, ...). self: a is u.
 func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in UserInput, self bool) error {
+	if in.ExternalID != nil && strings.TrimSpace(*in.ExternalID) != u.ExternalID && !maySetExternalID(a) {
+		return errExternalIDAdmins()
+	}
 	if !s.canManageUser(a, u) {
 		if !self {
 			return s.denied(a, u)

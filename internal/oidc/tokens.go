@@ -364,7 +364,8 @@ func (c *Claims) upstream() *model.UpstreamAccount {
 }
 
 // upstreamClaims adds the idp scope's claims of account a (model.UpstreamAccount), those want allows (nil: all):
-// idp_sub the provider's ID of the account, idp_tenant its Microsoft directory, idp_login the name it signs in with.
+// idp_sub the provider's ID of the account, idp_tenant its Microsoft directory (or the organization, for an
+// organization provider), idp_login the name it signs in with.
 func upstreamClaims(o *obj, a *model.UpstreamAccount, want func(string) bool) {
 	if want == nil || want("idp_sub") {
 		o.str("idp_sub", a.Subject)

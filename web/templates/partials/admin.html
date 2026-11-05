@@ -52,6 +52,7 @@
     </details>
     {{if .Site.Mail}}{{template "check-field" (dict "name" "invite" "label" "Email the invitation" "show" "isCreate" "help" "Sends the user a link to set a password or create a passkey. You also get the link to share yourself.")}}
     {{else}}<p class="help" x-show="isCreate">After creating the user you get an invitation link to share with them (email is not set up on this server).</p>{{end}}
+    {{if .IsAdmin}}{{template "field" (dict "name" "external_id" "label" "External ID" "autocomplete" "off" "help" "Optional. The user's identifier in a provisioning system (SCIM externalId), unique in the organization. Changing it can make that system no longer match this user, or create a duplicate.")}}{{end}}
     {{template "check-field" (dict "name" "active" "label" "Account is active" "switch" true "show" "isEdit" "help" "Disabled users cannot sign in and their sessions end.")}}
     {{template "field" (dict "name" "status_reason" "label" "Reason" "show" "statusChanging" "autocomplete" "off" "helpBind" "statusReasonHelp" "help" "Optional. Shown on the user's page and kept in the audit log.")}}
   </div>

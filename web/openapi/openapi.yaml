@@ -5854,6 +5854,8 @@ components:
             administrator who has a way to sign in only by a super admin"
         external_id:
           type: string
+          description: "the user's identifier in a provisioning system (SCIM externalId), unique in the organization, at most
+            255 characters; set or changed by administrators only (a manager may send the value the user already has)"
         family_name:
           type: string
           description: last name; optional
@@ -6084,6 +6086,8 @@ components:
             administrator who has a way to sign in only by a super admin"
         external_id:
           type: string
+          description: "the user's identifier in a provisioning system (SCIM externalId), unique in the organization, at most
+            255 characters; set or changed by administrators only (a manager may send the value the user already has)"
         family_name:
           type: string
           description: last name; optional

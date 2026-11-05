@@ -87,7 +87,9 @@ type Claims struct {
 const upstreamValueMax = 256
 
 // AccountOf is the account c names at provider p, as the provider names it (model.UpstreamAccount); nil when it has
-// no usable ID. A Microsoft subject is "tenant:object" (oidcClaims): passed on as the two IDs Microsoft's APIs use.
+// no usable ID. A Microsoft subject is "tenant:object" (oidcClaims): passed on as the two IDs Microsoft's APIs use. An
+// organization provider's account is named with its organization, and its address only when that organization verified
+// it.
 func AccountOf(p *model.Provider, c Claims) *model.UpstreamAccount {
 	a := &model.UpstreamAccount{Subject: c.Subject, Login: c.Email}
 	switch p.Type {
@@ -102,8 +104,16 @@ func AccountOf(p *model.Provider, c Claims) *model.UpstreamAccount {
 		}
 	case model.ProviderGitHub:
 		a.Login = c.Username
+	case model.ProviderOrganization:
+		// The organization the person came from, and only an address it vouches for: applications may link the
+		// account to one of theirs by that address when they trust that organization with its domain, so neither a
+		// username nor an unverified address stands in for it.
+		a.Tenant, a.Login = p.SourceOrg, ""
+		if c.EmailVerified {
+			a.Login = c.Email
+		}
 	}
-	if a.Login == "" {
+	if a.Login == "" && p.Type != model.ProviderOrganization {
 		a.Login = c.Username
 	}
 	if a.Subject == "" || len(a.Subject) > upstreamValueMax || len(a.Tenant) > upstreamValueMax {

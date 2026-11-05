@@ -36,8 +36,9 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 	if len(sess) != 1 || !slices.Equal(sess[0].AMR, []string{"fed"}) || !slices.Equal(sess[0].UpstreamAMR, []string{"pwd", "otp", "mfa"}) {
 		t.Fatalf("acme's session: %+v", sess)
 	}
-	// the account it went through, as the provider names it: the person's ID at the primary organization
-	if a := sess[0].Upstream; a == nil || a.Subject != pat.ID || a.Tenant != "" || a.Login != "pat@example.com" {
+	// the account it went through, as the provider names it: the person's ID at the primary organization, that
+	// organization, and the address it verified
+	if a := sess[0].Upstream; a == nil || a.Subject != pat.ID || a.Tenant != g.p.SourceOrg || a.Login != "pat@example.com" {
 		t.Fatalf("acme's session's upstream account: %+v", a)
 	}
 

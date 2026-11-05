@@ -472,3 +472,44 @@ test('providers: another organization’s provider takes only members of chosen 
     await apiCall(page, 'DELETE', `/api/orgs/northwind/providers/${made.id}`)
   }
 })
+
+test('users: administrators set the external ID (for provisioning); a taken one is refused; managers do not see the field', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/users`, { waitUntil: 'load' })
+  const tag = uniq('ext').toLowerCase()
+  const mk = (n) => apiCall(page, 'POST', `${API}/users`, { email: `${tag}-${n}@example.com`, given_name: `Ext ${n}`, invite: { email: false } })
+  const [one, two] = [await mk(1), await mk(2)]
+  try {
+    await apiCall(page, 'PATCH', `${API}/users/${two.id}`, { external_id: `fut:${tag}-taken` })
+    await page.goto(`${A}/users/${one.id}`, { waitUntil: 'load' })
+    await page.getByRole('button', { name: 'Edit user' }).click()
+    const dlg = page.getByRole('dialog', { name: 'Edit user' })
+    const ext = dlg.locator('#f-external_id')
+    await expect(ext).toHaveValue('')
+    await ext.fill(`fut:${tag}-taken`)
+    await dlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(dlg.locator('#e-external_id')).toContainText('already in use')
+    await ext.fill(`fut:${tag}`)
+    await dlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(dlg).toBeHidden()
+    expect((await apiCall(page, 'GET', `${API}/users/${one.id}`)).external_id).toBe(`fut:${tag}`)
+    await page.getByRole('button', { name: 'Edit user' }).click()
+    await expect(ext).toHaveValue(`fut:${tag}`)
+    await page.keyboard.press('Escape')
+
+    // a manager edits the same user without the field, and leaves the value as it is
+    await signIn(page, 'manager')
+    await page.goto(`${A}/users/${one.id}`, { waitUntil: 'load' })
+    await page.getByRole('button', { name: 'Edit user' }).click()
+    const mdlg = page.getByRole('dialog', { name: 'Edit user' })
+    await expect(mdlg.locator('#f-external_id')).toHaveCount(0)
+    await mdlg.locator('#f-family_name').fill('Changed')
+    await mdlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(mdlg).toBeHidden()
+    expect((await apiCall(page, 'GET', `${API}/users/${one.id}`)).external_id).toBe(`fut:${tag}`)
+  } finally {
+    await signIn(page, 'admin')
+    await page.goto(`${A}/users`, { waitUntil: 'load' })
+    for (const u of [one, two]) await apiCall(page, 'DELETE', `${API}/users/${u.id}`)
+  }
+})

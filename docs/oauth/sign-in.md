@@ -144,15 +144,20 @@ which kind of provider a sign-in went through; the `idp` scope also says which a
 names it, so an application that calls the provider's own APIs (Microsoft Graph, Google's) can tell it is the same
 account:
 
-| Claim | Microsoft | Google, GitLab, Auth0, OpenID Connect | GitHub |
-| --- | --- | --- | --- |
-| `idp_sub` | the object ID (`oid`), as Graph's `/me` `id`; Microsoft's `sub` differs for each application | the provider's `sub` | the user ID |
-| `idp_tenant` | the directory (`tid`) | absent | absent |
-| `idp_login` | the user principal name (`preferred_username`) | the email address | the username |
+| Claim | Microsoft | Google, GitLab, Auth0, OpenID Connect | GitHub | Another organization |
+| --- | --- | --- | --- | --- |
+| `idp_sub` | the object ID (`oid`), as Graph's `/me` `id`; Microsoft's `sub` differs for each application | the provider's `sub` | the user ID | the user's ID there |
+| `idp_tenant` | the directory (`tid`) | absent | absent | that organization's ID |
+| `idp_login` | the user principal name (`preferred_username`) | the email address | the username | the email address, only when that organization verified it |
 
 Match on `idp_sub` (with `idp_tenant` for Microsoft): it never changes. `idp_login` is for `login_hint`, so the
 provider's own sign-in starts at the right account; it can change, and another account can come to have it, so it is
-never an identity. All three are absent when the user signed in another way (a password, a passkey) and when the
+never an identity.
+
+For a guest from another organization, `idp_tenant` and `idp_login` together say that organization vouches for the
+address: someone in this organization cannot set them, as they can the user's own `email`. An application that already
+has accounts for people of that organization can link a guest's first sign-in to the account with that address, when
+it trusts that organization with the address's domain; afterwards it matches on `sub` like any other user. All three are absent when the user signed in another way (a password, a passkey) and when the
 provider has since been removed; the consent screen names the scope. Refreshed tokens keep the account of the sign-in
 they came from.
 

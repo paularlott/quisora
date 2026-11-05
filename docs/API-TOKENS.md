@@ -83,8 +83,10 @@ curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 ## SCIM (`scim`)
 
 The token provisions users and groups in its owner's organization (a super admin's, in any organization). A manager's
-token changes plain users and their group memberships. Creating, renaming, retagging or deleting a group, and anything
-done to a manager or administrator, needs an administrator's token. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
+token changes plain users and their group memberships. Creating, renaming, retagging or deleting a group, anything
+done to a manager or administrator, and setting or changing a user's `externalId` (how a provisioning system finds its
+people: a wrong one makes it match the wrong account or create a duplicate) need an administrator's token; a manager's
+replace that sends the `externalId` a user already has goes through. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
 in the OpenAPI document under the SCIM tag, and the server describes itself at `/scim/v2/<org>/ServiceProviderConfig`
 and `/scim/v2/<org>/Schemas`.
 

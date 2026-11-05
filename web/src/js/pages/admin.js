@@ -374,7 +374,7 @@ function userDialogMixin(Alpine) {
     get busyLabel() { return this.busy ? 'Saving…' : this.userSubmitLabel },
     openCreateUser(ev) {
       this.editingUser = null
-      this.resetForm({ username: '', email: '', given_name: '', family_name: '', role: 'user', invite: false, tags: [] })
+      this.resetForm({ username: '', email: '', given_name: '', family_name: '', role: 'user', invite: false, tags: [], external_id: '' })
       this.resetChipText()
       this.fillProfile(null)
       if (!this._emailWatch) {
@@ -426,7 +426,7 @@ function userDialogMixin(Alpine) {
     openEditUser(u, opener) {
       this.editingUser = u
       this.resetForm({ username: u.username, email: u.email || '', role: u.role, active: u.active,
-        given_name: u.given_name || '', family_name: u.family_name || '', tags: [...(u.tags || [])] })
+        given_name: u.given_name || '', family_name: u.family_name || '', tags: [...(u.tags || [])], external_id: u.external_id || '' })
       this.resetChipText()
       this.fillProfile(u)
       this.openDlg('user-dialog', opener)
@@ -445,10 +445,13 @@ function userDialogMixin(Alpine) {
         if (this.editingUser) {
           const body = { username: f.username, email: f.email, given_name: f.given_name, family_name: f.family_name, role: f.role, active: !!f.active, tags: f.tags, ...this.profileBody() }
           if (this.editingSelf) delete body.email
+          // only administrators have the field; sent when changed, so a save by anyone else leaves it alone
+          if (f.external_id !== (this.editingUser.external_id || '')) body.external_id = f.external_id.trim()
           if (this.statusChanging && (f.status_reason || '').trim()) body.status_reason = f.status_reason.trim()
           return patch(`${this.apiBase}/users/${enc(this.editingUser.id)}`, body)
         }
         return post(`${this.apiBase}/users`, { username: f.username, email: f.email, given_name: f.given_name, family_name: f.family_name, role: f.role, tags: f.tags, ...this.profileBody(),
+          ...((f.external_id || '').trim() ? { external_id: f.external_id.trim() } : {}),
           invite: { email: mailOn() && !!f.invite && !!(f.email || '').trim() } })
       }, null, this))
       if (!res) return
