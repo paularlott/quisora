@@ -42,6 +42,10 @@
     box-shadow: var(--btn-secondary-shadow);
   }
   .btn-secondary:hover { background: color-mix(in srgb, var(--ctl-bg) 80%, var(--accent-solid) 14%); }
+  /* Lighter than .btn-secondary, still AA: the border is --ctl-border (>= 3:1, WCAG 1.4.11) and the text --fg-muted
+     (>= 4.5:1, 1.4.3) on every surface the tokens are checked against. */
+  .btn-subtle { color: var(--fg-muted); border-width: 1px; border-color: var(--ctl-border); font-weight: 500; }
+  .btn-subtle:hover { background: var(--ctl-hover); color: var(--fg); }
   .btn-ghost { color: var(--fg); }
   .btn-ghost:hover { background: var(--ctl-hover); }
   /* middle, not the baseline: an icon wrapped in a span (copy, with its check) has a text baseline, a bare one does not,
@@ -127,7 +131,10 @@
   .bullet-list > li::marker { color: var(--fg-muted); }
 
   /* Sign-in providers: one full-width button each, the provider's brand mark before its name. */
-  .provider-list { display: flex; flex-direction: column; gap: 0.5rem; }
+  .provider-list, .other-orgs { display: flex; flex-direction: column; gap: 0.5rem; }
+  /* Another organization's providers stand a little apart: the space above their divider's label matches the space
+     above the Cancel link's text (the stack's gap plus a small button's padding). */
+  .other-orgs { margin-top: 0.4rem; }
   .brand-icon { display: inline-block; width: 1.25rem; height: 1.25rem; flex: none; vertical-align: middle; }
   /* A labelled rule between two ways of signing in ("or sign in with email"). */
   .divider { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; font-weight: 500; color: var(--fg-muted); }
@@ -492,7 +499,7 @@
 }
 
 @media (forced-colors: active) {
-  .btn-primary, .btn-danger, .btn-secondary { border-color: ButtonText; background: ButtonFace; color: ButtonText; forced-color-adjust: auto; }
+  .btn-primary, .btn-danger, .btn-secondary, .btn-subtle { border-color: ButtonText; background: ButtonFace; color: ButtonText; forced-color-adjust: auto; }
   .switch:checked, .checkbox:checked { background: Highlight; }
   .badge, .alert { border: 1px solid CanvasText; }
   .glass-switch, .switch, .input, .select, .textarea { border-color: ButtonText; }

@@ -143,6 +143,26 @@ func TestOrganizationProviderSignsGuestsIn(t *testing.T) {
 	}
 }
 
+// Another organization's provider is for that organization's people, not this one's: it is offered last, after the
+// email form, in its own group named "via another organization", and lighter than the organization's own sign-ins.
+func TestOrganizationProviderIsOfferedLastInItsOwnGroup(t *testing.T) {
+	g := newGuestEnv(t, nil)
+	_, page := g.browserAt(t, g.acme).get("/login")
+	group := strings.Index(page, `<div class="other-orgs" role="group" aria-labelledby="other-orgs-label"`)
+	label := strings.Index(page, `id="other-orgs-label">via another organization</div>`)
+	button := strings.Index(page, "Continue with "+g.Primary.DisplayName)
+	email := strings.Index(page, `id="f-email"`)
+	if email < 0 || group < email || label < group || button < label {
+		t.Fatalf("order: email %d, group %d, label %d, button %d: %.2000s", email, group, label, button, page)
+	}
+	if !strings.Contains(page[group:button], `class="btn btn-subtle btn-sm w-full"`) {
+		t.Fatalf("the button is not the lighter style: %.600s", page[group:])
+	}
+	if one := strings.Index(page, `class="provider-list"`); one >= 0 && strings.Contains(page[one:email], "Continue with "+g.Primary.DisplayName) {
+		t.Fatal("offered with the organization's own sign-ins too")
+	}
+}
+
 // By default an organization provider does not link by email: the source organization's managers can mark any address
 // verified, so a user of the primary organization with the address of one of acme's users is not signed in as them,
 // whether or not accounts are made automatically (that would clash with the address, as it must).

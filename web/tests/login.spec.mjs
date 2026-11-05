@@ -121,3 +121,31 @@ test('a code by email finishes the second factor', async ({ page }) => {
   await expect(page.locator('#f-mcode')).toBeVisible()
   expect(sends).toBe(2)
 })
+
+test("another organization's provider comes last, in its own group", async ({ page }) => {
+  await signIn(page, 'none')
+  await page.goto('/o/acme/login')
+  const group = page.getByRole('group', { name: 'via another organization' })
+  await expect(group).toBeVisible()
+  const guest = group.getByRole('link', { name: /^Continue with / })
+  await expect(guest).toHaveCount(1)
+  await expect(guest).toHaveClass(/btn-subtle/)
+  // after the email form, and not among the organization's own one-step sign-ins
+  const after = await page.evaluate(() => {
+    const g = document.querySelector('.other-orgs')
+    return !!(document.getElementById('f-email').compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+  expect(after, 'group after the email field').toBe(true)
+  await expect(page.locator('.provider-list').getByRole('link', { name: await guest.textContent() })).toHaveCount(0)
+  // the lighter style keeps AA contrast in both themes
+  for (const colorScheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme })
+    const r = await axe(page)
+    expect(r.violations.length, `${colorScheme}: ${fmt(r.violations)}`).toBe(0)
+  }
+
+  // gone with the other one-step sign-ins once past the email step
+  await page.locator('#f-email').fill('someone@acme.example')
+  await page.keyboard.press('Enter')
+  await expect(group).toBeHidden()
+})

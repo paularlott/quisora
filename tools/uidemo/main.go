@@ -277,6 +277,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	_, err = svc.CreateProvider(ctx, sys, acme.ID, service.ProviderInput{Type: ptr(model.ProviderOIDC), Name: ptr("Partner directory"), Issuer: ptr("https://id.partner.example"),
 		ClientID: ptr("acme-partner"), ClientSecret: ptr("partner-secret")})
 	must(err)
+	// The primary organization's people sign in to acme as guests: offered after the email form, in its own group.
+	_, err = svc.CreateProvider(ctx, sys, acme.ID, service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &super.OrgID})
+	must(err)
 	// The other preset types, off so the sign-in page keeps its two buttons.
 	_, err = svc.CreateProvider(ctx, sys, acme.ID, service.ProviderInput{Type: ptr(model.ProviderMicrosoft), Tenant: ptr("organizations"),
 		AllowedTenants: &[]string{"72f988bf-86f1-41af-91ab-2d7cd011db47"}, ClientID: ptr("ms-client"), ClientSecret: ptr("ms-secret"), Enabled: ptr(false)})

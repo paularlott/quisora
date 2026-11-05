@@ -67,7 +67,7 @@
           <option value="">Choose an organization</option>
           <template x-for="o in orgs" :key="o.id"><option :value="o.id" x-text="o.label"></option></template>
         </select>
-        <p class="help" id="h-source_org">Lets people with an account in the organization chosen here sign in to this one with &ldquo;Continue with&rdquo; and its name: they sign in there and come back here as guests. Guests are created on their first sign-in when &ldquo;Create accounts automatically&rdquo; is on; otherwise add each person to this organization&rsquo;s users first, with the same email address as in the chosen organization, marked verified. Quisora makes and removes the application this needs in the chosen organization.</p>
+        <p class="help" id="h-source_org">Lets people with an account in the organization chosen here sign in to this one with &ldquo;Continue with&rdquo; and its name: they sign in there and come back here as guests. Guests are created on their first sign-in when &ldquo;Create accounts automatically&rdquo; is on; otherwise add each person to this organization&rsquo;s users first, with the same email address as in the chosen organization, marked verified.</p>
         <p class="field-error" id="e-source_org" x-text="errors.source_org"></p>
       </div>
       <div class="field" x-show="hasAddress" x-cloak>

@@ -8,7 +8,7 @@
 
   {{if .Data.Reauth}}<div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>Please sign in again to continue{{with .Data.CurrentUser}}. You are currently signed in as {{.}}{{end}}.</span></div>{{end}}
   {{if .Data.Error}}<div class="alert alert-error" role="alert">{{template "icon" "alert"}}<span>{{.Data.Error}}</span></div>{{end}}
-  <noscript><div class="alert alert-warning">{{template "icon" "alert"}}<span>Signing in with a password or passkey needs JavaScript.{{if .Data.Providers}} The sign-in providers work without it.{{end}}</span></div></noscript>
+  <noscript><div class="alert alert-warning">{{template "icon" "alert"}}<span>Signing in with a password or passkey needs JavaScript.{{if or .Data.Providers .Data.OtherOrgs}} The sign-in providers work without it.{{end}}</span></div></noscript>
   {{if .Data.NoMethods}}<div class="alert alert-warning" role="status">{{template "icon" "info"}}<span>No sign-in method is enabled for this organization. Ask an administrator.</span></div>{{end}}
 
   {{/* The one-step sign-ins first, none of which needs the email address: the providers (where single sign-on is
@@ -65,6 +65,17 @@
     <button type="button" class="btn btn-ghost btn-sm self-start" @click="closeForgot">{{template "icon" "chevron-left"}} Back to sign in</button>
   </form>
   {{end}}
+  {{end}}
+
+  {{/* Another organization's providers last, under their own divider and lighter than the organization's own ways to
+       sign in: they are for that organization's people (guests), not this one's. The divider names the group for
+       screen readers too. Hidden with the other one-step sign-ins once past the email step. */}}
+  {{with .Data.OtherOrgs}}
+  <div class="other-orgs" role="group" aria-labelledby="other-orgs-label" x-show="isEmail">
+    <div class="divider" id="other-orgs-label">via another organization</div>
+    {{range .}}<a class="btn btn-subtle btn-sm w-full" href="{{.Href}}">{{template "provider-icon" .Type}}<span>Continue with {{.Name}}</span></a>
+    {{end}}
+  </div>
   {{end}}
 
   {{/* A sign-in for an application can be declined: the application is told the user cancelled (access_denied). A

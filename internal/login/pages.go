@@ -41,13 +41,16 @@ type providerButton struct {
 }
 
 type loginData struct {
-	OrgDisplay  string
-	Tenant      string // canonical name of the tenant the page signs in for ("" = the org's own methods)
-	Next        string
-	Reauth      bool
-	Password    bool
-	Passkey     bool
-	Providers   []providerButton
+	OrgDisplay string
+	Tenant     string // canonical name of the tenant the page signs in for ("" = the org's own methods)
+	Next       string
+	Reauth     bool
+	Password   bool
+	Passkey    bool
+	Providers  []providerButton // the organization's own sign-in providers
+	// Another organization's providers (model.ProviderOrganization): for that organization's people, not this one's,
+	// so they come last, under their own divider, and lighter than the organization's own ways to sign in.
+	OtherOrgs   []providerButton
 	Error       string
 	CanReset    bool
 	NoMethods   bool
@@ -126,9 +129,14 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 		if len(v) > 0 {
 			href += "?" + v.Encode()
 		}
-		d.Providers = append(d.Providers, providerButton{Name: p.Name, Type: p.Type, Href: href})
+		b := providerButton{Name: p.Name, Type: p.Type, Href: href}
+		if p.Type == model.ProviderOrganization {
+			d.OtherOrgs = append(d.OtherOrgs, b)
+		} else {
+			d.Providers = append(d.Providers, b)
+		}
 	}
-	d.NoMethods = !d.Password && !d.Passkey && len(d.Providers) == 0
+	d.NoMethods = !d.Password && !d.Passkey && len(d.Providers) == 0 && len(d.OtherOrgs) == 0
 	m.s.Render.Render(w, http.StatusOK, "login", m.anonPage(w, r, "Sign in to "+org.DisplayName, d))
 }
 
