@@ -12,7 +12,7 @@
 
   <section class="glass-card" aria-label="Users list">
     <div class="toolbar mb-4">
-      {{template "search" (dict "label" "Search users" "placeholder" "Search by name, username or email")}}
+      {{template "search" (dict "label" "Search users" "placeholder" "Search by name, username, email or tag")}}
       <div class="toolbar-group">
         <div class="field"><label class="sr-only" for="filter-role">Filter by role</label>
           <select class="select" id="filter-role" data-filter="role" @change="setFilter"><option value="">All roles</option>{{range .Data.FilterRoles}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></div>

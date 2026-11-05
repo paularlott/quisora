@@ -3589,7 +3589,7 @@ components:
     Q:
       name: q
       in: query
-      description: case-insensitive prefix search (a user's username, email, full name or family name; a group's or organization's name)
+      description: case-insensitive prefix search (a user's username, email, full name or family name; a group's or organization's name). A user search that finds nobody that way finds the users with exactly that tag.
       schema:
         type: string
     AuditFrom:

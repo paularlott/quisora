@@ -65,6 +65,18 @@ func TestTagsAPI(t *testing.T) {
 	if r = ad.get(AU + "?tag=sales&offset=1"); r.total() != 1 || len(r.items()) != 0 {
 		t.Fatalf("offset past the matches: %s", r.Raw)
 	}
+	// a search that finds nobody by name finds the users with exactly that tag; never a tag's prefix, and a name it
+	// also starts comes first
+	if r = ad.get(AU + "?q=" + url.QueryEscape("dept:finance")); r.total() != 1 || r.items()[0].(map[string]any)["id"] != id {
+		t.Fatalf("search by tag: %s", r.Raw)
+	}
+	if r = ad.get(AU + "?q=dept:fin"); r.total() != 0 {
+		t.Fatalf("search must match a whole tag: %s", r.Raw)
+	}
+	want(t, ad.post(AU, map[string]any{"given_name": "S", "username": "salesperson", "email": "sp@x.example"}), 201)
+	if r = ad.get(AU + "?q=sales"); r.total() != 1 || r.items()[0].(map[string]any)["username"] != "salesperson" {
+		t.Fatalf("a name the search starts comes before a tag: %s", r.Raw)
+	}
 	// clear
 	r = ad.patch(AU+"/"+other, map[string]any{"tags": []string{}})
 	want(t, r, 200)

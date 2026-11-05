@@ -136,10 +136,18 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 		total int
 		err   error
 	)
-	if tag := v.Get("tag"); tag != "" {
+	tag := v.Get("tag")
+	if tag != "" {
 		items, total, err = m.s.Svc.ListUsersTagged(r.Context(), a, org.ID, q, tag)
 	} else {
 		items, total, err = m.s.Svc.ListUsers(r.Context(), a, org.ID, q)
+	}
+	// A search that finds nobody by name may be a tag (ff3-uid:10, dept:finance): the users tagged with exactly it.
+	// Only then, so a tag never hides a name it also starts; tags match whole, as the tag filter does.
+	if err == nil && total == 0 && tag == "" && model.ValidTag(q.Search) {
+		tagged := q
+		tagged.Search = ""
+		items, total, err = m.s.Svc.ListUsersTagged(r.Context(), a, org.ID, tagged, q.Search)
 	}
 	if err != nil {
 		web.WriteError(w, err)
