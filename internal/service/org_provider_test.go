@@ -319,3 +319,54 @@ func TestOrganizationProviderClientIsNotChangedAlone(t *testing.T) {
 		t.Fatalf("the provider's application: %v", err)
 	}
 }
+
+// An organization provider's groups are groups of its source organization: chosen ones are checked (another
+// organization's, or one that does not exist, is refused), repeats are dropped, at most 20 are kept, [] clears them, and
+// choosing another source organization needs groups of that one: another organization's never carry over.
+func TestOrganizationProviderGroups(t *testing.T) {
+	c := orgProviderEnv(t)
+	staff, ops := c.group(c.primary.ID, "staff"), c.group(c.primary.ID, "ops")
+	elsewhere := c.group(c.b.ID, "b-staff")
+	in := orgProvider(c.primary.ID)
+	in.SourceGroups = &[]string{staff.ID, staff.ID, " " + ops.ID + " "}
+	p, err := c.svc.CreateProvider(c.ctx, actor(c.super), c.a.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.SourceGroups, []string{staff.ID, ops.ID}) {
+		t.Fatalf("groups %v", p.SourceGroups)
+	}
+	invalid := func(name string, in service.ProviderInput) {
+		t.Helper()
+		var inv *service.FieldError
+		if _, err := c.svc.UpdateProvider(c.ctx, actor(c.super), p.ID, in); !errors.As(err, &inv) || inv.Field != "source_groups" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	invalid("another organization's group", service.ProviderInput{SourceGroups: &[]string{elsewhere.ID}})
+	invalid("no such group", service.ProviderInput{SourceGroups: &[]string{model.NewID()}})
+	many := make([]string, 21)
+	for i := range many {
+		many[i] = model.NewID()
+	}
+	invalid("too many", service.ProviderInput{SourceGroups: &many})
+	invalid("another source organization, the old groups kept", service.ProviderInput{SourceOrg: &c.b.ID})
+
+	// an unrelated change does not look the groups up again: one deleted since stays chosen, admitting nobody
+	if err := c.svc.DeleteGroup(c.ctx, service.System, ops.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err = c.svc.UpdateProvider(c.ctx, actor(c.super), p.ID, service.ProviderInput{Name: ptr("Staff")})
+	if err != nil || !slices.Equal(p.SourceGroups, []string{staff.ID, ops.ID}) {
+		t.Fatalf("an unrelated change: %v %v", p.SourceGroups, err)
+	}
+	// another source organization with its own groups
+	p, err = c.svc.UpdateProvider(c.ctx, actor(c.super), p.ID, service.ProviderInput{SourceOrg: &c.b.ID, SourceGroups: &[]string{elsewhere.ID}})
+	if err != nil || p.SourceOrg != c.b.ID || !slices.Equal(p.SourceGroups, []string{elsewhere.ID}) {
+		t.Fatalf("moved: %+v %v", p, err)
+	}
+	p, err = c.svc.UpdateProvider(c.ctx, actor(c.super), p.ID, service.ProviderInput{SourceGroups: &[]string{}})
+	if err != nil || p.SourceGroups != nil {
+		t.Fatalf("cleared: %v %v", p.SourceGroups, err)
+	}
+}

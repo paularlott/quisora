@@ -148,39 +148,42 @@ test('header: on a page with nothing live the switch says On, not Connecting', a
   await expect(page.locator('#live-state')).toHaveText('Connected')
 })
 
-test('providers: allowed email domains are rows, none by default (any address); a bad one is flagged on its row', async ({ page }) => {
+test('providers: allowed email domains are chips, none by default (any address); a bad one is refused on Save, focused and kept for correcting', async ({ page }) => {
   await signIn(page, 'admin')
   await page.goto(`${A}/providers`, { waitUntil: 'load' })
   await page.getByRole('button', { name: 'New provider' }).click()
   const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
-  await expect(dlg.getByRole('textbox', { name: /^Domain \d/ })).toHaveCount(0)
+  const chips = dlg.getByRole('list', { name: 'Current domains' })
+  await expect(chips).toBeHidden()
   const name = uniq('Dom')
   await page.locator('#f-name').fill(name)
   await page.locator('#f-issuer').fill('https://login.example.com')
   await page.locator('#f-client_id').fill('cid')
   await page.locator('#f-client_secret').fill('secret')
-  const add = dlg.getByRole('button', { name: 'Add domain' })
-  await add.click()
-  await expect(dlg.getByLabel('Domain 1', { exact: true })).toBeFocused()
-  await page.keyboard.type('Example.com')
-  await page.keyboard.press('Enter') // a new row below, focused
-  await expect(dlg.getByLabel('Domain 2', { exact: true })).toBeFocused()
-  await page.keyboard.type('not a domain')
+  const input = dlg.locator('#f-allowed_domains')
+  await input.fill('@Example.com')
+  await input.press('Enter') // added, lower case and without the @
+  await expect(chips.getByText('example.com', { exact: true })).toBeVisible()
+  await expect(input).toHaveValue('')
+  await input.fill('not_a_domain')
   await dlg.getByRole('button', { name: 'Create provider' }).click()
-  const bad = dlg.getByLabel('Domain 2', { exact: true })
-  await expect(bad).toHaveAttribute('aria-invalid', 'true')
-  await expect(bad).toBeFocused()
-  await dlg.getByRole('button', { name: 'Remove not a domain' }).click()
+  await expect(input).toHaveAttribute('aria-invalid', 'true')
+  await expect(input).toBeFocused() // a click on Save with a bad value takes you to it
+  await expect(dlg.locator('#e-allowed_domains')).toContainText('“not_a_domain” is not a domain name')
+  await expect(dlg.locator('#h-allowed_domains')).toHaveText('Optional. With none, any email address may sign in this way; add domains to allow only addresses at them.')
+  await expect(input).toHaveValue('not_a_domain')
+  await expect(dlg).toBeVisible()
+  await input.fill('')
   await dlg.getByRole('button', { name: 'Create provider' }).click()
   await expect(dlg).toBeHidden()
   const made = (await apiCall(page, 'GET', `${API}/providers?q=${encodeURIComponent(name)}`)).items[0]
   expect(made.allowed_domains).toEqual(['example.com'])
-  // editing shows the saved domain as a row; removing it allows any address again
+  // editing shows the saved domain as a chip; removing it allows any address again
   await page.getByRole('button', { name: 'Edit ' + name }).click()
   const ed = page.getByRole('dialog', { name: 'Edit provider' })
-  await expect(ed.getByLabel('Domain 1', { exact: true })).toHaveValue('example.com')
-  await ed.getByRole('button', { name: 'Remove example.com' }).click()
-  await expect(ed.getByRole('textbox', { name: /^Domain \d/ })).toHaveCount(0)
+  await expect(ed.getByRole('list', { name: 'Current domains' })).toContainText('example.com')
+  await ed.getByRole('button', { name: 'Remove domain example.com' }).click()
+  await expect(ed.getByRole('list', { name: 'Current domains' })).toBeHidden()
   await ed.getByRole('button', { name: 'Save changes' }).click()
   await expect(ed).toBeHidden()
   expect((await apiCall(page, 'GET', `${API}/providers/${made.id}`)).allowed_domains).toEqual([])
@@ -425,4 +428,47 @@ test('account: recovery codes are made after confirming it is you, shown once, a
   await expect(page.locator('#recovery-codes')).toHaveText('') // not kept in the page
   await expect(row).toContainText('10 left')
   await expect(row.getByRole('button', { name: 'Create new codes…' })).toBeVisible()
+})
+
+test('providers: another organization’s provider takes only members of chosen groups, and choosing another organization clears them', async ({ page }) => {
+  await signIn(page, 'super')
+  await page.goto('/admin/orgs/northwind/providers', { waitUntil: 'load' })
+  const acme = await apiCall(page, 'GET', '/api/orgs/acme')
+  const eng = (await apiCall(page, 'GET', '/api/orgs/acme/groups?q=Engineering')).items[0]
+  await page.getByRole('button', { name: 'New provider' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
+  await dlg.locator('#f-type').selectOption('organization')
+  const groups = dlg.locator('#f-source_group')
+  await expect(groups).toBeVisible()
+  await expect(dlg.locator('#h-source_group')).toHaveText('Choose the organization first.')
+  await dlg.locator('#f-source_org').selectOption(acme.id)
+  await groups.fill('Engin')
+  await dlg.getByRole('option', { name: /Engineering/ }).click()
+  const chips = dlg.getByRole('list', { name: 'Groups whose members may sign in' })
+  await expect(chips).toContainText('Engineering')
+  const name = uniq('Guests')
+  await dlg.locator('#f-name').fill(name)
+  expect((await axe(page, { include: '#provider-dialog' })).violations).toEqual([])
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const made = (await apiCall(page, 'GET', `/api/orgs/northwind/providers?q=${encodeURIComponent(name)}`)).items[0]
+  expect(made.source_org).toBe(acme.id)
+  expect(made.source_groups).toEqual([eng.id])
+  try {
+    // the list says so, and the dialog shows the group by name again
+    const row = page.getByRole('row', { name: new RegExp(name) })
+    await expect(row).toContainText('1 group only')
+    await row.getByRole('button', { name: 'Edit ' + name }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit provider' })
+    await expect(edit.getByRole('list', { name: 'Groups whose members may sign in' })).toContainText('Engineering')
+    // another organization's groups never carry over
+    const other = await edit.locator('#f-source_org option').evaluateAll((os, a) => os.map((o) => o.value).find((v) => v && v !== a), acme.id)
+    await edit.locator('#f-source_org').selectOption(other)
+    await expect(edit.getByRole('list', { name: 'Groups whose members may sign in' })).toBeHidden()
+    await edit.locator('#f-source_org').selectOption(acme.id)
+    await expect(edit.getByRole('button', { name: 'Remove Engineering' })).toHaveCount(0)
+    await edit.getByRole('button', { name: 'Cancel' }).click()
+  } finally {
+    await apiCall(page, 'DELETE', `/api/orgs/northwind/providers/${made.id}`)
+  }
 })

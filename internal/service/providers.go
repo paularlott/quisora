@@ -34,9 +34,14 @@ type ProviderInput struct {
 	// Microsoft only: a tenant ID or "organizations", and the tenant IDs allowed to sign in.
 	Tenant         *string   `json:"tenant"`
 	AllowedTenants *[]string `json:"allowed_tenants"`
-	// Organization only: the organization (id or name) whose users sign in. Super admins only.
-	SourceOrg *string `json:"source_org"`
+	// Organization only: the organization (id or name) whose users sign in, and the groups of it (ids) whose members
+	// alone may (empty: all of its users). Super admins only.
+	SourceOrg    *string   `json:"source_org"`
+	SourceGroups *[]string `json:"source_groups"`
 }
+
+// maxSourceGroups bounds the groups an organization provider admits (Provider.SourceGroups).
+const maxSourceGroups = 20
 
 // providerDefaultName is a new provider's button label when none is given.
 var providerDefaultName = map[string]string{model.ProviderOIDC: "Single sign-on", model.ProviderGitHub: "GitHub",
@@ -211,9 +216,9 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		p.Tenant, p.AllowedTenants = "", nil
 	}
 	if org {
-		return s.applySourceOrg(ctx, p, in.SourceOrg)
+		return s.applySourceOrg(ctx, p, in.SourceOrg, in.SourceGroups)
 	}
-	p.SourceOrg = ""
+	p.SourceOrg, p.SourceGroups = "", nil
 	if p.OIDC() {
 		iss, err := providerIssuer(p.Type, issuer, p.Tenant)
 		if err != nil {
@@ -235,8 +240,10 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 // applySourceOrg settles an organization provider: its source organization must exist and be another one (an
 // organization's own users sign in to it directly), the issuer is that organization's (never typed in), the scopes are
 // fixed, and an unnamed provider is named after the source organization, which the sign-in page offers as "Continue
-// with <name>". Its client credentials come later (issueSignInClient), once everything else is known to be valid.
-func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *string) error {
+// with <name>". Its groups, when chosen, must be groups of that organization. Its client credentials come later
+// (issueSignInClient), once everything else is known to be valid.
+func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *string, groups *[]string) error {
+	was, wasGroups := p.SourceOrg, p.SourceGroups
 	if ref != nil {
 		p.SourceOrg = strings.TrimSpace(*ref)
 	}
@@ -255,6 +262,35 @@ func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *st
 	p.SourceOrg, p.Issuer, p.Scopes = src.ID, s.Cfg.OrgIssuer(src.ID), slices.Clone(orgProviderScopes)
 	if p.Name == "" {
 		p.Name = src.DisplayName
+	}
+	if groups != nil {
+		gs := []string{}
+		for _, id := range *groups {
+			if id = strings.TrimSpace(id); id != "" && !slices.Contains(gs, id) {
+				gs = append(gs, id)
+			}
+		}
+		if len(gs) > maxSourceGroups {
+			return Invalid("source_groups", "choose at most "+itoa(maxSourceGroups)+" groups")
+		}
+		p.SourceGroups = gs
+	}
+	if len(p.SourceGroups) == 0 {
+		p.SourceGroups = nil
+		return nil
+	}
+	// Only groups being chosen are looked up (a group deleted since does not stop other changes being saved: its
+	// members just no longer sign in), and every group when the organization changes: another's groups never carry over.
+	if src.ID == was && slices.Equal(p.SourceGroups, wasGroups) {
+		return nil
+	}
+	for _, id := range p.SourceGroups {
+		g, err := s.Groups.Get(ctx, id)
+		if errors.Is(err, store.ErrNotFound) || err == nil && g.OrgID != src.ID {
+			return Invalid("source_groups", "choose groups of "+src.DisplayName+": "+id+" is not one")
+		} else if err != nil {
+			return mapStore(err)
+		}
 	}
 	return nil
 }

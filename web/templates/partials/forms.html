@@ -55,7 +55,7 @@
     </ul>
     <input class="tag-input" id="f-{{$n}}" name="{{$n}}" type="text" x-model="chipText.{{$n}}" @keydown="onTagKey" @input="onTagInput" @blur="onTagBlur" :aria-invalid="invalid.{{$n}}" aria-describedby="e-{{$n}} h-{{$n}}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Add a {{$noun}}">
   </div>
-  <p class="help" id="h-{{$n}}">{{.help}}{{if eq $noun "scope"}} Type a scope and press Enter or space to add it; Backspace removes the last one. No spaces, quotes or backslashes.{{else}} Type a {{$noun}} and press Enter, comma or space to add it; Backspace removes the last one. Letters, digits and . _ : / - only{{if eq $noun "tag"}}; a colon marks a namespace, as in dept:finance{{end}}.{{end}}</p>
+  <p class="help" id="h-{{$n}}">{{.help}}{{if eq $noun "scope"}} Type a scope and press Enter or space to add it; Backspace removes the last one. No spaces, quotes or backslashes.{{else if eq $noun "domain"}}{{else}} Type a {{$noun}} and press Enter, comma or space to add it; Backspace removes the last one. Letters, digits and . _ : / - only{{if eq $noun "tag"}}; a colon marks a namespace, as in dept:finance{{end}}.{{end}}</p>
   <p class="field-error" id="e-{{$n}}" x-text="errors.{{$n}}"></p>
 </div>{{end}}
 
@@ -140,7 +140,8 @@
 {{/* Chip picker (lib/picker.js): the chosen items as chips with the search-as-you-type input beside them in one box, as
      the tag field looks. dict: id (the input; errors under e-<id without "f-">), list (listbox id), label, listLabel,
      placeholder, help, chips (expression: [{ id, name, removeLabel }]), chipsLabel (the chip list's name), remove (the chip button's handler, given
-     data-id), show. Backspace in the empty input removes the last chip when the picker has removeLast. */}}
+     data-id), show, helpBind (an expression for the help text instead of help). Backspace in the empty input removes the
+     last chip when the picker has removeLast. */}}
 {{define "picker-chips"}}{{$e := slice .id 2}}<div class="field"{{with .show}} x-show="{{.}}" x-cloak{{end}}>
   <label class="label" for="{{.id}}">{{.label}}</label>
   <div class="picker">
@@ -162,7 +163,7 @@
     </ul>
     <p class="picker-none" x-show="pickNone" x-cloak>Nothing matches.</p>
   </div>
-  <p class="help" id="h-{{$e}}">{{.help}}</p>
+  <p class="help" id="h-{{$e}}"{{with .helpBind}} x-text="{{.}}"{{end}}>{{.help}}</p>
   <p class="field-error" id="e-{{$e}}" x-text="errors.{{$e}}"></p>
   <p class="sr-only" role="status" x-text="pickStatus"></p>
 </div>{{end}}

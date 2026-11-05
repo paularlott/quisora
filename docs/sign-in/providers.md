@@ -209,8 +209,8 @@ client made for a provider whose creation then failed, or never completed, is re
 There are two ways to let a person of S in to B. Choose one when you set the provider up; they can be combined.
 
 **Create accounts automatically** (recommended): every user of S who signs in becomes a guest, a plain `user` in B with
-their S name and verified address, made on their first sign-in. Combine it with **Allowed email domains** and the
-tenants' access lists (**Who can sign in**) to keep that bounded. An address that one of B's users already has is
+their S name and verified address, made on their first sign-in. Combine it with **Only members of these groups** (below),
+**Allowed email domains** and the tenants' access lists (**Who can sign in**) to keep that bounded. An address that one of B's users already has is
 refused (`exists`): nobody takes over an existing account this way. As everywhere, managers and administrators of B are
 not linked by email: they connect the provider on their own account page. A guest who is promoted to manager or
 administrator of B loses the link the provider created, for the same reason, and connects the provider again on their
@@ -228,6 +228,20 @@ can mark any address verified, so each of them could then sign in to B as any of
 Switch it on only for an organization whose staff you trust that far; with it off, an existing user of B is never
 matched to a guest by address.
 
+### Only some of S's users: groups
+
+**Only members of these groups** limits the provider to the members of up to 20 groups of S: someone in none of them
+is refused (`group`: "Your account is not in a group allowed to sign in to this organization") before anything else
+is decided, so no guest is made for them, nobody is linked by email, and an account page's **Connect** is refused too.
+It is checked at every sign-in through the provider, not only the first, against S's groups as they are then (read on
+this server, by group id, so renaming a group changes nothing): someone taken out of every chosen group can no longer
+sign in to B this way, though a B session they already have lasts until it ends (below). With no groups chosen, every
+user of S may sign in, as before. A chosen group that is deleted in S admits nobody; with every chosen group deleted,
+nobody signs in through the provider until the list is changed. Choosing another source organization clears the groups:
+another organization's groups never carry over.
+
+With the management API, `source_groups` is the list of S's group ids (`[]` for none).
+
 ### Second factors and leavers
 
 A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
@@ -237,8 +251,8 @@ said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 
-The provider asks for no refresh token, so there is no leaver detection: a person disabled or removed in S keeps the
-B session they already have until it ends (its idle and absolute limits). Disable or remove their guest account in B
+The provider asks for no refresh token, so there is no leaver detection: a person disabled or removed in S, or taken out
+of the provider's groups, keeps the B session they already have until it ends (its idle and absolute limits). Disable or remove their guest account in B
 too (ending its sessions), or use [emergency sign-out](../emergency-sign-out.md).
 
 Through the management API, as a super admin:

@@ -456,10 +456,22 @@
   .dialog::backdrop {
     background: var(--scrim); -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
   }
-  /* The panel keeps its glass rim and sheen (absolutely positioned layers) still; the content scrolls inside it, so
-     those layers never scroll through the form. */
+  /* The panel keeps its glass rim and sheen (absolutely positioned layers) still, and so do the title bar and the
+     buttons: only the body scrolls, between them, so the title, its close button and the dialog's actions stay in view
+     however long the form. A form or wrapper (one of several views of a dialog) holding a body and its buttons lays
+     them out the same way. */
   .dialog-panel { display: flex; flex-direction: column; max-height: calc(100dvh - 1rem); overflow: hidden; padding: 0; border-radius: var(--radius-dialog); }
-  .dialog-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-radius: inherit; }
+  .dialog-scroll, .dialog-scroll > :not(.dialog-head, .dialog-body, .dialog-foot, .sr-only, template) {
+    display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; border-radius: inherit;
+  }
+  .dialog-scroll { overflow: hidden; }
+  .dialog-head, .dialog-foot { flex: none; }
+  /* Content scrolling under the title bar or the buttons fades out over the body's own padding (empty until it scrolls). */
+  .dialog-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 0.5rem, #000 calc(100% - 1rem), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 0.5rem, #000 calc(100% - 1rem), transparent);
+  }
   .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.25rem 0.75rem 1.5rem; }
   .dialog-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
   .dialog-body { padding: 0.5rem 1.5rem 1rem; display: flex; flex-direction: column; gap: 1.1rem; }

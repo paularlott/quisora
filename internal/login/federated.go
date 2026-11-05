@@ -157,6 +157,8 @@ func upstreamErrorCode(err error) string {
 		return "unverified"
 	case errors.Is(err, upstream.ErrDomain):
 		return "domain"
+	case errors.Is(err, upstream.ErrGroup):
+		return "group"
 	case errors.Is(err, upstream.ErrExists):
 		return "exists"
 	case errors.Is(err, upstream.ErrDisabled):
@@ -174,6 +176,7 @@ var upstreamMessages = map[string]string{
 	"not_linked":  "No account here is linked to that identity. Ask an administrator for access.",
 	"unverified":  "That provider has not verified your email address, so an account could not be created.",
 	"domain":      "Your email domain is not allowed to sign in to this organization.",
+	"group":       "Your account is not in a group allowed to sign in to this organization.",
 	"exists":      "An account with your email address already exists. Sign in the way you usually do; an administrator can link this provider.",
 	"disabled":    "This sign-in method or account is disabled.",
 	"factor_lost": msgFactorLost,

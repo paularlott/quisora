@@ -924,6 +924,11 @@ type Provider struct {
 	// that organization's, and its client (ClientID) is an application of that organization, made and removed with
 	// the provider (Client.ProviderID).
 	SourceOrg string `msgpack:"so,omitempty" json:"source_org,omitempty"`
+	// SourceGroups, when set, are groups of SourceOrg (ids): only their members sign in through the organization
+	// provider, a first sign-in that creates a guest, one that links by email and every later one alike, so someone
+	// taken out of the groups no longer signs in. Empty: every user of SourceOrg may. A group deleted since lets
+	// nobody in; with all of them deleted, nobody signs in through the provider.
+	SourceGroups []string `msgpack:"sg,omitempty" json:"source_groups,omitempty"`
 }
 
 // OIDC reports whether the provider signs in with OpenID Connect (every type but GitHub).

@@ -58,7 +58,7 @@
   {{template "dialog-start" (dict "id" "members-dialog" "title" "Members" "titleBind" "membersTitle" "size" "lg")}}
   <div class="dialog-body">
     <div role="status" class="status-slot"><div class="alert alert-warning" x-show="membersDeleted" x-cloak>{{template "icon" "alert"}}<span>This group was deleted by someone else.</span></div></div>
-    {{template "picker" (dict "id" "f-member" "list" "member-picks" "label" "Add a user" "listLabel" "Users" "placeholder" "Name or email address" "help" (or (and .IsAdmin "Type to find active users who are not in this group yet; use the arrow keys and Enter to add one.") "Type to find active users (not managers or administrators) who are not in this group yet; use the arrow keys and Enter to add one."))}}
+    {{template "picker" (dict "id" "f-member" "list" "member-picks" "label" "Add a user" "listLabel" "Users" "placeholder" "Name or email address" "help" (or (and .IsAdmin "Active users who are not in this group yet.") "Active users (not managers or administrators) who are not in this group yet."))}}
     <div>
       <h3 class="section-title mb-2"><span x-text="memberCount">Members</span></h3>
       <p class="muted" x-show="noMembers" x-cloak>This group has no members yet.</p>

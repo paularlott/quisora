@@ -2,6 +2,7 @@ package login_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -269,5 +271,57 @@ func TestOrganizationProviderFailuresAreCountedPerClientAddress(t *testing.T) {
 	b.fromAddress("203.0.113.5")
 	if _, done := g.continueAsVia(t, b, beta, pb); done != web.OrgPath(beta.ID, "/account") || len(sessionsOf(t, g.env, guest)) != 1 {
 		t.Fatalf("a sign-in through beta's provider from another address after the failures: %q", done)
+	}
+}
+
+// With groups, only their members sign in through the provider: a member's first sign-in makes their guest account,
+// someone in none of the groups is refused before any account is made (with accounts made automatically, and with
+// linking by email too), and a guest taken out of the groups is refused at their next sign-in.
+func TestOrganizationProviderAdmitsOnlyItsGroups(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.AutoProvision, in.LinkByEmail = ptr(true), ptr(true) })
+	ctx := context.Background()
+	eve := g.person(t, g.Primary, "eve", "eve@example.com")
+	mal := g.person(t, g.Primary, "mal", "mal@example.com")
+	g.person(t, g.acme, "mal-here", "mal@example.com") // added by hand: linking by email would match them
+	staff, err := g.Svc.CreateGroupWithMembers(ctx, service.System, g.Primary.ID, service.GroupInput{DisplayName: ptr("staff")}, []string{eve.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.p, err = g.Svc.UpdateProvider(ctx, service.System, g.p.ID, service.ProviderInput{SourceGroups: &[]string{staff.ID}}); err != nil {
+		t.Fatal(err)
+	}
+
+	b, done := g.continueAs(t, eve)
+	if done != web.OrgPath(g.acme.ID, "/account") || !b.hasSessionIn(g.acme) {
+		t.Fatalf("a member: %q", done)
+	}
+	before, _ := g.Svc.Users.Count(ctx, g.acme.ID)
+	b, done = g.continueAs(t, mal)
+	if !strings.Contains(done, "error=group") || b.hasSessionIn(g.acme) {
+		t.Fatalf("not a member: %q", done)
+	}
+	if after, _ := g.Svc.Users.Count(ctx, g.acme.ID); after != before {
+		t.Fatalf("users of acme: %d, then %d", before, after)
+	}
+	if _, err := g.Svc.Identities.GetByUnique(ctx, model.IdentityKey(g.p.ID, mal.ID)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("mal linked by email: %v", err)
+	}
+	if _, err := g.Svc.Identities.GetByUnique(ctx, model.IdentityKey(g.p.ID, eve.ID)); err != nil {
+		t.Fatalf("eve's link: %v", err)
+	}
+
+	// eve leaves the group: her guest account stays, and her next sign-in is refused
+	if _, err := g.Svc.ChangeGroup(ctx, service.System, staff, service.GroupInput{}, nil, []string{eve.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if b, done = g.continueAs(t, eve); !strings.Contains(done, "error=group") || b.hasSessionIn(g.acme) {
+		t.Fatalf("a member no longer: %q", done)
+	}
+	// with no groups, everyone of the source organization signs in again
+	if _, err := g.Svc.UpdateProvider(ctx, service.System, g.p.ID, service.ProviderInput{SourceGroups: &[]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, done = g.continueAs(t, eve); done != web.OrgPath(g.acme.ID, "/account") || !b.hasSessionIn(g.acme) {
+		t.Fatalf("no groups: %q", done)
 	}
 }

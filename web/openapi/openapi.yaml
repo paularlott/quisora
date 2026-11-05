@@ -4956,6 +4956,11 @@ components:
         source_org_name:
           type: string
           description: "organization: that organization's display name"
+        source_groups:
+          type: array
+          description: "organization: groups of that organization (ids) whose members alone sign in through the provider, at every sign-in; absent: all of its users"
+          items:
+            type: string
         tenant:
           type: string
         trust_mfa:
@@ -5019,6 +5024,13 @@ components:
           description: "organization (super admins only, which also create, change and delete such a provider): the id or name
             of the other organization whose users sign in as guests. An application is made for the provider in that
             organization, and removed with it"
+        source_groups:
+          type: array
+          description: "organization: up to 20 groups of that organization (ids) whose members alone may sign in through the
+            provider, checked at every sign-in (a guest's first one and every later one); [] or absent: all of its users.
+            Changing source_org needs groups of the new organization (or [])"
+          items:
+            type: string
         tenant:
           type: string
           description: "microsoft: a tenant ID, or organizations (then allowed_tenants is required)"

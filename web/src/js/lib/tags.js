@@ -1,7 +1,7 @@
-// Chip editor logic for the "tag-field" partial: a chip list with a text input, used for tags, application roles and
-// OAuth scopes. Compose into a form component with mix() next to formMixin(). One component may hold several such
+// Chip editor logic for the "tag-field" partial: a chip list with a text input, used for tags, application roles,
+// OAuth scopes and a provider's allowed email domains. Compose into a form component with mix() next to formMixin(). One component may hold several such
 // fields; each lives in form.<name> (insertion order while editing, the server sorts tags) and the partial marks its
-// root with data-chips="<name>" and data-noun="tag" | "role" | "scope".
+// root with data-chips="<name>" and data-noun="tag" | "role" | "scope" | "domain".
 //   type and press Enter, comma or space -> the value is added      Backspace in the empty input -> removes the last
 //   (a scope may contain a comma, so only Enter and space separate scopes)
 //   each chip has a remove button named "Remove <noun> <value>"     errors show inline (#e-<name>) and are announced
@@ -15,13 +15,17 @@ export const MAX_TAGS = 50
 // (service.validScopeToken) adds at most 100 characters and 50 scopes.
 export const SCOPE_RE = /^[\x21\x23-\x5B\x5D-\x7E]{1,100}$/
 const MAX_SCOPES = 50
-const NOUN = { tags: 'tag', roles: 'role', custom_scopes: 'scope', scopes: 'scope' }
+// A domain name, as the server checks it (service.domainRe): lower case, a leading @ dropped; at most 100 of them.
+export const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+const MAX_DOMAINS = 100
+const NOUN = { tags: 'tag', roles: 'role', custom_scopes: 'scope', scopes: 'scope', allowed_domains: 'domain' }
 const FIELDS = Object.keys(NOUN)
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1)
 const separators = (noun) => (noun === 'scope' ? /\s+/ : /[\s,]+/)
 
 export function tagError(t, noun = 'tag') {
   if (noun === 'scope') return `“${t}” is not a valid scope: use printable characters without spaces, quotes or backslashes (at most 100).`
+  if (noun === 'domain') return `“${t}” is not a domain name, such as example.com.`
   return `“${t}” is not a valid ${noun}: use letters, digits and . _ : / - (1–64 characters, starting and ending with a letter or digit).`
 }
 
@@ -68,13 +72,14 @@ export function tagsMixin() {
 
     // Add one value; returns false (and shows the error) when it is not acceptable.
     addChip(name, noun, raw) {
-      const t = raw.trim()
+      const domain = noun === 'domain'
+      const t = domain ? raw.trim().replace(/^@/, '').toLowerCase() : raw.trim()
       if (!t) return true
       const list = this.form[name] || []
       const scope = noun === 'scope'
-      if (!(scope ? SCOPE_RE : TAG_RE).test(t)) { this.setChipError(name, tagError(t, noun)); return false }
+      if (!(scope ? SCOPE_RE : domain ? DOMAIN_RE : TAG_RE).test(t)) { this.setChipError(name, tagError(raw.trim(), noun)); return false }
       if (list.includes(t)) { announce(`${capital(noun)} ${t} is already added.`); return true }
-      const max = scope ? MAX_SCOPES : MAX_TAGS
+      const max = scope ? MAX_SCOPES : domain ? MAX_DOMAINS : MAX_TAGS
       if (list.length >= max) { this.setChipError(name, `At most ${max} ${noun}s are allowed.`); return false }
       this.form[name] = [...list, t]
       this.clearChipError(name)
@@ -127,8 +132,15 @@ export function tagsMixin() {
       }
       this.chipText = { ...this.chipText, [name]: rest }
     },
+    // Leaving the input for another control folds in what is typed, showing any error at once. Not when focus goes to
+    // the form's own submit button, or nowhere (Safari does not focus a clicked button): an error shown then would
+    // move the button from under the pointer before the click lands, so the click would miss it and the form would
+    // never be submitted. The text stays; the submit folds it in itself (tagsReady), and an error there focuses the
+    // field.
     onTagBlur(ev) {
       const { name, noun } = fieldOf(ev.currentTarget)
+      const to = ev.relatedTarget
+      if (!to || (to.type === 'submit' && to.form === ev.currentTarget.form)) return
       if ((this.chipText[name] || '').trim() !== '') this.commitChips(name, noun)
     },
     removeTag(ev) {

@@ -780,14 +780,15 @@ export default function (Alpine) {
 
   // ---- Connected apps ----------------------------------------------------------------------------------------
   // ---- Sign-in providers: connect one to this account (or disconnect it). Connecting leaves for the provider and
-  // comes back to /account?provider=connected|taken|failed#providers.
+  // comes back to /account?provider=connected|taken|failed|domain|group#providers.
   Alpine.data('accountProviders', () => ({
     items: [], loadError: '', busy: false,
     init() {
       const q = new URLSearchParams(window.location.search).get('provider')
       const msg = { connected: ['Provider connected.', 'success'], taken: ['That account at the provider is already connected to someone else here.', 'error'],
         failed: ['The provider could not be connected. Try again.', 'error'],
-        domain: ['That provider account\u2019s email address is not at a domain this organization allows.', 'error'] }[q]
+        domain: ['That provider account\u2019s email address is not at a domain this organization allows.', 'error'],
+        group: ['That account is not in a group allowed to sign in this way.', 'error'] }[q]
       if (msg) {
         toast(msg[0], msg[1])
         history.replaceState(null, '', window.location.pathname + window.location.hash)

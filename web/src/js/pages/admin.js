@@ -1025,6 +1025,7 @@ export default function (Alpine) {
   sshComponent(Alpine)
   // ---- Organizations -----------------------------------------------------------------------------------------
   const API_GROUP_LIMIT = 20 // the server's bound on the groups chosen to make API tokens
+  const SOURCE_GROUP_LIMIT = 20 // the server's bound on an organization provider's groups (maxSourceGroups)
   // ---- Branding fields (the organization dialog, and the branding card on the organization's page) ----------------
   // b is the saved branding; pending, the logos chosen since: null (nothing), '' (remove) or the new image as a data:
   // URI; form.primary_color, the colour (the component's form holds it).
@@ -1713,8 +1714,29 @@ export default function (Alpine) {
   }))
 
   // ---- Providers --------------------------------------------------------------------------------------------------
-  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), {
-    editing: null, apiBase: '', publicUrl: '', orgId: '', newId: '', isSuper: false, orgs: [], orgsLoaded: false,
+  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), pickerMixin({
+    // groups of the organization whose users sign in through an organization provider
+    async search(q) {
+      if (!this.form.source_org) return { items: [] }
+      const r = await get(`/api/orgs/${enc(this.form.source_org)}/groups${qs({ q, limit: 8 })}`)
+      const items = r.items.filter((g) => !this.form.source_groups.includes(g.id)) // the chosen ones are already chips
+      return { more: r.total > r.items.length, items: items.map((g) => ({ type: 'group', id: g.id, label: g.display_name, detail: '', kind: 'Group' })) }
+    },
+    chosen(p) {
+      this.clearErrors()
+      if (this.form.source_groups.includes(p.id)) return
+      if (this.form.source_groups.length >= SOURCE_GROUP_LIMIT) { toast(`At most ${SOURCE_GROUP_LIMIT} groups.`, 'error'); return }
+      this.groupNames = { ...this.groupNames, [p.id]: p.label }
+      this.form.source_groups = [...this.form.source_groups, p.id]
+      announce(`${p.label} added.`)
+    },
+    clearOnChoose: true,
+    removeLast() {
+      const id = this.form.source_groups.at(-1)
+      if (id) this.dropGroup(id)
+    },
+  }), {
+    editing: null, apiBase: '', publicUrl: '', orgId: '', newId: '', isSuper: false, orgs: [], orgsLoaded: false, groupNames: {},
     init() {
       this.apiBase = this.$el.dataset.base; this.publicUrl = this.$el.dataset.public; this.orgId = this.$el.dataset.orgId
       this.isSuper = !!this.$el.dataset.super
@@ -1734,7 +1756,36 @@ export default function (Alpine) {
       return { ...p, copyCallbackLabel: 'Copy callback URL of ' + p.name, createdText: fmtDate(p.created), statusText: b.text, statusClass: b.cls, typeText: providerTypeText(p.type),
         editLabel: 'Edit ' + p.name, deleteLabel: 'Delete ' + p.name, sub: providerSub(p),
         hasCallback: p.type !== 'organization', readOnly: p.type === 'organization' && !this.isSuper, // an organization provider writes into another organization: super admins only
-        domainsText: (p.allowed_domains || []).join(', ') || 'Any', provisionText: (p.auto_provision ? 'Creates accounts' : 'Existing users only') + (p.trust_mfa ? '; counts as a second factor' : '') }
+        domainsText: (p.allowed_domains || []).join(', ') || 'Any', provisionText: (p.auto_provision ? 'Creates accounts' : 'Existing users only') +
+          (p.source_groups && p.source_groups.length ? `; ${p.source_groups.length === 1 ? '1 group' : p.source_groups.length + ' groups'} only` : '') +
+          (p.trust_mfa ? '; counts as a second factor' : '') }
+    },
+    get groupChips() {
+      return (this.form.source_groups || []).map((id) => { const name = this.groupNames[id] || 'Deleted group'; return { id, name, removeLabel: 'Remove ' + name } })
+    },
+    dropGroup(id) {
+      this.form.source_groups = this.form.source_groups.filter((g) => g !== id)
+      announce(`${this.groupNames[id] || 'Deleted group'} removed.`)
+    },
+    removeGroup(ev) {
+      this.dropGroup(ev.currentTarget.dataset.id)
+      this.$nextTick(() => { const el = document.getElementById('f-source_group'); if (el) el.focus() })
+    },
+    // the names of the chosen groups, by id (a group deleted since shows as such)
+    async loadGroupNames(p) {
+      const ids = p.source_groups || []
+      const gs = await Promise.all(ids.map((id) => getOrNull(`/api/orgs/${enc(p.source_org)}/groups/${enc(id)}`)))
+      if (this.editing === p) this.groupNames = Object.fromEntries(ids.map((id, i) => [id, gs[i] && gs[i].display_name]).filter(([, n]) => n))
+    },
+    // another organization's groups never carry over: choosing a different one starts the list again
+    sourceOrgChanged() {
+      if (this.form.source_groups.length) announce('Groups cleared: choose groups of the new organization.')
+      this.form.source_groups = []
+      this.resetPicker()
+    },
+    get groupsHelp() {
+      return this.form.source_org ? 'Optional. Only members of these groups can sign in this way, checked at every sign-in. Leave empty to allow everyone in the organization.'
+        : 'Choose the organization first.'
     },
     get isEdit() { return this.editing !== null },
     get ptype() { return PROVIDER_TYPES[this.form.type] || PROVIDER_TYPES.oidc },
@@ -1778,8 +1829,8 @@ export default function (Alpine) {
     get dialogTitle() { return this.editing ? 'Edit provider' : 'New sign-in provider' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create provider' },
     toForm(p) {
-      return { type: p.type, name: p.name, issuer: p.issuer || '', source_org: p.source_org || '', client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
-        allowed_domains: listRows(p.allowed_domains, 'Domain', true), tenant: p.tenant || '', allowed_tenants: listRows(p.allowed_tenants, 'Tenant ID', true), auto_provision: !!p.auto_provision, trust_mfa: !!p.trust_mfa, link_by_email: p.link_by_email !== false, enabled: p.enabled !== false }
+      return { type: p.type, name: p.name, issuer: p.issuer || '', source_org: p.source_org || '', source_groups: [...(p.source_groups || [])], client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
+        allowed_domains: [...(p.allowed_domains || [])], tenant: p.tenant || '', allowed_tenants: listRows(p.allowed_tenants, 'Tenant ID', true), auto_provision: !!p.auto_provision, trust_mfa: !!p.trust_mfa, link_by_email: p.link_by_email !== false, enabled: p.enabled !== false }
     },
     async openCreate(ev) {
       const opener = ev.currentTarget
@@ -1788,6 +1839,8 @@ export default function (Alpine) {
       this.newId = newId()
       this.resetForm(this.toForm({ type: 'oidc', name: '', scopes: ['openid', 'profile', 'email'], enabled: true }))
       this.resetChipText()
+      this.groupNames = {}
+      this.resetPicker()
       this.openDlg('provider-dialog', opener)
     },
     async edit(ev) {
@@ -1797,17 +1850,21 @@ export default function (Alpine) {
       this.editing = p
       this.resetForm(this.toForm(p))
       this.resetChipText()
+      this.groupNames = {}
+      this.resetPicker()
+      if (p.type === 'organization') this.loadGroupNames(p)
       this.openDlg('provider-dialog', opener)
       this.watchEdit({ kinds: ['provider'], record: p, fetchOne: () => getOrNull(`${this.apiBase}/providers/${enc(p.id)}`) })
     },
-    // a server message about one domain goes on its row (it starts with the domain)
-    listError(err) { return (err.field === 'allowed_domains' || err.field === 'allowed_tenants') && this.setListError(err.field, err.message) },
+    // a server message about one tenant goes on its row (it starts with the tenant ID)
+    listError(err) { return err.field === 'allowed_tenants' && this.setListError(err.field, err.message) },
+    errorKey(f) { return f === 'source_groups' ? 'source_group' : f },
     async submit() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
-      const body = { type: f.type, name: f.name, allowed_domains: listValues(f.allowed_domains),
+      const body = { type: f.type, name: f.name, allowed_domains: f.allowed_domains,
         auto_provision: f.auto_provision, trust_mfa: f.trust_mfa, link_by_email: f.link_by_email, enabled: f.enabled }
-      if (f.type === 'organization') body.source_org = f.source_org // its client is made with it: no client ID, secret or scopes
+      if (f.type === 'organization') { body.source_org = f.source_org; body.source_groups = f.source_groups } // its client is made with it: no client ID, secret or scopes
       else { body.client_id = f.client_id; body.scopes = f.scopes }
       if (PROVIDER_TYPES[f.type] && PROVIDER_TYPES[f.type].address) body.issuer = f.issuer
       if (f.type === 'microsoft') { body.tenant = f.tenant; body.allowed_tenants = listValues(f.allowed_tenants) }

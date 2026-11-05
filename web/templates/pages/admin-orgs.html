@@ -77,7 +77,7 @@
           </select>
           <p class="help" id="h-api_tokens">Personal API tokens that the organization's own applications check through Quisora; an application also has to accept them in its own settings. Tokens for SCIM and the administration API follow people's roles, whatever is chosen here. Tokens already made are kept: turning this off stops them working, and turning it on again brings them back.</p>
         </div>
-        {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Type to search, use the arrow keys to move through the results and Enter to choose; Backspace removes the last group. Anyone in a chosen group may make API tokens, including people who join later.")}}
+        {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Anyone in a chosen group may make API tokens, including people who join later.")}}
       </fieldset>
 
       <fieldset class="fieldset">

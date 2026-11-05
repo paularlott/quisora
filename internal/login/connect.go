@@ -87,6 +87,17 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		back("domain")
 		return
 	}
+	if ok, err := m.Upstream.GroupAllowed(ctx, res.Provider, res.Claims); err != nil || !ok {
+		reason, result := "not in an allowed group", "group"
+		if err != nil {
+			m.s.Log.Error("provider groups", "error", err)
+			reason, result = "groups could not be read", "failed"
+		}
+		m.audit(r, "account.provider.connect_refused", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name,
+			"reason": reason})
+		back(result)
+		return
+	}
 	key := model.IdentityKey(res.Provider.ID, res.Claims.Subject)
 	if id, err := m.s.Svc.Identities.GetByUnique(ctx, key); err == nil && id.Authority == model.ProviderAuthority(res.Provider) {
 		switch {

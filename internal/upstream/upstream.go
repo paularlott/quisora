@@ -57,8 +57,10 @@ var (
 	ErrNotLinked       = errors.New("upstream: no account is linked to this identity")
 	ErrUnverifiedEmail = errors.New("upstream: the provider did not verify the email address")
 	ErrDomain          = errors.New("upstream: email domain is not allowed")
-	ErrExists          = errors.New("upstream: an account with this email address already exists")
-	ErrDisabled        = errors.New("upstream: provider or account is disabled")
+	// ErrGroup: the person is in none of the groups an organization provider admits (Provider.SourceGroups).
+	ErrGroup    = errors.New("upstream: not in a group allowed to sign in")
+	ErrExists   = errors.New("upstream: an account with this email address already exists")
+	ErrDisabled = errors.New("upstream: provider or account is disabled")
 
 	// errNoLongerMatches: the account found by a verified address no longer has it as the link is written.
 	errNoLongerMatches = errors.New("upstream: the account no longer has the address")
@@ -390,6 +392,12 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 	if err == nil && !DomainAllowed(p, c) {
 		return nil, false, ErrDomain // the provider's allowed domains apply to linked identities too
 	}
+	// and so do its groups, to every sign-in: someone taken out of them no longer signs in
+	if ok, gerr := s.GroupAllowed(ctx, p, c); gerr != nil {
+		return nil, false, gerr
+	} else if !ok {
+		return nil, false, ErrGroup
+	}
 	switch {
 	case err == nil:
 		u, uerr := s.Svc.Users.Get(ctx, ident.UserID)
@@ -636,6 +644,31 @@ func (s *Service) githubClaims(ctx context.Context, p *model.Provider, secret, c
 		}
 	}
 	return c, nil
+}
+
+// GroupAllowed reports whether a sign-in through p passes its groups: for an organization provider with groups
+// (Provider.SourceGroups), the person, a user of the source organization (the subject is their id there, read on this
+// server), must be in one of them now. Every other provider, and one without groups, admits anyone. A read that fails
+// is an error, never an answer: the sign-in fails rather than let someone in unchecked.
+func (s *Service) GroupAllowed(ctx context.Context, p *model.Provider, c Claims) (bool, error) {
+	if p.Type != model.ProviderOrganization || len(p.SourceGroups) == 0 {
+		return true, nil
+	}
+	u, err := s.Svc.Users.Get(ctx, c.Subject)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if u.OrgID != p.SourceOrg {
+		return false, nil
+	}
+	gs, err := s.Svc.UserGroups(ctx, u)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(gs, func(g *model.Group) bool { return slices.Contains(p.SourceGroups, g.ID) }), nil
 }
 
 // DomainAllowed reports whether a sign-in passes p's allowed email domains: with none, any; otherwise a verified

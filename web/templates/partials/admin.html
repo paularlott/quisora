@@ -245,7 +245,7 @@
   <form @submit.prevent="submitAccess" novalidate>
     <div class="dialog-body">
       <p class="font-semibold" x-show="isEditAccess" x-cloak><span class="muted">For</span> <span x-text="editingWho"></span></p>
-      {{template "picker" (dict "id" "f-acc_subject" "list" "acc-picks" "label" "Find a user or group" "listLabel" "Users and groups" "required" true "show" "isAdd" "placeholder" "Name, email address or group" "help" "Type to search, use the arrow keys to move through the results and Enter to choose. A group gives access to every member, including people who join later.")}}
+      {{template "picker" (dict "id" "f-acc_subject" "list" "acc-picks" "label" "Find a user or group" "listLabel" "Users and groups" "required" true "show" "isAdd" "placeholder" "Name, email address or group" "help" "A group gives access to every member, including people who join later.")}}
 
       {{template "tag-field" (dict "name" "roles" "noun" "role" "label" "Roles" "help" "Optional. Application roles, such as editor or viewer, sent in the roles claim.")}}
       {{template "tag-field" (dict "help" "Optional. Added to the tags claim for this tenant's applications.")}}
