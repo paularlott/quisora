@@ -765,6 +765,7 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 			if sessErr := s.endUserSessions(ctx, u.ID, a); sessErr != nil {
 				detail["sessions"] = "not all ended: " + sessErr.Error()
 			}
+			s.endGuestSessions(ctx, u)
 		} else if err == nil && promoted {
 			// the promotion moved the session epoch (applyRole): removing what it replaced is tidying
 			if sessErr := s.endSessionsOf(ctx, u.ID, sessWas); sessErr != nil {
@@ -911,6 +912,7 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// applications are told (back-channel logout), and their reports get no manager. Their memberships stand on them
 	// too: every reader of a group's members leaves out those whose user is gone (memberIDs).
 	s.sessionsEnding(ctx, u.ID, nil)
+	s.endGuestSessions(ctx, u)
 	s.clearManagerOf(ctx, u)
 	return nil
 }
@@ -1133,6 +1135,7 @@ func (s *Service) RevokeSessions(ctx context.Context, a *Actor, userID string) e
 		return mapStore(err)
 	}
 	s.AuditUser(ctx, a, u, "user.sessions.revoke", nil)
+	s.endGuestSessions(ctx, u)
 	return nil
 }
 
@@ -1161,6 +1164,10 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, userID, keep string) 
 		}
 	}
 	errs = append(errs, s.endSessionsOf(ctx, userID, was))
+	// their guest accounts' sessions are other sessions of theirs too
+	if u, err := s.Users.Get(ctx, userID); err == nil {
+		s.endGuestSessions(ctx, u)
+	}
 	return n, errors.Join(errs...)
 }
 

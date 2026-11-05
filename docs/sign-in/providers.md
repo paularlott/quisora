@@ -251,9 +251,17 @@ said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 
-The provider asks for no refresh token, so there is no leaver detection: a person disabled or removed in S, or taken out
-of the provider's groups, keeps the B session they already have until it ends (its idle and absolute limits). Disable or remove their guest account in B
-too (ending its sessions), or use [emergency sign-out](../emergency-sign-out.md).
+The provider asks for no refresh token, so there is no leaver detection; S and B are on the same server instead. When a
+person's sessions end in S - signed out everywhere (by an administrator, or by themselves, including **sign out my
+other sessions**), disabled, locked out, past their end date or deleted - their guest accounts' sessions and refresh
+grants end too, and B's applications are told by back-channel logout. B's audit log records it on the guest as
+`user.sessions.revoke`, with `source_org` and `source_user`. The guest account itself stays: the person can sign in
+again through S if S still lets them. A guest of B that is itself the source of guests in a third organization is
+followed too (four organizations deep at most).
+
+Someone only taken out of the provider's groups keeps the B session they have until it ends (its idle and absolute
+limits), and an [emergency sign-out](../emergency-sign-out.md) of S does not reach B: disable or remove their guest
+account in B too, or pull B's emergency sign-out.
 
 Through the management API, as a super admin:
 
