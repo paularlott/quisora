@@ -64,8 +64,7 @@ func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct)
 		writeErr(w, http.StatusBadGateway, "The provider could not be reached. Try again later.", "")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: state, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: int(upstream.StateTTL.Seconds())})
+	setStateCookie(w, state)
 	web.WriteJSON(w, http.StatusOK, map[string]string{"url": authURL})
 }
 

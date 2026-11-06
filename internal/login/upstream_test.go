@@ -68,7 +68,7 @@ func TestUpstreamOIDCSignIn(t *testing.T) {
 	}
 	// The state cookie is cleared after the callback.
 	for _, c := range res.Cookies() {
-		if c.Name == "__Host-quisora_up" && c.MaxAge >= 0 {
+		if strings.HasPrefix(c.Name, "__Host-quisora_up") && c.MaxAge >= 0 {
 			t.Fatalf("state cookie kept: %+v", c)
 		}
 	}
@@ -623,5 +623,37 @@ func TestProviderStepCookieIsScoped(t *testing.T) {
 		if res, body := b3.get("/o/acme/login?step=1"); res.StatusCode != 200 || strings.Contains(body, "data-ticket") {
 			t.Fatalf("cookie %.10q: %d", v, res.StatusCode)
 		}
+	}
+}
+
+// A provider sign-in started while another is under way in the same browser does not break the first: each is bound
+// to the browser by its own state cookie. This is how a guest of an organization provider signs in when the source
+// organization's sign-in page in turn sends them to its own provider - the inner sign-in finishes first, then the
+// outer one's callback must still find its state.
+func TestNestedProviderSignInsKeepTheirOwnState(t *testing.T) {
+	u := newUpEnv(t, nil)
+	outer := u.oidcProvider(t, nil)
+	inner := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name = ptr("Inner SSO") })
+	b := u.browser(t)
+	begin := func(p *model.Provider) (state, code string) {
+		res, _ := b.get("/o/acme/login/provider/" + p.ID)
+		if res.StatusCode != 302 {
+			t.Fatalf("provider start: %d", res.StatusCode)
+		}
+		loc := res.Header.Get("Location")
+		lu, _ := url.Parse(loc)
+		return lu.Query().Get("state"), u.oidc.Authorize(loc, claims("sub-1", "pat@corp.example"))
+	}
+	finish := func(p *model.Provider, state, code string) *http.Response {
+		res, _ := b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(state) + "&code=" + url.QueryEscape(code))
+		return res
+	}
+	outerState, outerCode := begin(outer)
+	innerState, innerCode := begin(inner)
+	if res := finish(inner, innerState, innerCode); res.StatusCode != 303 || strings.Contains(res.Header.Get("Location"), "error=") {
+		t.Fatalf("inner sign-in: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	if res := finish(outer, outerState, outerCode); res.StatusCode != 303 || strings.Contains(res.Header.Get("Location"), "error=") {
+		t.Fatalf("outer sign-in after the inner one: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 }

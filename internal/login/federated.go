@@ -1,6 +1,8 @@
 package login
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/url"
@@ -13,7 +15,22 @@ import (
 )
 
 // stateCookie binds an upstream sign-in to the browser that started it (the state alone is not enough: login CSRF).
+// One cookie per sign-in, named for its state (stateCookieName), not one per browser: a sign-in can start another
+// inside it - a guest of an organization provider signing in at the source organization through that organization's
+// own provider - and with a single cookie the inner one would replace the outer one's, whose callback would then fail.
 const stateCookie = "__Host-quisora_up"
+
+// stateCookieName is the name of the cookie that binds the sign-in with this state to the browser.
+func stateCookieName(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return stateCookie + "_" + hex.EncodeToString(sum[:8])
+}
+
+// setStateCookie binds the upstream sign-in with this state to the browser, for as long as the state lasts.
+func setStateCookie(w http.ResponseWriter, state string) {
+	http.SetCookie(w, &http.Cookie{Name: stateCookieName(state), Value: state, Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: int(upstream.StateTTL.Seconds())})
+}
 
 // providerStart handles GET /o/{org}/login/provider/{id}: redirect the browser to the upstream provider.
 func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
@@ -43,8 +60,7 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 		back("failed")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: state, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: int(upstream.StateTTL.Seconds())})
+	setStateCookie(w, state)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -55,17 +71,17 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	pathOrg := web.Org(r)
+	state, provider := q.Get("state"), r.PathValue("provider")
 	var browser string
-	if c, err := r.Cookie(stateCookie); err == nil {
+	if c, err := r.Cookie(stateCookieName(state)); err == nil {
 		browser = c.Value
 	}
 	// Rate-limited first: a refused callback leaves the state cookie, so the user's sign-in can still finish.
 	if !m.rateLimit(w, r, pathOrg.ID+"|callback", known{any: true}) {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/", Secure: true, HttpOnly: true,
+	http.SetCookie(w, &http.Cookie{Name: stateCookieName(state), Value: "", Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	state, provider := q.Get("state"), r.PathValue("provider")
 	if q.Get("error") != "" { // the user declined, or the provider failed
 		if org, next, tenant, ok := m.Upstream.CancelTenant(ctx, pathOrg.ID, provider, state, browser); ok {
 			http.Redirect(w, r, loginURL(org, next, tenant, "denied"), http.StatusFound)
