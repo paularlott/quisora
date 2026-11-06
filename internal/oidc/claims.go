@@ -29,7 +29,7 @@ var claimScopes = map[string]string{
 	"phone_number": "phone", "phone_number_verified": "phone",
 	"groups":     "groups",
 	"enterprise": "enterprise",
-	"idp_sub":    "idp", "idp_tenant": "idp", "idp_login": "idp",
+	"idp":        "idp", "idp_sub": "idp", "idp_tenant": "idp", "idp_login": "idp",
 }
 
 // maxClaimsParam bounds the claims parameter (it rides in the authorization URL).

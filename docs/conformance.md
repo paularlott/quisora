@@ -2,8 +2,8 @@
 
 Quisora run against the OpenID Foundation conformance suite (built from source, October 2026) with the harness in
 [conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256. The
-results below are from commit `f5c0901` with the expired request_uri fix below, run on 6 November 2026, against a
-freshly seeded node.
+results below are from commit `f5c0901` with the expired request_uri and `idp` claim fixes below, run on 6 November
+2026, against a freshly seeded node.
 
 The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seeded confidential clients have
 **Require PKCE** turned off (a per-client setting, on by default; public clients always need PKCE). The only local
@@ -15,7 +15,7 @@ release.
 | Plan | Modules | Failures | Warnings |
 |---|---|---|---|
 | `oidcc-config-certification-test-plan` | 1 | 0 | 0 |
-| `oidcc-basic-certification-test-plan` (discovery, static client) | 35 | 0 | 4 |
+| `oidcc-basic-certification-test-plan` (discovery, static client) | 35 | 0 | 3 |
 | `oidcc-rp-initiated-logout-certification-test-plan` (static client, code) | 11 | 0 | 0 |
 | `oidcc-backchannel-rp-initiated-logout-certification-test-plan` (static client, code) | 2 | 0 | 0 |
 
@@ -25,10 +25,10 @@ and client assertion modules to the basic plan's:
 
 | Plan | Modules | Failures | Warnings |
 |---|---|---|---|
-| `oidcc-test-plan` with `client_secret_post` | 36 | 0 | 4 |
-| `oidcc-test-plan` with `private_key_jwt` (ES256 client keys) | 37 | 0 | 4 |
+| `oidcc-test-plan` with `client_secret_post` | 36 | 0 | 3 |
+| `oidcc-test-plan` with `private_key_jwt` (ES256 client keys) | 37 | 0 | 3 |
 
-The same four expected warnings as the basic plan.
+The same three expected warnings as the basic plan.
 
 ## FAPI 2.0 Security Profile
 
@@ -40,8 +40,8 @@ keys, and with PS256 (RSA) client keys, which the module refusing RS256 client a
 
 | Plan | Client keys | Modules | Passed | Failures | Warnings | Review | Skipped |
 |---|---|---|---|---|---|---|---|
-| `fapi2-security-profile-final-test-plan` | ES256 | 52 | 47 | 0 | 2 | 2 | 1 |
-| `fapi2-security-profile-final-test-plan` | PS256 | 52 | 48 | 0 | 2 | 2 | 0 |
+| `fapi2-security-profile-final-test-plan` | ES256 | 52 | 48 | 0 | 1 | 2 | 1 |
+| `fapi2-security-profile-final-test-plan` | PS256 | 52 | 49 | 0 | 1 | 2 | 0 |
 | `fapi2-security-profile-final-test-plan`, client credentials | ES256 | 15 | 14 | 0 | 0 | 0 | 1 |
 
 The client credentials run (`fapi_profile=fapi_client_credentials_grant`, `openid=plain_oauth`) has no user, so its
@@ -50,9 +50,7 @@ with the profile on and only the `scim` scope. Its first run found that discover
 list `scim` (a warning); it does now. Its one skip is the RS256 module again, covered by the PS256 run above.
 
 - **Warning** (`test-claims-parameter-identity-claims`): the ID token carries `sid`, the session id of OpenID
-  Connect back-channel logout, and `idp`, neither of which the module knows. Quisora supports back-channel logout, so
-  `sid` stays; `idp` is as in the basic plan's warnings below.
-- **Warning** (`happy-flow`): the ID token carries `idp`, which the request did not ask for (below).
+  Connect back-channel logout, which the module does not know. Quisora supports back-channel logout, so it stays.
 - **Review** (`par-attempt-to-use-expired-request_uri`, `par-attempt-to-use-request_uri-for-different-client`):
   neither request can be sent back to the client (an expired request_uri is gone, and one presented by another client
   belongs to the client that pushed it, so nothing in it can be trusted for this one), so Quisora shows its error page. The suite asks for a
@@ -112,10 +110,6 @@ none changed a result:
 
 ## Expected warnings (basic plan)
 
-- `oidcc-server` (and FAPI 2.0's `happy-flow`): the ID token carries `idp`, the type of upstream provider the user
-  signed in through (the harness signs in through its fake provider, so it is `oidc`), which no scope asked for. It
-  is how the user authenticated, as `amr` and `acr` are, not data about them, and it is absent after a sign-in of
-  Quisora's own ([sign-in.md](oauth/sign-in.md)). Which account at that provider it was needs the `idp` scope.
 
 - `oidcc-scope-profile`: userinfo leaves out profile claims the user does not have (picture, website, birthdate…).
   OpenID Connect returns claims only when they are available.
@@ -123,7 +117,7 @@ none changed a result:
   `email` scope as well as userinfo. Allowed, and most providers do it; many applications read the address from the
   ID token.
 
-All four are allowed by the specification. Leaving `email` out of the ID token when an access token is issued
+All three are allowed by the specification. Leaving `email` out of the ID token when an access token is issued
 would follow the suite's reading more closely, but many applications and client libraries read the address from
 the ID token, and an application can always ask for exactly what it wants with the `claims` parameter. The profile
 warning goes only when every user has every standard profile claim, which Quisora does not hold (pictures, birth
@@ -153,6 +147,9 @@ text before each screenshot.
   and was refused only after that second had passed, so it worked up to a second past the `expires_in` the client was
   told; `par-attempt-to-use-expired-request_uri` visits the moment `expires_in` is up, and went on to the sign-in page.
   The expiry is now kept to the millisecond and the request_uri refused from it.
+- **The ID token carried `idp` unasked** (a warning in `oidcc-server` and FAPI 2.0's `happy-flow`): the type of
+  upstream provider the user signed in through was in every token. It is now a claim of the `idp` scope, with the
+  account there (`idp_sub`, `idp_tenant`, `idp_login`), and can be asked for by name.
 - **The harness followed the per-organization address spaces.** Since each organization moved to `/o/<id>`, the
   sign-in page is `/o/<id>/login?…` and the sign-out form posts to `/o/<id>/oauth/logout/confirm`; the browser steps
   in `conformance/config/` now match both. SCIM stays at the server's root (`/scim/v2/<org>`), so the client

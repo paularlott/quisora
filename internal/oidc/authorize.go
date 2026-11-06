@@ -876,7 +876,7 @@ var scopeDescriptions = map[string]string{
 	"phone":          "Your phone number",
 	"groups":         "The groups you belong to",
 	"enterprise":     "Your work details: job title, department, manager, employee number and the like",
-	"idp":            "The account you signed in with at another provider, such as Microsoft or Google: its ID and sign-in name",
+	"idp":            "Which provider you signed in with, such as Microsoft or Google, and your account there: its ID and sign-in name",
 	"org":            "Your organization, tenant and role in it",
 	"roles":          "Your roles and tags in this application",
 	"offline_access": "Stay signed in and act while you are away",

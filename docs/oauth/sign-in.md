@@ -98,9 +98,8 @@ curl -s "$ISSUER/oauth/token" \
   upstream provider, followed by the provider's own `amr` values when it sent any, but never its `mfa`:
   [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor. `mfa` in `amr`
   and `urn:quisora:acr:mfa` say the same thing.
-  After a sign-in through an upstream provider, `idp` names its type (`microsoft`, `google`, `github`, `gitlab`,
-  `auth0`, `oidc` or `organization`); it is absent otherwise. Refreshed tokens keep it. With the `idp` scope, the
-  tokens also say which account at that provider it was ([below](#which-upstream-account-the-idp-scope)).
+  `fed` in `amr` says the user signed in through an upstream provider; the `idp` scope says which one and which
+  account there ([below](#which-upstream-account-the-idp-scope)).
 - **Refresh token**: with the refresh grant on the client. See [refreshing](#refreshing).
 
 A code presented a second time fails, and everything issued from it the first time is revoked: someone else had it.
@@ -124,12 +123,12 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | `org` | `org`, `org_name`, `tenant`, `tenant_name`, `org_role` (the user's Quisora role: `user`, `manager`, `admin`, `super_admin`) |
 | `roles` | `roles`: the application roles the user's access to this application gives them, and `tags` |
 | `enterprise` | `enterprise`: job title, department, manager, employee number and the like |
-| `idp` | `idp_sub`, `idp_tenant`, `idp_login`: the account at the upstream provider the user signed in with ([below](#which-upstream-account-the-idp-scope)) |
+| `idp` | `idp`, `idp_sub`, `idp_tenant`, `idp_login`: the upstream provider the user signed in with and the account there ([below](#which-upstream-account-the-idp-scope)) |
 | `offline_access` | No claims: the refresh tokens outlive the user's browser session ([refreshing](#refreshing)). |
 
 Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
-`tags` and `roles`, plus `groups`, `enterprise` and the `idp` scope's claims with those scopes, and `acr`, `amr`,
-`idp` (after an upstream provider sign-in) and `auth_time`. Besides those, an access token carries `jti`, `sid` (the
+`tags` and `roles`, plus `groups`, `enterprise` and the `idp` scope's claims with those scopes, and `acr`, `amr` and
+`auth_time`. Besides those, an access token carries `jti`, `sid` (the
 browser session), `gid` (the refresh grant it was issued from) and, when claims were requested by name for userinfo,
 `userinfo_claims`.
 Scopes of your own (`orders:read`) are listed on the client and simply passed through in `scope`: your API decides
@@ -139,13 +138,13 @@ applications registered for their types, in `authorization_details`.
 
 ### Which upstream account: the idp scope
 
-A user can have several accounts at upstream providers linked to theirs, a Microsoft and a Google one say. `idp` says
-which kind of provider a sign-in went through; the `idp` scope also says which account there, as the provider itself
-names it, so an application that calls the provider's own APIs (Microsoft Graph, Google's) can tell it is the same
-account:
+A user can have several accounts at upstream providers linked to theirs, a Microsoft and a Google one say. The `idp`
+scope says which kind of provider a sign-in went through and which account there, as the provider itself names it, so
+an application that calls the provider's own APIs (Microsoft Graph, Google's) can tell it is the same account:
 
 | Claim | Microsoft | Google, GitLab, Auth0, OpenID Connect | GitHub | Another organization |
 | --- | --- | --- | --- | --- |
+| `idp` | `microsoft` | `google`, `gitlab`, `auth0`, `oidc` | `github` | `organization` |
 | `idp_sub` | the object ID (`oid`), as Graph's `/me` `id`; Microsoft's `sub` differs for each application | the provider's `sub` | the user ID | the user's ID there |
 | `idp_tenant` | the directory (`tid`) | absent | absent | that organization's ID |
 | `idp_login` | the user principal name (`preferred_username`) | the email address | the username | the email address, only when that organization verified it |
@@ -157,7 +156,8 @@ never an identity.
 For a guest from another organization, `idp_tenant` and `idp_login` together say that organization vouches for the
 address: someone in this organization cannot set them, as they can the user's own `email`. An application that already
 has accounts for people of that organization can link a guest's first sign-in to the account with that address, when
-it trusts that organization with the address's domain; afterwards it matches on `sub` like any other user. All three are absent when the user signed in another way (a password, a passkey) and when the
+it trusts that organization with the address's domain; afterwards it matches on `sub` like any other user. All four are
+absent without the scope and when the user signed in another way (a password, a passkey), and the last three when the
 provider has since been removed; the consent screen names the scope. Refreshed tokens keep the account of the sign-in
 they came from.
 

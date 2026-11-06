@@ -306,7 +306,7 @@ func (p *Provider) grantStateOf(ctx context.Context, id string, u *model.User) (
 			return grantState{}, unavailable(err)
 		}
 		if err == nil {
-			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch, amr: g.AMR, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream}
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch, amr: g.AMR, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream, idp: g.IdP}
 		}
 		p.grants.PutIf(id, st, tok)
 	}
@@ -324,6 +324,7 @@ type grantState struct {
 	// the upstream provider said, upstreamAMR: model.TokenAMR)
 	amr, upstreamAMR []string
 	upstream         *model.UpstreamAccount // the account at the upstream provider (Grant.Upstream)
+	idp              string                 // that provider's type (Grant.IdP)
 }
 
 // ---------------------------------------------------------------------------------------------------------------

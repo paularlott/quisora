@@ -125,7 +125,6 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 		o.num("auth_time", is.authTime.Unix())
 		o.str("acr", acrFor(is.amr))
 		o.strs("amr", nonNil(model.TokenAMR(is.amr, is.upstreamAMR)))
-		o.strIf("idp", is.idp)
 		o.strIf("sid", is.sid)
 		o.strIf("gid", is.gid)
 		if len(is.claimsUI) > 0 {
@@ -141,7 +140,7 @@ func (p *Provider) accessToken(ctx context.Context, key *keyEntry, is *issue, no
 			enterpriseClaim(o, is.user)
 		}
 		if is.wantsUpstream() {
-			upstreamClaims(o, is.upstream, nil)
+			upstreamClaims(o, is.idp, is.upstream, nil)
 		}
 	} else {
 		p.orgClaims(o, is)
@@ -276,7 +275,6 @@ func (p *Provider) idToken(ctx context.Context, key *keyEntry, is *issue, now ti
 	o.strIf("nonce", is.nonce)
 	o.str("acr", acrFor(is.amr))
 	o.strs("amr", nonNil(model.TokenAMR(is.amr, is.upstreamAMR)))
-	o.strIf("idp", is.idp)
 	o.strIf("sid", is.sid)
 	// The organization, tenant and Quisora role are claims of the "org" scope, the tags and application roles of the
 	// "roles" scope (as at userinfo); access tokens always carry them all, for resource servers.
@@ -341,15 +339,13 @@ func (p *Provider) profileClaims(ctx context.Context, o *obj, is *issue, u *mode
 	if want("enterprise") {
 		enterpriseClaim(o, u)
 	}
-	if is.upstream != nil {
-		upstreamClaims(o, is.upstream, want)
-	}
+	upstreamClaims(o, is.idp, is.upstream, want)
 }
 
 // wantsUpstream reports whether the access token of is carries the idp scope's claims: the scope was granted, or one
 // of them was requested by name for userinfo, which reads them from the access token.
 func (is *issue) wantsUpstream() bool {
-	if is.upstream == nil {
+	if is.idp == "" && is.upstream == nil {
 		return false
 	}
 	return is.has("idp") || slices.ContainsFunc(is.claimsUI, func(c string) bool { return claimScopes[c] == "idp" })
@@ -363,10 +359,17 @@ func (c *Claims) upstream() *model.UpstreamAccount {
 	return &model.UpstreamAccount{Subject: c.IdPSub, Tenant: c.IdPTenant, Login: c.IdPLogin}
 }
 
-// upstreamClaims adds the idp scope's claims of account a (model.UpstreamAccount), those want allows (nil: all):
-// idp_sub the provider's ID of the account, idp_tenant its Microsoft directory (or the organization, for an
-// organization provider), idp_login the name it signs in with.
-func upstreamClaims(o *obj, a *model.UpstreamAccount, want func(string) bool) {
+// upstreamClaims adds the idp scope's claims, those want allows (nil: all), after a sign-in through an upstream
+// provider of type idp as account a (model.UpstreamAccount; nil when not known): idp the provider's type, idp_sub its
+// ID of the account, idp_tenant its Microsoft directory (or the organization, for an organization provider),
+// idp_login the name it signs in with. A sign-in of Quisora's own has none of them.
+func upstreamClaims(o *obj, idp string, a *model.UpstreamAccount, want func(string) bool) {
+	if want == nil || want("idp") {
+		o.strIf("idp", idp)
+	}
+	if a == nil {
+		return
+	}
 	if want == nil || want("idp_sub") {
 		o.str("idp_sub", a.Subject)
 	}

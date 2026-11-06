@@ -141,8 +141,8 @@ func TestDeviceGrantPassesUpstreamAMROn(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
 	ms := h.microsoft()
-	cl := h.deviceClient(nil)
-	dc, uc := h.startDevice(cl, "openid offline_access")
+	cl := h.deviceClient(func(in *service.ClientInput) { in.Scopes = &[]string{"openid", "idp", "offline_access"} })
+	dc, uc := h.startDevice(cl, "openid idp offline_access")
 	b, csrf := h.session(h.user)
 	h.signedInThrough(b, ms.ID, []string{"pwd", "mfa"}, "fed")
 	if status, page := h.consentDevice(b, csrf, uc, true); status != 200 || !strings.Contains(page, "Your device is signed in") {

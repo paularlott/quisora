@@ -47,7 +47,7 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 	newApp := func(tenant *model.Tenant) *model.Client {
 		t.Helper()
 		in := service.ClientInput{Name: ptr("App"), AuthMethod: ptr(model.AuthMethodNone), GrantTypes: &[]string{"authorization_code"},
-			RedirectURIs: &[]string{redirect}, Scopes: &[]string{"openid"}, FirstParty: ptr(true)}
+			RedirectURIs: &[]string{redirect}, Scopes: &[]string{"openid", "idp"}, FirstParty: ptr(true)}
 		if tenant != nil {
 			in.TenantID = &tenant.ID
 		}
@@ -66,7 +66,7 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 	issuer := iu.Path // the server's own address, as the browser reaches it
 	authorize := func(app *model.Client) (int, string) {
 		t.Helper()
-		q := url.Values{"response_type": {"code"}, "client_id": {app.ID}, "redirect_uri": {redirect}, "scope": {"openid"},
+		q := url.Values{"response_type": {"code"}, "client_id": {app.ID}, "redirect_uri": {redirect}, "scope": {"openid idp"},
 			"state": {"s"}, "nonce": {"n"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])},
 			"code_challenge_method": {"S256"}}
 		res, _ := b.getAbs(issuer + "/oauth/authorize?" + q.Encode())

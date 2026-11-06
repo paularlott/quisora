@@ -32,9 +32,9 @@ func (h *harness) withUpstreamAccount(c *http.Client, a *model.UpstreamAccount) 
 	h.t.Fatal("no session cookie")
 }
 
-// The idp scope says which account at the upstream provider a sign-in went through, as the provider names it: in the
-// ID token, the access token (so userinfo and introspection can say it) and the tokens of a refresh. Without the scope
-// none of it is released, a claim of it can be asked for by name, and a sign-in of Quisora's own has none.
+// The idp scope says which upstream provider a sign-in went through and which account there, as the provider names it:
+// in the ID token, the access token (so userinfo and introspection can say it) and the tokens of a refresh. Without
+// the scope none of it is released, a claim of it can be asked for by name, and a sign-in of Quisora's own has none.
 func TestIdPScopeNamesTheUpstreamAccount(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
@@ -50,7 +50,8 @@ func TestIdPScopeNamesTheUpstreamAccount(t *testing.T) {
 	})
 	account := &model.UpstreamAccount{Subject: "0e4c2a1b-oid", Tenant: "72f988bf-86f1-41af-91ab-2d7cd011db47",
 		Login: "ada@contoso.onmicrosoft.com"}
-	want := map[string]any{"idp_sub": account.Subject, "idp_tenant": account.Tenant, "idp_login": account.Login}
+	want := map[string]any{"idp": model.ProviderMicrosoft, "idp_sub": account.Subject, "idp_tenant": account.Tenant,
+		"idp_login": account.Login}
 
 	signIn := func(provider string, a *model.UpstreamAccount, scope string, extra url.Values) tokResp {
 		t.Helper()
@@ -96,13 +97,9 @@ func TestIdPScopeNamesTheUpstreamAccount(t *testing.T) {
 	has("refreshed ID token", claimsOf(t, refreshed.str("id_token")), true)
 	has("refreshed access token", claimsOf(t, refreshed.str("access_token")), true)
 
-	// without the scope: idp only
+	// without the scope: none of them, not even which provider it was (amr still says "fed")
 	r = signIn(ms.ID, account, "openid profile", nil)
-	idt := claimsOf(t, r.str("id_token"))
-	if idt["idp"] != model.ProviderMicrosoft {
-		t.Errorf("idp %v", idt["idp"])
-	}
-	has("ID token without the scope", idt, false)
+	has("ID token without the scope", claimsOf(t, r.str("id_token")), false)
 	has("access token without the scope", claimsOf(t, r.str("access_token")), false)
 	has("userinfo without the scope", h.userinfo(r.str("access_token")), false)
 
@@ -113,7 +110,7 @@ func TestIdPScopeNamesTheUpstreamAccount(t *testing.T) {
 		t.Error("idp_login asked for userinfo is in the ID token")
 	}
 	ui := h.userinfo(r.str("access_token"))
-	if ui["idp_login"] != account.Login || ui["idp_sub"] != nil || ui["idp_tenant"] != nil {
+	if ui["idp_login"] != account.Login || ui["idp_sub"] != nil || ui["idp_tenant"] != nil || ui["idp"] != nil {
 		t.Errorf("userinfo with idp_login asked for: %v", ui)
 	}
 

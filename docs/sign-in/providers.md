@@ -95,9 +95,9 @@ their page and can disconnect them (`GET`/`DELETE /api/orgs/acme/users/<id>/prov
 A sign-in through a provider is a first factor, like a password: Quisora never trusts what the provider says about its
 own second factors. Where a second factor is required, or for managers and administrators, Quisora asks for the
 user's own (authenticator app, passkey, or a code by email) after the provider, as after a password. The session's
-`amr` is `["fed", …]`, and the tokens' `idp` claim names the provider's type (`microsoft`, `google`, …), so an
-application can tell which kind of account the person used. With the `idp` scope it is also told which account:
-its ID at the provider and the name it signs in with ([the idp scope](../oauth/sign-in.md#which-upstream-account-the-idp-scope)).
+`amr` is `["fed", …]`. An application that asks for the `idp` scope is told which provider: its type in the `idp`
+claim (`microsoft`, `google`, …), and which account there, its ID at the provider and the name it signs in with
+([the idp scope](../oauth/sign-in.md#which-upstream-account-the-idp-scope)).
 
 What the provider says about how the person signed in to it (its ID token's `amr`, such as Microsoft's
 `["pwd","mfa"]`) is passed on, except its `mfa`: the tokens' `amr` is Quisora's own values and then the provider's,
@@ -246,8 +246,8 @@ With the management API, `source_groups` is the list of S's group ids (`[]` for 
 
 A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
 factor where one is required, and the person gives the second factor they have in B. B's tokens add what S's ID token
-said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code at S), with `idp` `organization` and
-`acr` from B's own values only. The provider is *not* trusted to
+said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code at S), with `idp` `organization` (to applications
+with the `idp` scope) and `acr` from B's own values only. The provider is *not* trusted to
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 
