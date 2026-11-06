@@ -349,16 +349,20 @@ func TestPushedRequestURIRefusals(t *testing.T) {
 		return parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte(h.env.Svc.Sealer.SealFor(binding, b)))
 	}
 	own := parBinding(cl.OrgID, cl.ID)
-	live := time.Now().Add(time.Minute).Unix()
+	live := time.Now().Add(time.Minute).UnixMilli()
 	for name, tc := range map[string]struct{ client, requestURI string }{
-		"no client":         {"", uri},
-		"no id":             {cl.ID, parURNPrefix},
-		"not encoded":       {cl.ID, parURNPrefix + "!!!"},
-		"not sealed":        {cl.ID, parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte("v3:x:y"))},
-		"tampered":          {cl.ID, uri[:len(uri)-2] + "AA"},
-		"another client":    {cl.ID, seal(parBinding(cl.OrgID, "other"), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
-		"another org":       {cl.ID, seal(parBinding("another-org", cl.ID), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
-		"expired":           {cl.ID, seal(own, pushedRequest{ID: "a", Expires: time.Now().Add(-time.Second).Unix(), Params: "client_id=" + cl.ID})},
+		"no client":      {"", uri},
+		"no id":          {cl.ID, parURNPrefix},
+		"not encoded":    {cl.ID, parURNPrefix + "!!!"},
+		"not sealed":     {cl.ID, parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte("v3:x:y"))},
+		"tampered":       {cl.ID, uri[:len(uri)-2] + "AA"},
+		"another client": {cl.ID, seal(parBinding(cl.OrgID, "other"), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
+		"another org":    {cl.ID, seal(parBinding("another-org", cl.ID), pushedRequest{ID: "a", Expires: live, Params: "client_id=" + cl.ID})},
+		"expired":        {cl.ID, seal(own, pushedRequest{ID: "a", Expires: time.Now().Add(-time.Second).UnixMilli(), Params: "client_id=" + cl.ID})},
+		// expires_in is a promise to the millisecond: not a moment's grace after it (the conformance suite visits at once)
+		"expired just now": {cl.ID, seal(own, pushedRequest{ID: "a", Expires: time.Now().Add(-20 * time.Millisecond).UnixMilli(), Params: "client_id=" + cl.ID})},
+		"sealed in seconds": {cl.ID, parURNPrefix + base64.RawURLEncoding.EncodeToString([]byte(h.env.Svc.Sealer.SealFor(own,
+			[]byte(`{"j":"a","e":`+strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)+`,"q":"client_id=`+cl.ID+`"}`))))},
 		"no id inside":      {cl.ID, seal(own, pushedRequest{Expires: live, Params: "client_id=" + cl.ID})},
 		"unparsable params": {cl.ID, seal(own, pushedRequest{ID: "a", Expires: live, Params: "a=%zz"})},
 	} {

@@ -148,7 +148,9 @@ func main() {
 		repl = append(repl, "@"+key+"_ID@", cl.ID, "@"+key+"_JWKS@", private)
 	}
 	// The suite tests the organization's own issuer (/o/<id>): its discovery, endpoints and sign-in pages are all under it.
-	r := strings.NewReplacer(append(repl, "@ISSUER@", cfg.OrgIssuer(org.ID))...)
+	// SCIM is not: it is served from the server's root (/scim/v2/<org>), so @PUBLIC_URL@ names that.
+	r := strings.NewReplacer(append(repl, "@ISSUER@", cfg.OrgIssuer(org.ID),
+		"@PUBLIC_URL@", strings.TrimRight(cfg.Server.PublicURL, "/"))...)
 	must(os.MkdirAll(*out, 0o700))
 	files, _ := filepath.Glob(filepath.Join(*templates, "*.json"))
 	for _, f := range files {

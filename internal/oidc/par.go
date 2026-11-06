@@ -58,8 +58,10 @@ const (
 // pushedRequest is what a request_uri holds, sealed (parBinding): the organization and client it is for are the
 // binding, not part of it.
 type pushedRequest struct {
-	ID      string `json:"j"` // names the request_uri to the record of its use (usePushed)
-	Expires int64  `json:"e"` // unix seconds: the last moment it may be visited
+	ID string `json:"j"` // names the request_uri to the record of its use (usePushed)
+	// Expires is when it stops working, in unix milliseconds: whole seconds would let it be used up to a second past
+	// the expires_in the client was told. (Its key changed with the unit, so one sealed in seconds reads as expired.)
+	Expires int64  `json:"em"`
 	Params  string `json:"q"` // the authorization request's parameters, form-encoded
 }
 
@@ -153,7 +155,7 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 	var b bytes.Buffer
 	je := json.NewEncoder(&b)
 	je.SetEscapeHTML(false)
-	_ = je.Encode(pushedRequest{ID: model.NewID(), Expires: time.Now().Add(parTTL).Unix(), Params: enc})
+	_ = je.Encode(pushedRequest{ID: model.NewID(), Expires: time.Now().Add(parTTL).UnixMilli(), Params: enc})
 	sealed := p.svc.Sealer.SealFor(parBinding(c.OrgID, c.ClientID()), b.Bytes())
 	o := newObj(128)
 	o.str("request_uri", parURNPrefix+base64.RawURLEncoding.EncodeToString([]byte(sealed)))
@@ -173,7 +175,7 @@ func (p *Provider) loadPushed(ctx context.Context, orgID, clientID, uri string) 
 	}
 	raw, err := p.svc.Sealer.OpenFor(parBinding(orgID, clientID), string(sealed))
 	var pr pushedRequest
-	if err != nil || json.Unmarshal(raw, &pr) != nil || pr.ID == "" || time.Now().Unix() > pr.Expires {
+	if err != nil || json.Unmarshal(raw, &pr) != nil || pr.ID == "" || time.Now().UnixMilli() >= pr.Expires {
 		return nil, "", false, errPushed
 	}
 	if q, err = url.ParseQuery(pr.Params); err != nil {

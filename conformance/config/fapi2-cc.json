@@ -15,6 +15,6 @@
     "jwks": @CLIENTFAPICC2_JWKS@
   },
   "resource": {
-    "resourceUrl": "@ISSUER@/scim/v2/acme/Users?count=1"
+    "resourceUrl": "@PUBLIC_URL@/scim/v2/acme/Users?count=1"
   }
 }

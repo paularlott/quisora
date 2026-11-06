@@ -24,7 +24,7 @@
         {
           "task": "Login",
           "optional": true,
-          "match": "@ISSUER@/login/*",
+          "match": "@ISSUER@/login*",
           "commands": [
             [
               "click",
@@ -58,7 +58,7 @@
             [
               "click",
               "css",
-              "form[action='/oauth/logout/confirm'] button[type=submit]",
+              "form[action$='/oauth/logout/confirm'] button[type=submit]",
               "optional"
             ]
           ]
@@ -124,7 +124,7 @@
           "tasks": [
             {
               "task": "Cancel sign-in",
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "wait",
@@ -165,7 +165,7 @@
           "tasks": [
             {
               "task": "First visit: stop at the sign-in page",
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "wait",
@@ -184,7 +184,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",

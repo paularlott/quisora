@@ -19,7 +19,7 @@
         {
           "task": "Login",
           "optional": true,
-          "match": "@ISSUER@/login/*",
+          "match": "@ISSUER@/login*",
           "commands": [
             [
               "click",
@@ -53,7 +53,7 @@
             [
               "click",
               "css",
-              "form[action='/oauth/logout/confirm'] button[type=submit]",
+              "form[action$='/oauth/logout/confirm'] button[type=submit]",
               "optional"
             ]
           ]
@@ -74,7 +74,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "wait",
@@ -115,7 +115,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "wait",
@@ -271,7 +271,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -323,7 +323,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -375,7 +375,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -427,7 +427,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -479,7 +479,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -531,7 +531,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -565,7 +565,7 @@
                 [
                   "click",
                   "css",
-                  "form[action='/oauth/logout/confirm'] button[type=submit]",
+                  "form[action$='/oauth/logout/confirm'] button[type=submit]",
                   "optional"
                 ]
               ]
@@ -596,7 +596,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -630,7 +630,7 @@
                 [
                   "click",
                   "css",
-                  "form[action='/oauth/logout/confirm'] button[type=submit]",
+                  "form[action$='/oauth/logout/confirm'] button[type=submit]",
                   "optional"
                 ]
               ]
@@ -661,7 +661,7 @@
             {
               "task": "Login",
               "optional": true,
-              "match": "@ISSUER@/login/*",
+              "match": "@ISSUER@/login*",
               "commands": [
                 [
                   "click",
@@ -695,7 +695,7 @@
                 [
                   "click",
                   "css",
-                  "form[action='/oauth/logout/confirm'] button[type=submit]",
+                  "form[action$='/oauth/logout/confirm'] button[type=submit]",
                   "optional"
                 ]
               ]
