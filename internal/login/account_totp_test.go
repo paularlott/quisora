@@ -3,6 +3,7 @@ package login_test
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,11 @@ func TestAccountTOTP(t *testing.T) {
 	if len(secret) < 16 || !strings.HasPrefix(str(out, "uri"), "otpauth://totp/") || !strings.Contains(str(out, "uri"), "secret="+secret) ||
 		!strings.Contains(str(out, "uri"), "issuer=") || !strings.HasPrefix(str(out, "qr"), "data:image/svg+xml;base64,") {
 		t.Fatalf("begin: %v", out["_raw"])
+	}
+	// the app lists the account under its organization's name, not the site's
+	if u, err := url.Parse(str(out, "uri")); err != nil || u.Query().Get("issuer") != org.DisplayName ||
+		!strings.HasPrefix(u.Path, "/"+org.DisplayName+":") {
+		t.Fatalf("issuer: %v %v", str(out, "uri"), err)
 	}
 	res, out = b.api("POST", "/api-internal/account/totp/confirm", map[string]any{"code": "000000"})
 	wantStatus(t, res, out, 422)

@@ -19,8 +19,10 @@ func NewTOTPSecret() string {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(RandomBytes(20))
 }
 
-// TOTPURI returns the otpauth:// URI for enrolment in an authenticator app.
+// TOTPURI returns the otpauth:// URI for enrolment in an authenticator app. The label is "issuer:account", so a colon
+// in the issuer (an organization's name may have one) would split it in the wrong place: it is dropped.
 func TOTPURI(issuer, account, secret string) string {
+	issuer = strings.TrimSpace(strings.ReplaceAll(issuer, ":", ""))
 	v := url.Values{"secret": {secret}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
 	return "otpauth://totp/" + url.PathEscape(issuer+":"+account) + "?" + v.Encode()
 }

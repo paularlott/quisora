@@ -1,6 +1,7 @@
 package login
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -27,12 +28,18 @@ type totpBeginResp struct {
 	QR     string `json:"qr"`
 }
 
-func (m *Module) totpDetails(u *model.User, secret string) (totpBeginResp, error) {
+// totpDetails is what an authenticator app is set up from: the app lists the account under the name of its
+// organization (org), so someone in several tells them apart, or under the site's name when it has none.
+func (m *Module) totpDetails(u *model.User, org *model.Org, secret string) (totpBeginResp, error) {
 	account := u.Email
 	if account == "" {
 		account = u.Username
 	}
-	uri := secure.TOTPURI(m.s.Cfg.UI.SiteName, account, secret)
+	issuer := m.s.Cfg.UI.SiteName
+	if org != nil {
+		issuer = cmp.Or(strings.TrimSpace(org.DisplayName), org.Name, issuer)
+	}
+	uri := secure.TOTPURI(issuer, account, secret)
 	qr, err := qrDataURL(uri)
 	return totpBeginResp{Secret: secret, URI: uri, QR: qr}, err
 }
@@ -77,7 +84,7 @@ func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	t, u, _, ok := m.enrolTicket(w, r, in.Ticket)
+	t, u, org, ok := m.enrolTicket(w, r, in.Ticket)
 	if !ok {
 		return
 	}
@@ -88,7 +95,7 @@ func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
 		m.internalError(w, r, "ticket", err)
 		return
 	}
-	resp, err := m.totpDetails(u, secret)
+	resp, err := m.totpDetails(u, org, secret)
 	if err != nil {
 		m.internalError(w, r, "qr", err)
 		return

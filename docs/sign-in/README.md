@@ -54,7 +54,7 @@ is accepted), so it is also how someone who lost everything gets back in.
 **Require a second factor** on the organization (or a tenant, for its applications) makes every password or provider
 sign-in also give one:
 
-- an **authenticator app** (a 6-digit code: TOTP);
+- an **authenticator app** (a 6-digit code: TOTP), which lists the account under its organization's display name;
 - a **passkey** after the password;
 - a [code by email](email-codes.md), where the organization allows it, for users with neither of the first two;
 - a [recovery code](recovery-codes.md), in place of either of the first two.

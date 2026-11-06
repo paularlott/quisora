@@ -1050,7 +1050,7 @@ func (m *Module) totpBegin(w http.ResponseWriter, r *http.Request, a acct) {
 		m.internalError(w, r, "pending totp", err)
 		return
 	}
-	resp, err := m.totpDetails(u, secret)
+	resp, err := m.totpDetails(u, web.Org(r), secret)
 	if err != nil {
 		m.internalError(w, r, "qr", err)
 		return

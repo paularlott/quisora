@@ -31,6 +31,11 @@ func TestTOTP(t *testing.T) {
 		if err != nil || u.Scheme != "otpauth" || u.Query().Get("secret") != sec || u.Query().Get("issuer") != "Quisora" {
 			t.Fatalf("uri %v %v", u, err)
 		}
+		// a colon in the issuer would split the label in the wrong place
+		if u, _ := url.Parse(TOTPURI("Acme: Sales", "a@example.com", sec)); u.Path != "/Acme Sales:a@example.com" ||
+			u.Query().Get("issuer") != "Acme Sales" {
+			t.Fatalf("issuer with a colon: %v", u)
+		}
 		now := time.Unix(1_700_000_000, 0)
 		code := TOTPCode(sec, now)
 		if len(code) != 6 {
