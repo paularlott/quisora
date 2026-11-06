@@ -62,7 +62,7 @@ func TestSendRecoveryUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := cap.wait(t)
-	if msg.To != "ann@example.com" || !strings.Contains(msg.Subject, "Acme ID") || !strings.Contains(msg.Text, "7 of them are left") {
+	if msg.To != "ann@example.com" || !strings.Contains(msg.Subject, "Widgets <Inc>") || !strings.Contains(msg.Text, "7 of them are left") {
 		t.Fatalf("%+v", msg)
 	}
 	if !strings.Contains(msg.Text, "https://quisora.example.test/o/"+org.ID+"/account") {

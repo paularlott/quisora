@@ -6,6 +6,7 @@ import (
 	"errors"
 	htmltemplate "html/template"
 	"strconv"
+	"strings"
 	texttemplate "text/template"
 	"time"
 
@@ -98,10 +99,19 @@ func (m *Mailer) SendVerifyAddress(ctx context.Context, u *model.User, org *mode
 	return m.renderTo(ctx, address, u, org, verifyTpl, m.Svc.LinkURL(u.OrgID, linkPaths[service.LinkVerify], tok), service.VerifyTTL)
 }
 
+// senderName is who an email is from, in its subject and text: the user's organization (its display name), which is
+// what they know it as, else the server's site name.
+func (m *Mailer) senderName(org *model.Org) string {
+	if org != nil && strings.TrimSpace(org.DisplayName) != "" {
+		return org.DisplayName
+	}
+	return m.Cfg.UI.SiteName
+}
+
 // SendRecoveryUsed tells u that one of their recovery codes was used to sign in, and how many are left: someone who
 // got hold of the codes is noticed at their first use.
 func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model.Org, left int) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Link: m.Cfg.Server.PublicURL + web.OrgPath(u.OrgID, "/account"), Left: strconv.Itoa(left)}
+	d := tplData{Site: m.senderName(org), Name: u.FullName(), Org: org.DisplayName, Link: m.Cfg.Server.PublicURL + web.OrgPath(u.OrgID, "/account"), Left: strconv.Itoa(left)}
 	msg, err := recoveryTpl.render(d)
 	if err != nil {
 		return err
@@ -112,7 +122,7 @@ func (m *Mailer) SendRecoveryUsed(ctx context.Context, u *model.User, org *model
 
 // SendSignInCode emails u the one-time code that finishes a sign-in as its second factor, valid for ttl.
 func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.Org, code string, ttl time.Duration) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Code: code, Expires: humanTTL(ttl)}
+	d := tplData{Site: m.senderName(org), Name: u.FullName(), Org: org.DisplayName, Code: code, Expires: humanTTL(ttl)}
 	msg, err := codeTpl.render(d)
 	if err != nil {
 		return err
@@ -122,7 +132,7 @@ func (m *Mailer) SendSignInCode(ctx context.Context, u *model.User, org *model.O
 }
 
 func (m *Mailer) renderTo(ctx context.Context, to string, u *model.User, org *model.Org, t *tpl, link string, ttl time.Duration) error {
-	d := tplData{Site: m.Cfg.UI.SiteName, Name: u.FullName(), Org: org.DisplayName, Link: link, Expires: humanTTL(ttl)}
+	d := tplData{Site: m.senderName(org), Name: u.FullName(), Org: org.DisplayName, Link: link, Expires: humanTTL(ttl)}
 	msg, err := t.render(d)
 	if err != nil {
 		return err
@@ -218,14 +228,14 @@ var (
 	inviteTpl = mk("You have been invited to {{.Site}}",
 		`Hello {{.Name}},
 
-You have been invited to join {{.Org}} on {{.Site}}. Finish setting up your account (set a password or create a passkey, depending on what your organization allows):
+You have been invited to join {{.Site}}. Finish setting up your account (set a password or create a passkey, depending on what your organization allows):
 
 {{.Link}}
 
 This link can be used once and expires in {{.Expires}}.
 If you were not expecting this invitation you can ignore this message.
 `,
-		`You have been invited to join <strong>{{.Org}}</strong> on {{.Site}}. Finish setting up your account: set a password or create a passkey, depending on what your organization allows.`,
+		`You have been invited to join <strong>{{.Site}}</strong>. Finish setting up your account: set a password or create a passkey, depending on what your organization allows.`,
 		"Set up your account",
 		`This link can be used once and expires in {{.Expires}}. If you were not expecting this invitation you can ignore this message.`)
 

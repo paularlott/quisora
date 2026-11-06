@@ -89,8 +89,8 @@ func TestTemplatesAndLinks(t *testing.T) {
 		subject string
 		path    string
 	}{
-		{service.LinkInvite, sendInvite, "invited to Acme ID", "/o/" + org.ID + "/invite?token="},
-		{service.LinkReset, func() error { return m.SendReset(ctx, u, org) }, "Reset your Acme ID password", "/o/" + org.ID + "/reset?token="},
+		{service.LinkInvite, sendInvite, "invited to Widgets <Inc>", "/o/" + org.ID + "/invite?token="},
+		{service.LinkReset, func() error { return m.SendReset(ctx, u, org) }, "Reset your Widgets <Inc> password", "/o/" + org.ID + "/reset?token="},
 		{service.LinkVerify, func() error { return m.SendVerify(ctx, u, org) }, "Confirm your email", "/o/" + org.ID + "/verify-email?token="},
 	} {
 		if err := tc.send(); err != nil {
