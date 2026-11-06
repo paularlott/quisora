@@ -118,6 +118,24 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	q := listQuery(r)
 	v := r.URL.Query()
+	// ?external_id= or ?email=: the one user with it (an indexed lookup, for provisioning systems), or none
+	if ext, email := v.Get("external_id"), v.Get("email"); ext != "" || email != "" {
+		u, err := m.s.Svc.FindUser(r.Context(), a, org.ID, ext, email)
+		if errors.Is(err, service.ErrNotFound) {
+			writeList(w, []userView{}, 0)
+			return
+		}
+		if err != nil {
+			web.WriteError(w, err)
+			return
+		}
+		view := viewOf(u)
+		can := m.s.Svc.CanManageUser(a, u)
+		view.CanManage = &can
+		view.Directory = m.s.Svc.Visibility(a, u) == service.Directory
+		writeList(w, []userView{view}, 1)
+		return
+	}
 	if role := v.Get("role"); role != "" {
 		if !model.Role(role).Valid() {
 			web.WriteError(w, service.Invalid("role", "unknown role"))

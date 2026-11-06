@@ -330,6 +330,26 @@ func (s *Service) GetUser(ctx context.Context, a *Actor, id string) (*model.User
 	return u, nil
 }
 
+// FindUser is the user of orgID with external id ext, or whose primary or linked address is email (exactly one of
+// them given): an indexed lookup, with the same access and visibility as GetUser. ErrNotFound when there is none.
+func (s *Service) FindUser(ctx context.Context, a *Actor, orgID, ext, email string) (*model.User, error) {
+	if !s.canManageUsers(a, orgID) {
+		return nil, ErrForbidden
+	}
+	key := model.UserExternalIDKey(orgID, ext)
+	if ext == "" {
+		key = model.UserEmailKey(orgID, email)
+	}
+	u, err := s.Users.GetByUnique(ctx, key)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	if u.OrgID != orgID {
+		return nil, ErrNotFound
+	}
+	return s.GetUser(ctx, a, u.ID)
+}
+
 // ListUsers lists users of an org, with their last sign-in (shown, not sortable: it is kept on the users' sign-in
 // records, so sorting on it would read the whole organization).
 func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store.ListQuery) ([]*model.User, int, error) {

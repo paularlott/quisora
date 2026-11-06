@@ -303,6 +303,16 @@ paths:
           description: only the users with this tag (the whole tag, ignoring case)
           schema:
             type: string
+        - name: external_id
+          in: query
+          description: the one user with this external id, or none (an indexed lookup; the other parameters are ignored)
+          schema:
+            type: string
+        - name: email
+          in: query
+          description: the one user whose primary or linked address this is (ignoring case), or none (an indexed lookup; the other parameters are ignored)
+          schema:
+            type: string
       responses:
         "200":
           description: Success

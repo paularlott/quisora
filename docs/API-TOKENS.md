@@ -43,6 +43,9 @@ at `/api/openapi.json` (SCIM is in it too), which every server also renders as a
 pins the version; without it you get the oldest supported version. Versions are dates: the release that introduced
 them, and a new one comes only with a change that would break existing callers.
 
+The users list also takes `?external_id=` or `?email=` (a primary or linked address, ignoring case): an indexed lookup
+of the one user with it, answered as a list of that user or none, for provisioning systems that keep their own ids.
+
 Every audit event of a change made with a token names it (`token_id`), so a misused token can be found and deleted.
 A token that exists but is refused (a wrong secret, or used after an emergency sign-out, or after its owner was
 disabled or lost the role its scopes need) is audited as `apitoken.refused` in its organization; a request a valid

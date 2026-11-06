@@ -77,6 +77,17 @@ func TestTagsAPI(t *testing.T) {
 	if r = ad.get(AU + "?q=sales"); r.total() != 1 || r.items()[0].(map[string]any)["username"] != "salesperson" {
 		t.Fatalf("a name the search starts comes before a tag: %s", r.Raw)
 	}
+	// ?external_id= and ?email=: an exact, indexed lookup of one user
+	want(t, ad.patch(AU+"/"+id, map[string]any{"external_id": "app:7"}), 200)
+	if r = ad.get(AU + "?external_id=" + url.QueryEscape("app:7")); r.total() != 1 || r.items()[0].(map[string]any)["id"] != id {
+		t.Fatalf("external_id lookup: %s", r.Raw)
+	}
+	if r = ad.get(AU + "?email=" + url.QueryEscape("TAGME@x.example")); r.total() != 1 || r.items()[0].(map[string]any)["id"] != id {
+		t.Fatalf("email lookup ignores case: %s", r.Raw)
+	}
+	if r = ad.get(AU + "?external_id=app:8"); r.Status != 200 || r.total() != 0 {
+		t.Fatalf("no such external id: %d %s", r.Status, r.Raw)
+	}
 	// clear
 	r = ad.patch(AU+"/"+other, map[string]any{"tags": []string{}})
 	want(t, r, 200)
