@@ -162,3 +162,7 @@ task test-all     # also against PostgreSQL, MySQL and MariaDB in Docker
 task test-ui      # accessibility (axe) and keyboard tests in Chromium
 task bench        # Go benchmarks
 ```
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and how to sign the Contributor License Agreement.

@@ -1,0 +1,14 @@
+name: CLA
+
+# The shared CLA check: https://github.com/paularlott/cla
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  cla-check:
+    uses: paularlott/cla/.github/workflows/cla-check.yml@main
