@@ -1,7 +1,10 @@
 // Theme toggle. The preference lives in localStorage ("quisora-theme": light | dark | system); theme-boot.js applied it
 // before first paint. The switch toggles between light and dark; "Match system" clears the explicit choice.
+// A framed page is a skin preview (only previews may be framed): its toggle changes the preview alone, not the saved
+// preference, which the page around it (same origin) would follow through its storage event.
 const KEY = 'quisora-theme'
 const mq = window.matchMedia('(prefers-color-scheme: dark)')
+const framed = window.self !== window.top
 
 function readPref() {
   const el = document.documentElement
@@ -13,7 +16,7 @@ function apply(pref) {
   el.setAttribute('data-theme', pref === 'system' ? (mq.matches ? 'dark' : 'light') : pref)
 }
 function save(pref) {
-  try { pref === 'system' ? localStorage.removeItem(KEY) : localStorage.setItem(KEY, pref) } catch { /* private mode */ }
+  if (!framed) try { pref === 'system' ? localStorage.removeItem(KEY) : localStorage.setItem(KEY, pref) } catch { /* private mode */ }
   apply(pref)
 }
 
