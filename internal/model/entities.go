@@ -36,6 +36,15 @@ type OrgSettings struct {
 	APITokens string `msgpack:"at,omitempty" json:"api_tokens,omitempty"`
 	// APITokenGroups are the ids of the groups of the organization whose members may (APITokensGroups only).
 	APITokenGroups []string `msgpack:"atg,omitempty" json:"api_token_groups,omitempty"`
+	// The organization's own password, lockout, API token and privileged session policy; 0 keeps the server's
+	// (limits.password_min_length, limits.lockout_attempts, limits.lockout_minutes, tokens.api_token_max_days,
+	// session.privileged_ttl and session.privileged_idle). APITokenMaxDays may also be APITokensNoLimit.
+	PasswordMinLength int `msgpack:"pml,omitempty" json:"password_min_length"`
+	LockoutAttempts   int `msgpack:"loa,omitempty" json:"lockout_attempts"`
+	LockoutMinutes    int `msgpack:"lom,omitempty" json:"lockout_minutes"`
+	APITokenMaxDays   int `msgpack:"atm,omitempty" json:"api_token_max_days"`
+	PrivilegedTTL     int `msgpack:"pttl,omitempty" json:"privileged_ttl"`  // seconds
+	PrivilegedIdle    int `msgpack:"pidl,omitempty" json:"privileged_idle"` // seconds
 }
 
 // Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
@@ -44,6 +53,9 @@ func (s OrgSettings) Equal(o OrgSettings) bool {
 	s.APITokenGroups, o.APITokenGroups = nil, nil
 	return reflect.DeepEqual(s, o) && slices.Equal(g, og)
 }
+
+// APITokensNoLimit is OrgSettings.APITokenMaxDays for an organization whose personal API tokens may never expire.
+const APITokensNoLimit = -1
 
 // Who may make api-scope personal API tokens (OrgSettings.APITokens).
 const (
@@ -90,6 +102,12 @@ type OrgBranding struct {
 	Logo string `msgpack:"lg,omitempty" json:"-"`
 	// LogoDark says whether the logo has a dark-theme image (OrgLogo.Dark).
 	LogoDark bool `msgpack:"ld,omitempty" json:"-"`
+	// Skin is the skin the organization's pages use: a built-in or custom skin's name, "default" for the built-in look
+	// (no skin), or "" for the primary organization's (the primary organization's "" is the built-in look).
+	Skin string `msgpack:"sk,omitempty" json:"skin"`
+	// Footer is the footer line of the organization's pages (a little inline HTML, as ui.footer); "" inherits the
+	// primary organization's, else ui.footer.
+	Footer string `msgpack:"ft,omitempty" json:"footer"`
 }
 
 // OrgLogo is an organization's logo (OrgBranding): ID is the organization's. Dark, when set, is shown in the dark
@@ -124,6 +142,21 @@ type EmailTemplateSet struct {
 	LayoutText string                   `msgpack:"lt,omitempty" json:"layout_text"`
 	Emails     map[string]EmailTemplate `msgpack:"e,omitempty" json:"emails"`
 }
+
+// Skin is a custom skin of the server (the built-in ones are in the binary, web/skins): a stylesheet loaded after the
+// built-in one on the pages of the organizations that choose it (OrgBranding.Skin). Its id is its name (lowercase
+// letters, digits and dashes), which never changes; super admins add, change and remove skins. It is global, as the
+// organization records are: every organization's pages read it.
+type Skin struct {
+	Meta
+	DisplayName string `msgpack:"dn" json:"display_name"`
+	CSS         string `msgpack:"css" json:"-"`
+	// CSSVersion is a hash of CSS, the ?v= of the stylesheet's address (so a changed skin is a new address).
+	CSSVersion string `msgpack:"cv" json:"-"`
+}
+
+func (k *Skin) Kind() Kind   { return KindSkin }
+func (k *Skin) Index() Index { return Index{} }
 
 // EmailTemplate is one email's templates: its subject (text), and its body as HTML and as plain text.
 type EmailTemplate struct {

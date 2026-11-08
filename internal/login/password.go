@@ -89,18 +89,18 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		}
 	} // else: treated like an unknown user (generic failure after a dummy hash), so a switched-off org or tenant looks the same
 	key := m.lockKeyFor(r, u, lockKey(u, org, login))
-	n, open, err := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, org, key)
 	if err != nil { // the counter failed: refused, but not a lockout
 		unavailableResponse(w)
 		return
 	}
 	if !open {
 		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
-		m.lockedResponse(w)
+		m.lockedResponse(w, org)
 		return
 	}
 	wrong := false
-	defer m.settle(ctx, key, &wrong)
+	defer m.settle(ctx, org, key, &wrong)
 
 	// Always spend one password hash, whatever is wrong, so timing does not reveal which accounts exist.
 	check := u
@@ -229,8 +229,8 @@ func (m *Module) afterPassword(w http.ResponseWriter, r *http.Request, u *model.
 // failed records the n-th failed attempt (charge: audit, lockout event) and answers with the generic message.
 func (m *Module) failed(w http.ResponseWriter, r *http.Request, n int64, org *model.Org, u *model.User, login, reason string) {
 	m.audit(r, "login.failure", org, u, login, map[string]string{"reason": reason})
-	if m.tripped(n) && u != nil {
-		m.audit(r, "login.lockout", org, u, login, map[string]string{"minutes": strconv.Itoa(int(m.lockWindow().Minutes()))})
+	if m.tripped(org, n) && u != nil {
+		m.audit(r, "login.lockout", org, u, login, map[string]string{"minutes": strconv.Itoa(int(m.lockWindow(org).Minutes()))})
 	}
 	field := ""
 	msg := msgBadLogin
@@ -269,18 +269,18 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	n, open, err := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, org, key)
 	if err != nil { // the counter failed: refused, but not a lockout
 		unavailableResponse(w)
 		return
 	}
 	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
-		m.lockedResponse(w)
+		m.lockedResponse(w, org)
 		return
 	}
 	wrong := false
-	defer m.settle(ctx, key, &wrong)
+	defer m.settle(ctx, org, key, &wrong)
 	within, err := m.attempt(ctx, in.Ticket)
 	if err != nil { // the counter failed: refused, but not as too many tries
 		unavailableResponse(w)
@@ -340,18 +340,18 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := m.lockKeyFor(r, u, u.ID)
-	n, open, err := m.charge(ctx, key)
+	n, open, err := m.charge(ctx, org, key)
 	if err != nil { // the counter failed: refused, but not a lockout
 		unavailableResponse(w)
 		return
 	}
 	if !open {
 		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
-		m.lockedResponse(w)
+		m.lockedResponse(w, org)
 		return
 	}
 	wrong := false
-	defer m.settle(ctx, key, &wrong)
+	defer m.settle(ctx, org, key, &wrong)
 	within, err := m.attempt(ctx, in.Ticket)
 	if err != nil { // the counter failed: refused, but not as too many tries
 		unavailableResponse(w)

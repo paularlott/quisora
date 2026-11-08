@@ -1,120 +1,65 @@
 package web
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"errors"
-	"fmt"
-	"io/fs"
-	"os"
-	"path"
-	"path/filepath"
-	"regexp"
-	"slices"
+	"net/http"
 	"strings"
 
-	webassets "github.com/paularlott/quisora/web"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/skins"
 )
 
-// Skin is a replacement look for the UI (ui.skin): a stylesheet loaded after the built-in one that sets the design
-// tokens (web/src/css/tokens.css) under :root[data-skin="<name>"], and optional logos. It is read once at start-up.
-type Skin struct {
-	Name      string // data-skin on <html>
-	CSS       []byte
-	Version   string // content hash, the ?v= of the stylesheet URL
-	LogoLight *SkinFile
-	LogoDark  *SkinFile
-}
-
-// SkinFile is a skin's logo.
-type SkinFile struct {
-	Type string
-	Body []byte
-}
-
-// logoTypes are the logo files a skin may hold, by extension, in order of preference.
-var logoTypes = [][2]string{{".svg", "image/svg+xml"}, {".png", "image/png"}}
-
-// BuiltinSkins lists the skins compiled into the binary.
-func BuiltinSkins() []string {
-	entries, _ := fs.ReadDir(webassets.Skins, "skins")
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
+// skinStylesheet serves a skin's stylesheet (GET /branding/skins/<name>.css): a built-in or custom skin. The pages name
+// it with ?v=<version>, so a changed skin is a new address and this one may be kept.
+func (s *Server) skinStylesheet(w http.ResponseWriter, r *http.Request) {
+	name, ok := strings.CutSuffix(r.PathValue("file"), ".css")
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
-	return names
-}
-
-// LoadSkin loads ui.skin: "" (none), a built-in skin's name, or the absolute path of a skin folder (config.Validate
-// checks it and makes a relative one absolute).
-func LoadSkin(v string) (*Skin, error) {
-	if v == "" {
-		return nil, nil
+	css, _, err := s.Svc.SkinStylesheet(r.Context(), name)
+	if errors.Is(err, service.ErrNotFound) {
+		http.NotFound(w, r)
+		return
 	}
-	var fsys fs.FS
-	var name string
-	if filepath.IsAbs(v) {
-		fsys, name = os.DirFS(v), filepath.Base(v)
-	} else {
-		if !slices.Contains(BuiltinSkins(), v) {
-			return nil, fmt.Errorf("ui.skin %q is not a built-in skin (built in: %s)", v, strings.Join(BuiltinSkins(), ", "))
-		}
-		sub, err := fs.Sub(webassets.Skins, path.Join("skins", v))
-		if err != nil {
-			return nil, err
-		}
-		fsys, name = sub, v
-	}
-	css, err := fs.ReadFile(fsys, "skin.css")
 	if err != nil {
-		return nil, fmt.Errorf("ui.skin: %w", err)
+		WriteError(w, err)
+		return
 	}
-	sum := sha256.Sum256(css)
-	s := &Skin{Name: name, CSS: css, Version: hex.EncodeToString(sum[:6])}
-	if s.LogoLight, err = skinLogo(fsys, "logo-light"); err != nil {
-		return nil, err
+	h := w.Header()
+	h.Set("Content-Type", "text/css; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	if r.URL.Query().Get("v") != "" {
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		h.Set("Cache-Control", "no-cache")
 	}
-	if s.LogoDark, err = skinLogo(fsys, "logo-dark"); err != nil {
-		return nil, err
-	}
-	if s.LogoDark == nil {
-		s.LogoDark = s.LogoLight
-	}
-	return s, nil
+	_, _ = w.Write(css)
 }
 
-// skinSelector finds the skin names a stylesheet styles: [data-skin="<name>"], quoted or not, with space around the
-// "=" and a flag after the value as CSS allows.
-var skinSelector = regexp.MustCompile(`\[\s*data-skin\s*=\s*["']?([^"'\]\s]+)`)
+// SkinCSSPath is the address of skin name's stylesheet at version v.
+func SkinCSSPath(name, v string) string { return "/branding/skins/" + name + ".css?v=" + v }
 
-// skinOtherName returns the skin name a stylesheet's data-skin selectors use when none is the skin's own (its
-// folder's), as when the folder was renamed: the stylesheet would then style nothing, without a word. "" when one is
-// its own, or when it names no skin (:root { ... }: it is loaded only for this skin). It reads the text, not the CSS
-// (a selector in a comment counts), so New only warns of it.
-func skinOtherName(css []byte, name string) string {
-	other := ""
-	for _, m := range skinSelector.FindAllSubmatch(css, -1) {
-		if string(m[1]) == name {
-			return ""
-		}
-		if other == "" {
-			other = string(m[1])
+// withSkin sets the skin of a page of organization o: its own, else the primary organization's (service.ResolveSkin),
+// or, for a preview, the skin named by the page's ?skin=: a skin there is, skins.Default (no skin) or skins.Inherit
+// (the primary organization's, as an organization that has not chosen one).
+func (s *Server) withSkin(ctx context.Context, st Site, o *model.Org, preview string) Site {
+	name, v := s.Svc.ResolveSkin(ctx, o)
+	switch {
+	case preview == skins.Default:
+		name, v = "", ""
+	case preview == skins.Inherit:
+		name, v = s.Svc.ResolveSkin(ctx, nil)
+	case preview != "":
+		if pv := s.Svc.SkinVersion(ctx, preview); pv != "" {
+			name, v = preview, pv
 		}
 	}
-	return other
-}
-
-func skinLogo(fsys fs.FS, base string) (*SkinFile, error) {
-	for _, t := range logoTypes {
-		b, err := fs.ReadFile(fsys, base+t[0])
-		if err == nil {
-			return &SkinFile{Type: t[1], Body: b}, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("ui.skin: %w", err)
-		}
+	st.Skin, st.SkinCSS = name, ""
+	if name != "" {
+		st.SkinCSS = SkinCSSPath(name, v)
 	}
-	return nil, nil
+	return st
 }

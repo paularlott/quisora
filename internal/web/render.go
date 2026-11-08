@@ -23,7 +23,7 @@ type Site struct {
 	DefaultTheme string        // light, dark or system
 	LogoLight    string        // URL
 	LogoDark     string        // URL (falls back to LogoLight)
-	Skin         string        // ui.skin's name (data-skin on <html>), or ""
+	Skin         string        // the skin's name (data-skin on <html>), or "": the organization's (service.ResolveSkin)
 	SkinCSS      string        // URL of the skin's stylesheet, or ""
 	OrgLogo      bool          // the logo is the organization's (Site.For), and Brand its name
 	BrandCSS     string        // URL of the organization's primary colour stylesheet (Site.For), or ""

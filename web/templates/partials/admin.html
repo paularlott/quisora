@@ -611,6 +611,23 @@
   </div>
   <p class="help" id="h-primary_color">Written as #rrggbb. Used for buttons and links, so it must be dark enough for white text on it.</p>
   <p class="field-error" id="e-primary_color" x-text="errors.primary_color"></p>
+</div>
+<div class="field">
+  <label class="label" for="f-skin">Skin</label>
+  <div class="flex flex-wrap items-center gap-3">
+    <select class="select w-auto min-w-60" id="f-skin" name="skin" x-model="form.skin" :aria-invalid="invalid.skin" aria-describedby="h-skin e-skin">
+      <template x-for="o in skinOptions" :key="o.value"><option :value="o.value" x-text="o.label"></option></template>
+    </select>
+    <button type="button" class="btn btn-secondary btn-sm" @click="previewSkin">{{template "icon" "eye"}} Preview</button>
+  </div>
+  <p class="help" id="h-skin" x-text="skinHelp"></p>
+  <p class="field-error" id="e-skin" x-text="errors.skin"></p>
+</div>
+<div class="field">
+  <label class="label" for="f-footer">Footer</label>
+  <input class="input" id="f-footer" name="footer" type="text" x-model="form.footer" :aria-invalid="invalid.footer" aria-describedby="e-footer h-footer" maxlength="1000" autocomplete="off" spellcheck="false">
+  <p class="help" id="h-footer">Text shown at the bottom of every page. You can use links (&lt;a href="…"&gt;) and &lt;strong&gt;, &lt;em&gt;, &lt;small&gt;, &lt;span&gt; and &lt;br&gt;. Leave it empty to use the primary organization's footer, or the server's if that's empty too.</p>
+  <p class="field-error" id="e-footer" x-text="errors.footer"></p>
 </div>{{end}}
 
 {{/* One address of an organization to copy, in a card's <dl>: id, label, what (named in the announcement), value. */}}
@@ -644,5 +661,22 @@
     <button type="submit" class="btn btn-danger" id="signout-submit" :aria-busy="busyAttr" :disabled="signOutBlocked"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="signOutLabel">Sign everyone out</span></button>
   </div>
 </form>
+{{template "dialog-end"}}
+{{end}}
+
+{{/* The skin preview (lib/skinpreview.js, skinPreviewMixin): a page in a skin, framed. */}}
+{{define "skin-preview-dialog"}}
+{{template "dialog-start" (dict "id" "skin-preview" "title" "Preview" "titleBind" "pvTitle" "size" "xl")}}
+<div class="dialog-body">
+  <div class="tabs" role="tablist" aria-label="Page to preview">
+    <button type="button" role="tab" class="tab" id="pvs-tab-login" aria-controls="pvs-panel" :aria-selected="pvLoginSelected" :tabindex="pvLoginTabindex" data-view="login" @click="selectPv" @keydown="pvKey">Sign-in page</button>
+    <button type="button" role="tab" class="tab" id="pvs-tab-page" aria-controls="pvs-panel" :aria-selected="pvPageSelected" :tabindex="pvPageTabindex" data-view="page" @click="selectPv" @keydown="pvKey">This page</button>
+  </div>
+  <div role="tabpanel" id="pvs-panel" :aria-labelledby="pvPanelLabel">
+    <iframe class="skin-frame" x-ref="pvframe" src="about:blank" title="Preview" referrerpolicy="same-origin"></iframe>
+  </div>
+  <p class="help">Nothing is saved. This shows how the pages will look with this skin.</p>
+</div>
+<div class="dialog-foot"><button type="button" class="btn btn-secondary" @click="closeThis">Close</button></div>
 {{template "dialog-end"}}
 {{end}}

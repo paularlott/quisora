@@ -230,8 +230,8 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 }
 
 // lifetime is the session lifetime and idle timeout (seconds) of u in org: the organization's, never longer than
-// the server's (session.ttl, session.idle), and for managers and above never longer than session.privileged_ttl and
-// session.privileged_idle. An idle timeout of 0 is none.
+// the server's (session.ttl, session.idle), and for managers and above never longer than the organization's privileged
+// lengths, else session.privileged_ttl and session.privileged_idle. An idle timeout of 0 is none.
 func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
 	cfg := m.svc.Cfg.Session
 	ttl, idle = cfg.TTL, cfg.Idle
@@ -242,11 +242,18 @@ func (m *Sessions) lifetime(org *model.Org, u *model.User) (ttl, idle int) {
 		idle = org.Settings.SessionIdle
 	}
 	if u != nil && u.Role.Privileged() {
-		if cfg.PrivilegedTTL > 0 {
-			ttl = min(ttl, cfg.PrivilegedTTL)
+		pttl, pidle := cfg.PrivilegedTTL, cfg.PrivilegedIdle
+		if org != nil && org.Settings.PrivilegedTTL > 0 {
+			pttl = org.Settings.PrivilegedTTL
 		}
-		if cfg.PrivilegedIdle > 0 && (idle == 0 || cfg.PrivilegedIdle < idle) {
-			idle = cfg.PrivilegedIdle
+		if org != nil && org.Settings.PrivilegedIdle > 0 {
+			pidle = org.Settings.PrivilegedIdle
+		}
+		if pttl > 0 {
+			ttl = min(ttl, pttl)
+		}
+		if pidle > 0 && (idle == 0 || pidle < idle) {
+			idle = pidle
 		}
 	}
 	return ttl, idle

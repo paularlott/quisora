@@ -92,7 +92,6 @@ func TestValidateMessages(t *testing.T) {
 		"log level":      {func(c *Config) { c.Log.Level = "loud" }, "log.level"},
 		"log format":     {func(c *Config) { c.Log.Format = "xml" }, "log.format"},
 		"logo":           {func(c *Config) { c.UI.LogoLight = "relative.png" }, "ui.logo_light"},
-		"skin":           {func(c *Config) { c.UI.Skin = "Bad Name" }, "ui.skin"},
 	} {
 		c := Default()
 		tc.mut(c)

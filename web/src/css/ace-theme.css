@@ -37,3 +37,34 @@
 .ace-quisora.ace_autocomplete .ace_selected, .ace-quisora.ace_autocomplete .ace_marker-layer .ace_active-line { background: var(--row-hover); }
 .ace-quisora.ace_autocomplete .ace_completion-meta, .ace-quisora.ace_autocomplete .ace_rightAlignedText { color: var(--fg-muted); opacity: 1; }
 .ace_tooltip { background: var(--glass-solid); color: var(--fg); border: 1px solid var(--edge); font-family: var(--font-sans); }
+
+/* The search box (Ctrl+F / ⌘F, ext-searchbox): drawn from the tokens like the editor; its close button is a glyph
+   rather than Ace's image sprite. */
+.ace-quisora .ace_search {
+  background: var(--glass-solid); color: var(--fg); border: 1px solid var(--edge); border-top: 0;
+  box-shadow: var(--glass-shadow); font-family: var(--font-sans); font-size: 0.875rem;
+}
+.ace-quisora .ace_search_field {
+  background: var(--ctl-bg); color: var(--fg); border-color: var(--ctl-border); font-family: var(--font-mono);
+}
+.ace-quisora .ace_search_field::placeholder { color: var(--fg-muted); opacity: 1; }
+.ace-quisora .ace_search_field:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ace-quisora .ace_searchbtn { background: var(--ctl-bg); color: var(--fg); border-color: var(--ctl-border); }
+.ace-quisora .ace_searchbtn:hover { background: var(--ctl-hover); }
+.ace-quisora .ace_searchbtn:focus-visible, .ace-quisora .ace_button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ace-quisora .ace_searchbtn.prev::after, .ace-quisora .ace_searchbtn.next::after { border-color: var(--fg-muted); }
+.ace-quisora .ace_search_form.ace_nomatch { outline: 2px solid var(--danger); }
+.ace-quisora .ace_search_counter { color: var(--fg-muted); font-family: var(--font-sans); }
+.ace-quisora .ace_button { color: var(--fg); border-color: var(--edge); opacity: 1; border-radius: 4px; }
+.ace-quisora .ace_button:hover, .ace-quisora .ace_button:active { background: var(--ctl-hover); }
+.ace-quisora .ace_button.checked { border-color: var(--accent); color: var(--accent); }
+.ace-quisora .ace_searchbtn_close {
+  background: none; color: var(--fg-muted); width: 1.25rem; height: 1.25rem; top: 0.4rem; right: 0.3rem;
+  display: flex; align-items: center; justify-content: center; font: 1.1rem/1 var(--font-sans);
+}
+.ace-quisora .ace_searchbtn_close::before { content: "\00d7"; }
+.ace-quisora .ace_searchbtn_close:hover { background: var(--ctl-hover); color: var(--fg); }
+@media (forced-colors: active) {
+  .ace-quisora .ace_search { border: 1px solid CanvasText; }
+  .ace-quisora .ace_button.checked { border-color: Highlight; }
+}

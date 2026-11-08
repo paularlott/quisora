@@ -147,7 +147,13 @@ These have guides of their own:
 
 Settings the guides refer to: `session.ttl`, `session.idle`, `session.privileged_ttl` and `session.privileged_idle`
 (session lifetimes); `session.upstream_check_minutes` (leaver detection); `tokens.*` (token lifetimes and signing);
-`tokens.api_token_max_days`; `[secrets.vault]` and `[secrets.onepassword]`. TLS 1.2 connections are offered only the
+`tokens.api_token_max_days`; `[secrets.vault]` and `[secrets.onepassword]`.
+
+Some settings are only the server's defaults: an organization can set its own in the console (**Organizations**, edit,
+for super admins), and the server's applies wherever it has not. They are `limits.password_min_length`,
+`limits.lockout_attempts`, `limits.lockout_minutes`, `tokens.api_token_max_days`, `session.privileged_ttl` and
+`session.privileged_idle`. `ui.footer` is the default footer: an organization's administrators can set its own on its
+overview's branding card, and an organization without one shows the primary organization's, else `ui.footer`. TLS 1.2 connections are offered only the
 forward-secret AES-GCM cipher suites (RFC 9325, as FAPI 2.0 requires); TLS 1.3 is unaffected. Behind a proxy that ends
 TLS, the proxy's configuration decides.
 

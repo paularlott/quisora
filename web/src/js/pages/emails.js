@@ -11,6 +11,7 @@ import { formMixin } from '../lib/form.js'
 import { dialogMixin, openDialog, closeDialog } from '../lib/dialog.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
+import { fitTabs } from '../lib/tabsfit.js'
 
 const FIELDS = [
   ['Site', "who the email is from"], ['Org', "the organization's display name"], ['Name', "the recipient's full name"],
@@ -83,6 +84,7 @@ export default function register(Alpine) {
           }
           this.loaded = true
           await this.$nextTick()
+          fitTabs(this.$refs.tabs)
           const opts = (name, mode) => ({
             mode, inputId: 'f-' + name, labelId: 'l-' + name, describedBy: ['h-' + name, 'e-' + name], minLines: 8, maxLines: 30,
             completer: completer(() => this.tab === 'layout'), onChange: () => this.edited(),
@@ -151,8 +153,8 @@ export default function register(Alpine) {
       get resetLabel() { return `Use the default ${this.tabName}` },
       get inheritText() {
         return this.primary
-          ? "These are the server's default templates: every organization sends them where it has none of its own. Parts left as they are follow the built-in templates."
-          : "Parts left as they are follow the primary organization's templates (else the built-in ones), and change when those do."
+          ? "These templates are the default for every organization. Anything you don't change uses Quisora's built-in templates."
+          : "Anything you don't change uses the primary organization's templates (or Quisora's built-in ones), and updates when they do."
       },
 
       // ---- tabs ----

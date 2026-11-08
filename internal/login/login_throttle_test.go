@@ -202,6 +202,33 @@ func TestLockout(t *testing.T) {
 	}
 }
 
+// An organization's own lockout replaces the server's for its accounts: fewer attempts, a longer lock.
+func TestOrgLockout(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Limits.LockoutAttempts = 10
+		c.Limits.LockoutMinutes = 15
+		c.Limits.LoginPerIPMin = 0
+	})
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	st := org.Settings
+	st.LockoutAttempts, st.LockoutMinutes = 2, 60
+	if _, err := e.Svc.UpdateOrg(context.Background(), service.System, org.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	b := e.browser(t)
+	for range 2 {
+		if res, _ := b.login("acme", "pat", "bad"); res.StatusCode != 401 {
+			t.Fatalf("expected 401 before lockout, got %d", res.StatusCode)
+		}
+	}
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 429)
+	if res.Header.Get("Retry-After") != "3600" {
+		t.Fatalf("Retry-After %q", res.Header.Get("Retry-After"))
+	}
+}
+
 // An unknown login locks out after the same number of attempts, so lockout does not reveal which accounts exist.
 // Someone who knows the email address can lock the account, but not its owner's browsers that have signed in to it
 // before: they count failures of their own and lock after as many. A tampered device cookie is no cookie.

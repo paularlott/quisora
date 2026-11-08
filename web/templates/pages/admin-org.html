@@ -32,19 +32,24 @@
       <div><dt>API tokens for applications</dt><dd x-text="apiTokensText"></dd></div>
       <div><dt>Session lifetime</dt><dd x-text="ttlText"></dd></div>
       <div><dt>Signed out when idle for</dt><dd x-text="idleText"></dd></div>
+      <div><dt>Managers and admins</dt><dd x-text="privilegedText"></dd></div>
+      <div><dt>Shortest password</dt><dd x-text="passwordMinText"></dd></div>
+      <div><dt>Account lockout</dt><dd x-text="lockoutText"></dd></div>
+      <div><dt>API token lifetime</dt><dd x-text="tokenDaysText"></dd></div>
     </dl>
   </section>
 
   {{if .IsAdmin}}
   <section class="glass-card" aria-labelledby="brand-h" x-data="adminBranding" data-api="{{.Data.API}}" x-show="loaded" x-cloak>
     <h2 class="section-title mb-1" id="brand-h">Branding</h2>
-    <p class="muted mb-4">The logo and colour show on this organization's sign-in pages and in the console for its users. Without a logo, the server's logo and name are shown.</p>
+    <p class="muted mb-4">Change how this organization's sign-in pages and console look to its users. If there's no logo, the server's logo and name are used.</p>
     <form class="stack" @submit.prevent="save" novalidate>
       {{template "branding-fields"}}
       <div>
         <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="saveBlocked"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save branding</span></button>
       </div>
     </form>
+    {{template "skin-preview-dialog"}}
   </section>
   {{end}}
 

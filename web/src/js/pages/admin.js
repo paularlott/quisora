@@ -16,6 +16,7 @@ import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
+import { skinPreviewMixin } from '../lib/skinpreview.js'
 import { detailsText, checkDetails, describeProblem } from '../lib/authdetails.js'
 
 // newId makes an id as the server does (model.NewID): the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, the
@@ -1040,9 +1041,41 @@ export default function (Alpine) {
     r.onerror = () => reject(r.error)
     r.readAsDataURL(file)
   })
-  const brandingMixin = () => ({
-    b: {}, pending: { logo_light: null, logo_dark: null },
-    resetBranding(b) {
+  const brandingMixin = () => mix(skinPreviewMixin(), {
+    b: {}, pending: { logo_light: null, logo_dark: null }, skins: [], brandPrimary: false, brandOrgBase: '',
+    // the skins to choose from (GET /api/skins), once; the choice is set again once its option is there
+    async loadSkins() {
+      if (this.skins.length) return
+      try {
+        this.skins = (await get('/api/skins')).items
+        const v = this.form.skin
+        this.form.skin = ''
+        this.$nextTick(() => { this.form.skin = v })
+      } catch { /* the choice stays as it is: saving it is checked by the server */ }
+    },
+    get skinOptions() {
+      const opts = this.brandPrimary ? [{ value: '', label: 'Default' }]
+        : [{ value: '', label: 'Same as the primary organization' }, { value: 'default', label: 'Default' }]
+      for (const k of this.skins) if (k.name !== 'default') opts.push({ value: k.name, label: k.display_name + (k.builtin ? '' : ' (custom)') })
+      const cur = this.b.skin
+      if (cur && cur !== 'default' && this.skins.length && !this.skins.some((k) => k.name === cur)) opts.push({ value: cur, label: cur + ' (removed)' })
+      return opts
+    },
+    get skinHelp() {
+      return this.brandPrimary ? "Changes how the primary organization's pages look. Organizations that haven't picked a skin use this one too."
+        : "Changes how this organization's sign-in pages and console look."
+    },
+    get skinChanged() { return (this.form.skin || '') !== (this.b.skin || '') },
+    // previewSkin shows the organization's pages in the skin chosen, saved or not (skinPreviewMixin)
+    previewSkin(ev) {
+      const v = this.form.skin || (this.brandPrimary ? 'default' : 'inherit')
+      const o = this.skinOptions.find((x) => x.value === (this.form.skin || ''))
+      this.showSkinPreview(ev.currentTarget, v, o ? o.label : v, this.brandOrgBase)
+    },
+    resetBranding(b, primary, orgBase) {
+      this.brandPrimary = !!primary
+      this.brandOrgBase = orgBase || ''
+      this.loadSkins()
       this.b = b || {}
       this.pending = { logo_light: null, logo_dark: null }
       this.$refs.logo_light.value = ''
@@ -1103,12 +1136,15 @@ export default function (Alpine) {
       this.form.primary_color = ''
       this.$refs.primary_color.focus()
     },
-    get brandingChanged() { return this.colorChanged || this.pending.logo_light !== null || this.pending.logo_dark !== null },
+    get footerChanged() { return (this.form.footer || '').trim() !== (this.b.footer || '') },
+    get brandingChanged() { return this.colorChanged || this.footerChanged || this.skinChanged || this.pending.logo_light !== null || this.pending.logo_dark !== null },
     // the changes, as PATCH <org>/branding and the branding of a new organization take them
     brandingBody() {
       const body = {}
       for (const key of ['logo_light', 'logo_dark']) if (this.pending[key] !== null) body[key] = this.pending[key]
       if (this.colorChanged) body.primary_color = this.form.primary_color.trim()
+      if (this.footerChanged) body.footer = this.form.footer.trim()
+      if (this.skinChanged) body.skin = this.form.skin || ''
       return body
     },
   })
@@ -1134,11 +1170,23 @@ export default function (Alpine) {
       if (id) this.dropGroup(id)
     },
   }), {
-    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 }, groupNames: {},
+    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 }, groupNames: {}, help: {},
     init() {
       this.base = this.$el.dataset.base
       this.publicUrl = this.$el.dataset.public
       this.defaults = { ttl: Math.round(Number(this.$el.dataset.ttl) / 3600), idle: Math.round(Number(this.$el.dataset.idle) / 60) }
+      // the help of the organization's own policy fields: their range and the server's setting, used when left blank
+      const d = this.$el.dataset
+      const n = (k) => Number(d[k]) || 0
+      const dflt = (v) => ` Leave empty to use the server's setting (${v}).`
+      this.help = {
+        password_min_length: '8 to 64.' + dflt(n('pwmin')),
+        lockout_attempts: 'How many wrong passwords or codes in a row lock the account (1 to 100).' + dflt(n('lockout') || 'never locks'),
+        lockout_minutes: 'How long the account stays locked (1 to 1440).' + dflt(n('lockmin') || 15),
+        api_token_max_days: '1 to 3650. Tokens created without an expiry get this lifetime.' + dflt(n('tokendays') ? n('tokendays') + ' days' : 'no limit'),
+        privileged_ttl: 'Hours before a session ends, even if it is in use.' + dflt(n('pttl') ? Math.round(n('pttl') / 3600) + 'h' : 'as everyone'),
+        privileged_idle: 'Minutes of inactivity before a session ends.' + dflt(n('pidle') ? Math.round(n('pidle') / 60) + ' minutes' : 'as everyone'),
+      }
       this.initTable()
     },
     transform(o) {
@@ -1150,8 +1198,8 @@ export default function (Alpine) {
     get isEdit() { return this.editing !== null },
     get dialogTitle() { return this.editing ? 'Edit organization' : 'New organization' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create organization' },
-    get ttlHelp() { return 'Hours before a session ends, whatever the activity. Leave blank for the server default (' + this.defaults.ttl + 'h).' },
-    get idleHelp() { return 'Minutes of inactivity before a session ends. Leave blank for the server default (' + (this.defaults.idle || 'none') + ').' },
+    get ttlHelp() { return `Hours before a session ends, even if it is in use. Leave empty to use the server's setting (${this.defaults.ttl}h).` },
+    get idleHelp() { return `Minutes of inactivity before a session ends. Leave empty to use the server's setting (${this.defaults.idle ? this.defaults.idle + ' minutes' : 'none'}).` },
     // The chosen groups need an organization that exists to choose from.
     get groupsUnavailable() { return !this.isEdit },
     get groupsOption() { return this.isEdit ? 'Members of chosen groups' : 'Members of chosen groups (once the organization exists)' },
@@ -1191,7 +1239,12 @@ export default function (Alpine) {
         passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes,
         api_tokens: s.api_tokens || 'off', api_token_groups: [...(s.api_token_groups || [])],
         session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '',
-        primary_color: (o.branding && o.branding.primary_color) || '' }
+        password_min_length: s.password_min_length ? String(s.password_min_length) : '', lockout_attempts: s.lockout_attempts ? String(s.lockout_attempts) : '',
+        lockout_minutes: s.lockout_minutes ? String(s.lockout_minutes) : '', api_token_max_days: s.api_token_max_days > 0 ? String(s.api_token_max_days) : '',
+        api_token_no_limit: s.api_token_max_days === -1,
+        privileged_ttl: s.privileged_ttl ? String(Math.round(s.privileged_ttl / 3600)) : '', privileged_idle: s.privileged_idle ? String(Math.round(s.privileged_idle / 60)) : '',
+        primary_color: (o.branding && o.branding.primary_color) || '', footer: (o.branding && o.branding.footer) || '',
+        skin: (o.branding && o.branding.skin) || '' }
     },
     openCreate(ev) {
       this.editing = null
@@ -1205,7 +1258,7 @@ export default function (Alpine) {
       const o = this.rowFromEvent(ev)
       this.editing = o
       this.resetForm(this.orgToForm(o))
-      this.resetBranding(o.branding)
+      this.resetBranding(o.branding, o.primary, '/o/' + o.name)
       this.groupNames = {}
       this.resetPicker()
       this.loadGroupNames(o)
@@ -1224,7 +1277,10 @@ export default function (Alpine) {
       const res = await this.run(() => {
         const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa, email_codes: f.email_codes,
           api_tokens: f.api_tokens, api_token_groups: f.api_tokens === 'groups' ? f.api_token_groups : [],
-          session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle') }
+          session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle'),
+          password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
+          lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
+          privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle') }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
         // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
@@ -2277,19 +2333,36 @@ export default function (Alpine) {
     },
     get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
     get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },
+    get privilegedText() {
+      const s = this.org.settings
+      if (!s.privileged_ttl && !s.privileged_idle) return 'Server default'
+      return [s.privileged_ttl ? hours(s.privileged_ttl) + ' sessions' : 'Server default lifetime',
+        s.privileged_idle ? 'signed out when idle for ' + minutes(s.privileged_idle) : 'server default idle timeout'].join(', ')
+    },
+    get passwordMinText() { const n = this.org.settings.password_min_length; return n ? `${n} characters` : 'Server default' },
+    get lockoutText() {
+      const s = this.org.settings
+      if (!s.lockout_attempts && !s.lockout_minutes) return 'Server default'
+      return `${s.lockout_attempts ? `After ${s.lockout_attempts} failed attempts` : 'After the server default attempts'}, for ${s.lockout_minutes ? minutes(s.lockout_minutes * 60) : 'the server default time'}`
+    },
+    get tokenDaysText() {
+      const n = this.org.settings.api_token_max_days
+      if (n === -1) return 'No limit: tokens may never expire'
+      return n ? `At most ${n} day${n === 1 ? '' : 's'}` : 'Server default'
+    },
   }))
 
   // ---- An organization's branding (its administrators): PATCH <org>/branding --------------------------------------
   // The branding card on the organization's page; the organization dialog has the same fields (brandingMixin).
-  Alpine.data('adminBranding', () => mix(formMixin(), brandingMixin(), {
+  Alpine.data('adminBranding', () => mix(formMixin(), dialogMixin(), brandingMixin(), {
     loaded: false, apiBase: '',
     async init() {
       this.apiBase = this.$el.dataset.api
       try { this.show(await get(this.apiBase)) } catch { /* the page's own load of the organization reports it */ }
     },
     show(org) {
-      this.resetForm({ primary_color: org.branding.primary_color })
-      this.resetBranding(org.branding)
+      this.resetForm({ primary_color: org.branding.primary_color, footer: org.branding.footer || '', skin: org.branding.skin || '' })
+      this.resetBranding(org.branding, org.primary, '/o/' + org.name)
       this.loaded = true
     },
     get saveBlocked() { return this.busy || !this.brandingChanged },

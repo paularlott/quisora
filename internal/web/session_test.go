@@ -82,6 +82,9 @@ func TestSessionLifetime(t *testing.T) {
 	org := func(ttl, idle int) *model.Org {
 		return &model.Org{Settings: model.OrgSettings{SessionTTL: ttl, SessionIdle: idle}}
 	}
+	priv := func(ttl, idle int) *model.Org {
+		return &model.Org{Settings: model.OrgSettings{PrivilegedTTL: ttl, PrivilegedIdle: idle}}
+	}
 	for _, tc := range []struct {
 		name      string
 		org       *model.Org
@@ -93,6 +96,9 @@ func TestSessionLifetime(t *testing.T) {
 		{"org above the server is capped", org(30*86400, 7*86400), user, 7 * 86400, 86400},
 		{"privileged", org(0, 0), admin, 12 * 3600, 3600},
 		{"privileged under a shorter org", org(1800, 300), admin, 1800, 300},
+		{"org's own privileged lengths", priv(4*3600, 1800), admin, 4 * 3600, 1800},
+		{"org's privileged lengths, longer than the server's", priv(24*3600, 7200), admin, 24 * 3600, 7200},
+		{"org's privileged lengths are not a user's", priv(4*3600, 1800), user, 7 * 86400, 86400},
 	} {
 		if ttl, idle := m.lifetime(tc.org, tc.u); ttl != tc.ttl || idle != tc.idle {
 			t.Errorf("%s: %d/%d, want %d/%d", tc.name, ttl, idle, tc.ttl, tc.idle)

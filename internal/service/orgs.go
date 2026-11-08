@@ -232,6 +232,9 @@ func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in 
 	var logo *model.OrgLogo
 	if in.Branding != nil {
 		var err error
+		if err := s.validSkinChoice(ctx, in.Branding.Skin); err != nil {
+			return nil, nil, "", prefixField("branding.", err)
+		}
 		if logo, err = applyBranding(o, nil, *in.Branding); err != nil {
 			return nil, nil, "", prefixField("branding.", err)
 		}
@@ -560,5 +563,5 @@ func (s *Service) validOrgSettings(ctx context.Context, orgID string, st model.O
 	if s.Cfg.Session.Idle > 0 && st.SessionIdle > s.Cfg.Session.Idle && (old == nil || st.SessionIdle != old.SessionIdle) {
 		return Invalid("session_idle", "at most "+itoa(s.Cfg.Session.Idle)+" seconds (the server's session.idle)")
 	}
-	return nil
+	return s.validOrgPolicy(st, old)
 }

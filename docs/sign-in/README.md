@@ -101,8 +101,9 @@ so an invitation for someone who was promoted after it went out is judged on the
 ## Sessions
 
 Browser sessions last `session.ttl` from sign-in (7 days) and end after `session.idle` unused (24 hours). An
-organization may set shorter ones on its settings, never longer. Managers and above get `session.privileged_ttl` (12
-hours) and `session.privileged_idle` (1 hour) when those are shorter. The primary organization's settings (methods,
+organization may set shorter ones on its settings, never longer. Managers and above get the organization's own
+lengths for them, else `session.privileged_ttl` (12 hours) and `session.privileged_idle` (1 hour), when those are
+shorter. The primary organization's settings (methods,
 second factor, session lifetimes) cover the super admins, so only super admins change them.
 
 Users see their sessions of the organization on their account page and can end any of them; administrators can end a user's sessions

@@ -1,0 +1,85 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminSkins" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">System</p>
+      <h1 class="page-title">Skins</h1>
+      <p class="page-sub">Skins change how the sign-in pages and console look. Each organization picks one in its Branding settings. If it doesn't, it uses the primary organization's skin.</p>
+    </div>
+    <div class="head-actions"><button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New skin</button></div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+  <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+
+  <section class="glass-card" aria-label="Skins list" x-show="loaded" x-cloak>
+    <div class="table-wrap" role="region" aria-label="Skins table" tabindex="0">
+      <table class="table">
+        <caption class="sr-only">Skins</caption>
+        <thead><tr>
+          <th scope="col">Skin</th>
+          <th scope="col">Name</th>
+          <th scope="col">Type</th>
+          <th scope="col">Changed</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="k in items" :key="k.name"><tr>
+            <td><span class="cell-title" x-text="k.display_name"></span></td>
+            <td class="mono" x-text="k.name"></td>
+            <td><span class="badge" :class="k.kindClass" x-text="k.kind"></span></td>
+            <td x-text="k.updatedText"></td>
+            <td class="actions">
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="k.previewLabel" :data-name="k.name" @click="preview">{{template "icon" "eye"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="k.openLabel" :data-name="k.name" @click="open">{{template "icon" "pencil"}}</button>
+              <button type="button" class="btn btn-ghost btn-icon btn-sm" :aria-label="k.deleteLabel" :data-name="k.name" x-show="k.custom" @click="remove">{{template "icon" "trash"}}</button>
+            </td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {{template "dialog-start" (dict "id" "skin-dialog" "title" "Skin" "titleBind" "dialogTitle" "size" "lg")}}
+  <form @submit.prevent="submit" novalidate>
+    <div class="dialog-body">
+      <div class="field-row">
+        <div class="field">
+          <label class="label" for="f-display_name">Display name</label>
+          <input class="input" id="f-display_name" name="display_name" type="text" maxlength="60" autocomplete="off" x-model="form.display_name" :disabled="readOnly" :aria-invalid="invalid.display_name" aria-describedby="h-display_name e-display_name" data-autofocus>
+          <p class="help" id="h-display_name">The name administrators see when picking a skin. Leave empty to use the name.</p>
+          <p class="field-error" id="e-display_name" x-text="errors.display_name"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="f-name">Name</label>
+          <input class="input mono" id="f-name" name="name" type="text" maxlength="40" autocomplete="off" spellcheck="false" x-model="form.name" :disabled="!isCreate" :aria-invalid="invalid.name" aria-describedby="h-name e-name">
+          <p class="help" id="h-name">Lowercase letters, numbers and dashes, such as acme-dark. It can't be changed later.</p>
+          <p class="field-error" id="e-name" x-text="errors.name"></p>
+        </div>
+      </div>
+      <div class="field" x-show="isCreate">
+        <label class="label" for="f-start">Start from</label>
+        <select class="select" id="f-start" x-model="form.start" @change="startFrom" aria-describedby="h-start">
+          <option value="">A blank skin</option>
+          <template x-for="k in items" :key="k.name"><option :value="k.name" x-text="k.display_name"></option></template>
+        </select>
+        <p class="help" id="h-start">Replaces the stylesheet below with a copy of this skin.</p>
+      </div>
+      <div class="field">
+        <label class="label" id="l-css" for="f-css">Stylesheet</label>
+        <div class="details-editor" x-ref="css" :data-invalid="invalid.css"></div>
+        <p class="help" id="h-css" x-text="cssHelp"></p>
+        <p class="field-error" id="e-css" x-text="errors.css"></p>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-secondary" @click="closeThis" x-text="cancelLabel">Cancel</button>
+      <button type="button" class="btn btn-secondary" x-show="readOnly" @click="copyBuiltin">{{template "icon" "copy"}} Copy to a new skin</button>
+      <button type="submit" class="btn btn-primary" x-show="!readOnly" :aria-busy="busyAttr" :disabled="saveDisabled"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="submitLabel">Save skin</span></button>
+    </div>
+  </form>
+  {{template "dialog-end"}}
+  {{template "skin-preview-dialog"}}
+</div>
+{{end}}

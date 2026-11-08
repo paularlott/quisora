@@ -39,6 +39,7 @@ const (
 	KindSignIn         Kind = "signin"   // a user's sign-in stamps (SignIn)
 	KindOrgLogo        Kind = "logo"     // an organization's logo (OrgLogo)
 	KindEmailTemplates Kind = "emailtpl" // an organization's email templates (EmailTemplates)
+	KindSkin           Kind = "skin"     // a custom skin of the server (Skin)
 	KindLock           Kind = "lock"     // leases (Lock), such as each node's master key report
 	KindReplay         Kind = "replay"   // single-use values seen, until they expire (Replay)
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
@@ -74,7 +75,7 @@ type Index struct {
 	//     clients, providers, passkeys, identities, sessions, grants, consents, API tokens, SSH CA keys and certificates, audit
 	//     events, link tokens, sign-in records): the OrgID, so an organization's records, and every unique value scoped to it, share a partition.
 	//     An entity whose OrgID is empty (a server-level audit event) is global;
-	//   - KindOrg and KindKey (organizations, signing keys): "". They are read by every organization and by pages that
+	//   - KindOrg, KindKey and KindSkin (organizations, signing keys, custom skins): "". They are read by every organization and by pages that
 	//     have no organization yet, and the organization list is one record set;
 	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
 	//     other, so they spread over the partitions instead of loading partition 0 (an organization's deletion guard,

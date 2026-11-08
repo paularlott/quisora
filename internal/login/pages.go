@@ -79,7 +79,8 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 	next := safeNext(org, q.Get("next"))
 	reauth := wantsReauth(r)
 	cur := web.User(r)
-	if cur != nil && !reauth {
+	// a skin preview (?skin=, the console's preview dialog) shows the page to someone signed in as well
+	if cur != nil && !reauth && !q.Has("skin") {
 		http.Redirect(w, r, nextOrDefault(org, next), http.StatusSeeOther)
 		return
 	}

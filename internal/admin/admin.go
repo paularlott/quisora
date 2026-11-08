@@ -103,6 +103,11 @@ func (m *Module) routes() []Route {
 		{"POST", o + "/email-templates/preview", m.previewEmailTemplate, ""},
 		{"POST", o + "/email-templates/test", m.testEmailTemplate, ""},
 		{"DELETE", o, m.deleteOrg, service.ScopeOrgsDelete},
+		{"GET", "/api/skins", m.listSkins, ""},
+		{"POST", "/api/skins", m.createSkin, ""},
+		{"GET", "/api/skins/{name}", m.getSkin, ""},
+		{"PATCH", "/api/skins/{name}", m.updateSkin, ""},
+		{"DELETE", "/api/skins/{name}", m.deleteSkin, ""},
 		{"POST", o + "/sign-out", m.signOutOrg, ""},
 
 		{"GET", o + "/users", m.listUsers, service.ScopeUsers},

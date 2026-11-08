@@ -362,17 +362,18 @@ type changePasswordReq struct {
 func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model.User, password, field string) bool {
 	ctx := r.Context()
 	key := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
-	n, open, err := m.charge(ctx, key)
+	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	n, open, err := m.charge(ctx, org, key)
 	if err != nil { // the counter failed: refused, but not a lockout
 		unavailableResponse(w)
 		return false
 	}
 	if !open {
-		m.lockedResponse(w)
+		m.lockedResponse(w, org)
 		return false
 	}
 	wrong := false
-	defer m.settle(ctx, key, &wrong)
+	defer m.settle(ctx, org, key, &wrong)
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	ok, err := m.s.Svc.VerifyPassword(vctx, u.OrgID, u, password)
@@ -387,8 +388,7 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 	}
 	if !ok {
 		wrong = true
-		if m.tripped(n) {
-			org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+		if m.tripped(org, n) {
 			m.audit(r, "login.lockout", org, u, u.Username, nil)
 		}
 		writeErr(w, http.StatusUnprocessableEntity, "That password is incorrect.", field)
@@ -653,18 +653,19 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		return
 	}
 	lockKey := m.lockKeyFor(r, u, u.ID) // as sign-in: a known browser has its own counter (device.go)
+	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 	checkCode := func() bool {
-		n, open, err := m.charge(ctx, lockKey)
+		n, open, err := m.charge(ctx, org, lockKey)
 		if err != nil { // the counter failed: refused, but not a lockout
 			unavailableResponse(w)
 			return false
 		}
 		if !open {
-			m.lockedResponse(w)
+			m.lockedResponse(w, org)
 			return false
 		}
 		wrong := false
-		defer m.settle(ctx, lockKey, &wrong)
+		defer m.settle(ctx, org, lockKey, &wrong)
 		secret, err := m.s.Svc.Sealer.OpenFor(service.TOTPBinding(u.ID), u.TOTPSecret)
 		if err != nil {
 			m.internalError(w, r, "open totp secret", err)
@@ -677,8 +678,7 @@ func (m *Module) reauthPassword(w http.ResponseWriter, r *http.Request, a acct) 
 		}
 		if !good {
 			wrong = true
-			if m.tripped(n) {
-				org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+			if m.tripped(org, n) {
 				m.audit(r, "login.lockout", org, u, u.Username, nil)
 			}
 			writeErr(w, http.StatusUnprocessableEntity, "That code is incorrect or has already been used.", "code")
@@ -759,26 +759,26 @@ func (m *Module) reauthRecovery(w http.ResponseWriter, r *http.Request, a acct, 
 		}
 	}
 	lockKey := m.lockKeyFor(r, u, u.ID)
-	n, open, err := m.charge(ctx, lockKey)
+	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
+	n, open, err := m.charge(ctx, org, lockKey)
 	if err != nil { // the counter failed: refused, but not a lockout
 		unavailableResponse(w)
 		return
 	}
 	if !open {
-		m.lockedResponse(w)
+		m.lockedResponse(w, org)
 		return
 	}
 	wrong := false
-	defer m.settle(ctx, lockKey, &wrong)
+	defer m.settle(ctx, org, lockKey, &wrong)
 	used, left, err := m.s.Svc.ConsumeRecoveryCode(ctx, u, in.RecoveryCode)
 	if err != nil { // the use could not be recorded (or may have been): try again, not a wrong code, no failure counted
 		m.internalError(w, r, "record recovery code", err)
 		return
 	}
-	org, _ := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 	if !used {
 		wrong = true
-		if m.tripped(n) {
+		if m.tripped(org, n) {
 			m.audit(r, "login.lockout", org, u, u.Username, nil)
 		}
 		writeErr(w, http.StatusUnprocessableEntity, "That recovery code is incorrect or has already been used.", "recovery_code")
@@ -1313,7 +1313,7 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "scopes": scopes,
-		"max_days": m.s.Cfg.Tokens.APITokenMaxDays, "apps": apps})
+		"max_days": m.s.Svc.APITokenMaxDays(m.s.Svc.OrgOrNil(r.Context(), a.u.OrgID)), "apps": apps})
 }
 
 // updateToken changes a token's name, applications or scopes. It can give a narrowed token its full access back, so

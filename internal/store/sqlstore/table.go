@@ -46,6 +46,7 @@ var tableNames = map[model.Kind]string{
 	model.KindSignIn:         "sign_ins",
 	model.KindOrgLogo:        "organization_logos",
 	model.KindEmailTemplates: "email_templates",
+	model.KindSkin:           "skins",
 	model.KindLock:           "leases",
 	model.KindReplay:         "single_use_values",
 	model.KindEphemeral:      "ephemeral_state",

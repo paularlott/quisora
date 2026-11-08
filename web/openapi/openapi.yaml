@@ -2966,6 +2966,115 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/skins:
+    parameters:
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [System]
+      summary: List the skins
+      description: "The skins an organization may choose for its pages (its branding's skin): the built-in ones first, then the custom ones super admins added, without their stylesheets. Super admins and organization administrators; not service accounts."
+      operationId: get_skins
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SkinList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [System]
+      summary: Add a custom skin
+      description: "A stylesheet loaded after the built-in one on the pages of the organizations that choose it, setting the design tokens under :root[data-skin] (any skin) or :root[data-skin=\"<name>\"]. The name (lowercase letters, digits and dashes, not a built-in skin's or default) is the skin's id and never changes. At most 256 KB; data-skin selectors that name only another skin are refused. Super admins, as people. Audited as skin.create."
+      operationId: post_skins
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SkinInput"}
+        required: true
+      responses:
+        "201":
+          description: Created
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Skin"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/skins/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: the skin's name
+        schema: {type: string}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [System]
+      summary: Get a skin with its stylesheet
+      description: A built-in or custom skin, with its stylesheet. Super admins.
+      operationId: get_skins_name
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Skin"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      tags: [System]
+      summary: Change a custom skin
+      description: Its display name or stylesheet (as when it is added); built-in skins are not changed. Pages load the new stylesheet at once (its address carries its version). Super admins, as people. Audited as skin.update.
+      operationId: patch_skins_name
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SkinInput"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Skin"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [System]
+      summary: Remove a custom skin
+      description: The organizations that chose it show the primary organization's skin (the primary organization, the built-in look) until they choose another. Built-in skins are not removed. Super admins, as people. Audited as skin.delete.
+      operationId: delete_skins_name
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/system:
     parameters:
       - {$ref: "#/components/parameters/ApiVersion"}
@@ -4129,6 +4238,14 @@ components:
         primary_color:
           type: string
           description: "#rrggbb, or empty for the server's colour"
+        footer:
+          type: string
+          description: the footer line of the organization's pages (a little inline HTML); empty uses the primary organization's,
+            else the server's ui.footer
+        skin:
+          type: string
+          description: the skin of the organization's pages (a skin's name); default is the built-in look; empty uses the primary
+            organization's
         logo_light:
           type: string
           description: URL of the logo, served by Quisora; absent without one
@@ -4151,6 +4268,54 @@ components:
           type: string
           description: "#rrggbb with a contrast of at least 4.5:1 against white text; \"\" removes it"
           example: "#134e4a"
+        skin:
+          type: string
+          description: a built-in or custom skin's name (GET /api/skins), default for the built-in look, or "" for the primary
+            organization's
+        footer:
+          type: string
+          maxLength: 1000
+          description: "the footer line of the organization's pages, on one line: text with links (<a href>) and <strong>, <em>,
+            <small>, <span> and <br>; other markup is removed when shown; \"\" uses the primary organization's, else the server's"
+    Skin:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the skin's id, data-skin on the pages' <html>
+        display_name:
+          type: string
+        builtin:
+          type: boolean
+          description: compiled into the binary (not changed or removed)
+        css:
+          type: string
+          description: the stylesheet (one skin at a time, super admins)
+        updated:
+          type: string
+          format: date-time
+          description: when a custom skin last changed
+    SkinInput:
+      type: object
+      properties:
+        name:
+          type: string
+          description: lowercase letters, digits and dashes, at most 40; when adding only
+        display_name:
+          type: string
+          description: 1 to 60 characters (default the name)
+        css:
+          type: string
+          description: the stylesheet, at most 256 KB
+    SkinList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Skin"}
+        total:
+          type: integer
     Client:
       type: object
       properties:
@@ -5101,6 +5266,26 @@ components:
         session_ttl:
           type: integer
           description: seconds; 0 = server default
+        password_min_length:
+          type: integer
+          description: shortest password, 8 to 64 characters; 0 = server default (limits.password_min_length)
+        lockout_attempts:
+          type: integer
+          description: wrong passwords or codes in a row that lock an account, 1 to 100; 0 = server default (limits.lockout_attempts)
+        lockout_minutes:
+          type: integer
+          description: how long a locked account stays locked, 1 to 1440 minutes; 0 = server default (limits.lockout_minutes)
+        api_token_max_days:
+          type: integer
+          description: longest personal API token lifetime, 1 to 3650 days, and the lifetime of one made without; -1 = no limit
+            (tokens may never expire); 0 = server default (tokens.api_token_max_days)
+        privileged_ttl:
+          type: integer
+          description: session lifetime of managers and above, seconds, at most the server's session.ttl; 0 = server default
+            (session.privileged_ttl)
+        privileged_idle:
+          type: integer
+          description: idle timeout of managers and above, seconds; 0 = server default (session.privileged_idle)
     Provider:
       type: object
       properties:
