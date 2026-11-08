@@ -92,6 +92,7 @@
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/service-accounts"{{if eq $.Nav "service-accounts"}} aria-current="page"{{end}}>{{template "icon" "key"}} Service accounts</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/emails"{{if eq $.Nav "emails"}} aria-current="page"{{end}}>{{template "icon" "mail"}} Emails</a>
       {{end}}
       {{end}}
     </div>

@@ -1,0 +1,120 @@
+{{template "base" .}}
+{{define "content"}}
+<div x-data="adminEmails" data-api="{{.Data.API}}/email-templates" data-me="{{with .User}}{{.Email}}{{end}}" class="stack-lg">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">{{.Data.OrgDisplay}}{{if .Data.IsPrimary}} <span class="badge badge-accent ml-1">Primary</span>{{end}}</p>
+      <h1 class="page-title">Emails</h1>
+      <p class="page-sub">The emails this organization sends: a layout for their header and footer, and each email's subject and body, in HTML and in plain text.</p>
+    </div>
+  </div>
+
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+  <div class="skeleton-row" x-show="loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+
+  <section class="glass-card" aria-labelledby="et-h" x-show="loaded" x-cloak>
+    <p class="muted mb-4" x-text="inheritText"></p>
+    <div class="tabs" role="tablist" aria-label="Templates">
+      <template x-for="t in tabs" :key="t.id">
+        <button type="button" role="tab" class="tab" :id="t.tabId" aria-controls="et-panel" :aria-selected="t.selected" :tabindex="t.tabindex"
+          :data-tab="t.id" @click="selectTab" @keydown="tabKey"><span x-text="t.title"></span><span class="tab-mark" x-show="t.custom" aria-hidden="true"></span><span class="sr-only" x-show="t.custom">(customized)</span><span class="tab-mark tab-mark-unsaved" x-show="t.unsaved" aria-hidden="true"></span><span class="sr-only" x-show="t.unsaved">(unsaved)</span></button>
+      </template>
+    </div>
+
+    <div role="tabpanel" id="et-panel" :aria-labelledby="panelLabel" class="stack pt-5">
+      <div class="et-head">
+        <div>
+          <h2 class="section-title" id="et-h" x-text="tabTitle">Layout</h2>
+          <p class="muted" x-text="tabAbout"></p>
+        </div>
+        <span class="badge" :class="tabBadgeClass" x-text="tabBadgeText"></span>
+      </div>
+
+      <form class="stack" @submit.prevent="save" novalidate>
+        <div class="field" x-show="isEmailTab">
+          <label class="label" for="f-subject">Subject</label>
+          <input class="input" id="f-subject" type="text" autocomplete="off" spellcheck="false" x-model="form.subject" @input="edited" :aria-invalid="invalid.subject" aria-describedby="h-subject e-subject">
+          <p class="help" id="h-subject">Plain text, on one line. It cannot show the link or the code: subjects show on lock screens and in notifications.</p>
+          <p class="field-error" id="e-subject" x-text="errors.subject"></p>
+        </div>
+
+        <div class="field">
+          <label class="label" id="l-html" for="f-html">HTML</label>
+          <div class="details-editor" x-ref="html" :data-invalid="htmlInvalid"></div>
+          <p class="help" id="h-html" x-text="htmlHelp"></p>
+          <p class="field-error" id="e-html" x-text="errors.html"></p>
+        </div>
+
+        <div class="field">
+          <label class="label" id="l-text" for="f-text">Plain text</label>
+          <div class="details-editor" x-ref="text" :data-invalid="textInvalid"></div>
+          <p class="help" id="h-text" x-text="textHelp"></p>
+          <p class="field-error" id="e-text" x-text="errors.text"></p>
+        </div>
+
+        <details class="disclosure">
+          <summary>Template fields</summary>
+          <div class="stack">
+            <p class="muted">The templates are <a href="https://pkg.go.dev/text/template" target="_blank" rel="noopener">Go templates</a>. A field is written as shown, with its capitals: <code>{{"{{"}}.Name{{"}}"}}</code> shows the recipient's name, and <code>{{"{{"}}if .LogoURL{{"}}"}}…{{"{{"}}end{{"}}"}}</code> shows something only when a field is set. In the HTML, every field is escaped. Loops and templates of their own are not available.</p>
+            <dl class="kv kv-fields">
+              <div><dt><code>{{"{{"}}.Site{{"}}"}}</code></dt><dd>Who the email is from: the organization's display name, else the server's name.</dd></div>
+              <div><dt><code>{{"{{"}}.Org{{"}}"}}</code></dt><dd>The organization's display name.</dd></div>
+              <div><dt><code>{{"{{"}}.Name{{"}}"}}</code></dt><dd>The recipient's full name.</dd></div>
+              <div><dt><code>{{"{{"}}.Link{{"}}"}}</code></dt><dd>The link the email carries (all but the sign-in code). Invitations, resets and verifications must show it.</dd></div>
+              <div><dt><code>{{"{{"}}.Expires{{"}}"}}</code></dt><dd>How long the link or code works, such as "1 hour".</dd></div>
+              <div><dt><code>{{"{{"}}.Code{{"}}"}}</code></dt><dd>The sign-in code (the sign-in code email only), which it must show.</dd></div>
+              <div><dt><code>{{"{{"}}.Left{{"}}"}}</code></dt><dd>Recovery codes left (the recovery code email only).</dd></div>
+              <div><dt><code>{{"{{"}}.LogoURL{{"}}"}}</code></dt><dd>The address of the organization's logo, else the server's. Some mail clients show no SVG images.</dd></div>
+              <div><dt><code>{{"{{"}}.PrimaryColor{{"}}"}}</code></dt><dd>The organization's primary colour, such as #3730a3.</dd></div>
+            </dl>
+          </div>
+        </details>
+
+        <div class="et-actions">
+          <button type="button" class="btn btn-secondary" @click="previewEmail" :disabled="busy" aria-describedby="h-preview">{{template "icon" "eye"}} <span x-text="previewLabel">Preview layout</span></button>
+          <button type="button" class="btn btn-secondary" @click="openTest" :disabled="busy" aria-describedby="h-preview">{{template "icon" "mail"}} Send test</button>
+          <button type="submit" class="btn btn-primary" :aria-busy="saveBusyAttr" :disabled="saveBlocked"><span class="spinner" x-show="saving" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save layout</span></button>
+          <button type="button" class="btn btn-secondary" @click="resetTab" :disabled="tabIsDefault">{{template "icon" "refresh"}} <span x-text="resetLabel">Use the default layout</span></button>
+          <span class="et-unsaved" role="status"><span class="badge badge-warning" x-show="tabDirty" x-cloak>Unsaved changes</span></span>
+        </div>
+        <p class="help" id="h-preview" x-text="previewHelp"></p>
+      </form>
+    </div>
+  </section>
+
+  {{template "dialog-start" (dict "id" "email-test" "title" "Send a test email" "size" "sm")}}
+  <form @submit.prevent="sendTest" novalidate>
+    <div class="dialog-body">
+      <div class="alert alert-warning" x-show="noMail" x-cloak>{{template "icon" "alert"}}<span>Email is not set up on this server, so test emails cannot be sent.</span></div>
+      <p class="muted" x-text="testAbout"></p>
+      <div class="field">
+        <label class="label" for="f-to">Send to</label>
+        <input class="input" id="f-to" type="email" autocomplete="email" x-model="form.to" :aria-invalid="invalid.to" :disabled="noMail" aria-describedby="e-to" data-autofocus>
+        <p class="field-error" id="e-to" x-text="errors.to"></p>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-secondary" @click="closeThis">Cancel</button>
+      <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="sendBlocked"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span>{{template "icon" "mail"}} Send</button>
+    </div>
+  </form>
+  {{template "dialog-end"}}
+
+  {{template "dialog-start" (dict "id" "email-preview" "title" "Preview" "titleBind" "previewTitle" "size" "lg")}}
+  <div class="dialog-body">
+    <dl class="kv kv-wide"><div><dt>Subject</dt><dd x-text="preview.subject"></dd></div></dl>
+    <div class="tabs" role="tablist" aria-label="Version">
+      <button type="button" role="tab" class="tab" id="pv-tab-html" aria-controls="pv-html" :aria-selected="previewHtmlSelected" :tabindex="previewHtmlTabindex" data-view="html" @click="selectView" @keydown="viewKey">HTML</button>
+      <button type="button" role="tab" class="tab" id="pv-tab-text" aria-controls="pv-text" :aria-selected="previewTextSelected" :tabindex="previewTextTabindex" data-view="text" @click="selectView" @keydown="viewKey">Plain text</button>
+    </div>
+    <div role="tabpanel" id="pv-html" aria-labelledby="pv-tab-html" x-show="isHtmlView">
+      <iframe x-ref="frame" class="email-frame" src="/admin/email-preview" sandbox="allow-scripts" referrerpolicy="no-referrer" title="The email as HTML"></iframe>
+    </div>
+    <div role="tabpanel" id="pv-text" aria-labelledby="pv-tab-text" x-show="isTextView" x-cloak>
+      <pre class="email-text" tabindex="0" x-text="preview.text"></pre>
+    </div>
+  </div>
+  <div class="dialog-foot"><button type="button" class="btn btn-secondary" @click="closeThis">Close</button></div>
+  {{template "dialog-end"}}
+</div>
+{{end}}

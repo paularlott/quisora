@@ -25,7 +25,7 @@ import (
 // sweepKinds are the kinds the sweep reads, in turn.
 var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
 	model.KindClient, model.KindProvider, model.KindPasskey, model.KindIdentity, model.KindAPIToken, model.KindSignIn,
-	model.KindOrgLogo, model.KindSession, model.KindGrant, model.KindConsent, model.KindLock, model.KindSSHKey, model.KindSSHCert}
+	model.KindOrgLogo, model.KindEmailTemplates, model.KindSession, model.KindGrant, model.KindConsent, model.KindLock, model.KindSSHKey, model.KindSSHCert}
 
 // sweepMinAge is how old a record must be before the sweep may remove it: well past the store's staleness bound, so
 // its owner, made elsewhere at the same time, is visible here.
@@ -85,6 +85,8 @@ func owners(e model.Entity) []ownerRef {
 	case *model.SignIn:
 		return []ownerRef{{kind: model.KindUser, id: v.ID}}
 	case *model.OrgLogo:
+		return []ownerRef{{kind: model.KindOrg, id: v.ID}}
+	case *model.EmailTemplates:
 		return []ownerRef{{kind: model.KindOrg, id: v.ID}}
 	case *model.Session:
 		if v.Passkey != "" { // signed in with a passkey: it stands on it (SessionUsable)

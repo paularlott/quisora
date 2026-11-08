@@ -433,6 +433,10 @@
   }
   .kv { display: grid; gap: 0.9rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
   .kv-wide { grid-template-columns: 1fr; } /* one per row: long values */
+  .kv.kv-fields { grid-template-columns: 1fr; gap: 0.6rem; } /* template fields: written as typed, so no capitals */
+  .kv.kv-fields dt { font-size: inherit; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--fg); }
+  .kv.kv-fields dd { font-weight: 400; color: var(--fg-muted); }
+  @media (min-width: 40rem) { .kv-fields > div { display: grid; grid-template-columns: 10rem 1fr; gap: 1rem; } .kv.kv-fields dd { margin: 0; } }
   .kv dt { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
   .kv dd { margin: 0.15rem 0 0; font-weight: 600; }
   .kv-stats dd { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
@@ -553,5 +557,46 @@
   @media (forced-colors: active) {
     .otp-box { border-color: CanvasText; background: Canvas; }
     .otp:focus-within .otp-box.is-current { outline-color: Highlight; }
+  }
+
+  /* Tabs (role=tablist): a row of buttons over a hairline; the chosen one is underlined in the accent. */
+  .tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--edge); }
+  .tab {
+    display: inline-flex; align-items: center; gap: 0.4rem; min-height: 2.5rem; padding: 0.35rem 0.85rem; margin-bottom: -1px;
+    border: 0; border-bottom: 2px solid transparent; border-radius: var(--radius-ctl) var(--radius-ctl) 0 0; background: none;
+    color: var(--fg-muted); font: inherit; font-size: 0.9375rem; font-weight: 600; cursor: pointer;
+  }
+  .tab:hover { color: var(--fg); background: var(--ctl-hover); }
+  .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent-solid); }
+  .tab:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+  .tab-mark { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--accent-solid); }
+  .tab-mark-unsaved { background: none; border: 2px solid var(--fg-muted); width: 0.55rem; height: 0.55rem; } /* a ring: not saved yet */
+  /* On a phone the row would wrap unevenly: the tabs become a grid of chips, two to a row, the chosen one in the accent. */
+  @media (max-width: 39.98rem) {
+    .tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; border-bottom: 0; }
+    .tab {
+      margin: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--edge); border-radius: var(--radius-ctl); background: var(--ctl-bg);
+      text-align: left; line-height: 1.25;
+    }
+    .tab > :first-child { flex: 1 1 auto; } /* the marks at the chip's end */
+    .tab[aria-selected="true"] { background: var(--b-accent-bg); color: var(--b-accent-fg); border-color: var(--accent-solid); }
+  }
+  @media (forced-colors: active) {
+    .tab[aria-selected="true"] { border-bottom-color: Highlight; } .tab-mark { background: CanvasText; }
+    .tab-mark-unsaved { background: none; border-color: CanvasText; }
+  }
+  @media (forced-colors: active) and (max-width: 39.98rem) { .tab { border-color: CanvasText; } .tab[aria-selected="true"] { border: 2px solid Highlight; } }
+
+  /* The email templates page: the tab's heading beside its badge, and the tab's buttons (one under another on a phone)
+     with its unsaved edits at the row's end. */
+  .et-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+  .et-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+  .et-unsaved { margin-left: auto; }
+  @media (max-width: 39.98rem) { .et-actions > .btn { flex: 1 1 100%; } .et-unsaved { margin-left: 0; } }
+  /* The preview: the HTML in a sandboxed frame (it sizes itself to the email), the text as it is. */
+  .email-frame { display: block; width: 100%; height: 24rem; border: 1px solid var(--edge); border-radius: var(--radius-inner); background: #ffffff; }
+  .email-text {
+    margin: 0; padding: 1rem; max-height: 60vh; overflow: auto; border: 1px solid var(--edge); border-radius: var(--radius-inner);
+    background: var(--glass-inset); font-family: var(--font-mono); font-size: 0.875rem; white-space: pre-wrap; overflow-wrap: anywhere;
   }
 }

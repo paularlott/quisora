@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -87,5 +88,34 @@ func TestSendSignInCode(t *testing.T) {
 	// It is queued as its organization's, and is not sent once the code has expired.
 	if msg.OrgID != org.ID || time.Until(msg.Expires) < 9*time.Minute || time.Until(msg.Expires) > 10*time.Minute {
 		t.Fatalf("organization %q, expires %v: want %q, in 10 minutes", msg.OrgID, msg.Expires, org.ID)
+	}
+}
+
+// An organization's emails are rendered from its own templates over the primary organization's, with its brand.
+func TestOrgTemplates(t *testing.T) {
+	cap := newCapture()
+	m := newMailer(t, nil, cap)
+	ctx := context.Background()
+	u, org := userAndOrg(t, m, "ann@example.com")
+	_, err := m.Svc.UpdateEmailTemplates(ctx, service.System, org.ID, model.EmailTemplateSet{
+		LayoutText: "{{.Org}} ({{.PrimaryColor}}, {{.LogoURL}})\n{{template \"body\" .}}",
+		Emails:     map[string]model.EmailTemplate{mailtpl.Reset: {Subject: "New password for {{.Name}}"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SendReset(ctx, u, org); err != nil {
+		t.Fatal(err)
+	}
+	msg := cap.wait(t)
+	if msg.Subject != "New password for Ann" || !strings.HasPrefix(msg.Text, "Widgets <Inc> (#3730a3, https://quisora.example.test/branding/logo-light)\n") ||
+		!strings.Contains(msg.Text, "/reset?token=") || !strings.Contains(msg.HTML, "Reset password") {
+		t.Fatalf("%+v", msg)
+	}
+	if err := m.SendTest(ctx, org.ID, "bob@example.com", mailtpl.Message{Subject: "s", Text: "t", HTML: "<p>h</p>"}); err != nil {
+		t.Fatal(err)
+	}
+	if msg = cap.wait(t); msg.To != "bob@example.com" || msg.OrgID != org.ID || msg.Subject != "s" {
+		t.Fatalf("test email: %+v", msg)
 	}
 }

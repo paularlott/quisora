@@ -853,7 +853,8 @@ Until the first release, formats change in place. From then on:
 ## Email
 
 With `mail.smtp_host` set, invitations, password resets and address confirmations are emailed. Without it nothing is
-emailed: administrators share invitation links themselves, and there is no self-service password reset.
+emailed: administrators share invitation links themselves, and there is no self-service password reset. What the emails
+say and look like is set per organization, over the primary organization's defaults: [EMAILS.md](EMAILS.md).
 
 Email is queued in the store before the request that sends it answers, as the sending node's own ([Queued work](#queued-work)),
 sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30

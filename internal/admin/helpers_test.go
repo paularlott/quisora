@@ -13,6 +13,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/admin"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -228,6 +229,14 @@ func (m *fakeMailer) SendVerifyAddress(_ context.Context, _ *model.Org, u *model
 		return m.err
 	}
 	m.sent = append(m.sent, "verify "+u.Username+" "+address)
+	return nil
+}
+
+func (m *fakeMailer) SendTest(_ context.Context, _, to string, msg mailtpl.Message) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.sent = append(m.sent, "test "+to+" "+msg.Subject)
 	return nil
 }
 

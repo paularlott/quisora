@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -28,6 +29,8 @@ type Mailer interface {
 	SendInviteLink(ctx context.Context, org *model.Org, u *model.User, url string, expires time.Time) error
 	// SendVerifyAddress emails a verification link to one of u's addresses.
 	SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error
+	// SendTest emails msg, rendered from organization orgID's templates, to the address to: a test email.
+	SendTest(ctx context.Context, orgID, to string, msg mailtpl.Message) error
 }
 
 type noopMailer struct{}
@@ -39,6 +42,8 @@ func (noopMailer) SendInviteLink(context.Context, *model.Org, *model.User, strin
 func (noopMailer) SendVerifyAddress(context.Context, *model.Org, *model.User, string) error {
 	return ErrMailerDisabled
 }
+
+func (noopMailer) SendTest(context.Context, string, string, mailtpl.Message) error { return ErrMailerDisabled }
 
 // Module registers the admin routes.
 type Module struct {
@@ -91,6 +96,10 @@ func (m *Module) routes() []Route {
 		{"GET", o, m.getOrg, web.AnyScope},
 		{"PATCH", o, m.updateOrg, ""},
 		{"PATCH", o + "/branding", m.updateBranding, ""},
+		{"GET", o + "/email-templates", m.getEmailTemplates, ""},
+		{"PUT", o + "/email-templates", m.putEmailTemplates, ""},
+		{"POST", o + "/email-templates/preview", m.previewEmailTemplate, ""},
+		{"POST", o + "/email-templates/test", m.testEmailTemplate, ""},
 		{"DELETE", o, m.deleteOrg, service.ScopeOrgsDelete},
 		{"POST", o + "/sign-out", m.signOutOrg, ""},
 
