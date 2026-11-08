@@ -77,7 +77,9 @@ Each tab has a **Preview** button and a **Send test** button, which asks for the
 Previews and test emails are rendered by the server from the templates as they are in the editors, saved or not, with a made-up recipient (Alex Example) and a link to the real page without a valid token. The HTML
 preview is drawn in a sandboxed frame with a policy of its own, so the email's inline styles and remote images show and
 nothing in it runs. A test email goes to the address given, with `[Test]` before its subject, through the
-organization's share of the mail queue, and is audited (`org.email_templates.test`, with the address).
+organization's share of the mail queue, and is audited (`org.email_templates.test`, with the address). Each
+administrator may send at most 5 test emails a minute and 30 an hour (then 429), so the endpoint cannot be used to relay
+mail.
 
 ## Replication
 

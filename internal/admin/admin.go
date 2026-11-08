@@ -43,7 +43,9 @@ func (noopMailer) SendVerifyAddress(context.Context, *model.Org, *model.User, st
 	return ErrMailerDisabled
 }
 
-func (noopMailer) SendTest(context.Context, string, string, mailtpl.Message) error { return ErrMailerDisabled }
+func (noopMailer) SendTest(context.Context, string, string, mailtpl.Message) error {
+	return ErrMailerDisabled
+}
 
 // Module registers the admin routes.
 type Module struct {

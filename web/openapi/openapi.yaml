@@ -313,7 +313,7 @@ paths:
     post:
       tags: [Organizations]
       summary: Send a test email
-      description: "Email one email, rendered as the preview renders it, to the address in to, with [Test] before its subject. It is queued as the organization's mail. 503 when the server has no SMTP server. The organization's administrators and super admins; not service accounts. Audited as org.email_templates.test, with the address."
+      description: "Email one email, rendered as the preview renders it, to the address in to, with [Test] before its subject. It is queued as the organization's mail. 503 when the server has no SMTP server. The organization's administrators and super admins; not service accounts. Audited as org.email_templates.test, with the address. At most 5 a minute and 30 an hour per administrator (429)."
       operationId: post_orgs_org_email_templates_test
       requestBody:
         content:
@@ -333,6 +333,12 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: Too many test emails were sent by this administrator (5 a minute, 30 an hour)
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/sign-out:
     parameters:

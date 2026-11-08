@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/mail"
 
@@ -129,6 +130,17 @@ func (m *Module) testEmailTemplate(w http.ResponseWriter, r *http.Request) {
 	addr, err := mail.ParseAddress(in.To)
 	if err != nil || addr.Name != "" {
 		web.WriteError(w, service.Invalid("to", "enter an email address, such as you@example.com"))
+		return
+	}
+	// Per administrator (service accounts may not), counted once the address is valid (what is refused counts too).
+	within, err := m.s.TestEmailAllowed(r.Context(), a.UserID)
+	switch {
+	case err != nil:
+		web.WriteError(w, fmt.Errorf("%w: %v", service.ErrUnavailable, err))
+		return
+	case !within:
+		w.Header().Set("Retry-After", "60")
+		web.WriteJSON(w, http.StatusTooManyRequests, web.ErrorBody{Error: "Too many test emails were sent. Wait a minute and try again."})
 		return
 	}
 	msg.Subject = "[Test] " + msg.Subject

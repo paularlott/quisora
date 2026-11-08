@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // An organization's admins read, change, preview and test its email templates; managers, other organizations' admins
@@ -64,6 +65,16 @@ func TestEmailTemplatesAPI(t *testing.T) {
 	if ev := auditActions(t, w, "org.email_templates.test"); len(ev) != 1 || ev[0].Detail["to"] != "pat@example.com" {
 		t.Fatalf("test audit: %+v", ev)
 	}
+	// a few test emails a minute per administrator: then 429, and nothing more is sent
+	for i := 2; i < web.TestEmailsPerMinute; i++ { // two counted: the one refused while email was off, and the one sent
+		want(t, ad.post(ET+"/test", map[string]any{"email": "reset", "to": "pat@example.com"}), 200)
+	}
+	if res := ad.post(ET+"/test", map[string]any{"email": "reset", "to": "pat@example.com"}); res.Status != 429 || res.Header.Get("Retry-After") == "" {
+		t.Fatalf("over the limit: %d", res.Status)
+	}
+	if len(m.sent) != web.TestEmailsPerMinute-1 {
+		t.Fatalf("sent %d test emails", len(m.sent))
+	}
 
 	for name, c := range map[string]*caller{"manager": w.as("manager"), "other org": w.as("other"),
 		"service account": w.asServiceAccount(w.acme, service.ScopeUsers, service.ScopeClients)} {
@@ -74,7 +85,7 @@ func TestEmailTemplatesAPI(t *testing.T) {
 			}
 		}
 	}
-	if len(m.sent) != 1 {
+	if len(m.sent) != web.TestEmailsPerMinute-1 {
 		t.Fatalf("sent by others: %v", m.sent)
 	}
 }
