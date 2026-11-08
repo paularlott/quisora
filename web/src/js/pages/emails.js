@@ -264,7 +264,10 @@ export default function register(Alpine) {
         const draft = this.draft()
         const set = { layout_html: '', layout_text: '', emails: {} }
         for (const p of this.allParts()) {
-          const text = mine.includes(p) ? partOf(draft, p) : saved[p]
+          // untouched parts go as stored ('' = inherited), so they keep following the inherited ones even if those
+          // changed since the page loaded; an edit back to the inherited text goes as '' too
+          const edited = mine.includes(p) && partOf(draft, p) !== saved[p]
+          const text = edited && partOf(draft, p) !== partOf(this.inherited, p) ? partOf(draft, p) : (edited ? '' : partOf(this.own, p))
           if (p.startsWith('layout_')) set[p] = text
           else {
             const [, name, kind] = p.split('.')
