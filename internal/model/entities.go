@@ -105,6 +105,33 @@ type OrgLogo struct {
 func (l *OrgLogo) Kind() Kind   { return KindOrgLogo }
 func (l *OrgLogo) Index() Index { return Index{Partition: l.ID} } // read by the organization's id only
 
+// EmailTemplates are an organization's own templates of the emails it sends (package mailtpl): ID is the
+// organization's. A part left empty is the primary organization's, else the built-in one, so an organization may change
+// only the layout, or only one email.
+type EmailTemplates struct {
+	Meta
+	Set EmailTemplateSet `msgpack:"t" json:"-"`
+}
+
+func (t *EmailTemplates) Kind() Kind   { return KindEmailTemplates }
+func (t *EmailTemplates) Index() Index { return Index{Partition: t.ID} } // read by the organization's id only
+
+// EmailTemplateSet is a set of email templates: the layout, which holds every email's header and footer and places its
+// body with {{template "body" .}}, and each email's subject and bodies, by its name (mailtpl.Names). "" is a part not
+// set.
+type EmailTemplateSet struct {
+	LayoutHTML string                   `msgpack:"lh,omitempty" json:"layout_html"`
+	LayoutText string                   `msgpack:"lt,omitempty" json:"layout_text"`
+	Emails     map[string]EmailTemplate `msgpack:"e,omitempty" json:"emails"`
+}
+
+// EmailTemplate is one email's templates: its subject (text), and its body as HTML and as plain text.
+type EmailTemplate struct {
+	Subject string `msgpack:"s,omitempty" json:"subject"`
+	HTML    string `msgpack:"h,omitempty" json:"html"`
+	Text    string `msgpack:"x,omitempty" json:"text"`
+}
+
 func (o *Org) Index() Index {
 	uq := []string{OrgNameKey(o.Name)}
 	if o.Primary {

@@ -155,10 +155,11 @@ var Schemas = map[Kind]Schema{
 		{Name: "serial", Type: FieldString, Search: true},
 		{Name: "principals", Type: FieldString, Words: true},
 	}},
-	KindEphemeral: {KindEphemeral, nil},
-	KindLink:      {KindLink, nil},
-	KindSignIn:    {KindSignIn, nil},
-	KindOrgLogo:   {KindOrgLogo, nil},
+	KindEphemeral:      {KindEphemeral, nil},
+	KindLink:           {KindLink, nil},
+	KindSignIn:         {KindSignIn, nil},
+	KindOrgLogo:        {KindOrgLogo, nil},
+	KindEmailTemplates: {KindEmailTemplates, nil},
 	KindLock: {KindLock, []Field{
 		{Name: "org_deleted", Type: FieldBool, Index: true}, // deletions of organizations that decided (Lock.Holder)
 	}},
@@ -208,7 +209,7 @@ func ExpiryOf(k Kind) Expiry { return expiries[k] }
 
 // unscopedKinds are the kinds whose records have no scope (Index.Scope ""): a query with Scope "" selects the whole
 // kind, which is also the empty scope.
-var unscopedKinds = map[Kind]bool{KindOrg: true, KindKey: true, KindSignIn: true, KindOrgLogo: true, KindLock: true, KindReplay: true,
+var unscopedKinds = map[Kind]bool{KindOrg: true, KindKey: true, KindSignIn: true, KindOrgLogo: true, KindEmailTemplates: true, KindLock: true, KindReplay: true,
 	KindEphemeral: true}
 
 // Unscoped reports whether every record of kind k has Scope "".
@@ -217,7 +218,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindLock, KindReplay, KindEphemeral, KindQueue}
+		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindLock, KindReplay, KindEphemeral, KindQueue}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -265,6 +266,8 @@ func NewEntity(k Kind) Entity {
 		return &SignIn{}
 	case KindOrgLogo:
 		return &OrgLogo{}
+	case KindEmailTemplates:
+		return &EmailTemplates{}
 	case KindLock:
 		return &Lock{}
 	case KindReplay:

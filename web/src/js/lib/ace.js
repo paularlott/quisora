@@ -10,6 +10,8 @@
 //     an ordinary one (closes the dialog).
 import ace from 'ace-builds/src-noconflict/ace'
 import 'ace-builds/src-noconflict/mode-json'
+import 'ace-builds/src-noconflict/mode-html'
+import 'ace-builds/src-noconflict/mode-text'
 import 'ace-builds/src-noconflict/ext-language_tools'
 import 'ace-builds/css/ace.css'
 import '../../css/ace-theme.css'
@@ -55,15 +57,16 @@ function keyboardExit(editor) {
   editor.on('blur', disarm)
 }
 
-// createEditor makes a JSON editor in host. opts: inputId (the field's id, given to the input textarea), labelId,
-// describedBy (ids), placeholder, completer (makes the editor's Ace completer, given the editor), onChange(text).
+// createEditor makes an editor in host, for JSON unless opts.mode says otherwise ('html', 'text'). opts: inputId (the
+// field's id, given to the input textarea), labelId, describedBy (ids), placeholder, completer (makes the editor's Ace
+// completer, given the editor), onChange(text), minLines and maxLines.
 export function createEditor(host, opts) {
   const editor = ace.edit(host, {
-    mode: 'ace/mode/json',
+    mode: 'ace/mode/' + (opts.mode || 'json'),
     useWorker: false,
     theme: THEME,
-    minLines: 10,
-    maxLines: 24,
+    minLines: opts.minLines || 10,
+    maxLines: opts.maxLines || 24,
     fontSize: '0.875rem',
     tabSize: 2,
     useSoftTabs: true,
@@ -84,8 +87,20 @@ export function createEditor(host, opts) {
   if (opts.labelId) input.setAttribute('aria-labelledby', opts.labelId)
   input.setAttribute('aria-describedby', [...(opts.describedBy || []), keyboardHint()].join(' '))
   keyboardExit(editor)
-  editor.session.on('change', () => opts.onChange && opts.onChange(editor.getValue()))
+  // On the editor, not its session: it follows the session it is given (newSession, editor.setSession).
+  editor.on('change', () => opts.onChange && opts.onChange(editor.getValue()))
   // A dialog that was closed when the editor was made gives it no size: measure again whenever the host changes size.
   new ResizeObserver(() => editor.resize()).observe(host)
   return editor
+}
+
+// newSession makes an edit session (a text with its own undo history) in mode ('html', 'text', 'json') to give an
+// editor with editor.setSession: one editor can so edit several texts in turn, each keeping its history.
+export function newSession(text, mode) {
+  const session = ace.createEditSession(text || '', 'ace/mode/' + mode)
+  session.setUseWorker(false)
+  session.setTabSize(2)
+  session.setUseSoftTabs(true)
+  session.setUseWrapMode(true)
+  return session
 }

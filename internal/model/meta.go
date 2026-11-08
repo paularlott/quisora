@@ -17,29 +17,30 @@ import (
 type Kind string
 
 const (
-	KindOrg      Kind = "org"
-	KindUser     Kind = "user"
-	KindGroup    Kind = "group"
-	KindMember   Kind = "member"
-	KindTenant   Kind = "tenant"
-	KindAccess   Kind = "access"
-	KindClient   Kind = "client"
-	KindProvider Kind = "provider"
-	KindPasskey  Kind = "passkey"
-	KindIdentity Kind = "identity"
-	KindSession  Kind = "session"
-	KindGrant    Kind = "grant"
-	KindAPIToken Kind = "apitoken"
-	KindConsent  Kind = "consent" // what a user allowed an application, remembered until removed (Consent)
-	KindKey      Kind = "key"
-	KindSSHKey   Kind = "sshkey"  // a tenant's SSH CA keys (SSHKey)
-	KindSSHCert  Kind = "sshcert" // the SSH certificates issued, until they expire (SSHCert)
-	KindAudit    Kind = "audit"
-	KindLink     Kind = "link"
-	KindSignIn   Kind = "signin" // a user's sign-in stamps (SignIn)
-	KindOrgLogo  Kind = "logo"   // an organization's logo (OrgLogo)
-	KindLock     Kind = "lock"   // leases (Lock), such as each node's master key report
-	KindReplay   Kind = "replay" // single-use values seen, until they expire (Replay)
+	KindOrg            Kind = "org"
+	KindUser           Kind = "user"
+	KindGroup          Kind = "group"
+	KindMember         Kind = "member"
+	KindTenant         Kind = "tenant"
+	KindAccess         Kind = "access"
+	KindClient         Kind = "client"
+	KindProvider       Kind = "provider"
+	KindPasskey        Kind = "passkey"
+	KindIdentity       Kind = "identity"
+	KindSession        Kind = "session"
+	KindGrant          Kind = "grant"
+	KindAPIToken       Kind = "apitoken"
+	KindConsent        Kind = "consent" // what a user allowed an application, remembered until removed (Consent)
+	KindKey            Kind = "key"
+	KindSSHKey         Kind = "sshkey"  // a tenant's SSH CA keys (SSHKey)
+	KindSSHCert        Kind = "sshcert" // the SSH certificates issued, until they expire (SSHCert)
+	KindAudit          Kind = "audit"
+	KindLink           Kind = "link"
+	KindSignIn         Kind = "signin"   // a user's sign-in stamps (SignIn)
+	KindOrgLogo        Kind = "logo"     // an organization's logo (OrgLogo)
+	KindEmailTemplates Kind = "emailtpl" // an organization's email templates (EmailTemplates)
+	KindLock           Kind = "lock"     // leases (Lock), such as each node's master key report
+	KindReplay         Kind = "replay"   // single-use values seen, until they expire (Replay)
 	// KindEphemeral holds short-lived sign-in state (codes, flows, challenges, counters) in a shared database, so
 	// every node of a cluster without gossip sees it. Never backed up or replicated.
 	KindEphemeral Kind = "eph"

@@ -8,6 +8,7 @@ import (
 	"github.com/paularlott/quisora/internal/admin"
 	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/mail"
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
 	"github.com/paularlott/quisora/internal/store"
@@ -53,6 +54,10 @@ func (d demoMailer) SendInviteLink(ctx context.Context, org *model.Org, u *model
 
 func (d demoMailer) SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error {
 	return d.m.SendVerifyAddress(ctx, u, org, address)
+}
+
+func (d demoMailer) SendTest(ctx context.Context, orgID, to string, msg mailtpl.Message) error {
+	return d.m.SendTest(ctx, orgID, to, msg)
 }
 
 // demoClusterStatus is a made-up three-node gossip cluster (-cluster), in the shape of GET /api/cluster.

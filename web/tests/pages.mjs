@@ -55,6 +55,20 @@ export const PAGES = [
   { name: 'master-key', path: '/admin/system/master-key', as: 'super', steps: [async (p) => { await p.getByRole('heading', { name: 'Nodes' }).waitFor() }] },
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
   { name: 'org', path: A, as: 'admin', steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }] },
+  // The email templates: the layout's editors, and the preview of an email
+  { name: 'emails', path: `${A}/emails`, as: 'admin', steps: [async (p) => { await p.locator('.ace_editor').nth(1).waitFor(); await p.waitForTimeout(300) }] },
+  // on a phone, the tabs are a grid of chips
+  { name: 'emails-phone', path: `${A}/emails`, as: 'admin', steps: [async (p) => {
+      await p.setViewportSize({ width: 375, height: 812 })
+      await p.locator('.ace_editor').nth(1).waitFor()
+      await p.getByRole('tab', { name: 'Password reset' }).click(); await p.getByLabel('Subject').fill('Changed {{.Site}}'); await p.waitForTimeout(300)
+    }] },
+  { name: 'emails-preview', path: `${A}/emails`, as: 'admin', dialog: true, steps: [async (p) => {
+      await p.locator('.ace_editor').nth(1).waitFor()
+      await p.getByRole('tab', { name: 'Password reset' }).click()
+      await p.getByRole('button', { name: 'Preview password reset' }).click()
+      await p.frameLocator('iframe.email-frame').getByText('Hello Alex Example,').waitFor(); await p.waitForTimeout(450)
+    }] },
   // The branding card with a logo and a dark logo chosen, and a colour the server refuses
   { name: 'org-branding', path: A, as: 'admin', steps: [async (p) => {
       const card = p.getByRole('region', { name: 'Branding' })

@@ -14,6 +14,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/mail"
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
@@ -199,6 +200,10 @@ func (a adminMailer) SendInviteLink(ctx context.Context, org *model.Org, u *mode
 
 func (a adminMailer) SendVerifyAddress(ctx context.Context, org *model.Org, u *model.User, address string) error {
 	return a.m.SendVerifyAddress(ctx, u, org, address)
+}
+
+func (a adminMailer) SendTest(ctx context.Context, orgID, to string, msg mailtpl.Message) error {
+	return a.m.SendTest(ctx, orgID, to, msg)
 }
 
 // housekeepingLog reports the outcome of the housekeeping tasks. A task that fails because the cluster cannot take

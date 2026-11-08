@@ -233,6 +233,113 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/email-templates:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Organizations]
+      summary: Get an organization's email templates
+      description: "The templates the organization's emails (invitation, password reset, address verification, recovery code used, sign-in code) are rendered from: its own parts, and every part as it would inherit it. A part the organization does not set is the primary organization's, which are every organization's default, else the built-in one. The organization's administrators and super admins; not service accounts."
+      operationId: get_orgs_org_email_templates
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EmailTemplates"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    put:
+      tags: [Organizations]
+      summary: Change an organization's email templates
+      description: "Replace the organization's own email templates. The layout holds every email's header and footer and places the email's body with {{template \"body\" .}}; each email has a subject, an HTML body and a plain-text body. They are Go templates over the fields Site, Org, Name, Link, Expires, Left, Code, LogoURL and PrimaryColor, HTML escaped in the HTML parts. A part left out or empty, or the same as the one inherited, is inherited (and follows it when it changes). Refused (422, with the part in field, such as emails.reset.html) unless every email renders: no loops or templates of its own, at most 64 KB a part, a link email shows {{.Link}}, the sign-in code email {{.Code}}, and no subject shows either. Every node uses the change once it has replicated. The organization's administrators and super admins; not service accounts. Audited as org.email_templates."
+      operationId: put_orgs_org_email_templates
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EmailTemplateSet"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EmailTemplates"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/email-templates/preview:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Organizations]
+      summary: Preview an email
+      description: "Render one email from templates as they are being edited (checked as PUT checks them, but not saved), over what the organization inherits, with made-up values: a sample recipient, and a link to the real page without a valid token. The organization's administrators and super admins; not service accounts."
+      operationId: post_orgs_org_email_templates_preview
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EmailDraft"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EmailPreview"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/email-templates/test:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    post:
+      tags: [Organizations]
+      summary: Send a test email
+      description: "Email one email, rendered as the preview renders it, to the address in to, with [Test] before its subject. It is queued as the organization's mail. 503 when the server has no SMTP server. The organization's administrators and super admins; not service accounts. Audited as org.email_templates.test, with the address. At most 5 a minute and 30 an hour per administrator (429)."
+      operationId: post_orgs_org_email_templates_test
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EmailDraft"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Ok"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: Too many test emails were sent by this administrator (5 a minute, 30 an hour)
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/sign-out:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -4537,6 +4644,76 @@ components:
       properties:
         address:
           type: string
+    EmailDraft:
+      type: object
+      required: [email]
+      properties:
+        templates: {$ref: "#/components/schemas/EmailTemplateSet"}
+        email:
+          type: string
+          enum: [invite, reset, verify, recovery, code]
+          description: the email to render
+        to:
+          type: string
+          description: the address a test email is sent to (the test email only)
+          example: you@example.com
+    EmailPreview:
+      type: object
+      properties:
+        subject: {type: string}
+        html: {type: string}
+        text: {type: string}
+    EmailTemplate:
+      type: object
+      properties:
+        subject:
+          type: string
+          description: text template of the subject; it cannot show the link or the code
+        html:
+          type: string
+          description: HTML template of the body, placed in the HTML layout
+        text:
+          type: string
+          description: text template of the body, placed in the text layout
+    EmailTemplateSet:
+      type: object
+      properties:
+        layout_html:
+          type: string
+          description: "HTML template of every email's header and footer; places the body with {{template \"body\" .}}"
+        layout_text:
+          type: string
+          description: "text template of every email's header and footer; places the body with {{template \"body\" .}}"
+        emails:
+          type: object
+          description: each email's templates, by its name (invite, reset, verify, recovery, code)
+          additionalProperties: {$ref: "#/components/schemas/EmailTemplate"}
+    EmailTemplates:
+      type: object
+      properties:
+        own:
+          description: the parts the organization set itself (empty for a part it inherits)
+          $ref: "#/components/schemas/EmailTemplateSet"
+        inherited:
+          description: every part as the organization inherits it (the primary organization's over the built-in ones)
+          $ref: "#/components/schemas/EmailTemplateSet"
+        primary:
+          type: boolean
+          description: the organization is the primary one, whose templates the others inherit
+        emails:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              title: {type: string}
+              about: {type: string}
+              needs:
+                type: string
+                description: the field the email's bodies must show (Link or Code); absent for none
+        mail_enabled:
+          type: boolean
+          description: the server sends email (a test email needs it)
     Error:
       type: object
       required: [error]

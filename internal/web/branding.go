@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/mailtpl"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -26,6 +28,27 @@ func OrgLogoURL(o *model.Org, dark bool) string {
 		name = "/branding/logo-dark"
 	}
 	return OrgPath(o.ID, name) + "?v=" + o.Branding.Logo
+}
+
+// MailBrand is who organization o's emails are from, as their templates are given it (mailtpl.Data): its display name
+// (else the server's site name), the absolute URL of its logo (else of the server's) and its primary colour (else the
+// built-in one).
+func MailBrand(cfg *config.Config, o *model.Org) mailtpl.Data {
+	d := mailtpl.Data{Site: cfg.UI.SiteName, LogoURL: cfg.Server.PublicURL + "/branding/logo-light", PrimaryColor: mailtpl.DefaultColor}
+	if o == nil {
+		return d
+	}
+	d.Org = o.DisplayName
+	if strings.TrimSpace(o.DisplayName) != "" {
+		d.Site = o.DisplayName
+	}
+	if u := OrgLogoURL(o, false); u != "" {
+		d.LogoURL = cfg.Server.PublicURL + u
+	}
+	if o.Branding.PrimaryColor != "" {
+		d.PrimaryColor = o.Branding.PrimaryColor
+	}
+	return d
 }
 
 // For is the site as the pages of organization o show it (nil: the server's): with its logo, under its name (Brand;

@@ -113,7 +113,7 @@ organizations): [docs/SERVICE-ACCOUNTS.md](docs/SERVICE-ACCOUNTS.md). MCP server
 [docs/MCP.md](docs/MCP.md).
 Connecting applications (sign-in, client credentials, device sign-in, token exchange, PAR, DPoP, FAPI 2.0):
 [docs/oauth](docs/oauth/README.md). How people sign in (passkeys, upstream providers, recovery codes, codes by email):
-[docs/sign-in](docs/sign-in/README.md). SSH certificates for servers: [docs/ssh](docs/ssh/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md).
+[docs/sign-in](docs/sign-in/README.md). SSH certificates for servers: [docs/ssh](docs/ssh/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md). Email templates per organization: [docs/EMAILS.md](docs/EMAILS.md).
 Keys and passwords in Vault or 1Password: [docs/secret-stores.md](docs/secret-stores.md). What to check before a
 release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 [SECURITY.md](SECURITY.md).
