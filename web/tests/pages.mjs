@@ -56,6 +56,11 @@ export const PAGES = [
   { name: 'orgs-new', path: '/admin/orgs', as: 'super', steps: [waitRows, open('New organization')], dialog: true },
   { name: 'org', path: A, as: 'admin', steps: [async (p) => { await p.getByText('Session lifetime').waitFor() }] },
   // The email templates: the layout's editors, and the preview of an email
+  { name: 'skins', path: '/admin/skins', as: 'super', steps: [async (p) => { await p.getByRole('row', { name: /Matte/ }).waitFor() }] },
+  { name: 'skins-dialog', path: '/admin/skins', as: 'super', dialog: true, steps: [async (p) => {
+      await p.getByRole('button', { name: 'View Matte', exact: true }).click()
+      await p.locator('#skin-dialog .ace_editor').waitFor(); await p.waitForTimeout(450)
+    }] },
   { name: 'emails', path: `${A}/emails`, as: 'admin', steps: [async (p) => { await p.locator('.ace_editor').nth(1).waitFor(); await p.waitForTimeout(300) }] },
   // on a phone, the tabs are a grid of chips
   { name: 'emails-phone', path: `${A}/emails`, as: 'admin', steps: [async (p) => {

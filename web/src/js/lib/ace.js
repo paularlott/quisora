@@ -12,7 +12,9 @@ import ace from 'ace-builds/src-noconflict/ace'
 import 'ace-builds/src-noconflict/mode-json'
 import 'ace-builds/src-noconflict/mode-html'
 import 'ace-builds/src-noconflict/mode-text'
+import 'ace-builds/src-noconflict/mode-css'
 import 'ace-builds/src-noconflict/ext-language_tools'
+import 'ace-builds/src-noconflict/ext-searchbox' // Ctrl+F / ⌘F: find (and Ctrl+H / ⌘⌥F: replace); its styles are in ace.css
 import 'ace-builds/css/ace.css'
 import '../../css/ace-theme.css'
 import { announce } from './announce.js'
@@ -29,7 +31,7 @@ function keyboardHint() {
     const hint = document.createElement('div')
     hint.id = HINT_ID
     hint.className = 'sr-only'
-    hint.textContent = 'Tab indents. Press Escape, then Tab, to move out of the editor.'
+    hint.textContent = 'Tab indents. Press Escape, then Tab, to move out of the editor. Control or Command F searches.'
     document.body.append(hint)
   }
   return HINT_ID
@@ -57,7 +59,7 @@ function keyboardExit(editor) {
   editor.on('blur', disarm)
 }
 
-// createEditor makes an editor in host, for JSON unless opts.mode says otherwise ('html', 'text'). opts: inputId (the
+// createEditor makes an editor in host, for JSON unless opts.mode says otherwise ('html', 'text', 'css'). opts: inputId (the
 // field's id, given to the input textarea), labelId, describedBy (ids), placeholder, completer (makes the editor's Ace
 // completer, given the editor), onChange(text), minLines and maxLines.
 export function createEditor(host, opts) {

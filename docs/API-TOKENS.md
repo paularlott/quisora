@@ -339,6 +339,7 @@ and `GET /api-internal/account/tokens` lists the `apps` you can choose from, eac
   `DELETE /api/orgs/{org}/users/{id}/tokens/{token}`.
 - The OAuth revocation endpoint (`/o/<org id>/oauth/revoke`) does not revoke personal API tokens: it answers
   `unsupported_token_type`.
-- **How long they last**: at most `tokens.api_token_max_days` (365 by default); a token made without a lifetime gets
-  the maximum. Set it to 0 to allow tokens that never expire (a lifetime typed in is then at most 10 years). Tokens with the `backup` scope always expire within 30 days. A new secret never extends a
+- **How long they last**: at most the organization's longest lifetime, set by a super admin on the organization (or
+  **No limit**, for tokens that may never expire), else `tokens.api_token_max_days` (365 by default); a token made
+  without a lifetime gets the maximum, or never expires without one. Set it to 0 to allow tokens that never expire (a lifetime typed in is then at most 10 years). Tokens with the `backup` scope always expire within 30 days. A new secret never extends a
   token's life.

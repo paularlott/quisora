@@ -23,6 +23,8 @@ type brandingView struct {
 	PrimaryColor string `json:"primary_color"`
 	LogoLight    string `json:"logo_light,omitempty"`
 	LogoDark     string `json:"logo_dark,omitempty"`
+	Footer       string `json:"footer"`
+	Skin         string `json:"skin"`
 }
 
 // viewOf is o as a sees it: the last emergency sign-out (who pulled it, and why) is for those who manage the
@@ -34,7 +36,7 @@ func (m *Module) viewOf(a *service.Actor, o *model.Org) orgView {
 		o = &cp
 	}
 	return orgView{Org: o, Primary: o.Primary, Branding: brandingView{PrimaryColor: o.Branding.PrimaryColor,
-		LogoLight: web.OrgLogoURL(o, false), LogoDark: web.OrgLogoURL(o, true)}}
+		LogoLight: web.OrgLogoURL(o, false), LogoDark: web.OrgLogoURL(o, true), Footer: o.Branding.Footer, Skin: o.Branding.Skin}}
 }
 
 func (m *Module) listOrgs(w http.ResponseWriter, r *http.Request) {

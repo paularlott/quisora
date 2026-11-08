@@ -38,8 +38,9 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   can reset a manager's or administrator's sign-in (a new invitation, removing the password, an authenticator app,
   a passkey or a provider link) or lower their role, so one administrator cannot take over another's account, and
   only a super admin can sign out the primary organization, which holds the super admins.
-- **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs. A skin for the whole server, and a logo and
-  colour of their own for each organization ([web/skins](web/skins/README.md#organization-branding)).
+- **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs. Skins chosen per organization (built-in
+  ones, and custom ones super admins add in the console), and a logo, colour and footer of their own for each
+  organization ([web/skins](web/skins/README.md)).
 - **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL or MariaDB.
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip: the data
   is split into partitions, each owned by one node that commits every write on a majority of the cluster.
@@ -139,7 +140,8 @@ addresses come from `X-Forwarded-For` only then), and `server.shutdown_drain` to
 traffic to a node that is stopping. `server.allowed_networks` lists the private networks sign-in providers and applications
 may be on (calls to other private addresses are refused; `server.allow_private_networks` allows them all, for a home
 lab), and `server.extra_ca_file` adds private CA roots for them; `server.restore_from` restores a backup at the first start of an empty node. The console's look is a
-skin (`ui.skin`, with a logo and a footer: [web/skins](web/skins/README.md)), in a light or dark theme that follows
+skin, chosen per organization in the console (with the server's logo, `ui.logo_light`, and footer, `ui.footer`:
+[web/skins](web/skins/README.md)), in a light or dark theme that follows
 the device's unless `ui.default_theme` says otherwise ([light, dark or system](web/skins/README.md#light-dark-or-system)). Every setting:
 [quisora.toml.example](quisora.toml.example) and `quisora serve --help`.
 

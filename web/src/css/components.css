@@ -112,6 +112,8 @@
   @media (min-width: 40rem) { .check-columns { grid-template-columns: 1fr 1fr; } }
   fieldset.fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.65rem; }
   fieldset.fieldset > legend { font-size: 0.875rem; font-weight: 650; padding: 0; margin-bottom: 0.4rem; }
+  /* a group inside a group (Sessions: Everyone, Managers and admins): a quieter heading */
+  fieldset.fieldset fieldset.fieldset > legend { font-size: 0.8125rem; font-weight: 600; color: var(--fg-muted); margin-bottom: 0.2rem; }
   /* A collapsible section of a form (<details class="disclosure">): the summary is a full-width button-like row. */
   details.disclosure { border: 1px solid var(--edge); border-radius: var(--radius-inner); padding: 0 1rem; }
   details.disclosure > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;
@@ -457,6 +459,7 @@
   }
   .dialog.dialog-sm { width: min(29rem, calc(100vw - 1rem)); }
   .dialog.dialog-lg { width: min(52rem, calc(100vw - 1rem)); }
+  .dialog.dialog-xl { width: min(72rem, calc(100vw - 1rem)); }
   .dialog::backdrop {
     background: var(--scrim); -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
   }
@@ -571,21 +574,19 @@
   .tab:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
   .tab-mark { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--accent-solid); }
   .tab-mark-unsaved { background: none; border: 2px solid var(--fg-muted); width: 0.55rem; height: 0.55rem; } /* a ring: not saved yet */
-  /* On a phone the row would wrap unevenly: the tabs become a grid of chips, two to a row, the chosen one in the accent. */
-  @media (max-width: 39.98rem) {
-    .tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; border-bottom: 0; }
-    .tab {
-      margin: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--edge); border-radius: var(--radius-ctl); background: var(--ctl-bg);
-      text-align: left; line-height: 1.25;
-    }
-    .tab > :first-child { flex: 1 1 auto; } /* the marks at the chip's end */
-    .tab[aria-selected="true"] { background: var(--b-accent-bg); color: var(--b-accent-fg); border-color: var(--accent-solid); }
+  /* Tabs that would wrap unevenly (lib/tabsfit.js measures) become a grid of chips, the chosen one in the accent. */
+  .tabs.tabs-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: 0.5rem; border-bottom: 0; }
+  .tabs-chips .tab {
+    margin: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--edge); border-radius: var(--radius-ctl); background: var(--ctl-bg);
+    text-align: left; line-height: 1.25;
   }
+  .tabs-chips .tab > :first-child { flex: 1 1 auto; } /* the marks at the chip's end */
+  .tabs-chips .tab[aria-selected="true"] { background: var(--b-accent-bg); color: var(--b-accent-fg); border-color: var(--accent-solid); }
   @media (forced-colors: active) {
     .tab[aria-selected="true"] { border-bottom-color: Highlight; } .tab-mark { background: CanvasText; }
     .tab-mark-unsaved { background: none; border-color: CanvasText; }
   }
-  @media (forced-colors: active) and (max-width: 39.98rem) { .tab { border-color: CanvasText; } .tab[aria-selected="true"] { border: 2px solid Highlight; } }
+  @media (forced-colors: active) { .tabs-chips .tab { border-color: CanvasText; } .tabs-chips .tab[aria-selected="true"] { border: 2px solid Highlight; } }
 
   /* The email templates page: the tab's heading beside its badge, and the tab's buttons (one under another on a phone)
      with its unsaved edits at the row's end. */
@@ -593,6 +594,8 @@
   .et-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
   .et-unsaved { margin-left: auto; }
   @media (max-width: 39.98rem) { .et-actions > .btn { flex: 1 1 100%; } .et-unsaved { margin-left: 0; } }
+  /* The skin preview: a page of the server, framed */
+  .skin-frame { display: block; width: 100%; height: min(70vh, 46rem); border: 1px solid var(--edge); border-radius: var(--radius-inner); background: var(--page-bg); }
   /* The preview: the HTML in a sandboxed frame (it sizes itself to the email), the text as it is. */
   .email-frame { display: block; width: 100%; height: 24rem; border: 1px solid var(--edge); border-radius: var(--radius-inner); background: #ffffff; }
   .email-text {

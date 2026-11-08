@@ -29,7 +29,6 @@ site_name = "Identity"
 default_theme = "system"                  # light, dark or system
 # logo_light = "/etc/quisora/logo.svg"        # absolute file path or https URL
 # logo_dark = "/etc/quisora/logo-dark.svg"    # optional; falls back to logo_light
-# skin = "matte"                          # a built-in skin (web/skins), or the path of a skin folder such as ./acme (web/skins/README.md)
 # footer = '© Example Ltd · <a href="mailto:help@example.com">Support</a>'  # links and <strong>, <em>, <small>, <span>, <br>
 
 [storage]

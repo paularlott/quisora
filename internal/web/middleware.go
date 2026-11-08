@@ -118,8 +118,10 @@ func contentSecurityPolicy(logos ...string) string {
 }
 
 // securityHeaders sets the headers every response carries; csp is the Content-Security-Policy of a response that
-// sets none of its own (one(contentSecurityPolicy(...)), made once).
+// sets none of its own (one(contentSecurityPolicy(...)), made once). A skin preview (a GET with ?skin=, shown in the
+// console's preview dialog) may be framed by this site's own pages, and only by them.
 func securityHeaders(csp []string, next http.Handler) http.Handler {
+	preview := one(strings.Replace(csp[0], "frame-ancestors 'none'", "frame-ancestors 'self'", 1))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		// Shared, read-only value slices (len == cap, so a later Add copies rather than writing into them): no
@@ -127,12 +129,19 @@ func securityHeaders(csp []string, next http.Handler) http.Handler {
 		for _, sh := range staticSecurityHeaders {
 			h[sh.key] = sh.val
 		}
+		pageCSP := csp
+		if r.Method == http.MethodGet && r.URL.Query().Has("skin") {
+			h["X-Frame-Options"] = frameSameOrigin
+			pageCSP = preview
+		}
 		if _, ok := h["Content-Security-Policy"]; !ok {
-			h["Content-Security-Policy"] = csp
+			h["Content-Security-Policy"] = pageCSP
 		}
 		next.ServeHTTP(w, r)
 	})
 }
+
+var frameSameOrigin = one("SAMEORIGIN")
 
 type staticHeader struct {
 	key string

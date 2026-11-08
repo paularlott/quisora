@@ -2,6 +2,7 @@ package web
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,6 +64,27 @@ func (st Site) For(o *model.Org) Site {
 	}
 	if c := o.Branding.PrimaryColor; c != "" {
 		st.BrandCSS = OrgPath(o.ID, "/branding/brand.css") + "?v=" + strings.TrimPrefix(c, "#")
+	}
+	if o.Branding.Footer != "" {
+		st.Footer = FooterHTML(o.Branding.Footer)
+	}
+	if o.Settings.PasswordMinLength > 0 {
+		st.PasswordMin = o.Settings.PasswordMinLength
+	}
+	return st
+}
+
+// siteFor is the site's branding for the pages of organization o (Site.For), with its skin (withSkin; preview is a
+// page's ?skin=) and the primary organization's footer when o has none of its own (else ui.footer).
+func (s *Server) siteFor(ctx context.Context, o *model.Org, preview string) Site {
+	st := s.withSkin(ctx, s.Site.For(o), o, preview)
+	if o != nil && o.Branding.Footer != "" || o != nil && o.Primary {
+		return st
+	}
+	if id, err := s.Svc.PrimaryOrgID(ctx); err == nil {
+		if p, err := s.Svc.Org(ctx, id); err == nil && p.Branding.Footer != "" {
+			st.Footer = FooterHTML(p.Branding.Footer)
+		}
 	}
 	return st
 }

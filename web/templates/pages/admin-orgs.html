@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-public="{{.Site.PublicURL}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
+<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-public="{{.Site.PublicURL}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" {{with .Data.Defaults}}data-pwmin="{{.PasswordMinLength}}" data-lockout="{{.LockoutAttempts}}" data-lockmin="{{.LockoutMinutes}}" data-tokendays="{{.APITokenMaxDays}}" data-pttl="{{.PrivilegedTTL}}" data-pidle="{{.PrivilegedIdle}}"{{end}} data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">Administration</p>
@@ -67,6 +67,32 @@
       </fieldset>
 
       <fieldset class="fieldset">
+        <legend>Passwords and lockout</legend>
+        <div class="field-row">
+          <div class="field">
+            <label class="label" for="f-password_min_length">Shortest password (characters)</label>
+            <input class="input" id="f-password_min_length" name="password_min_length" type="number" min="8" max="64" step="1" inputmode="numeric" x-model="form.password_min_length" :aria-invalid="invalid.password_min_length" aria-describedby="e-password_min_length h-password_min_length">
+            <p class="help" id="h-password_min_length" x-text="help.password_min_length"></p>
+            <p class="field-error" id="e-password_min_length" x-text="errors.password_min_length"></p>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="label" for="f-lockout_attempts">Attempts before locking</label>
+            <input class="input" id="f-lockout_attempts" name="lockout_attempts" type="number" min="1" max="100" step="1" inputmode="numeric" x-model="form.lockout_attempts" :aria-invalid="invalid.lockout_attempts" aria-describedby="e-lockout_attempts h-lockout_attempts">
+            <p class="help" id="h-lockout_attempts" x-text="help.lockout_attempts"></p>
+            <p class="field-error" id="e-lockout_attempts" x-text="errors.lockout_attempts"></p>
+          </div>
+          <div class="field">
+            <label class="label" for="f-lockout_minutes">Locked for (minutes)</label>
+            <input class="input" id="f-lockout_minutes" name="lockout_minutes" type="number" min="1" max="1440" step="1" inputmode="numeric" x-model="form.lockout_minutes" :aria-invalid="invalid.lockout_minutes" aria-describedby="e-lockout_minutes h-lockout_minutes">
+            <p class="help" id="h-lockout_minutes" x-text="help.lockout_minutes"></p>
+            <p class="field-error" id="e-lockout_minutes" x-text="errors.lockout_minutes"></p>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="fieldset">
         <legend>API tokens for applications</legend>
         <div class="field">
           <label class="label" for="f-api_tokens">Who may make them</label>
@@ -77,35 +103,72 @@
           </select>
           <p class="help" id="h-api_tokens">Personal API tokens that the organization's own applications check through Quisora; an application also has to accept them in its own settings. Tokens for SCIM and the administration API follow people's roles, whatever is chosen here. Tokens already made are kept: turning this off stops them working, and turning it on again brings them back.</p>
         </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="label" for="f-api_token_max_days">Longest lifetime (days)</label>
+            <input class="input" id="f-api_token_max_days" name="api_token_max_days" type="number" min="1" max="3650" step="1" inputmode="numeric" x-model="form.api_token_max_days" :disabled="form.api_token_no_limit" :aria-invalid="invalid.api_token_max_days" aria-describedby="e-api_token_max_days h-api_token_max_days">
+            <p class="help" id="h-api_token_max_days" x-text="help.api_token_max_days"></p>
+            <p class="field-error" id="e-api_token_max_days" x-text="errors.api_token_max_days"></p>
+          </div>
+          <div class="field field-beside">
+            <label class="check" for="f-api_token_no_limit">
+              <input type="checkbox" role="switch" class="switch" id="f-api_token_no_limit" name="api_token_no_limit" x-model="form.api_token_no_limit" aria-describedby="h-api_token_no_limit e-api_token_no_limit">
+              <span class="check-text">No limit</span>
+            </label>
+            <p class="help" id="h-api_token_no_limit">Tokens may last forever.</p>
+            <p class="field-error" id="e-api_token_no_limit" x-text="errors.api_token_no_limit"></p>
+          </div>
+        </div>
         {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Anyone in a chosen group may make API tokens, including people who join later.")}}
       </fieldset>
 
       <fieldset class="fieldset">
         <legend>Sessions</legend>
-        <div class="field-row">
-          <div class="field">
-            <label class="label" for="f-session_ttl">Session lifetime (hours)</label>
-            <input class="input" id="f-session_ttl" name="session_ttl" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_ttl" :aria-invalid="invalid.session_ttl" aria-describedby="e-session_ttl h-session_ttl">
-            <p class="help" id="h-session_ttl" x-text="ttlHelp"></p>
-            <p class="field-error" id="e-session_ttl" x-text="errors.session_ttl"></p>
+        <fieldset class="fieldset">
+          <legend>Everyone</legend>
+          <div class="field-row">
+            <div class="field">
+              <label class="label" for="f-session_ttl">Lifetime (hours)</label>
+              <input class="input" id="f-session_ttl" name="session_ttl" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_ttl" :aria-invalid="invalid.session_ttl" aria-describedby="e-session_ttl h-session_ttl">
+              <p class="help" id="h-session_ttl" x-text="ttlHelp"></p>
+              <p class="field-error" id="e-session_ttl" x-text="errors.session_ttl"></p>
+            </div>
+            <div class="field">
+              <label class="label" for="f-session_idle">Idle timeout (minutes)</label>
+              <input class="input" id="f-session_idle" name="session_idle" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_idle" :aria-invalid="invalid.session_idle" aria-describedby="e-session_idle h-session_idle">
+              <p class="help" id="h-session_idle" x-text="idleHelp"></p>
+              <p class="field-error" id="e-session_idle" x-text="errors.session_idle"></p>
+            </div>
           </div>
-          <div class="field">
-            <label class="label" for="f-session_idle">Idle timeout (minutes)</label>
-            <input class="input" id="f-session_idle" name="session_idle" type="number" min="0" step="1" inputmode="numeric" x-model="form.session_idle" :aria-invalid="invalid.session_idle" aria-describedby="e-session_idle h-session_idle">
-            <p class="help" id="h-session_idle" x-text="idleHelp"></p>
-            <p class="field-error" id="e-session_idle" x-text="errors.session_idle"></p>
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend>Managers and admins</legend>
+          <div class="field-row">
+            <div class="field">
+              <label class="label" for="f-privileged_ttl">Lifetime (hours)</label>
+              <input class="input" id="f-privileged_ttl" name="privileged_ttl" type="number" min="0" step="1" inputmode="numeric" x-model="form.privileged_ttl" :aria-invalid="invalid.privileged_ttl" aria-describedby="e-privileged_ttl h-privileged_ttl">
+              <p class="help" id="h-privileged_ttl" x-text="help.privileged_ttl"></p>
+              <p class="field-error" id="e-privileged_ttl" x-text="errors.privileged_ttl"></p>
+            </div>
+            <div class="field">
+              <label class="label" for="f-privileged_idle">Idle timeout (minutes)</label>
+              <input class="input" id="f-privileged_idle" name="privileged_idle" type="number" min="0" step="1" inputmode="numeric" x-model="form.privileged_idle" :aria-invalid="invalid.privileged_idle" aria-describedby="e-privileged_idle h-privileged_idle">
+              <p class="help" id="h-privileged_idle" x-text="help.privileged_idle"></p>
+              <p class="field-error" id="e-privileged_idle" x-text="errors.privileged_idle"></p>
+            </div>
           </div>
-        </div>
+        </fieldset>
       </fieldset>
 
       <fieldset class="fieldset" aria-describedby="h-org-branding">
         <legend>Branding</legend>
-        <p class="help" id="h-org-branding">The logo and colour show on the organization's sign-in pages and in the console for its users. Without a logo, the server's logo and name are shown.</p>
+        <p class="help" id="h-org-branding">Change how the organization's sign-in pages and console look to its users. If there's no logo, the server's logo and name are used.</p>
         {{template "branding-fields"}}
       </fieldset>
     </div>
     {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}
   </form>
   {{template "dialog-end"}}
+  {{template "skin-preview-dialog"}}
 </div>
 {{end}}

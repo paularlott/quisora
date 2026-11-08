@@ -33,7 +33,16 @@ type BrandingInput struct {
 	LogoLight    *string `json:"logo_light"`
 	LogoDark     *string `json:"logo_dark"`
 	PrimaryColor *string `json:"primary_color"`
+	// Skin is the skin of the organization's pages: a built-in or custom skin's name, "default" for the built-in look,
+	// "" for the primary organization's.
+	Skin *string `json:"skin"`
+	// Footer is the footer line of the organization's pages: a little inline HTML (links, <strong>, <em>, <small>,
+	// <span>, <br>; the rest is removed when shown), at most MaxFooterBytes. "" inherits the primary organization's.
+	Footer *string `json:"footer"`
 }
+
+// MaxFooterBytes is the longest footer an organization may set.
+const MaxFooterBytes = 1000
 
 // OrgLogo returns organization orgID's logo (ErrNotFound when it has none).
 func (s *Service) OrgLogo(ctx context.Context, orgID string) (*model.OrgLogo, error) {
@@ -54,6 +63,9 @@ func (s *Service) UpdateBranding(ctx context.Context, a *Actor, orgID string, in
 	logo, err := s.OrgLogos.Get(ctx, orgID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, mapStore(err)
+	}
+	if err := s.validSkinChoice(ctx, in.Skin); err != nil {
+		return nil, err
 	}
 	was, wasLogo := snapshot(o), o.Branding.Logo
 	if logo, err = applyBranding(o, logo, in); err != nil {
@@ -100,6 +112,19 @@ func (s *Service) writeLogo(ctx context.Context, orgID string, logo *model.OrgLo
 // Nothing is changed when in is refused.
 func applyBranding(o *model.Org, logo *model.OrgLogo, in BrandingInput) (*model.OrgLogo, error) {
 	b := o.Branding
+	if in.Skin != nil {
+		b.Skin = strings.TrimSpace(*in.Skin)
+	}
+	if in.Footer != nil {
+		f := strings.TrimSpace(*in.Footer)
+		if len(f) > MaxFooterBytes {
+			return nil, Invalid("footer", "at most "+itoa(MaxFooterBytes)+" characters")
+		}
+		if strings.ContainsAny(f, "\r\n") {
+			return nil, Invalid("footer", "one line: use <br> for a line break")
+		}
+		b.Footer = f
+	}
 	if in.PrimaryColor != nil {
 		c, err := primaryColor(*in.PrimaryColor)
 		if err != nil {

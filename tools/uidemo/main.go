@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:18443", "listen address")
 	theme := flag.String("theme", "system", "default theme: light, dark or system")
-	skin := flag.String("skin", "", "UI skin: a built-in one (web/skins) or the path of a skin folder (./acme)")
+	skin := flag.String("skin", "", "the primary organization's skin (so every organization's): a built-in one (web/skins), or the path of a folder holding skin.css, added as a custom skin named after the folder")
 	rotation := flag.Bool("rotation", false, "show a master key rotation in progress (the master key rotation page)")
 	clustered := flag.Bool("cluster", false, "show a three-node gossip cluster on the system overview (a made-up status)")
 	flag.Parse()
@@ -56,7 +57,6 @@ func main() {
 	cfg.Server.DataDir = dir
 	cfg.UI.SiteName = "Quisora"
 	cfg.UI.DefaultTheme = *theme
-	cfg.UI.Skin = *skin
 	cfg.UI.Footer = "Quisora demo · All data is in memory"
 	cfg.Limits.PasswordWorkers = 4
 	cfg.Mail.SMTPHost = demoMailHost
@@ -79,6 +79,9 @@ func main() {
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
 	must(err)
 	demo, byName := seed(ctx, svc, super)
+	if *skin != "" {
+		must(demoSkin(ctx, svc, super, *skin))
+	}
 	if *rotation {
 		// Halfway through a rotation: this node seals with a new key, another still with the old one, and the secrets
 		// sealed so far are under the old key.
@@ -479,4 +482,29 @@ func seedSSH(ctx context.Context, svc *service.Service, t *model.Tenant, user *m
 	must(svc.RevokeSSHCert(ctx, sys, t.OrgID, first.ID))
 	_, err = svc.SignHostSSH(ctx, sys, t.ID, service.SSHHostRequest{PublicKey: newKey(), Principals: []string{"web1.acme.example"}})
 	must(err)
+}
+
+// demoSkin gives the primary organization (and so every organization) skin v: a built-in skin's name, or the path of a
+// folder holding skin.css, added first as a custom skin named after the folder (a skin being written can so be tried
+// on every page: SKIN=./acme with the Playwright suite).
+func demoSkin(ctx context.Context, svc *service.Service, super *model.User, v string) error {
+	a := service.ActorForUser(super, "127.0.0.1")
+	name := v
+	if strings.ContainsRune(v, '/') {
+		css, err := os.ReadFile(filepath.Join(v, "skin.css"))
+		if err != nil {
+			return err
+		}
+		name = filepath.Base(filepath.Clean(v))
+		text := string(css)
+		if _, err := svc.CreateSkin(ctx, a, service.SkinInput{Name: &name, CSS: &text}); err != nil {
+			return fmt.Errorf("skin %s: %w", v, err)
+		}
+	}
+	id, err := svc.PrimaryOrgID(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = svc.UpdateBranding(ctx, a, id, service.BrandingInput{Skin: &name})
+	return err
 }

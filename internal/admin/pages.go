@@ -55,6 +55,8 @@ type View struct {
 	// Organizations page: the server's session defaults (seconds), shown next to an organization's overrides.
 	DefaultSessionTTL  int
 	DefaultSessionIdle int
+	// and the server's password, lockout, API token and privileged session defaults (config.Config)
+	Defaults OrgDefaults
 
 	// KeyRotationDays: the signing keys page (tokens.key_rotation_days; 0 = by hand only).
 	KeyRotationDays int
@@ -120,6 +122,7 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/audit", m.pageAllAudit)
 	page("GET /admin/system", m.systemPage("admin-system", "System overview", "system"))
 	page("GET /admin/system/master-key", m.systemPage("admin-master-key", "Master key rotation", "system"))
+	page("GET /admin/skins", m.systemPage("admin-skins", "Skins", "skins"))
 }
 
 // adminOrgCookie remembers the organization last administered in this browser, so the system pages (which belong to
@@ -197,6 +200,17 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }
 
+// OrgDefaults are the server's settings an organization's own replace (model.OrgSettings): limits, tokens and session.
+type OrgDefaults struct {
+	PasswordMinLength, LockoutAttempts, LockoutMinutes, APITokenMaxDays, PrivilegedTTL, PrivilegedIdle int
+}
+
+func (m *Module) orgDefaults() OrgDefaults {
+	c := m.s.Cfg
+	return OrgDefaults{c.Limits.PasswordMinLength, c.Limits.LockoutAttempts, c.Limits.LockoutMinutes, c.Tokens.APITokenMaxDays,
+		c.Session.PrivilegedTTL, c.Session.PrivilegedIdle}
+}
+
 func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {
 	a := web.Actor(r)
 	if !a.IsSuper() {
@@ -204,7 +218,7 @@ func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := m.s.Page(w, r, "Organizations", "orgs", &View{API: "/api/orgs", Base: "/admin/orgs",
-		DefaultSessionTTL: m.s.Cfg.Session.TTL, DefaultSessionIdle: m.s.Cfg.Session.Idle})
+		DefaultSessionTTL: m.s.Cfg.Session.TTL, DefaultSessionIdle: m.s.Cfg.Session.Idle, Defaults: m.orgDefaults()})
 	m.s.Render.Render(w, http.StatusOK, "admin-orgs", p)
 }
 

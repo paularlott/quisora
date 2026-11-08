@@ -1,13 +1,24 @@
 # Skins
 
 A skin replaces the look of the UI without touching templates or components. Without one the UI has its own liquid
-glass look. Choose one with `ui.skin` (`--skin`):
+glass look. Skins are chosen in the console, not in the configuration:
 
-```toml
-[ui]
-skin = "matte"                     # a built-in skin (a folder here, compiled into the binary)
-# skin = "/etc/quisora/skins/acme" # or the path of a skin folder (./acme: relative to the working directory)
-```
+- **Super admins** keep the server's skins on **Skins** (System menu): the built-in ones (the folders here, compiled
+  into the binary), which can be viewed and copied, and custom ones they add, change and remove. A custom skin is a
+  stylesheet edited in the console, stored in Quisora's database (the `skins` table, replicated and backed up like
+  other records) and used by every node as soon as it has replicated. The API is `/api/skins` (super admins change
+  them; organization administrators list them, to choose one).
+- **Each organization** chooses its skin on its branding (the overview's Branding card, or the organization dialog):
+  a skin, **Default** (Quisora's own look, no skin), or **Same as the primary organization**, the default. The primary organization's
+  choice is so the look of every organization that has not chosen its own (and of pages that belong to none).
+  Audited with the rest of the branding (`org.branding`).
+- **Preview**: the Skins page's preview buttons and the branding card's **Preview** open a dialog showing the
+  organization's sign-in page, or the page it was opened from, in the skin (saved or not). It frames the page with
+  `?skin=<name>` (`default` for Default, `inherit` for the primary organization's): any page shows that skin instead
+  of its own, may then be framed by this site's pages (and only them), and a sign-in page shows its form to someone
+  signed in too.
+
+A skin removed leaves the organizations that chose it on the primary organization's skin until they choose another.
 
 ## Light, dark or system
 
@@ -32,57 +43,17 @@ Every folder here is a built-in skin, named after the folder: adding one needs n
 | --- | --- |
 | `matte` | Restrained: opaque surfaces with hairline borders, one royal-blue accent, square-ish corners, a solid header. |
 
-None ships a logo: set `ui.logo_light` / `ui.logo_dark`, or copy one into a skin folder of your own.
+A skin holds no logo: organizations have their own (below), and the server's is `ui.logo_light` / `ui.logo_dark`.
 
-## What a skin holds
+## Custom skins
 
-| File | |
-| --- | --- |
-| `skin.css` | Required. Loaded after the built-in stylesheet, served from `/branding/skin.css`. |
-| `logo-light.svg` or `.png` | Optional. The logo, used unless `ui.logo_light` is set. |
-| `logo-dark.svg` or `.png` | Optional. The dark-theme logo (default: `logo-light`), used unless `ui.logo_dark` or `ui.logo_light` is set. |
-
-A value with a `/` in it is a folder: absolute, or relative to the working directory the server starts in. A bare name
-(`acme`) is always a built-in skin, so write a folder in the working directory as `./acme`. The folder's name is the
-skin's name: lowercase letters, digits and dashes, and the `data-skin` selectors of its `skin.css` must use it (a
-stylesheet whose selectors name only another skin, as after renaming the folder, styles nothing, and the server warns
-of it at start-up; one with no `data-skin` selector applies as it is). The files are read once at start-up,
-so restart the server after changing them.
-
-Use fixed colours in logos. A logo is shown as an `<img>`, where `prefers-color-scheme` follows the operating system
-rather than the theme the user picked, so the light and dark variants are separate files.
-
-## Writing `skin.css`
-
-The pages set `data-skin="<name>"` on `<html>`, with `data-theme="light|dark"` and `data-layout`: `auth` on the
-sign-in, consent and other end-user pages, `app` on the console and account pages. A skin sets the design tokens of
-`web/src/css/tokens.css` under `:root[data-skin="<name>"]`. That selector is as specific as the built-in dark theme's
-and comes later, so it wins:
-
-```css
-:root[data-skin="acme"] {
-  --page-bg: light-dark(#f7f7f5, #111110);
-  --accent-solid: #0f766e;
-  --glass-bg: light-dark(#ffffff, #1b1b1a);
-  /* ... */
-}
-:root[data-skin="acme"][data-layout="auth"] { --accent-solid: #134e4a; }
-```
-
-- Use `light-dark(light, dark)` for colours that differ between the themes. The theme sets `color-scheme` on `<html>`,
-  so one declaration covers light, dark and visitors without JavaScript (who get their OS preference). It works only
-  for colours: set non-colour tokens once, or under `:root[data-skin="<name>"][data-theme="dark"]`.
-- Start from a copy of `matte/skin.css`: it defines a small palette (`--sk-*`) and maps it onto every token once.
-- Every colour, shadow, radius and surface treatment the components use is a token: buttons, switches, the avatar,
-  the current navigation link and so on. Prefer tokens to restyling components. A skin may add plain rules too, as
-  the built-in skin does to replace the aurora backdrop.
-- Plain CSS only: the file is served as is, so there is no Tailwind (`@apply`, utilities) and no `@import`. Load
-  nothing from other origins (fonts, images): the server works on networks without internet access, and the
-  Content-Security-Policy would block them anyway.
-- The reduced-transparency and more-contrast preferences still apply under a skin (they are `!important` in
-  tokens.css).
-- Keep WCAG 2.2 AA: text 4.5:1 and controls 3:1 against the surfaces they sit on, in both themes. The accessibility
-  audit runs against a skin with `SKIN=<name> npx playwright test a11y` in `web/` (a built-in name, or a folder's absolute path).
+A custom skin has a **name** (lowercase letters, digits and dashes, at most 40; not a built-in skin's or `default`),
+which is set when it is added and never changes, a **display name**, and a **stylesheet** of at most 256 KB, served at
+`/branding/skins/<name>.css?v=<version>` (a changed stylesheet is a new address, so browsers never keep an old one).
+Start from a copy of a built-in skin (**Start from**, or **Copy to a new skin** on a built-in one): the copy's
+`[data-skin="<name>"]` selectors become `[data-skin]`, which styles whichever skin is chosen, so it works under any
+name. **Default** is listed too: it is no stylesheet, but its copy is Quisora's own design tokens (light, dark, and
+dark for pages without JavaScript) under `[data-skin]`, every one there to change. A stylesheet whose `data-skin` selectors name only another skin (it would style nothing) is refused.
 
 ## Organization branding
 
@@ -94,9 +65,10 @@ organization sets on its page in the console or with `PATCH /api/orgs/{org}/bran
   name under the logo, since its heading already reads "Sign in to <org>"),
 - its colour for buttons, links and focus rings.
 
-Without a logo the server's is shown (`ui.logo_light` / `ui.logo_dark`, or the skin's) with the server's site name;
-without a colour the skin's accent stays. The skin still decides everything else, so the organization's logo and colour
-sit inside the skin's look. Organization branding is not a place for a stylesheet: only the logo and the colour can be set.
+Without a logo the server's is shown (`ui.logo_light` / `ui.logo_dark`) with the server's site name;
+without a colour the skin's accent stays. The skin (the organization's, else the primary organization's) still decides everything else, so the organization's
+logo and colour sit inside the skin's look. Organization branding holds no stylesheet of its own: it chooses one of
+the server's skins, and sets the logo, the colour and the footer.
 
 - **Colour.** `#rrggbb`, dark enough that white text on it has a contrast of at least 4.5:1 (WCAG 2.2 AA), since
   buttons are filled with it under white text. Link text and focus rings use it darkened (light theme) or lightened
@@ -119,6 +91,6 @@ curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/js
 ```
 
 A field left out stays as it is and `""` removes it. An invalid value is a 422 whose `field` is `logo_light`,
-`logo_dark` or `primary_color` (`branding.primary_color` and so on when creating). The organization objects the API
-returns carry `"branding": {"primary_color": "#134e4a", "logo_light": "<url>", "logo_dark": "<url>"}` (a logo's URL is
+`logo_dark`, `primary_color`, `skin` or `footer` (`branding.primary_color` and so on when creating). The organization objects the API
+returns carry `"branding": {"primary_color": "#134e4a", "logo_light": "<url>", "logo_dark": "<url>", "skin": "", "footer": ""}` (a logo's URL is
 omitted when there is none, and `primary_color` is `""` without one).

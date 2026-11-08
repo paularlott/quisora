@@ -59,7 +59,6 @@ type Server struct {
 	// organization's pages and endpoints when it does not exist (InOrg). Nil: a plain 404.
 	NotFound http.Handler
 
-	skin    *Skin // ui.skin, or nil
 	httpSrv *http.Server
 	addr    string
 	certs   *certSource
@@ -102,20 +101,9 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 		log.Warn("this binary was built without its web assets (run \"task webassets\" before go build): the sign-in " +
 			"pages and the admin console will not work")
 	}
-	skin, err := LoadSkin(cfg.UI.Skin)
-	if err != nil {
-		return nil, err
-	}
 	SetTrustedProxies(cfg.Server.TrustProxy)
 	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r, stopping: make(chan struct{}),
-		Site: SiteFromConfig(cfg), Mux: http.NewServeMux(), skin: skin}
-	if skin != nil {
-		s.Site.Skin, s.Site.SkinCSS = skin.Name, "/branding/skin.css?v="+skin.Version
-		if other := skinOtherName(skin.CSS, skin.Name); other != "" {
-			log.Warn("ui.skin: skin.css styles data-skin=\""+other+"\", but the skin's name is its folder's: rename the "+
-				"folder, or the selectors, or the skin may style nothing", "skin", cfg.UI.Skin, "name", skin.Name)
-		}
-	}
+		Site: SiteFromConfig(cfg), Mux: http.NewServeMux()}
 	s.baseRoutes()
 	return s, nil
 }
@@ -189,6 +177,7 @@ func (s *Server) baseRoutes() {
 		static.ServeHTTP(w, r)
 	}))
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
+	s.Mux.HandleFunc("GET /branding/skins/{file}", s.skinStylesheet)
 	s.Mux.Handle("GET /o/{org}/branding/{name}", s.InOrg(http.HandlerFunc(s.orgBranding)))
 	s.Mux.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
@@ -255,45 +244,23 @@ func openAPIDocument(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// branding serves the configured logos (local files or redirects to https URLs), else the skin's, else the built-in
-// one, and the skin's stylesheet.
+// branding serves the configured logos (local files or redirects to https URLs), else the built-in one.
 func (s *Server) branding(w http.ResponseWriter, r *http.Request) {
 	var src string
-	var skinLogo *SkinFile
 	switch r.PathValue("name") {
 	case "logo-light":
 		src = s.Cfg.UI.LogoLight
-		if s.skin != nil {
-			skinLogo = s.skin.LogoLight
-		}
 	case "logo-dark":
 		src = s.Cfg.UI.LogoDark
 		if src == "" {
 			src = s.Cfg.UI.LogoLight
 		}
-		if s.skin != nil {
-			skinLogo = s.skin.LogoDark
-		}
-	case "skin.css":
-		if s.skin == nil {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		// the pages name it with ?v=<content hash>, so a changed skin is a new URL
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		_, _ = w.Write(s.skin.CSS)
-		return
 	default:
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	switch {
-	case src == "" && skinLogo != nil:
-		w.Header().Set("Content-Type", skinLogo.Type)
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
-		_, _ = w.Write(skinLogo.Body)
 	case src == "":
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
@@ -336,7 +303,7 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.CSRF = s.AnonCSRF(w, r)
 		p.Org = Org(r) // an organization's own pages (sign-in, device, sign-out) name it signed out too
 	}
-	p.Site = p.Site.For(p.Org) // its branding (an admin page then names the organization it administers: p.Org)
+	p.Site = s.siteFor(r.Context(), p.Org, r.URL.Query().Get("skin")) // its branding (an admin page then names the organization it administers: p.Org)
 	return p
 }
 
@@ -352,7 +319,7 @@ func (s *Server) SignInElsewhere(w http.ResponseWriter, r *http.Request, status 
 	p := s.Page(w, r, title, "", notFound)
 	if id, err := s.Svc.PrimaryOrgID(r.Context()); err == nil {
 		if o, err := s.Svc.Org(r.Context(), id); err == nil {
-			p.Site = p.Site.For(o)
+			p.Site = s.siteFor(r.Context(), o, r.URL.Query().Get("skin"))
 		}
 	}
 	s.Render.Render(w, status, "not-found", p)

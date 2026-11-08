@@ -5,7 +5,7 @@
     <div>
       <p class="eyebrow">{{.Data.OrgDisplay}}{{if .Data.IsPrimary}} <span class="badge badge-accent ml-1">Primary</span>{{end}}</p>
       <h1 class="page-title">Emails</h1>
-      <p class="page-sub">The emails this organization sends: a layout for their header and footer, and each email's subject and body, in HTML and in plain text.</p>
+      <p class="page-sub">Edit the emails this organization sends. The layout holds the header and footer shared by every email. Each email has its own subject and body, in HTML and plain text.</p>
     </div>
   </div>
 
@@ -14,7 +14,7 @@
 
   <section class="glass-card" aria-labelledby="et-h" x-show="loaded" x-cloak>
     <p class="muted mb-4" x-text="inheritText"></p>
-    <div class="tabs" role="tablist" aria-label="Templates">
+    <div class="tabs" role="tablist" aria-label="Templates" x-ref="tabs">
       <template x-for="t in tabs" :key="t.id">
         <button type="button" role="tab" class="tab" :id="t.tabId" aria-controls="et-panel" :aria-selected="t.selected" :tabindex="t.tabindex"
           :data-tab="t.id" @click="selectTab" @keydown="tabKey"><span x-text="t.title"></span><span class="tab-mark" x-show="t.custom" aria-hidden="true"></span><span class="sr-only" x-show="t.custom">(customized)</span><span class="tab-mark tab-mark-unsaved" x-show="t.unsaved" aria-hidden="true"></span><span class="sr-only" x-show="t.unsaved">(unsaved)</span></button>

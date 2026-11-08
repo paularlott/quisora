@@ -188,6 +188,7 @@ type Service struct {
 	SignIns    *store.Table[model.SignIn, *model.SignIn]
 	OrgLogos   *store.Table[model.OrgLogo, *model.OrgLogo]
 	EmailTpls  *store.Table[model.EmailTemplates, *model.EmailTemplates]
+	Skins      *store.Table[model.Skin, *model.Skin]
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
@@ -196,10 +197,11 @@ type Service struct {
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
 
-	orgCache      *ttlcache.Cache[*model.Org] // organizations by id and by name (Org, OrgByRef)
-	primaryID     atomic.Pointer[string]      // the primary organization's id, once read (PrimaryOrgID)
-	bg            sync.WaitGroup              // Background work
-	tokenTouching sync.Map                    // ids of API tokens whose last use is being recorded (touchAPIToken)
+	orgCache      *ttlcache.Cache[*model.Org]  // organizations by id and by name (Org, OrgByRef)
+	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
+	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
+	bg            sync.WaitGroup               // Background work
+	tokenTouching sync.Map                     // ids of API tokens whose last use is being recorded (touchAPIToken)
 
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant
 	// of the user), so relying parties can be sent back-channel logout tokens. Set by the app.
@@ -252,9 +254,11 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		SignIns:    store.NewTable[model.SignIn](s),
 		OrgLogos:   store.NewTable[model.OrgLogo](s),
 		EmailTpls:  store.NewTable[model.EmailTemplates](s),
+		Skins:      store.NewTable[model.Skin](s),
 		Locks:      store.NewTable[model.Lock](s),
 		Replays:    store.NewTable[model.Replay](s),
 		orgCache:   ttlcache.New[*model.Org](orgTTL, 20_000),
+		skinCache:  ttlcache.New[*model.Skin](orgTTL, 1_000),
 	}
 }
 

@@ -102,9 +102,9 @@ func applyTags(dst *[]string, in *[]string) error {
 
 var usernameRe = regexp.MustCompile(`^[\p{L}\p{N}._@+-]{1,128}$`)
 
-// validatePassword checks a new password's length: at least limits.password_min_length characters.
-func (s *Service) validatePassword(pw string) error {
-	n, min := utf8.RuneCountInString(pw), s.Cfg.Limits.PasswordMinLength
+// validatePassword checks a new password's length: at least the organization's shortest (PasswordMinLength).
+func (s *Service) validatePassword(o *model.Org, pw string) error {
+	n, min := utf8.RuneCountInString(pw), s.PasswordMinLength(o)
 	if n < min {
 		return Invalid("password", "must be at least "+itoa(min)+" characters")
 	}

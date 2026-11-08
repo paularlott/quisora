@@ -374,12 +374,10 @@ func (m *Module) auditLimited(r *http.Request, bucket, limit, uid string) {
 
 // ---- lockout -------------------------------------------------------------------------------------------------
 
-func (m *Module) lockWindow() time.Duration {
-	mins := m.s.Cfg.Limits.LockoutMinutes
-	if mins <= 0 {
-		mins = 15
-	}
-	return time.Duration(mins) * time.Minute
+// lockWindow is how long an account of org stays locked (service.Lockout).
+func (m *Module) lockWindow(org *model.Org) time.Duration {
+	_, w := m.s.Svc.Lockout(org)
+	return w
 }
 
 // lockKey identifies the account being attacked. Unknown logins get a pseudo key so that an attacker sees the same
@@ -398,32 +396,34 @@ func lockKey(u *model.User, org *model.Org, login string) string {
 // the limit hold for attempts sent at once: had only finished failures counted, every attempt in a burst would pass
 // the check before the first was charged. The charge is a failure unless it is given back: settle, deferred by the
 // caller, refunds it for every outcome but a wrong credential (n is then this failure's number: tripped).
-func (m *Module) charge(ctx context.Context, key string) (n int64, open bool, err error) {
-	max := m.s.Cfg.Limits.LockoutAttempts
+// The lockout is org's (service.Lockout): the organization of the account, or of the sign-in page for an unknown one.
+func (m *Module) charge(ctx context.Context, org *model.Org, key string) (n int64, open bool, err error) {
+	max, window := m.s.Svc.Lockout(org)
 	if max <= 0 {
 		return 0, true, nil
 	}
-	n, err = m.s.Eph.Incr(ctx, nsLockout, key, 1, m.lockWindow())
+	n, err = m.s.Eph.Incr(ctx, nsLockout, key, 1, window)
 	if err != nil {
 		return 0, false, err
 	}
 	if n > int64(max) { // refused while locked: not an attempt, so the counter stays at the limit
-		_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, m.lockWindow())
+		_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, window)
 	}
 	return n, n <= int64(max), nil
 }
 
 // settle gives back a charge (charge) unless *wrong says the attempt was a wrong credential.
-func (m *Module) settle(ctx context.Context, key string, wrong *bool) {
-	if *wrong || m.s.Cfg.Limits.LockoutAttempts <= 0 {
+func (m *Module) settle(ctx context.Context, org *model.Org, key string, wrong *bool) {
+	max, window := m.s.Svc.Lockout(org)
+	if *wrong || max <= 0 {
 		return
 	}
-	_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, m.lockWindow())
+	_, _ = m.s.Eph.Incr(context.WithoutCancel(ctx), nsLockout, key, -1, window)
 }
 
-// tripped reports whether the n-th failure (charge) is the one that locks the account.
-func (m *Module) tripped(n int64) bool {
-	max := m.s.Cfg.Limits.LockoutAttempts
+// tripped reports whether the n-th failure (charge) is the one that locks an account of org.
+func (m *Module) tripped(org *model.Org, n int64) bool {
+	max, _ := m.s.Svc.Lockout(org)
 	return max > 0 && n == int64(max)
 }
 
@@ -441,8 +441,8 @@ func unavailableResponse(w http.ResponseWriter) {
 	writeErr(w, http.StatusServiceUnavailable, "The server cannot check your account right now. Please try again in a moment.", "")
 }
 
-func (m *Module) lockedResponse(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", strconv.Itoa(int(m.lockWindow().Seconds())))
+func (m *Module) lockedResponse(w http.ResponseWriter, org *model.Org) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(m.lockWindow(org).Seconds())))
 	writeErr(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.", "")
 }
 
