@@ -40,7 +40,30 @@
   @media (min-width: 48rem) { .app-body { grid-template-columns: 15.5rem minmax(0, 1fr); gap: var(--panel-gap); align-items: start; } }
   .app-body.no-nav { grid-template-columns: minmax(0, 1fr); }
   .app-nav { padding: 0.75rem; }
-  @media (min-width: 48rem) and (min-height: 40rem) { .app-nav { position: sticky; top: calc(var(--header-gap) + var(--header-h) + var(--panel-gap)); } }
+  /* Wide screens: the sidebar stays beside the content, never taller than the window, and its links scroll inside it
+     when they do not fit, so every one is in reach wherever the page is scrolled to (a sticky sidebar taller than the
+     window could only be scrolled through by reaching the end of the page). The glass panel keeps its shape: the
+     list scrolls inside it, padded so a link's focus ring is not cut off, and does not hand its scrolling on to the
+     page at either end. Shorter windows (and 400% zoom) keep the sidebar in the page's flow, scrolling with it. */
+  @media (min-width: 48rem) and (min-height: 40rem) {
+    .app-nav { --nav-top: calc(var(--header-gap) + var(--header-h) + var(--panel-gap));
+      position: sticky; top: var(--nav-top); max-height: calc(100dvh - var(--nav-top) - var(--header-gap));
+      display: flex; flex-direction: column; padding: 0; }
+    .nav-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0.75rem;
+      border-radius: inherit; scroll-padding-block: calc(var(--nav-fade) + 0.5rem); scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--fg) 30%, transparent) transparent; }
+  }
+  /* A soft fade at an edge of the list while there is more to scroll that way, so links cut off by it read as more
+     to come (scroll-padding above keeps a focused link and its ring clear of it). It follows the list's own scroll position;
+     a list that fits has no scroll timeline, so no fade, and browsers without scroll timelines simply show none. */
+  :root { --nav-fade: 1.5rem; }
+  @supports (animation-timeline: scroll()) {
+    @media (min-width: 48rem) and (min-height: 40rem) {
+      .nav-scroll { animation: nav-fade linear both; animation-timeline: scroll(self);
+        -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--nav-fade-top), #000 calc(100% - var(--nav-fade-bottom)), transparent);
+        mask-image: linear-gradient(to bottom, transparent, #000 var(--nav-fade-top), #000 calc(100% - var(--nav-fade-bottom)), transparent); }
+    }
+  }
   .nav-drawer-head, .nav-scrim { display: none; }
   /* Small screens (with JavaScript): the navigation is a drawer that slides in from the left over a scrim, like a
      dialog (same scrim and glass, so the same contrast budget: tokens.css). shell.js opens and closes it, makes the
@@ -134,3 +157,12 @@
 }
 
 @media print { .aurora, .app-header, .app-nav, .toasts { display: none !important; } }
+
+/* The edge fades of the sidebar's list (above): animatable lengths, none until the list scrolls. */
+@property --nav-fade-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --nav-fade-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes nav-fade {
+  0% { --nav-fade-top: 0px; --nav-fade-bottom: var(--nav-fade); }
+  10%, 90% { --nav-fade-top: var(--nav-fade); --nav-fade-bottom: var(--nav-fade); }
+  100% { --nav-fade-top: var(--nav-fade); --nav-fade-bottom: 0px; }
+}

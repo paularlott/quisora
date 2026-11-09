@@ -28,14 +28,20 @@ export default function (Alpine) {
       mq.addEventListener('change', () => { if (!mq.matches) this.closeNav(false) })
       // a page restored from the back/forward cache comes back with the drawer shut
       window.addEventListener('pageshow', (ev) => { if (ev.persisted) this.closeNav(false) })
-      if (this.$refs.nav) swipeToClose(this.$refs.nav, this.$refs.navScrim, () => this.closeNav())
+      if (this.$refs.nav) {
+        swipeToClose(this.$refs.nav, this.$refs.navScrim, () => this.closeNav())
+        revealCurrent(this.$refs.nav)
+      }
     },
     openNav() {
       if (this.navOpen || !window.matchMedia(NARROW).matches) return
       this.navOpen = true
       this.userOpen = false
       setPageInert(true)
-      this.$nextTick(() => { if (this.$refs.navClose) this.$refs.navClose.focus() })
+      this.$nextTick(() => {
+        revealCurrent(this.$refs.nav)
+        if (this.$refs.navClose) this.$refs.navClose.focus()
+      })
     },
     // closeNav(false) leaves the focus where it is (the window widened, or the page came back from the cache).
     closeNav(restoreFocus) {
@@ -69,6 +75,19 @@ export default function (Alpine) {
     get navExpanded() { return this.navOpen ? 'true' : 'false' },
     get userExpanded() { return this.userOpen ? 'true' : 'false' },
   }))
+}
+
+// revealCurrent scrolls the navigation's list, when it scrolls at all, so the current page's link is in view: a link
+// low in a long list (the sidebar in a short window, or the drawer) is not left out of sight after following it. The
+// list is set directly, without moving the page or animating.
+function revealCurrent(nav) {
+  const list = nav.querySelector('.nav-scroll')
+  const link = nav.querySelector('[aria-current="page"]')
+  if (!list || !link || list.scrollHeight <= list.clientHeight) return
+  const box = list.getBoundingClientRect(), r = link.getBoundingClientRect()
+  const pad = parseFloat(getComputedStyle(list).scrollPaddingTop) || 0
+  if (r.top >= box.top + pad && r.bottom <= box.bottom - pad) return
+  list.scrollTop += r.top - box.top - (list.clientHeight - r.height) / 2
 }
 
 // swipeToClose lets the open drawer be swiped back to the left, from the drawer or the scrim: it follows the finger
