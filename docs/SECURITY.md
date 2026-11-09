@@ -81,7 +81,10 @@ Before production:
 8. **People**: as few super admins as possible; every administrator with a passkey or authenticator app; API tokens
    with short lifetimes (`tokens.api_token_max_days`: 365 by default; lower it to what your scripts need); the
    organization's setting for who may make `api` tokens left off (the default) or limited to the groups that need them;
-   access reviewed periodically from the user lists.
+   access reviewed periodically from the user lists. Quisora's own MCP server ([MCP.md](MCP.md#quisoras-own-mcp-server))
+   left off unless AI assistants are to manage users (it is off for every organization until a super admin switches it
+   on, and accepts only managers and up who signed in with a second factor), or turned off for the whole server with
+   `--disable-mcp`; where it is on, its approved clients reviewed under **Self-registered apps**.
 9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
    the mailboxes are at least as well protected as the passwords.
 10. **SSH certificates** (if you use them): `AuthorizedPrincipalsFile` on every server, with `group:` principals for

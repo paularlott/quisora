@@ -387,3 +387,67 @@ func TestSelfRegisteredPrivateScheme(t *testing.T) {
 		t.Fatalf("consent for a private-use scheme:\n%s", page)
 	}
 }
+
+// A resource this process serves (Quisora's MCP server) accepts a user's token only when it names that resource, and
+// only while the user may still use the application: the resource's tenant still accepts it.
+func TestVerifyResourceToken(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := setup(t, nil)
+	tn := h.mcpTenant("mcp", true)
+	cl := h.register("http://127.0.0.1:44001/callback")
+	r, _ := h.publicLogin(cl, url.Values{"resource": {mcpResource}})
+	tok := r.str("access_token")
+	verify := func(resource string) (*model.User, error) {
+		req := httptest.NewRequest(http.MethodPost, mcpResource, nil)
+		_, u, err := h.p.VerifyResourceToken(req, "Bearer", tok, resource)
+		return u, err
+	}
+	if u, err := verify(mcpResource); err != nil || u.ID != h.user.ID {
+		t.Fatalf("the token for the resource: %v %v", u, err)
+	}
+	if _, err := verify("https://MCP.example.com/mcp/"); err != nil {
+		t.Errorf("the same resource written differently: %v", err)
+	}
+	if _, err := verify("https://other.example/mcp"); err == nil {
+		t.Error("accepted for another resource")
+	}
+	off := tn.Settings
+	off.SelfRegistration = false
+	if _, err := h.env.Svc.UpdateTenant(ctx, h.admin, tn.ID, service.TenantInput{Settings: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verify(mcpResource); err == nil {
+		t.Error("accepted after the tenant stopped accepting self-registered apps")
+	}
+}
+
+// An application an administrator set up may use a resource it lists; taking the resource off it stops its tokens at
+// once, not when they expire. A client's own token (client_credentials) is never a user's.
+func TestVerifyResourceTokenAdminApp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := setup(t, nil)
+	cl, _ := h.newClient(func(in *service.ClientInput) {
+		in.Resources = &[]string{mcpResource, "https://api.example"}
+	})
+	verify := func(tok string) error {
+		_, _, err := h.p.VerifyResourceToken(httptest.NewRequest(http.MethodPost, mcpResource, nil), "Bearer", tok, mcpResource)
+		return err
+	}
+	forAddress := func(m map[string]any) { m["aud"] = []string{cl.ID, mcpResource} }
+	if err := verify(h.forgeAccess(cl, forAddress)); err != nil {
+		t.Fatalf("an administrator's application listing the resource: %v", err)
+	}
+	if err := verify(h.forgeAccess(cl, func(m map[string]any) { forAddress(m); m["sub"] = cl.ID })); err == nil {
+		t.Error("accepted a client_credentials token")
+	}
+	live := h.forgeAccess(cl, forAddress)
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{Resources: &[]string{"https://api.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID) // the cluster does this in a server, on every change to the record
+	if err := verify(live); err == nil {
+		t.Error("a live token was accepted after the resource was taken off the application")
+	}
+}

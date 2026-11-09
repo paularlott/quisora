@@ -3,6 +3,7 @@
   <h1 class="page-title">Authorize {{.Data.ClientName}}</h1>
   {{with .Data.UserCode}}<div class="alert alert-warning" role="note">{{template "icon" "alert"}}<span><strong>Signing in a device.</strong> Allow only if you started this yourself on a device in front of you that shows the code <strong class="mono">{{.}}</strong>. If someone sent you the code, choose Deny: they are trying to get into your account.</span></div>{{end}}
   {{if .Data.SelfRegistered}}<div class="alert alert-warning" role="note">{{template "icon" "alert"}}<span><strong>Not verified by your organization.</strong> This application registered itself; its name is what it calls itself. It will receive the result at <strong class="mono">{{.Data.RedirectHost}}</strong>. Allow it only if you started this from an application you trust.</span></div>{{end}}
+  {{if .Data.Manages}}<div class="alert alert-warning" role="note">{{template "icon" "alert"}}<span><strong>Manage your organization as you.</strong> It will be able to look up your organization's users, groups and audit log, and change them with your permissions: create, disable and enable users, change group members, send invitations and sign people out. Allow it only for an AI assistant you trust to act for you.</span></div>{{end}}
   <div>
     <p>Signed in as <strong>{{.Data.Username}}</strong>. <strong>{{.Data.ClientName}}</strong> is asking to:</p>
     {{with .Data.Tenant}}<p class="help">Tenant: {{.}}</p>{{end}}

@@ -110,8 +110,8 @@ Both modes, every storage backend, Docker, backups and recovery: [docs/RUNNING.m
 and outage procedures: [docs/REPLICATION.md](docs/REPLICATION.md). Running it securely (threat model, hardening checklist, incident
 response): [docs/SECURITY.md](docs/SECURITY.md). Personal data and data subject requests: [docs/PRIVACY.md](docs/PRIVACY.md). Scripts and tools with personal API tokens:
 [docs/API-TOKENS.md](docs/API-TOKENS.md). Automation with service accounts (SCIM provisioning, importers, deploying
-organizations): [docs/SERVICE-ACCOUNTS.md](docs/SERVICE-ACCOUNTS.md). MCP servers and AI clients that register themselves:
-[docs/MCP.md](docs/MCP.md).
+organizations): [docs/SERVICE-ACCOUNTS.md](docs/SERVICE-ACCOUNTS.md). MCP servers and AI clients that register themselves, and
+Quisora's own MCP server for managing users and groups from an AI client: [docs/MCP.md](docs/MCP.md).
 Connecting applications (sign-in, client credentials, device sign-in, token exchange, PAR, DPoP, FAPI 2.0):
 [docs/oauth](docs/oauth/README.md). How people sign in (passkeys, upstream providers, recovery codes, codes by email):
 [docs/sign-in](docs/sign-in/README.md). SSH certificates for servers: [docs/ssh](docs/ssh/README.md). Emergency sign-out and lock-out: [docs/emergency-sign-out.md](docs/emergency-sign-out.md). Email templates per organization: [docs/EMAILS.md](docs/EMAILS.md).

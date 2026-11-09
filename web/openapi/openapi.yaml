@@ -5250,6 +5250,11 @@ components:
           type: boolean
           description: users without an authenticator app or passkey may give the second factor as a one-time code emailed to
             their verified address (never managers and above); needs the server to send email; off by default
+        mcp_server:
+          type: boolean
+          description: serve the organization's own MCP server at /o/{organization id}/mcp, through which AI clients manage
+            its users and groups for its managers and administrators (see docs/MCP.md); off by default, and while off its
+            address and protected resource metadata answer 404
         passkey_login:
           type: boolean
         password_login:

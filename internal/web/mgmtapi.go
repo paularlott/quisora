@@ -197,6 +197,13 @@ func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Han
 	}))
 }
 
+// ServeAs runs management API handler h for actor a, authenticated by the caller (Quisora's MCP server, which calls
+// the API's handlers in process): as RequireManagement runs it once it has its actor, a refusal for want of
+// permission audited.
+func (s *Server) ServeAs(w http.ResponseWriter, r *http.Request, a *service.Actor, h http.HandlerFunc) {
+	s.auditDenied(w, WithActor(r, a), a, h)
+}
+
 // auditDenied runs next, and records the request as refused when next refused it for want of permission
 // (WriteError with service.ErrForbidden): an access-control event, like the refusals RequireManagement makes itself.
 func (s *Server) auditDenied(w http.ResponseWriter, r *http.Request, a *service.Actor, next http.HandlerFunc) {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/mail"
 	"github.com/paularlott/quisora/internal/mailtpl"
+	"github.com/paularlott/quisora/internal/mcpapi"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/oidc"
@@ -188,7 +190,13 @@ func modules(ctx context.Context, a *App) []web.Module {
 	a.Admin = adm
 	a.Server.NotFound = admin.NotFound(a.Server)
 	a.Server.Mux.Handle("/", a.Server.NotFound)
-	return []web.Module{op, lm, &scim.Module{TokenVerifier: scimVerifier(a)}, adm, &events.Module{Hub: hub}, commandModule{a}}
+	// Quisora's own MCP server runs the management API's handlers in process, for the user its token names.
+	api := http.NewServeMux()
+	for _, rt := range adm.Routes() {
+		api.HandleFunc(rt.Method+" "+rt.Path, rt.Handler)
+	}
+	return []web.Module{op, lm, &scim.Module{TokenVerifier: scimVerifier(a)}, adm, &events.Module{Hub: hub}, commandModule{a},
+		&mcpapi.Module{Verify: mcpVerifier(a), API: api}}
 }
 
 // adminMailer adapts the mailer to the admin module's interface.

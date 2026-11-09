@@ -1,11 +1,16 @@
 package admin_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 )
 
 func TestPages(t *testing.T) {
@@ -42,7 +47,8 @@ func TestPages(t *testing.T) {
 			t.Errorf("%s: inline script", p.path)
 		}
 	}
-	if b := html(su, "/admin/orgs", 200); !strings.Contains(b, `x-data="adminOrgs"`) || !strings.Contains(b, `href="/admin/orgs" aria-current="page"`) {
+	if b := html(su, "/admin/orgs", 200); !strings.Contains(b, `x-data="adminOrgs"`) || !strings.Contains(b, `href="/admin/orgs" aria-current="page"`) ||
+		!strings.Contains(b, `id="f-mcp_server"`) {
 		t.Error("orgs page")
 	}
 	// the organization block: for administrators the link to its overview (current on that page); for managers a
@@ -265,5 +271,96 @@ func TestRoleFilterOptions(t *testing.T) {
 				t.Errorf("%s on %s: %s offered", c.who, c.path, v)
 			}
 		}
+	}
+}
+
+// The overview lists the organization's own MCP server, last among its addresses with a copy button, while the
+// organization switches it on; and says when no tenant accepts AI clients for it yet.
+func TestOrgOverviewShowsMCPAddress(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	ad := w.as("admin")
+	mcp := w.env.Cfg.OrgMCP(w.acme.ID)
+	page := func() string {
+		t.Helper()
+		res, err := ad.c.Get(w.env.URL + "/admin/orgs/acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return string(b)
+	}
+	switchMCP := func(on bool) {
+		t.Helper()
+		org, err := w.env.Svc.Org(ctx, w.acme.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := org.Settings
+		st.MCPServer = on
+		if _, err := w.env.Svc.UpdateOrg(ctx, service.System, org.ID, service.OrgInput{Settings: &st}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A tenant listing the address does not switch the server on: the organization does.
+	set := model.DefaultTenantSettings()
+	set.SelfRegistration = true
+	if _, err := w.env.Svc.CreateTenant(ctx, service.System, w.acme.ID, service.TenantInput{Name: ptr("ai"), Settings: &set,
+		Resources: &[]string{mcp}}); err != nil {
+		t.Fatal(err)
+	}
+	if b := page(); strings.Contains(b, `id="addr-mcp"`) || !strings.Contains(b, `x-text="mcpText"`) {
+		t.Fatal("the address shown while the organization's MCP server is off")
+	}
+
+	switchMCP(true)
+	b := page()
+	at, scim := strings.Index(b, `<code class="mono" id="addr-mcp">`+mcp+`</code>`), strings.Index(b, `id="addr-scim"`)
+	if at < 0 || at < scim || !strings.Contains(b, `data-source="addr-mcp"`) {
+		t.Fatalf("not listed last with a copy button while on:\n%.3000s", b[max(0, scim-200):])
+	}
+	if strings.Contains(b, `id="mcp-no-tenant"`) {
+		t.Error("says no tenant accepts AI clients while one does")
+	}
+
+	// On, but no tenant owns the address: the overview says what is missing.
+	tn, err := w.env.Svc.TenantForResources(ctx, w.acme.ID, []string{mcp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.env.Svc.UpdateTenant(ctx, service.System, tn.ID, service.TenantInput{Resources: &[]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if b := page(); !strings.Contains(b, `id="addr-mcp"`) || !strings.Contains(b, `id="mcp-no-tenant"`) {
+		t.Error("no note that no tenant accepts AI clients")
+	}
+
+	switchMCP(false)
+	if strings.Contains(page(), `id="addr-mcp"`) {
+		t.Error("shown after the organization switched the server off")
+	}
+}
+
+// With --disable-mcp (server.disable_mcp) the console neither offers the switch nor shows the address or the setting,
+// whatever an organization's settings say.
+func TestDisableMCPHidesIt(t *testing.T) {
+	w := newWorldWith(t, func(c *config.Config) { c.Server.DisableMCP = true })
+	get := func(c *caller, path string) string {
+		t.Helper()
+		res, err := c.c.Get(w.env.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return string(b)
+	}
+	if b := get(w.as("super"), "/admin/orgs"); strings.Contains(b, `id="f-mcp_server"`) {
+		t.Error("the organization dialog offers the MCP server switch")
+	}
+	if b := get(w.as("admin"), "/admin/orgs/acme"); strings.Contains(b, `id="addr-mcp"`) || strings.Contains(b, "mcpText") {
+		t.Error("the overview shows the MCP server")
 	}
 }

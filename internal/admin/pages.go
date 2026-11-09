@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,11 +34,15 @@ type View struct {
 	FilterRoles []RoleOption
 
 	// Addresses an organization is shared and configured with (config.OrgIssuer, web.OrgPath): the overview page shows
-	// the sign-in page, the issuer and the SCIM base URL, each to copy; the tenant page needs the issuer
-	// for the client dialog.
+	// the sign-in page, the issuer, the SCIM base URL and, while it is on, its own MCP server, each to copy; the tenant
+	// page needs the issuer for the client dialog.
 	Issuer    string
 	SignInURL string
 	SCIMURL   string
+	MCPURL    string // config.Config.OrgMCP while the organization's MCP server is on (OrgSettings.MCPServer); else ""
+	// MCPNoTenant: the MCP server is on, but no tenant owns its address and accepts self-registered apps (AI clients),
+	// so no AI client can sign in to it yet.
+	MCPNoTenant bool
 
 	// Tenant page (/admin/orgs/{org}/tenants/{tenant}), and its clients and SSH pages (.../clients, .../ssh).
 	TenantID      string
@@ -197,6 +202,13 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 	pub := m.s.Cfg.Server.PublicURL
 	v.SignInURL = pub + web.OrgPath(org.Name, "/login")
 	v.SCIMURL = pub + "/scim/v2/" + org.Name
+	// Quisora's own MCP server, when the organization switches it on (docs/MCP.md); AI clients sign in to it through
+	// the tenant that owns its address and accepts self-registered apps. A read that fails says nothing of the tenant.
+	if m.s.Cfg.MCPServer(org.Settings.MCPServer) {
+		v.MCPURL = m.s.Cfg.OrgMCP(org.ID)
+		_, err := m.s.Svc.TenantForResources(r.Context(), org.ID, []string{v.MCPURL})
+		v.MCPNoTenant = errors.Is(err, service.ErrNotFound)
+	}
 	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }
 

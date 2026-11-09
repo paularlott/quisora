@@ -545,6 +545,13 @@ func ActorForToken(t *model.APIToken, u *model.User, ip string) *Actor {
 	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, Scopes: t.Scopes, TokenID: t.ID, IP: ip}
 }
 
+// ActorForApp builds the actor for user u acting through application clientID with a user's access token (Quisora's
+// own MCP server): limited to what a personal API token may do (Scoped, holding no scopes), and named in the audit log
+// with the application.
+func ActorForApp(u *model.User, clientID, ip string) *Actor {
+	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, App: clientID, IP: ip}
+}
+
 // ActorForUser builds the actor for an interactive session (no scope limits).
 func ActorForUser(u *model.User, ip string) *Actor {
 	return &Actor{UserID: u.ID, OrgID: u.OrgID, Role: u.Role, Name: u.Username, IP: ip, Unscoped: true}

@@ -153,6 +153,52 @@ func (p *Provider) tokenAccess(ctx context.Context, cl *Claims, u *model.User) (
 	return app, app.Allowed, nil
 }
 
+// VerifyResourceToken verifies a user's access token presented to resource, a protected resource this process serves
+// (Quisora's MCP server), in request r of the organization web.Org(r): the token is that organization's
+// (VerifyRequestToken, which checks a DPoP-bound one's proof), names resource in its audience, is a user's (not a
+// client's own), the application still lists resource when an administrator set it up (a self-registered one is
+// held to the tenant that owns resource, by tokenAccess), and its user may still use the application (tokenAccess:
+// the resource still accepts the application, and the user still has access in the resource's tenant). An error that
+// is service.ErrUnavailable is a read that failed (answered 503); every other is a refusal.
+func (p *Provider) VerifyResourceToken(r *http.Request, scheme, tok, resource string) (*Claims, *model.User, error) {
+	cl, err := p.VerifyRequestToken(r, scheme, tok)
+	if err != nil {
+		return nil, nil, err
+	}
+	want := model.CanonicalResource(resource)
+	if !slices.ContainsFunc(cl.Aud, func(a string) bool { return model.CanonicalResource(a) == want }) {
+		return nil, nil, badToken("not issued for this resource")
+	}
+	if cl.Sub == cl.ClientID {
+		return nil, nil, badToken("not a user's token")
+	}
+	orgID, _ := p.issuerOrg(cl.Iss) // verified: the request's organization
+	ce, err := p.client(r.Context(), orgID, cl.ClientID)
+	if err != nil {
+		if gone(err) {
+			return nil, nil, badToken("client gone")
+		}
+		return nil, nil, unavailable(err)
+	}
+	// Taking the address off an administrator's application stops its tokens at once, not when they expire.
+	if !ce.c.SelfRegistered && !slices.ContainsFunc(ce.c.Resources, func(a string) bool { return model.CanonicalResource(a) == want }) {
+		return nil, nil, badToken("the application no longer lists this resource")
+	}
+	u, err := p.user(r.Context(), cl.Sub)
+	if err != nil {
+		if gone(err) {
+			return nil, nil, badToken("user inactive")
+		}
+		return nil, nil, unavailable(err)
+	}
+	if _, ok, err := p.tokenAccess(r.Context(), cl, u); err != nil {
+		return nil, nil, err
+	} else if !ok {
+		return nil, nil, badToken("no access to the application")
+	}
+	return cl, u, nil
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // userinfo
 

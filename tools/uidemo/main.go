@@ -79,6 +79,19 @@ func main() {
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
 	must(err)
 	demo, byName := seed(ctx, svc, super)
+	// The primary organization's own MCP server is on, and a tenant owns its address and accepts AI clients, so its
+	// overview lists the address.
+	primary, err := svc.Org(ctx, super.OrgID)
+	must(err)
+	primarySettings := primary.Settings
+	primarySettings.MCPServer = true
+	_, err = svc.UpdateOrg(ctx, service.System, primary.ID, service.OrgInput{Settings: &primarySettings})
+	must(err)
+	_, err = svc.CreateTenant(ctx, service.System, super.OrgID, service.TenantInput{Name: ptr("ai"), DisplayName: ptr("AI assistants"),
+		Description: ptr("AI clients that manage users through the MCP server"),
+		Settings:    &model.TenantSettings{PasswordLogin: true, PasskeyLogin: true, RequireMFA: true, SelfRegistration: true},
+		Resources:   &[]string{cfg.OrgMCP(super.OrgID)}})
+	must(err)
 	if *skin != "" {
 		must(demoSkin(ctx, svc, super, *skin))
 	}

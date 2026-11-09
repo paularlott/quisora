@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/paularlott/quisora/internal/mcpapi"
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
@@ -54,5 +56,17 @@ func serviceAccount(a *App, r *http.Request, scheme, tok string) (*service.Actor
 func scimVerifier(a *App) func(r *http.Request, scheme, tok string) (*service.Actor, error) {
 	return func(r *http.Request, scheme, tok string) (*service.Actor, error) {
 		return serviceAccount(a, r, scheme, tok)
+	}
+}
+
+// mcpVerifier accepts, for Quisora's own MCP server, a user's access token issued for its address: the tools run as
+// that user, acting through the application the token was issued to.
+func mcpVerifier(a *App) mcpapi.Verifier {
+	return func(r *http.Request, tok, resource string) (*service.Actor, bool, error) {
+		cl, u, err := a.OIDC.VerifyResourceToken(r, "Bearer", tok, resource)
+		if err != nil {
+			return nil, false, err
+		}
+		return service.ActorForApp(u, cl.ClientID, web.ClientIP(r)), model.MFA(cl.AMR), nil
 	}
 }

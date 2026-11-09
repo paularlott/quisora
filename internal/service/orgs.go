@@ -528,6 +528,10 @@ func (s *Service) validOrgSettings(ctx context.Context, orgID string, st model.O
 	if st.SessionTTL < 0 || st.SessionIdle < 0 {
 		return Invalid("settings", "lifetimes cannot be negative")
 	}
+	// server.disable_mcp: the switch can be turned off, or left on (it was on before), but not turned on.
+	if st.MCPServer && s.Cfg.Server.DisableMCP && (old == nil || !old.MCPServer) {
+		return Invalid("mcp_server", "MCP servers are turned off on this server (server.disable_mcp)")
+	}
 	if st.EmailCodes && !s.Cfg.Mail.Enabled() && (old == nil || !old.EmailCodes) {
 		return Invalid("email_codes", "needs the server to send email (mail.smtp_host)")
 	}

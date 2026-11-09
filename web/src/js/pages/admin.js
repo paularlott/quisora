@@ -1236,7 +1236,7 @@ export default function (Alpine) {
     orgToForm(o) {
       const s = o.settings
       return { name: o.name, display_name: o.display_name, password_login: !!s.password_login, password_reset: !!s.password_reset,
-        passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes,
+        passkey_login: !!s.passkey_login, require_mfa: !!s.require_mfa, email_codes: !!s.email_codes, mcp_server: !!s.mcp_server,
         api_tokens: s.api_tokens || 'off', api_token_groups: [...(s.api_token_groups || [])],
         session_ttl: s.session_ttl ? String(Math.round(s.session_ttl / 3600)) : '', session_idle: s.session_idle ? String(Math.round(s.session_idle / 60)) : '',
         password_min_length: s.password_min_length ? String(s.password_min_length) : '', lockout_attempts: s.lockout_attempts ? String(s.lockout_attempts) : '',
@@ -1248,7 +1248,7 @@ export default function (Alpine) {
     },
     openCreate(ev) {
       this.editing = null
-      this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false } }))
+      this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false, mcp_server: false } }))
       this.resetBranding({})
       this.groupNames = {}
       this.resetPicker()
@@ -1276,7 +1276,7 @@ export default function (Alpine) {
       const edit = this.editing
       const res = await this.run(() => {
         const settings = { password_login: f.password_login, password_reset: f.password_reset, passkey_login: f.passkey_login, require_mfa: f.require_mfa, email_codes: f.email_codes,
-          api_tokens: f.api_tokens, api_token_groups: f.api_tokens === 'groups' ? f.api_token_groups : [],
+          mcp_server: f.mcp_server, api_tokens: f.api_tokens, api_token_groups: f.api_tokens === 'groups' ? f.api_token_groups : [],
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle'),
           password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
           lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
@@ -2321,6 +2321,7 @@ export default function (Alpine) {
       return !s.password_login ? 'Off' : s.password_reset ? 'On, with reset by email' : 'On, no reset by email'
     },
     get passkeyText() { return this.org.settings.passkey_login ? 'On' : 'Off' },
+    get mcpText() { return this.org.settings.mcp_server ? 'On' : 'Off' },
     get mfaText() {
       const s = this.org.settings
       return (s.require_mfa ? 'Required' : 'Optional') + (!s.email_codes ? '' : mailOn() ? ', codes by email allowed' : ', codes by email allowed but email is not set up')

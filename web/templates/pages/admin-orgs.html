@@ -122,6 +122,13 @@
         {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Anyone in a chosen group may make API tokens, including people who join later.")}}
       </fieldset>
 
+      {{if .Site.MCP}}
+      <fieldset class="fieldset">
+        <legend>AI assistants</legend>
+        {{template "check-field" (dict "name" "mcp_server" "label" "MCP server" "switch" true "help" "Managers and administrators can let AI clients such as Claude manage users and groups. Requires a passkey or an authenticator code.")}}
+      </fieldset>
+      {{end}}
+
       <fieldset class="fieldset">
         <legend>Sessions</legend>
         <fieldset class="fieldset">

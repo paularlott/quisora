@@ -67,6 +67,7 @@ type Server struct {
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" cmd:"serve invite sign-out" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
 	ShutdownDrain        int      `toml:"shutdown_drain" flag:"shutdown-drain" usage:"Seconds /readyz answers 503 before shutting down, when a load balancer has been polling it, so traffic moves to other nodes first (0 = none)"`
 	ShutdownTimeout      int      `toml:"shutdown_timeout" flag:"shutdown-timeout" usage:"Seconds requests in flight get to finish at shutdown"`
+	DisableMCP           bool     `toml:"disable_mcp" flag:"disable-mcp" usage:"Turn off every organization's own MCP server (AI clients managing users and groups), and the option to switch it on"`
 }
 
 type UI struct {
@@ -603,6 +604,14 @@ func (c *Config) Replicate() bool { return c.Cluster.Bind != "" }
 // OrgIssuer is the OAuth issuer of an organization: its own, under /o/<id>, so a token of one organization is never
 // taken for another's (an API checks the issuer and its audience), and every endpoint of it is the organization's.
 func (c *Config) OrgIssuer(orgID string) string { return c.Server.PublicURL + "/o/" + orgID }
+
+// OrgMCP is the address of organization orgID's own MCP server (internal/mcpapi), its resource identifier (RFC 8707):
+// what a tenant lists to turn it on, and what AI clients ask tokens for.
+func (c *Config) OrgMCP(orgID string) string { return c.OrgIssuer(orgID) + "/mcp" }
+
+// MCPServer reports whether an organization whose settings say on (model.OrgSettings.MCPServer) serves its own MCP
+// server: unless server.disable_mcp turns them all off.
+func (c *Config) MCPServer(on bool) bool { return on && !c.Server.DisableMCP }
 
 // Endpoints are an organization's OAuth and OpenID Connect addresses: the one list the discovery document publishes
 // and the console shows for applications to be configured with.

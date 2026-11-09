@@ -19,6 +19,9 @@ and, under the organization, `/o/<organization id>/.well-known/…`). The docume
 form only, since the issuer in a document must be the address it was fetched from: asked for by the organization's name,
 they answer with a permanent redirect to the id form.
 
+Quisora also runs an MCP server of its own, for managing an organization's users and groups from an AI client:
+[Quisora's own MCP server](#quisoras-own-mcp-server) below.
+
 ## Setting it up
 
 1. **Pick the tenant** the MCP server's users sign in through, and in its **Sign-in rules** turn on **Allow
@@ -87,3 +90,87 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/<org>/self-r
 ```
 
 A user sees each app under **Connected apps** on their account page and can remove it there too.
+
+## Quisora's own MCP server
+
+Quisora is also an MCP server itself: an AI client (Claude, say) signed in by one of an organization's managers or
+administrators can look up and manage the organization's users and groups for them. Each organization's server is at
+
+```
+https://id.example.com/o/<organization id>/mcp
+```
+
+and it is off until a super admin switches it on for the organization. It is an MCP server like any other as far as
+sign-in goes, so everything above applies to it, and nothing else decides who may use it.
+
+### Turning it on
+
+1. **Switch it on for the organization.** A super admin edits the organization on the **Organizations** page and
+   turns on **MCP server** under **AI assistants** (`settings.mcp_server` in the API). Until then its address and
+   metadata answer 404. The organization's overview then lists the address under **Addresses**, to copy.
+2. **Choose who may sign AI clients in.** Pick (or make) the tenant whose sign-in rules should apply, and in its
+   **Sign-in rules** turn on **Allow self-registered apps** and add the address under **Resources**. Until a tenant
+   does, the overview says no AI client can sign in yet.
+
+Then give the address to the AI client (in Claude, add it as a custom connector). The client finds Quisora from the
+server's protected resource metadata
+(`/.well-known/oauth-protected-resource/o/<organization id>/mcp`), registers itself, and the person signs in and
+approves it on the consent page, which warns that the client will manage the organization as them. Whoever signs a
+client in hands it their management rights for as long as its refresh token lasts (the tenant's token lifetimes
+apply), so, as with the admin console, it needs a sign-in with a passkey or an authenticator code, whatever the
+tenant requires.
+
+An application an administrator set up (rather than one that registered itself) may also use the server, when its
+**Resources** list the address: a deliberate choice, for an AI client you want to pre-register. Access tokens are
+sent as `Bearer` tokens; DPoP-bound tokens are not accepted here. The server answers POST requests only (its tools
+send no notifications, so it offers no event stream), and a JSON-RPC batch (which protocol version 2025-03-26 allows)
+may hold at most 10 requests.
+
+Switching the organization's **MCP server** off, removing the address from the tenant or turning off its
+self-registered apps stops the server at once, for clients already signed in too; so does removing the address from an
+administrator's application.
+
+To keep MCP off for every organization, start the server with `--disable-mcp` (`server.disable_mcp = true`,
+`QUISORA_DISABLE_MCP=true`): every organization's address and metadata answer 404, the console no longer offers the
+switch or shows the address, and the API refuses to switch it on. It is off by default, so organizations may switch
+their server on. Each client a person approved is listed with the organization's **Self-registered apps**, where
+**Revoke** ends its access, and under **Connected apps** on the person's account page.
+
+### Who may use it, and what it can do
+
+- **Managers and up only.** Anyone the tenant lets sign in may approve the client, but the server refuses a token
+  whose user is not a manager, administrator or super admin, or whose sign-in did not use a second factor.
+- **As the person who signed in.** Every tool is one management API request, made as that person: their role decides
+  what they may see and change, exactly as in the console (a manager changes plain users only; only administrators
+  read the audit log). The organization is the one the address names.
+- **No more than a personal API token.** A change that needs a recent re-authentication in the console (disabling an
+  administrator, sending an invitation to another manager or administrator, removing someone's password or authenticator)
+  is refused, as it is for an API token. The client cannot make API tokens either.
+- **In the audit log.** Every change is recorded under the person's name, with the client (its `client_id`) in the
+  event's detail as `app`.
+- **No sign-in links.** An invitation is emailed to the user; the link itself is never given to the AI client.
+
+| Tool | What it does | Hints |
+| --- | --- | --- |
+| `search_users` | Finds enabled users (disabled ones too when asked) by the start of a username, email address or name (or a whole tag), and by role | read-only |
+| `get_user` | A user's details: profile, status, groups, sign-in methods | read-only |
+| `list_user_sessions` | A user's signed-in browser sessions | read-only |
+| `list_groups` | The groups, with their number of members | read-only |
+| `list_group_members` | A group's members | read-only |
+| `query_audit_log` | The audit log, filtered by name, action, outcome and time | read-only |
+| `create_user` | Creates a user with the default role, optionally emailing an invitation | not destructive |
+| `enable_user` | Enables a disabled user | not destructive, idempotent |
+| `add_group_member` | Adds a user to a group | not destructive, idempotent |
+| `disable_user` | Disables a user, with a reason | destructive, idempotent |
+| `remove_group_member` | Removes a user from a group | destructive, idempotent |
+| `send_invitation` | Emails a user a new invitation (a new user's set-up, or a lost sign-in reset) | destructive |
+| `sign_out_user` | Ends all of a user's sessions | destructive, idempotent |
+
+The hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) tell the client which calls to
+confirm with the person first; they are hints only, and the server enforces the rules above whatever the client does.
+Changing roles, deleting anything, locking accounts, and the organization's applications, tenants, providers and
+settings are left to the console and the management API on purpose.
+
+What the tools return (names, descriptions, audit details) was typed by people, some of whom the person signed in
+may not trust: the server tells the client to treat it as data, never as instructions, and no tool can raise
+anyone's role.

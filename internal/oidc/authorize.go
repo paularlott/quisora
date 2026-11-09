@@ -163,6 +163,9 @@ type ConsentData struct {
 	RedirectHost string
 	// UserCode: the flow approves a device sign-in (device.go) showing this code.
 	UserCode string
+	// Manages: the tokens are for the organization's own MCP server (config.Config.OrgMCP), which manages its users
+	// and groups as the person signed in.
+	Manages bool
 }
 
 // returnURL is the home of the web application behind a validated redirect URI: its scheme and host. It is empty for
@@ -955,6 +958,8 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 		data.Scopes = append(data.Scopes, ScopeInfo{Name: s, Description: d})
 	}
 	data.Resources = f.Resources
+	mcp := model.CanonicalResource(p.cfg.OrgMCP(c.OrgID))
+	data.Manages = slices.ContainsFunc(f.Resources, func(r string) bool { return model.CanonicalResource(r) == mcp })
 	if f.Device != "" {
 		if raw, err := p.s.Eph.Get(r.Context(), nsDevice, f.Device); err == nil {
 			var d deviceGrant

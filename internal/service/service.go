@@ -105,7 +105,10 @@ type Actor struct {
 	Scopes   []string // the scopes of a token-authenticated actor (ignored when Unscoped)
 	ClientID string   // set when acting as an OAuth client (client_credentials)
 	TokenID  string   // the personal API token the actor authenticated with: recorded with every audit event
-	IP       string
+	// App is the application (OAuth client id) a user acts through, such as an AI client of Quisora's MCP server:
+	// recorded with every audit event, so what was done through it can be told apart and its access revoked.
+	App string
+	IP  string
 }
 
 // CommandOrigin describes the command this process runs (quisora invite, restore, …) for the audit log: the
@@ -288,7 +291,7 @@ func RequestFrom(ctx context.Context) *RequestInfo {
 // for and why it was refused. At most one per caller and reason per minute on each node (auditRefusal): a caller can
 // repeat a refused request as fast as it likes.
 func (s *Service) AuditRefused(ctx context.Context, a *Actor, method, path, reason string) {
-	who := a.UserID + "|" + a.TokenID + "|" + a.ClientID
+	who := a.UserID + "|" + a.TokenID + "|" + a.ClientID + "|" + a.App
 	s.auditRefusal("api|"+who+"|"+reason, func(detail map[string]string) {
 		detail["reason"] = reason
 		s.Audit(ctx, a, a.OrgID, "api.request.refused", method+" "+path, detail)
@@ -384,6 +387,12 @@ func (s *Service) auditEvent(ctx context.Context, a *Actor, c change) (*model.Au
 		d := make(map[string]string, len(detail)+1)
 		maps.Copy(d, detail)
 		d["token_id"] = a.TokenID
+		e.Detail, detail = d, d
+	}
+	if a.App != "" { // which application did it, for the user (revoking its access is the answer to a misuse)
+		d := make(map[string]string, len(detail)+1)
+		maps.Copy(d, detail)
+		d["app"] = a.App
 		e.Detail, detail = d, d
 	}
 	metrics.AuditEvents.Inc(e.Action, e.Outcome)

@@ -30,6 +30,7 @@ type Site struct {
 	Footer       template.HTML // ui.footer, limited to links and text emphasis (FooterHTML)
 	PublicURL    string
 	Mail         bool // an SMTP server is configured (config.Mail.Enabled)
+	MCP          bool // organizations may switch their own MCP server on (server.disable_mcp off)
 	Clustered    bool // nodes replicate over gossip: super admins get the cluster page
 	PasswordMin  int  // limits.password_min_length: the forms say how long a password must be
 }
@@ -154,7 +155,7 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, p *Pag
 // SiteFromConfig builds the branding block.
 func SiteFromConfig(c *config.Config) Site {
 	s := Site{Name: c.UI.SiteName, Brand: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
-		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(),
+		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(), MCP: !c.Server.DisableMCP,
 		PasswordMin: c.Limits.PasswordMinLength}
 	return s
 }

@@ -36,6 +36,7 @@
       <div><dt>Shortest password</dt><dd x-text="passwordMinText"></dd></div>
       <div><dt>Account lockout</dt><dd x-text="lockoutText"></dd></div>
       <div><dt>API token lifetime</dt><dd x-text="tokenDaysText"></dd></div>
+      {{if .Site.MCP}}<div><dt>MCP server for AI clients</dt><dd x-text="mcpText"></dd></div>{{end}}
     </dl>
   </section>
 
@@ -61,7 +62,9 @@
       {{template "address" (dict "id" "addr-issuer" "label" "Issuer (for applications)" "what" "issuer" "value" .Data.Issuer)}}
       {{template "address" (dict "id" "addr-discovery" "label" "Discovery URL (OpenID configuration)" "what" "discovery URL" "value" (printf "%s/.well-known/openid-configuration" .Data.Issuer))}}
       {{template "address" (dict "id" "addr-scim" "label" "SCIM base URL (for provisioning tools)" "what" "SCIM base URL" "value" .Data.SCIMURL)}}
+      {{if .Data.MCPURL}}{{template "address" (dict "id" "addr-mcp" "label" "MCP server (for AI clients)" "what" "MCP server address" "value" .Data.MCPURL)}}{{end}}
     </dl>
+    {{if .Data.MCPNoTenant}}<p class="help mt-2" id="mcp-no-tenant">No AI client can sign in yet: add this address to a tenant's <strong>Resources</strong> and turn on <strong>Allow self-registered apps</strong>.</p>{{end}}
   </section>
 
   <section class="glass-card" aria-labelledby="signout-h">

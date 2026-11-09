@@ -23,6 +23,7 @@ data_dir = "/var/lib/quisora"             # required: everything this node keeps
 # shutdown_timeout = 30                   # seconds requests in flight get to finish at shutdown
 # restore_from = ""                       # backup file loaded at start-up when the store is empty (ignored once it has data)
 # restore_password = ""                   # its password, when it is encrypted
+# disable_mcp = false                     # turn off every organization's own MCP server, and the option to switch it on
 
 [ui]
 site_name = "Identity"

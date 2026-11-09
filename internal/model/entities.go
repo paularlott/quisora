@@ -45,6 +45,10 @@ type OrgSettings struct {
 	APITokenMaxDays   int `msgpack:"atm,omitempty" json:"api_token_max_days"`
 	PrivilegedTTL     int `msgpack:"pttl,omitempty" json:"privileged_ttl"`  // seconds
 	PrivilegedIdle    int `msgpack:"pidl,omitempty" json:"privileged_idle"` // seconds
+	// MCPServer serves the organization's own MCP server (internal/mcpapi), through which AI clients manage its users
+	// and groups for its managers and administrators. Off by default (and for an organization saved before the setting
+	// existed): while off, its address and metadata answer 404 and the console does not show it.
+	MCPServer bool `msgpack:"mcp,omitempty" json:"mcp_server"`
 }
 
 // Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
