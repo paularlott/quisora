@@ -328,6 +328,10 @@
   .search .input { padding-left: 2.75rem; padding-right: 2.75rem; border-radius: var(--radius-pill); }
   .search > .icon { position: absolute; left: 1rem; top: 50%; margin-top: -0.625rem; color: var(--fg-muted); pointer-events: none; }
   .search-clear { position: absolute; right: 0.25rem; top: 50%; margin-top: -1.1rem; }
+  /* Our clear button, not the browser's: Chrome's and Safari's cancel button is not a tab stop or announced, is a
+     small fixed-colour mark that ignores the theme, and Firefox has none. The field stays type="search" for its
+     semantics, the phone keyboard's search key and Escape to clear. */
+  .search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 
   .table-wrap { overflow-x: auto; border-radius: var(--radius-inner); -webkit-overflow-scrolling: touch; }
   .table-wrap:focus-visible { outline-offset: -3px; }
