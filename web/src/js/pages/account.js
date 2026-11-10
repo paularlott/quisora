@@ -4,6 +4,7 @@ import { ApiError, accountApi, get, post, patch, del } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { subscribe, liveRunner, useStream } from '../lib/live.js'
 import { dialogMixin } from '../lib/dialog.js'
+import { focusWhenShown } from '../lib/focus.js'
 import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { fmtDateTime, relTime, fmtDate, isSet } from '../lib/format.js'
@@ -175,7 +176,7 @@ export default function (Alpine) {
     switchTo(on, focusId) {
       this.useRecovery = on
       this.clearErrors()
-      this.$nextTick(() => document.getElementById(focusId)?.focus())
+      focusWhenShown(focusId)
     },
     settle(v) { const r = this.resolve; this.resolve = null; if (r) r(v) },
     done() { const r = this.resolve; this.resolve = null; this.closeDlg('reauth-dialog'); if (r) r(true) },
@@ -756,7 +757,7 @@ export default function (Alpine) {
       this.fileName = sshFileName(key) + '-cert.pub'
       announce('Certificate ready.')
       await this.load()
-      this.$nextTick(() => { const b = document.querySelector('#ssh-dialog [data-autofocus]:not(textarea)'); if (b) b.focus() })
+      focusWhenShown(() => document.querySelector('#ssh-dialog [data-autofocus]:not(textarea)'))
     },
     // download saves the certificate as a file named for the key: OpenSSH reads <key>-cert.pub beside the key.
     download() {

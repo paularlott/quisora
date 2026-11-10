@@ -3,6 +3,7 @@
 // its own fetch wrapper (lib/api.js treats 401 as "session ended" and navigates away). It also hosts the WebAuthn
 // helpers that account.js reuses.
 import { ApiError, orgBase } from '../lib/api.js'
+import { focusWhenShown, isShown } from '../lib/focus.js'
 import { formMixin } from '../lib/form.js'
 import { announce, toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
@@ -203,7 +204,7 @@ function stepsMixin() {
     // contain the next step's field.
     focusFirst() {
       const attempt = (left) => {
-        const target = [...this.$root.querySelectorAll('[data-step-focus]')].find((e) => e.offsetParent !== null)
+        const target = [...this.$root.querySelectorAll('[data-step-focus]')].find(isShown)
         if (target && (target !== document.activeElement || left === 0)) target.focus()
         else if (left > 0) requestAnimationFrame(() => attempt(left - 1))
       }
@@ -365,7 +366,7 @@ export default function (Alpine) {
       this.form.password = ''
       this.clearErrors()
       this.step = 'email'
-      this.$nextTick(() => { const el = document.getElementById('f-email'); if (el) el.focus() })
+      focusWhenShown('f-email')
       this.startConditional({ next: this.next, tenant: this.tenant })
     },
 
@@ -422,7 +423,7 @@ export default function (Alpine) {
       this.done = true
       this.form.password = this.form.confirm = ''
       announce('Your password has been saved. You can sign in now.')
-      this.$nextTick(() => { const el = document.getElementById('signin-link'); if (el) el.focus() })
+      focusWhenShown('signin-link')
     },
   }))
 

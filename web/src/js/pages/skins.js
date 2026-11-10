@@ -4,6 +4,7 @@
 import { get, post, patch, del } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { dialogMixin, openDialog, closeDialog } from '../lib/dialog.js'
+import { focusWhenShown } from '../lib/focus.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { fmtDate } from '../lib/format.js'
@@ -123,7 +124,7 @@ export default function register(Alpine) {
         this.builtin = false
         this.resetForm({ name: from + '-copy', display_name: this.form.display_name + ' (copy)', start: from })
         this.setCSS(css, false)
-        this.$nextTick(() => document.getElementById('f-name').focus())
+        focusWhenShown('f-name')
       },
       errorKey(f) { return f },
       async submit() {

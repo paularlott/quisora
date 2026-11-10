@@ -4,6 +4,7 @@ import { get, post, put, patch, del, qs, ApiError } from '../lib/api.js'
 import { tableMixin } from '../lib/table.js'
 import { formMixin, lines } from '../lib/form.js'
 import { dialogMixin } from '../lib/dialog.js'
+import { focusWhenShown } from '../lib/focus.js'
 import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { emailsMixin } from '../lib/emails.js'
@@ -255,17 +256,6 @@ const mailOn = () => document.documentElement.dataset.mail === '1'
 
 function confirmAction(Alpine, opts) { return Alpine.store('confirm').ask(opts) }
 
-// Focus an element that has just been revealed (x-show applies on the next frame, so retry briefly).
-function focusSoon(id) {
-  let n = 0
-  const tick = () => {
-    const el = document.getElementById(id)
-    if (el) el.focus()
-    if (++n < 6 && (!el || document.activeElement !== el)) setTimeout(tick, 40)
-  }
-  setTimeout(tick, 30)
-}
-
 // Tags as shown in tables: a list of badge descriptors.
 function tagView(tags, what) {
   const list = tags || []
@@ -407,7 +397,7 @@ function userDialogMixin(Alpine) {
       // let x-show reveal the right state first, then open and focus its main control
       this.$nextTick(() => {
         this.openDlg('invite-dialog', opener)
-        focusSoon(this.inviteUrl ? 'invite-copy' : 'invite-generate')
+        focusWhenShown(this.inviteUrl ? 'invite-copy' : 'invite-generate')
       })
     },
     async makeInvite(email) {
@@ -418,7 +408,7 @@ function userDialogMixin(Alpine) {
         const res = await post(`${this.apiBase}/users/${enc(this.inviteUserId)}/invite`, email ? { email: true } : {})
         Object.assign(this, { inviteUrl: res.url, inviteExpires: res.expires, inviteSent: !!res.emailed, inviteNote: res.email_warning || '' })
         announce(email && res.emailed ? 'Invitation emailed.' : 'Invitation link created.')
-        focusSoon('invite-copy')
+        focusWhenShown('invite-copy')
       } catch (e) { this.inviteError = e.message; announce(e.message, 'assertive') }
       this.inviteBusy = false
     },
@@ -661,7 +651,7 @@ function clientDialogMixin(Alpine) {
       this.errors = { [name]: err.message }
       this.invalid = { [name]: 'true' }
       announce(err.message, 'assertive')
-      this.$nextTick(() => { const r = this.form[name][0]; const el = r && document.getElementById(r.inputId); if (el) el.focus() })
+      focusWhenShown(() => { const r = this.form[name][0]; return r && document.getElementById(r.inputId) })
       return true
     },
     // Checks the editor can make itself (the chip field checks each scope as it is added); false when the form must
@@ -1213,7 +1203,7 @@ export default function (Alpine) {
     },
     removeGroup(ev) {
       this.dropGroup(ev.currentTarget.dataset.id)
-      this.$nextTick(() => { const el = document.getElementById('f-api_group'); if (el) el.focus() })
+      focusWhenShown('f-api_group')
     },
     // the names of the chosen groups, by id (a group deleted since shows as such)
     async loadGroupNames(o) {
@@ -1339,7 +1329,7 @@ export default function (Alpine) {
     async filterByTag(ev) {
       const tag = ev.currentTarget.dataset.tag
       this.setTagFilter(tag)
-      focusSoon('clear-tag-filter')
+      focusWhenShown('clear-tag-filter')
       await this.load()
       announce(`Showing users tagged ${tag}. ${this.statusText}`)
     },
@@ -1828,7 +1818,7 @@ export default function (Alpine) {
     },
     removeGroup(ev) {
       this.dropGroup(ev.currentTarget.dataset.id)
-      this.$nextTick(() => { const el = document.getElementById('f-source_group'); if (el) el.focus() })
+      focusWhenShown('f-source_group')
     },
     // the names of the chosen groups, by id (a group deleted since shows as such)
     async loadGroupNames(p) {
@@ -2118,7 +2108,7 @@ export default function (Alpine) {
     get filtersExpanded() { return this.filtersOpen ? 'true' : 'false' },
     toggleFilters() {
       this.filtersOpen = !this.filtersOpen
-      if (this.filtersOpen) this.$nextTick(() => { const f = document.getElementById('f-action'); if (f) f.focus() })
+      if (this.filtersOpen) focusWhenShown('f-action')
     },
     closeFilters() { this.filtersOpen = false },
     escFilters() {

@@ -5,6 +5,7 @@
 // the DOM and referenced by aria-describedby), and binds :aria-invalid="invalid.<name>".
 import { ApiError } from './api.js'
 import { announce, dismissToast, toast } from './announce.js'
+import { focusWhenShown } from './focus.js'
 import { editWatchMixin } from './live.js'
 import { mix } from './mix.js'
 import { sync as syncOtp } from './otp.js'
@@ -48,7 +49,7 @@ export function formMixin() {
         // Field errors stay next to the field (WCAG 3.3.1): message, aria-invalid, focus.
         this.errors = { [field]: err.message }
         this.invalid = { [field]: 'true' }
-        this.$nextTick(() => { const el = document.getElementById('f-' + field); if (el) el.focus() })
+        focusWhenShown('f-' + field)
         announce(err.message, 'assertive')
       } else {
         // Errors about the whole action (permission, conflict, network, server) are error toasts, which stay until

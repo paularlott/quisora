@@ -1,5 +1,6 @@
 // OAuth pages: consent, sign-out confirmation and the auto-submitting form_post response.
 import { orgBase, post } from '../lib/api.js'
+import { focusWhenShown } from '../lib/focus.js'
 
 function message(e) {
   return (e && e.message) || 'Something went wrong. Please try again.'
@@ -26,7 +27,7 @@ export default function (Alpine) {
         this.error = message(e)
         if (e && (e.status === 403 || e.status === 404)) {
           this.closed = true // the clicked button is gone: keep focus on the page, on the way back where there is one
-          this.$nextTick(() => { if (this.$refs.back) this.$refs.back.focus() })
+          focusWhenShown(() => this.$refs.back)
           return
         }
         this.busy = false

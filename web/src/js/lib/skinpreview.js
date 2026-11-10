@@ -3,6 +3,7 @@
 // own skin and lets this site frame it (a skin there is, "default" for Quisora's own look, "inherit" for the primary
 // organization's). Alpine's CSP build binds nothing on an iframe, so the frame's address is set here (showFrame).
 import { openDialog } from './dialog.js'
+import { focusWhenShown } from './focus.js'
 
 export function skinPreviewMixin() {
   return {
@@ -38,7 +39,7 @@ export function skinPreviewMixin() {
       ev.preventDefault()
       this.pv.view = this.pv.view === 'login' ? 'page' : 'login'
       this.showFrame()
-      this.$nextTick(() => document.getElementById('pvs-tab-' + this.pv.view).focus())
+      focusWhenShown('pvs-tab-' + this.pv.view)
     },
   }
 }

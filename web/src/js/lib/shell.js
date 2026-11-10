@@ -5,6 +5,8 @@
 // it and return the focus to the menu button. It can also be swiped back to the left. On wider screens it is the
 // sidebar and none of this applies.
 
+import { focusWhenShown } from './focus.js'
+
 const NARROW = '(max-width: 47.99rem)'
 
 // The parts of the page outside the drawer, made inert while it is open (the live regions stay live).
@@ -38,10 +40,8 @@ export default function (Alpine) {
       this.navOpen = true
       this.userOpen = false
       setPageInert(true)
-      this.$nextTick(() => {
-        revealCurrent(this.$refs.nav)
-        if (this.$refs.navClose) this.$refs.navClose.focus()
-      })
+      this.$nextTick(() => revealCurrent(this.$refs.nav))
+      focusWhenShown(() => this.$refs.navClose)
     },
     // closeNav(false) leaves the focus where it is (the window widened, or the page came back from the cache).
     closeNav(restoreFocus) {

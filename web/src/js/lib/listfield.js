@@ -9,6 +9,7 @@
 //   - removing a row moves focus to the previous row (or the next, or the Add button when nothing is left)
 // The partial passes the list name and the item name ("Redirect URI") through data-list / data-item on the fieldset.
 import { announce } from './announce.js'
+import { focusWhenShown } from './focus.js'
 
 let seq = 0
 
@@ -54,7 +55,7 @@ export function listFieldMixin() {
       const rows = this.form[name]
       return { name, item: set.dataset.item, rows, at: rows.findIndex((r) => r.id === Number(el.dataset.row)), set }
     },
-    _focusRow(row) { this.$nextTick(() => { const el = document.getElementById(row.inputId); if (el) el.focus() }) },
+    _focusRow(row) { focusWhenShown(() => document.getElementById(row.inputId)) },
 
     listInput(ev) {
       const { rows, at, item } = this._listOf(ev.currentTarget)
@@ -93,7 +94,7 @@ export function listFieldMixin() {
       if (rows.length === 0 && !set.hasAttribute('data-optional')) rows.push(newRow(''))
       describe(rows, item)
       if (focus) this._focusRow(focus)
-      else this.$nextTick(() => { const b = set.querySelector('[data-list-add]'); if (b) b.focus() })
+      else focusWhenShown(() => set.querySelector('[data-list-add]'))
       const none = rows.length === 0 || (rows.length === 1 && trimmed(rows[0].value) === '')
       announce(`Removed ${gone}. ${none ? 'No entries' : rows.length + ' rows'}.`)
     },

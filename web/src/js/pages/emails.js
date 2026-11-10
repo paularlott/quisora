@@ -9,6 +9,7 @@
 import { get, post, put } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { dialogMixin, openDialog, closeDialog } from '../lib/dialog.js'
+import { focusWhenShown } from '../lib/focus.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { fitTabs } from '../lib/tabsfit.js'
@@ -212,7 +213,7 @@ export default function register(Alpine) {
         else return
         ev.preventDefault()
         this.showTab(ids[i])
-        this.$nextTick(() => document.getElementById('et-tab-' + ids[i]).focus())
+        focusWhenShown('et-tab-' + ids[i])
       },
       // resetTab, once confirmed, puts the inherited parts in this tab's editors (no other tab's; undoable in the
       // editors); saving the tab then drops the organization's own.
@@ -326,7 +327,7 @@ export default function register(Alpine) {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(ev.key)) return
         ev.preventDefault()
         this.previewView = this.previewView === 'html' ? 'text' : 'html'
-        this.$nextTick(() => document.getElementById('pv-tab-' + this.previewView).focus())
+        focusWhenShown('pv-tab-' + this.previewView)
       },
       showFrame(html) {
         const f = this.$refs.frame

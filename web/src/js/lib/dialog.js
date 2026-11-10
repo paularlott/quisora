@@ -1,5 +1,7 @@
 // Modal dialogs on the native <dialog> element: showModal() gives a real focus trap, inert background, Esc to close
 // and top-layer stacking. This module adds focus return and focus-first-control behaviour (clicking outside does nothing).
+import { isShown } from './focus.js'
+
 const openers = new WeakMap()
 // Focus is returned at once, not from the close event: that event comes a task later, and focus moved in between (the
 // next control a keyboard user goes to) would be taken back to the opener.
@@ -12,9 +14,8 @@ export function openDialog(id, opener) {
   restored.delete(d) // a close event still to come from an earlier closing must not count for this one
   d.showModal()
   // Focus: an element marked data-autofocus, else the first form control, else the dialog's title heading.
-  const visible = (el) => el.offsetParent !== null || getComputedStyle(el).position === 'fixed'
-  const target = [...d.querySelectorAll('[data-autofocus]')].find(visible) ||
-    [...d.querySelectorAll('input:not([type=hidden]):not([disabled]), select, textarea')].find(visible)
+  const target = [...d.querySelectorAll('[data-autofocus]')].find(isShown) ||
+    [...d.querySelectorAll('input:not([type=hidden]):not([disabled]), select, textarea')].find(isShown)
   if (target) target.focus()
   return d
 }
@@ -56,7 +57,7 @@ document.addEventListener('keydown', (ev) => {
   const open = document.querySelectorAll('dialog[open]')
   const d = open[open.length - 1]
   if (!d) return
-  const items = [...d.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null || getComputedStyle(el).position === 'fixed')
+  const items = [...d.querySelectorAll(FOCUSABLE)].filter(isShown)
   if (!items.length) return
   const first = items[0]
   const last = items[items.length - 1]
