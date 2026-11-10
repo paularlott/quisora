@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,27 +67,42 @@ const sshPersistPerBuild = 50
 // (a disabled account that is enabled again), or the tenant's (SSH turned off and on).
 var sshStickyReasons = []string{SSHReasonAccessRemoved, SSHReasonPrincipals, SSHReasonRoleNotAllowed}
 
-// sshKRLEntry is a node's revocation list of one tenant. A build holds mu, so the requests that come meanwhile wait for
-// it and take what it made. gen counts the invalidations (InvalidateSSHKRLOf): a list is kept only while gen is what
-// it was when its build began, so a change made during a build is never hidden by it. While the build's sticky
-// revocations are written down (persisting), the invalidations they cause, and any other, are held back (missed) and
-// counted once the writing ends: the list kept already revokes those certificates, and the requests meanwhile take it
-// instead of each making it again.
+// sshKRLIdle is how long a node keeps the entry of a tenant whose list nobody asks for (sshKRLSweep): a list is never
+// served past sshKRLTTL, so an entry left that long holds nothing of use, and the entries of tenants deleted, turned off
+// or asked for once do not pile up.
+const sshKRLIdle = 2 * sshKRLTTL
+
+// sshKRLEntry is a node's revocation list of one tenant. One request at a time builds it (flight); those that come
+// meanwhile wait for it, each for as long as it is there to be answered, and take what it made. gen counts the
+// invalidations (InvalidateSSHKRLOf): a list is kept only while gen is what it was when its build began, and a request
+// takes a build under way only when no invalidation came since it began, so a change made before a request, or during
+// a build, is never hidden by it. While the build's sticky revocations are written down (persisting), the
+// invalidations they cause, and any other, are held back (missed) and counted once the writing ends: the list kept
+// already revokes those certificates, and the requests meanwhile take it instead of each making it again.
 type sshKRLEntry struct {
-	mu      sync.Mutex
 	persist sync.Mutex // one sshPersist at a time
 
 	// under sshState.krlMu
 	gen        uint64
 	persisting bool
 	missed     bool
-	org        string // the tenant's organization, once a build has read it
+	org        string        // the tenant's organization, once a build has read it
+	asked      time.Time     // when a request last asked for the list, or a build made it
+	flight     *sshKRLFlight // the build under way, if any
 
-	// under mu
 	built uint64 // gen when the kept list's build began
 	at    time.Time
 	data  []byte
 	tag   string // sshca.KRLTag of data
+}
+
+// sshKRLFlight is a build of a tenant's revocation list under way: its outcome is set once done is closed.
+type sshKRLFlight struct {
+	gen  uint64 // the entry's gen when it began
+	done chan struct{}
+	data []byte
+	tag  string
+	err  error
 }
 
 // SSHRevokedCert is a certificate on the revocation list and why.
@@ -133,31 +149,68 @@ func (s *Service) newSSHEval(ctx context.Context, t *model.Tenant) (*sshEval, er
 	return ev, nil
 }
 
-// user returns certificate user id as it stands now (read once per evaluation).
+// user returns certificate user id as it stands now (read once per evaluation: load).
 func (ev *sshEval) user(ctx context.Context, id string) (*sshUser, error) {
 	if x := ev.users[id]; x != nil {
 		return x, nil
 	}
-	x := &sshUser{}
-	u, err := ev.s.Users.GetIn(ctx, ev.t.OrgID, id)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		x.gone = true
-	case err != nil:
-		return nil, mapStore(err)
-	default:
-		x.u = u
+	if err := ev.load(ctx, []string{id}); err != nil {
+		return nil, err
+	}
+	return ev.users[id], nil
+}
+
+// load reads the users ids name that the evaluation has not read yet, together: the users in one read, and their
+// access to the tenant's SSH application in one decision (sshDecideAll), which reads what they share once. The callers
+// load every user of the certificates they evaluate before the first, so that an evaluation reads the application and
+// the groups once, however many users it meets.
+func (ev *sshEval) load(ctx context.Context, ids []string) error {
+	ids = slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(ids))), func(id string) bool { return ev.users[id] != nil })
+	if len(ids) == 0 {
+		return nil
+	}
+	found, err := ev.s.Users.GetMany(ctx, ids)
+	if err != nil {
+		return mapStore(err)
+	}
+	read := make(map[string]*sshUser, len(ids))
+	for _, id := range ids {
+		read[id] = &sshUser{gone: true}
+	}
+	var usable []*model.User
+	for _, u := range found {
+		if u.OrgID != ev.t.OrgID {
+			continue // of another organization: none, as a read of the organization's users finds it
+		}
+		x := &sshUser{u: u}
 		if x.usable, err = ev.s.UserUsable(ctx, u); err != nil {
-			return nil, err
+			return err
 		}
 		if x.usable {
-			if x.dec, err = ev.s.sshDecide(ctx, ev.t, u); err != nil {
-				return nil, err
-			}
+			usable = append(usable, u)
+		}
+		read[u.ID] = x
+	}
+	decs, err := ev.s.sshDecideAll(ctx, ev.t, usable)
+	if err != nil {
+		return err
+	}
+	for _, u := range usable {
+		read[u.ID].dec = decs[u.ID]
+	}
+	maps.Copy(ev.users, read)
+	return nil
+}
+
+// sshCertUsers returns the ids of the users of certs (none for a host certificate).
+func sshCertUsers(certs []*model.SSHCert) []string {
+	ids := make([]string, 0, len(certs))
+	for _, c := range certs {
+		if c.UserID != "" {
+			ids = append(ids, c.UserID)
 		}
 	}
-	ev.users[id] = x
-	return x, nil
+	return ids
 }
 
 // reason says why certificate c would not be issued now ("": it would be, or it has expired). The reasons that follow
@@ -306,6 +359,16 @@ func (s *Service) sshRevokedOf(ctx context.Context, t *model.Tenant, certs []*mo
 		return nil, err
 	}
 	now := time.Now()
+	// the users reason reads: those of the user certificates on the list's span, not revoked, whose CA key is kept
+	var users []string
+	for _, c := range certs {
+		if c.UserID != "" && !c.Host && !c.Revoked && ev.keys[c.CAKeyID] != nil && !now.After(c.ValidBefore.Add(sshKRLGrace)) {
+			users = append(users, c.UserID)
+		}
+	}
+	if err := ev.load(ctx, users); err != nil {
+		return nil, err
+	}
 	var out []SSHRevokedCert
 	for _, c := range certs {
 		if now.After(c.ValidBefore.Add(sshKRLGrace)) {
@@ -371,43 +434,84 @@ func (s *Service) SSHKRL(ctx context.Context, tenantID string) ([]byte, error) {
 // a server whose CA file still lists them. Of the host certificates only those revoked by hand are read: the others
 // can be revoked only with their key. Its version is the time it was made, in unix seconds. An empty list is a valid
 // answer, and the one a tenant with nothing revoked gets; ErrNotFound for a tenant that never had SSH. Made by one
-// request at a time for a tenant: the others wait and take what it made. Kept for 30 seconds on the node (any change of
-// a certificate, CA key or tenant clears it: InvalidateSSHKRL).
+// request at a time for a tenant: the others wait, until it is made or they hang up, and take what it made. Kept for 30
+// seconds on the node (any change of a certificate, CA key or tenant clears it: InvalidateSSHKRL).
 func (s *Service) SSHKRLTagged(ctx context.Context, tenantID string) ([]byte, string, error) {
 	s.ssh.krlMu.Lock()
-	if s.ssh.krl == nil {
-		s.ssh.krl = map[string]*sshKRLEntry{}
-	}
+	now := time.Now()
+	s.sshKRLSweep(now)
 	e := s.ssh.krl[tenantID]
 	if e == nil {
 		e = &sshKRLEntry{}
 		s.ssh.krl[tenantID] = e
 	}
-	s.ssh.krlMu.Unlock()
-	e.mu.Lock()
-	gen := s.sshKRLGen(e)
-	if e.data != nil && e.built == gen && time.Since(e.at) < sshKRLTTL {
+	e.asked = now
+	if e.data != nil && e.built == e.gen && now.Sub(e.at) < sshKRLTTL {
 		data, tag := e.data, e.tag
-		e.mu.Unlock()
+		s.ssh.krlMu.Unlock()
 		return data, tag, nil
 	}
-	data, tag, revoked, err := s.sshBuildKRL(ctx, e, tenantID)
+	if f := e.flight; f != nil && f.gen == e.gen {
+		s.ssh.krlMu.Unlock()
+		select {
+		case <-f.done:
+			return f.data, f.tag, f.err
+		case <-ctx.Done(): // the build goes on for the others
+			return nil, "", ctx.Err()
+		}
+	}
+	f := &sshKRLFlight{gen: e.gen, done: make(chan struct{})}
+	e.flight = f // a build begun before an invalidation is left to its own waiters
+	s.ssh.krlMu.Unlock()
+	// The build is not this request's own: it goes on if this one hangs up, for those waiting for it, bounded by the
+	// store's own limits.
+	bctx := context.WithoutCancel(ctx)
+	data, tag, revoked, err := s.sshBuildKRL(bctx, e, tenantID)
+	f.data, f.tag, f.err = data, tag, err
+	s.ssh.krlMu.Lock()
+	if e.flight == f {
+		e.flight = nil
+	}
+	e.asked = time.Now()
+	switch {
+	case err == nil && e.gen == f.gen:
+		e.data, e.tag, e.at, e.built = data, tag, e.asked, f.gen
+	case errors.Is(err, ErrNotFound) && s.ssh.krl[tenantID] == e && e.flight == nil && !e.persisting:
+		delete(s.ssh.krl, tenantID) // the tenant is gone or never had SSH: nothing to keep
+	}
+	s.ssh.krlMu.Unlock()
+	close(f.done)
 	if err != nil {
-		e.mu.Unlock()
 		return nil, "", err
 	}
-	e.data, e.tag, e.at, e.built = data, tag, time.Now(), gen
-	e.mu.Unlock()
-	// The sticky revocations are written down once the list is kept and its lock let go: their writes invalidate it
-	// (every node's change hook), and the requests that came meanwhile have taken it. A build that finds another one
-	// writing leaves the writing to it; the list revokes them either way.
+	// The sticky revocations are written down once the list is kept and its waiters have it: their writes invalidate it
+	// (every node's change hook), and the requests that come meanwhile take it. A build that finds another one writing
+	// leaves the writing to it; the list revokes them either way.
 	if e.persist.TryLock() {
 		s.sshKRLPersisting(e, true)
-		s.sshPersist(ctx, revoked)
+		s.sshPersist(bctx, revoked)
 		s.sshKRLPersisting(e, false)
 		e.persist.Unlock()
 	}
 	return data, tag, nil
+}
+
+// sshKRLSweep drops, at most once every sshKRLTTL, the entries of the tenants whose lists nobody has asked for in
+// sshKRLIdle, unless one is being built or its revocations written down (under sshState.krlMu). A tenant asked for again
+// gets a new entry, and its list made afresh.
+func (s *Service) sshKRLSweep(now time.Time) {
+	if s.ssh.krl == nil {
+		s.ssh.krl = map[string]*sshKRLEntry{}
+	}
+	if now.Sub(s.ssh.krlSwept) < sshKRLTTL {
+		return
+	}
+	s.ssh.krlSwept = now
+	for id, e := range s.ssh.krl {
+		if e.flight == nil && !e.persisting && now.Sub(e.asked) >= sshKRLIdle {
+			delete(s.ssh.krl, id)
+		}
+	}
 }
 
 // sshKRLPersisting marks e's writing down of revocations begun or ended; at its end an invalidation held back meanwhile
@@ -429,13 +533,6 @@ func sshKRLInvalidate(e *sshKRLEntry) {
 		return
 	}
 	e.gen++
-}
-
-// sshKRLGen is the invalidation count of e.
-func (s *Service) sshKRLGen(e *sshKRLEntry) uint64 {
-	s.ssh.krlMu.Lock()
-	defer s.ssh.krlMu.Unlock()
-	return e.gen
 }
 
 // sshBuildKRL makes the revocation list of tenant tenantID (SSHKRLTagged), and returns with it what it found revoked.
@@ -559,7 +656,7 @@ func (s *Service) RevokeSSHCert(ctx context.Context, a *Actor, orgID, certID str
 		if err != nil {
 			return mapStore(err)
 		}
-		s.InvalidateSSHKRL()
+		s.InvalidateSSHKRLOf(c.TenantID)
 		return nil
 	}
 }
@@ -578,35 +675,28 @@ func (s *Service) RevokeSSHCertsFrom(ctx context.Context, orgID, userID string, 
 		return mapStore(err)
 	}
 	var errs []error
-	revoked := 0
 	for _, c := range all {
 		if c.Revoked || c.SignIn == "" || !from[c.SignIn] || !time.Now().Before(c.ValidBefore) {
 			continue
 		}
-		done, err := s.sshRevokeSignInEnded(ctx, orgID, c.ID)
-		if err != nil {
+		if _, err := s.sshRevokeSignInEnded(ctx, orgID, c); err != nil {
 			errs = append(errs, err)
 		}
-		if done {
-			revoked++
-		}
-	}
-	if revoked > 0 {
-		s.InvalidateSSHKRL()
 	}
 	return errors.Join(errs...)
 }
 
 // carrySSHCerts re-stamps to session epoch epoch the live certificates of user userID issued under one of the
 // sessions or grants in from (SSHCert.SignIn): those of the session kept when the user's other sessions end
-// (carryOver), which stand on its epoch as it does.
+// (carryOver), which stand on its epoch as it does. The revocation lists of their tenants are dropped on this node: one
+// made since the epoch moved revokes them.
 func (s *Service) carrySSHCerts(ctx context.Context, orgID, userID string, from map[string]bool, epoch uint64) error {
 	all, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "user_id", Value: userID}}})
 	if err != nil {
 		return mapStore(err)
 	}
 	var errs []error
-	carried := 0
+	carried := map[string]bool{} // by tenant
 	for _, c := range all {
 		if c.Revoked || c.SignIn == "" || !from[c.SignIn] || !time.Now().Before(c.ValidBefore) {
 			continue
@@ -615,7 +705,7 @@ func (s *Service) carrySSHCerts(ctx context.Context, orgID, userID string, from 
 			c.SessionEpoch = epoch
 			err := s.SSHCerts.Update(ctx, c)
 			if err == nil {
-				carried++
+				carried[c.TenantID] = true
 				break
 			}
 			if !errors.Is(err, store.ErrStale) || attempt == 4 {
@@ -627,33 +717,36 @@ func (s *Service) carrySSHCerts(ctx context.Context, orgID, userID string, from 
 			}
 		}
 	}
-	if carried > 0 {
-		s.InvalidateSSHKRL()
+	for id := range carried {
+		s.InvalidateSSHKRLOf(id)
 	}
 	return errors.Join(errs...)
 }
 
-// sshRevokeSignInEnded marks certificate id revoked by the system for the end of its sign-in, unless it is revoked
-// already; it reports whether it marked it.
-func (s *Service) sshRevokeSignInEnded(ctx context.Context, orgID, id string) (bool, error) {
+// sshRevokeSignInEnded marks certificate listed (as just read or stored) revoked by the system for the end of its
+// sign-in, unless it is revoked already, and drops its tenant's revocation list on this node; it reports whether it
+// marked it. It is read again only when it changed since.
+func (s *Service) sshRevokeSignInEnded(ctx context.Context, orgID string, listed *model.SSHCert) (bool, error) {
+	c := new(model.SSHCert)
+	*c = *listed
 	for attempt := 0; ; attempt++ {
-		c, err := s.SSHCerts.GetIn(ctx, orgID, id)
-		if err != nil {
-			return false, mapStore(err)
-		}
 		if c.Revoked {
 			return false, nil
 		}
 		c.Revoked, c.RevokedAt, c.RevokedBy, c.RevokedReason = true, time.Now().UTC(), System.Name, SSHReasonSignInEnded
 		detail := map[string]string{"serial": strconv.FormatUint(c.Serial, 10), "tenant_id": c.TenantID, "key_id": c.KeyID,
 			"user_id": c.UserID, "reason": SSHReasonSignInEnded}
-		err = s.audited(ctx, System, orgID, "ssh.cert.revoke", c.KeyID, detail, func() error { return s.SSHCerts.Update(ctx, c) })
+		err := s.audited(ctx, System, orgID, "ssh.cert.revoke", c.KeyID, detail, func() error { return s.SSHCerts.Update(ctx, c) })
 		if errors.Is(err, store.ErrStale) && attempt < 3 {
-			continue // changed meanwhile: read it again
+			if c, err = s.SSHCerts.GetIn(ctx, orgID, listed.ID); err != nil { // changed meanwhile: read it again
+				return false, mapStore(err)
+			}
+			continue
 		}
 		if err != nil {
 			return false, mapStore(err)
 		}
+		s.InvalidateSSHKRLOf(c.TenantID)
 		return true, nil
 	}
 }
@@ -683,6 +776,9 @@ type SSHCertView struct {
 
 // sshViews evaluates certs (of tenant t) into listed certificates.
 func (s *Service) sshViews(ctx context.Context, ev *sshEval, certs []*model.SSHCert) ([]*SSHCertView, error) {
+	// A read that fails here is made again for each certificate below: an expired one is listed without its username,
+	// as before, and the status of another fails the listing.
+	_ = ev.load(ctx, sshCertUsers(certs))
 	now := time.Now()
 	out := make([]*SSHCertView, 0, len(certs))
 	for _, c := range certs {

@@ -328,6 +328,14 @@ type AppAccess struct {
 // user of another organization is never allowed: every caller refuses one before asking, and this does too, so one
 // missed check cannot open a tenant to the whole server.
 func (s *Service) ClientAccess(ctx context.Context, t *model.Tenant, c *model.Client, u *model.User, groupIDs []string) (*AppAccess, error) {
+	return s.clientAccess(ctx, t, c, u, groupIDs, map[string]*model.TenantAccess{})
+}
+
+// clientAccess is ClientAccess reading the access entries of t through read, by user or group id (nil: none), each
+// once: a decision for several users (sshDecideAll) shares it, so an entry of a group is read once, not once for each
+// member.
+func (s *Service) clientAccess(ctx context.Context, t *model.Tenant, c *model.Client, u *model.User, groupIDs []string,
+	read map[string]*model.TenantAccess) (*AppAccess, error) {
 	if u.OrgID != t.OrgID {
 		return &AppAccess{}, nil
 	}
@@ -341,14 +349,15 @@ func (s *Service) ClientAccess(ctx context.Context, t *model.Tenant, c *model.Cl
 	now := time.Now()
 	var roles, tags [][]string
 	for _, id := range ids {
-		acc, err := s.Access.Get(ctx, model.AccessID(t.ID, id))
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue
+		acc, seen := read[id]
+		if !seen {
+			var err error
+			if acc, err = s.Access.Get(ctx, model.AccessID(t.ID, id)); err != nil && !errors.Is(err, store.ErrNotFound) {
+				return nil, err
 			}
-			return nil, err
+			read[id] = acc
 		}
-		if !acc.Live(now) || !acc.Covers(c.ID) {
+		if acc == nil || !acc.Live(now) || !acc.Covers(c.ID) {
 			continue
 		}
 		res.Allowed = true

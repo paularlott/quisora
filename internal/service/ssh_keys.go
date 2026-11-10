@@ -29,9 +29,10 @@ const (
 
 // sshState is what a node keeps for SSH: a lock for changing keys, and the revocation lists made lately.
 type sshState struct {
-	mu    sync.Mutex // making, rotating and removing CA keys on this node
-	krlMu sync.Mutex
-	krl   map[string]*sshKRLEntry
+	mu       sync.Mutex // making, rotating and removing CA keys on this node
+	krlMu    sync.Mutex
+	krl      map[string]*sshKRLEntry
+	krlSwept time.Time // when sshKRLSweep last ran
 }
 
 // parseSSHKey parses a stored public key (authorized_keys form).

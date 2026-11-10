@@ -111,60 +111,89 @@ const (
 // application is disabled by that (syncSSHClient), and access and principals are still decided, so that what the
 // revocation list writes down while SSH is off is right. An error is a read that failed: no verdict.
 func (s *Service) sshDecide(ctx context.Context, t *model.Tenant, u *model.User) (sshDecision, error) {
-	if u.OrgID != t.OrgID {
-		return sshDecision{}, nil
+	by, err := s.sshDecideAll(ctx, t, []*model.User{u})
+	return by[u.ID], err
+}
+
+// sshDecideAll is sshDecide for each of users, by user id: what does not depend on the user (the application, the
+// groups' pending changes) is read once for all of them, and what they share (their groups, the groups' access
+// entries) once too. An evaluation of the revocation list decides for every user with a certificate at once.
+func (s *Service) sshDecideAll(ctx context.Context, t *model.Tenant, users []*model.User) (map[string]sshDecision, error) {
+	out := make(map[string]sshDecision, len(users))
+	in := make([]*model.User, 0, len(users)) // those of the tenant's organization: no access for any other
+	for _, u := range users {
+		if u.OrgID == t.OrgID {
+			in = append(in, u)
+		} else {
+			out[u.ID] = sshDecision{}
+		}
+	}
+	if len(in) == 0 {
+		return out, nil
+	}
+	unavailable := func() (map[string]sshDecision, error) {
+		for _, u := range in {
+			out[u.ID] = sshDecision{Unavailable: true}
+		}
+		return out, nil
 	}
 	if t.SSH == nil || t.SSH.ClientID == "" {
-		return sshDecision{Unavailable: true}, nil
+		return unavailable()
 	}
 	c, err := s.Clients.Get(ctx, t.SSH.ClientID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return sshDecision{Unavailable: true}, nil
+			return unavailable()
 		}
-		return sshDecision{}, mapStore(err)
+		return nil, mapStore(err)
 	}
 	if !c.Enabled && t.SSH.Enabled || c.TenantID != t.ID || c.OrgID != t.OrgID {
-		return sshDecision{Unavailable: true}, nil
+		return unavailable()
 	}
-	groups, err := s.UserGroups(ctx, u)
+	groupsOf, err := s.UserGroupsOf(ctx, in)
 	if err != nil {
-		return sshDecision{}, err
+		return nil, err
 	}
-	ids := make([]string, len(groups))
-	for i, g := range groups {
-		ids[i] = g.ID
-	}
-	app, err := s.ClientAccess(ctx, t, c, u, ids)
-	if err != nil {
-		return sshDecision{}, mapStore(err)
-	}
-	if !app.Allowed {
-		return sshDecision{}, nil
-	}
-	// Only names OpenSSH principals can be and that are safe in an AuthorizedPrincipalsFile; others are left out. The
-	// name is checked, and the prefix added after.
-	var list []string
-	add := func(prefix, name string) {
-		if sshPrincipal.MatchString(name) {
-			list = append(list, prefix+name)
+	entries := map[string]*model.TenantAccess{}
+	for _, u := range in {
+		groups := groupsOf[u.ID]
+		ids := make([]string, len(groups))
+		for i, g := range groups {
+			ids[i] = g.ID
 		}
-	}
-	if t.SSH.PrincipalUsername {
-		add("", u.Username)
-	}
-	if t.SSH.PrincipalGroups {
-		for _, g := range groups {
-			add(SSHGroupPrefix, g.DisplayName)
+		app, err := s.clientAccess(ctx, t, c, u, ids, entries)
+		if err != nil {
+			return nil, mapStore(err)
 		}
-	}
-	if t.SSH.PrincipalRoles {
-		for _, r := range app.Roles {
-			add(SSHRolePrefix, r)
+		if !app.Allowed {
+			out[u.ID] = sshDecision{}
+			continue
 		}
+		// Only names OpenSSH principals can be and that are safe in an AuthorizedPrincipalsFile; others are left out.
+		// The name is checked, and the prefix added after.
+		var list []string
+		add := func(prefix, name string) {
+			if sshPrincipal.MatchString(name) {
+				list = append(list, prefix+name)
+			}
+		}
+		if t.SSH.PrincipalUsername {
+			add("", u.Username)
+		}
+		if t.SSH.PrincipalGroups {
+			for _, g := range groups {
+				add(SSHGroupPrefix, g.DisplayName)
+			}
+		}
+		if t.SSH.PrincipalRoles {
+			for _, r := range app.Roles {
+				add(SSHRolePrefix, r)
+			}
+		}
+		slices.Sort(list)
+		out[u.ID] = sshDecision{Allowed: true, Principals: slices.Compact(list)}
 	}
-	slices.Sort(list)
-	return sshDecision{Allowed: true, Principals: slices.Compact(list)}, nil
+	return out, nil
 }
 
 // sshExtensions are the names of the OpenSSH extensions a user certificate of the settings set grants, sorted.
@@ -372,10 +401,9 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 			_, err = s.Grants.Get(ctx, req.SignIn) // the sign endpoint: the access token's grant
 		}
 		if err != nil {
-			if _, rerr := s.sshRevokeSignInEnded(ctx, u.OrgID, rec.ID); rerr != nil {
+			if _, rerr := s.sshRevokeSignInEnded(ctx, u.OrgID, rec); rerr != nil {
 				s.Log.WithError(rerr).Error("an SSH certificate whose sign-in ended could not be revoked", "serial", rec.Serial)
 			}
-			s.InvalidateSSHKRL()
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, s.sshRefuse(ctx, req, t, "session_ended", &SSHRefusal{"the sign-in this request comes from has ended: sign in again"})
 			}

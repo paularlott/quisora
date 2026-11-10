@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -2080,6 +2081,96 @@ func TestSSHKRLIsMadeOncePerTenantAtATime(t *testing.T) {
 		if len(got[i]) == 0 || &got[i][0] != &got[0][0] {
 			t.Fatalf("request %d did not get the list the first made", i)
 		}
+	}
+}
+
+// A request waiting for a build of the list made by another goes when it hangs up, while the build goes on for the
+// others; one that comes after an invalidation does not take a build begun before it.
+func TestSSHKRLWaitersCanHangUp(t *testing.T) {
+	var mu sync.Mutex
+	var block, blocked chan struct{}
+	builds := 0
+	st := &faultStore{Store: memstore.New()}
+	st.beforeList = func(kind model.Kind, q store.ListQuery) error {
+		if kind == model.KindSSHCert && len(q.Filters) == 1 && q.Filters[0].Field == "tenant_id" { // a build's user certificates
+			mu.Lock()
+			builds++
+			b, s := block, blocked
+			block = nil
+			mu.Unlock()
+			if b != nil {
+				close(s)
+				<-b
+			}
+		}
+		return nil
+	}
+	w := sshWorldOn(t, newEnvOn(t, st))
+	w.enable()
+	u := w.user(w.org.ID, "paul", model.RoleUser)
+	first, second := w.mustSign(u), w.mustSign(u)
+	w.svc.InvalidateSSHKRL()
+	mu.Lock()
+	block, blocked, builds = make(chan struct{}), make(chan struct{}), 0
+	release, held := block, blocked
+	mu.Unlock()
+	type answer struct {
+		data []byte
+		err  error
+	}
+	slow := make(chan answer, 1)
+	go func() { data, err := w.svc.SSHKRL(w.ctx, w.tenant.ID); slow <- answer{data, err} }()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the build did not begin")
+	}
+	waiter := make(chan answer, 1)
+	go func() { data, err := w.svc.SSHKRL(w.ctx, w.tenant.ID); waiter <- answer{data, err} }()
+	ctx, cancel := context.WithCancel(w.ctx)
+	gone := make(chan error, 1)
+	go func() { _, err := w.svc.SSHKRL(ctx, w.tenant.ID); gone <- err }()
+	cancel()
+	select {
+	case err := <-gone:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("a request that hung up: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a request that hung up waited for the build")
+	}
+
+	// a revocation now (its change hook invalidates): a request after it makes the list again, with it
+	c, err := w.svc.SSHCerts.Get(w.ctx, second.Cert.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Revoked = true
+	if err := w.svc.SSHCerts.Update(w.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	w.svc.InvalidateSSHKRLOf(w.tenant.ID)
+	user := pubKeyOf(t, keysOf(t, w, "user")[0])
+	data, err := w.svc.SSHKRL(w.ctx, w.tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, err := sshca.ParseKRL(data); err != nil || !k.Revoked(user, second.Cert.Serial, "") {
+		t.Errorf("a request after the revocation took the build begun before it: %v", err)
+	}
+
+	close(release)
+	a, b := <-slow, <-waiter
+	if a.err != nil || b.err != nil || len(a.data) == 0 || len(b.data) == 0 { // (b may have come after the revocation)
+		t.Fatalf("a request that stayed was not answered: %v %v", a.err, b.err)
+	}
+	if k, _ := sshca.ParseKRL(a.data); k.Revoked(user, first.Cert.Serial, "") {
+		t.Error("the list revokes a certificate that is not")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if builds != 2 {
+		t.Errorf("%d builds, want the held one and the one after the revocation", builds)
 	}
 }
 
