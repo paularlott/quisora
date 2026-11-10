@@ -361,7 +361,8 @@ func (n *Node) buildGossip() error {
 	gcfg.EncryptionKey = key
 	gcfg.PreviousEncryptionKeys = prev // a cluster key rotation in progress: they still decrypt, never encrypt
 	// A captured packet cannot be replayed later: older (or newer) than this by the receiver's clock it is refused,
-	// and until then it is in the duplicate history. Far above the clock skew the nodes may have (store.MaxSkew).
+	// and until then it is in the duplicate history. A reply carries its request's message id and is taken only as the
+	// answer to that request. Far above the clock skew the nodes may have (store.MaxSkew).
 	gcfg.MaxPacketAge = 2 * time.Minute
 	gcfg.Cipher = aes.New()
 	gcfg.MsgCodec = shamaton.New()
