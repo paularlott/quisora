@@ -49,6 +49,7 @@ func BenchmarkSortedUserPage(b *testing.B) {
 				{"active-desc-ties", store.ListQuery{Scope: "org", Sort: "active", Desc: true, Offset: 200, Limit: 25, Filters: visibility}},
 				{"role-user-username", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: append([]store.Filter{{Field: "role", Value: string(model.RoleUser)}}, visibility...)}},
 				{"role-super-username", store.ListQuery{Scope: "org", Sort: "username", Limit: 25, Filters: []store.Filter{{Field: "role", Value: string(model.RoleSuperAdmin)}}}},
+				{"role-super-username-all", store.ListQuery{Scope: "org", Sort: "username", Filters: []store.Filter{{Field: "role", Value: string(model.RoleSuperAdmin)}}}},
 				{"plain", store.ListQuery{Scope: "org", Limit: 25}},
 				{"plain-visibility", store.ListQuery{Scope: "org", Limit: 25, Filters: visibility}},
 				{"search-username", store.ListQuery{Scope: "org", Sort: "username", Search: "user-0000", Limit: 25, Filters: visibility}},

@@ -292,7 +292,7 @@ func (e *badgerEngine) Page(_ context.Context, bucket string, p pageQuery, nowMs
 }
 
 // page selects p from bucket in one key-only iteration (a value is read only to check a member's expiry): it starts
-// at the bound it iterates from, stops at the other, and counts every live member it passes that p does not skip.
+// at the bound it iterates from, stops at the other, and counts every live member it passes that p selects.
 func page(t *badger.Txn, bucket string, p pageQuery, nowMs int64) ([]string, int, error) {
 	prefix := []byte(bucket + "/")
 	var lo, hi []byte // the bounds as keys; nil when unbounded
@@ -344,6 +344,9 @@ func page(t *badger.Txn, bucket string, p pageQuery, nowMs int64) ([]string, int
 				if _, skip := p.Skip[string(m)]; skip { // (the lookup's conversion does not allocate)
 					continue
 				}
+			}
+			if p.Keep != nil && !p.Keep(m) {
+				continue
 			}
 			if total >= p.Offset && (p.Limit <= 0 || len(out) < p.Limit) {
 				out = append(out, string(m))

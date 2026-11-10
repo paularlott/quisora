@@ -35,15 +35,18 @@ type engine interface {
 }
 
 // pageQuery selects a page of an ordered set: the live members within [From, To) ("" = no bound on that side) that
-// are not in Skip, in byte order (Reverse: descending), leaving out the first Offset of them and returning at most
-// Limit (Limit <= 0: all). The total a page comes with counts every member selected, ignoring Offset and Limit,
-// unless NoTotal says the caller has no use for it (the store keeps counters: see counterKey): the engine then
-// stops at the end of the page instead of visiting the rest of the range, and the total it returns means nothing.
-// Skip is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set pages the
-// scope's index with them skipped, instead of loading the scope.
+// are not in Skip and that Keep keeps, in byte order (Reverse: descending), leaving out the first Offset of them and
+// returning at most Limit (Limit <= 0: all). The total a page comes with counts every member selected, ignoring
+// Offset and Limit, unless NoTotal says the caller has no use for it (the store keeps counters: see counterKey): the
+// engine then stops at the end of the page instead of visiting the rest of the range, and the total it returns
+// means nothing. Skip is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set
+// pages the scope's index with them skipped, instead of loading the scope. Keep (nil: every member) tests a member
+// (which it must not retain): a sorted listing of the matches of an indexed filter pages the sort index keeping only
+// their members, instead of loading every match to sort them.
 type pageQuery struct {
 	From, To string
 	Skip     map[string]struct{}
+	Keep     func(member []byte) bool
 	Reverse  bool
 	Offset   int
 	Limit    int

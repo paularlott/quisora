@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/store/storetest"
 )
 
 // A sorted listing on a SortIndex field, ascending or descending, at any offset, with or without the visibility
@@ -228,5 +230,165 @@ func TestSortKeyOrder(t *testing.T) {
 	m := sortMember("org/1", str, "x\x00y", "id-1")
 	if sortMemberID(m) != "id-1" || !strings.HasPrefix(m, "org%2F1/") {
 		t.Errorf("member %q: id %q", m, sortMemberID(m))
+	}
+}
+
+// A sorted listing with an indexed equality filter (a role, a tag; with the visibility exclusion or without) gives,
+// from the sort index keeping only the filter's matches (listSorted with keep), exactly what loading and sorting
+// every match gives (collect, which it replaces where it costs less) and what applying the query to every record
+// gives: both directions, runs of equal values (active, role, name), offsets within and past the matches, limits or
+// none, in a scope next to another, after records move in the order, change role or are deleted. List pages the
+// index when the filter selects much of the scope, loading only the page's records, and loads the matches when it
+// selects few. A page by key (After) is for unsorted listings only.
+func TestSortedIndexedFilterPages(t *testing.T) {
+	ctx := context.Background()
+	s := openBadger(t, BadgerOptions{InMemory: true})
+	var recs []*store.Record
+	var us []*model.User
+	for i := range 650 {
+		org := "org"
+		if i >= 600 {
+			org = "org2" // the same values in the next scope: none of its records may show
+		}
+		name := fmt.Sprintf("user-%04d", i%600)
+		if i%3 == 0 {
+			name = strings.ToUpper(name)
+		}
+		u := &model.User{Meta: model.Meta{ID: model.NewID(), Created: time.Unix(1_700_000_000+int64(i%40), 0)}, OrgID: org,
+			Username: name, Email: name + "@example.test", GivenName: []string{"Ann", "bob", ""}[i%3], Role: model.RoleUser,
+			Active: i%4 != 0}
+		switch {
+		case i%41 == 5:
+			u.Role = model.RoleSuperAdmin
+		case i%9 == 2:
+			u.Role = model.RoleAdmin
+		}
+		if i%5 == 1 {
+			u.Tags = []string{"Blue", "green"}
+		}
+		r, err := store.Encode(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recs, us = append(recs, r), append(us, u)
+	}
+	if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingReads{engine: s.eng}
+	s.eng = counting
+	ids := func(recs []*store.Record) []string {
+		out := make([]string, len(recs))
+		for i, r := range recs {
+			out[i] = r.ID
+		}
+		return out
+	}
+	// compare checks q against the oracle and the sort index path against the path it replaces; it returns how many
+	// records List loaded.
+	compare := func(q store.ListQuery) int {
+		t.Helper()
+		storetest.CheckAgainstApplyQuery(t, s, model.KindUser, q)
+		in, out := indexBuckets(model.KindUser, q)
+		f, ok := sortIndexed(model.KindUser, q.Sort)
+		if in == "" || !ok {
+			t.Fatalf("%+v: not an indexed filter on a sort index", q)
+		}
+		matches, err := s.indexedIDs(ctx, model.KindUser, in, q.Scope, nowMs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		old, err := s.collect(ctx, model.KindUser, matches, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep := map[string]struct{}{}
+		for _, id := range matches {
+			keep[id] = struct{}{}
+		}
+		from, to := scopeBounds(q.Scope)
+		got, err := s.listSorted(ctx, model.KindUser, q, f, keep, out, from, to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(ids(got.Records), ids(old.Records)) || got.Total != old.Total {
+			t.Errorf("%+v:\n index %d %v\n match %d %v", q, got.Total, ids(got.Records), old.Total, ids(old.Records))
+		}
+		counting.records = 0
+		page, err := s.List(ctx, model.KindUser, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counting.records < len(page.Records) {
+			t.Errorf("%+v: loaded %d records for a page of %d", q, counting.records, len(page.Records))
+		}
+		return counting.records
+	}
+	visible := store.Filter{Field: "super_admin", Value: false}
+	role := func(r model.Role, more ...store.Filter) []store.Filter {
+		return append([]store.Filter{{Field: "role", Value: string(r)}}, more...)
+	}
+	filters := [][]store.Filter{
+		role(model.RoleUser), role(model.RoleUser, visible), role(model.RoleAdmin, visible), role(model.RoleSuperAdmin),
+		{{Field: "tags", Value: "BLUE"}, visible},
+	}
+	for _, sort := range []string{"username", "name", "active", "role", "created", "email"} {
+		for _, desc := range []bool{false, true} {
+			for _, flts := range filters {
+				for _, off := range []int{0, 7, 260, 520, 700} {
+					for _, limit := range []int{1, 25} {
+						compare(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Offset: off, Limit: limit, Filters: flts})
+					}
+				}
+				compare(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Filters: flts})
+			}
+		}
+	}
+	// Most of the organization: the index is paged and only the page is loaded (the excluded super admins are ids
+	// only). Its few super admins: they are loaded, as before.
+	if n := compare(store.ListQuery{Scope: "org", Sort: "username", Desc: true, Offset: 100, Limit: 25, Filters: role(model.RoleUser, visible)}); n != 25 {
+		t.Errorf("a page of most of the scope loaded %d records, want 25", n)
+	}
+	if n := compare(store.ListQuery{Scope: "org", Sort: "username", Limit: 5, Filters: role(model.RoleSuperAdmin)}); n != 15 {
+		t.Errorf("a page of 15 matches loaded %d records, want them all", n)
+	}
+
+	// Updates move records in the order or out of the role's matches; deletions leave both.
+	tb := store.NewTable[model.User](s)
+	for _, i := range []int{10, 11, 47} {
+		u, err := tb.Get(ctx, us[i].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.Username, u.Active = "aaa-"+u.Username, !u.Active
+		if i != 10 {
+			u.Role = model.RoleAdmin
+		}
+		if err := tb.Update(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, i := range []int{1, 3, 4, 46, 87} { // users and super admins (46, 87)
+		if err := tb.Delete(ctx, us[i].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, desc := range []bool{false, true} {
+		for _, flts := range filters {
+			compare(store.ListQuery{Scope: "org", Sort: "username", Desc: desc, Limit: 4, Filters: flts})
+			compare(store.ListQuery{Scope: "org", Sort: "active", Desc: desc, Offset: 140, Limit: 25, Filters: flts})
+		}
+	}
+
+	// A page by key needs the default order; unsorted, it pages the filter's index.
+	if _, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org", Sort: "username", After: us[20].ID, Filters: role(model.RoleUser)}); !errors.Is(err, store.ErrBadQuery) {
+		t.Errorf("a sorted page by key: %v", err)
+	}
+	all, err := s.List(ctx, model.KindUser, store.ListQuery{Scope: "org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []int{0, 100, 590} {
+		storetest.CheckAgainstApplyQuery(t, s, model.KindUser, store.ListQuery{Scope: "org", After: all.Records[at].ID, Limit: 25, Filters: role(model.RoleUser)})
 	}
 }

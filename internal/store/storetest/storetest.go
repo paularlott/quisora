@@ -1395,12 +1395,21 @@ func testListSortIndexes(t *testing.T, s store.Store) {
 		must(t, groups.Put(ctx, &model.Group{OrgID: "org1", DisplayName: n}))
 	}
 	visible := []store.Filter{{Field: "super_admin", Value: false}}
+	role := func(r model.Role, more ...store.Filter) []store.Filter {
+		return append([]store.Filter{{Field: "role", Value: string(r)}}, more...)
+	}
 	for _, desc := range []bool{false, true} {
 		for _, sort := range []string{"username", "name", "valid_until", "created", "active", "role", "email"} {
 			for _, off := range []int{0, 3, 11, 38, 45} {
 				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5})
 				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5, Filters: visible})
+				// An indexed equality filter, alone and with the visibility exclusion, that selects most of the
+				// scope (the key-value stores page the sort index keeping its matches) and few of it.
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5, Filters: role(model.RoleUser)})
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 5, Filters: role(model.RoleUser, visible...)})
+				check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Offset: off, Limit: 2, Filters: role(model.RoleAdmin, visible...)})
 			}
+			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Filters: role(model.RoleUser)})
 			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Limit: 1})
 			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Filters: visible})
 			check(model.KindUser, store.ListQuery{Scope: "org1", Sort: sort, Desc: desc, Filters: []store.Filter{{Field: "active", Value: false}}, Offset: 2, Limit: 4})
@@ -1413,15 +1422,18 @@ func testListSortIndexes(t *testing.T, s store.Store) {
 			check(model.KindGroup, store.ListQuery{Scope: "org1", Sort: "created", Desc: desc, Limit: 3})
 		}
 	}
-	// The order follows the records: a renamed user moves, a deleted one leaves.
+	// The order follows the records: a renamed user moves, a deleted one leaves, as does one whose role changes from
+	// the role filtered on.
 	u := us[7]
-	u.Username, u.GivenName = "aaa", "Zoe"
+	u.Username, u.GivenName, u.Role = "aaa", "Zoe", model.RoleAdmin
 	must(t, users(s).Update(ctx, u))
 	must(t, users(s).Delete(ctx, us[0].ID))
 	must(t, users(s).Delete(ctx, us[2].ID)) // a super admin
 	for _, desc := range []bool{false, true} {
 		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "username", Desc: desc, Limit: 3})
 		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "name", Desc: desc, Offset: 1, Limit: 6, Filters: visible})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "username", Desc: desc, Limit: 4, Filters: role(model.RoleUser, visible...)})
+		check(model.KindUser, store.ListQuery{Scope: "org1", Sort: "active", Desc: desc, Offset: 9, Limit: 6, Filters: role(model.RoleUser)})
 	}
 	if n, err := s.Count(ctx, model.KindUser, "org1"); err != nil || n != 38 {
 		t.Errorf("count %d %v", n, err)
