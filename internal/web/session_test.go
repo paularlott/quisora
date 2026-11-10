@@ -17,7 +17,7 @@ import (
 
 // sessionFixture makes a service over st with a primary organization, a user of it and a session of that user (not yet
 // stored, so a test can arrange the store first) last used at lastSeen.
-func sessionFixture(t *testing.T, st store.Store, lastSeen time.Time) (*service.Service, *model.User, *model.Session) {
+func sessionFixture(t testing.TB, st store.Store, lastSeen time.Time) (*service.Service, *model.User, *model.Session) {
 	t.Helper()
 	ctx := context.Background()
 	sealer, _ := secure.NewSealer(secure.RandomBytes(32))

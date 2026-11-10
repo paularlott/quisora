@@ -33,11 +33,11 @@ func (e *env) benchPost(path, body string) *httptest.ResponseRecorder {
 // BenchmarkPasswordLogin is bound by the argon2id hash (19 MiB, 2 passes) plus one session write.
 func BenchmarkPasswordLogin(b *testing.B) {
 	e := benchEnv(b)
-	body := `{"org":"primary","email":"admin@example.com","password":"` + e.Password + `"}`
+	body := `{"email":"admin@example.com","password":"` + e.Password + `"}`
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 200 {
+		if rec := e.benchPost("/o/primary/api-internal/login/password", body); rec.Code != 200 {
 			b.Fatalf("%d %s", rec.Code, rec.Body)
 		}
 	}
@@ -45,12 +45,12 @@ func BenchmarkPasswordLogin(b *testing.B) {
 
 func BenchmarkPasswordLoginParallel(b *testing.B) {
 	e := benchEnv(b)
-	body := `{"org":"primary","email":"admin@example.com","password":"` + e.Password + `"}`
+	body := `{"email":"admin@example.com","password":"` + e.Password + `"}`
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 200 {
+			if rec := e.benchPost("/o/primary/api-internal/login/password", body); rec.Code != 200 {
 				b.Fatalf("%d %s", rec.Code, rec.Body)
 			}
 		}
@@ -61,11 +61,11 @@ func BenchmarkPasswordLoginParallel(b *testing.B) {
 // hash, so it is no cheaper for an attacker (or a prober) than a real account.
 func BenchmarkPasswordLoginUnknownUser(b *testing.B) {
 	e := benchEnv(b)
-	body := `{"org":"primary","email":"nobody@example.com","password":"whatever it is"}`
+	body := `{"email":"nobody@example.com","password":"whatever it is"}`
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if rec := e.benchPost("/api-internal/login/password", body); rec.Code != 401 {
+		if rec := e.benchPost("/o/primary/api-internal/login/password", body); rec.Code != 401 {
 			b.Fatalf("%d", rec.Code)
 		}
 	}
@@ -82,7 +82,10 @@ func BenchmarkPasskeyLoginHTTP(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		b.StopTimer()
-		rec := e.benchPost("/api-internal/login/passkey/begin", `{"org":"primary"}`)
+		rec := e.benchPost("/o/primary/api-internal/login/passkey/begin", `{}`)
+		if rec.Code != 200 {
+			b.Fatalf("begin: %d %s", rec.Code, rec.Body)
+		}
 		var begin struct {
 			Challenge string          `json:"challenge"`
 			Options   json.RawMessage `json:"options"`
@@ -96,7 +99,7 @@ func BenchmarkPasskeyLoginHTTP(b *testing.B) {
 		}
 		body, _ := json.Marshal(map[string]any{"challenge": begin.Challenge, "credential": json.RawMessage(cred)})
 		b.StartTimer()
-		if rec := e.benchPost("/api-internal/login/passkey/finish", string(body)); rec.Code != 200 {
+		if rec := e.benchPost("/o/primary/api-internal/login/passkey/finish", string(body)); rec.Code != 200 {
 			b.Fatalf("%d %s", rec.Code, rec.Body)
 		}
 	}
