@@ -30,7 +30,8 @@ last copy of the files, which stops its revocations without any other sign than 
 **What to know before you start.**
 
 - A certificate is checked when someone connects. Revoking one, or ending a person's access, stops new logins within a
-  minute or two ([Revocation](#revocation)); it does not close sessions already open.
+  minute or two ([Revocation](#revocation)); sessions already open stay open unless servers run `fetch` with
+  `--end-revoked`, which ends them within the same minute or two ([Setting up an Ubuntu server](#setting-up-an-ubuntu-server), step 7).
 - The revocation list must always be present on the server, or sshd refuses every public-key login
   ([Why the revocation list must always be there](#why-the-revocation-list-must-always-be-there)).
 - Quisora does not create Linux accounts. Each account people log in as must exist on the server
@@ -359,6 +360,21 @@ was made, so a new copy differs from the old one nearly every time: `fetch` writ
 what it revokes changed ([Monitoring](#monitoring)). Add `--known-hosts-file <path>` to also write the host CA lines,
 `--ca-file` and `--krl-file` to use other paths (an empty value, `--ca-file=`, leaves that file alone), and
 `--ca-cert <pem>` if Quisora is served with a private CA's certificate.
+
+**Ending connections already open (`--end-revoked`).** sshd checks a certificate only when it is presented, so a
+revocation stops new logins but leaves open sessions open. With `--end-revoked` (Linux, sshd logging to journald, run as
+root, as the timer above does), each `fetch` also ends the connections whose certificate the list in place revokes: it
+reads the certificate logins sshd logged in the last 25 hours (`Accepted publickey for … ssh2: …-CERT … ID … (serial …)
+CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still sshd's.
+That process is the connection's privileged one, which the logged-in user cannot touch, and the log is root's, so a
+session cannot hide which certificate it came in with. Ending it closes the connection and ends the session. Each one is
+printed (`ended the SSH connection of … (serial …, process …): its certificate is revoked`), and a log that cannot be read
+makes `fetch` exit 1 after the files are written. Processes a session left running on their own (under `tmux`, `screen`
+or `nohup`) are not ended: in an incident, end those by hand. Add it to the service's `ExecStart`:
+
+```
+ExecStart=/usr/local/bin/quisora ssh fetch --end-revoked https://id.example.com/o/<org id>/ssh/<tenant id>
+```
 
 Then try it from a workstation ([Signing in from a workstation](#signing-in-from-a-workstation)).
 
@@ -820,6 +836,7 @@ asked for. A certificate is on it for the first of these reasons that applies:
 | `user_deleted` | The user was deleted. |
 | `user_disabled` | The user was disabled, locked out, is past their end date, or their organization is gone. |
 | `sessions_ended` | The user's sessions were ended: signed out everywhere, or a credential reset. |
+| `sign_in_ended` | The sign-in it was issued under was taken back: the account page's session, or the browser session a `quisora ssh` sign-in went through, ended from another session or by an administrator; the `quisora ssh` sign-in's token revoked, or the app's access removed. The user **signing out** of that browser does not revoke it: it lasts to its expiry, like the access tokens the session issued ([signing out and ending a session](../sign-in/README.md#sessions)). |
 | `signed_out` | An [emergency sign-out](../emergency-sign-out.md) of the organization, or of the server, came after the certificate was issued. |
 | `role_not_allowed` | The user is a manager or administrator and the tenant does not allow them certificates (it was turned off after the certificate was issued). |
 | `app_unavailable` | The tenant's SSH application is disabled or missing. The certificates count again when it is back. |
@@ -877,18 +894,22 @@ list, `ca.pub` and `known_hosts` are answered with `Cache-Control: no-cache` and
 them (a cache cannot hand out an old `ca.pub` beside a new list after a rotation), and servers fetch every minute if you
 use the timer above (plus up to 15 seconds of `RandomizedDelaySec=`). So expect a revocation, or the end of someone's
 access, to reach sshd within about two minutes. The discovery document may be cached for 60 seconds. It applies to new logins. A session someone already
-has open stays open: end it on the server (`loginctl terminate-user`, or kill the sshd process) when that matters.
+has open stays open unless the server runs `fetch --end-revoked`, which ends it at the same fetch
+([Setting up an Ubuntu server](#setting-up-an-ubuntu-server), step 7); otherwise end it on the server (`loginctl
+terminate-user`, or kill the sshd process) when that matters.
 
 To cut a person off at once from everything, lock them out ([emergency sign-out and lock-out](../emergency-sign-out.md#locking-out-one-person)):
 their certificates go on the list as `user_disabled`.
 
 ### What revocation does not cover
 
-- **Ending one session, or revoking one grant, does not revoke certificates already issued.** A certificate counts while
-  the user's sessions as a whole hold, so what ends it is signing the person out **everywhere**, a credential reset, a
-  lock-out or an emergency sign-out, or revoking the certificate itself. Signing out of one browser, or removing one
-  application from the account page, leaves the certificates asked for under it valid until they expire.
-- Sessions already open on a server stay open.
+- **A certificate goes with the sign-in it was issued under** (`sign_in_ended`) when that sign-in is taken back: its
+  browser session ended from another session or by an administrator, or the `quisora ssh` sign-in's token or the app's
+  access revoked; besides signing the person out everywhere, a credential reset, a lock-out, an emergency sign-out, or
+  revoking the certificate itself. Signing out of the browser does not revoke it: it lasts to its expiry. Certificates
+  issued before the sign-in was recorded follow only the latter.
+- Sessions already open on a server stay open, unless it runs `fetch --end-revoked`; and processes a session left running
+  on their own (`tmux`, `nohup`) are not ended even then.
 - A host certificate revocation reaches only clients that use `RevokedHostKeys`
   ([Clients and host certificate revocation](#clients-and-host-certificate-revocation)).
 - A server that has stopped fetching keeps its old list.
@@ -999,9 +1020,8 @@ that has stopped fetching. Keep lifetimes as short as your people can stand (the
 
 ### Known limits
 
-- Ending a single session, or revoking a single grant, does not revoke certificates already issued; sign the person out
-  everywhere, pull an emergency sign-out or revoke the certificate ([What revocation does not cover](#what-revocation-does-not-cover)).
-- Open sessions stay open, and a host revocation reaches only clients that set `RevokedHostKeys`.
+- Open sessions stay open on servers that do not run `fetch --end-revoked` (Linux with journald), and a host revocation
+  reaches only clients that set `RevokedHostKeys` ([What revocation does not cover](#what-revocation-does-not-cover)).
 - The SSH application uses ordinary bearer access tokens, not DPoP-bound ones. An access token that leaks in the minutes
   it lives (10 by default, `tokens.access_ttl`) can be used to ask for a certificate for another key, if the
   sign-in behind it is still within **Sign-in age**.
@@ -1067,7 +1087,7 @@ that line.
 | `ssh.ca.remove` | A CA key was removed. |
 | `ssh.cert.issue` | A user certificate was issued: the person, `serial`, `principals`, `fingerprint`, `valid_before`, `via` (`cli` or `account`) and `amr`. |
 | `ssh.cert.refused` | A certificate was refused, with the `reason`, the tenant and `via`. At most one per person, tenant and reason a minute (`detail.suppressed` counts the others). |
-| `ssh.cert.revoke` | A certificate was revoked: by hand (`serial`, `key_id`, and by whom), or by the system when the list found it revoked for a lost access (`access_removed`, `principals_changed`, `role_not_allowed`), with the `reason`. |
+| `ssh.cert.revoke` | A certificate was revoked: by hand (`serial`, `key_id`, and by whom), or by the system when the list found it revoked for a lost access (`access_removed`, `principals_changed`, `role_not_allowed`) or the sign-in it was issued under was ended (`sign_in_ended`), with the `reason`. |
 | `ssh.host.issue` | A host certificate was issued, with who signed it, `serial`, `principals`, `valid_before` and `key_id`. |
 | `ssh.host.refused` | A host certificate was refused (`host_certs_off`, `no_host_key`, `bad_key`, `bad_principals`, `pattern`, `bad_ttl`). Throttled like `ssh.cert.refused`. |
 

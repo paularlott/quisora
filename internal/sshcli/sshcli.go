@@ -44,6 +44,12 @@ type Env struct {
 	GOOS        string                                        // the operating system to behave for; "" = this one (tests)
 	Hostname    func() (string, error)                        // the host's name (host-sign)
 	LookupCNAME func(context.Context, string) (string, error) // resolves it to a fully qualified name (host-sign)
+
+	// fetch --end-revoked: the certificate logins sshd logged (default: journald), whether a process is still sshd's
+	// (default: /proc), and ending one (default: SIGTERM). Tests replace them.
+	SSHDLogins func(context.Context) ([]SSHDLogin, error)
+	IsSSHD     func(pid int) bool
+	Terminate  func(pid int) error
 }
 
 func (e *Env) out() io.Writer {

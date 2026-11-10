@@ -24,12 +24,15 @@ import (
 // authenticator app or passkey when a second factor is required (instead of setting one up), and under "Try another
 // way" to those with one. Managers and above never use it: their second factor is their own app or passkey. A wrong
 // code counts towards the lockout like a wrong authenticator code, and a sign-in can have a new code sent at most
-// every emailResendEvery and emailSendsPerSignIn times.
+// every emailResendEvery and emailSendsPerSignIn times. However many sign-ins are started, an account is sent at most
+// emailCodesPerHour codes (an hour from the first), so its mailbox cannot be flooded.
 const (
 	nsEmailCode         = "login.emailcode"
+	nsEmailCodeUser     = "login.emailcode.user"
 	emailCodeTTL        = 10 * time.Minute
 	emailResendEvery    = 30 * time.Second
 	emailSendsPerSignIn = 5
+	emailCodesPerHour   = 10
 )
 
 // emailCode is the code sent for one sign-in (ephemeral, ns login.emailcode, keyed by the ticket).
@@ -62,6 +65,7 @@ func codeHash(ticketID, code string) []byte {
 var (
 	errCodeTooSoon  = errors.New("a code was sent moments ago: wait a little before asking for another")
 	errCodeTooMany  = errors.New("too many codes were sent for this sign-in: start again")
+	errCodeHourly   = errors.New("too many codes were sent to this account: try again later")
 	errCodeNotReady = errors.New("no code was sent for this sign-in")
 )
 
@@ -81,6 +85,13 @@ func (m *Module) sendEmailCode(ctx context.Context, ticketID string, u *model.Us
 		return errCodeTooMany
 	case !st.Last.IsZero() && time.Since(st.Last) < emailResendEvery:
 		return errCodeTooSoon
+	}
+	sent, err := m.s.Eph.Incr(ctx, nsEmailCodeUser, u.ID, 1, time.Hour)
+	if err != nil { // not knowing is no leave to send: refused, as above
+		return err
+	}
+	if sent > emailCodesPerHour {
+		return errCodeHourly
 	}
 	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
 	if err != nil {
@@ -155,6 +166,8 @@ func (m *Module) emailSend(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusTooManyRequests, "A code was sent moments ago. Wait a little before asking for another.", "")
 		case errors.Is(err, errCodeTooMany):
 			writeErr(w, http.StatusTooManyRequests, "Too many codes were sent for this sign-in. Start again.", "")
+		case errors.Is(err, errCodeHourly):
+			writeErr(w, http.StatusTooManyRequests, "Too many codes were sent to this account. Try again in an hour, or sign in another way.", "")
 		default:
 			m.internalError(w, r, "send email code", err)
 		}

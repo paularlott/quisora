@@ -109,6 +109,19 @@ second factor, session lifetimes) cover the super admins, so only super admins c
 Users see their sessions of the organization on their account page and can end any of them; administrators can end a user's sessions
 from the user's page. Changing a password signs the user out of every other browser and device.
 
+**Signing out and ending a session are not the same.** What goes with the session depends on how it ends:
+
+| | Signing out (the sign-out page, an application's logout, another user signing in in the same browser) | Ending it from another session or by an administrator, signing out everywhere, a lock-out |
+| --- | --- | --- |
+| The browser session | ends | ends |
+| Applications' sign-ins without `offline_access` | end | end |
+| Applications' sign-ins with `offline_access` | go on, to their own expiry | end |
+| [SSH certificates](../ssh/README.md#revocation) issued in it, or to `quisora ssh` through it | go on, to their expiry | revoked |
+
+Signing out is the user leaving this browser; ending a session is taking back what it gave, as for a session someone
+else may hold. "Sign out all other sessions" ends the others in that way and keeps the current one with everything it
+gave.
+
 ## Confirming it is you
 
 **Sensitive changes** need a recent re-authentication (signed in or confirmed within 5 minutes; the console asks with
@@ -123,10 +136,11 @@ administrators):
 - demoting, disabling or deleting another administrator or super admin (management API only: a directory offboarding
   an administrator through SCIM still can, within the service's rules: it never touches a super admin);
 - removing another user's password or authenticator app;
-- issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in).
+- issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in);
+- creating or changing a service account, or rotating its secret.
 
 **Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
-provider, an API token) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second
+provider, an API token, signing out other sessions) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second
 factor. A sign-in through a provider trusted for the second factor does not count when the account has one of its own,
 and an account whose second factor is a passkey confirms with the passkey, not the password alone. A
 [recovery code](recovery-codes.md#confirming-it-is-you) stands in for a lost authenticator app or passkey here too.

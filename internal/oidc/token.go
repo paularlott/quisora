@@ -511,7 +511,18 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 // store, and the retry must find it there to end it, not answer 200 to a cached "nothing to revoke".
 func (p *Provider) revokeGrant(ctx context.Context, id string) error {
 	p.grants.Put(id, grantState{})
-	err := p.svc.Grants.Delete(context.WithoutCancel(ctx), id)
+	ctx = context.WithoutCancel(ctx)
+	// The SSH certificates issued under the grant go with it, before it is deleted: a failure leaves the grant for the
+	// retry to find and end, certificates included.
+	g, err := p.svc.Grants.Get(ctx, id)
+	if err == nil {
+		err = p.svc.RevokeSSHCertsFrom(ctx, g.OrgID, g.UserID, map[string]bool{id: true})
+	} else if gone(err) {
+		err = nil
+	}
+	if err == nil {
+		err = p.svc.Grants.Delete(ctx, id)
+	}
 	if err != nil {
 		p.grants.Del(id)
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)

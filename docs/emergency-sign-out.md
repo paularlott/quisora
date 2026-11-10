@@ -71,9 +71,8 @@ Ended, at once, on every node:
 
 The [SSH certificates](ssh/README.md#revocation) the organizations' tenants issued before it go on their revocation
 lists within 30 seconds, and a server refuses them when it next fetches the list (a minute or two with the timer in
-the guide), and a session already open on a server stays open. Host certificates are not affected. (Ending a single session,
-or revoking one application's grant, does not revoke certificates already issued; signing a person out everywhere, a
-lock-out or this does.)
+the guide), and a session already open on a server stays open unless the server runs `fetch --end-revoked`. Host
+certificates are not affected.
 
 Applications are told through back-channel logout, and the ended records are deleted in the background. Signing in
 again works straight away: nothing about the accounts changes.

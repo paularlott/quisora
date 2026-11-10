@@ -187,10 +187,13 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 		if err != nil {
 			return stepResp{}, err
 		}
-		if err := m.sendEmailCode(ctx, id, u, org); err != nil {
+		// An account sent its hourly allowance of codes still gets the step: asking for a code there says why none came.
+		switch err := m.sendEmailCode(ctx, id, u, org); {
+		case err == nil:
+			m.audit(r, "login.email_code.sent", org, u, u.Username, nil)
+		case !errors.Is(err, errCodeHourly):
 			return stepResp{}, err
 		}
-		m.audit(r, "login.email_code.sent", org, u, u.Username, nil)
 	}
 	if t.Step == "enrol" {
 		resp.Methods = []string{"totp"}

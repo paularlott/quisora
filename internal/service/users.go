@@ -1110,6 +1110,15 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 	}
 	n := 0
 	var errs []error
+	if len(mine) > 0 { // the SSH certificates issued under the grants go with them
+		from := map[string]bool{}
+		for _, g := range mine {
+			from[g.ID] = true
+		}
+		if err := s.RevokeSSHCertsFrom(ctx, mine[0].OrgID, userID, from); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for _, g := range mine {
 		if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, mapStore(err))
@@ -1212,12 +1221,14 @@ func (s *Service) moveSessionEpoch(ctx context.Context, userID string, allow fun
 // current one), so a revocation that moved the epoch does not end them. The session first: a grant an exchange
 // makes from an older copy of it is then refused (CreateSessionGrant), so none is made in the epoch just ended.
 func (s *Service) carryOver(ctx context.Context, userID, keep string, now uint64) error {
+	orgID := ""
 	for attempt := 0; ; attempt++ {
 		sess, err := s.Sessions.Get(ctx, keep)
 		if errors.Is(err, store.ErrNotFound) || err == nil && sess.UserID != userID {
 			return nil
 		}
 		if err == nil {
+			orgID = sess.OrgID
 			sess.Epoch = now
 			err = s.Sessions.Update(ctx, sess)
 		}
@@ -1233,10 +1244,12 @@ func (s *Service) carryOver(ctx context.Context, userID, keep string, now uint64
 		return fmt.Errorf("keep the current session's refresh grants: %w", mapStore(err))
 	}
 	var errs []error
+	kept := map[string]bool{keep: true} // the session and its grants, which its SSH certificates were issued under
 	for _, g := range grants {
 		if g.SessionID != keep {
 			continue
 		}
+		kept[g.ID] = true
 		for attempt := 0; ; attempt++ {
 			g.Epoch = now
 			err := s.Grants.Update(ctx, g)
@@ -1251,6 +1264,9 @@ func (s *Service) carryOver(ctx context.Context, userID, keep string, now uint64
 				break
 			}
 		}
+	}
+	if err := s.carrySSHCerts(ctx, orgID, userID, kept, now); err != nil {
+		errs = append(errs, fmt.Errorf("keep the current session's SSH certificates: %w", err))
 	}
 	return errors.Join(errs...)
 }

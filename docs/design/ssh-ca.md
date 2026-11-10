@@ -242,7 +242,7 @@ makes the certificates that were not revoked otherwise valid again).
 So no hook is needed: the KRL is computed when asked for (cached 30 s per tenant on the node) and every way Quisora
 ends a user's access reaches SSH within that time plus the servers' fetch interval. `Service.SSHRevoked(ctx,
 tenantID) ([]SSHRevokedCert, error)` returns them with a reason, the first that applies: `revoked`, `ca_key_removed`,
-`user_deleted`, `user_disabled`, `sessions_ended`, `signed_out`, `role_not_allowed`, `app_unavailable`,
+`user_deleted`, `user_disabled`, `sessions_ended`, `sign_in_ended`, `signed_out`, `role_not_allowed`, `app_unavailable`,
 `access_removed`, `principals_changed`, `ssh_off`, `settings_changed` (host certificates only ever get `revoked`,
 `ca_key_removed` and `ssh_off`; a certificate written down by `sshPersist` shows its stored reason).
 `Service.SSHKRLTagged(ctx, tenantID) ([]byte, etag string, error)` (and `SSHKRL` without the tag) encodes them: a
@@ -498,8 +498,12 @@ and restore steps (rotate and remove the CA keys), and monitoring (the fetch uni
 
 ## Known limits
 
-Ending a single session or revoking one grant does not revoke certificates already issued (only the user's session
-epoch, an emergency sign-out stamp, or revoking the certificate does). The SSH application uses bearer tokens, not
+A certificate records the session or grant it was issued under (`SSHCert.SignIn`), and taking that sign-in back
+(EndSessions: a session ended from another or by an administrator; a grant revoked) revokes it for good; the user's own
+sign-out (SignOutSession) does not, as it does not end offline grants, and "sign out other sessions" carries the kept
+session's certificates to the new epoch (`sign_in_ended`, written when the session or grant is ended: an expiry is not an ending, so it cannot be
+worked out from what is left). Open connections are ended by `fetch --end-revoked`, which reads sshd's certificate
+logins from journald (root's, so a session cannot tamper with it) and signals the connection's privileged process. The SSH application uses bearer tokens, not
 DPoP. CA key rotation and first enabling are guarded by a lock per node, so two nodes acting in the same instant can each
 make a key (both are published; the newer signs; the extra is removed by hand). An emailed one-time code counts as a
 second factor (`model.MFA`). Restoring an older backup can republish a removed CA key (its tombstone is gone), undo manual

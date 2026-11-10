@@ -96,6 +96,11 @@ func TestInviteThroughRunningServer(t *testing.T) {
 	if got := post(good); got != http.StatusUnauthorized {
 		t.Errorf("replayed request: %d", got)
 	}
+	// still refused once the node's in-memory state is gone (a restart, or another node owning the counters)
+	_ = a.Eph.Delete(ctx, nsCommand, "nonce|"+good.Nonce)
+	if got := post(good); got != http.StatusUnauthorized {
+		t.Errorf("replayed request after the ephemeral state was lost: %d", got)
+	}
 
 	// with the server stopped, the command uses the store itself
 	a.Close()

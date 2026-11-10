@@ -197,7 +197,7 @@ func (p *Provider) finishLogout(w http.ResponseWriter, r *http.Request, redirect
 	p.message(w, r, http.StatusOK, "Signed out", "You have been signed out", "You can close this window.")
 }
 
-// endSession ends the browser session (and its refresh grants). The clients that had one are notified through
+// endSession signs the browser session out (with the refresh grants that last only as long as it). The clients that had one are notified through
 // the service's OnSessionsEnding hook, which the session manager calls for every ended session. It reports false
 // when the session could not be ended: the user has then been told (503), not sent on to the relying party's
 // signed-out page as though they were, since the session (or a refresh grant of it) still works in the store.

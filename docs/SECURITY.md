@@ -43,9 +43,8 @@ are judged, so a super admin named only in an event's detail (a group membership
 
 **SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
 
-- Ending a single session, or revoking a single grant, does not revoke certificates already issued. Signing the person out
-  everywhere, a credential reset, a lock-out, an emergency sign-out or revoking the certificate does.
-- Open sessions on a server stay open, and sshd's `RevokedKeys` covers user logins only: a host certificate that is
+- Open sessions on a server stay open unless it runs `quisora ssh fetch --end-revoked` (Linux with journald; processes
+  a session left running under `tmux` or `nohup` are not ended), and sshd's `RevokedKeys` covers user logins only: a host certificate that is
   revoked, or whose CA key is removed or SSH is turned off, is refused only by clients that fetch the revocation list and set
   `RevokedHostKeys`. Keep host certificates short.
 - The SSH application uses bearer access tokens, not DPoP-bound ones: a token that leaks in the minutes it lives
@@ -88,7 +87,8 @@ Before production:
 9. **Mail**: `mail.tls` `starttls` or `tls`. Codes by email as a second factor stay off (the default) unless
    the mailboxes are at least as well protected as the passwords.
 10. **SSH certificates** (if you use them): `AuthorizedPrincipalsFile` on every server, with `group:` principals for
-    privileged accounts; the fetch timer alerting on failure and on a revocation list older than 5 minutes; a break-glass
+    privileged accounts; the fetch timer, with `--end-revoked` on Linux, alerting on failure and on a revocation list older
+    than 5 minutes; a break-glass
     login that does not depend on Quisora; host certificates of a few weeks, with `RevokedHostKeys` on the clients;
     the CA key fingerprints checked against the console on first use ([SSH certificates](ssh/README.md)).
 

@@ -59,3 +59,6 @@ func (m *Module) AgeEmailCode(ticketID string) {
 	b, _ = json.Marshal(st)
 	_ = m.s.Eph.Set(ctx, nsEmailCode, ticketID, b, emailCodeTTL)
 }
+
+// EmailCodesPerHour is emailCodesPerHour, for the tests.
+const EmailCodesPerHour = emailCodesPerHour

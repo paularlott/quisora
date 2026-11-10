@@ -52,7 +52,7 @@ Everyone else signs in as before.
 | --- | --- |
 | Code | 6 digits, random |
 | Lasts | 10 minutes, once, and only for the sign-in it was sent for |
-| New codes | At most one every 30 seconds, and five per sign-in |
+| New codes | At most one every 30 seconds, five per sign-in, and ten an hour for each account however many sign-ins are started (one past that still reaches the code step, and asking for a code there says why none came) |
 | Wrong codes | Count towards the account's lock-out, as wrong authenticator codes do |
 | The session | `amr` is `pwd otp mfa`: it counts as a second factor for applications and for `acr_values=urn:quisora:acr:mfa` |
 

@@ -44,6 +44,9 @@ type SSHUserRequest struct {
 	// certificate once they no longer hold); one that has already ended is refused.
 	SessionEpoch uint64
 	Stamp        model.SignOutStamp
+	// SignIn is the session (the account page) or the access token's grant (the sign endpoint) the request stands on:
+	// the certificate is revoked when it is ended (RevokeSSHCertsFrom).
+	SignIn string
 }
 
 // SSHSession is how a session signed in, for the check of the tenant's sign-in methods.
@@ -340,7 +343,7 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 		Principals: slices.Clone(cert.ValidPrincipals), Fingerprint: sshca.Fingerprint(pub),
 		ValidAfter: time.Unix(int64(cert.ValidAfter), 0).UTC(), ValidBefore: time.Unix(int64(cert.ValidBefore), 0).UTC(),
 		Extensions: slices.Sorted(maps.Keys(cert.Permissions.Extensions)), SourceAddresses: slices.Clone(set.SourceAddresses),
-		SessionEpoch: req.SessionEpoch, Stamp: req.Stamp, Via: req.Via}
+		SessionEpoch: req.SessionEpoch, Stamp: req.Stamp, SignIn: req.SignIn, Via: req.Via}
 	actor := req.Actor
 	if actor == nil {
 		actor = ActorForUser(u, "")

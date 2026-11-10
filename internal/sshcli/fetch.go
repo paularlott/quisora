@@ -25,6 +25,9 @@ type FetchOptions struct {
 	CAFile         string // the user CA keys, for sshd's TrustedUserCAKeys
 	KRLFile        string // the revocation list, for sshd's RevokedKeys
 	KnownHostsFile string // the host CA lines, for clients' known_hosts
+	// EndRevoked ends the SSH connections of certificates the revocation list in place revokes (Linux: sshd's log in
+	// journald): sshd checks a certificate only when it is presented, so a revocation alone leaves open sessions open.
+	EndRevoked bool
 }
 
 // Fetch brings a server's trust files up to date. Everything is fetched and checked before anything is written, so
@@ -85,6 +88,7 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 		quiet      bool // written, but not reported (a new list with nothing changed in it)
 	}
 	var files []file
+	var inEffect *sshca.KRL // the list in place once the files are written
 	if o.CAFile != "" {
 		files = append(files, file{path: o.CAFile, what: "user CA keys", data: caData})
 	}
@@ -100,6 +104,7 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 		if old, err := os.ReadFile(o.KRLFile); err == nil {
 			installed, _ = sshca.ParseKRL(old) // one that cannot be read is replaced
 		}
+		inEffect = krl
 		// A version is a node's clock, which is not to be trusted to go forward: a list that is older than the installed
 		// one is kept only if it revokes nothing the installed one does not (a clock that ran ahead and was set back
 		// must not hold back new revocations), and an installed version in the local future is not counted at all.
@@ -107,6 +112,7 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 			!revokesMore(krl, installed) {
 			fmt.Fprintf(e.errw(), "note: the server's revocation list (version %d) is older than the one in %s (version %d) and revokes nothing more: keeping the installed one\n",
 				krl.Version, o.KRLFile, installed.Version)
+			inEffect = installed
 		} else {
 			if err := checkKRLCAs(krl, append(slices.Clone(caKeys), hostKeys...)); err != nil {
 				return fmt.Errorf("revocation list: %w", err)
@@ -155,6 +161,11 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 		syncDir(filepath.Dir(s.path))
 		if !s.quiet {
 			fmt.Fprintf(e.out(), "updated %s (%s)\n", s.path, s.what)
+		}
+	}
+	if o.EndRevoked && inEffect != nil {
+		if _, err := e.endRevoked(ctx, inEffect, caKeys); err != nil {
+			return fmt.Errorf("ending connections of revoked certificates: %w", err)
 		}
 	}
 	return nil

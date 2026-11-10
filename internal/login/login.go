@@ -701,8 +701,8 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 				m.s.Log.Warn("session upgrade failed; starting a new session", "error", err)
 			}
 		}
-		if !upgraded { // another user (or no upgrade possible): the old session ends, or the sign-in fails
-			if err := m.s.Sessions.Delete(ctx, old.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		if !upgraded { // another user (or no upgrade possible): the old session is signed out, or the sign-in fails
+			if err := m.s.Sessions.SignOut(ctx, old.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return "", err
 			}
 		}

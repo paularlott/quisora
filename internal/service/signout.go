@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -109,9 +111,19 @@ func (s *Service) CreateSessionGrant(ctx context.Context, g *model.Grant, sess *
 	return err
 }
 
-// EndSession ends session sess with its refresh grants (EndSessions), and reports whether the session itself ended.
+// EndSession revokes session sess with everything it gave (EndSessions), and reports whether the session itself ended.
 func (s *Service) EndSession(ctx context.Context, sess *model.Session) (ended bool, err error) {
 	n, err := s.EndSessions(ctx, sess.UserID, []*model.Session{sess})
+	return n == 1, err
+}
+
+// SignOutSession is the user signing session sess out themselves (the sign-out page, an application's RP-initiated
+// logout, another user signing in in the same browser): the session ends with the grants that last only as long as it
+// does (no offline_access), while those granted offline access go on (to their own expiry), and so do the SSH
+// certificates it was used for, like the access tokens it issued. Revoking a session (EndSession) ends them all. It
+// reports whether the session itself ended.
+func (s *Service) SignOutSession(ctx context.Context, sess *model.Session) (ended bool, err error) {
+	n, err := s.endSessions(ctx, sess.UserID, []*model.Session{sess}, true)
 	return n == 1, err
 }
 
@@ -121,8 +133,15 @@ func (s *Service) EndSession(ctx context.Context, sess *model.Session) (ended bo
 // their grants listed again: none is left behind by a revocation that reports success. The user's grants are listed
 // once a round, whatever the number of sessions. Every deletion is attempted even when one fails (a session a
 // compromised passkey signed in ends whatever its grants do), and the failures are returned together; ended counts
-// the sessions that ended (one already gone included).
+// the sessions that ended (one already gone included). It revokes: the SSH certificates issued under the sessions or
+// their grants are revoked first (RevokeSSHCertsFrom), and every grant goes, offline access or not.
 func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*model.Session) (ended int, err error) {
+	return s.endSessions(ctx, userID, sessions, false)
+}
+
+// endSessions is EndSessions, or with signOut the sessions' own sign-out (SignOutSession): the grants with offline
+// access and the SSH certificates are left.
+func (s *Service) endSessions(ctx context.Context, userID string, sessions []*model.Session, signOut bool) (ended int, err error) {
 	var errs []error
 	pending := sessions
 	for attempt := 0; len(pending) > 0; attempt++ {
@@ -134,8 +153,22 @@ func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*mo
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list refresh grants: %w", mapStore(err)))
 		}
+		ending := func(g *model.Grant) bool {
+			return ids[g.SessionID] && !(signOut && slices.Contains(g.Scopes, "offline_access"))
+		}
+		if !signOut {
+			from := maps.Clone(ids)
+			for _, g := range grants {
+				if ending(g) {
+					from[g.ID] = true
+				}
+			}
+			if err := s.RevokeSSHCertsFrom(ctx, pending[0].OrgID, userID, from); err != nil {
+				errs = append(errs, fmt.Errorf("revoke SSH certificates: %w", err))
+			}
+		}
 		for _, g := range grants {
-			if ids[g.SessionID] {
+			if ending(g) {
 				if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 					errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
 				}

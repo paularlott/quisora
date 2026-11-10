@@ -75,6 +75,7 @@ func TestRevokeOtherSessionsReportsPartialFailure(t *testing.T) {
 	otherID := other.sessionID()
 	good := e.Svc.Store
 	e.Svc.Store = failSessionDeletes{good}
+	b.markReauth()
 	res, out := b.api("DELETE", "/api-internal/account/sessions", nil)
 	if res.StatusCode != http.StatusServiceUnavailable || out["revoked"] != float64(1) || out["error"] == "" {
 		t.Fatalf("revoke others with failing deletion: %d %v", res.StatusCode, out)

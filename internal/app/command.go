@@ -110,12 +110,14 @@ func (m commandModule) accept(w http.ResponseWriter, r *http.Request, in command
 			"(check the clocks)")
 		return false
 	}
-	n, err = m.a.Eph.Incr(ctx, nsCommand, "nonce|"+sig.Nonce, 1, 2*commandWindow)
+	// The nonce is recorded in the store (UseOnce), not in a counter: counters live in one node's memory and start
+	// again when it restarts, which would let a request be replayed within its window.
+	first, err := m.a.Svc.UseOnce(ctx, "command|"+sig.Nonce, time.Now().Add(2*commandWindow))
 	if err != nil { // the nonce could not be checked: refused, but not as a replay
 		commandRefuse(w, http.StatusServiceUnavailable, "this server cannot check the request now: try again shortly")
 		return false
 	}
-	if n != 1 {
+	if !first {
 		commandRefuse(w, http.StatusUnauthorized, "the request was already used")
 		return false
 	}

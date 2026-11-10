@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -98,6 +99,28 @@ func TestEmailCodeSendLimit(t *testing.T) {
 	}
 	e.Mod.AgeEmailCode(tk)
 	res, out = b.post("/api-internal/login/email/send", map[string]any{"ticket": tk})
+	wantStatus(t, res, out, 429)
+	e.noMail(t)
+}
+
+// However many sign-ins are started, an account is sent at most EmailCodesPerHour codes: a sign-in past that still
+// reaches the step, and asking for a code there says why none comes.
+func TestEmailCodeHourlyLimitPerAccount(t *testing.T) {
+	e, org := emailEnv(t, func(s *model.OrgSettings) { s.RequireMFA = true; s.EmailCodes = true })
+	e.verifiedUser(t, org, "pat", model.RoleUser)
+	for i := 0; i < login.EmailCodesPerHour; i++ {
+		res, out := e.browser(t).login("acme", "pat", userPassword)
+		wantStatus(t, res, out, 200)
+		codeFrom(t, e)
+	}
+	b := e.browser(t)
+	res, out := b.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	if str(out, "step") != "email_code" {
+		t.Fatalf("step %v", out)
+	}
+	e.noMail(t)
+	res, out = b.post("/api-internal/login/email/send", map[string]any{"ticket": str(out, "ticket")})
 	wantStatus(t, res, out, 429)
 	e.noMail(t)
 }

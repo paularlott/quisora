@@ -41,7 +41,8 @@ const SSH_BLOCKED = {
   no_principals: 'Its settings give you no principal (no username, group or role it uses), so a certificate would let you log in nowhere. Ask an administrator.',
 }
 const SSH_REASON = { revoked: 'Revoked by you or an administrator.', ca_key_removed: 'The key that signed it was removed.', user_deleted: 'Your account was deleted.',
-  user_disabled: 'Your account is disabled.', sessions_ended: 'You were signed out everywhere.', signed_out: 'Everyone was signed out.',
+  user_disabled: 'Your account is disabled.', sessions_ended: 'You were signed out everywhere.',
+  sign_in_ended: 'The sign-in it was issued under was ended (signed out, or the app\u2019s access revoked).', signed_out: 'Everyone was signed out.',
   role_not_allowed: 'Your role may no longer get certificates here.', access_removed: 'You lost access to this tenant\u2019s SSH.',
   principals_changed: 'Your principals changed.', ssh_off: 'SSH certificates are turned off for this tenant.',
   app_unavailable: 'This tenant\u2019s SSH application is disabled.', settings_changed: 'It grants more than this tenant now allows: get a new one.' }
@@ -553,23 +554,29 @@ export default function (Alpine) {
     get hasOthers() { return this.items.some((s) => !s.current) },
     get hasLoadError() { return this.loadError !== '' },
     async revoke(ev) {
-      const s = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      const opener = ev.currentTarget
+      const s = this.items.find((i) => i.id === opener.dataset.id)
       if (!s) return
       const ok = await Alpine.store('confirm').ask({ title: 'Sign out session', message: `Sign out ${s.agent} (${s.ip})?`,
         detail: 'That device will have to sign in again.', confirmLabel: 'Sign out' })
       if (!ok) return
-      try { await del(accountApi('/sessions/') + enc(s.id)); toast('Session signed out.'); await this.load() } catch (e) { toast(e.message, 'error') }
+      try {
+        await withReauth(Alpine, () => del(accountApi('/sessions/') + enc(s.id)), opener)
+        toast('Session signed out.')
+        await this.load()
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
-    async revokeOthers() {
+    async revokeOthers(ev) {
+      const opener = ev.currentTarget
       const ok = await Alpine.store('confirm').ask({ title: 'Sign out other sessions', message: 'Sign out everywhere else?',
         detail: 'Every other browser and device will have to sign in again. This session stays signed in.', confirmLabel: 'Sign out others' })
       if (!ok) return
       try {
-        const r = await del(accountApi('/sessions'))
+        const r = await withReauth(Alpine, () => del(accountApi('/sessions')), opener)
         toast('Other sessions signed out.')
         await this.load()
         announce(`${r && r.revoked || 0} sessions signed out.`)
-      } catch (e) { toast(e.message, 'error') }
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
   }))
 

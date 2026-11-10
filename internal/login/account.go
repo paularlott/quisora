@@ -1231,7 +1231,12 @@ func (m *Module) listSessions(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
+// revokeSession and revokeOtherSessions need a recent re-authentication: a stolen session cookie alone must not sign
+// its owner out (nor end the SSH certificates their sign-ins hold).
 func (m *Module) revokeSession(w http.ResponseWriter, r *http.Request, a acct) {
+	if !m.needReauth(w, r, a) {
+		return
+	}
 	ctx := r.Context()
 	handle := r.PathValue("id")
 	list, err := m.s.Svc.Sessions.All(ctx, a.u.ID)
@@ -1259,6 +1264,9 @@ func (m *Module) revokeSession(w http.ResponseWriter, r *http.Request, a acct) {
 }
 
 func (m *Module) revokeOtherSessions(w http.ResponseWriter, r *http.Request, a acct) {
+	if !m.needReauth(w, r, a) {
+		return
+	}
 	n, err := m.endOtherSessions(r.Context(), a)
 	detail := map[string]string{"count": strconv.Itoa(n)}
 	if err != nil {

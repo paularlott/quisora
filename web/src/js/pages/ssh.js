@@ -30,6 +30,7 @@ const REASON = {
   user_deleted: 'The user was deleted',
   user_disabled: 'The user was disabled',
   sessions_ended: 'The user’s sessions were ended',
+  sign_in_ended: 'The sign-in it was issued under was ended',
   signed_out: 'An emergency sign-out',
   role_not_allowed: 'The user’s role may no longer get certificates',
   access_removed: 'The user lost access to the tenant',

@@ -160,7 +160,8 @@ minutes, and start 30 device sign-ins per minute.
 As with any sign-in, the tokens belong to a grant that lasts as long as the browser session that approved it, unless
 the `offline_access` scope was granted: then the refresh tokens outlive that session (up to `tokens.refresh_ttl`, 30
 days by default, renewed by each refresh). A CLI or TV that should stay signed in for days asks for `offline_access`,
-and its client is allowed that scope. Signing the user out everywhere, locking them out, an
+and its client is allowed that scope. Ending that browser session from another session or by an administrator,
+signing the user out everywhere, locking them out, an
 [emergency sign-out](../emergency-sign-out.md) or removing their access ends the device's sign-in too.
 
 ## What is recorded

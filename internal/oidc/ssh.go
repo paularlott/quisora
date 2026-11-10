@@ -349,6 +349,7 @@ func (p *Provider) handleSSHSign(w http.ResponseWriter, r *http.Request) {
 		PublicKey: in.PublicKey, Principals: in.Principals, TTL: time.Duration(min(in.TTL, maxSSHTTL)) * time.Second,
 		// the grant's amr, as Quisora verified the sign-in: the token's amr also has what an upstream provider said
 		AMR: grant.amr, AuthTime: time.Unix(int64(cl.AuthTime), 0), Via: "cli", SessionEpoch: grant.epoch, Stamp: grant.stamp,
+		SignIn: cl.GID,
 	})
 	var refusal *service.SSHRefusal
 	var field *service.FieldError

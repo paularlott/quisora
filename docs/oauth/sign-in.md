@@ -194,7 +194,8 @@ answers 503 `temporarily_unavailable` instead: the token may be good, keep it an
   the latest token can turn **Rotate refresh tokens** off.
 - **How long.** Without `offline_access`, the grant lasts as long as the user's browser session at Quisora: signing
   out there ends it. With it, refresh tokens outlive the session, for `tokens.refresh_ttl` (30 days by default).
-  Either way, signing the user out everywhere, locking them out or an emergency sign-out ends it.
+  Either way, ending the session from another session or by an administrator, signing the user out everywhere, locking
+  them out or an emergency sign-out ends it ([signing out and ending a session](../sign-in/README.md#sessions)).
 
 ## Introspection
 

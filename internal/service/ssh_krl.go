@@ -31,6 +31,7 @@ const (
 	SSHReasonUserDeleted    = "user_deleted"       // the user was deleted
 	SSHReasonUserDisabled   = "user_disabled"      // disabled, locked out, past the end date, or the organization is gone
 	SSHReasonSessionsEnded  = "sessions_ended"     // the user's sessions were ended (sign out everywhere, a credential reset)
+	SSHReasonSignInEnded    = "sign_in_ended"      // the session or grant it was issued under was ended (RevokeSSHCertsFrom)
 	SSHReasonSignedOut      = "signed_out"         // an emergency sign-out of the organization or the server came after it
 	SSHReasonRoleNotAllowed = "role_not_allowed"   // the user is a manager or above and the tenant does not allow it
 	SSHReasonAccessRemoved  = "access_removed"     // the user lost access to the tenant's SSH application
@@ -560,6 +561,100 @@ func (s *Service) RevokeSSHCert(ctx context.Context, a *Actor, orgID, certID str
 		}
 		s.InvalidateSSHKRL()
 		return nil
+	}
+}
+
+// RevokeSSHCertsFrom revokes for good the certificates of user userID (of organization orgID) issued under one of the
+// sessions or grants in from (SSHCert.SignIn), which are being ended: signed out, revoked, or ended as a refresh token
+// was replayed. A certificate goes with the sign-in it was issued under, as the session's applications do; its expiry
+// is not an ending. Already revoked and expired ones are left as they are. Each is audited as the system's revocation
+// (ssh.cert.revoke, reason sign_in_ended).
+func (s *Service) RevokeSSHCertsFrom(ctx context.Context, orgID, userID string, from map[string]bool) error {
+	if len(from) == 0 || userID == "" {
+		return nil
+	}
+	all, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "user_id", Value: userID}}})
+	if err != nil {
+		return mapStore(err)
+	}
+	var errs []error
+	revoked := 0
+	for _, c := range all {
+		if c.Revoked || c.SignIn == "" || !from[c.SignIn] || !time.Now().Before(c.ValidBefore) {
+			continue
+		}
+		done, err := s.sshRevokeSignInEnded(ctx, orgID, c.ID)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if done {
+			revoked++
+		}
+	}
+	if revoked > 0 {
+		s.InvalidateSSHKRL()
+	}
+	return errors.Join(errs...)
+}
+
+// carrySSHCerts re-stamps to session epoch epoch the live certificates of user userID issued under one of the
+// sessions or grants in from (SSHCert.SignIn): those of the session kept when the user's other sessions end
+// (carryOver), which stand on its epoch as it does.
+func (s *Service) carrySSHCerts(ctx context.Context, orgID, userID string, from map[string]bool, epoch uint64) error {
+	all, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "user_id", Value: userID}}})
+	if err != nil {
+		return mapStore(err)
+	}
+	var errs []error
+	carried := 0
+	for _, c := range all {
+		if c.Revoked || c.SignIn == "" || !from[c.SignIn] || !time.Now().Before(c.ValidBefore) {
+			continue
+		}
+		for attempt := 0; ; attempt++ {
+			c.SessionEpoch = epoch
+			err := s.SSHCerts.Update(ctx, c)
+			if err == nil {
+				carried++
+				break
+			}
+			if !errors.Is(err, store.ErrStale) || attempt == 4 {
+				errs = append(errs, mapStore(err))
+				break
+			}
+			if c, err = s.SSHCerts.GetIn(ctx, orgID, c.ID); err != nil || c.Revoked {
+				break
+			}
+		}
+	}
+	if carried > 0 {
+		s.InvalidateSSHKRL()
+	}
+	return errors.Join(errs...)
+}
+
+// sshRevokeSignInEnded marks certificate id revoked by the system for the end of its sign-in, unless it is revoked
+// already; it reports whether it marked it.
+func (s *Service) sshRevokeSignInEnded(ctx context.Context, orgID, id string) (bool, error) {
+	for attempt := 0; ; attempt++ {
+		c, err := s.SSHCerts.GetIn(ctx, orgID, id)
+		if err != nil {
+			return false, mapStore(err)
+		}
+		if c.Revoked {
+			return false, nil
+		}
+		c.Revoked, c.RevokedAt, c.RevokedBy, c.RevokedReason = true, time.Now().UTC(), System.Name, SSHReasonSignInEnded
+		detail := map[string]string{"serial": strconv.FormatUint(c.Serial, 10), "tenant_id": c.TenantID, "key_id": c.KeyID,
+			"user_id": c.UserID, "reason": SSHReasonSignInEnded}
+		err = s.audited(ctx, System, orgID, "ssh.cert.revoke", c.KeyID, detail, func() error { return s.SSHCerts.Update(ctx, c) })
+		if errors.Is(err, store.ErrStale) && attempt < 3 {
+			continue // changed meanwhile: read it again
+		}
+		if err != nil {
+			return false, mapStore(err)
+		}
+		return true, nil
 	}
 }
 

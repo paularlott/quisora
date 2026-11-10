@@ -1406,11 +1406,14 @@ type SSHCert struct {
 	// certificate counts only while they would (user certificates).
 	SessionEpoch uint64       `msgpack:"se,omitempty" json:"-"`
 	Stamp        SignOutStamp `msgpack:"st" json:"-"`
-	Via          string       `msgpack:"via" json:"via"`                          // "cli", "account" or "api"
-	IssuedBy     string       `msgpack:"ib,omitempty" json:"issued_by,omitempty"` // the actor, for host certificates
-	Revoked      bool         `msgpack:"rv,omitempty" json:"revoked"`
-	RevokedAt    time.Time    `msgpack:"rva,omitempty" json:"revoked_at,omitzero"`
-	RevokedBy    string       `msgpack:"rvb,omitempty" json:"revoked_by,omitempty"`
+	// SignIn is the session (the account page) or grant (the sign endpoint) the certificate was issued under: ending
+	// that sign-in revokes it (service.RevokeSSHCertsFrom). "" for a host certificate.
+	SignIn    string    `msgpack:"sg,omitempty" json:"-"`
+	Via       string    `msgpack:"via" json:"via"`                          // "cli", "account" or "api"
+	IssuedBy  string    `msgpack:"ib,omitempty" json:"issued_by,omitempty"` // the actor, for host certificates
+	Revoked   bool      `msgpack:"rv,omitempty" json:"revoked"`
+	RevokedAt time.Time `msgpack:"rva,omitempty" json:"revoked_at,omitzero"`
+	RevokedBy string    `msgpack:"rvb,omitempty" json:"revoked_by,omitempty"`
 	// RevokedReason is why, when Quisora found it revoked (RevokedBy "system": the user lost access, a role or a
 	// principal it carries); "" for one revoked by hand. Listed as the reason of the certificate (SSHCertView).
 	RevokedReason string `msgpack:"rvr,omitempty" json:"-"`

@@ -415,7 +415,7 @@ func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		clear()
 		return nil, nil
 	}
-	err = m.Delete(ctx, sess.ID)
+	err = m.SignOut(ctx, sess.ID)
 	if err == nil {
 		clear()
 		return sess, nil
@@ -426,17 +426,32 @@ func (m *Sessions) End(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	return sess, err
 }
 
-// Delete ends a session by id, with its refresh grants (service.EndSession): a grant made with offline_access outlives
-// its session, so one left behind would keep refreshing after a sign-out that reported success, and one an exchange
-// makes while the session ends is found too. (A grant without it dies with the session, grantLive.)
+// Delete revokes a session by id, with everything it gave (service.EndSession): its refresh grants, those made with
+// offline_access too (one left behind would keep refreshing after a revocation that reported success, and one an
+// exchange makes while the session ends is found too), and the SSH certificates issued under it. For ending another
+// session: from the account page, by an administrator.
 func (m *Sessions) Delete(ctx context.Context, id string) error {
+	return m.end(ctx, id, false)
+}
+
+// SignOut ends a session by id as its user signing out (service.SignOutSession): the grants made with offline_access
+// and the SSH certificates go on.
+func (m *Sessions) SignOut(ctx context.Context, id string) error {
+	return m.end(ctx, id, true)
+}
+
+func (m *Sessions) end(ctx context.Context, id string, signOut bool) error {
 	s, err := m.svc.Sessions.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	m.Evict(id, "")
 	m.svc.SessionsEnding(ctx, s.UserID, id)
-	_, err = m.svc.EndSession(ctx, s)
+	if signOut {
+		_, err = m.svc.SignOutSession(ctx, s)
+	} else {
+		_, err = m.svc.EndSession(ctx, s)
+	}
 	return err
 }
 

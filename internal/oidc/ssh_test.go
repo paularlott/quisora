@@ -1099,3 +1099,44 @@ func TestSSHSignAfterSessionsEnded(t *testing.T) {
 		t.Fatalf("the certificate's record: %+v %v (epoch %d, stamp %+v)", certs, err, u.SessionEpoch, stamp)
 	}
 }
+
+// A certificate goes with the grant of the token that asked for it: revoking the token (RFC 7009) revokes the
+// certificate too, for good.
+func TestSSHCertRevokedWithItsGrant(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	e := h.sshTenant("prod", service.SSHSettingsInput{CertTTL: ptr(3600)})
+	key, _ := sshKey(t)
+	other := e.mfaToken(h.user)
+	st, kept, _ := e.sign(other, map[string]any{"public_key": key})
+	tok := e.mfaToken(h.user)
+	st2, m, _ := e.sign(tok, map[string]any{"public_key": key})
+	if st != 200 || st2 != 200 {
+		t.Fatalf("sign: %d %v / %d %v", st, kept, st2, m)
+	}
+	reasons := func() map[string]string {
+		t.Helper()
+		list, err := h.env.Svc.SSHRevoked(context.Background(), e.tn.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, r := range list {
+			out[strconv.FormatUint(r.Cert.Serial, 10)] = r.Reason
+		}
+		return out
+	}
+	if got := reasons(); len(got) != 0 {
+		t.Fatalf("revoked before: %v", got)
+	}
+	if r := h.post(h.orgBase+"/oauth/revoke", url.Values{"token": {tok}, "client_id": {e.cl.ID}}, "", ""); r.status != 200 {
+		t.Fatalf("revoke: %d %v", r.status, r)
+	}
+	got := reasons()
+	if got[m["serial"].(string)] != service.SSHReasonSignInEnded {
+		t.Errorf("the revoked token's certificate: %v", got)
+	}
+	if reason, ok := got[kept["serial"].(string)]; ok {
+		t.Errorf("another sign-in's certificate revoked: %s", reason)
+	}
+}

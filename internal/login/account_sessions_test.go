@@ -41,6 +41,19 @@ func TestAccountSessions(t *testing.T) {
 	for _, s := range list[1:] {
 		victim = str(s, "id")
 	}
+	// ending sessions needs a recent re-authentication: a stolen cookie alone cannot sign its owner out
+	res, out = cur.api("DELETE", "/api-internal/account/sessions/"+victim, nil)
+	if wantStatus(t, res, out, 403); str(out, "field") != "reauth" {
+		t.Fatalf("ending a session without a re-authentication: %v", out)
+	}
+	res, out = cur.api("DELETE", "/api-internal/account/sessions", nil)
+	if wantStatus(t, res, out, 403); str(out, "field") != "reauth" {
+		t.Fatalf("ending a session without a re-authentication: %v", out)
+	}
+	if left, _ := e.Svc.Sessions.All(context.Background(), pat.ID); len(left) != 3 {
+		t.Fatalf("sessions left %d without a re-authentication", len(left))
+	}
+	cur.markReauth()
 	res, out = cur.api("DELETE", "/api-internal/account/sessions/"+victim, nil)
 	wantStatus(t, res, out, 204)
 	if left, _ := e.Svc.Sessions.All(context.Background(), pat.ID); len(left) != 2 {
@@ -58,6 +71,7 @@ func TestAccountSessions(t *testing.T) {
 	if len(items(t, out)) != 1 {
 		t.Fatalf("sam sees %d sessions", len(items(t, out)))
 	}
+	samB.markReauth()
 	res, out = samB.api("DELETE", "/api-internal/account/sessions/"+curHandle, nil)
 	wantStatus(t, res, out, 404)
 	if res, _ := cur.api("GET", "/api-internal/account", nil); res.StatusCode != 200 {

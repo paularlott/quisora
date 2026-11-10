@@ -29,7 +29,7 @@ func TestLogoutWithBackchannel(t *testing.T) {
 	code := h.getCode(c, cl, ch, nil)
 	r := h.exchangeCode(cl, secret, code, v)
 	v2, ch2 := pkce()
-	code2 := h.getCode(c, silent, ch2, nil)
+	code2 := h.getCode(c, silent, ch2, url.Values{"scope": {"openid profile email"}}) // no offline_access: lasts as the session does
 	r2 := h.exchangeCode(silent, ssecret, code2, v2)
 	idt, rt := r.str("id_token"), r.str("refresh_token")
 	sid := claimsOf(t, idt)["sid"].(string)
@@ -77,12 +77,16 @@ func TestLogoutWithBackchannel(t *testing.T) {
 		t.Fatal("more than one logout token delivered")
 	default:
 	}
-	// session and grants are gone
+	// the session is gone, and the grant that lasted only as long as it; the one granted offline access goes on (the
+	// user signed out themselves: revoking the session ends it too, TestRevokedSessionEndsOfflineGrants)
 	if resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode()); resp.StatusCode != 302 || loc(t, resp).Path != h.orgBase+"/login" {
 		t.Fatal("session survived logout")
 	}
-	if h.refreshWith(cl, secret, rt).status != 400 || h.refreshWith(silent, ssecret, r2.str("refresh_token")).status != 400 {
-		t.Fatal("grants survived logout")
+	if h.refreshWith(silent, ssecret, r2.str("refresh_token")).status != 400 {
+		t.Fatal("a grant without offline_access survived logout")
+	}
+	if r := h.refreshWith(cl, secret, rt); r.status != 200 {
+		t.Fatalf("a grant with offline_access ended at the user's own sign-out: %d", r.status)
 	}
 }
 

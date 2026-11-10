@@ -152,7 +152,7 @@ func (m *Module) signSSH(w http.ResponseWriter, r *http.Request, a acct) {
 	// The certificate stands on the session: it takes the session's epoch and sign-out stamp, never the current ones.
 	issued, err := m.s.Svc.SignUserSSH(ctx, service.SSHUserRequest{Actor: a.actor, User: u, TenantID: in.TenantID, PublicKey: in.PublicKey,
 		AMR: a.sess.AMR, AuthTime: m.authTime(ctx, a), Via: "account", Session: sshSession(a),
-		SessionEpoch: a.sess.Epoch, Stamp: a.sess.Stamp})
+		SessionEpoch: a.sess.Epoch, Stamp: a.sess.Stamp, SignIn: a.sess.ID})
 	var refusal *service.SSHRefusal
 	if errors.As(err, &refusal) {
 		writeErr(w, http.StatusForbidden, web.Capitalise(refusal.Msg)+".", "")
