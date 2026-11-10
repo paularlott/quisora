@@ -988,7 +988,7 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
 
 - A password sign-in costs ~26 ms of CPU (argon2id, 19 MiB; m=19456, t=2, p=1). Stored hashes are sealed with the
   master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
-  far outside these (over 256 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
+  far outside these (over 64 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
 - Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 10.3 GB per node on disk);
   lookups and token traffic do not slow down at that size. Memory per node (measured at 100 organizations × 1,000
@@ -1001,6 +1001,11 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   system shows them as resident (several GB at this size), but they are file pages it can drop at any time, not
   allocations. Housekeeping never reads a whole collection: the end-date sweep and filtered queries on large kinds
   use indexes (`model.Due`, `model.Field.Index`).
+- Set `GOMEMLIMIT` (read by the Go runtime, for example `GOMEMLIMIT=1536MiB` for a 2 GB node). Each password hash
+  leaves 19 MiB of garbage, and without a limit the runtime lets the heap grow to twice what is live before collecting:
+  a burst of password sign-ins (64 concurrent clients, 15 cores) took the process to about 1.2 GB resident, and with
+  `GOMEMLIMIT=512MiB` to about 640 MB at the same rate. The runtime keeps freed pages until the system needs them, so
+  resident memory after a burst stays near its peak; the Go heap returns to its idle size (`quisora_memory_heap_bytes`).
 - At this size send audit events to VictoriaLogs ([Audit log](#audit-log)): the built-in trail's pages read through
   every event they search.
 - A new gossip node catches up at ~16,000 records/s.
