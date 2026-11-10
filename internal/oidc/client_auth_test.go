@@ -641,3 +641,24 @@ func TestClientAuthCounterFailureIsUnavailable(t *testing.T) {
 		}
 	})
 }
+
+// A requester that hangs up while a client's keys are being fetched does not end the fetch: the keys are every
+// caller's, and a failed fetch backs off for all, so sending an assertion with an unknown kid and hanging up must not
+// keep a private_key_jwt client from authenticating (after a restart or a key rotation).
+func TestRemoteKeysFetchOutlivesItsRequester(t *testing.T) {
+	t.Parallel()
+	k := newAssertionKeys(t)[0]
+	ctx, hangUp := context.WithCancel(context.Background())
+	srv, hits := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hangUp() // while the keys are on their way
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte(k.jwks))
+	})
+	h := setup(t, nil)
+	h.p.HTTP = srv.Client()
+	uri := srv.URL + "/jwks"
+	h.p.remoteKeys(ctx, uri, true)
+	if keys := h.p.remoteKeys(context.Background(), uri, false); len(keys) == 0 || hits.Load() != 1 {
+		t.Fatalf("after the requester hung up: %d keys, %d fetches", len(keys), hits.Load())
+	}
+}

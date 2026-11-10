@@ -33,7 +33,7 @@ import (
 const (
 	nsFlow     = "oauth.flow"
 	nsCode     = "oauth.code"
-	nsUsed     = "oauth.used"     // client and code id (replayKey) -> grant id, to revoke on replay
+	nsUsed     = "oauth.used"     // client and code id (replayKey) -> organization, user and grant id (NUL-separated), to revoke on replay
 	nsReplayed = "oauth.replayed" // client and code id (replayKey) presented again: a redemption still under way revokes what it makes
 	nsRateOIDC = "oauth.rate"     // failed client authentications per IP
 	nsLogout   = "oauth.logout"
@@ -84,6 +84,11 @@ type Provider struct {
 	memGen  sync.Map // org id -> *atomic.Uint64, bumped by InvalidateMembership
 	memAll  atomic.Uint64
 
+	// originsLoads are the reads of an organization's origins under way, by organization id: a miss waits for the one
+	// under way rather than reading every public client of the organization again (cors.go).
+	originsMu    sync.Mutex
+	originsLoads map[string]*originsLoad
+
 	jwksMu    sync.Mutex
 	remoteKey map[string]*remoteJWKS
 
@@ -102,15 +107,26 @@ func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log,
 		clients: ttlcache.New[*clientEntry](cacheTTL, 50_000), origins: ttlcache.New[*originSet](cacheTTL, 20_000), users: ttlcache.New[*model.User](cacheTTL, 200_000),
 		tenants: ttlcache.New[*model.Tenant](cacheTTL, 20_000), grants: ttlcache.New[grantState](grantTTL, 200_000), groups: ttlcache.New[groupEntry](cacheTTL, 200_000),
-		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}}
+		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}, originsLoads: map[string]*originsLoad{}}
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
 	return p
 }
 
-// InvalidateClient evicts a cached client ("" = all).
-func (p *Provider) InvalidateClient(id string) {
-	p.origins.Clear() // a record id does not say whose organization's origins changed
+// InvalidateClient evicts a cached client ("" = all) and every organization's origins, as a record id does not say
+// whose organization's changed: InvalidateClientIn, when the organization is known.
+func (p *Provider) InvalidateClient(id string) { p.InvalidateClientIn("", id) }
+
+// InvalidateClientIn evicts a cached client ("" = all) of organization orgID and that organization's origins ("": every
+// organization's, for a change that does not say whose it was, a deletion's). Only the organization whose client
+// changed reads its origins again: registrations at one organization (unauthenticated) must not make every
+// organization's next CORS request read all its public clients.
+func (p *Provider) InvalidateClientIn(orgID, id string) {
+	if orgID == "" {
+		p.origins.Clear()
+	} else {
+		p.origins.Del(orgID)
+	}
 	if id == "" {
 		p.clients.Clear()
 		return

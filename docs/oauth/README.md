@@ -86,14 +86,17 @@ The answer is the client, with its `id` and, once, its `secret`. Every field is 
 
 **Consent.** Users approve what an application asks for on a consent screen. Each client chooses how often:
 
-- By default, once each time they sign in: the approval lasts while their sign-in does, and signing out ends it.
+- By default, once each time they sign in: the approval lasts while their sign-in does, and signing out ends it (an
+  application granted offline access keeps that access after the user signs out, and with it the approval).
 - **Remember consent** asks each user once. The approval is kept, signing out or not, until the user removes the
   application under **Connected apps** on their account page, a manager does on the admin user page, or the account
   is locked out.
-- **First-party application** (super admins only) never asks, for applications you run yourselves.
+- **First-party application** (super admins only) never asks, for applications you run yourselves. A tenant's SSH
+  application is the exception: it always asks ([SSH](../ssh/README.md#risks)).
 
 Either way the screen comes back for scopes or resources not yet allowed, and whenever the application sends
-`prompt=consent`. A public client and a device sign-in ask every time, whatever the setting: anyone can claim a public
+`prompt=consent`. What a user allowed is for the application as it was: once its redirect URIs or credentials
+change, it asks again, and an authorization code issued before the change is not redeemed after it. A public client and a device sign-in ask every time, whatever the setting: anyone can claim a public
 `client_id` (self-registered applications are public), and a device code may have come from someone else.
 
 ## Endpoints

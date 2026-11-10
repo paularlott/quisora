@@ -361,12 +361,14 @@ func TestEveryAuditedChangeRecordsAnUnknownOutcome(t *testing.T) {
 			return func() error { return e.svc.DeleteClient(e.ctx, service.System, c.ID) }
 		}},
 		{"client.self_register", model.KindClient, func(e *env, org *model.Org) run {
+			e.acceptSelfRegistered(org.ID)
 			return func() error {
 				_, err := e.svc.RegisterClient(e.ctx, org.ID, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
 				return err
 			}
 		}},
 		{"client.self_registered.revoke", model.KindClient, func(e *env, org *model.Org) run {
+			e.acceptSelfRegistered(org.ID)
 			app, err := e.svc.RegisterClient(e.ctx, org.ID, service.RegistrationInput{ClientName: "Zed", RedirectURIs: []string{"https://z.example.com/cb"}})
 			if err != nil {
 				t.Fatal(err)

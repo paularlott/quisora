@@ -150,6 +150,7 @@ type SSHUserRequest struct {
                            // must allow it (nil at the sign endpoint, whose token was issued under that rule)
     SessionEpoch uint64             // of the access token's grant (sign endpoint) or the session (account page)
     Stamp        model.SignOutStamp // likewise; recorded on the certificate
+    SignIn       string             // the grant (sign endpoint) or the session (account page); recorded too
 }
 type SSHIssued struct {
     Certificate string // authorized_keys form of the certificate (…-cert-v01@openssh.com AAAA…)
@@ -190,7 +191,10 @@ Certificate: type user, key id `<username>@<org name>/<user id>`, random serial,
 requested subset; sorted, deduplicated), ValidAfter now − 5 min, ValidBefore now + TTL capped at the user's
 `ValidUntil` if set, extensions from the Permit settings, critical option `source-address` from SourceAddresses.
 Signed by the tenant's current user CA key (the newest key with NotBefore ≤ now < RetireAt). The record is stored,
-then audited `ssh.cert.issue` (detail: serial, principals, fingerprint, valid_before, via, amr).
+then audited `ssh.cert.issue` (detail: serial, principals, fingerprint, valid_before, via, amr). Then the `SignIn`
+record (the session when `ClientID` is "", else the grant) is read again from the store: gone, the certificate is
+revoked (`sign_in_ended`) and the request refused (`session_ended`); unreadable, it is revoked as well and the request
+fails (nothing decided, nothing handed out).
 
 Principals: `PrincipalUsername` → `u.Username`; `PrincipalGroups` → `group:<display name>` for each of the user's
 groups; `PrincipalRoles` → `role:<role>` for each application role from the user's tenant access (empty on a tenant
@@ -301,7 +305,8 @@ matches (`ListSSHCerts` without it).
 On first enable the service creates a client in the tenant (via the normal client service, as the system):
 name `SSH`, public (`token_endpoint_auth_method: none`), grant types `authorization_code` and
 `urn:ietf:params:oauth:grant-type:device_code` (no refresh token), redirect URI `http://127.0.0.1/callback` (loopback:
-any port), scopes `openid profile`, first party (no consent screen for the browser flow; the device flow always asks),
+any port), scopes `openid profile`, first party, yet always confirmed on the consent screen, in the browser flow as in
+the device flow (its code goes to any loopback port, where another local user may listen),
 `device_privileged_users` = `AllowPrivileged` (kept in step when the setting changes). Its id is stored in
 `TenantSSH.ClientID`, and the client is marked `Client.SSHApp` (not in JSON); its `client.create` event has
 `ssh_tenant`. If it was deleted, enabling again (or housekeeping, while SSH is on) makes a new one, with a new client
@@ -499,11 +504,25 @@ and restore steps (rotate and remove the CA keys), and monitoring (the fetch uni
 ## Known limits
 
 A certificate records the session or grant it was issued under (`SSHCert.SignIn`), and taking that sign-in back
-(EndSessions: a session ended from another or by an administrator; a grant revoked) revokes it for good; the user's own
+(EndSessions: a session ended from another or by an administrator, or with the passkey it signed in with; a grant
+revoked) revokes it for good. The sign-in is deleted first and its certificates listed and revoked after; the signer
+stores the certificate first and then reads the sign-in again from the store (not a cache), and revokes the certificate
+and refuses if it is gone. On a shared database (SQL) or a single node, whichever comes second sees the other, so a
+certificate signed while its sign-in is ended (on a node still trusting a cached session or grant) does not survive it.
+In a gossip cluster each node reads its own copy of the store, so the two can miss each other while the deletion and
+the certificate are replicating: the window narrows to the replication lag, from the seconds of the caches, but does
+not close. A grant is deleted whether or not its
+certificates could be revoked (the failure is reported, a 503 to a client's revocation); whose certificates they are
+comes from the caller (the grant record or the access token's claims), so the client's retry with the access token
+revokes them though the grant is gone (a refresh token cannot be retried that way: the grant it is checked against is
+gone, so a retry answers 200 and the certificates last until they expire); the user's own
 sign-out (SignOutSession) does not, as it does not end offline grants, and "sign out other sessions" carries the kept
 session's certificates to the new epoch (`sign_in_ended`, written when the session or grant is ended: an expiry is not an ending, so it cannot be
 worked out from what is left). Open connections are ended by `fetch --end-revoked`, which reads sshd's certificate
-logins from journald (root's, so a session cannot tamper with it) and signals the connection's privileged process. The SSH application uses bearer tokens, not
+logins from journald (root's lines only, `_UID=0`, so neither a session nor another local user can forge one) and
+signals the connection's privileged process, only while it is still the one that logged it (root's sshd, whatever
+its parent, so connections that outlived an sshd restart or came through socket activation are included; started before
+the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). The SSH application uses bearer tokens, not
 DPoP. CA key rotation and first enabling are guarded by a lock per node, so two nodes acting in the same instant can each
 make a key (both are published; the newer signs; the extra is removed by hand). An emailed one-time code counts as a
 second factor (`model.MFA`). Restoring an older backup can republish a removed CA key (its tombstone is gone), undo manual

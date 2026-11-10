@@ -22,9 +22,10 @@ import (
 // them (Tenant.Resources), if it allows self-registered applications, governs the sign-in as for any of its clients.
 //
 // They are public clients with PKCE (no secret to keep), for user scopes only, with redirect URIs that are https, the
-// loopback interface or a private-use scheme; consent is always asked. Registration is unauthenticated, so it is
-// limited per address (by the caller) and capped per organization, a registration never used is removed after a day,
-// and one no longer used after selfRegIdleTTL.
+// loopback interface or a private-use scheme; consent is always asked. Registration is unauthenticated, so it is open
+// only at an organization with a tenant that accepts self-registered applications, limited per address and per
+// organization (by the caller) and capped per organization, a registration never used is removed after a day, and one
+// no longer used after selfRegIdleTTL.
 
 const (
 	// MaxSelfRegistered caps an organization's self-registered applications nobody has used yet: registration is
@@ -155,9 +156,37 @@ func (s *Service) unusedSelfRegistered(ctx context.Context, orgID string) (int, 
 	return n, mapStore(err)
 }
 
+// acceptsSelfRegistered reports whether a tenant of organization orgID lets self-registered applications sign in
+// for resources it owns (TenantSettings.SelfRegistration, TenantForResources): where none does, a registration could
+// never be used, and is refused rather than stored.
+func (s *Service) acceptsSelfRegistered(ctx context.Context, orgID string) (bool, error) {
+	const page = 200
+	for after := ""; ; { // an organization's tenants are its administrators' own, a page at a time
+		l, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: orgID, After: after, Limit: page})
+		if err != nil {
+			return false, mapStore(err)
+		}
+		for _, t := range l {
+			if t.Settings.SelfRegistration && len(t.Resources) > 0 {
+				return true, nil
+			}
+		}
+		if len(l) < page {
+			return false, nil
+		}
+		after = l[len(l)-1].ID
+	}
+}
+
 // RegisterClient registers an application of organization orgID by dynamic client registration (RFC 7591). The caller
-// limits it per address; here it is checked and capped (MaxSelfRegistered).
+// limits it per address and organization; here it is checked, refused (ErrForbidden) unless a tenant of the
+// organization accepts self-registered applications, and capped (MaxSelfRegistered).
 func (s *Service) RegisterClient(ctx context.Context, orgID string, in RegistrationInput) (*model.Client, error) {
+	if ok, err := s.acceptsSelfRegistered(ctx, orgID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrForbidden
+	}
 	c, err := selfRegClient(in)
 	if err != nil {
 		return nil, err

@@ -307,6 +307,10 @@ func TestMarkEmailVerified(t *testing.T) {
 	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), c.aManager.ID, "mgr-alt@example.org", true); !errors.Is(err, service.ErrInvalid) {
 		t.Errorf("admin adds a verified address for an established manager: %v", err)
 	}
+	// nor an unverified one: the verification link goes to the address added, which its adder may hold
+	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.aAdmin), c.aManager.ID, "mgr-alt@example.org", false); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("admin adds an unverified address for an established manager: %v", err)
+	}
 	mgr, _ := c.svc.Users.Get(c.ctx, c.aManager.ID) // now with a password
 	if !c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), c.aUser) || c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), mgr) ||
 		c.svc.CanMarkEmailVerified(c.ctx, actor(c.aAdmin), c.aAdmin) {

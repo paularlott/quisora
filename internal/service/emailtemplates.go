@@ -46,7 +46,8 @@ func (s *Service) EmailTemplates(ctx context.Context, a *Actor, orgID string) (*
 // UpdateEmailTemplates replaces organization orgID's own email templates with in: a part left empty, or the same as
 // the one it would inherit, is inherited (and follows the inherited one when that changes). Refused, with the part at
 // fault, unless every email renders and shows what it must (mailtpl.Check). Its administrators and the super admins,
-// never a service account.
+// never a service account; the primary organization's, which every other organization inherits, only the super
+// admins.
 func (s *Service) UpdateEmailTemplates(ctx context.Context, a *Actor, orgID string, in model.EmailTemplateSet) (*EmailTemplateView, error) {
 	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
 		return nil, ErrForbidden
@@ -58,6 +59,12 @@ func (s *Service) UpdateEmailTemplates(ctx context.Context, a *Actor, orgID stri
 	inherited, primary, err := s.inheritedEmailTemplates(ctx, orgID)
 	if err != nil {
 		return nil, err
+	}
+	// The primary organization's templates render every organization's invitations, resets and sign-in codes that
+	// have none of their own: changing them is a change to every organization, so it is a super admin's, as the
+	// server's other settings are, not the primary organization's administrators'.
+	if primary && !a.IsSuper() {
+		return nil, ErrForbidden
 	}
 	set, err := checkEmailTemplates(in, inherited)
 	if err != nil {

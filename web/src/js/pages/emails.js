@@ -13,6 +13,7 @@ import { focusWhenShown } from '../lib/focus.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { fitTabs } from '../lib/tabsfit.js'
+import { withReauth } from './account.js'
 
 const FIELDS = [
   ['Site', "who the email is from"], ['Org', "the organization's display name"], ['Name', "the recipient's full name"],
@@ -261,8 +262,9 @@ export default function register(Alpine) {
 
       // save saves the tab shown: its parts as they are in the editors, every other part as it is saved (the API
       // replaces the whole set). The server keeps a part blank or equal to the inherited one as inherited; the editors
-      // are then given the text the organization sends.
-      async save() {
+      // are then given the text the organization sends. Saving needs a recent re-authentication (the templates carry
+      // every link and code the organization sends): the server asks for it, and withReauth confirms and retries.
+      async save(ev) {
         const mine = Object.values(partsOf(this.tab))
         const draft = this.draft()
         const set = { layout_html: '', layout_text: '', emails: {} }
@@ -279,7 +281,7 @@ export default function register(Alpine) {
         }
         const name = this.tabTitle
         this.saving = true
-        const v = await this.act(() => put(this.apiBase, set))
+        const v = await this.act(() => withReauth(Alpine, () => put(this.apiBase, set), ev && (ev.submitter || ev.target), this))
         this.saving = false
         if (!v) return
         this.apply(v)

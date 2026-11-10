@@ -257,7 +257,7 @@ paths:
     put:
       tags: [Organizations]
       summary: Change an organization's email templates
-      description: "Replace the organization's own email templates. The layout holds every email's header and footer and places the email's body with {{template \"body\" .}}; each email has a subject, an HTML body and a plain-text body. They are Go templates over the fields Site, Org, Name, Link, Expires, Left, Code, LogoURL and PrimaryColor, HTML escaped in the HTML parts. A part left out or empty, or the same as the one inherited, is inherited (and follows it when it changes). Refused (422, with the part in field, such as emails.reset.html) unless every email renders: no loops or templates of its own, at most 64 KB a part, a link email shows {{.Link}}, the sign-in code email {{.Code}}, and no subject shows either. Every node uses the change once it has replicated. The organization's administrators and super admins; not service accounts. Audited as org.email_templates."
+      description: "Replace the organization's own email templates. The layout holds every email's header and footer and places the email's body with {{template \"body\" .}}; each email has a subject, an HTML body and a plain-text body. They are Go templates over the fields Site, Org, Name, Link, Expires, Left, Code, LogoURL and PrimaryColor, HTML escaped in the HTML parts. A part left out or empty, or the same as the one inherited, is inherited (and follows it when it changes). Refused (422, with the part in field, such as emails.reset.html) unless every email renders: no loops or templates of its own, at most 64 KB a part, a link email shows {{.Link}}, the sign-in code email {{.Code}}, and no subject shows either. In the HTML the link shows only as the whole href of an <a> or as text, and the code only as text (never in an image's address, a style or another attribute), and the templates set no variables and call no function but and, or, not, eq, ne, lt, le, gt and ge. Every node uses the change once it has replicated. The organization's administrators and super admins (the primary organization's, which every organization inherits: super admins only), after a recent re-authentication of the console session (403 with field reauth; a personal API token cannot); not service accounts. Audited as org.email_templates."
       operationId: put_orgs_org_email_templates
       requestBody:
         content:
@@ -466,6 +466,13 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: The organization sent its 300 invitation and verification emails for the hour (its administrators,
+            managers and service accounts together); nothing was created, changed or sent
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}:
     parameters:
@@ -527,6 +534,13 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: The organization sent its 300 invitation and verification emails for the hour (its administrators,
+            managers and service accounts together); nothing was created, changed or sent
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
     delete:
       tags: [Users]
@@ -701,6 +715,13 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: The organization sent its 300 invitation and verification emails for the hour (its administrators,
+            managers and service accounts together); nothing was created, changed or sent
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}/emails:
     parameters:
@@ -743,6 +764,13 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: The organization sent its 300 invitation and verification emails for the hour (its administrators,
+            managers and service accounts together); nothing was created, changed or sent
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}/emails/{address}:
     parameters:
@@ -906,6 +934,13 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429":
+          description: The organization sent its 300 invitation and verification emails for the hour (its administrators,
+            managers and service accounts together); nothing was created, changed or sent
+          headers:
+            Retry-After:
+              description: seconds to wait
+              schema: {type: integer}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/users/{id}/apps:
     parameters:
@@ -1149,8 +1184,8 @@ paths:
       tags: [Users]
       summary: Unlink the user's account at one sign-in provider
       description: Unlink the user's account at one sign-in provider; for someone else it may be their last way to sign in
-        (send an invitation afterwards), for yourself it may not (409) and needs a recent re-authentication (403, field
-        reauth); 404 when none is linked
+        (send an invitation afterwards), for yourself it may not (409); either needs a recent re-authentication (403,
+        field reauth; a personal API token cannot); 404 when none is linked
       operationId: delete_orgs_org_users_id_providers_provider
       security:
         - session: []
@@ -1230,8 +1265,8 @@ paths:
       tags: [Users]
       summary: Remove one of the user's passkeys and end the sessions that signed in with it
       description: Remove one of the user's passkeys and end the sessions that signed in with it; for someone else it may be
-        their last way to sign in (send an invitation afterwards), for yourself it may not (409) and needs a recent
-        re-authentication (403, field reauth)
+        their last way to sign in (send an invitation afterwards), for yourself it may not (409); either needs a recent
+        re-authentication (403, field reauth; a personal API token cannot)
       operationId: delete_orgs_org_users_id_passkeys_passkey
       security:
         - session: []

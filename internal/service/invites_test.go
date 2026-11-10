@@ -566,3 +566,62 @@ func TestBreakGlassPromotionWithUnknownOutcomeIsAudited(t *testing.T) {
 		t.Fatal("the promotion that landed was not audited")
 	}
 }
+
+// The live invitation of a privileged account is replaced only by its issuer (or a super admin), a service account
+// included: one service account cannot replace another's invitation, or the system's, and take the new link.
+func TestServiceAccountReplacesOnlyItsOwnInvite(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	sa := func(name string) *service.Actor {
+		t.Helper()
+		scopes := []string{"users"}
+		c, _, err := e.svc.CreateServiceAccount(e.ctx, actor(e.super), org.ID, service.ServiceAccountInput{Name: ptr(name), Scopes: &scopes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service.ActorForServiceAccount(c, scopes, "")
+	}
+	one, two := sa("one"), sa("two")
+
+	mgr := e.user(org.ID, "new-mgr", model.RoleManager) // never set up: whoever may manage it invites it
+	if _, _, err := e.svc.CreateInvite(e.ctx, one, mgr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.CreateInvite(e.ctx, two, mgr.ID); err == nil {
+		t.Error("a service account replaced another's live invitation")
+	}
+	if _, _, err := e.svc.CreateInvite(e.ctx, one, mgr.ID); err != nil {
+		t.Errorf("a service account could not replace its own invitation: %v", err)
+	}
+
+	sys := e.user(org.ID, "sys-mgr", model.RoleManager)
+	if _, _, err := e.svc.CreateInvite(e.ctx, service.System, sys.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.CreateInvite(e.ctx, one, sys.ID); err == nil {
+		t.Error("a service account replaced the system's live invitation")
+	}
+}
+
+// A service account's invitation opens nothing once the account no longer holds a scope it invites with.
+func TestServiceAccountInviteNeedsItsScopeWhenUsed(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	scopes := []string{"users", "clients"}
+	c, _, err := e.svc.CreateServiceAccount(e.ctx, actor(e.super), org.ID, service.ServiceAccountInput{Name: ptr("inviter"), Scopes: &scopes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := e.user(org.ID, "invited", model.RoleUser)
+	link, _, err := e.svc.CreateInvite(e.ctx, service.ActorForServiceAccount(c, scopes, ""), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	less := []string{"clients"}
+	if _, err := e.svc.UpdateServiceAccount(e.ctx, actor(e.super), org.ID, c.ID, service.ServiceAccountInput{Scopes: &less}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.svc.PeekLink(e.ctx, tokenFrom(link), service.LinkInvite); !errors.Is(err, service.ErrLink) {
+		t.Fatalf("the invitation of a service account without the users scope opened: %v", err)
+	}
+}

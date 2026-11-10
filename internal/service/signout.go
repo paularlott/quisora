@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -133,8 +132,8 @@ func (s *Service) SignOutSession(ctx context.Context, sess *model.Session) (ende
 // their grants listed again: none is left behind by a revocation that reports success. The user's grants are listed
 // once a round, whatever the number of sessions. Every deletion is attempted even when one fails (a session a
 // compromised passkey signed in ends whatever its grants do), and the failures are returned together; ended counts
-// the sessions that ended (one already gone included). It revokes: the SSH certificates issued under the sessions or
-// their grants are revoked first (RevokeSSHCertsFrom), and every grant goes, offline access or not.
+// the sessions that ended (one already gone included). It revokes: every grant goes, offline access or not, and the
+// SSH certificates issued under the sessions or their grants are revoked once they are deleted (RevokeSSHCertsFrom).
 func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*model.Session) (ended int, err error) {
 	return s.endSessions(ctx, userID, sessions, false)
 }
@@ -143,11 +142,21 @@ func (s *Service) EndSessions(ctx context.Context, userID string, sessions []*mo
 // access and the SSH certificates are left.
 func (s *Service) endSessions(ctx context.Context, userID string, sessions []*model.Session, signOut bool) (ended int, err error) {
 	var errs []error
+	// The sign-ins whose SSH certificates are revoked: the sessions and the grants ended with them. They are revoked
+	// after the deletions, never before. A certificate signed at the same moment is created, and then its sign-in read
+	// again from the store (SignUserSSH); here the sign-in is deleted, and then the certificates listed. On a shared
+	// database, or a single node, whichever comes second sees the other: the listing finds a certificate created before
+	// the deletion, and a certificate created after it finds its sign-in gone and is revoked by its signer. In a gossip
+	// cluster each node reads its own copy, so the two can miss each other while either write is replicating: the
+	// window narrows to the replication lag. Revoking first would leave it open for the seconds a node still trusts its
+	// cached copy of the session or grant (one signed between the listing and the deletion would be missed).
+	from := map[string]bool{}
 	pending := sessions
 	for attempt := 0; len(pending) > 0; attempt++ {
 		ids := make(map[string]bool, len(pending))
 		for _, ss := range pending {
 			ids[ss.ID] = true
+			from[ss.ID] = true
 		}
 		grants, err := s.Grants.All(ctx, userID)
 		if err != nil {
@@ -156,19 +165,9 @@ func (s *Service) endSessions(ctx context.Context, userID string, sessions []*mo
 		ending := func(g *model.Grant) bool {
 			return ids[g.SessionID] && !(signOut && slices.Contains(g.Scopes, "offline_access"))
 		}
-		if !signOut {
-			from := maps.Clone(ids)
-			for _, g := range grants {
-				if ending(g) {
-					from[g.ID] = true
-				}
-			}
-			if err := s.RevokeSSHCertsFrom(ctx, pending[0].OrgID, userID, from); err != nil {
-				errs = append(errs, fmt.Errorf("revoke SSH certificates: %w", err))
-			}
-		}
 		for _, g := range grants {
 			if ending(g) {
+				from[g.ID] = true
 				if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 					errs = append(errs, fmt.Errorf("end refresh grant %s: %w", g.ID, mapStore(err)))
 				}
@@ -197,6 +196,11 @@ func (s *Service) endSessions(ctx context.Context, userID string, sessions []*mo
 			}
 		}
 		pending = again
+	}
+	if !signOut && len(sessions) > 0 {
+		if err := s.RevokeSSHCertsFrom(ctx, sessions[0].OrgID, userID, from); err != nil {
+			errs = append(errs, fmt.Errorf("revoke SSH certificates: %w", err))
+		}
 	}
 	return ended, errors.Join(errs...)
 }

@@ -20,8 +20,15 @@ import (
 // the organization it registered or was authorized in; forResources places one in the tenant of that organization that
 // owns the resources a request names.
 
-// registerPerIPMin bounds registrations per address and minute (registration is unauthenticated).
-const registerPerIPMin = 10
+// Registration is unauthenticated, so it is limited per address and minute, per address and organization a day (an
+// unused registration is kept a day: one address alone cannot fill the organization's cap of unused ones,
+// service.MaxSelfRegistered), and per organization and minute from every address together (how fast anyone can fill
+// that cap, and how often registrations write to the store).
+const (
+	registerPerIPMin  = 10
+	registerPerIPDay  = 100
+	registerPerOrgMin = 60
+)
 
 // forResources returns the client as the request sees it: itself for an administrator's client; for a
 // self-registered one, a copy in the tenant of its organization that owns resources (service.InTenant), with that
@@ -69,8 +76,8 @@ func (p *Provider) appClient(ctx context.Context, r *http.Request, orgID, id str
 			return ce, nil
 		}
 		fresh, rerr := p.readMetadata(ctx, r, orgID, id, false)
-		if fresh != nil {
-			if c, err := p.svc.RefreshMetadataClient(ctx, fresh); err == nil {
+		if fresh != nil { // kept even if the request hangs up now: the URL's one read a minute was spent on it
+			if c, err := p.svc.RefreshMetadataClient(context.WithoutCancel(ctx), fresh); err == nil {
 				p.clients.Del(c.ID)
 				return &clientEntry{c: c}, nil
 			}
@@ -121,6 +128,9 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id 
 	if n > 1 {
 		return nil, nil
 	}
+	// The read is this minute's for every caller, not this request's: it runs to the end (or the fetch timeout) and
+	// keeps what it read even when the request that spent the slot hangs up meanwhile.
+	ctx = context.WithoutCancel(ctx)
 	doc, err := p.fetch(ctx, id, service.MaxMetadataBytes)
 	if err != nil {
 		p.log.Warn("oidc: reading a client metadata document", "client_id", id, "error", err)
@@ -137,8 +147,9 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id 
 	return c, nil
 }
 
-// handleRegister is dynamic client registration (RFC 7591): public clients with PKCE for user sign-in only, limited
-// per address and capped in total; see service.RegisterClient.
+// handleRegister is dynamic client registration (RFC 7591): public clients with PKCE for user sign-in only, at an
+// organization with a tenant that accepts them, limited per address and organization and capped in total; see
+// service.RegisterClient.
 func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "register|"+web.RateKeyIP(r), 1, time.Minute)
@@ -156,12 +167,42 @@ func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, oerr("invalid_client_metadata", "the request body must be a JSON object"))
 		return
 	}
+	orgID := web.Org(r).ID
+	// The address's daily allowance first, counted as the minute's is, on every request: an address past its own does
+	// not reach what every other address shares. The organization's minute is only read here, and counted below for a
+	// registration made: one refused (no tenant accepts them, metadata refused, the cap reached) writes nothing, and
+	// must not spend what every address shares, or a few addresses sending bad requests would block everyone's.
+	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, "register-day|"+orgID+"|"+web.RateKeyIP(r), 1, 24*time.Hour)
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
+	if n > registerPerIPDay {
+		w.Header().Set("Retry-After", "3600")
+		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down", desc: "too many registrations from this address"})
+		return
+	}
+	orgKey := "register-org|" + orgID
+	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, orgKey, 0, time.Minute)
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
+	if n >= registerPerOrgMin {
+		w.Header().Set("Retry-After", "60")
+		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down", desc: "too many registrations at this organization"})
+		return
+	}
 	in.ClientID = ""
-	c, err := p.svc.RegisterClient(r.Context(), web.Org(r).ID, in)
+	c, err := p.svc.RegisterClient(r.Context(), orgID, in)
 	var re *service.RegistrationError
 	switch {
 	case errors.As(err, &re):
 		writeOAuthError(w, oerr(re.Code, re.Description))
+		return
+	case errors.Is(err, service.ErrForbidden):
+		writeOAuthError(w, &oauthError{status: http.StatusForbidden, code: "access_denied",
+			desc: "this organization does not accept self-registered applications"})
 		return
 	case errors.Is(err, service.ErrLimit):
 		w.Header().Set("Retry-After", "3600")
@@ -171,6 +212,10 @@ func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, serverError(err))
 		return
 	}
+	// Registrations at the same moment can each pass the read above, so the organization's minute can be overrun by as
+	// many as arrive together; it bounds the rate, not each request. The application is made: a counter that cannot be
+	// written now does not undo it.
+	_, _ = p.s.Eph.Incr(r.Context(), nsRateOIDC, orgKey, 1, time.Minute)
 	web.WriteJSON(w, http.StatusCreated, map[string]any{
 		"client_id": c.ID, "client_id_issued_at": c.Created.Unix(), "client_name": c.Name,
 		"redirect_uris": c.RedirectURIs, "grant_types": c.GrantTypes, "response_types": []string{"code"},

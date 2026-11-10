@@ -16,6 +16,7 @@ import (
 // allows; nothing else about the request may widen that. The same rules apply to a client metadata document.
 func TestSelfRegistrationMetadata(t *testing.T) {
 	c := newCast(t)
+	c.acceptSelfRegistered(c.a.ID)
 	bad := map[string]service.RegistrationInput{
 		"confidential":  {AuthMethod: "client_secret_basic", RedirectURIs: []string{"https://a.example.com/cb"}},
 		"grant":         {GrantTypes: []string{"client_credentials"}, RedirectURIs: []string{"https://a.example.com/cb"}},
@@ -230,6 +231,7 @@ func TestRefreshMetadataClientAndPurge(t *testing.T) {
 	}
 
 	// Purge removes unused registrations older than a day, keeps used and fresh ones.
+	c.acceptSelfRegistered(c.a.ID)
 	old, _ := c.svc.RegisterClient(c.ctx, c.a.ID, service.RegistrationInput{ClientName: "stale", RedirectURIs: []string{"https://s.example.com/cb"}})
 	if n := c.svc.PurgeSelfRegistered(c.ctx, time.Now()); n != 0 {
 		t.Errorf("fresh registration purged: %d", n)
@@ -289,6 +291,8 @@ func TestSelfRegRedirect(t *testing.T) {
 // time).
 func TestSelfRegistrationCapIsPerOrganizationAndPurgePages(t *testing.T) {
 	c := newCast(t)
+	c.acceptSelfRegistered(c.a.ID)
+	c.acceptSelfRegistered(c.b.ID)
 	in := service.RegistrationInput{RedirectURIs: []string{"https://a.example.com/cb"}}
 	for i := range service.MaxSelfRegistered {
 		cl := &model.Client{Meta: model.Meta{ID: fmt.Sprintf("dyn-fill-%d", i)}, OrgID: c.a.ID, Name: "fill", SelfRegistered: true,
@@ -308,5 +312,49 @@ func TestSelfRegistrationCapIsPerOrganizationAndPurgePages(t *testing.T) {
 	}
 	if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); err != nil {
 		t.Errorf("registering after the purge: %v", err)
+	}
+}
+
+// acceptSelfRegistered gives organization orgID a tenant that accepts self-registered applications, without which
+// the organization refuses registrations.
+func (e *env) acceptSelfRegistered(orgID string) *model.Tenant {
+	e.t.Helper()
+	t, err := e.svc.CreateTenant(e.ctx, service.System, orgID, service.TenantInput{Name: ptr("selfreg"),
+		Resources: &[]string{"https://selfreg.example.com/"}, Settings: &model.TenantSettings{SelfRegistration: true}})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return t
+}
+
+// Registration is open only at an organization with a tenant that lets self-registered applications sign in for a
+// resource it owns: anywhere else a registration could never be used, and anyone may ask for one.
+func TestRegistrationNeedsATenantThatAcceptsIt(t *testing.T) {
+	c := newCast(t)
+	in := service.RegistrationInput{RedirectURIs: []string{"https://a.example.com/cb"}}
+	if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("an organization without tenants: %v", err)
+	}
+	// a tenant with the switch on but no resource accepts nothing; one with resources but the switch off neither
+	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.a.ID, service.TenantInput{Name: ptr("nores"),
+		Settings: &model.TenantSettings{SelfRegistration: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.a.ID, service.TenantInput{Name: ptr("off"),
+		Resources: &[]string{"https://off.example.com/"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("no tenant accepts self-registered applications: %v", err)
+	}
+	if l, _, _ := c.svc.Clients.List(c.ctx, store.ListQuery{Scope: c.a.ID, Filters: []store.Filter{{Field: "self_registered", Value: true}}}); len(l) != 0 {
+		t.Errorf("a refused registration stored %d applications", len(l))
+	}
+	c.acceptSelfRegistered(c.a.ID)
+	if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); err != nil {
+		t.Fatalf("with a tenant that accepts them: %v", err)
+	}
+	if _, err := c.svc.RegisterClient(c.ctx, c.b.ID, in); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("another organization's tenant opened this one: %v", err)
 	}
 }

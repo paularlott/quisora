@@ -365,9 +365,17 @@ what it revokes changed ([Monitoring](#monitoring)). Add `--known-hosts-file <pa
 revocation stops new logins but leaves open sessions open. With `--end-revoked` (Linux, sshd logging to journald, run as
 root, as the timer above does), each `fetch` also ends the connections whose certificate the list in place revokes: it
 reads the certificate logins sshd logged in the last 25 hours (`Accepted publickey for … ssh2: …-CERT … ID … (serial …)
-CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still sshd's.
-That process is the connection's privileged one, which the logged-in user cannot touch, and the log is root's, so a
-session cannot hide which certificate it came in with. Ending it closes the connection and ends the session. Each one is
+CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still the one
+that logged it. Only lines journald received from root are read (`_UID=0`, which journald takes from the sending
+socket, not from what the program says), so a local user cannot log a line that names a revoked serial and a process
+number of their choosing. And the process is signalled only while it is sshd's, runs as root, and started no later than
+the line was logged (so not a number taken since by another connection or a restarted listener); on kernels from 5.3 it
+is held by a pidfd from that check to the signal. Its parent is not checked, so connections that outlived a restart of
+sshd, and those of a socket-activated sshd (`sshd -i`), are ended too. The times are compared on the clock since boot
+(journald's monotonic timestamp, allowing for time spent suspended), not the wall clock, so a clock stepped forward after
+a login (a resumed VM, a first NTP sync) does not hide its connection; lines from an earlier boot are not read. That process is the connection's
+privileged one, which the logged-in user cannot touch, so a session cannot hide which certificate it came in with.
+Ending it closes the connection and ends the session. Each one is
 printed (`ended the SSH connection of … (serial …, process …): its certificate is revoked`), and a log that cannot be read
 makes `fetch` exit 1 after the files are written. Processes a session left running on their own (under `tmux`, `screen`
 or `nohup`) are not ended: in an incident, end those by hand. Add it to the service's `ExecStart`:
@@ -506,7 +514,8 @@ Install `quisora` (the same binary; the `ssh` commands need no configuration), t
 quisora ssh login https://id.example.com/o/<org id>/ssh/<tenant id>
 ```
 
-A browser opens on Quisora's sign-in page. Sign in with a second factor, and the command prints:
+A browser opens on Quisora's sign-in page. Sign in with a second factor, confirm on the page that follows that you want
+`quisora ssh` signed in (it is always asked), and the command prints:
 
 ```
 Signed in to acme/prod.
@@ -697,6 +706,11 @@ fully qualified name is used. Options:
 | `--auth-method auto\|post\|basic` | How the service account authenticates at the token endpoint. A service account is registered for `client_secret_post` unless made otherwise, so `auto` (the default) tries that and, if the server answers `invalid_client`, once more with `client_secret_basic`. `post` or `basic` tries only that one. |
 | `--token <token>` (`QUISORA_TOKEN`) | An access token with `ssh:host` instead of the client id and secret: the way for a service account that authenticates with a private key. |
 
+`--client-secret` and `--token` are accepted as options too, with a warning: anyone on the machine sees the command line
+(`ps`), so use the environment. The command follows redirects only within the server's address (scheme, host and port,
+with a default port written out or left off being the same), or from `http://` up to `https://` on the same host, so a
+redirect cannot send the secret elsewhere, nor back from `https://` to `http://`.
+
 Add the line to sshd and **reload sshd**, so that it serves the certificate (and does so again after every renewal,
 below):
 
@@ -836,7 +850,7 @@ asked for. A certificate is on it for the first of these reasons that applies:
 | `user_deleted` | The user was deleted. |
 | `user_disabled` | The user was disabled, locked out, is past their end date, or their organization is gone. |
 | `sessions_ended` | The user's sessions were ended: signed out everywhere, or a credential reset. |
-| `sign_in_ended` | The sign-in it was issued under was taken back: the account page's session, or the browser session a `quisora ssh` sign-in went through, ended from another session or by an administrator; the `quisora ssh` sign-in's token revoked, or the app's access removed. The user **signing out** of that browser does not revoke it: it lasts to its expiry, like the access tokens the session issued ([signing out and ending a session](../sign-in/README.md#sessions)). |
+| `sign_in_ended` | The sign-in it was issued under was taken back: the account page's session, or the browser session a `quisora ssh` sign-in went through, ended from another session or by an administrator, or by removing the passkey it signed in with; the `quisora ssh` sign-in's token revoked, or the app's access removed. Also a certificate signed at the moment its sign-in was being ended: it is revoked as it is made, and the request refused. The user **signing out** of that browser does not revoke it: it lasts to its expiry, like the access tokens the session issued ([signing out and ending a session](../sign-in/README.md#sessions)). |
 | `signed_out` | An [emergency sign-out](../emergency-sign-out.md) of the organization, or of the server, came after the certificate was issued. |
 | `role_not_allowed` | The user is a manager or administrator and the tenant does not allow them certificates (it was turned off after the certificate was issued). |
 | `app_unavailable` | The tenant's SSH application is disabled or missing. The certificates count again when it is back. |
@@ -904,8 +918,8 @@ their certificates go on the list as `user_disabled`.
 ### What revocation does not cover
 
 - **A certificate goes with the sign-in it was issued under** (`sign_in_ended`) when that sign-in is taken back: its
-  browser session ended from another session or by an administrator, or the `quisora ssh` sign-in's token or the app's
-  access revoked; besides signing the person out everywhere, a credential reset, a lock-out, an emergency sign-out, or
+  browser session ended from another session or by an administrator or with the passkey it signed in with, or the
+  `quisora ssh` sign-in's token or the app's access revoked; besides signing the person out everywhere, a credential reset, a lock-out, an emergency sign-out, or
   revoking the certificate itself. Signing out of the browser does not revoke it: it lasts to its expiry. Certificates
   issued before the sign-in was recorded follow only the latter.
 - Sessions already open on a server stay open, unless it runs `fetch --end-revoked`; and processes a session left running
@@ -1004,6 +1018,12 @@ administrators cannot be caught while **Managers and administrators may get cert
 a code only if they started it themselves, and limit the damage with a short lifetime and
 [source addresses](#source-addresses). If someone approved a code they were sent, revoke the certificate and sign the person out
 everywhere ([incident response](../SECURITY.md#incident-response)).
+
+**Codes at the loopback address.** The browser sign-in sends its code to a port on `127.0.0.1` that the command
+chooses, and any program on the machine can listen on a port there, another user's included. Someone who shares the
+machine could send you a sign-in link that returns to their own port, and get a certificate for your principals from
+it. So the browser sign-in always asks you to confirm, like the device sign-in: approve only a sign-in you have just
+started with `quisora ssh login`.
 
 **Where the private key is.** With the agent, the key is in the agent's memory and vanishes with the certificate. Anyone
 who can reach the agent's socket as that user (or as root, or through a forwarded agent) can use the key while the

@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,6 +32,7 @@ func TestRegistrationBodyMustBeAnObject(t *testing.T) {
 func TestDynamicRegistration(t *testing.T) {
 	t.Parallel()
 	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
 	r := h.postJSON(h.orgBase+"/oauth/register", map[string]any{"client_name": "Claude Code", "redirect_uris": []string{"http://127.0.0.1:33418/callback", "http://localhost:33418/callback", "com.example.claude:/callback"},
 		"grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"},
 		"token_endpoint_auth_method": "none", "scope": "openid profile admin"})
@@ -74,6 +76,88 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 }
 
+// An organization with no tenant that accepts self-registered applications takes no registrations: none could ever
+// sign anyone in, and anyone may ask for one.
+func TestRegistrationNeedsATenantThatAcceptsIt(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	reg := map[string]any{"redirect_uris": []string{"https://app.example/cb"}}
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 403 || r.str("error") != "access_denied" {
+		t.Fatalf("registration with no tenant accepting it: %d %v", r.status, r.m)
+	}
+	h.mcpTenant("mcp", false) // owns a resource, but does not let self-registered applications in
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 403 {
+		t.Fatalf("registration with the tenant's switch off: %d %v", r.status, r.m)
+	}
+	h.mcpTenantOf("open", "https://open.example.com/mcp", true)
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 201 {
+		t.Fatalf("registration with a tenant accepting it: %d %v", r.status, r.m)
+	}
+}
+
+// Besides its own minute's allowance, an address has a day's at each organization (it cannot fill the organization's
+// cap of unused registrations alone), and an organization a minute's from every address together.
+func TestRegistrationLimitsPerOrganization(t *testing.T) {
+	t.Parallel()
+	reg := map[string]any{"redirect_uris": []string{"https://app.example/cb"}}
+	for _, l := range []struct {
+		key   string // after the organization's id
+		limit int64
+		why   string
+	}{
+		{"register-day|%s|127.0.0.1", registerPerIPDay, "from this address"},
+		{"register-org|%s", registerPerOrgMin, "at this organization"},
+	} {
+		h := setup(t, nil)
+		h.mcpTenant("mcp", true)
+		// the allowance spent but for one (as other requests would have): one more registration, then refused
+		key := fmt.Sprintf(l.key, h.env.Primary.ID)
+		if _, err := h.p.s.Eph.Incr(context.Background(), nsRateOIDC, key, l.limit-1, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 201 {
+			t.Fatalf("%s: the last registration of the allowance: %d %v", l.why, r.status, r.m)
+		}
+		r := h.postJSON(h.orgBase+"/oauth/register", reg)
+		if r.status != 429 || r.str("error") != "slow_down" || !strings.Contains(r.str("error_description"), l.why) || r.hdr.Get("Retry-After") == "" {
+			t.Fatalf("%s: past the allowance: %d %v", l.why, r.status, r.m)
+		}
+	}
+}
+
+// A refused registration does not spend the organization's minute, which every address shares: only one made counts,
+// so a few addresses sending requests that are refused (no tenant accepts them, bad metadata) cannot block everyone's.
+func TestRefusedRegistrationsDoNotSpendTheOrganizationsMinute(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	key := "register-org|" + h.env.Primary.ID
+	spent := func() int64 {
+		t.Helper()
+		n, err := h.p.s.Eph.Incr(context.Background(), nsRateOIDC, key, 0, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	reg := map[string]any{"redirect_uris": []string{"https://app.example/cb"}}
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 403 {
+		t.Fatalf("registration with no tenant accepting it: %d %v", r.status, r.m)
+	}
+	h.mcpTenant("mcp", true)
+	if r := h.postJSON(h.orgBase+"/oauth/register", map[string]any{"redirect_uris": []string{"ftp://app.example/cb"}}); r.status != 400 {
+		t.Fatalf("registration with bad metadata: %d %v", r.status, r.m)
+	}
+	if n := spent(); n != 0 {
+		t.Fatalf("refused registrations spent %d of the organization's minute", n)
+	}
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 201 {
+		t.Fatalf("registration: %d %v", r.status, r.m)
+	}
+	if n := spent(); n != 1 {
+		t.Fatalf("a registration made counted %d", n)
+	}
+}
+
 // A self-registered application signs in only for a resource whose tenant allows self-registered applications; it
 // is then that tenant's client: consent warns that it is not verified, tokens are for the resource, and turning the
 // tenant's switch off (or revoking the app) ends its refresh tokens.
@@ -81,8 +165,13 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	h := setup(t, nil)
-	tn := h.mcpTenant("mcp", false)
+	tn := h.mcpTenant("mcp", true)
 	cl := h.register("http://127.0.0.1:44001/callback")
+	on, off := tn.Settings, tn.Settings
+	off.SelfRegistration = false
+	if _, err := h.env.Svc.UpdateTenant(ctx, h.admin, tn.ID, service.TenantInput{Settings: &off}); err != nil {
+		t.Fatal(err)
+	}
 	c, _ := h.session(h.user)
 	_, ch := pkce()
 
@@ -98,8 +187,6 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 		}
 	}
 
-	on := tn.Settings
-	on.SelfRegistration = true
 	if _, err := h.env.Svc.UpdateTenant(ctx, h.admin, tn.ID, service.TenantInput{Settings: &on}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +234,7 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 
 	// switch off: the access token is inactive at once, the refresh token stops working, and so does a new
 	// authorization
-	if _, err := h.env.Svc.UpdateTenant(ctx, h.admin, tn.ID, service.TenantInput{Settings: &tn.Settings}); err != nil {
+	if _, err := h.env.Svc.UpdateTenant(ctx, h.admin, tn.ID, service.TenantInput{Settings: &off}); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.introspect(rs, rsSecret, r2.str("access_token")); got["active"] != false {
@@ -463,5 +550,27 @@ func TestVerifyResourceTokenAdminApp(t *testing.T) {
 	h.p.InvalidateClient(cl.ID) // the cluster does this in a server, on every change to the record
 	if err := verify(live); err == nil {
 		t.Error("a live token was accepted after the resource was taken off the application")
+	}
+}
+
+// A metadata document's URL is read at most once a minute, for every caller: a requester that hangs up while it is
+// being read does not end the read, and what was read is kept for the sign-in that comes next.
+func TestMetadataReadOutlivesItsRequester(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx, hangUp := context.WithCancel(context.Background())
+	var id string
+	srv, hits := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hangUp() // while the document is on its way
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"client_id":"` + id + `","client_name":"Doc App","redirect_uris":["https://app.example/cb"]}`))
+	})
+	h.p.HTTP = srv.Client()
+	id = srv.URL + "/client.json"
+	org := h.env.Primary.ID
+	_, _ = h.p.readMetadata(ctx, nil, org, id, true)
+	ce, err := h.p.appClient(context.Background(), nil, org, id)
+	if err != nil || ce.c.Name != "Doc App" || hits.Load() != 1 {
+		t.Fatalf("after the requester hung up: %+v %v, %d reads", ce, err, hits.Load())
 	}
 }

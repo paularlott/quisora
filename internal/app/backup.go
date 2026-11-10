@@ -56,13 +56,8 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool,
 		return nil, err
 	}
 	defer st.Close()
-	// Checked in full before anything changes: a backup that is refused leaves the node as it was.
-	if _, err := backup.Verify(r, sealer, password); err != nil {
-		return nil, err
-	}
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
+	// backup.Restore checks the backup in full before it writes anything, and writes it from the copy it checked: a
+	// backup it refuses leaves the store as it was, and the marker below is removed again (refused).
 	marker := filepath.Join(c.Server.DataDir, restoreIncomplete)
 	_ = os.MkdirAll(c.Server.DataDir, 0o700)
 	// A marker an earlier, interrupted run left stays until a restore completes: a run refused before it writes
@@ -88,7 +83,7 @@ func Restore(ctx context.Context, c *config.Config, r io.ReadSeeker, force bool,
 			return nil, err
 		}
 	}
-	stats, err := backup.Restore(ctx, st, sealer, r, force, password)
+	stats, err := backup.Restore(ctx, st, sealer, r, force, password, c.Server.DataDir)
 	if err != nil {
 		if stats.Total() == 0 {
 			refused() // refused before writing anything
@@ -164,7 +159,7 @@ func restoreAtStart(ctx context.Context, c *config.Config, st store.Store, seale
 	if err := os.WriteFile(marker, []byte(file+"\n"), 0o600); err != nil {
 		return fmt.Errorf("restore: %w", err)
 	}
-	stats, err := backup.Restore(ctx, st, sealer, f, false, c.Server.RestorePassword)
+	stats, err := backup.Restore(ctx, st, sealer, f, false, c.Server.RestorePassword, c.Server.DataDir)
 	if err != nil {
 		if stats.Total() == 0 { // refused before writing anything (another master key): nothing to clean up
 			_ = os.Remove(marker)

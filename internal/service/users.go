@@ -331,7 +331,9 @@ func (s *Service) GetUser(ctx context.Context, a *Actor, id string) (*model.User
 }
 
 // FindUser is the user of orgID with external id ext, or whose primary or linked address is email (exactly one of
-// them given): an indexed lookup, with the same access and visibility as GetUser. ErrNotFound when there is none.
+// them given): an indexed lookup, with the same access as GetUser. ErrNotFound when there is none, and for a user a
+// sees only as a directory entry: the match would confirm an address or external id the entry does not show, which
+// a listing's search leaves out too (searchLeaks).
 func (s *Service) FindUser(ctx context.Context, a *Actor, orgID, ext, email string) (*model.User, error) {
 	if !s.canManageUsers(a, orgID) {
 		return nil, ErrForbidden
@@ -344,7 +346,7 @@ func (s *Service) FindUser(ctx context.Context, a *Actor, orgID, ext, email stri
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if u.OrgID != orgID {
+	if u.OrgID != orgID || s.Visibility(a, u) != Full {
 		return nil, ErrNotFound
 	}
 	return s.GetUser(ctx, a, u.ID)
@@ -1110,21 +1112,19 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 	}
 	n := 0
 	var errs []error
-	if len(mine) > 0 { // the SSH certificates issued under the grants go with them
-		from := map[string]bool{}
-		for _, g := range mine {
-			from[g.ID] = true
-		}
-		if err := s.RevokeSSHCertsFrom(ctx, mine[0].OrgID, userID, from); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	from := map[string]bool{}
 	for _, g := range mine {
+		from[g.ID] = true
 		if err := s.Grants.Delete(ctx, g.ID); err != nil && !errors.Is(err, store.ErrStale) {
 			errs = append(errs, mapStore(err))
 			continue
 		}
 		n++
+	}
+	if len(mine) > 0 { // the SSH certificates issued under the grants go with them, after them (as endSessions explains)
+		if err := s.RevokeSSHCertsFrom(ctx, mine[0].OrgID, userID, from); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if consent != nil {
 		if err := s.Consents.Delete(ctx, consent.ID); err != nil && !errors.Is(err, store.ErrStale) {
@@ -1483,37 +1483,42 @@ func ptrBool(b bool) *bool { return &b }
 // read the whole organization (model.Field: an indexed bool marks a small set).
 func ActiveFilter(active bool) store.Filter { return store.Filter{Field: "inactive", Value: !active} }
 
-// passkeySessionEnds returns the sessions passkeyID signed in for userID (but keepSession) and the deletions that end
-// them with their refresh grants, for a transaction; the applications are told first (back-channel logout). Each
-// session is deleted only at the version listed: a grant made meanwhile changed it (CreateSessionGrant), so the
-// transaction is refused (ErrStale) and decided again on fresh listings (removeWay), as EndSession does.
-func (s *Service) passkeySessionEnds(ctx context.Context, userID, passkeyID, keepSession string) ([]string, []store.Op, error) {
+// passkeySessionEnds returns the sessions passkeyID signed in for userID (but keepSession), the deletions that end
+// them with their refresh grants, for a transaction, and the ids of both (the sign-ins whose SSH certificates are
+// revoked once the transaction has committed: RevokeSSHCertsFrom); the applications are told first (back-channel
+// logout). Each session is deleted only at the version listed: a grant made meanwhile changed it
+// (CreateSessionGrant), so the transaction is refused (ErrStale) and decided again on fresh listings (removeWay), as
+// EndSession does.
+func (s *Service) passkeySessionEnds(ctx context.Context, userID, passkeyID, keepSession string) ([]string, []store.Op, map[string]bool, error) {
 	sessions, err := s.Sessions.All(ctx, userID)
 	if err != nil {
-		return nil, nil, mapStore(err)
+		return nil, nil, nil, mapStore(err)
 	}
 	var ids []string
 	var ops []store.Op
+	from := map[string]bool{}
 	for _, ss := range sessions {
 		if ss.Passkey == passkeyID && ss.ID != keepSession {
 			ids = append(ids, ss.ID)
 			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindSession, ss.ID), Match: true, Expect: ss.Version})
+			from[ss.ID] = true
 		}
 	}
 	if len(ids) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	grants, err := s.Grants.All(ctx, userID)
 	if err != nil {
-		return nil, nil, mapStore(err)
+		return nil, nil, nil, mapStore(err)
 	}
 	for _, g := range grants {
 		if slices.Contains(ids, g.SessionID) {
 			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindGrant, g.ID)})
+			from[g.ID] = true
 		}
 	}
 	s.sessionsEnding(ctx, userID, ids)
-	return ids, ops, nil
+	return ids, ops, from, nil
 }
 
 // EndPasskeySessions ends every session that was signed in with the passkey (and the refresh grants made in them),

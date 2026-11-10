@@ -4,8 +4,9 @@
 //
 // The templates are Go templates (html/template for HTML, text/template for the rest) over Data. Organizations' own
 // templates are written by their administrators, so what a template may do is narrowed (Check): no loops, no templates
-// of its own, a bounded size and output; a link email must show its link, the sign-in code email its code, and no
-// subject may show either (subjects show in lock-screen previews and notifications).
+// of its own, no variables, no functions but tests, a bounded size and output; a link email must show its link, the
+// sign-in code email its code, and no subject may show either (subjects show in lock-screen previews and
+// notifications); in HTML the link shows only as a link's address or as text, and the code only as text (Render).
 package mailtpl
 
 import (
@@ -13,10 +14,14 @@ import (
 	"errors"
 	"fmt"
 	htmltemplate "html/template"
+	"io"
 	"regexp"
+	"slices"
 	"strings"
 	texttemplate "text/template"
 	"text/template/parse"
+
+	"golang.org/x/net/html"
 
 	"github.com/paularlott/quisora/internal/model"
 )
@@ -310,7 +315,99 @@ func Render(set model.EmailTemplateSet, name string, d Data) (Message, error) {
 	if err != nil {
 		return Message{}, blame(err, "layout_html", f+"html")
 	}
+	if !secretsPlaced(set.LayoutHTML, e.HTML, d, htm) {
+		field := f + "html"
+		if l, err := renderHTML(set.LayoutHTML, "", d); err == nil && !secretsPlaced(set.LayoutHTML, "", d, l) {
+			field = "layout_html"
+		}
+		return Message{}, &Error{field, misplaced}
+	}
 	return Message{Subject: sub, Text: txt, HTML: htm}, nil
+}
+
+const misplaced = `must show {{.Link}} only as the whole address of a link (<a href="{{.Link}}">) or as text, and ` +
+	`{{.Code}} only as text: not in an image's address, a style or any other attribute, which a mail client fetches ` +
+	`or could send on`
+
+// secretsPlaced reports whether out, the HTML rendered from layout and body with d, shows d's link and code only where
+// they stay with the recipient: the link as the whole href of an <a> (only the recipient's click takes it, and only
+// to itself) or as text, the code only as text. Templates are written by administrators, and the primary
+// organization's are every organization's: a link or code in an image's address would be fetched by the mail client,
+// and sent to whoever wrote the template, with each email.
+//
+// The HTML is rendered again with other values for the link and the code, and the two are compared token by token:
+// only text, and the href of an <a> that is the whole link, may differ. Whatever else depends on them, however it is
+// escaped (a query parameter, a style, a branch on the code's value), differs, and is refused. It runs on every
+// render, with the real values when an email is sent, so a branch Check did not take is caught all the same.
+func secretsPlaced(layout, body string, d Data, out string) bool {
+	if d.Link == "" && d.Code == "" {
+		return true
+	}
+	alt := d
+	alt.Link = other(d.Link, "https://link-check.invalid/a", "https://link-check.invalid/b")
+	alt.Code = other(d.Code, "000000", "111111")
+	altOut, err := renderHTML(layout, body, alt)
+	if err != nil {
+		return false
+	}
+	a, b := html.NewTokenizer(strings.NewReader(out)), html.NewTokenizer(strings.NewReader(altOut))
+	raw := false // the token is the content of a raw-text element (<style>, <script>, <title>...), not text
+	for {
+		ta, tb := a.Next(), b.Next()
+		if ta != tb {
+			return false
+		}
+		if ta == html.ErrorToken {
+			return a.Err() == io.EOF && b.Err() == io.EOF
+		}
+		x, y := a.Token(), b.Token()
+		switch ta {
+		case html.TextToken:
+			if raw && x.Data != y.Data {
+				return false
+			}
+		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
+			if x.Data != y.Data || len(x.Attr) != len(y.Attr) {
+				return false
+			}
+			link := false // an <a> whose href is the link
+			for i, v := range x.Attr {
+				w := y.Attr[i]
+				if v.Namespace != w.Namespace || v.Key != w.Key {
+					return false
+				}
+				if v.Val != w.Val {
+					if x.Data != "a" || v.Key != "href" || v.Val != d.Link || w.Val != alt.Link {
+						return false
+					}
+					link = true
+				}
+			}
+			if link && slices.ContainsFunc(x.Attr, func(v html.Attribute) bool { return v.Key == "ping" }) {
+				return false // a click would post the link's address to the ping's
+			}
+		default:
+			if x.Data != y.Data {
+				return false
+			}
+		}
+		raw = ta == html.StartTagToken && rawText[x.Data]
+	}
+}
+
+// rawText are the elements whose content the tokenizer gives as one text token, unparsed.
+var rawText = map[string]bool{"iframe": true, "noembed": true, "noframes": true, "noscript": true, "plaintext": true,
+	"script": true, "style": true, "textarea": true, "title": true, "xmp": true}
+
+// other returns a value unlike s to render with in its place ("" for none): a, else b.
+func other(s, a, b string) string {
+	switch s {
+	case "":
+		return ""
+	case a:
+		return b
+	}
+	return a
 }
 
 func renderSubject(src string, d Data) (string, error) {
@@ -439,8 +536,17 @@ type execNameErr struct {
 
 func (e *execNameErr) Error() string { return e.err.Error() }
 
+// funcs are the functions a template may call: tests for {{if}}, which give true or false. No other is: print and
+// printf, with a variable to feed back into ({{$a = print $a $a}}) or a width ({{printf "%999999s" ""}}), build
+// strings far larger than the template, in memory, before the capped output sees any of it.
+var funcs = map[string]bool{"and": true, "or": true, "not": true, "eq": true, "ne": true, "lt": true, "le": true, "gt": true, "ge": true}
+
+// funcList names funcs for an error message, in the order Go documents them.
+const funcList = "and, or, not, eq, ne, lt, le, gt, ge"
+
 // allowed checks that a template uses no loop (the data has nothing to loop over, and {{range 1000000000}} would
-// only spend the server's time) and places no template but, in a layout, the body.
+// only spend the server's time), no variable of its own and no function but funcs (either could build a string of
+// any size: the template must only show the fields), and places no template but, in a layout, the body.
 func allowed(t *parse.Tree, layout bool) error {
 	if t == nil {
 		return nil
@@ -457,6 +563,14 @@ func allowed(t *parse.Tree, layout bool) error {
 			if !layout || n.Name != "body" {
 				bad = fmt.Errorf(`{{template %q}} is not available: only a layout places a template, the body`, n.Name)
 			}
+		case *parse.PipeNode:
+			if len(n.Decl) > 0 {
+				bad = errors.New("variables ({{$x := ...}}, {{$x = ...}}) are not available")
+			}
+		case *parse.IdentifierNode:
+			if !funcs[n.Ident] {
+				bad = fmt.Errorf("{{%s}} is not available: a template calls no function but %s", n.Ident, funcList)
+			}
 		}
 	})
 	return bad
@@ -472,6 +586,7 @@ func placesBody(root parse.Node) bool {
 	return found
 }
 
+// walk calls f on n and on every node under it, the pipelines of actions, conditions and arguments included.
 func walk(n parse.Node, f func(parse.Node)) {
 	if n == nil {
 		return
@@ -484,21 +599,39 @@ func walk(n parse.Node, f func(parse.Node)) {
 				walk(c, f)
 			}
 		}
+	case *parse.ActionNode:
+		walk(n.Pipe, f)
 	case *parse.IfNode:
-		walk(n.List, f)
-		if n.ElseList != nil {
-			walk(n.ElseList, f)
-		}
+		walkBranch(&n.BranchNode, f)
 	case *parse.WithNode:
-		walk(n.List, f)
-		if n.ElseList != nil {
-			walk(n.ElseList, f)
-		}
+		walkBranch(&n.BranchNode, f)
 	case *parse.RangeNode:
-		walk(n.List, f)
-		if n.ElseList != nil {
-			walk(n.ElseList, f)
+		walkBranch(&n.BranchNode, f)
+	case *parse.TemplateNode:
+		walk(n.Pipe, f)
+	case *parse.PipeNode:
+		if n != nil {
+			for _, v := range n.Decl {
+				walk(v, f)
+			}
+			for _, c := range n.Cmds {
+				walk(c, f)
+			}
 		}
+	case *parse.CommandNode:
+		for _, a := range n.Args {
+			walk(a, f)
+		}
+	case *parse.ChainNode:
+		walk(n.Node, f)
+	}
+}
+
+func walkBranch(b *parse.BranchNode, f func(parse.Node)) {
+	walk(b.Pipe, f)
+	walk(b.List, f)
+	if b.ElseList != nil {
+		walk(b.ElseList, f)
 	}
 }
 

@@ -3,13 +3,14 @@ package service
 import (
 	"context"
 	"errors"
-	"github.com/paularlott/quisora/internal/store"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // What a user is connected to: the applications they granted access to and the sign-in providers linked to their
@@ -228,23 +229,29 @@ func (s *Service) UserPasskeys(ctx context.Context, a *Actor, userID string) ([]
 // keepSession (the one removing it, which has just confirmed it is the user). It returns how many sessions ended; an
 // error with a count is a passkey removed whose sessions did not all end.
 func (s *Service) RemovePasskey(ctx context.Context, a *Actor, userID, passkeyID, keepSession string) (int, error) {
-	ended := 0
+	ended, orgID := 0, ""
+	var from map[string]bool
 	err := s.removeWay(ctx, a, userID, way{passkey: passkeyID}, func(u *model.User, gone []model.Credential) (string, map[string]string) {
 		return selfOr(a, u, "account.passkey.delete", "user.passkey.remove"), map[string]string{"name": gone[0].(*model.Passkey).Name}
 	}, func(u *model.User, gone []model.Credential, detail map[string]string) ([]store.Op, error) {
 		// The sessions the passkey signed in, and their refresh grants, end in the transaction that removes it.
-		ids, ops, err := s.passkeySessionEnds(ctx, u.ID, gone[0].GetMeta().ID, keepSession)
+		ids, ops, f, err := s.passkeySessionEnds(ctx, u.ID, gone[0].GetMeta().ID, keepSession)
 		if err != nil {
 			return nil, err
 		}
-		ended = len(ids)
+		ended, orgID, from = len(ids), u.OrgID, f
 		detail["sessions_ended"] = strconv.Itoa(ended)
 		return ops, nil
 	})
 	if err != nil {
-		ended = 0
+		return 0, err
 	}
-	return ended, err
+	// The SSH certificates issued under them go after the commit, as for every revocation: ended first, then revoked,
+	// so a certificate signed meanwhile is either listed here or finds its sign-in gone and revokes itself (SignUserSSH).
+	if err := s.RevokeSSHCertsFrom(ctx, orgID, userID, from); err != nil {
+		return ended, fmt.Errorf("revoke SSH certificates: %w", err)
+	}
+	return ended, nil
 }
 
 // RemoveTOTP removes the user's authenticator app (removeWay: done to yourself, not your last second factor where

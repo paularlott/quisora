@@ -172,6 +172,12 @@ func sshHostSignCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
+			// As for the server's secrets (secretFlagWarnings): accepted, but anyone on the machine sees them in ps.
+			for _, f := range [][2]string{{"token", "QUISORA_TOKEN"}, {"client-secret", "QUISORA_CLIENT_SECRET"}} {
+				if c.FlagSource(f[0]) == cli.SourceCommandLine {
+					fmt.Fprintf(os.Stderr, "warning: --%s is a secret on the command line, visible to anyone on this machine (ps); set %s instead\n", f[0], f[1])
+				}
+			}
 			return sshEnv(c).HostSign(ctx, sshcli.HostSignOptions{URL: c.GetStringArg("url"), KeyFile: c.GetStringArg("key"),
 				Principals: c.GetStringSlice("principal"), Token: c.GetString("token"), ClientID: c.GetString("client-id"),
 				Secret: c.GetString("client-secret"), AuthMethod: c.GetString("auth-method"), TTLDays: days})

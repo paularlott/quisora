@@ -447,12 +447,16 @@ func TestAccessTokenChecksFailClosedOnUnreadableStores(t *testing.T) {
 		if _, err := h.p.verifyAccessToken(t.Context(), at); !isUnavailable(err) {
 			t.Fatalf("grant read: %v", err)
 		}
-		// revocation and introspection cannot decide either
+		// introspection and a refresh token's revocation cannot decide either
 		f := url.Values{"token": {at}, "client_id": {cl.ID}, "client_secret": {secret}}
-		expectUnavailable(t, "revoke", h.post(h.orgBase+"/oauth/revoke", f, "", ""))
 		expectUnavailable(t, "introspect", h.post(h.orgBase+"/oauth/introspect", f, "", ""))
 		f.Set("token", r.str("refresh_token"))
 		expectUnavailable(t, "revoke refresh", h.post(h.orgBase+"/oauth/revoke", f, "", ""))
+		// an access token's revocation needs no read of its grant: it ends the grant whether or not it is still there
+		f.Set("token", at)
+		if resp := h.post(h.orgBase+"/oauth/revoke", f, "", ""); resp.status != 200 {
+			t.Errorf("revoke: %d, want 200", resp.status)
+		}
 	})
 	t.Run("organization", func(t *testing.T) {
 		h, _, _, r := login(t)

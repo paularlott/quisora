@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -256,4 +257,41 @@ func TestUserTOTPAPI(t *testing.T) {
 	mgr := giveTOTP(w.users["manager"])
 	want(t, w.as("admin").delete(AU+"/"+mgr.ID+"/totp"), 422)
 	want(t, w.as("super").delete(AU+"/"+mgr.ID+"/totp"), 204)
+}
+
+// Removing another user's passkey or linked provider takes away a way they sign in, as removing their password or
+// authenticator app does: it needs a recent re-authentication, so a stolen API token or an old session cannot strip
+// a user's sign-in methods.
+func TestRemovingSignInMethodsNeedsStepUp(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	u := w.users["user"]
+	pk := &model.Passkey{UserID: u.ID, OrgID: u.OrgID, Name: "Laptop", CredentialID: []byte("cred-1"), PublicKey: []byte("pk"), UserVerified: true}
+	if err := w.env.Svc.Passkeys.Create(ctx, pk); err != nil {
+		t.Fatal(err)
+	}
+	p := &model.Provider{OrgID: u.OrgID, Name: "GitHub", Type: model.ProviderGitHub, Enabled: true}
+	if err := w.env.Svc.Providers.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.env.Svc.Identities.Create(ctx, model.NewIdentity(u, p, "gh-1", "alan@github.example", "connect")); err != nil {
+		t.Fatal(err)
+	}
+	fresh := false
+	w.env.Server.Reauthed = func(*http.Request) bool { return fresh }
+	U := AU + "/" + u.ID
+	tok, ad := w.withBearer("admin", "admin"), w.as("admin")
+	for _, c := range []*caller{tok, ad} {
+		wantField(t, c.delete(U+"/passkeys/"+pk.ID), 403, "reauth")
+		wantField(t, c.delete(U+"/providers/"+p.ID), 403, "reauth")
+	}
+	if _, err := w.env.Svc.Passkeys.Get(ctx, pk.ID); err != nil {
+		t.Fatal("passkey removed without a re-authentication")
+	}
+	if ids, _ := w.env.Svc.Identities.All(ctx, u.ID); len(ids) != 1 {
+		t.Fatal("provider unlinked without a re-authentication")
+	}
+	fresh = true
+	want(t, ad.delete(U+"/passkeys/"+pk.ID), 200)
+	want(t, ad.delete(U+"/providers/"+p.ID), 200)
 }

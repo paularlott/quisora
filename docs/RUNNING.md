@@ -788,7 +788,19 @@ quisora restore quisora.bak                   # into the configured store, witho
 - Backups encrypted with the master key by earlier builds still restore, with no password, given that master key.
 
 - Ids and versions are kept, into any backend (a BadgerDB backup can go into PostgreSQL).
+- The backup is checked as it is copied to a private file in the data directory (`quisora-restore-…`, as large as the
+  backup file, removed when the restore ends; not `TMPDIR`, which may be a `tmpfs` held in memory), and the records are
+  written from that copy: a file changed after the check is never what is restored. Leave room for it there. A copy an
+  interrupted restore left is removed when the next one starts.
 - A restore that fails part-way leaves `restore-incomplete` in the data directory. Empty the store before trying again.
+- **A restore brings back the state of the backup's time**: refresh tokens and grants revoked since, sessions and
+  API tokens ended since (the [emergency sign-out](emergency-sign-out.md) counters go back too), passwords, second
+  factors and passkeys changed or removed since, and accounts disabled since. Only an audit note (`backup.restore`)
+  says it happened. After restoring a backup that is not from moments ago, sign everyone out
+  ([`quisora sign-out --all --api-tokens`](emergency-sign-out.md#from-the-command-line), or **System overview** →
+  **Sign everyone out…** once it serves), and review the accounts and credentials changed since the backup was made.
+  A forced restore over data (`--force`) brings back each record the store holds an older version of or no longer
+  holds at all (a deletion whose tombstone has been purged included), so the same applies to it.
 - **Clusters always restore into an empty cluster.**
   - Shared database: restore into the empty database, then start the nodes.
   - Gossip: restore into one node with an empty database (a restore never goes over data, nor on a node that already holds a
@@ -860,7 +872,12 @@ Until the first release, formats change in place. From then on:
 
 With `mail.smtp_host` set, invitations, password resets and address confirmations are emailed. Without it nothing is
 emailed: administrators share invitation links themselves, and there is no self-service password reset. What the emails
-say and look like is set per organization, over the primary organization's defaults: [EMAILS.md](EMAILS.md).
+say and look like is set per organization, over the primary organization's defaults: [EMAILS.md](EMAILS.md). An
+organization's administration (its administrators, managers and service accounts) has it email at most 300 invitations
+and verification links an hour to the addresses it enters, then 429 ([EMAILS.md](EMAILS.md#limits)). "Forgot your
+password?" sends an account at most 5 reset emails an hour for the requests of one address, and 20 an hour in all:
+anyone who knows the address can ask for a reset, but cannot use up the owner's own requests from another address, nor
+flood the inbox. The form answers the same either way.
 
 Email is queued in the store before the request that sends it answers, as the sending node's own ([Queued work](#queued-work)),
 sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30

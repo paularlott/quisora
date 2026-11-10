@@ -574,7 +574,10 @@ func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pub
 		rj.retryAt = time.Now().Add(d)
 		p.jwksMu.Unlock()
 	}
-	body, err := p.fetch(ctx, uri, jwksMaxBytes)
+	// The fetch is every caller's (they wait for it, and a failure backs off for all), so it is not the requester's
+	// own: one that hangs up must not end it, or an attacker sending assertions and hanging up would hold the client's
+	// keys in backoff. It still ends at fetch's timeout.
+	body, err := p.fetch(context.WithoutCancel(ctx), uri, jwksMaxBytes)
 	if err != nil {
 		p.log.Warn("oidc: fetching client jwks", "uri", uri, "error", err)
 		fail()

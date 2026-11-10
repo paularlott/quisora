@@ -44,8 +44,9 @@ type SSHUserRequest struct {
 	// certificate once they no longer hold); one that has already ended is refused.
 	SessionEpoch uint64
 	Stamp        model.SignOutStamp
-	// SignIn is the session (the account page) or the access token's grant (the sign endpoint) the request stands on:
-	// the certificate is revoked when it is ended (RevokeSSHCertsFrom).
+	// SignIn is the session (the account page, ClientID "") or the access token's grant (the sign endpoint) the request
+	// stands on: the certificate is revoked when it is ended (RevokeSSHCertsFrom), and it is read again once the
+	// certificate is stored.
 	SignIn string
 }
 
@@ -353,6 +354,33 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 		"amr": strings.Join(req.AMR, ","), "tenant": t.Name}
 	if err := s.AuditedUser(ctx, actor, u, "ssh.cert.issue", detail, func() error { return s.SSHCerts.Create(ctx, rec) }); err != nil {
 		return nil, mapStore(err)
+	}
+	// The sign-in may have been ended since it was checked (this node may hold a cached copy of the session or grant
+	// for a few seconds), and its revocation may have listed the user's certificates before this one was stored. Its
+	// end deletes it first and lists the certificates after (endSessions, revokeGrant); this stores the certificate
+	// first and reads the sign-in after, from the store. On a shared database, or a single node, whichever comes second
+	// sees the other: found here, it was deleted after this certificate was stored, and the listing that follows the
+	// deletion revokes it; gone, this revokes it, and the certificate is not handed out. In a gossip cluster each node
+	// reads its own copy, so the two can still miss each other while the deletion and the certificate are replicating:
+	// the window narrows to the replication lag, from the seconds of the caches. A read that fails decides nothing: the
+	// certificate is revoked as well, and not handed out.
+	if req.SignIn != "" {
+		var err error
+		if req.ClientID == "" {
+			_, err = s.Sessions.Get(ctx, req.SignIn) // the account page: the session
+		} else {
+			_, err = s.Grants.Get(ctx, req.SignIn) // the sign endpoint: the access token's grant
+		}
+		if err != nil {
+			if _, rerr := s.sshRevokeSignInEnded(ctx, u.OrgID, rec.ID); rerr != nil {
+				s.Log.WithError(rerr).Error("an SSH certificate whose sign-in ended could not be revoked", "serial", rec.Serial)
+			}
+			s.InvalidateSSHKRL()
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, s.sshRefuse(ctx, req, t, "session_ended", &SSHRefusal{"the sign-in this request comes from has ended: sign in again"})
+			}
+			return nil, mapStore(err)
+		}
 	}
 	return &SSHIssued{Certificate: line, Cert: rec}, nil
 }

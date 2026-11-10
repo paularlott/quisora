@@ -176,8 +176,10 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 			return ErrForbidden
 		}
 		v := verified && !self
-		if v {
-			// as MarkEmailVerified: a verified address links sign-ins from providers to the account
+		if !self {
+			// as MarkEmailVerified: a verified address links sign-ins from providers to the account. An unverified one
+			// too: its verification link goes to the address, and whoever holds that verifies it, so an address added by
+			// someone else ends up as theirs to verify. Either way it is a reset of a privileged account's sign-in.
 			if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
 				return err
 			}

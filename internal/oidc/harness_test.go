@@ -716,10 +716,16 @@ func (h *harness) register(redirect string) *model.Client {
 // mcpTenant is a tenant owning mcpResource, allowing self-registered applications when allow.
 func (h *harness) mcpTenant(name string, allow bool) *model.Tenant {
 	h.t.Helper()
+	return h.mcpTenantOf(name, mcpResource, allow)
+}
+
+// mcpTenantOf is mcpTenant owning resource instead.
+func (h *harness) mcpTenantOf(name, resource string, allow bool) *model.Tenant {
+	h.t.Helper()
 	set := model.DefaultTenantSettings()
 	set.SelfRegistration, set.RequireMFA = allow, false // the test sessions have no second factor
 	tn, err := h.env.Svc.CreateTenant(context.Background(), h.admin, h.env.Primary.ID,
-		service.TenantInput{Name: ptr(name), Settings: &set, Resources: &[]string{mcpResource}})
+		service.TenantInput{Name: ptr(name), Settings: &set, Resources: &[]string{resource}})
 	if err != nil {
 		h.t.Fatal(err)
 	}

@@ -6,11 +6,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/ttlcache"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -295,5 +298,116 @@ func TestPublicClientTokenRequestFailsClosedOnUnreadableClient(t *testing.T) {
 	h.env.Svc.Clients.S = good
 	if r1 := refresh(); r1.status != 200 {
 		t.Fatalf("the same request once the store answers again: %d %v", r1.status, r1.m)
+	}
+}
+
+// originsAt returns the origins publicOrigins finds for a request to organization orgID made under ctx.
+func (h *harness) originsAt(ctx context.Context, orgID string) *originSet {
+	var set *originSet
+	req := httptest.NewRequestWithContext(ctx, "OPTIONS", web.OrgPath(orgID, "/oauth/token"), nil)
+	req.SetPathValue("org", orgID)
+	h.p.s.InOrg(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { set = h.p.publicOrigins(r) })).
+		ServeHTTP(httptest.NewRecorder(), req)
+	return set
+}
+
+// heldLists holds every List until release is closed (or the caller's context ends, as a store's read would).
+type heldLists struct {
+	store.Store
+	release chan struct{}
+	lists   atomic.Int32
+}
+
+func (s *heldLists) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	s.lists.Add(1)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.Store.List(ctx, kind, q)
+}
+
+// The CORS preflight is unauthenticated: the requests that miss an organization's origins while they are being read
+// wait for that read rather than each reading every public client again, and the read is not the first requester's
+// own: one that hangs up does not leave the others (and the cache) without the origins.
+func TestOriginsReadOncePerOrganizationAtATime(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.publicClient(nil)
+	org := h.env.Primary.ID
+	held := &heldLists{Store: h.p.svc.Clients.S, release: make(chan struct{})}
+	h.p.svc.Clients.S = held
+	ctx, hangUp := context.WithCancel(context.Background())
+	sets := make([]*originSet, 8)
+	var wg sync.WaitGroup
+	wg.Go(func() { sets[0] = h.originsAt(ctx, org) })
+	for held.lists.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	for i := 1; i < len(sets); i++ {
+		wg.Go(func() { sets[i] = h.originsAt(context.Background(), org) })
+	}
+	time.Sleep(50 * time.Millisecond) // the others miss while the first read is under way
+	hangUp()
+	close(held.release)
+	wg.Wait()
+	if n := held.lists.Load(); n != 1 {
+		t.Errorf("%d reads of the clients for %d concurrent misses", n, len(sets))
+	}
+	for i, s := range sets[1:] {
+		if !s.allows("https://spa.example") {
+			t.Errorf("request %d: the origin is not allowed after the first requester hung up", i+1)
+		}
+	}
+	if s, ok := h.p.origins.Get(org); !ok || !s.allows("https://spa.example") {
+		t.Error("the origins read were not kept")
+	}
+}
+
+// A change to one organization's client makes only that organization read its origins again: registrations at one
+// organization do not empty every organization's. A change that does not say whose it was clears them all.
+func TestClientChangeReloadsOnlyItsOrganizationsOrigins(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.publicClient(nil)
+	org2, _ := h.secondOrg()
+	ctx := context.Background()
+	fill := func() {
+		h.originsAt(ctx, h.env.Primary.ID)
+		h.originsAt(ctx, org2.ID)
+	}
+	cached := func(org string) bool { _, ok := h.p.origins.Get(org); return ok }
+	fill()
+	h.p.InvalidateClientIn(org2.ID, "dyn-x")
+	if !cached(h.env.Primary.ID) || cached(org2.ID) {
+		t.Errorf("a client change at one organization: primary cached %v, the other %v", cached(h.env.Primary.ID), cached(org2.ID))
+	}
+	fill()
+	h.p.InvalidateClient("dyn-x")
+	if cached(h.env.Primary.ID) || cached(org2.ID) {
+		t.Error("a change of an unknown organization did not clear every organization's origins")
+	}
+}
+
+// A self-registered application nobody has let sign in has no browser origin to allow yet, and anyone may register
+// one: its redirect URIs' origins count only once it has been used.
+func TestUnusedSelfRegisteredOriginsNotAllowed(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	tn := h.mcpTenant("mcp", true)
+	cl := h.register("https://registered.example/cb")
+	ctx, org := context.Background(), h.env.Primary.ID
+	if h.originsAt(ctx, org).allows("https://registered.example") {
+		t.Fatal("an unused self-registered application's origin is allowed")
+	}
+	stored, err := h.env.Svc.Clients.Get(ctx, cl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.env.Svc.NoteSelfRegisteredUse(ctx, stored, tn)
+	h.p.InvalidateClientIn(org, cl.ID) // the cluster does this in a server, on every change to the record
+	if !h.originsAt(ctx, org).allows("https://registered.example") {
+		t.Fatal("a used self-registered application's origin is not allowed")
 	}
 }

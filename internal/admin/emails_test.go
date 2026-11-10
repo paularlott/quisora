@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -8,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/admin"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 func TestUserLinkedEmailsAPI(t *testing.T) {
@@ -218,5 +221,52 @@ func TestEmailOffersFollowSMTP(t *testing.T) {
 	b = page(on)
 	if !strings.Contains(b, "Email the invitation") || !strings.Contains(b, "Send by email") || !strings.Contains(b, `data-mail="1"`) {
 		t.Error("mail on: the page does not offer email")
+	}
+}
+
+// Invitations and verification links go to any address an administrator enters, from the organization's own
+// templates: an organization's administration sends at most web.AdminEmailsPerHour of them an hour (then 429, and
+// nothing is created or sent); another organization's budget is its own, an administrator's own addresses do not
+// count, and nor do requests refused before or while sending (an address the service turns down, mail not set up).
+func TestAdminEmailsAreBudgeted(t *testing.T) {
+	w := newWorld(t)
+	w.env.Server.Site.Mail = true
+	m := &fakeMailer{}
+	w.mod.Mailer = m
+	ad := w.as("admin")
+	uid := w.users["user"].ID
+	for range 3 {
+		want(t, ad.post(AU+"/"+uid+"/emails", map[string]any{"address": "not an address"}), 422)
+	}
+	m.err = admin.ErrMailerDisabled
+	for range 3 {
+		want(t, ad.post(AU+"/"+uid+"/emails/"+url.PathEscape(w.users["user"].Email)+"/verify", nil), 503)
+	}
+	m.err = nil
+	for i := 0; i < web.AdminEmailsPerHour; i++ {
+		if r := ad.post(AU+"/"+uid+"/invite", map[string]any{"email": true}); r.Status != 200 {
+			t.Fatalf("invitation %d: %d %s", i, r.Status, r.Raw)
+		}
+	}
+	r := ad.post(AU+"/"+uid+"/invite", map[string]any{"email": true})
+	if r.Status != 429 || r.Header.Get("Retry-After") == "" || !strings.Contains(r.str("error"), "invitation link") {
+		t.Fatalf("over the budget: %d %s", r.Status, r.Raw)
+	}
+	want(t, ad.post(AU, map[string]any{"username": "newbie", "email": "newbie@x.example", "invite": map[string]any{"email": true}}), 429)
+	if n, _ := w.env.Svc.Users.Count(context.Background(), w.acme.ID); n != 3 {
+		t.Fatalf("%d users: one created over the budget", n)
+	}
+	want(t, ad.post(AU+"/"+uid+"/emails", map[string]any{"address": "relay@x.example"}), 429)
+	want(t, ad.post(AU+"/"+uid+"/emails/"+url.PathEscape(w.users["user"].Email)+"/verify", nil), 429)
+	want(t, ad.patch(AU+"/"+uid, map[string]any{"email": "relay@x.example"}), 429)
+	if len(m.sent) != web.AdminEmailsPerHour {
+		t.Fatalf("sent %d", len(m.sent))
+	}
+	// the invitation link itself is still there to share; another organization, and a user's own address, still mail
+	want(t, ad.post(AU+"/"+uid+"/invite", nil), 200)
+	want(t, w.as("other").post(G+"/users/"+w.users["other"].ID+"/emails", map[string]any{"address": "otto2@x.example"}), 201)
+	want(t, ad.post(AU+"/"+w.users["admin"].ID+"/emails", map[string]any{"address": "mine@x.example"}), 201)
+	if len(m.sent) != web.AdminEmailsPerHour+2 {
+		t.Fatalf("sent %d", len(m.sent))
 	}
 }

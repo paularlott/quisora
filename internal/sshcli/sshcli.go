@@ -45,11 +45,12 @@ type Env struct {
 	Hostname    func() (string, error)                        // the host's name (host-sign)
 	LookupCNAME func(context.Context, string) (string, error) // resolves it to a fully qualified name (host-sign)
 
-	// fetch --end-revoked: the certificate logins sshd logged (default: journald), whether a process is still sshd's
-	// (default: /proc), and ending one (default: SIGTERM). Tests replace them.
+	// fetch --end-revoked: the certificate logins sshd logged (default: journald, root's lines only), whether the
+	// process of one is still the one that logged it (default: /proc), and ending it (default: SIGTERM through a pidfd,
+	// after checking again). Tests replace them.
 	SSHDLogins func(context.Context) ([]SSHDLogin, error)
-	IsSSHD     func(pid int) bool
-	Terminate  func(pid int) error
+	IsSSHD     func(l SSHDLogin) bool
+	Terminate  func(l SSHDLogin) error
 }
 
 func (e *Env) out() io.Writer {
@@ -87,7 +88,7 @@ func (e *Env) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// client is the HTTP client: timeouts, the extra CA certificates, no redirect from https to http.
+// client is the HTTP client: timeouts, the extra CA certificates, and redirects within the origin asked only.
 func (e *Env) client() (*http.Client, error) {
 	if e.HTTP != nil {
 		return e.HTTP, nil
@@ -117,12 +118,43 @@ func (e *Env) client() (*http.Client, error) {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
-				return errors.New("refusing a redirect from https to http")
+			// Never to another origin (another host or port, or from https to http): a 307 or 308 from the token
+			// endpoint would send the form again there, client secret included, and the server's answers are only
+			// trusted from the server.
+			if !sameServer(via[len(via)-1].URL, req.URL) {
+				return fmt.Errorf("refusing a redirect to another origin: %s://%s", req.URL.Scheme, req.URL.Host)
 			}
 			return nil
 		}}
 	return e.HTTP, nil
+}
+
+// sameServer reports whether a redirect from from to to stays at the same server: the same host and port, a default
+// port written out or left off being the same (https://host:443 is https://host), and the same scheme, or http
+// upgraded to https on the same host at the default ports (http://host to https://host: what was sent over http is
+// sent again only over TLS). Each hop is held to the one before it, so a chain of them never leaves the host nor goes
+// back from https to http.
+func sameServer(from, to *url.URL) bool {
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		if strings.EqualFold(u.Scheme, "http") {
+			return "80"
+		}
+		return "443"
+	}
+	if !strings.EqualFold(from.Hostname(), to.Hostname()) {
+		return false
+	}
+	fs, ts := strings.ToLower(from.Scheme), strings.ToLower(to.Scheme)
+	switch {
+	case fs == ts:
+		return port(from) == port(to)
+	case fs == "http" && ts == "https":
+		return port(from) == "80" && port(to) == "443"
+	}
+	return false
 }
 
 // Discovery is the document at the tenant's SSH URL (docs/design/ssh-ca.md, "Public endpoints").

@@ -72,8 +72,17 @@ in with PKCE, naming the MCP server as `resource`.
   credentials in the URI.
 - **Consent is always asked**, with a warning that the app is not verified by the organization and where it sends
   the result (a host, or the app scheme for a desktop app): its name is only what it calls itself.
-- **Abuse limits**: 10 registrations per address and minute, at most 10,000 registrations per organization nobody has used yet
-  (apps people use never count), and a registration never used to sign anyone in is removed after a day. A metadata
+- **Registration is open only where it can be used**: an organization with no tenant that allows self-registered apps
+  for a resource it owns answers `/oauth/register` with `403 access_denied`.
+- **Abuse limits**: 10 registration requests per address and minute, 100 per address and organization a day, 60
+  registrations made per organization and minute from every address together (refused requests do not count toward
+  it, so bad requests from a few addresses cannot block others) (`429 slow_down` past any of them), at most 10,000 registrations
+  per organization nobody has used yet (apps people use never count; past it `503 temporarily_unavailable`), and a
+  registration never used to sign anyone in is removed after a day. An app nobody has signed in with yet is given no
+  CORS origin (its https redirect URIs count once it has been used), so a browser app's first request through
+  pushed authorization (`/oauth/par`, which it calls from script) is refused by the browser until its first
+  authorization: such an app starts its first sign-in with a plain authorization request (a redirect, which needs no
+  CORS), and may use PAR from then on. A metadata
   document is read only for a resource whose tenant accepts self-registered apps, at most 20 new documents per address
   and minute and once a minute per URL, with the same SSRF guard as JWKS (no private or loopback addresses unless
   listed in `server.allowed_networks` or `server.allow_private_networks` is set), at most 5 KB; the app is stored only once a user lets it sign in.
@@ -144,7 +153,8 @@ their server on. Each client a person approved is listed with the organization's
   what they may see and change, exactly as in the console (a manager changes plain users only; only administrators
   read the audit log). The organization is the one the address names.
 - **No more than a personal API token.** A change that needs a recent re-authentication in the console (disabling an
-  administrator, sending an invitation to another manager or administrator, removing someone's password or authenticator)
+  administrator, sending an invitation to another manager or administrator, removing someone's password, authenticator or
+  passkey)
   is refused, as it is for an API token. The client cannot make API tokens either.
 - **In the audit log.** Every change is recorded under the person's name, with the client (its `client_id`) in the
   event's detail as `app`.

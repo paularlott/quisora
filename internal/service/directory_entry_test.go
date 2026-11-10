@@ -163,3 +163,27 @@ func TestFullViewListsOnlyWhatTheViewerSeesInFull(t *testing.T) {
 		}
 	}
 }
+
+// Looking a user up by address or external id confirms them, as a search would: a manager finds the users they see in
+// full, and an administrator (a directory entry to them) is not found by its address or external id.
+func TestFindUserDoesNotConfirmHiddenFields(t *testing.T) {
+	e := newEnv(t)
+	acme := e.org("acme")
+	mgr := e.user(acme.ID, "mgr", model.RoleManager)
+	adm := e.user(acme.ID, "f-admin", model.RoleAdmin)
+	plain := e.user(acme.ID, "f-plain", model.RoleUser)
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, adm.ID, service.UserInput{ExternalID: ptr("ext-admin")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.svc.FindUser(e.ctx, actor(mgr), acme.ID, "", plain.Email); err != nil || got.ID != plain.ID {
+		t.Fatalf("a plain user by address: %v %v", got, err)
+	}
+	for name, find := range map[string][2]string{"address": {"", adm.Email}, "external id": {"ext-admin", ""}} {
+		if got, err := e.svc.FindUser(e.ctx, actor(mgr), acme.ID, find[0], find[1]); !errors.Is(err, service.ErrNotFound) {
+			t.Errorf("a manager found an administrator by its %s: %v %v", name, got, err)
+		}
+		if got, err := e.svc.FindUser(e.ctx, actor(e.super), acme.ID, find[0], find[1]); err != nil || got.ID != adm.ID {
+			t.Errorf("a super admin did not find the administrator by its %s: %v %v", name, got, err)
+		}
+	}
+}

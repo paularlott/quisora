@@ -56,7 +56,8 @@ func TestSignOutAndRevocationEnd(t *testing.T) {
 		from := func(id string) func(*service.SSHUserRequest) {
 			return func(r *service.SSHUserRequest) { r.SignIn = id }
 		}
-		s.viaSess, s.viaOnline, s.viaOffline = w.mustSign(u, from(sess.ID)), w.mustSign(u, from(s.online)), w.mustSign(u, from(s.offline))
+		fromSession := func(r *service.SSHUserRequest) { r.SignIn, r.ClientID = sess.ID, "" } // the account page's: no client
+		s.viaSess, s.viaOnline, s.viaOffline = w.mustSign(u, fromSession), w.mustSign(u, from(s.online)), w.mustSign(u, from(s.offline))
 		return s
 	}
 	sessionGone := func(s signIn) bool {

@@ -29,3 +29,34 @@ func (s *Server) TestEmailAllowed(ctx context.Context, userID string) (bool, err
 	}
 	return n <= TestEmailsPerMinute && nh <= TestEmailsPerHour, nil
 }
+
+// Invitations and verification links sent by an administrator, a manager or a service account go to any address they
+// enter, from the organization's own templates (which its administrators write), from the server's mail identity:
+// without a limit the user endpoints would relay mail as the test email would. A budget per organization, generous
+// enough to invite a whole team in an afternoon, bounds it. Counted as the test emails are.
+const AdminEmailsPerHour = 300
+
+// AdminEmailAllowed reports whether organization orgID's administration may send another email within its budget. It
+// only reads the count: AdminEmailSent counts an email once it is sent, so a request refused before or after this
+// check (a bad address, mail switched off) spends nothing.
+func (s *Server) AdminEmailAllowed(ctx context.Context, orgID string) (bool, error) {
+	if s.Eph == nil {
+		return true, nil
+	}
+	n, err := s.Eph.Incr(ctx, sshRateNS, adminEmailKey(orgID), 0, time.Hour)
+	if err != nil {
+		return false, err
+	}
+	return n < AdminEmailsPerHour, nil
+}
+
+// AdminEmailSent counts an email sent on behalf of organization orgID's administration. The email is gone: a count
+// that cannot be written now does not undo it. Requests at the same moment can each pass AdminEmailAllowed, so the
+// budget can be overrun by as many as arrive together.
+func (s *Server) AdminEmailSent(ctx context.Context, orgID string) {
+	if s.Eph != nil {
+		_, _ = s.Eph.Incr(ctx, sshRateNS, adminEmailKey(orgID), 1, time.Hour)
+	}
+}
+
+func adminEmailKey(orgID string) string { return "mail-admin|h|" + orgID }

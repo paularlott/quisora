@@ -93,7 +93,9 @@ Each organization, and the server as a whole, keeps a sign-out counter, and ever
 stamped with the counters when it is made. Pulling the lever increments a counter in one write, which the cluster
 confirms like any other; from then on everything stamped before it is refused. So it does not depend on the nodes'
 clocks, and it cannot be half done. The counters are part of backups and are kept on the primary organization, which never
-changes, so nothing a sign-out ended comes back with a restore.
+changes, so nothing a sign-out ended before a backup was made comes back with a restore of it. A restore of a backup made
+before a sign-out brings back what it ended (the counters go back with everything else): sign everyone out again after
+restoring one ([Backup and restore](RUNNING.md#backup-and-restore)).
 
 ### In a gossip cluster
 

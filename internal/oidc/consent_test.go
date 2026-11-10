@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -399,4 +400,89 @@ func TestConsentNotCarriedToChangedRedirects(t *testing.T) {
 	if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"redirect_uri": {evil}, "prompt": {"none"}})); u.Query().Get("error") != "consent_required" {
 		t.Fatalf("prompt=none after the change: %s", u)
 	}
+}
+
+// Only a live grant stands for consent: one expired, or made in a session epoch the user has since left (its sessions
+// revoked), whose record is merely still there, does not skip the consent screen.
+func TestConsentNotFromDeadGrants(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	c, csrf := h.session(h.user)
+	v, ch := pkce()
+	u := h.authorize(c, authzQuery(cl, ch, nil))
+	_, redirect := h.decideConsent(c, csrf, u.Query().Get("flow"), true)
+	code := loc(t, h.get(c, redirect)).Query().Get("code")
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
+		t.Fatal(r.m)
+	}
+	gs, err := h.env.Svc.Grants.All(ctx, h.user.ID)
+	if err != nil || len(gs) != 1 {
+		t.Fatalf("grants: %v %v", gs, err)
+	}
+	g := gs[0]
+	_, ch2 := pkce()
+	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Query().Get("code") == "" {
+		t.Fatalf("control: asked again while the grant lives: %s", u)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*model.Grant)
+	}{
+		{"of an ended epoch", func(g *model.Grant) { g.Epoch++ }},
+		{"expired", func(g *model.Grant) { g.Expires = time.Now().Add(-time.Minute) }}, // last: its record is not read again
+	} {
+		dead, err := h.env.Svc.Grants.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live := *dead
+		tc.change(dead)
+		if err := h.env.Svc.Grants.Update(ctx, dead); err != nil {
+			t.Fatal(err)
+		}
+		if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Path != h.orgBase+"/oauth/consent" {
+			t.Errorf("a grant %s counted as consent: %s", tc.name, u)
+		}
+		live.Version = dead.Version
+		_ = h.env.Svc.Grants.Update(ctx, &live)
+	}
+}
+
+// A code is redeemed for the client as the user authorized it: one issued before the client's redirect URIs (or
+// credentials) changed is refused after the change, rather than making a grant that counts as consent for the changed
+// client. The same for a device sign-in approved before the change.
+func TestCodeNotRedeemedAfterTheClientChanged(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	c, csrf := h.session(h.user)
+	v, ch := pkce()
+	u := h.authorize(c, authzQuery(cl, ch, nil))
+	_, redirect := h.decideConsent(c, csrf, u.Query().Get("flow"), true)
+	code := loc(t, h.get(c, redirect)).Query().Get("code")
+	if code == "" {
+		t.Fatal("no code")
+	}
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{RedirectURIs: &[]string{cl.RedirectURIs[0], "https://attacker.example/cb"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID)
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 400 || r.str("error") != "invalid_grant" {
+		t.Fatalf("a code issued before the change redeemed: %d %v", r.status, r.m)
+	}
+
+	dev := h.deviceClient(nil)
+	dc, uc := h.startDevice(dev, "openid")
+	b, bcsrf := h.session(h.user)
+	if st, pg := h.consentDevice(b, bcsrf, uc, true); st != 200 {
+		t.Fatalf("approve: %d %s", st, pg)
+	}
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, dev.ID, service.ClientInput{RedirectURIs: &[]string{"https://elsewhere.example/cb"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(dev.ID)
+	tokenErr(t, h.pollDevice(dev, dc), 400, "invalid_grant")
 }

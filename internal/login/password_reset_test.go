@@ -3,6 +3,7 @@ package login_test
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -190,5 +191,37 @@ func TestResetFormIsRateLimited(t *testing.T) {
 	wantStatus(t, res, out, 429)
 	if res.Header.Get("Retry-After") == "" {
 		t.Fatal("no Retry-After")
+	}
+}
+
+// Anyone who knows an address may ask for its account's reset mails, so the hourly allowance is the requesting
+// address's: five requests from one address do not use up the owner's own from another. All addresses together still
+// get at most twenty an hour, so the form cannot flood the inbox.
+func TestForgotAllowanceIsPerAddress(t *testing.T) {
+	e := newEnv(t, noIPLimit, trustLoopbackProxy)
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	forgot := func(ip string, times int) {
+		t.Helper()
+		b := e.browserAt(t, org)
+		b.fromAddress(ip)
+		for range times {
+			res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
+			wantStatus(t, res, out, 200)
+		}
+	}
+	forgot("203.0.113.66", 8)
+	if n := e.drainMails(t); n != 5 {
+		t.Fatalf("one address was sent %d reset mails, want 5", n)
+	}
+	forgot("198.51.100.7", 1) // the owner, from elsewhere
+	if n := e.drainMails(t); n != 1 {
+		t.Fatalf("the owner's own request was sent %d mails after another address used its allowance", n)
+	}
+	for i := range 6 { // 30 requests from other addresses: the account's 20 an hour, 6 of which are sent
+		forgot("192.0.2."+strconv.Itoa(i+1), 5)
+	}
+	if n := e.drainMails(t); n != 14 {
+		t.Fatalf("every address together was sent %d more, want 14 (20 an hour)", n)
 	}
 }

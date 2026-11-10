@@ -57,7 +57,7 @@ func TestEncryptWriterRoundTrip(t *testing.T) {
 		t.Fatal("PasswordProtected")
 	}
 	dst := memstore.New()
-	if st, err := Restore(ctx, dst, s, bytes.NewReader(enc.Bytes()), false, covPassword); err != nil || st[model.KindGroup] != 3 {
+	if st, err := Restore(ctx, dst, s, bytes.NewReader(enc.Bytes()), false, covPassword, t.TempDir()); err != nil || st[model.KindGroup] != 3 {
 		t.Fatalf("restore: %v %v", st, err)
 	}
 	if _, err := EncryptWriter(io.Discard, "short"); err == nil {

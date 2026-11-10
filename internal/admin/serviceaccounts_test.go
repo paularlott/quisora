@@ -137,4 +137,8 @@ func TestCreateOrgWithServiceAccount(t *testing.T) {
 	}
 	wantField(t, su.post("/api/orgs", map[string]any{"name": "bad", "service_account": map[string]any{"name": "x", "scopes": []string{"orgs:create"}}}), 422, "service_account.scopes")
 	want(t, su.get("/api/orgs/bad"), 404)
+	// a personal API token makes no service account (its scopes would outlive the token), nor the organization
+	wantField(t, w.withBearer("super", "admin").post("/api/orgs", map[string]any{"name": "bytoken",
+		"service_account": map[string]any{"name": "x", "scopes": []string{"users"}}}), 403, "reauth")
+	want(t, su.get("/api/orgs/bytoken"), 404)
 }

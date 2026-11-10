@@ -81,6 +81,17 @@ func TestEmailTemplatesWho(t *testing.T) {
 			t.Errorf("%s preview: %v", name, err)
 		}
 	}
+	// The primary organization's templates are every organization's: only a super admin changes them, not its own
+	// administrators (who still read and preview them).
+	if _, err := c.svc.UpdateEmailTemplates(c.ctx, actor(c.pAdmin), c.primary.ID, in); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("primary org's admin on its templates: %v", err)
+	}
+	if _, err := c.svc.PreviewEmailTemplates(c.ctx, actor(c.pAdmin), c.primary.ID, in); err != nil {
+		t.Errorf("primary org's admin previews: %v", err)
+	}
+	if _, err := c.svc.UpdateEmailTemplates(c.ctx, actor(c.super), c.primary.ID, in); err != nil {
+		t.Errorf("super admin on the primary's templates: %v", err)
+	}
 	_, sa := newServiceAccount(t, c, c.a.ID, "users", "manage_admins", "clients")
 	for name, a := range map[string]*service.Actor{"manager": actor(c.aManager), "user": actor(c.aUser), "another org's admin": actor(c.bAdmin),
 		"primary org's admin": actor(c.pAdmin), "service account": sa} {

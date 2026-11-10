@@ -49,6 +49,10 @@ type codeData struct {
 	// GrantID is the id of the grant the exchange of the code makes, chosen with the code: an exchange that failed on
 	// our side and is retried makes the same grant, and finds it made (userGrant), never a second one.
 	GrantID string `json:"g,omitempty"`
+	// ConsentGen is the client's consent generation (Client.RememberGen) when the code was issued, which the grant
+	// takes (Grant.ConsentGen). A code issued before the client's redirect URIs or credentials changed is not redeemed
+	// after (userGrant): what the user allowed was the client as it was.
+	ConsentGen int64 `json:"cg"`
 }
 
 // tokenFailuresPerClientMin bounds the token requests per confidential client, grant type and minute that fail on what
@@ -251,11 +255,14 @@ func replayKey(c *model.Client, code string) string {
 func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code string) *oauthError {
 	key := replayKey(c, code)
 	_ = p.s.Eph.Set(ctx, nsReplayed, key, []byte{1}, replayMarkTTL)
-	if gid, err := p.s.Eph.Get(ctx, nsUsed, key); err == nil {
+	if used, err := p.s.Eph.Get(ctx, nsUsed, key); err == nil {
 		// The replay is refused either way; whether the grant could be ended is recorded as it happened.
-		rerr := p.revokeGrant(ctx, string(gid))
-		p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", string(gid), "revoke_error", rerr)
-		p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": string(gid), "grant_revoked": revokedText(rerr)})
+		if f := strings.Split(string(used), "\x00"); len(f) == 3 {
+			org, user, gid := f[0], f[1], f[2]
+			rerr := p.revokeGrant(ctx, org, user, gid)
+			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
+			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
+		}
 	}
 	return oerr("invalid_grant", "the authorization code is invalid, expired or already used")
 }
@@ -327,9 +334,9 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		// retry, rather than spent on our failure (its retry makes the same grant: codeData.GrantID).
 		_ = p.s.Eph.Set(ctx, nsCode, code, raw, p.codeTTL(c))
 	case oe == nil:
-		_ = p.s.Eph.Set(ctx, nsUsed, replayKey(c, code), []byte(gid), usedTTL)
+		_ = p.s.Eph.Set(ctx, nsUsed, replayKey(c, code), []byte(cd.OrgID+"\x00"+cd.UserID+"\x00"+gid), usedTTL)
 		if _, err := p.s.Eph.Get(ctx, nsReplayed, replayKey(c, code)); err == nil { // presented again while this one ran
-			rerr := p.revokeGrant(ctx, gid)
+			rerr := p.revokeGrant(ctx, cd.OrgID, cd.UserID, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
 			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
@@ -394,8 +401,11 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if !app.Allowed {
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
+	if cd.ConsentGen != c.RememberGen {
+		return nil, "", oerr("invalid_grant", "the application changed since the user authorized it: sign in again")
+	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, ConsentGen: c.RememberGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
 		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -504,27 +514,29 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 	return u, service.SessionUsableAt(s, u, want), nil
 }
 
-// revokeGrant deletes a grant (tombstone) and forgets cached knowledge of it. The error is the deletion's: a
-// revocation that did not persist is reported to whoever asked for it (RFC 7009 §2.2.1: 503, the client retries),
-// never answered or audited as done. The cache is told "gone" before the deletion (a check racing it must not keep
-// the grant alive on a copy read just before), and emptied when the deletion fails: the grant is still in the
-// store, and the retry must find it there to end it, not answer 200 to a cached "nothing to revoke".
-func (p *Provider) revokeGrant(ctx context.Context, id string) error {
+// revokeGrant deletes grant id (tombstone) of user userID of organization orgID, revokes the SSH certificates issued
+// under it, and forgets cached knowledge of it. The error is the deletion's or the certificates': a revocation that did
+// not persist is reported to whoever asked for it (RFC 7009 §2.2.1: 503, the client retries), never answered or
+// audited as done. The cache is told "gone" before the deletion (a check racing it must not keep the grant alive on a
+// copy read just before), and emptied when the deletion fails: the grant is still in the store, and the retry must
+// find it there to end it, not answer 200 to a cached "nothing to revoke".
+func (p *Provider) revokeGrant(ctx context.Context, orgID, userID, id string) error {
 	p.grants.Put(id, grantState{})
 	ctx = context.WithoutCancel(ctx)
-	// The SSH certificates issued under the grant go with it, before it is deleted: a failure leaves the grant for the
-	// retry to find and end, certificates included.
-	g, err := p.svc.Grants.Get(ctx, id)
-	if err == nil {
-		err = p.svc.RevokeSSHCertsFrom(ctx, g.OrgID, g.UserID, map[string]bool{id: true})
-	} else if gone(err) {
-		err = nil
+	// The grant is deleted first, whatever its certificates do: the end of a grant (a replayed refresh token's family,
+	// say) never waits on them. They are revoked after, as endSessions explains: a certificate signed under it meanwhile
+	// either is listed then or finds the grant gone and is revoked by its signer (Service.SignUserSSH), save within a
+	// gossip cluster's replication lag. Whose they are comes from the caller, not the grant, so a retry after a failure
+	// to revoke them does so again though the grant is gone by then (a grant already gone counts as deleted).
+	derr := p.svc.Grants.Delete(ctx, id)
+	if gone(derr) {
+		derr = nil
 	}
-	if err == nil {
-		err = p.svc.Grants.Delete(ctx, id)
+	if derr != nil {
+		p.grants.Del(id) // may still be in the store: the retry ends it
 	}
-	if err != nil {
-		p.grants.Del(id)
+	cerr := p.svc.RevokeSSHCertsFrom(ctx, orgID, userID, map[string]bool{id: true})
+	if err := errors.Join(derr, cerr); err != nil {
 		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
 		return unavailable(err)
 	}
@@ -689,7 +701,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	// Authentic token for this client. A static token only works while the grant has never rotated.
 	if !pr.counted && g.Counter != 0 {
 		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
-			rerr := p.revokeGrant(ctx, g.ID)
+			rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
 			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
 			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", revokedText(rerr))
 		}
@@ -751,7 +763,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	case c.RotateRefresh || c.Public():
 		if pr.counted && pr.counter != g.Counter {
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
-				rerr := p.revokeGrant(ctx, g.ID)
+				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
 				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
 				p.auditReuse(ctx, c, g, "an old refresh token was presented again", revokedText(rerr))
 			}
@@ -791,7 +803,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				break
 			}
 			if fresh.Counter > pr.counter {
-				rerr := p.revokeGrant(ctx, g.ID)
+				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
 				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "revoke_error", rerr)
 				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once", revokedText(rerr))
 				return nil, invalid

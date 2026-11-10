@@ -34,7 +34,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	a.onChange = append(a.onChange, func(rec *store.Record) {
 		switch rec.Kind {
 		case model.KindClient:
-			op.InvalidateClient(rec.ID)
+			op.InvalidateClientIn(rec.Scope, rec.ID) // tombstones carry no scope: "" clears every organization's origins
 		case model.KindUser:
 			op.InvalidateUser(rec.ID)
 		case model.KindTenant:

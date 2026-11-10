@@ -433,8 +433,7 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil && u.Enabled(time.Now()) && u.PasswordHash != "" {
 			// (an account without a password is not sent a reset: its way in is a new invitation from an administrator)
-			// At most five reset mails an hour per account, so the form cannot be used to flood someone's inbox.
-			if n, err := m.s.Eph.Incr(ctx, nsForgot, u.ID, 1, time.Hour); err == nil && n <= 5 {
+			if m.forgotAllowed(ctx, r, u.ID) {
 				// After the answer, not before: the link is a stored write and the mail a queued one, and the time
 				// they take must not tell an existing account from an unknown address.
 				m.audit(r, "password.forgot", org, u, u.Username, nil)
@@ -447,6 +446,26 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	web.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Reset mails an account is sent an hour: forgotPerAddress for the requests of one address, forgotPerAccount for all
+// of them together.
+const (
+	forgotPerAddress = 5
+	forgotPerAccount = 20
+)
+
+// forgotAllowed spends a reset mail of account userID's hourly allowance for the request's address, then of the
+// account's: anyone who knows the address can ask for resets, and must not use up the owner's own requests from
+// another address, while the form still cannot flood the inbox. A request past its address's allowance does not
+// spend the account's.
+func (m *Module) forgotAllowed(ctx context.Context, r *http.Request, userID string) bool {
+	n, err := m.s.Eph.Incr(ctx, nsForgot, userID+"|"+web.RateKeyIP(r), 1, time.Hour)
+	if err != nil || n > forgotPerAddress {
+		return false
+	}
+	n, err = m.s.Eph.Incr(ctx, nsForgot, userID, 1, time.Hour)
+	return err == nil && n <= forgotPerAccount
 }
 
 type resetReq struct {

@@ -3,7 +3,12 @@ package sshcli
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,9 +53,9 @@ func TestFetchEndsRevokedConnections(t *testing.T) {
 			{PID: 103, KeyID: "alice", Serial: 7, CA: fp},          // gone (its number since taken by another program)
 		}, nil
 	}
-	te.IsSSHD = func(pid int) bool { return pid != 103 }
+	te.IsSSHD = func(l SSHDLogin) bool { return l.PID != 103 }
 	var ended []int
-	te.Terminate = func(pid int) error { ended = append(ended, pid); return nil }
+	te.Terminate = func(l SSHDLogin) error { ended = append(ended, l.PID); return nil }
 
 	tf := newTrustFiles(t)
 	o := tf.opts(f.URL)
@@ -77,5 +82,94 @@ func TestFetchEndsRevokedConnections(t *testing.T) {
 	te.GOOS = "darwin"
 	if err := te.Fetch(context.Background(), o); err == nil {
 		t.Fatal("--end-revoked off Linux was not refused")
+	}
+}
+
+// sshd's log is read from root's lines only: anyone can log a line that reads like sshd's from a program named sshd,
+// but journald takes the user id from the socket. Each login carries when it was logged on the monotonic clock, and
+// lines from an earlier boot are left out.
+func TestJournalLoginsAreRootsOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for journalctl")
+	}
+	dir := t.TempDir()
+	defer func(was string) { procDir = was }(procDir)
+	procDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "sys/kernel/random"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sys/kernel/random/boot_id"), []byte("0f3c6e7a-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args := filepath.Join(dir, "args")
+	const msg = `"MESSAGE":"Accepted publickey for ubuntu from 192.0.2.7 port 51234 ssh2: ED25519-CERT SHA256:abc ID alice (serial 7) CA ED25519 SHA256:ca"`
+	lines := `{` + msg + `,"_PID":"100","_BOOT_ID":"0f3c6e7a1b2d4e5f8a9b0c1d2e3f4a5b","__MONOTONIC_TIMESTAMP":"90123456","__REALTIME_TIMESTAMP":"1700000000123456"}` + "\n" +
+		`{` + msg + `,"_PID":"200","_BOOT_ID":"99999999999999999999999999999999","__MONOTONIC_TIMESTAMP":"5000000","__REALTIME_TIMESTAMP":"1690000000000000"}`
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + args + "\ncat <<'EOF'\n" + lines + "\nEOF\n"
+	if err := os.WriteFile(filepath.Join(dir, "journalctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, err := journalLogins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := SSHDLogin{PID: 100, KeyID: "alice", Serial: 7, CA: "SHA256:ca", Logged: 90123456 * time.Microsecond}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("logins %+v, want [%+v]", got, want)
+	}
+	b, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(strings.Fields(string(b)), "_UID=0") {
+		t.Fatalf("journalctl was not asked for root's lines only: %s", b)
+	}
+}
+
+// A logged login's process is ended only while it is still the one that logged it: sshd's, run as root, and started
+// no later than the line was logged (not a number taken since), on the boot clock less the time spent asleep. Its
+// parent does not matter: a connection that outlived a restart of sshd, or one under socket activation, is init's.
+func TestIsSSHDChecksTheProcess(t *testing.T) {
+	dir := t.TempDir()
+	defer func(was string, wasAsleep func() time.Duration) { procDir, asleep = was, wasAsleep }(procDir, asleep)
+	procDir = dir
+	asleep = func() time.Duration { return 0 }
+	// proc makes process pid: its program, real user id, parent and start (seconds after boot, on the boot clock).
+	proc := func(pid, comm, uid, ppid string, started int) {
+		t.Helper()
+		d := filepath.Join(dir, pid)
+		stat := pid + " (" + comm + ") S " + ppid + " 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 " +
+			strconv.Itoa(started*100) + " 0 0\n"
+		for name, body := range map[string]string{
+			"comm":   comm + "\n",
+			"status": "Name:\t" + comm + "\nUid:\t" + uid + "\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
+			"stat":   stat,
+		} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	proc("1", "systemd", "0", "0", 0)
+	proc("10", "sshd", "0", "1", 100)          // the listener, restarted after the line was logged
+	proc("100", "sshd-session", "0", "10", 60) // a connection
+	proc("103", "sshd", "0", "1", 60)          // a connection that outlived a restart of sshd, or socket-activated
+	proc("101", "sshd", "1000", "10", 60)      // run as a user (real uid)
+	proc("102", "sshd", "0", "10", 120)        // started after the line was logged
+	proc("104", "logger", "0", "10", 60)       // not sshd
+	logged := 90 * time.Second
+	for pid, want := range map[int]bool{100: true, 103: true, 10: false, 101: false, 102: false, 104: false, 105: false} {
+		if got := isSSHD(SSHDLogin{PID: pid, Logged: logged}); got != want {
+			t.Errorf("process %d: %v, want %v", pid, got, want)
+		}
+	}
+	// A minute asleep before the connection started puts its start on the boot clock a minute later than on journald's.
+	asleep = func() time.Duration { return time.Minute }
+	if !isSSHD(SSHDLogin{PID: 102, Logged: logged}) {
+		t.Error("a connection started after a suspend was not taken for the one that logged it")
 	}
 }

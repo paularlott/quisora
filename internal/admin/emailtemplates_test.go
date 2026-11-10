@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -88,4 +89,20 @@ func TestEmailTemplatesAPI(t *testing.T) {
 	if len(m.sent) != web.TestEmailsPerMinute-1 {
 		t.Fatalf("sent by others: %v", m.sent)
 	}
+}
+
+// Changing the templates needs a recent re-authentication in the console: they carry every link and code the
+// organization sends, so an API token, or a session not confirmed lately, cannot change them.
+func TestEmailTemplatesNeedStepUp(t *testing.T) {
+	w := newWorld(t)
+	const ET = A + "/email-templates"
+	fresh := false
+	w.env.Server.Reauthed = func(*http.Request) bool { return fresh }
+	body := map[string]any{"emails": map[string]any{"reset": map[string]any{"subject": "{{.Org}}: new password"}}}
+	wantField(t, w.withBearer("admin", "admin").put(ET, body), 403, "reauth")
+	ad := w.as("admin")
+	wantField(t, ad.put(ET, body), 403, "reauth")
+	want(t, ad.post(ET+"/preview", map[string]any{"email": "reset", "templates": body}), 200) // nothing changes
+	fresh = true
+	want(t, ad.put(ET, body), 200)
 }

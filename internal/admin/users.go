@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -258,6 +259,9 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 	if input.Role != nil && input.Role.Rank() >= model.RoleAdmin.Rank() && !m.stepUp(w, r) {
 		return
 	}
+	if in.Invite != nil && in.Invite.Email && !m.mailBudget(w, r, org, a, "") {
+		return
+	}
 	u, err := m.s.Svc.CreateUser(r.Context(), a, org.ID, input)
 	if err != nil {
 		web.WriteError(w, err)
@@ -297,6 +301,9 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 	if (input.Role != nil && *input.Role != u.Role && input.Role.Rank() >= model.RoleAdmin.Rank() || curbs) && !m.stepUp(w, r) {
 		return
 	}
+	if input.Email != nil && !strings.EqualFold(*input.Email, u.Email) && *input.Email != "" && m.s.Site.Mail && !m.mailBudget(w, r, org, a, u.ID) {
+		return // a new address is mailed a verification link, below
+	}
 	upd, err := m.s.Svc.UpdateUser(r.Context(), a, u.ID, input)
 	if err != nil {
 		web.WriteError(w, err)
@@ -307,6 +314,8 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 		// stands either way; a failed mail is logged and the profile's "Send verification email" tries again.
 		if err := m.Mailer.SendVerifyAddress(r.Context(), org, upd, upd.Email); err != nil {
 			m.s.Log.Warn("admin: mailing a verification link", "user", upd.ID, "error", err)
+		} else {
+			m.mailSent(r, org, a, upd.ID)
 		}
 	}
 	web.WriteJSON(w, http.StatusOK, viewOf(upd))
@@ -427,9 +436,40 @@ func (m *Module) issueInvite(r *http.Request, org *model.Org, a *service.Actor, 
 			}
 		} else {
 			res.Emailed = true
+			m.mailSent(r, org, a, u.ID)
 		}
 	}
 	return res, nil
+}
+
+// mailBudget checks an invitation or verification email about to be sent to user userID ("" for one being created)
+// against the organization's hourly budget (web.AdminEmailAllowed) and writes a 429 when it is spent; mailSent counts
+// it once it is sent, so a request refused (an address the service turns down, mail switched off) spends nothing. A
+// user's own addresses, changed through these routes, do not count: the budget bounds what the organization's
+// administration sends to addresses it enters, and must not be spent by one of its users.
+func (m *Module) mailBudget(w http.ResponseWriter, r *http.Request, org *model.Org, a *service.Actor, userID string) bool {
+	if userID != "" && userID == a.UserID {
+		return true
+	}
+	within, err := m.s.AdminEmailAllowed(r.Context(), org.ID)
+	switch {
+	case err != nil:
+		web.WriteError(w, fmt.Errorf("%w: %v", service.ErrUnavailable, err))
+		return false
+	case !within:
+		w.Header().Set("Retry-After", "3600")
+		web.WriteJSON(w, http.StatusTooManyRequests, web.ErrorBody{Error: fmt.Sprintf("This organization sent its %d invitation "+
+			"and verification emails for the hour. Share the invitation link instead, or try again later.", web.AdminEmailsPerHour)})
+		return false
+	}
+	return true
+}
+
+// mailSent counts against the organization's budget an email sent to user userID (mailBudget).
+func (m *Module) mailSent(r *http.Request, org *model.Org, a *service.Actor, userID string) {
+	if userID != a.UserID {
+		m.s.AdminEmailSent(r.Context(), org.ID)
+	}
 }
 
 // inviteUser issues a new invitation link ({"email": true} also mails it) and returns it.
@@ -455,6 +495,9 @@ func (m *Module) inviteUser(w http.ResponseWriter, r *http.Request) {
 	// An accepted invitation replaces every way its user signs in: for a manager or administrator it takes the same
 	// re-authentication as removing their password (an API token cannot issue one).
 	if u.Role.Privileged() && u.ID != a.UserID && !m.stepUp(w, r) {
+		return
+	}
+	if in.Email && !m.mailBudget(w, r, org, a, u.ID) {
 		return
 	}
 	res, err := m.issueInvite(r, org, a, u, in.Email)
@@ -575,6 +618,9 @@ func (m *Module) addEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mailOn := m.s.Site.Mail
+	if mailOn && !m.mailBudget(w, r, org, a, u.ID) {
+		return
+	}
 	upd, err := m.s.Svc.AddLinkedEmail(ctx, a, u.ID, in.Address, !mailOn)
 	if err != nil {
 		web.WriteError(w, err)
@@ -584,6 +630,8 @@ func (m *Module) addEmail(w http.ResponseWriter, r *http.Request) {
 		// The address is linked either way; a failed mail is logged and "Resend link" tries again.
 		if err := m.Mailer.SendVerifyAddress(r.Context(), org, upd, l.Address); err != nil {
 			m.s.Log.Warn("admin: mailing a verification link", "user", upd.ID, "error", err)
+		} else {
+			m.mailSent(r, org, a, upd.ID)
 		}
 	}
 	web.WriteJSON(w, http.StatusCreated, viewOf(upd))
@@ -604,6 +652,9 @@ func (m *Module) resendEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, service.ErrForbidden)
 		return
 	}
+	if !m.mailBudget(w, r, org, a, u.ID) {
+		return
+	}
 	if err := m.Mailer.SendVerifyAddress(r.Context(), org, u, r.PathValue("address")); err != nil {
 		if errors.Is(err, ErrMailerDisabled) {
 			web.WriteJSON(w, http.StatusServiceUnavailable, web.ErrorBody{Error: "Email is not set up on this server."})
@@ -612,6 +663,7 @@ func (m *Module) resendEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
+	m.mailSent(r, org, a, u.ID)
 	ok(w)
 }
 
@@ -699,7 +751,7 @@ func (m *Module) connectionsUser(w http.ResponseWriter, r *http.Request) (*model
 // stepUp lets a dangerous change go ahead only after a recent re-authentication of the acting browser session
 // (signed in or confirmed within the last 5 minutes): deleting an organization, rotating the signing keys, changing
 // the primary organization's sign-in settings, making someone an administrator or demoting, disabling or deleting
-// one (service.CurbsAdmin), removing another user's password. An
+// one (service.CurbsAdmin), removing another user's password, authenticator app, passkey or linked provider. An
 // API token is refused: whoever holds one has not proven anything recently. A service account goes ahead: there is no
 // person to re-authenticate, and what it may do was decided when it was granted its scopes (the routes it reaches,
 // and administrators only with the manage_admins scope). It writes the response itself; the console answers a 403 with field
@@ -785,10 +837,15 @@ func (m *Module) listUserProviders(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
-// disconnectUserProvider handles DELETE /users/{id}/providers/{provider}: unlinks the user's account at one provider.
+// disconnectUserProvider handles DELETE /users/{id}/providers/{provider}: unlinks the user's account at one provider,
+// another user's after a recent re-authentication (stepUp), as removing their password or authenticator app is: it
+// takes away a way they sign in.
 func (m *Module) disconnectUserProvider(w http.ResponseWriter, r *http.Request) {
 	u, a, found := m.connectionsUser(w, r)
 	if !found {
+		return
+	}
+	if u.ID != a.UserID && !m.stepUp(w, r) {
 		return
 	}
 	ctx, proceed := m.selfCtx(w, r, a, u, true)
@@ -856,10 +913,14 @@ func (m *Module) listUserPasskeys(w http.ResponseWriter, r *http.Request) {
 }
 
 // removeUserPasskey handles DELETE /users/{id}/passkeys/{passkey}: removes one passkey (a lost or replaced device) and
-// ends the sessions that signed in with it.
+// ends the sessions that signed in with it; another user's after a recent re-authentication (stepUp), as removing
+// their password or authenticator app is.
 func (m *Module) removeUserPasskey(w http.ResponseWriter, r *http.Request) {
 	u, a, found := m.connectionsUser(w, r)
 	if !found {
+		return
+	}
+	if u.ID != a.UserID && !m.stepUp(w, r) {
 		return
 	}
 	ctx, proceed := m.selfCtx(w, r, a, u, true)

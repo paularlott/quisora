@@ -53,3 +53,44 @@ func TestPickKey(t *testing.T) {
 		t.Fatal("unknown kid")
 	}
 }
+
+// rsaJWK is an RSA JWK with an odd modulus of bits bits and exponent e: not a real key (none is needed to be refused
+// or kept), and a 16384-bit one costs nothing to make.
+func rsaJWK(bits int, e []byte) jwk {
+	n := make([]byte, bits/8)
+	for i := range n {
+		n[i] = 0xa5
+	}
+	n[0], n[len(n)-1] = 0xc1, 0x01
+	return jwk{Kty: "RSA", Kid: "k", N: rawB64.EncodeToString(n), E: rawB64.EncodeToString(e)}
+}
+
+// A provider's JWKS (an administrator may point a provider at their own issuer) gives RSA keys of 2048 to 8192 bits
+// with a sound exponent, and at most maxKeys keys: a 16384-bit modulus is never kept, so no token is verified with it.
+func TestParseKeysBoundsRSA(t *testing.T) {
+	f4 := []byte{1, 0, 1}
+	for name, c := range map[string]struct {
+		k    jwk
+		kept bool
+	}{
+		"2048":               {rsaJWK(2048, f4), true},
+		"8192":               {rsaJWK(8192, f4), true},
+		"1024":               {rsaJWK(1024, f4), false},
+		"16384":              {rsaJWK(16384, f4), false},
+		"even exponent":      {rsaJWK(2048, []byte{1, 0, 0}), false},
+		"exponent 1":         {rsaJWK(2048, []byte{1}), false},
+		"exponent over 2^31": {rsaJWK(2048, []byte{0xff, 0xff, 0xff, 0xff}), false},
+		"exponent 2^31-1":    {rsaJWK(2048, []byte{0x7f, 0xff, 0xff, 0xff}), true},
+	} {
+		if got := len(parseKeys(jwks{Keys: []jwk{c.k}})) == 1; got != c.kept {
+			t.Errorf("%s: kept %v", name, got)
+		}
+	}
+	many := make([]jwk, maxKeys+50)
+	for i := range many {
+		many[i] = rsaJWK(2048, f4)
+	}
+	if n := len(parseKeys(jwks{Keys: many})); n != maxKeys {
+		t.Errorf("%d keys taken", n)
+	}
+}

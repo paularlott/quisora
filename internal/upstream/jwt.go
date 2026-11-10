@@ -45,9 +45,18 @@ type verifyKey struct {
 
 var rawB64 = base64.RawURLEncoding
 
+// Limits of the keys taken from a provider's JWKS (which an organization's administrator may point at an issuer of
+// their own): RSA keys of 2048 to 8192 bits with an odd exponent from 3 to 2^31-1 (RSA verification costs grow with
+// the square of the modulus: a far larger one would hold a core for seconds per token), and the first maxKeys keys.
+const (
+	minRSABits = 2048
+	maxRSABits = 8192
+	maxKeys    = 100
+)
+
 func parseKeys(set jwks) []verifyKey {
 	var out []verifyKey
-	for _, k := range set.Keys {
+	for _, k := range set.Keys[:min(len(set.Keys), maxKeys)] {
 		if k.Use != "" && k.Use != "sig" {
 			continue
 		}
@@ -55,14 +64,18 @@ func parseKeys(set jwks) []verifyKey {
 		case "RSA":
 			n, err1 := rawB64.DecodeString(k.N)
 			e, err2 := rawB64.DecodeString(k.E)
-			if err1 != nil || err2 != nil || len(n) < 256 || len(e) == 0 || len(e) > 4 {
-				continue // reject keys under 2048 bits
+			if err1 != nil || err2 != nil || len(n) > maxRSABits/8+1 || len(e) == 0 || len(e) > 4 {
+				continue
 			}
 			ev := 0
 			for _, b := range e {
 				ev = ev<<8 | int(b)
 			}
-			out = append(out, verifyKey{kid: k.Kid, alg: k.Alg, pub: &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: ev}})
+			pub := &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: ev}
+			if pub.N.BitLen() < minRSABits || pub.N.BitLen() > maxRSABits || ev < 3 || ev > 1<<31-1 || ev%2 == 0 {
+				continue
+			}
+			out = append(out, verifyKey{kid: k.Kid, alg: k.Alg, pub: pub})
 		case "EC":
 			var c elliptic.Curve
 			switch k.Crv {

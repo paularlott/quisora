@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,4 +100,64 @@ func TestStatusNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustContain(t, "status", te.out.String(), "No Quisora certificates.")
+}
+
+// The CLI follows redirects within the server's origin only: a 307 from the token endpoint to another host or port
+// would post the form, client secret included, there.
+func TestClientRefusesRedirectsToAnotherOrigin(t *testing.T) {
+	var reached bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true }))
+	defer other.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/elsewhere":
+			http.Redirect(w, r, other.URL+"/token", http.StatusTemporaryRedirect)
+		case "/here":
+			http.Redirect(w, r, "/token", http.StatusTemporaryRedirect)
+		}
+	}))
+	defer srv.Close()
+	c, err := newTestEnv(t).client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := strings.NewReader("client_secret=s3cret")
+	if resp, err := c.Post(srv.URL+"/elsewhere", "application/x-www-form-urlencoded", form); err == nil {
+		resp.Body.Close()
+		t.Error("a redirect to another origin was followed")
+	}
+	if reached {
+		t.Error("the form reached the other origin")
+	}
+	resp, err := c.Post(srv.URL+"/here", "application/x-www-form-urlencoded", strings.NewReader("x=1"))
+	if err != nil {
+		t.Fatalf("a redirect within the origin: %v", err)
+	}
+	resp.Body.Close()
+}
+
+// A redirect stays at the server when it writes out or leaves off the scheme's default port, or upgrades http to https
+// on the same host; never to another host or port, nor back from https to http.
+func TestSameServer(t *testing.T) {
+	for _, tc := range []struct {
+		from, to string
+		want     bool
+	}{
+		{"https://id.example.com:443/ssh", "https://id.example.com/token", true},
+		{"https://id.example.com/ssh", "https://ID.example.com:443/token", true},
+		{"http://id.example.com/ssh", "https://id.example.com/ssh", true},
+		{"http://id.example.com:80/ssh", "https://id.example.com:443/ssh", true},
+		{"https://id.example.com:8443/ssh", "https://id.example.com:8443/token", true},
+		{"https://id.example.com/ssh", "http://id.example.com/ssh", false},
+		{"https://id.example.com/ssh", "https://id.example.com:8443/ssh", false},
+		{"http://id.example.com:8080/ssh", "https://id.example.com:8080/ssh", false},
+		{"http://id.example.com/ssh", "https://other.example.com/ssh", false},
+		{"https://id.example.com/ssh", "https://other.example.com/ssh", false},
+	} {
+		from, _ := url.Parse(tc.from)
+		to, _ := url.Parse(tc.to)
+		if got := sameServer(from, to); got != tc.want {
+			t.Errorf("%s to %s: %v, want %v", tc.from, tc.to, got, tc.want)
+		}
+	}
 }

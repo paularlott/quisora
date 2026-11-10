@@ -35,32 +35,50 @@ func isAccessTokenTyp(typ string) bool {
 // grant or the sign-out counters): the token is neither good nor bad, and the caller answers 503, never 401 (which
 // would make the client discard a token that may be good) and never as verified. Every other error is a refusal.
 func (p *Provider) verifyAccessToken(ctx context.Context, tok string) (*Claims, error) {
+	cl, u, err := p.accessClaims(ctx, tok)
+	if err != nil || cl.GID == "" {
+		return cl, err
+	}
+	alive, err := p.grantAlive(ctx, cl.GID, u)
+	if err != nil {
+		return nil, err
+	}
+	if !alive {
+		return nil, badToken("session ended")
+	}
+	return cl, nil
+}
+
+// accessClaims is verifyAccessToken without the grant: whether the token's grant is still alive is not checked. Its
+// user is returned too (nil for a client_credentials token). Revocation takes a token whose grant is gone, so the
+// client's retry of a revocation that ended the grant but not its SSH certificates can revoke them.
+func (p *Provider) accessClaims(ctx context.Context, tok string) (*Claims, *model.User, error) {
 	now := time.Now()
 	k := tokenKey(tok)
 	cl, kid, alg, cached := p.verified.get(k, now)
 	if cached {
 		// Verified before: only that its key is still published needs checking again (a retired key's tokens stop).
 		if key := p.keyByKID(ctx, kid); key == nil || key.alg != alg {
-			return nil, badToken("unknown key")
+			return nil, nil, badToken("unknown key")
 		}
 	} else {
 		pj, err := ParseJWT(tok)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !isAccessTokenTyp(pj.Header.Typ) {
-			return nil, badToken("not an access token")
+			return nil, nil, badToken("not an access token")
 		}
 		key := p.keyByKID(ctx, pj.Header.Kid)
 		if key == nil || key.alg != pj.Header.Alg {
-			return nil, badToken("unknown key")
+			return nil, nil, badToken("unknown key")
 		}
 		if err := pj.Verify(key.pub); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cl = &Claims{}
 		if err := json.Unmarshal(pj.Payload, cl); err != nil {
-			return nil, badToken("claims")
+			return nil, nil, badToken("claims")
 		}
 		if _, ok := p.issuerOrg(cl.Iss); ok && cl.Exp != 0 && now.Before(time.Unix(int64(cl.Exp), 0)) {
 			p.verified.put(k, pj.Header.Kid, pj.Header.Alg, cl, time.Unix(int64(cl.Exp), 0), now)
@@ -70,40 +88,31 @@ func (p *Provider) verifyAccessToken(ctx context.Context, tok string) (*Claims, 
 	if !ok || cl.Exp == 0 || now.After(time.Unix(int64(cl.Exp), 0)) ||
 		cl.Nbf != 0 && time.Unix(int64(cl.Nbf), 0).After(now.Add(leeway)) ||
 		cl.Iat != 0 && time.Unix(int64(cl.Iat), 0).After(now.Add(leeway)) || cl.Sub == "" || cl.ClientID == "" {
-		return nil, badToken("claims")
+		return nil, nil, badToken("claims")
 	}
 	ce, err := p.client(ctx, orgID, cl.ClientID)
 	if err != nil && !gone(err) {
-		return nil, unavailable(err)
+		return nil, nil, unavailable(err)
 	}
 	if err != nil || !ce.c.Enabled {
-		return nil, badToken("client disabled") // a disabled or deleted application's tokens stop working at once
+		return nil, nil, badToken("client disabled") // a disabled or deleted application's tokens stop working at once
 	}
 	if cl.Sub == cl.ClientID { // client_credentials token: the client is the subject, and there is no grant
-		return cl, nil
+		return cl, nil, nil
 	}
 	u, err := p.user(ctx, cl.Sub)
 	if err != nil && !gone(err) {
-		return nil, unavailable(err)
+		return nil, nil, unavailable(err)
 	}
 	if err != nil || u.OrgID != orgID {
-		return nil, badToken("user inactive")
+		return nil, nil, badToken("user inactive")
 	}
 	if ok, err := p.svc.UserUsable(ctx, u); err != nil {
-		return nil, unavailable(err)
+		return nil, nil, unavailable(err)
 	} else if !ok { // disabled, or its organization deleted
-		return nil, badToken("user inactive")
+		return nil, nil, badToken("user inactive")
 	}
-	if cl.GID != "" {
-		alive, err := p.grantAlive(ctx, cl.GID, u)
-		if err != nil {
-			return nil, err
-		}
-		if !alive {
-			return nil, badToken("session ended")
-		}
-	}
-	return cl, nil
+	return cl, u, nil
 }
 
 // verifyIn is verifyAccessToken for a token that must be organization orgID's: one issued by another organization is
@@ -654,7 +663,12 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// A JWT cannot be recalled, but revoking one of this client's user tokens ends the grant it came from,
 		// which stops refreshing and makes introspection report it inactive. A token from a token exchange carries
 		// the grant of the application the user signed in to: its holder (acting for the user) cannot end that.
-		cl, err := p.verifyIn(ctx, ce.c.OrgID, tok)
+		// Its grant may be gone: ended by an earlier revocation that could not revoke its SSH certificates (503), which
+		// the client's retry revokes (revokeGrant). Revoking the grant of a token already ended does no more.
+		cl, _, err := p.accessClaims(ctx, tok)
+		if err == nil && cl.Iss != p.issuer(ce.c.OrgID) {
+			err = badToken("another organization's token")
+		}
 		if errors.Is(err, service.ErrUnavailable) {
 			writeOAuthError(w, serverError(err)) // whether there is a grant to end could not be read
 			return
@@ -668,7 +682,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		if err == nil && cl.ClientID == ce.c.ClientID() && cl.GID != "" && len(cl.Act) == 0 {
 			// RFC 7009 §2.2.1: the client retries; nothing is audited as done (a revocation of unknown outcome, as such)
 			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, cl.Sub), "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
-				func() error { return p.revokeGrant(ctx, cl.GID) }); err != nil {
+				func() error { return p.revokeGrant(ctx, ce.c.OrgID, cl.Sub, cl.GID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
 			}
@@ -688,7 +702,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				detail["superseded"] = "true"
 			}
 			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, g.UserID), "oauth.revoke", detail,
-				func() error { return p.revokeGrant(ctx, g.ID) }); err != nil {
+				func() error { return p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
 			}

@@ -169,7 +169,7 @@ func TestRestoreRefusesUniqueClash(t *testing.T) {
 	s := covSealer(t)
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "same", nil), covGroup(t, "g2", "same", nil)}, nil)
 	for _, force := range []bool{false, true} {
-		if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), force, ""); !errors.Is(err, store.ErrConflict) {
+		if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), force, "", t.TempDir()); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("clash (force %v): %v", force, err)
 		}
 	}
@@ -298,7 +298,7 @@ func TestEmptyAndRestoreCountError(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "a", nil)}, nil)
-	if _, err := Restore(context.Background(), st, s, bytes.NewReader(data), false, ""); !errors.Is(err, boom) {
+	if _, err := Restore(context.Background(), st, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, boom) {
 		t.Fatalf("restore: %v", err)
 	}
 }
@@ -311,19 +311,19 @@ func TestRestoreSeekPutAndContextErrors(t *testing.T) {
 	s := covSealer(t)
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "a", nil)}, nil)
 	ctx := context.Background()
-	if _, err := Restore(ctx, memstore.New(), s, noSeek{bytes.NewReader(data)}, false, ""); err == nil ||
-		!strings.Contains(err.Error(), "seek boom") {
-		t.Fatalf("seek: %v", err)
+	// read once, then restored from the private copy it was verified into: the caller's reader is never rewound
+	if _, err := Restore(ctx, memstore.New(), s, noSeek{bytes.NewReader(data)}, false, "", t.TempDir()); err != nil {
+		t.Fatalf("a reader that cannot seek: %v", err)
 	}
 	boom := errors.New("put boom")
-	if _, err := Restore(ctx, failingStore{Store: memstore.New(), put: boom}, s, bytes.NewReader(data), false, ""); !errors.Is(err, boom) ||
+	if _, err := Restore(ctx, failingStore{Store: memstore.New(), put: boom}, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, boom) ||
 		!strings.Contains(err.Error(), "restore group g1") {
 		t.Fatalf("put: %v", err)
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
 	dst := memstore.New()
-	if _, err := Restore(cctx, dst, s, bytes.NewReader(data), false, ""); !errors.Is(err, context.Canceled) {
+	if _, err := Restore(cctx, dst, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
 	}
 	if empty, _ := Empty(ctx, dst); !empty {

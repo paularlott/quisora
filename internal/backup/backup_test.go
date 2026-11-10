@@ -85,7 +85,7 @@ func TestRoundTripAcrossBackends(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dst.Close()
-	stats, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, "")
+	stats, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,18 +127,18 @@ func TestRestoreRefusals(t *testing.T) {
 
 	// another master key
 	other, _ := secure.NewSealer(secure.RandomBytes(32))
-	if _, err := backup.Restore(ctx, memstore.New(), other, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrKey) {
+	if _, err := backup.Restore(ctx, memstore.New(), other, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, backup.ErrKey) {
 		t.Errorf("other key: %v", err)
 	}
 	// a store that is not empty, unless forced
-	if _, err := backup.Restore(ctx, f.src, f.sealer, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrNotEmpty) {
+	if _, err := backup.Restore(ctx, f.src, f.sealer, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, backup.ErrNotEmpty) {
 		t.Errorf("non-empty target: %v", err)
 	}
-	if _, err := backup.Restore(ctx, f.src, f.sealer, bytes.NewReader(data), true, ""); err != nil {
+	if _, err := backup.Restore(ctx, f.src, f.sealer, bytes.NewReader(data), true, "", t.TempDir()); err != nil {
 		t.Errorf("forced restore over the same data: %v", err)
 	}
 	// not a backup, and a truncated one
-	if _, err := backup.Restore(ctx, memstore.New(), f.sealer, bytes.NewReader([]byte("hello")), false, ""); !errors.Is(err, backup.ErrFormat) {
+	if _, err := backup.Restore(ctx, memstore.New(), f.sealer, bytes.NewReader([]byte("hello")), false, "", t.TempDir()); !errors.Is(err, backup.ErrFormat) {
 		t.Errorf("garbage: %v", err)
 	}
 	zr, _ := gzip.NewReader(bytes.NewReader(data))
@@ -147,7 +147,7 @@ func TestRestoreRefusals(t *testing.T) {
 	zw := gzip.NewWriter(&cut)
 	_, _ = zw.Write(plain[:len(plain)*2/3])
 	_ = zw.Close()
-	if _, err := backup.Restore(ctx, memstore.New(), f.sealer, bytes.NewReader(cut.Bytes()), false, ""); !errors.Is(err, backup.ErrFormat) {
+	if _, err := backup.Restore(ctx, memstore.New(), f.sealer, bytes.NewReader(cut.Bytes()), false, "", t.TempDir()); !errors.Is(err, backup.ErrFormat) {
 		t.Errorf("truncated: %v", err)
 	}
 }
@@ -165,9 +165,10 @@ func BenchmarkBackup(b *testing.B) {
 func BenchmarkRestore(b *testing.B) {
 	f := setup(b, 2000)
 	data := f.backup(b)
+	dir := b.TempDir()
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, ""); err != nil {
+		if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, "", dir); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -190,7 +191,7 @@ func TestForcedRestoreOverAnotherServerIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), true, ""); !errors.Is(err, store.ErrConflict) {
+	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), true, "", t.TempDir()); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("forced restore over another server: %v", err)
 	}
 	fresh := service.New(f.cfg, dst, f.sealer)
@@ -229,7 +230,7 @@ func TestAlteredBackupRefused(t *testing.T) {
 	_, _ = zw.Write(out.Bytes())
 	_ = zw.Close()
 	dst := memstore.New()
-	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(gz.Bytes()), false, ""); !errors.Is(err, backup.ErrFormat) {
+	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(gz.Bytes()), false, "", t.TempDir()); !errors.Is(err, backup.ErrFormat) {
 		t.Fatalf("altered backup: %v", err)
 	}
 	if empty, _ := backup.Empty(f.ctx, dst); !empty {
@@ -247,7 +248,7 @@ func TestRestoreOverDeletionsRefused(t *testing.T) {
 	f := setup(t, 2)
 	data := f.backup(t)
 	dst := memstore.New()
-	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, ""); err != nil {
+	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, "", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	// delete everything that was restored: only tombstones are left
@@ -262,7 +263,7 @@ func TestRestoreOverDeletionsRefused(t *testing.T) {
 	if empty, _ := backup.Empty(f.ctx, dst); !empty {
 		t.Fatal("expected a store holding only deletions")
 	}
-	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrNotEmpty) {
+	if _, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, backup.ErrNotEmpty) {
 		t.Fatalf("restore over deletions: %v", err)
 	}
 }
@@ -291,18 +292,18 @@ func TestEncryptedBackup(t *testing.T) {
 		t.Fatalf("framing check without the password: %v %v", st, err)
 	}
 	dst := memstore.New()
-	stats, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, pw)
+	stats, err := backup.Restore(f.ctx, dst, f.sealer, bytes.NewReader(data), false, pw, t.TempDir())
 	if err != nil || stats[model.KindUser] != 1201 {
 		t.Fatalf("restore: %v %v", stats, err)
 	}
-	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, "wrong horse battery"); !errors.Is(err, backup.ErrPassword) {
+	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, "wrong horse battery", t.TempDir()); !errors.Is(err, backup.ErrPassword) {
 		t.Fatalf("a wrong password: %v", err)
 	}
-	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrNeedPassword) {
+	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, backup.ErrNeedPassword) {
 		t.Fatalf("no password: %v", err)
 	}
 	other, _ := secure.NewSealer(secure.RandomBytes(32))
-	if _, err := backup.Restore(f.ctx, memstore.New(), other, bytes.NewReader(data), false, pw); !errors.Is(err, backup.ErrKey) {
+	if _, err := backup.Restore(f.ctx, memstore.New(), other, bytes.NewReader(data), false, pw, t.TempDir()); !errors.Is(err, backup.ErrKey) {
 		t.Fatalf("another master key: %v", err)
 	}
 	flipped := bytes.Clone(data)
@@ -385,7 +386,7 @@ func TestBackupAcrossKeyRotation(t *testing.T) {
 		if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), ring, opt.Password); err != nil {
 			t.Fatalf("encrypt=%v: verify with the ring: %v", enc, err)
 		}
-		if _, err := backup.Restore(ctx, memstore.New(), ring, bytes.NewReader(buf.Bytes()), false, opt.Password); err != nil {
+		if _, err := backup.Restore(ctx, memstore.New(), ring, bytes.NewReader(buf.Bytes()), false, opt.Password, t.TempDir()); err != nil {
 			t.Fatalf("encrypt=%v: restore with the ring: %v", enc, err)
 		}
 		if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2, opt.Password); err == nil {
@@ -430,7 +431,7 @@ func TestBackupNamesTheKeysItsSecretsNeed(t *testing.T) {
 	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), ring, ""); err != nil {
 		t.Fatalf("with both keys: %v", err)
 	}
-	if _, err := backup.Restore(ctx, memstore.New(), only2, bytes.NewReader(buf.Bytes()), false, ""); !errors.Is(err, backup.ErrKeyMissing) ||
+	if _, err := backup.Restore(ctx, memstore.New(), only2, bytes.NewReader(buf.Bytes()), false, "", t.TempDir()); !errors.Is(err, backup.ErrKeyMissing) ||
 		!strings.Contains(err.Error(), secure.KeyID(k1)) {
 		t.Fatalf("without the old key: %v", err)
 	}
@@ -447,7 +448,7 @@ func TestRestoreKeepsPartitionKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dst.Close()
-	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, ""); err != nil {
+	if _, err := backup.Restore(ctx, dst, f.sealer, bytes.NewReader(data), false, "", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	checked := map[model.Kind]int{}

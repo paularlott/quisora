@@ -72,7 +72,7 @@ func TestBackupRestoreKeepsThePrimaryOrg(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := memstore.New()
-	if _, err := backup.Restore(e.ctx, st, e.svc.Sealer, bytes.NewReader(buf.Bytes()), false, ""); err != nil {
+	if _, err := backup.Restore(e.ctx, st, e.svc.Sealer, bytes.NewReader(buf.Bytes()), false, "", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	restored := service.New(e.svc.Cfg, st, e.svc.Sealer)

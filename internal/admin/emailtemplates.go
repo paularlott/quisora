@@ -41,10 +41,12 @@ func (m *Module) getEmailTemplates(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, m.emailTemplatesView(v))
 }
 
-// putEmailTemplates replaces the organization's own email templates (service.UpdateEmailTemplates).
+// putEmailTemplates replaces the organization's own email templates (service.UpdateEmailTemplates), after a recent
+// re-authentication (stepUp): the templates carry every invitation, reset link and sign-in code the organization
+// sends, so a stolen session or API token must not be enough to change where those go.
 func (m *Module) putEmailTemplates(w http.ResponseWriter, r *http.Request) {
 	o, a, found := m.orgFor(w, r)
-	if !found {
+	if !found || !m.stepUp(w, r) {
 		return
 	}
 	var in model.EmailTemplateSet
@@ -163,8 +165,16 @@ func (m *Module) testEmailTemplate(w http.ResponseWriter, r *http.Request) {
 // inline styles and remote images show (the console's forbids both) and runs no script but the frame's own. The console
 // posts the rendered HTML to it; the frame parses it (scripts in it never run) and puts it in place of its own page,
 // then posts its height back.
-const emailPreviewScript = `addEventListener("message",function(e){if(e.source!==parent||!e.data||typeof e.data.html!=="string")return;` +
+//
+// The frame must not leave the email either: a page it navigated to would run in the console's dialog with the
+// frame's allow-scripts, free to pose as the console. The policy cannot forbid navigation, so the frame's script does:
+// the email's <meta http-equiv> (a refresh moves the frame as soon as it is in place) and <base> are dropped before it
+// is put in place, and a click on a link is cancelled (the links show, and go nowhere). The sandbox has no
+// allow-popups, allow-top-navigation or allow-forms, so nothing opens a window, moves the console or posts a form.
+const emailPreviewScript = `addEventListener("click",function(e){var t=e.target;if(t&&t.closest&&t.closest("a,area"))e.preventDefault()},true);` +
+	`addEventListener("message",function(e){if(e.source!==parent||!e.data||typeof e.data.html!=="string")return;` +
 	`var d=new DOMParser().parseFromString(e.data.html,"text/html");` +
+	`d.querySelectorAll("meta[http-equiv],base").forEach(function(n){n.remove()});` +
 	`document.replaceChild(document.importNode(d.documentElement,true),document.documentElement);` +
 	`parent.postMessage({previewHeight:document.documentElement.scrollHeight},"*")});` +
 	`parent.postMessage({previewReady:true},"*")`

@@ -13,18 +13,20 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/paularlott/quisora/internal/sshca"
 	"golang.org/x/crypto/ssh"
 )
 
 // SSHDLogin is a certificate login sshd logged: the process that serves the connection (the privileged one, which
-// the user cannot touch) and the certificate it accepted.
+// the user cannot touch), the certificate it accepted, and when the line was logged.
 type SSHDLogin struct {
 	PID    int
 	KeyID  string
 	Serial uint64
-	CA     string // SHA256:… fingerprint of the CA key that signed it
+	CA     string        // SHA256:… fingerprint of the CA key that signed it
+	Logged time.Duration // when journald received the line, since this boot: the process serving it had started by then
 }
 
 // sshdLoginsSince is how far back the log is read: the longest certificate lifetime (24 hours) and some.
@@ -49,10 +51,21 @@ func parseAccepted(pid int, msg string) (SSHDLogin, bool) {
 }
 
 // journalLogins reads the certificate logins sshd logged to journald in the last 25 hours (sshd, or sshd-session
-// from OpenSSH 9.8).
+// from OpenSSH 9.8), as root, since this boot. Any local user can log a line that reads like sshd's, even from a
+// program named sshd (_COMM is only the program's name); the user id is not theirs to choose: journald takes _UID from
+// the credentials of the socket the line came in on. Matches on one field are ORed and on different fields ANDed:
+// (sshd or sshd-session) and root. Each login carries when it was logged on the monotonic clock
+// (__MONOTONIC_TIMESTAMP, which the JSON output always has, as it has _BOOT_ID), not the wall clock: a clock stepped
+// forward after the login (a resumed VM, a first NTP sync) would make the connection seem to have started after it.
+// Lines from an earlier boot are left out: their monotonic times count from that boot, and their connections are gone.
 func journalLogins(ctx context.Context) ([]SSHDLogin, error) {
+	b, err := os.ReadFile(procDir + "/sys/kernel/random/boot_id")
+	if err != nil {
+		return nil, fmt.Errorf("reading this boot's id: %w", err)
+	}
+	boot := strings.ReplaceAll(strings.TrimSpace(string(b)), "-", "") // journald writes it without the dashes
 	cmd := exec.CommandContext(ctx, "journalctl", "--no-pager", "--quiet", "--output=json", "--output-fields=MESSAGE,_PID",
-		"--since="+sshdLoginsSince, "_COMM=sshd", "_COMM=sshd-session")
+		"--since="+sshdLoginsSince, "_COMM=sshd", "_COMM=sshd-session", "_UID=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -66,33 +79,95 @@ func journalLogins(ctx context.Context) ([]SSHDLogin, error) {
 		var entry struct {
 			Message any    `json:"MESSAGE"` // a string, or an array of bytes when it is not UTF-8
 			PID     string `json:"_PID"`
+			Boot    string `json:"_BOOT_ID"`
+			Logged  string `json:"__MONOTONIC_TIMESTAMP"` // microseconds since that boot
 		}
-		if json.Unmarshal(sc.Bytes(), &entry) != nil {
+		if json.Unmarshal(sc.Bytes(), &entry) != nil || entry.Boot != boot {
 			continue
 		}
 		msg, _ := entry.Message.(string)
 		pid, err := strconv.Atoi(entry.PID)
-		if err != nil || msg == "" {
+		logged, terr := strconv.ParseInt(entry.Logged, 10, 64)
+		if err != nil || terr != nil || msg == "" {
 			continue
 		}
 		if l, ok := parseAccepted(pid, msg); ok {
+			l.Logged = time.Duration(logged) * time.Microsecond
 			logins = append(logins, l)
 		}
 	}
 	return logins, sc.Err()
 }
 
-// isSSHD reports whether process pid is still sshd's (the connection it served may have ended, and its number been
-// taken by another process since).
-func isSSHD(pid int) bool {
-	comm, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+// procDir is where the processes are read from (tests make one of their own).
+var procDir = "/proc"
+
+// asleep is how long this boot has spent suspended (tests set their own).
+var asleep = timeAsleep
+
+// isSSHD reports whether process l.PID is still the one that served login l: the connection may have ended, and its
+// number been taken by another process since. It must be sshd's, run as root (the real user id), and have started no
+// later than the line was logged (a process started after it is not the one that logged it). Its parent is not
+// checked: connections that outlive a restart of sshd are the init process's children, and under socket activation
+// (sshd -i) they all are. The listener needs no test of its own: it does not log logins, so a line can name its number
+// only from an earlier holder of that number, logged before the listener started.
+func isSSHD(l SSHDLogin) bool {
+	pid := strconv.Itoa(l.PID)
+	if !commSSHD(pid) || !rootProcess(pid) {
+		return false
+	}
+	start, ok := procStart(pid)
+	return ok && start <= l.Logged+asleep()
+}
+
+// commSSHD reports whether process pid's program is sshd (or sshd-session).
+func commSSHD(pid string) bool {
+	comm, err := os.ReadFile(procDir + "/" + pid + "/comm")
 	return err == nil && strings.HasPrefix(strings.TrimSpace(string(comm)), "sshd")
 }
 
-func terminate(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
+// rootProcess reports whether process pid runs as root: the real user id, the first of the Uid line of its status.
+func rootProcess(pid string) bool {
+	b, err := os.ReadFile(procDir + "/" + pid + "/status")
+	if err != nil {
+		return false
+	}
+	for line := range strings.Lines(string(b)) {
+		if rest, ok := strings.CutPrefix(line, "Uid:"); ok {
+			f := strings.Fields(rest)
+			return len(f) > 0 && f[0] == "0"
+		}
+	}
+	return false
+}
+
+// procStart returns when process pid started, since boot: /proc/<pid>/stat's field 22, in clock ticks at USER_HZ (100
+// a second on Linux). The fields are counted after the program's name, which is in parentheses and may hold spaces and
+// parentheses itself. The kernel counts it on the boot clock, which, unlike journald's monotonic one, runs on while
+// the machine is suspended: isSSHD allows for the time spent asleep.
+func procStart(pid string) (time.Duration, bool) {
+	b, err := os.ReadFile(procDir + "/" + pid + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return 0, false
+	}
+	f := strings.Fields(string(b[i+1:])) // from field 3 (the state) on
+	if len(f) < 20 {
+		return 0, false
+	}
+	ticks, err := strconv.ParseInt(f[19], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	const userHZ = 100
+	return time.Duration(ticks) * time.Second / userHZ, true
+}
 
 // endRevoked ends the SSH connections whose certificate krl revokes: those sshd logged as accepted (SSHDLogins), whose
-// process is still sshd's, signed by a CA key in cas or in the list. Ending the connection's privileged process closes
+// process is still the one that logged it (IsSSHD), signed by a CA key in cas or in the list. Ending the connection's privileged process closes
 // it and ends its session. Processes the session left running on their own (under tmux, screen or nohup) are not
 // ended. It reports how many connections it ended.
 func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKey) (int, error) {
@@ -133,10 +208,10 @@ func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKe
 	var errs []error
 	for _, l := range list {
 		ca := byFP[l.CA]
-		if ca == nil || ended[l.PID] || !krl.Revoked(ca, l.Serial, l.KeyID) || !alive(l.PID) {
+		if ca == nil || ended[l.PID] || !krl.Revoked(ca, l.Serial, l.KeyID) || !alive(l) {
 			continue // another CA's, ended already, not revoked, or the connection is gone
 		}
-		if err := end(l.PID); err != nil {
+		if err := end(l); err != nil {
 			if !errors.Is(err, syscall.ESRCH) {
 				errs = append(errs, fmt.Errorf("ending the connection of %s (serial %d, process %d): %w", l.KeyID, l.Serial, l.PID, err))
 			}

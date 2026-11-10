@@ -155,15 +155,18 @@ func TestMakePrimaryOfPrivilegedIsASignInReset(t *testing.T) {
 }
 
 // An established manager or administrator's addresses and invitations are a super admin's to change: an administrator
-// may add an unverified linked address (the user's own business) but not link a verified one, which links provider
-// sign-ins to the account and so resets the sign-in.
+// may not link a verified address, which links provider sign-ins to the account and so resets the sign-in, nor an
+// unverified one, whose verification link goes to the address added (so to whoever added it, if it is theirs).
 func TestEstablishedManagerAddressesAreSuperAdminOnly(t *testing.T) {
 	c := newCast(t)
 	c.establish(c.aManager)
 	c.establish(c.aAdmin)
 	admin := actor(c.aAdmin)
-	if _, err := c.svc.AddLinkedEmail(c.ctx, admin, c.aManager.ID, "m1@example.com", false); err != nil {
-		t.Fatalf("unverified add: %v", err)
+	if _, err := c.svc.AddLinkedEmail(c.ctx, admin, c.aManager.ID, "m1@example.com", false); !isInvalid(err) {
+		t.Fatalf("admin adding an unverified address to a manager: %v", err)
+	}
+	if _, err := c.svc.AddLinkedEmail(c.ctx, actor(c.super), c.aManager.ID, "m1@example.com", false); err != nil {
+		t.Fatalf("super admin adding an unverified address: %v", err)
 	}
 	// Each of the ways to link a verified address is refused, and no upstream sign-in matches it afterwards.
 	attacker := "attacker@controlled.example"

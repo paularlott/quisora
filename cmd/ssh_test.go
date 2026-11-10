@@ -140,11 +140,25 @@ func TestSSHHostSign(t *testing.T) {
 	}
 	f.AuthMethod = "post"
 
+	if strings.Contains(errOut, "visible to anyone") {
+		t.Errorf("a secret from the environment was warned about: %s", errOut)
+	}
+
 	// a token from the environment
 	t.Setenv("QUISORA_CLIENT_SECRET", "")
 	t.Setenv("QUISORA_TOKEN", "host-token")
 	if _, errOut, err = e.run(t, "", "ssh", "host-sign", "--principal", "c.example.com", f.URL, keyFile); err != nil {
 		t.Fatalf("host-sign with a token: %v\n%s", err, errOut)
+	}
+	// secrets on the command line work, with a warning: anyone on the machine sees them in the process list
+	t.Setenv("QUISORA_TOKEN", "")
+	if _, errOut, err = e.run(t, "", "ssh", "host-sign", "--token", "host-token", "--principal", "c.example.com", f.URL, keyFile); err != nil ||
+		!strings.Contains(errOut, "--token is a secret on the command line") || !strings.Contains(errOut, "QUISORA_TOKEN") {
+		t.Errorf("--token: %v\n%s", err, errOut)
+	}
+	if _, errOut, err = e.run(t, "", "ssh", "host-sign", "--client-id", f.ClientID, "--client-secret", f.ClientSecret, "--principal", "c.example.com", f.URL, keyFile); err != nil ||
+		!strings.Contains(errOut, "--client-secret is a secret on the command line") {
+		t.Errorf("--client-secret: %v\n%s", err, errOut)
 	}
 	// no credentials at all
 	t.Setenv("QUISORA_TOKEN", "")

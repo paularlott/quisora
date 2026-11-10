@@ -36,6 +36,8 @@ import (
 	"hash"
 	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -433,18 +435,45 @@ func Verify(r io.Reader, sealer *secure.Sealer, password string) (Stats, error) 
 	return read(r, sealer, password, nil)
 }
 
+// restoreCopy starts the names of Restore's copies of the backup it restores.
+const restoreCopy = "quisora-restore-"
+
 // Restore loads a backup from r into st. The whole backup is verified first (structure, master key, integrity MAC)
-// and nothing is written unless it passes; r is then read again from the start. The store must be empty unless
-// force is set, in which case records from the backup replace stored ones with an older version, records the backup
-// does not hold are left alone, and a record whose unique value another stored record holds fails the restore
-// (ErrConflict: nothing is merged by guessing which record should keep the value).
-func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.ReadSeeker, force bool, password string) (Stats, error) {
-	if _, err := Verify(r, sealer, password); err != nil {
+// and nothing is written unless it passes. It is verified as it is copied to a private file in dir (the node's data
+// directory: as large as the backup, so not os.TempDir, which may be a tmpfs in memory), and the records are written
+// from that copy: the integrity MAC is in the trailer, so a backup file changed after it was verified (by anyone who
+// can write it) would otherwise have its records written before the trailer that refuses it is reached, or be
+// restored as a backup that was never verified. The store must be empty unless force is set, in which case records
+// from the backup replace stored ones with an older version, records the backup does not hold are left alone, and a
+// record whose unique value another stored record holds fails the restore (ErrConflict: nothing is merged by guessing
+// which record should keep the value).
+func Restore(ctx context.Context, st store.Store, sealer *secure.Sealer, r io.Reader, force bool, password, dir string) (Stats, error) {
+	// Copies an interrupted restore left (killed before it could remove its own) are removed first: each is as large
+	// as its backup, and nothing else reads them.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), restoreCopy) {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	cp, err := os.CreateTemp(dir, restoreCopy+"*") // readable by this user only
+	if err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
+	}
+	defer func() {
+		_ = cp.Close()
+		_ = os.Remove(cp.Name())
+	}()
+	// A backup that passes has been read to its end (Verify refuses anything after it), so the copy is all of it and
+	// nothing else: bytes added to the file since are not read.
+	if _, err := Verify(io.TeeReader(r, cp), sealer, password); err != nil {
 		return nil, err
 	}
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+	if _, err := cp.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
 	}
+	r = cp
 	if !force {
 		empty, err := Empty(ctx, st)
 		if err != nil {

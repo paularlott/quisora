@@ -135,9 +135,10 @@ administrators):
 - making someone an administrator or super admin, or creating one;
 - demoting, disabling or deleting another administrator or super admin (management API only: a directory offboarding
   an administrator through SCIM still can, within the service's rules: it never touches a super admin);
-- removing another user's password or authenticator app;
+- removing another user's password, authenticator app or passkey, or unlinking a sign-in provider from them;
 - issuing an invitation for a manager or administrator (an accepted invitation replaces every way they sign in);
-- creating or changing a service account, or rotating its secret.
+- creating or changing a service account, or rotating its secret;
+- changing an organization's email templates ([EMAILS.md](../EMAILS.md)).
 
 **Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
 provider, an API token, signing out other sessions) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second
@@ -148,9 +149,10 @@ and an account whose second factor is a passkey confirms with the passkey, not t
 ## Protecting administrators
 
 - **Resetting an administrator's sign-in is a super admin's change.** Sending an established manager or administrator
-  a new invitation, removing their password or authenticator app, lowering their role, or changing their primary email address (where
-  password resets go) needs a super admin. A manager or administrator who has not signed in yet gets the next
-  invitation only from whoever issued the current one, or from a super admin. So one administrator cannot take over
+  a new invitation, removing their password or authenticator app, lowering their role, changing their primary email address (where
+  password resets go), or adding a linked address to their account, verified or not (its verification link goes to
+  the address added), needs a super admin. A manager or administrator who has not signed in yet gets the next
+  invitation only from whoever issued the current one (the same person or service account), or from a super admin. So one administrator cannot take over
   another's account.
 - **Not linked by email.** Upstream providers never link a manager's or administrator's account by its email address:
   they connect the provider themselves ([providers](providers.md#who-signs-in-as-whom)).

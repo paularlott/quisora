@@ -451,7 +451,7 @@ func TestDevicePollDuringApprovalStaysPending(t *testing.T) {
 	_ = local.Set(ctx, nsDeviceTurn, id, []byte{1}, time.Minute)
 	done := make(chan bool, 1)
 	go func() {
-		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{}, "")
+		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{}, "", 0)
 	}()
 	g.waitHeld(t)
 	_, oe := p.deviceToken(ctx, &model.Client{Meta: model.Meta{ID: "client"}}, id, nil, "")

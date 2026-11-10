@@ -59,16 +59,17 @@ type deviceGrant struct {
 	MFA    bool `json:"mfa,omitempty"`
 	MaxAge *int `json:"ma,omitempty"`
 	// Decision is "" while pending, then "allow" (with the approving user's sign-in below) or "deny".
-	Decision  string                 `json:"d,omitempty"`
-	UserID    string                 `json:"u,omitempty"`
-	OrgID     string                 `json:"o,omitempty"`
-	SessionID string                 `json:"s,omitempty"`
-	AuthTime  int64                  `json:"at,omitempty"`
-	AMR       []string               `json:"amr,omitempty"`
-	IdP       string                 `json:"idp,omitempty"`  // codeData.IdP
-	Upstream  []string               `json:"uamr,omitempty"` // codeData.UpstreamAMR
-	Account   *model.UpstreamAccount `json:"upa,omitempty"`  // codeData.Upstream
-	GrantID   string                 `json:"g,omitempty"`    // codeData.GrantID
+	Decision   string                 `json:"d,omitempty"`
+	UserID     string                 `json:"u,omitempty"`
+	OrgID      string                 `json:"o,omitempty"`
+	SessionID  string                 `json:"s,omitempty"`
+	AuthTime   int64                  `json:"at,omitempty"`
+	AMR        []string               `json:"amr,omitempty"`
+	IdP        string                 `json:"idp,omitempty"`  // codeData.IdP
+	Upstream   []string               `json:"uamr,omitempty"` // codeData.UpstreamAMR
+	Account    *model.UpstreamAccount `json:"upa,omitempty"`  // codeData.Upstream
+	GrantID    string                 `json:"g,omitempty"`    // codeData.GrantID
+	ConsentGen int64                  `json:"cg,omitempty"`   // codeData.ConsentGen: the client's when the user approved
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -291,7 +292,7 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID}
+		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID, ConsentGen: d.ConsentGen}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, ad, jkt, "device_code")
 	return tr, restore(oe)
 }
@@ -402,9 +403,10 @@ func (p *Provider) pendingDevice(ctx context.Context, orgID, code string) (*devi
 	return &d, string(dc), ce.c, true
 }
 
-// decideDevice records the user's decision on the device sign-in a flow approves; it reports false when the sign-in
-// has expired or was decided already (another browser with the same code). Its user code stops working either way.
-func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User, idp string) bool {
+// decideDevice records the user's decision on the device sign-in a flow approves (an approval with the client's
+// consent generation as it was approved, gen); it reports false when the sign-in has expired or was decided already
+// (another browser with the same code). Its user code stops working either way.
+func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User, idp string, gen int64) bool {
 	raw, err := p.s.Eph.Get(ctx, nsDevice, f.Device)
 	if err != nil {
 		return false
@@ -424,6 +426,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 		d.Decision = "allow"
 		d.UserID, d.OrgID, d.SessionID, d.AuthTime, d.AMR = u.ID, u.OrgID, sess.ID, sess.AuthTime.Unix(), sess.AMR
 		d.IdP, d.Upstream, d.Account = idp, sess.UpstreamAMR, upstreamAccount(idp, sess)
+		d.ConsentGen = gen
 	}
 	b, _ := json.Marshal(d)
 	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil
@@ -435,7 +438,7 @@ func (p *Provider) deviceRespond(w http.ResponseWriter, r *http.Request, f *flow
 	switch params.Get("error") {
 	case "access_denied":
 		if f.Device != "" {
-			p.decideDevice(r.Context(), f, false, nil, nil, "")
+			p.decideDevice(r.Context(), f, false, nil, nil, "", 0)
 		}
 		p.message(w, r, http.StatusOK, "Device sign-in cancelled", "Your device was not signed in",
 			"You can close this page.")

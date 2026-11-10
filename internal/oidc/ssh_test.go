@@ -22,6 +22,7 @@ import (
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/sshca"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 	"golang.org/x/crypto/ssh"
 )
@@ -87,6 +88,9 @@ func (e *sshEnv) tokenIn(cl *model.Client, c *http.Client, extra url.Values) tok
 		q[k] = v
 	}
 	to := e.authorize(c, q)
+	if cl.SSHApp {
+		to = e.approved(c, to)
+	}
 	code := to.Query().Get("code")
 	if code == "" || !strings.HasPrefix(to.String(), redirect+"?") {
 		e.t.Fatalf("no code at the loopback redirect: %s", to)
@@ -97,6 +101,33 @@ func (e *sshEnv) tokenIn(cl *model.Client, c *http.Client, extra url.Values) tok
 		e.t.Fatalf("exchange: %d %v", r.status, r.m)
 	}
 	return r
+}
+
+// approved is where the SSH application's authorization goes once the user approves it on the confirmation page
+// (always shown for it), from to, where the authorization request sent browser c.
+func (e *sshEnv) approved(c *http.Client, to *url.URL) *url.URL {
+	e.t.Helper()
+	if to.Path != e.orgBase+"/oauth/consent" {
+		e.t.Fatalf("the SSH application's sign-in was not confirmed: %s", to)
+	}
+	pu, _ := url.Parse(e.env.URL)
+	csrf := ""
+	for _, ck := range c.Jar.Cookies(pu) {
+		if ck.Name == web.SessionCookieFor(e.env.Primary.ID) {
+			if s, err := e.env.Svc.Sessions.Get(context.Background(), web.SessionID(ck.Value)); err == nil {
+				csrf = s.CSRF
+			}
+		}
+	}
+	st, redirect := e.decideConsent(c, csrf, to.Query().Get("flow"), true)
+	if st != 200 {
+		e.t.Fatalf("approve: %d", st)
+	}
+	resp := e.get(c, redirect)
+	if resp.StatusCode != http.StatusFound {
+		e.t.Fatalf("after approving: %d %s", resp.StatusCode, body(resp))
+	}
+	return loc(e.t, resp)
 }
 
 // mfaToken is a token of u's sign-in with two factors, now.
@@ -684,7 +715,7 @@ func TestSSHSignDPoP(t *testing.T) {
 	c := h.sessionWith(h.user, mfaAMR, time.Now())
 	v, ch := pkce()
 	redirect := "http://127.0.0.1:43211/callback"
-	code := h.authorize(c, authzQuery(e.cl, ch, url.Values{"redirect_uri": {redirect}, "scope": {"openid profile"}, "acr_values": {acrMFA}})).Query().Get("code")
+	code := e.approved(c, h.authorize(c, authzQuery(e.cl, ch, url.Values{"redirect_uri": {redirect}, "scope": {"openid profile"}, "acr_values": {acrMFA}}))).Query().Get("code")
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {e.cl.ID}, "redirect_uri": {redirect}, "code_verifier": {v}}
 	proof := func(nonce string) string {
 		return h.proof(k, "POST", h.orgBase+"/oauth/token", func(_, c map[string]any) { c["nonce"] = nonce })
@@ -815,9 +846,14 @@ func TestSSHApplicationOAuth(t *testing.T) {
 			t.Errorf("port %s: a stale password sign-in was not asked to sign in again: %s", port, u)
 		}
 	}
-	// a fresh two-factor sign-in goes through to the loopback address with the code and the state
+	// a fresh two-factor sign-in is confirmed by the user, first-party as the application is (the code goes to whatever
+	// listens on that port of the machine, maybe another user's program), and never silently (prompt=none)
 	fresh := h.sessionWith(h.user, mfaAMR, time.Now())
-	to := h.authorize(fresh, q("http://127.0.0.1:50123/callback", url.Values{"acr_values": {acrMFA}, "max_age": {"3600"}}))
+	if to := h.authorize(fresh, q("http://127.0.0.1:50123/callback", url.Values{"prompt": {"none"}})); to.Query().Get("error") != "consent_required" {
+		t.Errorf("prompt=none: %s", to)
+	}
+	// then it goes through to the loopback address with the code and the state
+	to := e.approved(fresh, h.authorize(fresh, q("http://127.0.0.1:50123/callback", url.Values{"acr_values": {acrMFA}, "max_age": {"3600"}})))
 	if to.Host != "127.0.0.1:50123" || to.Path != "/callback" || to.Query().Get("code") == "" || to.Query().Get("state") != "st1" {
 		t.Errorf("fresh sign-in: %s", to)
 	}
@@ -1097,6 +1133,104 @@ func TestSSHSignAfterSessionsEnded(t *testing.T) {
 	certs, err := h.env.Svc.SSHCertsOf(ctx, u)
 	if err != nil || len(certs) != 1 || certs[0].SessionEpoch != u.SessionEpoch || !certs[0].Stamp.Current(stamp) {
 		t.Fatalf("the certificate's record: %+v %v (epoch %d, stamp %+v)", certs, err, u.SessionEpoch, stamp)
+	}
+}
+
+// grantListing is the store the certificates are read from, noting at each listing of them whether grant is still
+// there, and failing the listing with fail.
+type grantListing struct {
+	store.Store
+	svc   *service.Service
+	grant string
+	fail  error
+	seen  bool
+}
+
+func (s *grantListing) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if kind == model.KindSSHCert {
+		if _, err := s.svc.Grants.Get(ctx, s.grant); err == nil {
+			s.seen = true
+		}
+		if s.fail != nil {
+			return nil, s.fail
+		}
+	}
+	return s.Store.List(ctx, kind, q)
+}
+
+// Revoking a grant ends it first and revokes its certificates after: a certificate signed in between would otherwise
+// be missed. And the grant ends whatever its certificates do: a failure to revoke them is reported (503), but does not
+// leave the grant, and its refresh tokens, working; the client's retry revokes them though the grant is gone.
+func TestGrantRevokedBeforeItsCertificates(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	e := h.sshTenant("prod", service.SSHSettingsInput{CertTTL: ptr(3600)})
+	key, _ := sshKey(t)
+	svc := h.env.Svc
+	grantOf := func(tok string) (string, string) {
+		t.Helper()
+		st, m, _ := e.sign(tok, map[string]any{"public_key": key})
+		if st != 200 {
+			t.Fatalf("sign: %d %v", st, m)
+		}
+		certs, err := svc.SSHCertsOf(context.Background(), h.user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range certs {
+			if strconv.FormatUint(c.Serial, 10) == m["serial"] {
+				return c.SignIn, m["serial"].(string)
+			}
+		}
+		t.Fatal("the certificate's record is not there")
+		return "", ""
+	}
+	certs := svc.SSHCerts.S
+	revoke := func(tok, grant string, fail error) (int, bool) {
+		t.Helper()
+		watch := &grantListing{Store: certs, svc: svc, grant: grant, fail: fail}
+		svc.SSHCerts.S = watch
+		defer func() { svc.SSHCerts.S = certs }()
+		r := h.post(h.orgBase+"/oauth/revoke", url.Values{"token": {tok}, "client_id": {e.cl.ID}}, "", "")
+		return r.status, watch.seen
+	}
+
+	tok := e.mfaToken(h.user)
+	grant, serial := grantOf(tok)
+	if st, seen := revoke(tok, grant, nil); st != 200 || seen {
+		t.Errorf("revoke: %d, the certificates listed while the grant was there: %v", st, seen)
+	}
+	reason := func(serial string) string {
+		t.Helper()
+		list, err := svc.SSHRevoked(context.Background(), e.tn.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range list {
+			if strconv.FormatUint(r.Cert.Serial, 10) == serial {
+				return r.Reason
+			}
+		}
+		return ""
+	}
+	if got := reason(serial); got != service.SSHReasonSignInEnded {
+		t.Errorf("the revoked grant's certificate: %q", got)
+	}
+
+	tok = e.mfaToken(h.user)
+	grant, serial = grantOf(tok)
+	if st, _ := revoke(tok, grant, store.ErrUnavailable); st != http.StatusServiceUnavailable {
+		t.Errorf("revoke with the certificates unreadable: %d, want 503", st)
+	}
+	if _, err := svc.Grants.Get(context.Background(), grant); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the grant is left when its certificates could not be revoked: %v", err)
+	}
+	// The client's retry finds the grant gone, and revokes its certificates all the same.
+	if st, _ := revoke(tok, grant, nil); st != 200 {
+		t.Errorf("the retry: %d, want 200", st)
+	}
+	if got := reason(serial); got != service.SSHReasonSignInEnded {
+		t.Errorf("the certificate after the retry: %q, want it revoked", got)
 	}
 }
 

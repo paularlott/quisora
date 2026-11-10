@@ -476,8 +476,21 @@ func EncodeJWK(pub crypto.PublicKey, kid, alg string) (JWK, error) {
 	return j, nil
 }
 
-// PublicKey decodes the JWK into a crypto public key, validating it (EC points must be on the curve, RSA keys at
-// least 2048 bits).
+// RSA keys read from JWKs are between minRSABits and maxRSABits. The upper bound matters as much as the lower: RSA
+// verification costs grow with the square of the modulus, and the keys come from unauthenticated requests (a DPoP
+// proof carries its own) and from documents others publish (a client's jwks_uri), so a 48 KB modulus would hold a
+// core for seconds per proof. No CA or provider issues RSA keys over 8192 bits.
+const (
+	minRSABits = 2048
+	maxRSABits = 8192
+)
+
+// maxJWKSKeys is the most keys taken from one JWKS: a client or provider rotates through two or three, and every key
+// taken is one a token without a kid may be tried against.
+const maxJWKSKeys = 100
+
+// PublicKey decodes the JWK into a crypto public key, validating it (EC points must be on the curve, RSA keys of
+// minRSABits to maxRSABits with an odd exponent from 3 to 2^31-1, as crypto/rsa accepts).
 func (j JWK) PublicKey() (crypto.PublicKey, error) {
 	dec := func(s string) ([]byte, error) { return b64.DecodeString(strings.TrimRight(s, "=")) }
 	switch j.Kty {
@@ -506,9 +519,12 @@ func (j JWK) PublicKey() (crypto.PublicKey, error) {
 		if err1 != nil || err2 != nil || len(n) == 0 || len(e) == 0 || len(e) > 4 {
 			return nil, errors.New("bad RSA key")
 		}
+		if len(n) > maxRSABits/8+1 { // before it is made a number: an over-long one is refused at a glance
+			return nil, errors.New("RSA key too large")
+		}
 		k := &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}
-		if k.N.BitLen() < 2048 || k.E < 3 || k.E%2 == 0 {
-			return nil, errors.New("RSA key too small or invalid exponent")
+		if k.N.BitLen() < minRSABits || k.N.BitLen() > maxRSABits || k.E < 3 || k.E > 1<<31-1 || k.E%2 == 0 {
+			return nil, errors.New("RSA key too small, too large or with an invalid exponent")
 		}
 		return k, nil
 	}
@@ -533,7 +549,7 @@ type JWKS struct {
 	Keys []JWK `json:"keys"`
 }
 
-// ParseJWKS decodes a key set, or a single bare JWK.
+// ParseJWKS decodes a key set, or a single bare JWK; of a set, the first maxJWKSKeys keys.
 func ParseJWKS(data []byte) ([]JWK, error) {
 	var probe struct {
 		Keys *[]JWK `json:"keys"`
@@ -543,7 +559,7 @@ func ParseJWKS(data []byte) ([]JWK, error) {
 		return nil, err
 	}
 	if probe.Keys != nil {
-		return *probe.Keys, nil
+		return (*probe.Keys)[:min(len(*probe.Keys), maxJWKSKeys)], nil
 	}
 	if probe.Kty == "" {
 		return nil, errors.New("not a JWK or JWKS")

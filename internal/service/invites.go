@@ -144,12 +144,16 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 func (s *Service) issuerMayInvite(ctx context.Context, l *model.LinkToken, u *model.User) bool {
 	var a *Actor
 	if l.IssuedByClient != "" {
-		// A service account as it is now: still enabled, of the account's organization, with the scopes it holds now.
+		// A service account as it is now: still enabled, of the account's organization, with the scopes it holds now,
+		// one of them a scope it invites with (canManageUser judges roles, not scopes).
 		c, err := s.Clients.Get(ctx, l.IssuedByClient)
 		if err != nil || !c.Enabled || !c.ServiceAccount || c.OrgID != u.OrgID {
 			return false
 		}
 		a = ActorForServiceAccount(c, c.Scopes, "")
+		if !a.HasScope(ScopeUsers) && !a.HasScope(ScopeSCIM) {
+			return false
+		}
 	} else {
 		iu, err := s.Users.Get(ctx, l.IssuedBy)
 		if err != nil || !iu.Enabled(time.Now()) || iu.ID == u.ID {

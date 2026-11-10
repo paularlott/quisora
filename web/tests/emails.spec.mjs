@@ -172,6 +172,26 @@ test('an admin edits, previews, saves and tests the email templates', async ({ p
   }
 })
 
+// The preview frame runs script (its own), so it must not leave the email: a page it moved to would run in the
+// console's dialog. Neither the email's meta refresh nor a click on one of its links moves it.
+test('the email preview stays on the email', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(PAGE, { waitUntil: 'load' })
+  await page.getByRole('tab', { name: 'Password reset' }).click()
+  await typeInEditor(page, '#f-html', '<meta http-equiv="refresh" content="0;url=/healthz">' +
+    '<p><a href="{{.Link}}">Reset now</a> <a href="/healthz">Elsewhere</a></p>')
+  await page.getByRole('button', { name: 'Preview password reset' }).click()
+  const dlg = page.getByRole('dialog', { name: 'Preview: Password reset' })
+  const frame = page.frameLocator('iframe.email-frame')
+  await expect(frame.getByRole('link', { name: 'Reset now' })).toBeVisible()
+  await page.waitForTimeout(1000) // a refresh would have moved the frame by now
+  await frame.getByRole('link', { name: 'Elsewhere' }).click()
+  await page.waitForTimeout(500)
+  await expect(frame.getByRole('link', { name: 'Reset now' })).toBeVisible()
+  expect(page.frames().map((f) => new URL(f.url()).pathname)).not.toContain('/healthz')
+  await dlg.getByRole('button', { name: 'Close', exact: true }).click()
+})
+
 test('managers have no email templates page', async ({ page }) => {
   await signIn(page, 'manager')
   await page.goto('/admin/orgs/acme/users', { waitUntil: 'load' })

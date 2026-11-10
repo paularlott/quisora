@@ -65,6 +65,11 @@ func (m *Module) createOrg(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
+	// Its first service account is made as any other is (serviceaccounts.go): by a person only after a recent
+	// re-authentication, never by a personal API token (stepUp lets a service account through).
+	if in.ServiceAccount != nil && !m.stepUp(w, r) {
+		return
+	}
 	o, sa, secret, err := m.s.Svc.CreateOrgWithServiceAccount(r.Context(), web.Actor(r), in)
 	if err != nil {
 		web.WriteError(w, err)

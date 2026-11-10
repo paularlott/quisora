@@ -62,13 +62,20 @@ func (s *Service) mayResetSignIn(ctx context.Context, a *Actor, u *model.User, f
 // mayReplaceInvite returns the check of the invitation a new one by a would replace (issueLink runs it on the very
 // record it overwrites, on every try): a, not a super admin, may not replace the live invitation of a privileged
 // account from someone else, or its issuer could accept it as the user. The issuer (or a super admin) issues the next
-// one.
+// one. The issuer is the user or the service account (IssuedBy, IssuedByClient, as CreateInvite records them): a
+// service account has no user id, so comparing user ids alone would make every service account the issuer of
+// another's invitation, and of the system's. One issued by neither (the system, a command) is someone else's for all.
 func mayReplaceInvite(a *Actor, u *model.User) func(cur *model.LinkToken) error {
+	byUser, byClient := a.UserID, ""
+	if a.UserID == "" {
+		byClient = a.ClientID
+	}
 	return func(cur *model.LinkToken) error {
 		if a == System || a.IsSuper() || !u.Role.Privileged() {
 			return nil
 		}
-		if !cur.Used && time.Now().Before(cur.Expires) && cur.IssuedBy != a.UserID {
+		mine := (cur.IssuedBy != "" || cur.IssuedByClient != "") && cur.IssuedBy == byUser && cur.IssuedByClient == byClient
+		if !cur.Used && time.Now().Before(cur.Expires) && !mine {
 			return Invalid("user", "this account has an invitation from someone else that has not been used yet: "+
 				"only they or a super admin can issue a new one")
 		}

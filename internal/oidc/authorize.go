@@ -659,7 +659,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
 		if f.Device != "" {
-			p.decideDevice(ctx, f, false, nil, nil, "")
+			p.decideDevice(ctx, f, false, nil, nil, "", 0)
 		}
 		if none {
 			p.redirectError(w, r, f, "access_denied", errNoAccess.Error())
@@ -674,7 +674,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	if f.Device != "" && user.Role.Privileged() && !c.DevicePrivileged {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
-		p.decideDevice(ctx, f, false, nil, nil, "")
+		p.decideDevice(ctx, f, false, nil, nil, "", 0)
 		p.message(w, r, http.StatusForbidden, "Not allowed", "Managers and administrators cannot sign in on devices with "+c.Name,
 			"You are signed in as "+user.Email+". Your device was not signed in. Ask your administrator if you need this.")
 		return
@@ -690,8 +690,11 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 			p.redirectError(w, r, f, "access_denied", "the user denied the request")
 			return
 		}
-	} else if !c.FirstParty || f.Device != "" {
-		// A device sign-in is always confirmed: the code may have come from someone else.
+	} else if !c.FirstParty || f.Device != "" || c.SSHApp {
+		// A device sign-in is always confirmed: the code may have come from someone else. So is a sign-in to a tenant's
+		// SSH application, first-party as it is: its code goes to any port of the loopback address, where another
+		// user of the same machine may be listening, and an authorization link to their port, opened by the user,
+		// would hand them a code (and a certificate with the user's principals) without the user seeing anything.
 		consented := false
 		if !f.has("consent") && !c.Public() && f.Device == "" {
 			consented = p.hasConsent(ctx, user.ID, c, f.consent(), f.Resources)
@@ -721,7 +724,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	if f.Device != "" {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
-		if !p.decideDevice(ctx, f, true, sess, user, idp) {
+		if !p.decideDevice(ctx, f, true, sess, user, idp, c.RememberGen) {
 			p.message(w, r, http.StatusBadRequest, "Code expired", "This code can no longer be used",
 				"It has expired, or it was already used. Start again on your device to get a new code.")
 			return
@@ -740,7 +743,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Upstream: upstreamAccount(idp, sess), Scopes: f.Scopes,
-		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT}
+		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT, ConsentGen: c.RememberGen}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
 	if err != nil {
@@ -788,9 +791,12 @@ func methodAllowed(eff *service.SignInMethods, sess *model.Session) bool {
 }
 
 // hasConsent reports whether the user already authorized confidential client c for these scopes and resources, in one
-// approval (consent is remembered per scope set and per resource set): a live grant covers them, so the user is asked
-// once per sign-in and again after signing out, or, for a client set to remember consent (service.RemembersConsent),
-// their remembered consent (model.Consent) does, signed out or not.
+// approval (consent is remembered per scope set and per resource set): a live grant covers them (unexpired, made in the
+// user's current session epoch, for the client as it is: ConsentGen), so the user is asked once per sign-in and again
+// once its grants are gone, or, for a client set to remember consent (service.RemembersConsent), their remembered
+// consent (model.Consent) does, signed out or not. The user's own sign-out keeps the grants with offline_access
+// (SignOutSession), so a live one of those still counts after signing out: the application keeps that access anyway.
+// A grant whose record is merely left behind (expired, or of an epoch a revocation ended) counts for nothing.
 func (p *Provider) hasConsent(ctx context.Context, userID string, c *model.Client, scopes, resources []string) bool {
 	if p.svc.ConsentCovers(ctx, userID, c, scopes, resources) {
 		return true
@@ -799,9 +805,14 @@ func (p *Provider) hasConsent(ctx context.Context, userID string, c *model.Clien
 	if err != nil {
 		return false
 	}
+	u, err := p.user(ctx, userID)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
 	for _, g := range gs {
-		if g.ClientID == c.ID && g.ConsentGen == c.RememberGen && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
-			subset(resources, g.Resources) {
+		if g.ClientID == c.ID && g.ConsentGen == c.RememberGen && now.Before(g.Expires) && u.SessionHolds(g.Epoch) &&
+			subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) && subset(resources, g.Resources) {
 			return true
 		}
 	}
