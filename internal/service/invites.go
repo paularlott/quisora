@@ -130,7 +130,7 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && !l.BreakGlass && !strings.EqualFold(l.For, u.Email) {
 		return nil, nil, ErrLink
 	}
-	if l.Purpose == LinkInvite && l.IssuedBy != "" && !s.issuerMayInvite(ctx, l.IssuedBy, u) {
+	if l.Purpose == LinkInvite && (l.IssuedBy != "" || l.IssuedByClient != "") && !s.issuerMayInvite(ctx, l, u) {
 		_ = s.Links.Delete(ctx, l.ID) // it can never become valid again: the issuer would have to issue a new one
 		return nil, nil, ErrLink
 	}
@@ -139,13 +139,24 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 
 // issuerMayInvite asks CreateInvite's rules again when an invitation is used, of its issuer as they are now: the
 // account may have been promoted since (an administrator's invitation for a plain user must not open a super admin),
-// or the issuer demoted or disabled (a link they hold keeps no authority they lost).
-func (s *Service) issuerMayInvite(ctx context.Context, issuerID string, u *model.User) bool {
-	iu, err := s.Users.Get(ctx, issuerID)
-	if err != nil || !iu.Enabled(time.Now()) || iu.ID == u.ID {
-		return false
+// or the issuer (a user, or a service account) demoted, disabled or rescoped (a link they hold keeps no authority they
+// lost).
+func (s *Service) issuerMayInvite(ctx context.Context, l *model.LinkToken, u *model.User) bool {
+	var a *Actor
+	if l.IssuedByClient != "" {
+		// A service account as it is now: still enabled, of the account's organization, with the scopes it holds now.
+		c, err := s.Clients.Get(ctx, l.IssuedByClient)
+		if err != nil || !c.Enabled || !c.ServiceAccount || c.OrgID != u.OrgID {
+			return false
+		}
+		a = ActorForServiceAccount(c, c.Scopes, "")
+	} else {
+		iu, err := s.Users.Get(ctx, l.IssuedBy)
+		if err != nil || !iu.Enabled(time.Now()) || iu.ID == u.ID {
+			return false
+		}
+		a = ActorForUser(iu, "")
 	}
-	a := ActorForUser(iu, "")
 	return s.canManageUser(a, u) && s.mayResetSignIn(ctx, a, u, "user") == nil
 }
 
@@ -381,7 +392,11 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	var token string
 	var l *model.LinkToken
 	err = s.AuditedUser(ctx, a, u, "user.invite", nil, func() (err error) {
-		token, l, err = s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by, mayReplaceInvite(a, u))
+		token, l, err = s.issueLink(ctx, u, LinkInvite, "", InviteTTL, by, mayReplaceInvite(a, u), func(l *model.LinkToken) {
+			if a != System && a.UserID == "" {
+				l.IssuedByClient = a.ClientID // a service account: judged again when the invitation is used
+			}
+		})
 		return err
 	})
 	if err != nil {

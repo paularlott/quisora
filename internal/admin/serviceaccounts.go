@@ -78,6 +78,9 @@ func (m *Module) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
+	if !m.stepUp(w, r) { // a service account holds its scopes for good: given only after a recent re-authentication, never by an API token
+		return
+	}
 	c, secret, err := m.s.Svc.CreateServiceAccount(r.Context(), a, org.ID, in)
 	if err != nil {
 		web.WriteError(w, err)
@@ -93,6 +96,9 @@ func (m *Module) updateServiceAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	var in service.ServiceAccountInput
 	if !web.DecodeJSON(w, r, &in) {
+		return
+	}
+	if !m.stepUp(w, r) { // a service account holds its scopes for good: given only after a recent re-authentication, never by an API token
 		return
 	}
 	c, err := m.s.Svc.UpdateServiceAccount(r.Context(), a, org.ID, r.PathValue("id"), in)
@@ -119,6 +125,9 @@ func (m *Module) deleteServiceAccount(w http.ResponseWriter, r *http.Request) {
 func (m *Module) rotateServiceAccountSecret(w http.ResponseWriter, r *http.Request) {
 	org, a, found := m.orgFor(w, r)
 	if !found {
+		return
+	}
+	if !m.stepUp(w, r) { // a service account holds its scopes for good: its secret issued only after a recent re-authentication, never by an API token
 		return
 	}
 	id := r.PathValue("id")

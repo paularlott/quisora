@@ -72,15 +72,16 @@ func ServiceAccountName(c *model.Client) string { return "service:" + c.Name }
 
 // mayGrant reports whether a may give a service account of org the scope sc. first: the account made with a new
 // organization by whoever creates it, which may hold any of the organization's scopes (granting orgs:create is
-// trusting its holder with that). Otherwise a service account gives only scopes it holds itself, and only super
-// admins give import; orgs:create and orgs:delete are super admins' to give, on the primary organization alone.
+// trusting its holder with that). Otherwise a scoped actor (a service account, or a token) gives only scopes it holds
+// itself, and only super admins give import; orgs:create and orgs:delete are super admins' to give, on the primary
+// organization alone.
 func mayGrant(a *Actor, org *model.Org, sc string, first bool) bool {
 	switch {
 	case slices.Contains(PrimaryServiceAccountScopes, sc):
 		return org.Primary && a.IsSuper()
 	case first:
 		return true
-	case a.ClientID != "":
+	case !a.Unscoped:
 		return a.HasScope(sc)
 	case sc == ScopeImport:
 		return a.IsSuper()

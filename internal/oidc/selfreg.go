@@ -103,13 +103,8 @@ func (p *Provider) appClient(ctx context.Context, r *http.Request, orgID, id str
 // The error is set only when a counter could not be used: nothing was fetched (a limit never fails open), but the
 // document was not judged either, so the caller reports "unavailable", not "unknown application".
 func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id string, unstored bool) (*model.Client, error) {
-	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd|"+id, 1, time.Minute)
-	if err != nil {
-		return nil, unavailable(err)
-	}
-	if n > 1 {
-		return nil, nil
-	}
+	// The caller's own budget first: one over it must not spend the document's one read a minute, which every other
+	// caller then goes without (an application nobody could sign in to while someone kept asking for it).
 	if unstored && r != nil {
 		n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.RateKeyIP(r), 1, time.Minute)
 		if err != nil {
@@ -118,6 +113,13 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id 
 		if n > metadataPerIPMin {
 			return nil, nil
 		}
+	}
+	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd|"+id, 1, time.Minute)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	if n > 1 {
+		return nil, nil
 	}
 	doc, err := p.fetch(ctx, id, service.MaxMetadataBytes)
 	if err != nil {

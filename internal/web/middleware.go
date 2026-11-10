@@ -279,9 +279,15 @@ func Actor(r *http.Request) *service.Actor {
 	return a
 }
 
-// WithActor stores an actor in the request context (used by bearer-token authenticated APIs).
+// WithActor makes a the request's actor (bearer-token authenticated APIs, and the MCP server's in-process calls),
+// and takes away any session and user a cookie put in the context: the request is the token's, and a session there
+// would be read as the token holder's own (a re-authentication of whoever's cookie came with the token, which stepUp
+// and Reauthed would count).
 func WithActor(r *http.Request, a *service.Actor) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), ctxActor, a))
+	ctx := context.WithValue(r.Context(), ctxActor, a)
+	ctx = context.WithValue(ctx, ctxSession, (*model.Session)(nil))
+	ctx = context.WithValue(ctx, ctxUser, (*model.User)(nil))
+	return r.WithContext(ctx)
 }
 
 // WithSession loads the session (if any) into the request context. A session the store refused to check leaves the
@@ -381,6 +387,12 @@ func (s *Server) CheckCSRF(r *http.Request, token string) bool {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true
 	}
+	return s.CheckCSRFAlways(r, token)
+}
+
+// CheckCSRFAlways is CheckCSRF for a request of any method: a GET that must not be made from another site with the
+// browser's cookies (the backup download, which a link would otherwise start).
+func (s *Server) CheckCSRFAlways(r *http.Request, token string) bool {
 	if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, s.Cfg.Server.PublicURL) {
 		return false
 	}

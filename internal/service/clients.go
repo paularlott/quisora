@@ -448,12 +448,16 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 		return nil, err
 	}
 	was := snapshot(c)
+	before := *c
+	before.RedirectURIs = slices.Clone(c.RedirectURIs)
 	remembered := RemembersConsent(c)
 	if err := s.applyClient(ctx, a, c, in); err != nil {
 		return nil, err
 	}
-	if !remembered && RemembersConsent(c) {
-		c.RememberGen++ // consents left from before it last stopped remembering stay out of effect
+	if (!remembered && RemembersConsent(c)) || credentialsChanged(&before, c) {
+		// consents left from before it last stopped remembering stay out of effect; and what users allowed the client
+		// as it was does not carry over to codes sent elsewhere or redeemed with other credentials
+		c.RememberGen++
 	}
 	if err := s.audited(ctx, a, c.OrgID, "client.update", c.Name, addChanges(map[string]string{"client_id": c.ID}, was, c),
 		func() error { return s.Clients.Update(ctx, c) }); err != nil {
@@ -466,6 +470,15 @@ func (s *Service) UpdateClient(ctx context.Context, a *Actor, id string, in Clie
 		}
 	}
 	return c, nil
+}
+
+// credentialsChanged reports whether an update changed where c's authorization codes go or how c proves itself when
+// redeeming them: users' earlier consent (remembered, or a live grant) must not let codes reach the new place or
+// holder without asking (an administrator could otherwise point an application users already allowed at themselves
+// and collect a more privileged user's tokens from one link).
+func credentialsChanged(was, c *model.Client) bool {
+	return !slices.Equal(was.RedirectURIs, c.RedirectURIs) || was.AuthMethod != c.AuthMethod || was.JWKS != c.JWKS ||
+		was.JWKSURI != c.JWKSURI || was.SecretHash != c.SecretHash
 }
 
 // providerMade refuses a change to a client an organization sign-in provider made for itself (Client.ProviderID): its
@@ -495,6 +508,7 @@ func (s *Service) RotateClientSecret(ctx context.Context, a *Actor, id string) (
 	}
 	secret := "qsrs_" + secure.RandomToken(32)
 	c.SecretHash = string(secure.HashSecret(secret))
+	c.RememberGen++ // whoever holds the new secret redeems codes the users' earlier consents would let through unasked
 	if err := s.audited(ctx, a, c.OrgID, "client.secret.rotate", c.Name, map[string]string{"client_id": c.ID},
 		func() error { return s.Clients.Update(ctx, c) }); err != nil {
 		return "", mapStore(err)

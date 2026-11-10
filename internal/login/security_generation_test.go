@@ -388,6 +388,32 @@ func TestReauthDiesWithCredentialChangeElsewhere(t *testing.T) {
 	wantStatus(t, res, out, http.StatusForbidden)
 }
 
+// A confirmation that no longer stands is not brought back by the stale session's own change: someone holding only
+// the password, with a session confirmed before the owner set up an authenticator app, changes the password (which
+// asks for the current password only) and must still not be able to remove the new app.
+func TestStaleReauthNotRevivedByPasswordChange(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	user := e.user(t, org, "pat", model.RoleUser)
+	attacker, owner := e.signedIn(t, user), e.signedIn(t, user)
+	attacker.markReauth()
+	owner.markReauth()
+	res, out := owner.post("/api-internal/account/totp/begin", nil)
+	wantStatus(t, res, out, 200)
+	res, out = owner.post("/api-internal/account/totp/confirm", map[string]any{"code": totpAt(str(out, "secret"), time.Now())})
+	wantStatus(t, res, out, 200)
+	res, out = attacker.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": "an entirely new passphrase 7731"})
+	wantStatus(t, res, out, 200)
+	if _, out := attacker.api("GET", "/api-internal/account/reauth", nil); out["valid"] == true {
+		t.Fatal("a stale re-authentication came back with the password change")
+	}
+	res, out = attacker.api("DELETE", "/api-internal/account/totp", nil)
+	wantStatus(t, res, out, http.StatusForbidden)
+	if u, _ := e.Svc.Users.Get(context.Background(), user.ID); !u.HasTOTP() {
+		t.Fatal("the authenticator app was removed")
+	}
+}
+
 // An authenticator secret shown on the account page is confirmed only against the account as it was when shown.
 func TestPendingTOTPDiesWithCredentialChange(t *testing.T) {
 	e := newEnv(t, nil)

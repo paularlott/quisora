@@ -800,7 +800,7 @@ func (p *Provider) hasConsent(ctx context.Context, userID string, c *model.Clien
 		return false
 	}
 	for _, g := range gs {
-		if g.ClientID == c.ID && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
+		if g.ClientID == c.ID && g.ConsentGen == c.RememberGen && subset(scopes, consentScopes(g.Scopes, g.ClaimsUI, g.ClaimsID)) &&
 			subset(resources, g.Resources) {
 			return true
 		}

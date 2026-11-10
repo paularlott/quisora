@@ -224,6 +224,11 @@ func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in 
 		o.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
 	if in.Settings != nil {
+		if !a.IsSuper() {
+			// An organization's settings are super admins' (UpdateOrg): an account with orgs:create gets the defaults,
+			// not the MCP server, emailed codes or API tokens switched on by itself.
+			return nil, nil, "", Invalid("settings", "only a super admin chooses an organization's settings: leave them out")
+		}
 		if err := s.validOrgSettings(ctx, o.ID, *in.Settings, nil); err != nil {
 			return nil, nil, "", err
 		}

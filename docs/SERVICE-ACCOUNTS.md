@@ -64,7 +64,7 @@ operation's `serviceAccount` security requirement.
 | `import` | With `users`, create users with a password hash, an authenticator secret or provider links from another system ([API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)) | any |
 | `scim` | Use the SCIM API, `/scim/v2/<org>/…` | any |
 | `service_accounts` | Manage the organization's service accounts, granting none more than it holds | any |
-| `orgs:create` | Create organizations | the primary organization only |
+| `orgs:create` | Create organizations (with the default settings: only a super admin chooses them) | the primary organization only |
 | `orgs:delete` | Delete the organizations it created | the primary organization only |
 
 Any service account may also read its own organization, its tenants and its applications, whatever its scopes. The
@@ -89,6 +89,12 @@ are unchanged: it never reaches a super admin, and it manages administrators onl
   `import` and `service_accounts` included.
 - A service account is not asked to re-authenticate for the sensitive changes a person must confirm; what it may do was
   decided when it was granted its scopes. Granting `manage_admins` or `orgs:delete` is therefore a decision to take seriously.
+- For the same reason a person creates, changes or rotates the secret of a service account only after a recent
+  re-authentication in the console, and a personal API token cannot do it at all: an account's scopes outlive the token,
+  and its secret never expires.
+- An invitation a service account sends is judged again when it is used, against the account as it is then: deleted,
+  disabled or without the scope, or the invited person since made an administrator it may not manage, and the link
+  opens nothing.
 
 ## Deploying organizations
 

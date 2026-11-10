@@ -137,6 +137,9 @@ type Result struct {
 	// Connect is the user who started connecting this provider to their account (BeginConnect); the user was not
 	// resolved and nobody is signed in: the caller attaches the identity, then calls KeepConnected.
 	Connect string
+	// ConnectGen is the connecting user's security generation when connecting began (BeginConnect): the caller
+	// attaches the identity only while it is still the account's, as for any change confirmed against the account.
+	ConnectGen uint64
 	// grant is the provider's refresh token and its scopes, for a connection to keep (KeepConnected).
 	grant grant
 }
@@ -207,6 +210,7 @@ type state struct {
 	ProviderID string `json:"p"`
 	OrgID      string `json:"o"`
 	Connect    string `json:"u,omitempty"` // user id connecting this provider to their account
+	ConnectGen uint64 `json:"g,omitempty"` // that user's security generation when connecting began
 	Next       string `json:"n"`
 	Tenant     string `json:"t,omitempty"`
 	Nonce      string `json:"c"`
@@ -225,13 +229,14 @@ func (s *Service) BeginTenant(ctx context.Context, org *model.Org, p *model.Prov
 	return s.begin(ctx, org, p, state{Next: next, Tenant: tenant})
 }
 
-// BeginConnect starts connecting provider p to user u's account (u is signed in): Finish then returns the verified
-// identity in Result.Claims with Result.Connect set, instead of signing anyone in.
+// BeginConnect starts connecting provider p to user u's account (u is signed in, and read afresh: its security
+// generation goes with the state, Result.ConnectGen): Finish then returns the verified identity in Result.Claims with
+// Result.Connect set, instead of signing anyone in.
 func (s *Service) BeginConnect(ctx context.Context, org *model.Org, p *model.Provider, u *model.User, next string) (string, string, error) {
 	if u.OrgID != org.ID {
 		return "", "", ErrDisabled
 	}
-	return s.begin(ctx, org, p, state{Next: next, Connect: u.ID})
+	return s.begin(ctx, org, p, state{Next: next, Connect: u.ID, ConnectGen: u.SecurityGen})
 }
 
 func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, st state) (string, string, error) {
@@ -353,7 +358,7 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 		if claims.Subject == "" {
 			return fail, ErrUpstream
 		}
-		return &Result{Org: org, Provider: p, Next: st.Next, Claims: claims, Connect: st.Connect, grant: g}, nil
+		return &Result{Org: org, Provider: p, Next: st.Next, Claims: claims, Connect: st.Connect, ConnectGen: st.ConnectGen, grant: g}, nil
 	}
 	u, provisioned, err := s.resolve(ctx, org, p, claims)
 	if err != nil {

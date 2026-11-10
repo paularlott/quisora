@@ -435,6 +435,7 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 		writeErr(w, http.StatusUnprocessableEntity, "Choose a password you have not used just now.", "new")
 		return
 	}
+	keep := m.holdReauth(ctx, a)
 	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &in.New})
 	if err != nil {
 		web.WriteError(w, err)
@@ -444,7 +445,7 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 	// to them, so the answer is still a success, but one that says when a session could not be signed out (whoever
 	// had the old password may still be in it), not a count that reads as all of them.
 	n, err := m.endOtherSessions(ctx, a)
-	m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
+	keep(fresh.SecurityGen)
 	m.changed(a)
 	if err != nil {
 		m.s.Log.Warn("password changed; not every other session could be ended", "user", u.ID, "error", err)
@@ -478,12 +479,13 @@ func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct
 		web.WriteError(w, err)
 		return
 	}
+	keep := m.holdReauth(ctx, a)
 	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password})
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
+	keep(fresh.SecurityGen)
 	m.changed(a)
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": 0})
 }
@@ -520,15 +522,15 @@ func (m *Module) endOtherSessions(ctx context.Context, a acct) (int, error) {
 // passkey): an account that has none confirms with its password alone, which proves less than the sign-in did.
 // The value is "<generation>@<unix seconds of the confirmation>@<1 with a second factor, 0 without>".
 func (m *Module) markReauth(ctx context.Context, sessID string, gen uint64, secondFactor bool) {
-	m.setReauth(ctx, sessID, gen, time.Now(), secondFactor)
+	m.setReauth(ctx, sessID, gen, time.Now(), secondFactor, reauthTTL)
 }
 
-func (m *Module) setReauth(ctx context.Context, sessID string, gen uint64, at time.Time, secondFactor bool) {
+func (m *Module) setReauth(ctx context.Context, sessID string, gen uint64, at time.Time, secondFactor bool, ttl time.Duration) {
 	f := "0"
 	if secondFactor {
 		f = "1"
 	}
-	_ = m.s.Eph.Set(ctx, nsReauth, sessID, []byte(strconv.FormatUint(gen, 10)+"@"+strconv.FormatInt(at.Unix(), 10)+"@"+f), reauthTTL)
+	_ = m.s.Eph.Set(ctx, nsReauth, sessID, []byte(strconv.FormatUint(gen, 10)+"@"+strconv.FormatInt(at.Unix(), 10)+"@"+f), ttl)
 }
 
 // readReauth returns the security generation, the time and whether it used a second factor of a session's standing
@@ -578,21 +580,31 @@ func (m *Module) authTime(ctx context.Context, a acct) time.Time {
 	return t
 }
 
-// refreshReauth carries a session's standing re-authentication over to generation gen, which a change this very
-// session just made — and confirmed itself for — moved the account to: the confirmation was for that change, so the
-// change does not spend it, and the person can go on (add a second passkey, make recovery codes) without the dialog
-// again. A session without a standing confirmation gets none.
-func (m *Module) refreshReauth(ctx context.Context, sessID string, gen uint64) {
-	if _, at, second, ok := m.readReauth(ctx, sessID); ok {
-		m.setReauth(ctx, sessID, gen, at, second) // the time stays that of the confirmation
+// holdReauth is called before this session changes the account's credentials. The function it returns carries the
+// session's re-authentication over to gen, the generation the change moved the account to: the confirmation was for
+// that change, so the change does not spend it, and the person can go on (add a second passkey, make recovery codes)
+// without the dialog again. Only a confirmation that still stands against the account as it is before the change is
+// carried: one given before the owner added a second factor from another browser, say, no longer counts, and this
+// session's own change (a password change, which asks for the current password only) must not bring it back. It
+// keeps its expiry too (reauthTTL from when it was given), so changes made one after another never prolong it.
+func (m *Module) holdReauth(ctx context.Context, a acct) func(gen uint64) {
+	_, at, second, ok := m.readReauth(ctx, a.sess.ID)
+	if !ok || !m.reauthed(ctx, a) {
+		return func(uint64) {}
+	}
+	return func(gen uint64) {
+		if left := reauthTTL - time.Since(at); left > 0 {
+			m.setReauth(ctx, a.sess.ID, gen, at, second, left)
+		}
 	}
 }
 
-// afterCredentialChange keeps the session's re-authentication good after a service operation moved the account's
-// security generation on (a way in removed), and tells the account's other pages.
-func (m *Module) afterCredentialChange(ctx context.Context, a acct) {
+// afterCredentialChange keeps the session's re-authentication (held before the change, holdReauth) good after a
+// service operation moved the account's security generation on (a way in removed), and tells the account's other
+// pages.
+func (m *Module) afterCredentialChange(ctx context.Context, a acct, keep func(gen uint64)) {
 	if fresh, err := m.s.Svc.Users.Get(ctx, a.u.ID); err == nil {
-		m.refreshReauth(ctx, a.sess.ID, fresh.SecurityGen)
+		keep(fresh.SecurityGen)
 	}
 	m.changed(a)
 }
@@ -935,12 +947,13 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	// Removed as the service removes any (service.RemovePasskey: the last-way and second-factor guards, the sessions
 	// it signed in, the recovery codes with the last second factor), keeping the session doing it.
+	keep := m.holdReauth(ctx, a)
 	ended, err := m.s.Svc.RemovePasskey(service.SelfService(ctx), a.actor, a.u.ID, p.ID, a.sess.ID)
 	if err != nil && ended == 0 {
 		web.WriteError(w, err)
 		return
 	}
-	m.afterCredentialChange(ctx, a)
+	m.afterCredentialChange(ctx, a, keep)
 	if err != nil {
 		// The passkey is removed (so not an error of the request), but the sign-outs it should have caused did not
 		// all happen: say so, in the shape the page shows as a message.
@@ -1008,6 +1021,7 @@ func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	// Stored with a compare-and-swap on the user just read, moving its security generation on (StoreRegistration).
+	keep := m.holdReauth(r.Context(), a)
 	p, _, err := m.Passkeys.FinishRegistrationAs(r.Context(), purposeRegister, u, in.Challenge, in.Credential, in.Name)
 	if errors.Is(err, store.ErrStale) {
 		web.WriteError(w, service.ErrStale)
@@ -1021,7 +1035,7 @@ func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a
 		writeErr(w, http.StatusUnprocessableEntity, msg, "")
 		return
 	}
-	m.refreshReauth(r.Context(), a.sess.ID, u.SecurityGen)
+	keep(u.SecurityGen)
 	m.changed(a)
 	m.auditSelf(r, a, "account.passkey.add", map[string]string{"name": p.Name})
 	web.WriteJSON(w, http.StatusCreated, toPasskeyItem(p))
@@ -1119,12 +1133,13 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	// The commit (service.SetTOTP): a compare-and-swap on the version just read, so a factor set meanwhile (from
 	// another browser, or at a sign-in) is never overwritten unseen.
+	keep := m.holdReauth(ctx, a)
 	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
 		web.WriteError(w, err)
 		return
 	}
 	_ = m.s.Eph.Delete(ctx, nsPending, a.sess.ID)
-	m.refreshReauth(ctx, a.sess.ID, u.SecurityGen)
+	keep(u.SecurityGen)
 	m.changed(a)
 	if replace {
 		m.auditSelf(r, a, "account.totp.replace", nil)
@@ -1146,12 +1161,13 @@ func (m *Module) createRecoveryCodes(w http.ResponseWriter, r *http.Request, a a
 		web.WriteError(w, err)
 		return
 	}
+	keep := m.holdReauth(r.Context(), a)
 	codes, err := m.s.Svc.CreateRecoveryCodes(r.Context(), a.actor, u)
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	m.refreshReauth(r.Context(), a.sess.ID, u.SecurityGen)
+	keep(u.SecurityGen)
 	m.changed(a)
 	w.Header().Set("Cache-Control", "no-store") // shown this once
 	web.WriteJSON(w, http.StatusOK, map[string]any{"codes": codes})
@@ -1164,11 +1180,12 @@ func (m *Module) totpDisable(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	// Removed as any is (service.RemoveTOTP: not your last second factor where one is required; the recovery codes
 	// go with the last second factor).
+	keep := m.holdReauth(ctx, a)
 	if err := m.s.Svc.RemoveTOTP(service.SelfService(ctx), a.actor, a.u.ID); err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	m.afterCredentialChange(ctx, a)
+	m.afterCredentialChange(ctx, a, keep)
 	w.WriteHeader(http.StatusNoContent)
 }
 

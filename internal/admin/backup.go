@@ -35,6 +35,12 @@ func (m *Module) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		web.WriteReauth(w)
 		return
 	}
+	// From a console session it is a GET a link on another site could start (the session cookie goes with a top-level
+	// navigation), leaving an unencrypted copy of everything in the administrator's downloads: it needs the CSRF header.
+	if sess := web.Session(r); sess != nil && !m.s.CheckCSRFAlways(r, sess.CSRF) {
+		web.WriteJSON(w, http.StatusForbidden, web.ErrorBody{Error: "The request could not be verified. Reload the page."})
+		return
+	}
 	password := r.Header.Get(backupPasswordHeader)
 	plain := r.URL.Query().Get("plain")
 	switch {

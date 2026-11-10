@@ -336,6 +336,20 @@ func TestMetadataDocumentsUnstoredUntilConsent(t *testing.T) {
 	if hits > metadataPerIPMin {
 		t.Errorf("%d documents read for one address within a minute (limit %d)", hits, metadataPerIPMin)
 	}
+	// an address over its own limit does not spend another document's one read a minute: once that address's minute
+	// is over (or for anyone else), the document is still read
+	victim, before := ts.URL+"/gen/victim", hits
+	body(req(victim, mcpResource))
+	if hits != before {
+		t.Fatalf("a document was read for an address over its limit")
+	}
+	if err := h.p.s.Eph.Delete(ctx, nsRateOIDC, "cimd-ip|127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	body(req(victim, mcpResource))
+	if hits != before+1 {
+		t.Fatalf("the document's read was spent by a caller over its own limit (%d reads)", hits-before)
+	}
 	if l, _, _ := h.env.Svc.Clients.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "self_registered", Value: true}}}); len(l) != 0 {
 		t.Errorf("%d self-registered clients stored without consent", len(l))
 	}

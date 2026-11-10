@@ -395,7 +395,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", errNoAccess.Error())
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, ConsentGen: c.RememberGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
 		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {

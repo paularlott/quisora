@@ -2004,7 +2004,9 @@ export default function (Alpine) {
     async submit() {
       const edit = this.editing
       const body = this.body()
-      const res = await this.run(() => edit ? patch(`${this.apiUrl}/${enc(edit.id)}`, body) : post(this.apiUrl, body))
+      // Creating or changing a service account needs a recent re-authentication (the server asks; the dialog provides it).
+      const res = await this.run(() => withReauth(Alpine, () => edit ? patch(`${this.apiUrl}/${enc(edit.id)}`, body) : post(this.apiUrl, body),
+        document.activeElement, this))
       if (!res) return
       this.closeDlg('sa-dialog')
       if (edit) toast('Service account saved.')
@@ -2029,7 +2031,7 @@ export default function (Alpine) {
         detail: 'The current secret stops working immediately. Update everything that uses it.', confirmLabel: 'Rotate secret', danger: true })
       if (!yes) return
       try {
-        const res = await post(`${this.apiUrl}/${enc(a.id)}/secret`)
+        const res = await withReauth(Alpine, () => post(`${this.apiUrl}/${enc(a.id)}/secret`), ev.currentTarget || ev.target)
         this.showSecret({ ...a, secret: res.secret }, 'New secret')
       } catch (e) { toast(e.message, 'error') }
     },

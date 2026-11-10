@@ -805,9 +805,12 @@ type Client struct {
 	// user signs out. Confidential clients only (a public client's identity is not proven), and unused by a first-party
 	// one, which never asks.
 	RememberConsent bool `msgpack:"rmc,omitempty" json:"remember_consent"`
-	// RememberGen counts the times the client began remembering consent (service.RemembersConsent turned true). A
-	// Consent is honoured only while its Gen is the client's: one left from before remembering was last turned off
-	// (removing them is best effort) never comes back into effect.
+	// RememberGen is the client's consent generation: it moves on when the client begins remembering consent
+	// (service.RemembersConsent turned true), and when where its codes go or who can redeem them changes (redirect
+	// URIs, secret, keys, authentication method: service.credentialsChanged). A Consent, and a Grant standing in for
+	// consent, is honoured only while its Gen is the client's: one left from before remembering was last turned off
+	// (removing them is best effort), or given to the client as it was before an administrator pointed it elsewhere,
+	// never comes back into effect.
 	RememberGen   int64 `msgpack:"rmg,omitempty" json:"-"`
 	RotateRefresh bool  `msgpack:"rr" json:"rotate_refresh_tokens"` // one-time-use refresh tokens (costs a write per refresh)
 	// ServiceAccount marks a service account: a non-human principal of the organization (no tenant) that calls the
@@ -1183,13 +1186,16 @@ type Grant struct {
 	Meta
 	// Epoch is the session epoch of the sign-in it was granted in (User.SessionEpoch): it works only while that is
 	// current.
-	Epoch     uint64   `msgpack:"ep,omitempty" json:"-"`
-	ClientID  string   `msgpack:"ci" json:"client_id"`
-	UserID    string   `msgpack:"ui" json:"user_id"`
-	OrgID     string   `msgpack:"o" json:"org_id"`
-	SessionID string   `msgpack:"si" json:"session_id"`
-	Scopes    []string `msgpack:"sc" json:"scopes"`
-	AMR       []string `msgpack:"amr" json:"amr"`
+	Epoch uint64 `msgpack:"ep,omitempty" json:"-"`
+	// ConsentGen is the client's consent generation (Client.RememberGen) when the grant was made: the grant spares
+	// the user the consent screen only while it is still the client's.
+	ConsentGen int64    `msgpack:"cg,omitempty" json:"-"`
+	ClientID   string   `msgpack:"ci" json:"client_id"`
+	UserID     string   `msgpack:"ui" json:"user_id"`
+	OrgID      string   `msgpack:"o" json:"org_id"`
+	SessionID  string   `msgpack:"si" json:"session_id"`
+	Scopes     []string `msgpack:"sc" json:"scopes"`
+	AMR        []string `msgpack:"amr" json:"amr"`
 	// IdP is the type of the upstream provider the sign-in went through (Provider.Type, such as "microsoft"), empty
 	// for a sign-in of Quisora's own: the idp claim of the tokens issued from the grant.
 	IdP string `msgpack:"idp,omitempty" json:"idp,omitempty"`
@@ -1514,6 +1520,9 @@ type LinkToken struct {
 	// IssuedBy is the user who issued an invitation ("" for the system or a command): until it is used, nobody else
 	// below a super admin may replace it (service.mayResetSignIn).
 	IssuedBy string `msgpack:"ib,omitempty" json:"-"`
+	// IssuedByClient is the service account that issued an invitation (IssuedBy is then ""): judged again when the
+	// invitation is used, as a user issuer is (service.PeekLink).
+	IssuedByClient string `msgpack:"ic,omitempty" json:"-"`
 	// BreakGlass marks an invitation issued with "quisora invite --break-glass": it opens even for an account that is
 	// disabled (locked out, or past its end date), and using it enables the account again.
 	BreakGlass bool `msgpack:"bg,omitempty" json:"-"`

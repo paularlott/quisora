@@ -362,3 +362,41 @@ func TestConsentNotRemembered(t *testing.T) {
 		t.Fatalf("turn off: %v", err)
 	}
 }
+
+// What a user allowed an application does not carry over to the application pointed elsewhere: an administrator who
+// adds a redirect URI (or rotates the secret) of an application users already allowed must not collect their codes
+// at the new address without them being asked. A change that does neither (the description) keeps it.
+func TestConsentNotCarriedToChangedRedirects(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	c, csrf := h.session(h.user)
+	v, ch := pkce()
+	u := h.authorize(c, authzQuery(cl, ch, nil))
+	_, redirect := h.decideConsent(c, csrf, u.Query().Get("flow"), true)
+	code := loc(t, h.get(c, redirect)).Query().Get("code")
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 {
+		t.Fatal(r.m)
+	}
+	_, ch2 := pkce()
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{Description: ptr("the app")}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID)
+	if u := h.authorize(c, authzQuery(cl, ch2, nil)); u.Query().Get("code") == "" {
+		t.Fatalf("a description change asked again: %s", u)
+	}
+	evil := "https://attacker.example/cb"
+	if _, err := h.env.Svc.UpdateClient(ctx, h.admin, cl.ID, service.ClientInput{RedirectURIs: &[]string{cl.RedirectURIs[0], evil}}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.InvalidateClient(cl.ID)
+	u = h.authorize(c, authzQuery(cl, ch2, url.Values{"redirect_uri": {evil}}))
+	if u.Path != h.orgBase+"/oauth/consent" {
+		t.Fatalf("a code went to the new redirect URI without asking: %s", u)
+	}
+	if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"redirect_uri": {evil}, "prompt": {"none"}})); u.Query().Get("error") != "consent_required" {
+		t.Fatalf("prompt=none after the change: %s", u)
+	}
+}
