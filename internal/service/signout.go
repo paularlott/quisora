@@ -529,13 +529,23 @@ func (e *sweepErrs) err() error {
 	return errors.Join(e.first...)
 }
 
-// Background runs f on its own goroutine with a context that outlives the request; WaitBackground waits for every
-// such run (tests, shutdown).
-func (s *Service) Background(ctx context.Context, f func(ctx context.Context)) {
+// Background timeouts: a touch or a single write, and a sign-out sweep that deletes every ended record of an
+// organization and tells applications.
+const (
+	BackgroundShort = 10 * time.Second
+	BackgroundSweep = 10 * time.Minute
+)
+
+// Background runs f on its own goroutine with a context that outlives the request but ends after timeout; WaitBackground
+// waits for every such run (tests, shutdown). The deadline keeps a stalled store (a standalone store's commit waits
+// on its context only) from piling up one goroutine per request for as long as the stall lasts.
+func (s *Service) Background(ctx context.Context, timeout time.Duration, f func(ctx context.Context)) {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
-		f(context.WithoutCancel(ctx))
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+		f(ctx)
 	}()
 }
 

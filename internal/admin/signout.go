@@ -55,7 +55,7 @@ func (m *Module) pullSignOut(w http.ResponseWriter, r *http.Request, pull func(s
 		return
 	}
 	// Everything stamped before has stopped working already; deleting it and telling applications can take a while.
-	m.s.Svc.Background(r.Context(), func(ctx context.Context) {
+	m.s.Svc.Background(r.Context(), service.BackgroundSweep, func(ctx context.Context) {
 		_, _ = m.s.Svc.SweepSignOut(ctx, a, sweepOrg, in.APITokens)
 	})
 	web.WriteJSON(w, http.StatusOK, ev)

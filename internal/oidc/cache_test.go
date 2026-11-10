@@ -247,3 +247,19 @@ func TestClientCacheBoundedByItsTTL(t *testing.T) {
 	time.Sleep(bound) // the bound passes
 	expectUnavailable(t, "cached client past its bound, the store refusing", h.token(form, cl, secret))
 }
+
+// Forgetting a deleted organization drops its generation counter and every cached group list (the counter alone
+// going away would lower the generation to one an older list may carry).
+func TestForgetMembership(t *testing.T) {
+	t.Parallel()
+	var p Provider
+	p.InvalidateMembership("org")
+	before := p.membershipGen("org")
+	p.ForgetMembership("org")
+	if _, ok := p.memGen.Load("org"); ok {
+		t.Error("the counter of a deleted organization is still kept")
+	}
+	if p.membershipGen("org") == before {
+		t.Error("a list cached before the deletion would still be served")
+	}
+}

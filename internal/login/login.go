@@ -717,7 +717,7 @@ func (m *Module) completeWith(w http.ResponseWriter, r *http.Request, u *model.U
 	// The last sign-in time is best effort and nothing below needs it: it is recorded in the background, so the sign-in
 	// does not wait for one more write.
 	touched := *u
-	m.s.Svc.Background(ctx, func(ctx context.Context) { m.s.Svc.TouchLogin(ctx, &touched) })
+	m.s.Svc.Background(ctx, service.BackgroundShort, func(ctx context.Context) { m.s.Svc.TouchLogin(ctx, &touched) })
 	// Only the counter this browser charges (lockKeyFor): the owner signing in from a known browser must not reset
 	// the account-wide one, which only strangers' browsers charge (a reset or an accepted invitation clears both).
 	m.clearLock(ctx, m.lockKeyFor(r, u, u.ID))

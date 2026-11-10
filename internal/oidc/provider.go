@@ -169,6 +169,18 @@ func (p *Provider) InvalidateMembership(orgID string) {
 	v.(*atomic.Uint64).Add(1)
 }
 
+// ForgetMembership drops the bookkeeping kept for an organization that was deleted, which InvalidateMembership
+// would otherwise keep for as long as the process runs. Removing the counter alone would lower the generation
+// of the organization's cached lists to one they may have been stamped with before, so the global generation is
+// raised past it, dropping every list (an organization is deleted rarely).
+func (p *Provider) ForgetMembership(orgID string) {
+	n := uint64(1)
+	if v, ok := p.memGen.LoadAndDelete(orgID); ok {
+		n += v.(*atomic.Uint64).Load() // the global generation takes over what the counter contributed, and one more
+	}
+	p.memAll.Add(n)
+}
+
 // Wait blocks until the back-channel logouts queued or being sent are done (tests, shutdown), for at most
 // bcShutdownWait: a shutdown is not held up for long by relying parties that do not answer.
 func (p *Provider) Wait() {

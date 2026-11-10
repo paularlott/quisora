@@ -366,7 +366,7 @@ func (m *Sessions) touchLater(ctx context.Context, cs *cachedSession) {
 	if _, busy := m.touching.LoadOrStore(id, struct{}{}); busy {
 		return
 	}
-	m.svc.Background(ctx, func(ctx context.Context) {
+	m.svc.Background(ctx, service.BackgroundShort, func(ctx context.Context) {
 		defer m.touching.Delete(id)
 		m.touch(ctx, cs)
 	})

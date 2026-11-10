@@ -56,7 +56,7 @@ func (m commandModule) signOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Everything stamped before has stopped working already; deleting it and telling applications can take a while.
-	svc.Background(ctx, func(ctx context.Context) {
+	svc.Background(ctx, service.BackgroundSweep, func(ctx context.Context) {
 		if _, err := svc.SweepSignOut(ctx, service.System, orgID, in.APITokens); err != nil {
 			m.a.Log.WithError(err).Warn("emergency sign-out: not every ended record could be removed (they no longer work)")
 		}

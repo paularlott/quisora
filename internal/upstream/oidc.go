@@ -19,6 +19,7 @@ const (
 	// answers costs at most one outbound request per interval, not one per sign-in, and the sign-ins in between fail
 	// at once instead of each holding a request slot until the upstream timeout.
 	discoveryRetry = 30 * time.Second
+	cacheMax       = 1000 // entries of each discovery and JWKS cache
 	jwksTTL        = time.Hour
 	jwksMinRefetch = time.Minute // unknown-kid refetches are rate limited
 	clockLeeway    = time.Minute
@@ -93,6 +94,14 @@ func (s *Service) discover(ctx context.Context, base, issuer string) (*discovery
 	}
 	if c == nil {
 		c = &discoveryCall{done: make(chan struct{})}
+		// An organization administrator rewriting a provider's issuer, or an upstream rotating its URLs, leaves
+		// entries nobody asks for again: past the cap they are all dropped and fetched again when asked for.
+		if len(s.discCalls) >= cacheMax {
+			clear(s.discCalls)
+		}
+		if len(s.disc) >= cacheMax {
+			clear(s.disc)
+		}
 		s.discCalls[base] = c
 		go s.fetchDiscovery(context.WithoutCancel(ctx), base, issuer, c)
 	}
@@ -156,6 +165,9 @@ func (s *Service) keysFor(ctx context.Context, uri string, force bool) ([]verify
 	}
 	nk := &keyCache{keys: parseKeys(set), fetched: s.Now()}
 	s.mu.Lock()
+	if _, ok := s.cache[uri]; !ok && len(s.cache) >= cacheMax {
+		clear(s.cache)
+	}
 	s.cache[uri] = nk
 	s.mu.Unlock()
 	return nk.keys, nil

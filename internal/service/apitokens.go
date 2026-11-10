@@ -533,7 +533,7 @@ func (s *Service) touchAPIToken(ctx context.Context, t *model.APIToken) {
 	if _, busy := s.tokenTouching.LoadOrStore(cp.ID, struct{}{}); busy {
 		return
 	}
-	s.Background(ctx, func(ctx context.Context) {
+	s.Background(ctx, BackgroundShort, func(ctx context.Context) {
 		defer s.tokenTouching.Delete(cp.ID)
 		cp.LastUsed = now
 		_ = s.APITokens.Update(ctx, &cp)

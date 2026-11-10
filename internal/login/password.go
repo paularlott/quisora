@@ -437,7 +437,7 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 				// After the answer, not before: the link is a stored write and the mail a queued one, and the time
 				// they take must not tell an existing account from an unknown address.
 				m.audit(r, "password.forgot", org, u, u.Username, nil)
-				m.s.Svc.Background(ctx, func(ctx context.Context) {
+				m.s.Svc.Background(ctx, service.BackgroundShort, func(ctx context.Context) {
 					if err := m.Mail.SendReset(ctx, u, org); err != nil {
 						m.s.Log.Error("send reset mail", "error", err)
 					}

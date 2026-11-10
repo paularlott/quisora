@@ -35,6 +35,10 @@ func modules(ctx context.Context, a *App) []web.Module {
 		switch rec.Kind {
 		case model.KindClient:
 			op.InvalidateClientIn(rec.Scope, rec.ID) // tombstones carry no scope: "" clears every organization's origins
+		case model.KindOrg:
+			if rec.Deleted {
+				op.ForgetMembership(rec.ID) // the organization's own id keys the generation counters
+			}
 		case model.KindUser:
 			op.InvalidateUser(rec.ID)
 		case model.KindTenant:
