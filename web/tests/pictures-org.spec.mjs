@@ -27,7 +27,7 @@ test('an organization that leaves pictures to its administrators: the account pa
     await expect(card.locator('.avatar-img')).toBeVisible()
     await expect(card.getByText('administrators set pictures')).toBeVisible()
     // the picture is shown, not a control: no button, no pencil, and clicking it opens no file chooser
-    await expect(card.getByRole('button')).toHaveCount(0)
+    await expect(card.getByRole('button', { name: /picture/i })).toHaveCount(0)
     await expect(card.locator('.picture-pick-hint')).toBeHidden()
     let chose = false
     page.on('filechooser', () => { chose = true })
@@ -53,7 +53,7 @@ test('an organization with pictures off: no picture control on the account page 
     await expect(head.locator('.avatar')).toHaveText('GH')
     await expect(head.locator('.avatar-img')).toBeHidden()
     await expect(head.locator('#f-image')).toHaveCount(0)
-    await expect(head.getByRole('button')).toHaveCount(0)
+    await expect(head.getByRole('button', { name: /picture/i })).toHaveCount(0)
     await expect(head.locator('.picture-note')).toBeHidden() // pictures off: no note either
     await expect(head.getByRole('heading', { level: 1 })).toHaveText('Grace Hopper')
     const off = await axe(page, { include: '.page-head' })

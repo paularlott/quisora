@@ -34,7 +34,7 @@ export function emailsMixin(cfg) {
     },
     setEmails(u) {
       if ('can_verify_email' in u) this.canMark = !!u.can_verify_email // only on GET of one user: kept otherwise
-      this.primary = { address: u.email, verified: !!u.email_verified }
+      this.primary = { address: u.email, verified: !!u.email_verified, canResend: !!u.email && !u.email_verified && !!cfg.canResend && mailOn() }
       this.items = (u.linked_emails || []).map((l) => ({
         address: l.address, verified: !!l.verified,
         badgeText: l.verified ? 'Verified' : 'Unverified', badgeClass: l.verified ? 'badge badge-success' : 'badge badge-warning',
@@ -48,9 +48,12 @@ export function emailsMixin(cfg) {
     get hasItems() { return this.items.length > 0 },
     get canMarkPrimary() { return this.canMark && !this.primary.verified },
     get forPrimary() { return ' for ' + this.primary.address },
-    // The card: always where addresses can be managed; otherwise only once there is more than the primary address
-    // (which the profile shows, with its own verification button).
-    get showCard() { return this.manage || this.items.length > 0 },
+    // The card: always where addresses can be managed; otherwise once there is more than the primary address, or the
+    // primary is not verified yet (its link is sent from here). One verified address: the page's header says it all.
+    get showCard() { return this.manage || this.items.length > 0 || (!!this.primary.address && !this.primary.verified) },
+    get primaryActions() { return this.primary.canResend || this.canMarkPrimary },
+    // without email on the server an unverified address has no way to be verified here (said once; mailOff says more)
+    get noMailToVerify() { return !mailOn() && !this.mailOff && ((!!this.primary.address && !this.primary.verified) || this.items.some((i) => !i.verified)) },
     get locked() { return !this.manage },
     get hasEmailsError() { return this.emailsError !== '' },
     // Self-service additions are verified by a mailed link: without email set up on the server they cannot be made.

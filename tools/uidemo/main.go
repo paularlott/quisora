@@ -230,6 +230,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	// a plain user no other browser test signs in as or changes, for tests that check the account page once it has
 	// settled: a change to an account others use reloads its lists live (account page), re-rendering them under a check
 	out["account"] = user(acme, "dorothy", "Dorothy Vaughan", model.RoleUser, true)
+	// a plain user only the picture tests sign in as (they set and remove its picture): another test's change to an
+	// account they use (turning an authenticator app on ends its other sessions) must not end theirs mid-test
+	out["pictures"] = user(acme, "hedy", "Hedy Lamarr", model.RoleUser, true)
 	// Linked addresses for the email section: one verified (added by an administrator), one the user added and has
 	// not verified yet.
 	{

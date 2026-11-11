@@ -6,14 +6,12 @@
     <div class="identity">
       {{template "picture-pick"}}
       <div class="identity-main">
-        <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+        <p class="eyebrow identity-eyebrow"><span>Your account · {{with .Org}}{{.DisplayName}}{{end}}</span><span :class="roleClass" x-text="roleText" x-show="roleText" x-cloak></span></p>
         <h1 class="page-title" x-text="fullName">{{.User.FullName}}</h1>
         {{/* Each once: the username only where it is not the email address (a first super admin's often is) */}}
-        <p class="identity-line"><span x-show="showUsername" x-cloak x-text="u.username"></span><span aria-hidden="true" x-show="showUsername" x-cloak>·</span><span :class="roleClass" x-text="roleText"></span></p>
+        <p class="identity-line" x-show="showUsername" x-cloak><span x-text="u.username"></span></p>
         <p class="identity-line" x-show="hasEmail" x-cloak>
           <span x-show="showEmailText" x-text="u.email"></span><span :class="emailBadgeClass" x-text="emailBadge"></span>
-          <button type="button" class="btn-link" x-show="showVerify" x-cloak :disabled="verifyBusy" @click="sendVerification" x-text="verifyLabel"></button>
-          <span class="help" x-show="noMailToVerify" x-cloak>This server sends no email, so the address cannot be verified yet.</span>
         </p>
         {{template "picture-notes"}}
       </div>

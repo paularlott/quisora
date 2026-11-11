@@ -9,11 +9,15 @@
      #f-image-file (a chosen file is sent at once); otherwise the picture alone. Getters of the component: picAvatar, picHas,
      canChange, picStill (no control), picAction. */}}
 {{define "picture-pick"}}<template x-if="canChange">
-  <button type="button" class="picture-pick" id="f-image" aria-describedby="h-image e-image" :aria-invalid="invalid.image" :disabled="busy" @click="choosePicture">
-    <span class="sr-only" x-text="picAction"></span>{{/* its name: the avatar inside is hidden from assistive technology */}}
-    {{template "avatar" (dict "a" "picAvatar" "size" "xl")}}
-    <span class="picture-pick-hint" aria-hidden="true">{{template "icon" "pencil"}}</span>
-  </button>
+  <div class="picture-wrap">
+    <button type="button" class="picture-pick" id="f-image" aria-describedby="h-image e-image" :aria-invalid="invalid.image" :disabled="busy" @click="choosePicture">
+      <span class="sr-only" x-text="picAction"></span>{{/* its name: the avatar inside is hidden from assistive technology */}}
+      {{template "avatar" (dict "a" "picAvatar" "size" "xl")}}
+      <span class="picture-pick-hint" aria-hidden="true">{{template "icon" "pencil"}}</span>
+    </button>
+    {{/* Remove: a control of its own on the picture's other corner (a button cannot hold another), asked to confirm */}}
+    <button type="button" class="picture-remove" x-show="picHas" x-cloak :disabled="busy" @click="removePicture"><span class="sr-only">Remove picture</span>{{template "icon" "trash"}}</button>
+  </div>
 </template>
 <template x-if="picStill"><div class="picture-still">{{template "avatar" (dict "a" "picAvatar" "size" "xl")}}</div></template>{{end}}
 
@@ -25,7 +29,6 @@
   <div x-show="canChange" x-cloak>
     <p class="help" id="h-image" x-text="picHelp"></p>
     <p class="field-error" id="e-image" x-text="errors.image"></p>
-    <button type="button" class="btn-link" x-show="picHas" x-cloak :disabled="busy" @click="removePicture">Remove picture</button>
   </div>
   <p class="help picture-note" x-show="picReadOnly" x-cloak>{{template "icon" "info"}}<span x-text="picReadOnlyText"></span></p>
 </div>{{end}}

@@ -5,6 +5,9 @@
   .page-sub-wide { max-width: none; } /* a line of short labelled values, not prose: as wide as the header */
   .section-title { font-size: 1.125rem; font-weight: 650; letter-spacing: -0.01em; }
   .eyebrow { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-muted); }
+  /* the account header's: where you are, then your role, as a badge in its own type */
+  .identity-eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; }
+  .identity-eyebrow .badge { letter-spacing: normal; text-transform: none; }
   .muted { color: var(--fg-muted); }
   .mono { font-family: var(--font-mono); font-size: 0.875em; }
 
@@ -424,6 +427,17 @@
   .avatar-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; background: var(--ctl-bg); }
   /* The picture card's avatar opens the file chooser when the person may change it (lib/picture.js choosePicture). */
   .picture-pick, .picture-still { position: relative; flex: none; align-self: flex-start; border-radius: 50%; }
+  .picture-wrap { position: relative; flex: none; align-self: flex-start; }
+  /* Remove picture: the picture's other corner, across from the pencil */
+  .picture-remove {
+    position: absolute; left: 0; bottom: 0; display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0;
+    border-radius: 50%; color: var(--fg); background: var(--ctl-bg); border: 1px solid var(--edge); cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+  .picture-remove .icon { width: 1rem; height: 1rem; }
+  .picture-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+  .picture-remove:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .picture-remove:disabled { cursor: progress; }
   .picture-pick { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
   .picture-pick:disabled { cursor: progress; }
   .picture-pick:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }

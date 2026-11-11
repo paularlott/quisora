@@ -13,13 +13,17 @@
   <div class="alert alert-error mb-4" role="alert" x-show="hasEmailsError" x-cloak>{{template "icon" "alert"}}<span x-text="emailsError"></span></div>
   <p class="muted mb-2" x-show="atLimit" x-cloak>You have reached the limit of 10 linked addresses.</p>
   <p class="muted mb-2" x-show="mailOff" x-cloak>Email is not set up on this server, so addresses cannot be verified here. Ask an administrator to add one.</p>
+  <p class="muted mb-2" x-show="noMailToVerify" x-cloak>Email is not set up on this server, so addresses cannot be verified here yet.</p>
   <ul class="setting-list" aria-label="Email addresses">
     <li class="setting-row">
       <div class="setting-text">
         <p class="setting-title"><span x-text="primary.address"></span> <span class="badge badge-accent">Primary</span> <span :class="primaryBadgeClass" x-text="primaryBadge">Verified</span></p>
       </div>
-      <div class="flex flex-wrap items-center gap-2" x-show="canMarkPrimary" x-cloak>
-        <button type="button" class="btn btn-secondary btn-sm" :data-address="primary.address" @click="markVerified">Mark as verified<span class="sr-only" x-text="forPrimary"></span></button>
+      <div class="flex flex-wrap items-center gap-2" x-show="primaryActions" x-cloak>
+        <button type="button" class="btn btn-secondary btn-sm" x-show="primary.canResend" :data-address="primary.address" @click="resend">Resend link<span class="sr-only" x-text="forPrimary"></span></button>
+        <button type="button" class="btn btn-secondary btn-sm" x-show="canMarkPrimary" :data-address="primary.address" @click="markVerified">Mark as verified<span class="sr-only" x-text="forPrimary"></span></button>
+        {{/* where the other rows end with Remove, the primary (never removed here) keeps its place, so the buttons line up */}}
+        <span class="btn btn-ghost btn-icon btn-sm invisible" x-show="manage" aria-hidden="true"></span>
       </div>
     </li>
     <template x-for="row in items" :key="row.address"><li class="setting-row">
