@@ -48,6 +48,10 @@ const (
 	// KindQueue holds the items of a node's retry queues (QueueItem): emails waiting for SMTP, back-channel logouts
 	// waiting for their application. Node-local: never replicated, backed up or delivered by another node.
 	KindQueue Kind = "queue"
+
+	// KindSSHRevokedSignIn records the sign-ins taken back whose SSH certificates are revoked, until those have all
+	// expired (SSHRevokedSignIn).
+	KindSSHRevokedSignIn Kind = "sshrevoked"
 )
 
 // Meta is embedded in every stored entity.
@@ -80,6 +84,9 @@ type Index struct {
 	//   - KindReplay and KindLock: the record's own ID. Each is one compare-and-swap on one record, independent of every
 	//     other, so they spread over the partitions instead of loading partition 0 (an organization's deletion guard,
 	//     a Lock whose id is the organization's, is so in the organization's partition, with its users);
+	//   - KindSSHRevokedSignIn: the record's own ID (a sign-in's), though it is scoped to its organization: the
+	//     revocation list reads one for each certificate's sign-in, nearly all of them not there, and a cluster node
+	//     answers such a miss from the one partition its id names (the organization's would need every partition);
 	//   - KindEphemeral and KindQueue: "". They are node-local (or shared-database) state that is never replicated by
 	//     partition, so the key is never used.
 	Partition string

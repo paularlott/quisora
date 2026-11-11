@@ -259,7 +259,7 @@ func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code strin
 		// The replay is refused either way; whether the grant could be ended is recorded as it happened.
 		if f := strings.Split(string(used), "\x00"); len(f) == 3 {
 			org, user, gid := f[0], f[1], f[2]
-			rerr := p.revokeGrant(ctx, org, user, gid)
+			rerr := p.revokeGrant(ctx, org, user, c.SSHApp, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
 			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 		}
@@ -336,7 +336,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	case oe == nil:
 		_ = p.s.Eph.Set(ctx, nsUsed, replayKey(c, code), []byte(cd.OrgID+"\x00"+cd.UserID+"\x00"+gid), usedTTL)
 		if _, err := p.s.Eph.Get(ctx, nsReplayed, replayKey(c, code)); err == nil { // presented again while this one ran
-			rerr := p.revokeGrant(ctx, cd.OrgID, cd.UserID, gid)
+			rerr := p.revokeGrant(ctx, cd.OrgID, cd.UserID, c.SSHApp, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
 			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 			return nil, oerr("invalid_grant", "the authorization code is invalid, expired or already used")
@@ -521,12 +521,17 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 // audited as done. The cache is told "gone" before each deletion (a check racing it must not keep the grant alive on a
 // copy read just before), and emptied when the deletion fails: the grant is still in the store, and the retry must
 // find it there to end it, not answer 200 to a cached "nothing to revoke".
-func (p *Provider) revokeGrant(ctx context.Context, orgID, userID string, ids ...string) error {
+//
+// Only grants of an SSH application (sshApp: Client.SSHApp) can have certificates: the sign endpoint takes only the
+// tenant's SSH application's tokens. For any other client none are listed, and no record of the grant taken back is
+// written.
+func (p *Provider) revokeGrant(ctx context.Context, orgID, userID string, sshApp bool, ids ...string) error {
 	ctx = context.WithoutCancel(ctx)
 	// The grants are deleted first, whatever their certificates do: the end of a grant (a replayed refresh token's
 	// family, say) never waits on them. They are revoked after, as endSessions explains: a certificate signed under one
-	// meanwhile either is listed then or finds the grant gone and is revoked by its signer (Service.SignUserSSH), save
-	// within a gossip cluster's replication lag. Whose they are comes from the caller, not the grant, so a retry after a
+	// meanwhile either is listed then or finds the grant gone and is revoked by its signer (Service.SignUserSSH); in a
+	// gossip cluster, where the two can miss each other while replicating, the record of the grant taken back revokes it
+	// once both have replicated (Service.RevokeSSHCertsFrom). Whose they are comes from the caller, not the grant, so a retry after a
 	// failure to revoke them does so again though the grant is gone by then (a grant already gone counts as deleted).
 	// The certificates of all the grants are listed once.
 	from := make(map[string]bool, len(ids))
@@ -539,7 +544,9 @@ func (p *Provider) revokeGrant(ctx context.Context, orgID, userID string, ids ..
 			errs = append(errs, err)
 		}
 	}
-	errs = append(errs, p.svc.RevokeSSHCertsFrom(ctx, orgID, userID, from))
+	if sshApp {
+		errs = append(errs, p.svc.RevokeSSHCertsFrom(ctx, orgID, userID, from))
+	}
 	if err := errors.Join(errs...); err != nil {
 		p.log.Warn("oidc: revoking grants", "grants", ids, "error", err)
 		return unavailable(err)
@@ -705,7 +712,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	// Authentic token for this client. A static token only works while the grant has never rotated.
 	if !pr.counted && g.Counter != 0 {
 		if c.RotateRefresh || c.Public() { // a pre-rotation token again: someone kept a copy; kill the family
-			rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
+			rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, c.SSHApp, g.ID)
 			p.log.Warn("oidc: stale static refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
 			p.auditReuse(ctx, c, g, "a refresh token from before rotation was presented again", revokedText(rerr))
 		}
@@ -767,7 +774,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	case c.RotateRefresh || c.Public():
 		if pr.counted && pr.counter != g.Counter {
 			if pr.counter < g.Counter { // an old token again: someone kept a copy; kill the family
-				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
+				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, c.SSHApp, g.ID)
 				p.log.Warn("oidc: refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "user", g.UserID, "revoke_error", rerr)
 				p.auditReuse(ctx, c, g, "an old refresh token was presented again", revokedText(rerr))
 			}
@@ -807,7 +814,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 				break
 			}
 			if fresh.Counter > pr.counter {
-				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID)
+				rerr := p.revokeGrant(ctx, g.OrgID, g.UserID, c.SSHApp, g.ID)
 				p.log.Warn("oidc: concurrent refresh token reuse; grant revoked", "client", c.ID, "grant", g.ID, "revoke_error", rerr)
 				p.auditReuse(ctx, c, g, "the same refresh token was presented twice at once", revokedText(rerr))
 				return nil, invalid

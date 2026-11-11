@@ -195,6 +195,9 @@ type Service struct {
 	Locks      *store.Table[model.Lock, *model.Lock]
 	Replays    *store.Table[model.Replay, *model.Replay]
 
+	// SSHRevokedSignIns are the sign-ins taken back, whose certificates are revoked (RevokeSSHCertsFrom).
+	SSHRevokedSignIns *store.Table[model.SSHRevokedSignIn, *model.SSHRevokedSignIn]
+
 	ssh sshState // key changes and the revocation lists made on this node (ssh_keys.go, ssh_krl.go)
 
 	members confirmedMembers // memberships a fresh read decided (membersAt)
@@ -260,8 +263,11 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Skins:      store.NewTable[model.Skin](s),
 		Locks:      store.NewTable[model.Lock](s),
 		Replays:    store.NewTable[model.Replay](s),
-		orgCache:   ttlcache.New[*model.Org](orgTTL, 20_000),
-		skinCache:  ttlcache.New[*model.Skin](orgTTL, 1_000),
+
+		SSHRevokedSignIns: store.NewTable[model.SSHRevokedSignIn](s),
+
+		orgCache:  ttlcache.New[*model.Org](orgTTL, 20_000),
+		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),
 	}
 }
 

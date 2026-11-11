@@ -391,8 +391,10 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 	// sees the other: found here, it was deleted after this certificate was stored, and the listing that follows the
 	// deletion revokes it; gone, this revokes it, and the certificate is not handed out. In a gossip cluster each node
 	// reads its own copy, so the two can still miss each other while the deletion and the certificate are replicating:
-	// the window narrows to the replication lag, from the seconds of the caches. A read that fails decides nothing: the
-	// certificate is revoked as well, and not handed out.
+	// the certificate is handed out, and the listing does not mark it. That converges once they have replicated: the
+	// end recorded the sign-in as taken back (model.SSHRevokedSignIn) before its listing, and the revocation lists
+	// revoke every certificate issued under it (sshEval.reason), on each node within the 30 s it keeps a list. A read
+	// that fails decides nothing: the certificate is revoked as well, and not handed out.
 	if req.SignIn != "" {
 		var err error
 		if req.ClientID == "" {

@@ -69,11 +69,11 @@ func main() {
 	oldKey := secure.RandomBytes(32)
 	sealer, _ := secure.NewSealer(oldKey)
 	svc := service.New(cfg, st, sealer)
-	hub.OrgOfUser = func(id string) string {
+	hub.UserInfo = func(id string) (string, bool) {
 		if u, err := svc.Users.Get(context.Background(), id); err == nil {
-			return u.OrgID
+			return u.OrgID, u.Role == model.RoleSuperAdmin
 		}
-		return ""
+		return "", false
 	}
 	ctx := context.Background()
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
@@ -397,29 +397,49 @@ func (p *publishing) publish(rec *store.Record) {
 	}
 }
 
+// scoped returns rec as the change hooks are given it: a deletion with the scope of the record it removes (a
+// tombstone has none), noted before it is applied, as the cluster node does (noteScope).
+func (p *publishing) scoped(ctx context.Context, rec *store.Record) *store.Record {
+	if !rec.Deleted || rec.Scope != "" {
+		return rec
+	}
+	if cur, err := p.Store.Get(ctx, rec.Kind, rec.ID); err == nil {
+		cp := *rec
+		cp.Scope = cur.Scope
+		return &cp
+	}
+	return rec
+}
+
 func (p *publishing) Put(ctx context.Context, rec *store.Record) error {
+	pub := p.scoped(ctx, rec)
 	err := p.Store.Put(ctx, rec)
 	if err == nil {
-		p.publish(rec)
+		p.publish(pub)
 	}
 	return err
 }
 
 func (p *publishing) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	pub := p.scoped(ctx, rec)
 	err := p.Store.CompareAndPut(ctx, rec, expect)
 	if err == nil {
-		p.publish(rec)
+		p.publish(pub)
 	}
 	return err
 }
 
 // Tx publishes the records a transaction wrote (not those it only asserted), as the cluster store's change hook does.
 func (p *publishing) Tx(ctx context.Context, ops []store.Op) error {
+	pubs := make([]*store.Record, len(ops))
+	for i, op := range ops {
+		pubs[i] = p.scoped(ctx, op.Rec)
+	}
 	err := p.Store.Tx(ctx, ops)
 	if err == nil {
-		for _, op := range ops {
+		for i, op := range ops {
 			if !op.Assert {
-				p.publish(op.Rec)
+				p.publish(pubs[i])
 			}
 		}
 	}
@@ -427,9 +447,10 @@ func (p *publishing) Tx(ctx context.Context, ops []store.Op) error {
 }
 
 func (p *publishing) PutReplicated(ctx context.Context, rec *store.Record) (bool, error) {
+	pub := p.scoped(ctx, rec)
 	applied, err := p.Store.PutReplicated(ctx, rec)
 	if applied {
-		p.publish(rec)
+		p.publish(pub)
 	}
 	return applied, err
 }

@@ -122,13 +122,25 @@ type SSHCert struct {
     Revoked    bool
     RevokedAt  time.Time
     RevokedBy  string
-    RevokedReason string // why, when Quisora found it revoked (RevokedBy "system"): access_removed, principals_changed or
-                         // role_not_allowed; "" for one revoked by hand
+    RevokedReason string // why, when Quisora found it revoked (RevokedBy "system"): access_removed, principals_changed,
+                         // role_not_allowed or sign_in_ended; "" for one revoked by hand
 }
 ```
 
 Sweep owner: the tenant, for both kinds (not the user: a deleted user's certificate must stay on the KRL until it
 expires, which removing its record would undo). The record has no JSON for `SessionEpoch` and `Stamp`.
+
+### `KindSSHRevokedSignIn` ("sshrevoked", SQL table `ssh_revoked_sign_ins`; `Service.SSHRevokedSignIns`)
+
+A sign-in (session or grant, the `SSHCert.SignIn` of its certificates) that was taken back: its id is the sign-in's,
+with `OrgID`, `UserID` and `Expires`. Written by `RevokeSSHCertsFrom`, one per sign-in, before it lists the user's
+certificates; the KRL revokes a user certificate whose sign-in has one (`sign_in_ended`, see Known limits for why).
+Scope: the org id; partition: its own id (like `KindReplay`; `cluster/store.go` `partitionHint`), because the KRL
+reads one per certificate's sign-in in one `GetMany`, nearly all misses, and a cluster node answers a miss from the
+partition its id names (with the org's partition key a miss names none, so every partition would have to be readable).
+No fields. `AlwaysExpires`: `Expires` = written + 25 h (`sshMaxCertTTL` + 1 h, covering the longest certificate, its
+10 minutes on the list past its end, and a certificate signed elsewhere while the end was replicating). No sweep
+owner: it expires within a day. Backed up and replicated like any record; not streamed to the console.
 
 ## Signing user certificates
 
@@ -223,6 +235,8 @@ The KRL lists every certificate of the tenant that has not expired and **would n
   organization's or server's emergency sign-out stamp, whose user lost access to the tenant, whose tenant's SSH
   application is disabled or gone (`app_unavailable`), or whose principals are no longer a subset of what
   `SSHPrincipals` gives now (removed from a group);
+- user certificates whose sign-in (`SignIn`) was taken back (`sign_in_ended`): marked so by `RevokeSSHCertsFrom`, or
+  found by the record of the sign-in (`KindSSHRevokedSignIn`) when that listing missed it;
 - user certificates that grant more than the settings now would (`settings_changed`): a lifetime over `CertTTL`, an
   extension no longer permitted, or source addresses other than those the tenant now restricts certificates to;
 - certificates signed by a CA key that has been removed (`ca_key_removed`): the KRL revokes the key itself while its
@@ -234,7 +248,8 @@ A certificate stays on the list until `ValidBefore + 10 minutes` (`sshKRLGrace`)
 sees it revoked; the records live an hour past `ValidBefore`.
 
 Revocation is sticky for a lost access. When the list is built and a certificate is found revoked for `access_removed`,
-`principals_changed` or `role_not_allowed`, `sshPersist` writes it down once (`Revoked`, `RevokedAt`, `RevokedBy`
+`principals_changed` or `role_not_allowed`, or for `sign_in_ended` by the record of its sign-in (which expires),
+`sshPersist` writes it down once (`Revoked`, `RevokedAt`, `RevokedBy`
 "system", `RevokedReason`; audited `ssh.cert.revoke` as the system with a `reason`; best effort and bounded: at most 50
 a build, none after the first unavailable store write or one of unknown outcome, the list revoking them all the same;
 written after the list is kept and its lock released, one build's writing at a time), so restoring the access,
@@ -511,16 +526,30 @@ stores the certificate first and then reads the sign-in again from the store (no
 and refuses if it is gone. On a shared database (SQL) or a single node, whichever comes second sees the other, so a
 certificate signed while its sign-in is ended (on a node still trusting a cached session or grant) does not survive it.
 In a gossip cluster each node reads its own copy of the store, so the two can miss each other while the deletion and
-the certificate are replicating: the window narrows to the replication lag, from the seconds of the caches, but does
-not close. A grant is deleted whether or not its
+the certificate are replicating: the certificate is handed out and the listing does not mark it. That converges:
+`RevokeSSHCertsFrom` first records each sign-in as taken back (`KindSSHRevokedSignIn`, kept 25 h), and the KRL revokes
+every user certificate whose sign-in has such a record (`sign_in_ended`, read in one `GetMany` with the users in
+`sshEval.load`; then written down by `sshPersist`). Once the record and the certificate have both replicated to a node,
+its list revokes the certificate when it is next made, and whichever arrives second drops the node's kept lists (the
+change hook in `internal/app/modules.go` drops them for certificates, CA keys, tenants and these records), so at once,
+then the servers' fetch interval. The record is written whatever the organization's SSH (a
+tenant with SSH off keeps its certificates for when it is on again; a revocation is rare, the record small), for every
+session taken back, and for a grant only when it is an SSH application's (`Client.SSHApp`; oidc `revokeGrant`): the
+sign endpoint signs only for the tenant's SSH application, so no other grant can have a certificate, and for those
+neither a record is written nor the user's certificates listed. Only the
+revocations call `RevokeSSHCertsFrom`; the user's own sign-out writes no record, and the revocations that move the
+session epoch or the sign-out stamp (sign out everywhere, credential reset, lock-out, emergency sign-out) need none: those
+are durable in the user or the organization already. A grant is deleted whether or not its
 certificates could be revoked (the failure is reported, a 503 to a client's revocation); whose certificates they are
 comes from the caller (the grant record or the access token's claims), so the client's retry with the access token
 revokes them though the grant is gone (a refresh token cannot be retried that way: the grant it is checked against is
-gone, so a retry answers 200 and the certificates last until they expire); the user's own
+gone, so a retry answers 200, and the certificates the listing could not mark last until they expire unless the
+grant's record was written); the user's own
 sign-out (SignOutSession) does not, as it does not end offline grants, and "sign out other sessions" carries the kept
 session's certificates to the new epoch (`sign_in_ended`, written when the session or grant is ended: an expiry is not an ending, so it cannot be
 worked out from what is left). Open connections are ended by `fetch --end-revoked`, which reads sshd's certificate
-logins from journald (root's lines only, `_UID=0`, so neither a session nor another local user can forge one) and
+logins from journald (from where its last run stopped, keeping those whose connection is open in a state file, so
+no login is lost to a window of the log) (root's lines only, `_UID=0`, so neither a session nor another local user can forge one) and
 signals the connection's privileged process, only while it is still the one that logged it (root's sshd, whatever
 its parent, so connections that outlived an sshd restart or came through socket activation are included; started before
 the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). Where that process leads a logind session (its cgroup is a

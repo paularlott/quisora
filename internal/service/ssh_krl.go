@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -32,7 +33,7 @@ const (
 	SSHReasonUserDeleted    = "user_deleted"       // the user was deleted
 	SSHReasonUserDisabled   = "user_disabled"      // disabled, locked out, past the end date, or the organization is gone
 	SSHReasonSessionsEnded  = "sessions_ended"     // the user's sessions were ended (sign out everywhere, a credential reset)
-	SSHReasonSignInEnded    = "sign_in_ended"      // the session or grant it was issued under was ended (RevokeSSHCertsFrom)
+	SSHReasonSignInEnded    = "sign_in_ended"      // the session or grant it was issued under was taken back (RevokeSSHCertsFrom)
 	SSHReasonSignedOut      = "signed_out"         // an emergency sign-out of the organization or the server came after it
 	SSHReasonRoleNotAllowed = "role_not_allowed"   // the user is a manager or above and the tenant does not allow it
 	SSHReasonAccessRemoved  = "access_removed"     // the user lost access to the tenant's SSH application
@@ -63,9 +64,15 @@ const sshKRLGrace = 10 * time.Minute
 const sshPersistPerBuild = 50
 
 // sshStickyReasons are the reasons that are written to the certificate (SSHCert.RevokedReason) once found: the user
-// lost something a certificate carried, which is not undone by their getting it back. Others follow the user's state
-// (a disabled account that is enabled again), or the tenant's (SSH turned off and on).
-var sshStickyReasons = []string{SSHReasonAccessRemoved, SSHReasonPrincipals, SSHReasonRoleNotAllowed}
+// lost something a certificate carried, which is not undone by their getting it back, or the sign-in it was issued
+// under was taken back (found by its record, model.SSHRevokedSignIn, which expires). Others follow the user's state (a
+// disabled account that is enabled again), or the tenant's (SSH turned off and on).
+var sshStickyReasons = []string{SSHReasonAccessRemoved, SSHReasonPrincipals, SSHReasonRoleNotAllowed, SSHReasonSignInEnded}
+
+// sshRevokedSignInFor is how long the record of a sign-in taken back (model.SSHRevokedSignIn) is kept: the longest
+// certificate signed under it and its time on the list past its end (sshKRLGrace), with an hour from its making to
+// cover a certificate signed on another node until the end of the sign-in replicated there.
+const sshRevokedSignInFor = sshMaxCertTTL*time.Second + time.Hour
 
 // sshKRLIdle is how long a node keeps the entry of a tenant whose list nobody asks for (sshKRLSweep): a list is never
 // served past sshKRLTTL, so an entry left that long holds nothing of use, and the entries of tenants deleted, turned off
@@ -128,6 +135,8 @@ type sshEval struct {
 	want  model.SignOutStamp
 	ext   []string // the extensions a user certificate gets now (sshExtensions)
 	users map[string]*sshUser
+	// signIns are the sign-ins read (SSHCert.SignIn): true for one taken back (model.SSHRevokedSignIn).
+	signIns map[string]bool
 }
 
 func (s *Service) newSSHEval(ctx context.Context, t *model.Tenant) (*sshEval, error) {
@@ -139,7 +148,8 @@ func (s *Service) newSSHEval(ctx context.Context, t *model.Tenant) (*sshEval, er
 	if err != nil {
 		return nil, err
 	}
-	ev := &sshEval{s: s, t: t, off: t.SSH != nil && !t.SSH.Enabled, keys: map[string]*model.SSHKey{}, want: want, users: map[string]*sshUser{}}
+	ev := &sshEval{s: s, t: t, off: t.SSH != nil && !t.SSH.Enabled, keys: map[string]*model.SSHKey{}, want: want, users: map[string]*sshUser{},
+		signIns: map[string]bool{}}
 	if t.SSH != nil {
 		ev.ext = sshExtensions(t.SSH)
 	}
@@ -154,17 +164,47 @@ func (ev *sshEval) user(ctx context.Context, id string) (*sshUser, error) {
 	if x := ev.users[id]; x != nil {
 		return x, nil
 	}
-	if err := ev.load(ctx, []string{id}); err != nil {
+	if err := ev.loadUsers(ctx, []string{id}); err != nil {
 		return nil, err
 	}
 	return ev.users[id], nil
 }
 
-// load reads the users ids name that the evaluation has not read yet, together: the users in one read, and their
-// access to the tenant's SSH application in one decision (sshDecideAll), which reads what they share once. The callers
-// load every user of the certificates they evaluate before the first, so that an evaluation reads the application and
-// the groups once, however many users it meets.
-func (ev *sshEval) load(ctx context.Context, ids []string) error {
+// load reads what reason needs of certificates certs that the evaluation has not read yet, together: their users
+// (loadUsers), then, in one read, the sign-ins the user certificates not revoked were issued under that were taken
+// back (model.SSHRevokedSignIn). The callers load the certificates they evaluate before the first, so that an
+// evaluation reads the application and the groups once, however many users it meets, and the sign-ins once; reason
+// loads what a certificate needs that is not read yet (after a load that failed).
+func (ev *sshEval) load(ctx context.Context, certs []*model.SSHCert) error {
+	if err := ev.loadUsers(ctx, sshCertUsers(certs)); err != nil {
+		return err
+	}
+	var ids []string
+	for _, c := range certs {
+		if _, read := ev.signIns[c.SignIn]; c.SignIn != "" && !c.Host && !c.Revoked && !read {
+			ids = append(ids, c.SignIn)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	found, err := ev.s.SSHRevokedSignIns.GetMany(ctx, ids)
+	if err != nil {
+		return mapStore(err)
+	}
+	for _, id := range ids {
+		ev.signIns[id] = false
+	}
+	for _, r := range found {
+		ev.signIns[r.ID] = r.OrgID == ev.t.OrgID // of another organization: none
+	}
+	return nil
+}
+
+// loadUsers reads the users ids name that the evaluation has not read yet, together: the users in one read, and their
+// access to the tenant's SSH application in one decision (sshDecideAll), which reads what they share once.
+func (ev *sshEval) loadUsers(ctx context.Context, ids []string) error {
 	ids = slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(ids))), func(id string) bool { return ev.users[id] != nil })
 	if len(ids) == 0 {
 		return nil
@@ -229,6 +269,9 @@ func (ev *sshEval) reason(ctx context.Context, c *model.SSHCert) (string, error)
 	case c.Host:
 		return "", nil
 	}
+	if err := ev.load(ctx, []*model.SSHCert{c}); err != nil { // what the caller's load did not read
+		return "", err
+	}
 	x, err := ev.user(ctx, c.UserID)
 	switch {
 	case err != nil:
@@ -239,6 +282,8 @@ func (ev *sshEval) reason(ctx context.Context, c *model.SSHCert) (string, error)
 		return SSHReasonUserDisabled, nil
 	case !x.u.SessionHolds(c.SessionEpoch):
 		return SSHReasonSessionsEnded, nil
+	case ev.signIns[c.SignIn]:
+		return SSHReasonSignInEnded, nil
 	case !c.Stamp.Current(ev.want):
 		return SSHReasonSignedOut, nil
 	case sshRoleBlocked(ev.t, x.u):
@@ -359,14 +404,14 @@ func (s *Service) sshRevokedOf(ctx context.Context, t *model.Tenant, certs []*mo
 		return nil, err
 	}
 	now := time.Now()
-	// the users reason reads: those of the user certificates on the list's span, not revoked, whose CA key is kept
-	var users []string
+	// what reason reads: of the user certificates on the list's span, not revoked, whose CA key is kept
+	var live []*model.SSHCert
 	for _, c := range certs {
 		if c.UserID != "" && !c.Host && !c.Revoked && ev.keys[c.CAKeyID] != nil && !now.After(c.ValidBefore.Add(sshKRLGrace)) {
-			users = append(users, c.UserID)
+			live = append(live, c)
 		}
 	}
-	if err := ev.load(ctx, users); err != nil {
+	if err := ev.load(ctx, live); err != nil {
 		return nil, err
 	}
 	var out []SSHRevokedCert
@@ -662,19 +707,32 @@ func (s *Service) RevokeSSHCert(ctx context.Context, a *Actor, orgID, certID str
 }
 
 // RevokeSSHCertsFrom revokes for good the certificates of user userID (of organization orgID) issued under one of the
-// sessions or grants in from (SSHCert.SignIn), which are being ended: signed out, revoked, or ended as a refresh token
-// was replayed. A certificate goes with the sign-in it was issued under, as the session's applications do; its expiry
-// is not an ending. Already revoked and expired ones are left as they are. Each is audited as the system's revocation
-// (ssh.cert.revoke, reason sign_in_ended).
+// sessions or grants in from (SSHCert.SignIn), which are being taken back: revoked, ended from elsewhere, or ended as a
+// refresh token was replayed (never the user's own sign-out: SignOutSession). A certificate goes with the sign-in it
+// was issued under, as the session's applications do; its expiry is not an ending. Each sign-in is recorded as taken
+// back first (model.SSHRevokedSignIn, whatever the organization's SSH: a tenant with SSH off keeps its certificates
+// for when it is on again), and the revocation lists revoke every certificate issued under it from then on; then the
+// user's certificates are listed, and those of the sign-ins marked revoked at once, the already revoked and the
+// expired left as they are. In a gossip cluster the listing can miss a certificate being signed on another node (its
+// signer still read the sign-in as there, SignUserSSH): the record revokes it once both have replicated. Each marked is
+// audited as the system's revocation (ssh.cert.revoke, reason sign_in_ended), as is, when the revocation list finds
+// it, one the listing missed (sshPersist).
 func (s *Service) RevokeSSHCertsFrom(ctx context.Context, orgID, userID string, from map[string]bool) error {
 	if len(from) == 0 || userID == "" {
 		return nil
 	}
+	var errs []error
+	expires := time.Now().UTC().Add(sshRevokedSignInFor)
+	for _, id := range slices.Sorted(maps.Keys(from)) {
+		r := &model.SSHRevokedSignIn{Meta: model.Meta{ID: id}, OrgID: orgID, UserID: userID, Expires: expires}
+		if err := s.SSHRevokedSignIns.Put(ctx, r); err != nil {
+			errs = append(errs, fmt.Errorf("record sign-in %s as revoked: %w", id, mapStore(err)))
+		}
+	}
 	all, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "user_id", Value: userID}}})
 	if err != nil {
-		return mapStore(err)
+		return errors.Join(append(errs, mapStore(err))...)
 	}
-	var errs []error
 	for _, c := range all {
 		if c.Revoked || c.SignIn == "" || !from[c.SignIn] || !time.Now().Before(c.ValidBefore) {
 			continue
@@ -778,7 +836,7 @@ type SSHCertView struct {
 func (s *Service) sshViews(ctx context.Context, ev *sshEval, certs []*model.SSHCert) ([]*SSHCertView, error) {
 	// A read that fails here is made again for each certificate below: an expired one is listed without its username,
 	// as before, and the status of another fails the listing.
-	_ = ev.load(ctx, sshCertUsers(certs))
+	_ = ev.load(ctx, certs)
 	now := time.Now()
 	out := make([]*SSHCertView, 0, len(certs))
 	for _, c := range certs {

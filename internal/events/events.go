@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,37 +81,94 @@ type Hub struct {
 	subs  map[*subscriber]struct{}
 	perID map[string]int
 	now   func() time.Time
-	// OrgOfUser returns a user's organization id ("" when unknown), for records scoped by their owner. Set before
-	// the hub is used; nil leaves those events without an organization (sent to everyone, without an id).
-	OrgOfUser func(userID string) string
-	orgMu     sync.Mutex
-	orgOf     map[string]string // user id -> organization id (users never change organization)
+	// UserInfo returns a user's organization id ("" when the user is unknown) and whether they are a super admin, for
+	// records about a user. Set before the hub is used; nil leaves every user unknown (non-super viewers get no
+	// event about one, and a user's own records are sent to everyone without an id).
+	UserInfo func(userID string) (org string, super bool)
+	infoMu   sync.Mutex
+	infoOf   map[string]userInfo
 }
 
-// maxOrgCache bounds the user -> organization cache; it starts over when full.
-const maxOrgCache = 10000
+type userInfo struct {
+	org   string
+	super bool
+}
 
-func (h *Hub) userOrg(userID string) string {
-	if h.OrgOfUser == nil || userID == "" {
-		return ""
+// maxInfoCache bounds the user -> info cache; it starts over when full.
+const maxInfoCache = 10000
+
+func (h *Hub) setInfo(userID string, in userInfo) {
+	h.infoMu.Lock()
+	if h.infoOf == nil || len(h.infoOf) >= maxInfoCache {
+		h.infoOf = map[string]userInfo{}
 	}
-	h.orgMu.Lock()
-	org, ok := h.orgOf[userID]
-	h.orgMu.Unlock()
+	h.infoOf[userID] = in
+	h.infoMu.Unlock()
+}
+
+// info returns what is known of a user (one store read when not cached); ok is false for an unknown user.
+func (h *Hub) info(userID string) (userInfo, bool) {
+	if userID == "" {
+		return userInfo{}, false
+	}
+	h.infoMu.Lock()
+	in, ok := h.infoOf[userID]
+	h.infoMu.Unlock()
 	if ok {
-		return org
+		return in, true
 	}
-	org = h.OrgOfUser(userID)
+	if h.UserInfo == nil {
+		return userInfo{}, false
+	}
+	org, super := h.UserInfo(userID)
 	if org == "" {
-		return ""
+		return userInfo{}, false
 	}
-	h.orgMu.Lock()
-	if h.orgOf == nil || len(h.orgOf) >= maxOrgCache {
-		h.orgOf = map[string]string{}
+	in = userInfo{org, super}
+	h.setInfo(userID, in)
+	return in, true
+}
+
+// remember keeps the role of a user that was written, so a promotion or demotion applies to the next event. A
+// deletion keeps the last known one.
+func (h *Hub) remember(rec *store.Record) {
+	if rec.Kind != model.KindUser || rec.Deleted {
+		return
 	}
-	h.orgOf[userID] = org
-	h.orgMu.Unlock()
-	return org
+	if super, ok := rec.Fields["super_admin"].(bool); ok && rec.Scope != "" {
+		h.setInfo(rec.ID, userInfo{rec.Scope, super})
+		return
+	}
+	h.infoMu.Lock()
+	delete(h.infoOf, rec.ID)
+	h.infoMu.Unlock()
+}
+
+// concerns returns the user a record is about ("" when none), and whether the record is hidden from non-super
+// viewers whatever the user: an audit event recorded as about a super admin, and any record whose user a deletion
+// does not say (tombstones carry no scope or fields).
+func concerns(rec *store.Record) (user string, hidden bool) {
+	switch {
+	case rec.Kind == model.KindUser:
+		return rec.ID, false
+	case rec.Kind == model.KindMember: // "groupID:userID"
+		if u, _ := rec.Fields["user_id"].(string); u != "" {
+			return u, false
+		}
+		if i := strings.LastIndex(rec.ID, ":"); i >= 0 {
+			return rec.ID[i+1:], false
+		}
+		return "", true
+	case rec.Kind == model.KindSSHCert:
+		u, _ := rec.Fields["user_id"].(string)
+		return u, rec.Deleted && u == ""
+	case rec.Kind == model.KindAudit:
+		sa, _ := rec.Fields["super_admin"].(bool)
+		return "", rec.Deleted || sa
+	case userScoped[rec.Kind]:
+		return rec.Scope, rec.Scope == ""
+	}
+	return "", false
 }
 
 // NewHub returns an empty hub.
@@ -118,14 +176,19 @@ func NewHub() *Hub {
 	return &Hub{subs: map[*subscriber]struct{}{}, perID: map[string]int{}, now: time.Now}
 }
 
-// Publish delivers a record change to every subscriber allowed to see it. It never blocks: a subscriber whose
-// buffer is full is marked lagged and told to resynchronise.
+// Publish delivers a record change to every subscriber allowed to see it. Super admins are hidden from everyone below
+// super admin, so a viewer who is not one gets no event about one (or about a user the hub cannot tell). It never
+// blocks: a subscriber whose buffer is full is marked lagged and told to resynchronise.
 func (h *Hub) Publish(rec *store.Record) {
 	if !streamed[rec.Kind] {
 		return
 	}
+	h.remember(rec) // even when nobody listens: a later subscriber must not find a stale role
 	h.mu.Lock()
-	idle := len(h.subs) == 0
+	idle, plain := len(h.subs) == 0, false
+	for s := range h.subs {
+		plain = plain || !s.super
+	}
 	h.mu.Unlock()
 	if idle { // nobody to tell: no store read for the user's organization (this runs as replicated writes apply)
 		return
@@ -134,14 +197,19 @@ func (h *Hub) Publish(rec *store.Record) {
 	if rec.Kind == model.KindOrg {
 		ev.org = rec.ID
 	}
-	if userScoped[rec.Kind] {
-		ev.User, ev.org = rec.Scope, h.userOrg(rec.Scope)
-	}
 	if rec.Kind == model.KindKey {
 		ev.org = ""
 	}
+	user, hide := concerns(rec)
+	if user != "" && (plain || userScoped[rec.Kind]) {
+		in, ok := h.info(user)
+		hide = hide || !ok || in.super
+		if userScoped[rec.Kind] {
+			ev.User, ev.org = rec.Scope, in.org
+		}
+	}
 	if rec.Kind == model.KindSSHCert { // org-scoped, and its user's own too (the admin user page lists them)
-		ev.User, _ = rec.Fields["user_id"].(string)
+		ev.User = user
 	}
 	if rec.Deleted {
 		ev.Op = "delete"
@@ -149,7 +217,7 @@ func (h *Hub) Publish(rec *store.Record) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
-		if !s.wants(ev) {
+		if !s.wants(ev) || (hide && !s.super) {
 			continue
 		}
 		e := ev

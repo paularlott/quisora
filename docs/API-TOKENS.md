@@ -81,7 +81,8 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<
 
 # follow changes in your organization as they happen (server-sent events; -N turns off curl's buffering);
 # a super admin can add ?org=<name> to watch another organization. These are the admin console's live updates (a
-# browser opens one per organization, shared by its tabs); a user may hold 4 at once on each node
+# browser opens one per organization, shared by its tabs); a user may hold 4 at once on each node. Super admins are hidden below super admin here as everywhere: only a
+# super admin's stream carries events about a super admin (their user record, sessions, memberships, certificates, audit events)
 curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 ```
 

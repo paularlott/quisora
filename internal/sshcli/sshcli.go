@@ -45,10 +45,10 @@ type Env struct {
 	Hostname    func() (string, error)                        // the host's name (host-sign)
 	LookupCNAME func(context.Context, string) (string, error) // resolves it to a fully qualified name (host-sign)
 
-	// fetch --end-revoked: the certificate logins sshd logged (default: journald, root's lines only), whether the
-	// process of one is still the one that logged it (default: /proc), and ending it (default: SIGTERM through a pidfd,
-	// after checking again). Tests replace them.
-	SSHDLogins func(context.Context) ([]SSHDLogin, error)
+	// fetch --end-revoked: reading the certificate logins sshd logged in this boot after a cursor of the log (default:
+	// journald, root's lines only), whether the process of one is still the one that logged it (default: /proc), and
+	// ending it (default: its login session, or SIGTERM through a pidfd, after checking again). Tests replace them.
+	SSHDLogins func(ctx context.Context, boot, after string) (journalRead, error)
 	IsSSHD     func(l SSHDLogin) bool
 	Terminate  func(l SSHDLogin) error
 }

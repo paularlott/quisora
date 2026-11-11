@@ -682,7 +682,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		if err == nil && cl.ClientID == ce.c.ClientID() && cl.GID != "" && len(cl.Act) == 0 {
 			// RFC 7009 §2.2.1: the client retries; nothing is audited as done (a revocation of unknown outcome, as such)
 			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, cl.Sub), "oauth.revoke", map[string]string{"grant": cl.GID, "token": "access"},
-				func() error { return p.revokeGrant(ctx, ce.c.OrgID, cl.Sub, cl.GID) }); err != nil {
+				func() error { return p.revokeGrant(ctx, ce.c.OrgID, cl.Sub, ce.c.SSHApp, cl.GID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
 			}
@@ -702,7 +702,7 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				detail["superseded"] = "true"
 			}
 			if err := p.auditedClient(ctx, ce.c, p.svc.AuditTargetUser(ctx, ce.c.OrgID, g.UserID), "oauth.revoke", detail,
-				func() error { return p.revokeGrant(ctx, g.OrgID, g.UserID, g.ID) }); err != nil {
+				func() error { return p.revokeGrant(ctx, g.OrgID, g.UserID, ce.c.SSHApp, g.ID) }); err != nil {
 				writeOAuthError(w, serverError(err))
 				return
 			}

@@ -47,6 +47,11 @@ func modules(ctx context.Context, a *App) []web.Module {
 		case model.KindSSHCert, model.KindSSHKey:
 			// a revocation, a CA key removed or rotated, here or on another node: the tenant's list is made afresh
 			sshKRLChanged(a.Svc, rec)
+		case model.KindSSHRevokedSignIn:
+			// a sign-in revoked, here or on another node: a certificate signed under it elsewhere goes on the lists now
+			if !rec.Deleted {
+				a.Svc.InvalidateSSHKRLIn(rec.Scope)
+			}
 		case model.KindGrant:
 			op.InvalidateGrant(rec.ID)
 		case model.KindKey:
@@ -175,11 +180,11 @@ func modules(ctx context.Context, a *App) []web.Module {
 	}
 
 	hub := events.NewHub()
-	hub.OrgOfUser = func(id string) string {
+	hub.UserInfo = func(id string) (string, bool) {
 		if u, err := a.Svc.Users.Get(context.WithoutCancel(ctx), id); err == nil {
-			return u.OrgID
+			return u.OrgID, u.Role == model.RoleSuperAdmin
 		}
-		return ""
+		return "", false
 	}
 	a.onChange = append(a.onChange, hub.Publish)
 

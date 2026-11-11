@@ -10,11 +10,11 @@
 
 # Base images are pinned by digest (the multi-platform index), so a build uses exactly the images that were reviewed
 # even if a tag is moved. With a tag and a digest the digest decides: change a version and its digest together, e.g.
-#   skopeo inspect --raw docker://docker.io/library/golang:1.27.3-alpine | shasum -a 256
+#   skopeo inspect --raw docker://docker.io/library/golang:1.27.4-alpine | shasum -a 256
 ARG NODE_VERSION=24.15.0
 ARG NODE_DIGEST=sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
-ARG GO_VERSION=1.27.3
-ARG GO_DIGEST=sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c
+ARG GO_VERSION=1.27.4
+ARG GO_DIGEST=sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 ARG DISTROLESS_DIGEST=sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS web

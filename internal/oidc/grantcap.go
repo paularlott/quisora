@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -60,21 +61,34 @@ func (p *Provider) capGrants(ctx context.Context, orgID, userID, keep string) (l
 	}
 	slices.SortFunc(grants, evictsBefore)
 	excess := len(grants) - (limit - limit/10)
-	var ids []string
 	var ended []*model.Grant
 	for _, g := range grants {
 		if len(ended) == excess {
 			break
 		}
 		if g.ID != keep {
-			ids = append(ids, g.ID)
 			ended = append(ended, g)
 		}
 	}
 	if len(ended) == 0 {
 		return len(grants), limit, nil
 	}
-	rerr := p.revokeGrant(ctx, orgID, userID, ids...)
+	// The SSH application's grants, which can have certificates, apart from the others (revokeGrant).
+	var sshIDs, otherIDs []string
+	for _, g := range ended {
+		if e, err := p.loadClient(ctx, g.ClientID); err != nil || e.c.SSHApp { // unknown: as if it could
+			sshIDs = append(sshIDs, g.ID)
+		} else {
+			otherIDs = append(otherIDs, g.ID)
+		}
+	}
+	var rerr error
+	if len(sshIDs) > 0 {
+		rerr = p.revokeGrant(ctx, orgID, userID, true, sshIDs...)
+	}
+	if len(otherIDs) > 0 {
+		rerr = errors.Join(rerr, p.revokeGrant(ctx, orgID, userID, false, otherIDs...))
+	}
 	u := p.svc.AuditTargetUser(ctx, orgID, userID)
 	revoked := revokedText(rerr)
 	for _, g := range ended {

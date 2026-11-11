@@ -155,6 +155,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "serial", Type: FieldString, Search: true},
 		{Name: "principals", Type: FieldString, Words: true},
 	}},
+
+	KindSSHRevokedSignIn: {KindSSHRevokedSignIn, nil}, // read by id only (the revocation lists)
+
 	KindEphemeral:      {KindEphemeral, nil},
 	KindLink:           {KindLink, nil},
 	KindSignIn:         {KindSignIn, nil},
@@ -200,7 +203,7 @@ const (
 // expiries is the Expiry of the kinds that are not NeverExpires.
 var expiries = map[Kind]Expiry{
 	KindMember: MayExpire, KindAPIToken: MayExpire, KindKey: MayExpire, KindSSHKey: MayExpire, KindEphemeral: MayExpire,
-	KindSSHCert: AlwaysExpires,
+	KindSSHCert: AlwaysExpires, KindSSHRevokedSignIn: AlwaysExpires,
 	KindSession: AlwaysExpires, KindGrant: AlwaysExpires, KindLink: AlwaysExpires, KindAudit: AlwaysExpires,
 	KindReplay: AlwaysExpires, KindQueue: AlwaysExpires,
 }
@@ -219,7 +222,8 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock, KindReplay, KindEphemeral, KindQueue}
+		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindSSHRevokedSignIn, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock,
+		KindReplay, KindEphemeral, KindQueue}
 }
 
 // NewEntity returns an empty entity of kind k, or nil for an unknown kind.
@@ -259,6 +263,8 @@ func NewEntity(k Kind) Entity {
 		return &SSHKey{}
 	case KindSSHCert:
 		return &SSHCert{}
+	case KindSSHRevokedSignIn:
+		return &SSHRevokedSignIn{}
 	case KindAudit:
 		return &Audit{}
 	case KindLink:

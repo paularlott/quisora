@@ -51,6 +51,8 @@ var tableNames = map[model.Kind]string{
 	model.KindReplay:         "single_use_values",
 	model.KindEphemeral:      "ephemeral_state",
 	model.KindQueue:          "retry_queue",
+
+	model.KindSSHRevokedSignIn: "ssh_revoked_sign_ins",
 }
 
 // tableName is the (unquoted) table of a kind.

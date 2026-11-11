@@ -330,6 +330,9 @@ are untouched. Pre-release: no data migration; a store written by the old gossip
   - kinds with no organization whose records are independent (`KindReplay`, `KindLock`): the record's own ID, so they
     spread over the partitions instead of loading partition 0 (a lock or a replay value is a compare-and-swap on one
     record: its partition does not matter as long as it is always the same).
+  - `KindSSHRevokedSignIn` (an SSH sign-in taken back): the record's own ID (the sign-in's), though it belongs to an
+    organization: the revocation list reads one per certificate, nearly all absent, and a miss is answered from the
+    partition its id names.
 - Partition number: 0 for "", else `partition.PartitionOf(key, 64)`.
 - A record never changes partition (its organization never changes).
 

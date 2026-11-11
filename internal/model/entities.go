@@ -1417,7 +1417,7 @@ type SSHCert struct {
 	RevokedAt time.Time `msgpack:"rva,omitempty" json:"revoked_at,omitzero"`
 	RevokedBy string    `msgpack:"rvb,omitempty" json:"revoked_by,omitempty"`
 	// RevokedReason is why, when Quisora found it revoked (RevokedBy "system": the user lost access, a role or a
-	// principal it carries); "" for one revoked by hand. Listed as the reason of the certificate (SSHCertView).
+	// principal it carries, or the sign-in it was issued under was taken back); "" for one revoked by hand. Listed as the reason of the certificate (SSHCertView).
 	RevokedReason string `msgpack:"rvr,omitempty" json:"-"`
 }
 
@@ -1439,6 +1439,24 @@ func (c *SSHCert) Index() Index {
 			"principals": clipRunes(strings.Join(c.Principals, " "), MaxTagsText)},
 		Expires: c.ValidBefore.Add(time.Hour),
 	}
+}
+
+// SSHRevokedSignIn records that a sign-in, a session or a refresh grant (SSHCert.SignIn: its id is the sign-in's), was
+// taken back, which revokes the SSH certificates issued under it (service.RevokeSSHCertsFrom): the revocation lists
+// revoke a certificate whose sign-in has one. The revocation also marks revoked the certificates it lists, but in a
+// gossip cluster a certificate signed on another node at that moment may not have replicated to it, while its signer
+// still read the sign-in as there: this record, replicated, revokes it all the same. Kept until every certificate that
+// could have been signed under the sign-in has expired. A user's own sign-out writes none: its certificates last.
+type SSHRevokedSignIn struct {
+	Meta
+	OrgID   string    `msgpack:"o" json:"org_id"`
+	UserID  string    `msgpack:"ui" json:"user_id"`
+	Expires time.Time `msgpack:"ex" json:"expires"`
+}
+
+func (r *SSHRevokedSignIn) Kind() Kind { return KindSSHRevokedSignIn }
+func (r *SSHRevokedSignIn) Index() Index {
+	return Index{Scope: r.OrgID, Partition: r.ID, Expires: r.Expires}
 }
 
 // clipRunes cuts s to at most n characters: a queryable field longer than its column is refused with the record.

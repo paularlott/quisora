@@ -1,6 +1,6 @@
 module github.com/paularlott/quisora
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/1password/onepassword-sdk-go v0.4.1

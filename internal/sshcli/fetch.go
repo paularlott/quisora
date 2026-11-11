@@ -29,6 +29,8 @@ type FetchOptions struct {
 	// than the tenant's certificate lifetime (Linux: sshd's log in journald): sshd checks a certificate only when it
 	// is presented, so a revocation alone leaves open sessions open.
 	EndRevoked bool
+	// StateFile is where EndRevoked keeps track of the open logins between runs (required with it).
+	StateFile string
 }
 
 // Fetch brings a server's trust files up to date. Everything is fetched and checked before anything is written, so
@@ -42,6 +44,9 @@ type FetchOptions struct {
 // installed list stays, and the other files are updated all the same. The CA keys and the host CA lines are fetched whenever the list is, for that
 // check, even when only the list is to be written.
 func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
+	if o.EndRevoked && o.StateFile == "" {
+		return errors.New("--end-revoked needs a state file (--state-file) to keep track of open logins")
+	}
 	d, err := e.discover(ctx, o.URL)
 	if err != nil {
 		return err
@@ -165,7 +170,7 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 		}
 	}
 	if o.EndRevoked && inEffect != nil {
-		if _, err := e.endRevoked(ctx, inEffect, caKeys, time.Duration(d.CertTTL)*time.Second); err != nil {
+		if _, err := e.endRevoked(ctx, inEffect, caKeys, time.Duration(d.CertTTL)*time.Second, o.StateFile); err != nil {
 			return fmt.Errorf("ending connections of revoked certificates: %w", err)
 		}
 	}

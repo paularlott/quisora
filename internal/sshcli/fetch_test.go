@@ -25,7 +25,8 @@ func newTrustFiles(t *testing.T) trustFiles {
 }
 
 func (tf trustFiles) opts(url string) FetchOptions {
-	return FetchOptions{URL: url, CAFile: tf.ca, KRLFile: tf.krl, KnownHostsFile: tf.hosts}
+	return FetchOptions{URL: url, CAFile: tf.ca, KRLFile: tf.krl, KnownHostsFile: tf.hosts,
+		StateFile: filepath.Join(filepath.Dir(tf.ca), "state", "end-revoked.json")}
 }
 
 func read(t *testing.T, p string) string {

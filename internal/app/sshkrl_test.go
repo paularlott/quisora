@@ -53,7 +53,7 @@ func TestSSHKRLFollowsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed := func() bool {
+	listed := func(serial uint64) bool {
 		t.Helper()
 		data, err := a.Svc.SSHKRL(ctx, tn.ID)
 		if err != nil {
@@ -65,14 +65,14 @@ func TestSSHKRLFollowsChanges(t *testing.T) {
 		}
 		for _, ca := range krl.CAs {
 			for _, s := range ca.Serials {
-				if s == got.Cert.Serial {
+				if s == serial {
 					return true
 				}
 			}
 		}
 		return false
 	}
-	if listed() { // made, and kept for 30 seconds
+	if listed(got.Cert.Serial) { // made, and kept for 30 seconds
 		t.Fatal("listed before it was revoked")
 	}
 	c, err := a.Svc.SSHCerts.Get(ctx, got.Cert.ID)
@@ -84,9 +84,39 @@ func TestSSHKRLFollowsChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for !listed() {
+	for !listed(got.Cert.Serial) {
 		if time.Now().After(deadline) {
 			t.Fatal("the node kept the list made before the revocation")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// A sign-in taken back on another node (its record replicated here, after the list was made) puts a certificate
+	// signed under it on the list at once, though the certificate itself is not changed.
+	g := &model.Grant{ClientID: tn.SSH.ClientID, UserID: u.ID, OrgID: o.ID, Expires: time.Now().Add(time.Hour)}
+	g.ID = model.NewID()
+	if err := a.Svc.Grants.Create(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	k2, _ := ssh.NewPublicKey(pub2)
+	under, err := a.Svc.SignUserSSH(ctx, service.SSHUserRequest{User: u, TenantID: tn.ID, ClientID: tn.SSH.ClientID, PublicKey: sshca.AuthorizedKey(k2),
+		AMR: []string{"pwd", "otp"}, AuthTime: time.Now(), Via: "cli", SessionEpoch: u.SessionEpoch, Stamp: stamp, SignIn: g.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed(under.Cert.Serial) {
+		t.Fatal("listed before its sign-in was taken back")
+	}
+	r := &model.SSHRevokedSignIn{OrgID: o.ID, UserID: u.ID, Expires: time.Now().Add(25 * time.Hour)}
+	r.ID = g.ID
+	if err := a.Svc.SSHRevokedSignIns.Create(ctx, r); err != nil { // not through the service, as a replicated record
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for !listed(under.Cert.Serial) {
+		if time.Now().After(deadline) {
+			t.Fatal("the node kept the list made before the sign-in was taken back")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

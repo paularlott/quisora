@@ -97,11 +97,11 @@ func TestEndRevokedRealSSHD(t *testing.T) {
 	logged := func(keyID string) SSHDLogin {
 		t.Helper()
 		for range 100 {
-			list, err := journalLogins(context.Background())
+			r, err := journalLogins(context.Background(), "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, l := range list {
+			for _, l := range r.Logins {
 				if l.KeyID == keyID {
 					if !isSSHD(l) {
 						t.Fatalf("the login's process is not taken for sshd's: %+v", l)
@@ -133,6 +133,7 @@ func TestEndRevokedRealSSHD(t *testing.T) {
 		}
 		return k
 	}
+	state := filepath.Join(t.TempDir(), "end-revoked.json") // the open logins, kept between the runs below
 	env := func() (*Env, *syncBuffer) {
 		out := &syncBuffer{}
 		return &Env{Out: out, Err: out, GOOS: "linux"}, out
@@ -143,10 +144,10 @@ func TestEndRevokedRealSSHD(t *testing.T) {
 	l1 := logged("e2e-revoked-" + run)
 	s1 := loginSession(l1.PID)
 	e, out := env()
-	if n, err := e.endRevoked(context.Background(), krl(), []ssh.PublicKey{ca}, time.Hour); err != nil || n != 0 {
+	if n, err := e.endRevoked(context.Background(), krl(), []ssh.PublicKey{ca}, time.Hour, state); err != nil || n != 0 {
 		t.Fatalf("nothing revoked, within the lifetime: ended %d, %v", n, err)
 	}
-	if n, err := e.endRevoked(context.Background(), krl(71), []ssh.PublicKey{ca}, time.Hour); err != nil || n != 1 {
+	if n, err := e.endRevoked(context.Background(), krl(71), []ssh.PublicKey{ca}, time.Hour, state); err != nil || n != 1 {
 		t.Fatalf("revoked: ended %d, %v (%s)", n, err, out)
 	}
 	if !gone(c1) {
@@ -161,7 +162,7 @@ func TestEndRevokedRealSSHD(t *testing.T) {
 	s2 := loginSession(l2.PID)
 	time.Sleep(2 * time.Second)
 	e, out = env()
-	if n, err := e.endRevoked(context.Background(), krl(), []ssh.PublicKey{ca}, time.Second); err != nil || n != 1 {
+	if n, err := e.endRevoked(context.Background(), krl(), []ssh.PublicKey{ca}, time.Second, state); err != nil || n != 1 {
 		t.Fatalf("past the lifetime: ended %d, %v (%s)", n, err, out)
 	}
 	if !gone(c2) {

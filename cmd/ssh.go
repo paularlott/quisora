@@ -205,11 +205,12 @@ func sshFetchCmd() *cli.Command {
 			&cli.StringFlag{Name: "krl-file", DefaultValue: "/etc/ssh/quisora.krl", Usage: "Where to write the revocation list"},
 			&cli.StringFlag{Name: "known-hosts-file", Usage: "Where to write the host CA lines (default: not fetched)"},
 			&cli.BoolFlag{Name: "end-revoked", Usage: "Also end open SSH connections whose certificate the revocation list revokes or that are open longer than the certificate lifetime (Linux, sshd logging to journald; run as root)"},
+			&cli.StringFlag{Name: "state-file", DefaultValue: "/var/lib/quisora-ssh/end-revoked.json", Usage: "Where --end-revoked keeps track of open logins between runs (systemd: StateDirectory=quisora-ssh)"},
 		}, sshTLSFlags()...),
 		Arguments: []cli.Argument{sshURLArg()},
 		Run: func(ctx context.Context, c *cli.Command) error {
 			return sshEnv(c).Fetch(ctx, sshcli.FetchOptions{URL: c.GetStringArg("url"), CAFile: c.GetString("ca-file"),
-				KRLFile: c.GetString("krl-file"), KnownHostsFile: c.GetString("known-hosts-file"), EndRevoked: c.GetBool("end-revoked")})
+				KRLFile: c.GetString("krl-file"), KnownHostsFile: c.GetString("known-hosts-file"), EndRevoked: c.GetBool("end-revoked"), StateFile: c.GetString("state-file")})
 		},
 	}
 }

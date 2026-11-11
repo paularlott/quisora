@@ -365,8 +365,7 @@ what it revokes changed ([Monitoring](#monitoring)). Add `--known-hosts-file <pa
 revocation stops new logins but leaves open sessions open. With `--end-revoked` (Linux, sshd logging to journald, run as
 root, as the timer above does), each `fetch` also ends the connections whose certificate the list in place revokes,
 and those open longer than the tenant's certificate lifetime (`cert_ttl`): it
-reads the certificate logins sshd logged in the last 25 hours (`Accepted publickey for … ssh2: …-CERT … ID … (serial …)
-CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still the one
+reads the certificate logins sshd logged (`Accepted publickey for … ssh2: …-CERT … ID … (serial …) CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still the one
 that logged it. Only lines journald received from root are read (`_UID=0`, which journald takes from the sending
 socket, not from what the program says), so a local user cannot log a line that names a revoked serial and a process
 number of their choosing. And the process is signalled only while it is sshd's, runs as root, and started no later than
@@ -391,9 +390,19 @@ makes `fetch` exit 1 after the files are written. Where the connection has a log
 leader), so what the session left running in it goes too: `tmux`, `screen`, `nohup`, `setsid`. Where it has none (no
 PAM, no logind, a container), only the connection is ended, and processes it left running on their own stay. Either
 way, processes started outside the session (`systemd-run --user`, a user service, a cron job) are not ended: in an
-incident, look for those by hand. Add it to the service's `ExecStart`:
+incident, look for those by hand.
+
+It keeps track of the open logins between runs, in a state file (`--state-file`, by default
+`/var/lib/quisora-ssh/end-revoked.json`): the logins it has read whose connection is still open, and where it stopped
+reading the log. The first run reads the whole log of this boot; each later one only what was logged since. So a
+connection is known for as long as it is open, however old, and ended once its certificate is revoked or it passes
+`cert_ttl`, even after `fetch` has not run for a while. The one thing it needs is the login's line: one that journald
+rotated away before `fetch` read it cannot be found. Keep journald's retention (`SystemMaxUse=`, `MaxRetentionSec=` in
+`journald.conf`) longer than any time `fetch` could be failing unnoticed (it alerts on failure, above), which the
+defaults do on a server that is not flooding its log. Add it to the service, with a state directory:
 
 ```
+StateDirectory=quisora-ssh
 ExecStart=/usr/local/bin/quisora ssh fetch --end-revoked https://id.example.com/o/<org id>/ssh/<tenant id>
 ```
 
@@ -863,7 +872,7 @@ asked for. A certificate is on it for the first of these reasons that applies:
 | `user_deleted` | The user was deleted. |
 | `user_disabled` | The user was disabled, locked out, is past their end date, or their organization is gone. |
 | `sessions_ended` | The user's sessions were ended: signed out everywhere, or a credential reset. |
-| `sign_in_ended` | The sign-in it was issued under was taken back: the account page's session, or the browser session a `quisora ssh` sign-in went through, ended from another session or by an administrator, or by removing the passkey it signed in with; the `quisora ssh` sign-in's token revoked, or the app's access removed. Also a certificate signed at the moment its sign-in was being ended: it is revoked as it is made, and the request refused. The user **signing out** of that browser does not revoke it: it lasts to its expiry, like the access tokens the session issued ([signing out and ending a session](../sign-in/README.md#sessions)). |
+| `sign_in_ended` | The sign-in it was issued under was taken back: the account page's session, or the browser session a `quisora ssh` sign-in went through, ended from another session or by an administrator, or by removing the passkey it signed in with; the `quisora ssh` sign-in's token revoked, or the app's access removed. Also a certificate signed at the moment its sign-in was being ended: it is revoked as it is made, and the request refused, or, in a gossip cluster where the two nodes had not yet seen each other's change, revoked once they have ([How soon](#how-soon)). The user **signing out** of that browser does not revoke it: it lasts to its expiry, like the access tokens the session issued ([signing out and ending a session](../sign-in/README.md#sessions)). |
 | `signed_out` | An [emergency sign-out](../emergency-sign-out.md) of the organization, or of the server, came after the certificate was issued. |
 | `role_not_allowed` | The user is a manager or administrator and the tenant does not allow them certificates (it was turned off after the certificate was issued). |
 | `app_unavailable` | The tenant's SSH application is disabled or missing. The certificates count again when it is back. |
@@ -929,13 +938,20 @@ terminate-user`, or kill the sshd process) when that matters.
 To cut a person off at once from everything, lock them out ([emergency sign-out and lock-out](../emergency-sign-out.md#locking-out-one-person)):
 their certificates go on the list as `user_disabled`.
 
+In a [gossip cluster](../REPLICATION.md), a certificate signed on one node at the moment its sign-in is taken back on
+another may be handed out, as neither node has the other's change yet. Taking a sign-in back records it as taken back,
+and that record reaches every node like any change: once it and the certificate have both reached a node, the list
+that node makes revokes the certificate (`sign_in_ended`): the arrival of either makes the node's list again. So the
+replication delay comes on top of the times above, and the certificate does not outlast it.
+
 ### What revocation does not cover
 
 - **A certificate goes with the sign-in it was issued under** (`sign_in_ended`) when that sign-in is taken back: its
   browser session ended from another session or by an administrator or with the passkey it signed in with, or the
   `quisora ssh` sign-in's token or the app's access revoked; besides signing the person out everywhere, a credential reset, a lock-out, an emergency sign-out, or
   revoking the certificate itself. Signing out of the browser does not revoke it: it lasts to its expiry. Certificates
-  issued before the sign-in was recorded follow only the latter.
+  issued before the sign-in was recorded follow only the latter. In a gossip cluster, one signed while its sign-in was
+  being taken back on another node is revoked once both changes have replicated ([How soon](#how-soon)).
 - Sessions already open on a server stay open, unless it runs `fetch --end-revoked` (which also ends every connection
   open longer than `cert_ttl`, so one whose certificate expired before its access was removed does not stay open). It
   ends the connection's whole login session where it has one (logind), `tmux` and `nohup` included; processes started

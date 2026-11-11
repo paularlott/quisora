@@ -620,7 +620,7 @@ func partitionHint(kind model.Kind, id string) (int, bool) {
 	switch kind {
 	case model.KindOrg, model.KindKey:
 		return 0, true
-	case model.KindLock, model.KindReplay:
+	case model.KindLock, model.KindReplay, model.KindSSHRevokedSignIn:
 		return partitionNum(id), true
 	}
 	return 0, false

@@ -1,0 +1,54 @@
+# Known vulnerabilities, as the release gate (task check) checks them: govulncheck on the Go code reachable from the
+# default build and from the 1Password build (the onepassword tag), and npm audit on the web dependencies (high and
+# above, less the accepted ones in web/audit.mjs). The toolchain comes from go.mod, so a standard-library advisory
+# against the Go version releases are built with fails the check. The daily run catches advisories published after
+# the last push.
+name: vulnerabilities
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Scan quisora
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Scan the 1Password build
+        if: ${{ !cancelled() }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -tags onepassword ./...
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Audit the web dependencies
+        working-directory: web
+        run: node audit.mjs

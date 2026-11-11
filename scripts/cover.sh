@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 exclude='/conformance/|/internal/loadtest$|/internal/store/storetest$|/internal/upstream/upstreamtest$|/internal/webtest$|/tools/'
 pkgs=$(go list ./... | grep -Ev "$exclude" | paste -sd, -)
 out=${COVER_OUT:-coverage.out}
-go test -coverpkg="$pkgs" -coverprofile="$out" ./... >/dev/null
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+go test -coverpkg="$pkgs" -coverprofile="$out" ./... >"$log" 2>&1 || { grep -E -- '^(--- FAIL|FAIL|panic:)|_test.go:[0-9]+:' "$log" >&2; exit 1; }
 total=$(go tool cover -func="$out" | awk '/^total:/ {sub("%", "", $3); print $3}')
 floor=$(cat scripts/coverage-floor)
 echo "production statement coverage: ${total}% (floor ${floor}%)"

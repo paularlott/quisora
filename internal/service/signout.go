@@ -147,9 +147,10 @@ func (s *Service) endSessions(ctx context.Context, userID string, sessions []*mo
 	// again from the store (SignUserSSH); here the sign-in is deleted, and then the certificates listed. On a shared
 	// database, or a single node, whichever comes second sees the other: the listing finds a certificate created before
 	// the deletion, and a certificate created after it finds its sign-in gone and is revoked by its signer. In a gossip
-	// cluster each node reads its own copy, so the two can miss each other while either write is replicating: the
-	// window narrows to the replication lag. Revoking first would leave it open for the seconds a node still trusts its
-	// cached copy of the session or grant (one signed between the listing and the deletion would be missed).
+	// cluster each node reads its own copy, so the two can miss each other while either write is replicating: such a
+	// certificate is revoked by the record of its sign-in taken back (RevokeSSHCertsFrom) once both have replicated.
+	// Revoking first would leave it open for the seconds a node still trusts its cached copy of the session or grant
+	// (one signed between the listing and the deletion would be missed).
 	from := map[string]bool{}
 	pending := sessions
 	for attempt := 0; len(pending) > 0; attempt++ {

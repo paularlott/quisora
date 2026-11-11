@@ -106,7 +106,7 @@ a fourth node adds a node to lose without letting any more fail. A cluster of tw
 |---|---|---|
 | everything scoped to an organization: users, groups, memberships, tenants, access, clients, providers, passkeys, identities, sessions, grants, API tokens, link tokens, sign-in records | the organization's id | one of 1 to 63, the same for all of an organization's records |
 | organizations, signing keys, and a server-level audit event with no organization | none | 0 |
-| locks, replay values (`KindLock`, `KindReplay`) | the record's own id | spread over 1 to 63 |
+| locks, replay values, revoked SSH sign-ins (`KindLock`, `KindReplay`, `KindSSHRevokedSignIn`) | the record's own id | spread over 1 to 63 |
 | short-lived state (`KindEphemeral`), audit events (`KindAudit`) and queued items (`KindQueue`) | never replicated: each node's own | none |
 
 An organization's records, and every unique value scoped to it, are therefore in one partition: the owner checks them
