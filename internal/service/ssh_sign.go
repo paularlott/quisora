@@ -44,6 +44,9 @@ type SSHUserRequest struct {
 	// certificate once they no longer hold); one that has already ended is refused.
 	SessionEpoch uint64
 	Stamp        model.SignOutStamp
+	// Sources are the accounts a guest's sign-in stands on (model.Session.Sources), of what the request stands on: the
+	// certificate records them, and counts only while they stand (SourcesHold).
+	Sources []model.GuestSource
 	// SignIn is the session (the account page, ClientID "") or the access token's grant (the sign endpoint) the request
 	// stands on: the certificate is revoked when it is ended (RevokeSSHCertsFrom), and it is read again once the
 	// certificate is stored.
@@ -297,7 +300,11 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 	if err != nil {
 		return nil, err
 	}
-	if !u.SessionHolds(req.SessionEpoch) || !req.Stamp.Current(want) {
+	sourced, err := s.SourcesHold(ctx, req.Sources, s.storeUser)
+	if err != nil {
+		return nil, err
+	}
+	if !u.SessionHolds(req.SessionEpoch) || !req.Stamp.Current(want) || !sourced {
 		return nil, s.sshRefuse(ctx, req, t, "session_ended", &SSHRefusal{"the sign-in this request comes from has ended: sign in again"})
 	}
 	dec, err := s.sshDecide(ctx, t, u)
@@ -373,7 +380,7 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 		Principals: slices.Clone(cert.ValidPrincipals), Fingerprint: sshca.Fingerprint(pub),
 		ValidAfter: time.Unix(int64(cert.ValidAfter), 0).UTC(), ValidBefore: time.Unix(int64(cert.ValidBefore), 0).UTC(),
 		Extensions: slices.Sorted(maps.Keys(cert.Permissions.Extensions)), SourceAddresses: slices.Clone(set.SourceAddresses),
-		SessionEpoch: req.SessionEpoch, Stamp: req.Stamp, SignIn: req.SignIn, Via: req.Via}
+		SessionEpoch: req.SessionEpoch, Stamp: req.Stamp, Sources: req.Sources, SignIn: req.SignIn, Via: req.Via}
 	actor := req.Actor
 	if actor == nil {
 		actor = ActorForUser(u, "")

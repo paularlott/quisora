@@ -134,7 +134,7 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 		amr = append(amr, "mfa")
 	} else {
 		step, err = m.secondFactor(r, res.User, eff, ticket{Next: res.Next, AMR: amr, Tenant: res.Tenant, Provider: res.Provider.ID,
-			UpstreamAMR: res.Claims.AMR, Upstream: account})
+			UpstreamAMR: res.Claims.AMR, Upstream: account, Sources: res.Sources})
 	}
 	if errors.Is(err, errFactorLost) {
 		m.audit(r, "login.failure", res.Org, res.User, "", map[string]string{"reason": "second factor unusable",
@@ -156,7 +156,7 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dest, err := m.completeWith(w, r, res.User, res.Org, web.SessionOptions{AMR: amr, Provider: res.Provider.ID, UpstreamAMR: res.Claims.AMR,
-		Upstream: account}, res.Next)
+		Upstream: account, Sources: res.Sources}, res.Next)
 	if err != nil {
 		m.s.Log.Error("create session", "error", err)
 		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "failed"), http.StatusFound)

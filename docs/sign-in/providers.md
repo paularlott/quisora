@@ -260,13 +260,21 @@ with the `idp` scope) and `acr` from B's own values only. The provider is *not* 
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 
-The provider asks for no refresh token, so there is no leaver detection; S and B are on the same server instead. When a
-person's sessions end in S - signed out everywhere (by an administrator, or by themselves, including **sign out my
-other sessions**), disabled, locked out, past their end date or deleted - their guest accounts' sessions and refresh
-grants end too, and B's applications are told by back-channel logout. B's audit log records it on the guest as
-`user.sessions.revoke`, with `source_org` and `source_user`. The guest account itself stays: the person can sign in
-again through S if S still lets them. A guest of B that is itself the source of guests in a third organization is
-followed too (four organizations deep at most).
+The provider asks for no refresh token, so there is no leaver detection; S and B are on the same server instead. A
+guest's session in B stands on the session at S it signed in with: it records that person and the session's epoch, and
+B's refresh grants and SSH certificates made from it take that over. Every use of them - each request with the session,
+each refresh, each access token checked, the SSH revocation list - checks the person at S too, as it checks the guest
+account itself. So when a person's sessions end in S - signed out everywhere (by an administrator, or by themselves,
+including **sign out my other sessions**), disabled, locked out, past their end date, their password or sign-in reset,
+promoted to manager, or deleted - their guest accounts' sessions, refresh grants (offline access too) and SSH
+certificates stop working with it, whatever else happens: at once on the node that made the change, and on the others
+as soon as they hear of it (within seconds, as for the person's own sessions). A guest sign-in that was under way at that
+moment ends the same way, at its first use. Then their records are removed and B's applications told by
+back-channel logout; B's audit log records it on the guest as `user.sessions.revoke`, with `source_org` and
+`source_user`. That clean-up is best effort: when it fails (the store could not be read) it is logged, and what it
+missed has stopped working already. The guest account itself stays: the person can sign in again through S if S still
+lets them. A guest of B that is itself the source of guests in a third organization stands on the whole chain, back to
+S (four organizations deep at most: a sign-in further away is refused).
 
 Someone only taken out of the provider's groups keeps the B session they have until it ends (its idle and absolute
 limits), and an [emergency sign-out](../emergency-sign-out.md) of S does not reach B: disable or remove their guest

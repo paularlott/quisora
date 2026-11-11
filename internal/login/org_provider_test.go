@@ -22,11 +22,13 @@ type guestEnv struct {
 	*env
 	acme *model.Org
 	p    *model.Provider
+	op   *oidc.Provider // the OAuth endpoints
 }
 
 func newGuestEnv(t *testing.T, mut func(*service.ProviderInput), cfg ...func(*config.Config)) *guestEnv {
-	e := newEnvModules(t, false, func(s *web.Server) []web.Module { return []web.Module{oidc.New(s)} }, append(cfg, noIPLimit)...)
-	g := &guestEnv{env: e, acme: e.org(t, "acme", nil)}
+	var op *oidc.Provider
+	e := newEnvModules(t, false, func(s *web.Server) []web.Module { op = oidc.New(s); return []web.Module{op} }, append(cfg, noIPLimit)...)
+	g := &guestEnv{env: e, acme: e.org(t, "acme", nil), op: op}
 	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &e.Primary.ID}
 	if mut != nil {
 		mut(&in)
@@ -58,8 +60,8 @@ func (g *guestEnv) continueAs(t *testing.T, u *model.User) (*browser, string) {
 	return g.continueAsVia(t, g.signedIn(t, u), g.acme, g.p)
 }
 
-// continueAsVia is continueAs for the browser b, signed in at the primary organization, and the organization provider
-// p of org.
+// continueAsVia is continueAs for the browser b, signed in at the provider's source organization, and the organization
+// provider p of org.
 func (g *guestEnv) continueAsVia(t *testing.T, b *browser, org *model.Org, p *model.Provider) (*browser, string) {
 	t.Helper()
 	b.base = web.OrgPath(org.ID, "")
@@ -78,7 +80,7 @@ func (g *guestEnv) continueAsVia(t *testing.T, b *browser, org *model.Org, p *mo
 	}
 	// the primary organization's authorization endpoint: signed in, and the client trusted: the code comes back at once
 	loc := res.Header.Get("Location")
-	if !strings.HasPrefix(loc, g.Cfg.OrgIssuer(g.Primary.ID)+"/oauth/authorize?") {
+	if !strings.HasPrefix(loc, g.Cfg.OrgIssuer(p.SourceOrg)+"/oauth/authorize?") {
 		t.Fatalf("the provider sent the browser to %q", loc)
 	}
 	back := hop(loc)

@@ -28,9 +28,29 @@ const (
 // cachedSession is never changed once it is in the cache (lookups read it without the lock): a newer copy of the
 // session replaces the whole entry.
 type cachedSession struct {
-	sess    *model.Session
-	user    *model.User
+	sess *model.Session
+	user *model.User
+	// sources are the users a guest's session stands on (model.Session.Sources), by id, read with it: nil for one not
+	// there. The session is evicted with any of them, as with its own user.
+	sources map[string]*model.User
 	fetched time.Time
+}
+
+// users are the ids of the users cs stands on: its own, and those of a guest's sources.
+func (cs *cachedSession) users() []string {
+	ids := []string{cs.user.ID}
+	for id := range cs.sources {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// source is the service.UserGetter of cs's sources, as read with it.
+func (cs *cachedSession) source(_ context.Context, id string) (*model.User, error) {
+	if u := cs.sources[id]; u != nil {
+		return u, nil
+	}
+	return nil, store.ErrNotFound
 }
 
 // Sessions creates, looks up and ends browser sessions. Lookups are cached per node for a short time; Evict is
@@ -39,7 +59,7 @@ type Sessions struct {
 	svc    *service.Service
 	mu     sync.RWMutex
 	cache  map[string]*cachedSession
-	byUser map[string]map[string]struct{} // user id -> cached session ids, so evicting a user is O(their sessions)
+	byUser map[string]map[string]struct{} // user id -> cached session ids (theirs, and their guests'), so evicting a user is O(their sessions)
 	swept  time.Time                      // when entries past sessionCacheTTL were last dropped (mu)
 	// gens: a fill that began before an eviction is not stored after it (evictgen). Keys: the session id, and "u:" and
 	// the user id for evictions of a user.
@@ -74,10 +94,12 @@ func (m *Sessions) drop(id string) {
 		return
 	}
 	delete(m.cache, id)
-	if set := m.byUser[cs.user.ID]; set != nil {
-		delete(set, id)
-		if len(set) == 0 {
-			delete(m.byUser, cs.user.ID)
+	for _, uid := range cs.users() {
+		if set := m.byUser[uid]; set != nil {
+			delete(set, id)
+			if len(set) == 0 {
+				delete(m.byUser, uid)
+			}
 		}
 	}
 }
@@ -90,7 +112,9 @@ type SessionOptions struct {
 	UpstreamAMR []string
 	// Upstream is the account at that provider the person signed in with (model.Session.Upstream).
 	Upstream *model.UpstreamAccount
-	Passkey  string // passkey id, when a passkey was used
+	// Sources are the accounts a guest's sign-in through an organization provider stands on (model.Session.Sources).
+	Sources []model.GuestSource
+	Passkey string // passkey id, when a passkey was used
 }
 
 // Create starts a session for u after a successful sign-in and sets the cookie.
@@ -108,7 +132,7 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 	raw := secure.RandomToken(32)
 	s := &model.Session{Meta: model.Meta{ID: SessionID(raw)}, UserID: u.ID, OrgID: u.OrgID, AMR: amr, Epoch: u.SessionEpoch,
 		AuthTime: now, Expires: now.Add(time.Duration(ttl) * time.Second), IdleTTL: idle, LastSeen: now, Provider: opt.Provider, Passkey: opt.Passkey,
-		UpstreamAMR: opt.UpstreamAMR, Upstream: opt.Upstream, IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
+		UpstreamAMR: opt.UpstreamAMR, Upstream: opt.Upstream, Sources: opt.Sources, IP: ClientIP(r), UserAgent: truncate(r.UserAgent(), 300), CSRF: secure.RandomToken(24)}
 	stamp, err := m.svc.SessionStamp(ctx, u.OrgID)
 	if err != nil {
 		return nil, err
@@ -212,6 +236,7 @@ func (m *Sessions) Upgrade(ctx context.Context, w http.ResponseWriter, r *http.R
 		}
 		now := time.Now().UTC()
 		s.AMR, s.AuthTime, s.Provider, s.Passkey, s.UpstreamAMR, s.Upstream = opt.AMR, now, opt.Provider, opt.Passkey, opt.UpstreamAMR, opt.Upstream
+		s.Sources = opt.Sources // what the new sign-in stands on: the grants made before keep their own
 		s.Expires, s.IdleTTL, s.LastSeen = now.Add(time.Duration(ttl)*time.Second), idle, now
 		s.IP, s.UserAgent, s.CSRF = ClientIP(r), truncate(r.UserAgent(), 300), secure.RandomToken(24)
 		s.CookieHash = secure.HashSecret(secret)
@@ -294,15 +319,28 @@ func (m *Sessions) lookup(ctx context.Context, org, id string) (*model.Session, 
 			m.Evict(id, "")
 			return nil, nil, refused(err)
 		}
-		userTok := m.gens.Token("u:" + s.UserID)
+		toks := map[string]uint64{id: sessTok, "u:" + s.UserID: m.gens.Token("u:" + s.UserID)}
 		u, err := m.svc.Users.Get(ctx, s.UserID)
 		if err != nil {
 			return nil, nil, refused(err)
 		}
 		cs = &cachedSession{sess: s, user: u, fetched: now}
-		m.fill(id, cs, sessTok, userTok)
+		// A guest's session stands on the users it came from (model.Session.Sources): read with it, kept with it, and
+		// evicted with any of them, so the check below costs no read while the entry lasts.
+		for _, src := range s.Sources {
+			if cs.sources == nil {
+				cs.sources = map[string]*model.User{}
+			}
+			toks["u:"+src.UserID] = m.gens.Token("u:" + src.UserID)
+			su, err := m.svc.Users.Get(ctx, src.UserID)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return nil, nil, refused(err)
+			}
+			cs.sources[src.UserID] = su // nil: gone
+		}
+		m.fill(id, cs, toks)
 	}
-	if ok, err := m.svc.SessionUsable(ctx, cs.sess, cs.user); !ok {
+	if ok, err := m.svc.SessionUsableWith(ctx, cs.sess, cs.user, cs.source); !ok {
 		return nil, nil, refused(err)
 	}
 	if now.Sub(cs.sess.LastSeen) > lastSeenThrottle {
@@ -320,15 +358,18 @@ func refused(err error) error {
 	return nil
 }
 
-// fill puts cs, read from the store, in the cache and makes room for it, unless the session or its user was evicted
-// since the tokens were taken (before the reads): what was read may predate the change that evicted it. It is then
-// served to the request that read it, as a read made a moment earlier would have been, and not kept.
-func (m *Sessions) fill(id string, cs *cachedSession, sessTok, userTok uint64) {
-	now, u := cs.fetched, cs.user
+// fill puts cs, read from the store, in the cache and makes room for it, unless the session or a user it stands on was
+// evicted since the tokens were taken (toks, by evictgen key: each before its read): what was read may predate the
+// change that evicted it. It is then served to the request that read it, as a read made a moment earlier would have
+// been, and not kept.
+func (m *Sessions) fill(id string, cs *cachedSession, toks map[string]uint64) {
+	now := cs.fetched
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.gens.Valid(id, sessTok) || !m.gens.Valid("u:"+u.ID, userTok) {
-		return
+	for k, tok := range toks {
+		if !m.gens.Valid(k, tok) {
+			return
+		}
 	}
 	if now.Sub(m.swept) > sessionCacheTTL {
 		// Entries past sessionCacheTTL are read afresh anyway: dropped once a period, so the cache holds the sessions in
@@ -350,12 +391,14 @@ func (m *Sessions) fill(id string, cs *cachedSession, sessTok, userTok uint64) {
 	}
 	m.drop(id)
 	m.cache[id] = cs
-	set := m.byUser[u.ID]
-	if set == nil {
-		set = map[string]struct{}{}
-		m.byUser[u.ID] = set
+	for _, uid := range cs.users() {
+		set := m.byUser[uid]
+		if set == nil {
+			set = map[string]struct{}{}
+			m.byUser[uid] = set
+		}
+		set[id] = struct{}{}
 	}
-	set[id] = struct{}{}
 }
 
 // touchLater records that the session is in use, in the background: the request does not wait for a write it does
@@ -382,7 +425,7 @@ func (m *Sessions) touch(ctx context.Context, cs *cachedSession) {
 	}
 	m.mu.Lock()
 	if m.cache[s.ID] == cs { // not evicted or replaced meanwhile
-		m.cache[s.ID] = &cachedSession{sess: &s, user: cs.user, fetched: cs.fetched}
+		m.cache[s.ID] = &cachedSession{sess: &s, user: cs.user, sources: cs.sources, fetched: cs.fetched}
 	}
 	m.mu.Unlock()
 }

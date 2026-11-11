@@ -322,7 +322,7 @@ func (s *Service) oidcSignIn(ctx context.Context, p *model.Provider, secret, cod
 	}
 	out := Claims{Subject: str(c, "sub"), Email: str(c, "email"), EmailVerified: boolish(c["email_verified"]),
 		Name: str(c, "name"), GivenName: str(c, "given_name"), FamilyName: str(c, "family_name"),
-		Username: str(c, "preferred_username"), AMR: model.CleanAMR(c["amr"]), Picture: str(c, "picture")}
+		Username: str(c, "preferred_username"), AMR: model.CleanAMR(c["amr"]), Picture: str(c, "picture"), SID: str(c, "sid")}
 	if p.Type == model.ProviderMicrosoft {
 		// A Microsoft user is their tenant and object IDs (sub differs per application). Entra's email claim is
 		// whatever the tenant's administrators set: it counts as verified only when Microsoft vouches for the

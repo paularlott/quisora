@@ -3175,3 +3175,42 @@ func TestSSHCertsOfUser(t *testing.T) {
 		t.Errorf("users scope: %v", err)
 	}
 }
+
+// A guest's certificate stands on the account its sign-in came from (SSHCert.Sources): it is revoked once that
+// account's sessions end, and a request under a sign-in whose source has ended is refused, though the guest's own
+// account is untouched.
+func TestSSHGuestCertificateStandsOnItsSource(t *testing.T) {
+	w := newSSHWorld(t)
+	w.enable()
+	home := w.env.org("home")
+	guestOf := func(name string) (*model.User, *model.User, func(*service.SSHUserRequest)) {
+		src := w.user(home.ID, name, model.RoleUser)
+		g := w.user(w.org.ID, name+"-guest", model.RoleUser)
+		sources := []model.GuestSource{{UserID: src.ID, Epoch: w.fresh(src).SessionEpoch}}
+		return src, g, func(r *service.SSHUserRequest) { r.Sources = sources }
+	}
+
+	src, g, from := guestOf("pat")
+	c := w.mustSign(g, from)
+	if got := w.reasonOf(c); got != "" {
+		t.Fatalf("a guest's certificate while its source stands: %q", got)
+	}
+	if err := w.svc.RevokeSessions(w.ctx, service.System, src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.reasonOf(c); got != service.SSHReasonSessionsEnded {
+		t.Errorf("its source signed out everywhere: %q", got)
+	}
+	if _, err := w.sign(g, from); err == nil {
+		t.Error("a certificate was signed under a sign-in whose source has ended")
+	}
+
+	src, g, from = guestOf("sam")
+	c = w.mustSign(g, from)
+	if err := w.svc.DeleteUser(w.ctx, service.System, src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.reasonOf(c); got != service.SSHReasonSessionsEnded {
+		t.Errorf("its source deleted: %q", got)
+	}
+}

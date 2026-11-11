@@ -32,7 +32,7 @@ const (
 	SSHReasonCAKeyRemoved   = "ca_key_removed"     // its CA key was removed: servers stop trusting the key itself
 	SSHReasonUserDeleted    = "user_deleted"       // the user was deleted
 	SSHReasonUserDisabled   = "user_disabled"      // disabled, locked out, past the end date, or the organization is gone
-	SSHReasonSessionsEnded  = "sessions_ended"     // the user's sessions were ended (sign out everywhere, a credential reset)
+	SSHReasonSessionsEnded  = "sessions_ended"     // the user's sessions were ended (sign out everywhere, a credential reset), or a guest's source account's
 	SSHReasonSignInEnded    = "sign_in_ended"      // the session or grant it was issued under was taken back (RevokeSSHCertsFrom)
 	SSHReasonSignedOut      = "signed_out"         // an emergency sign-out of the organization or the server came after it
 	SSHReasonRoleNotAllowed = "role_not_allowed"   // the user is a manager or above and the tenant does not allow it
@@ -135,6 +135,9 @@ type sshEval struct {
 	want  model.SignOutStamp
 	ext   []string // the extensions a user certificate gets now (sshExtensions)
 	users map[string]*sshUser
+	// sources are the users guests' certificates stand on (SSHCert.Sources), as read: nil for one not there. Users of
+	// other organizations, read apart from the tenant's own (users).
+	sources map[string]*model.User
 	// signIns are the sign-ins read (SSHCert.SignIn): true for one taken back (model.SSHRevokedSignIn).
 	signIns map[string]bool
 }
@@ -149,7 +152,7 @@ func (s *Service) newSSHEval(ctx context.Context, t *model.Tenant) (*sshEval, er
 		return nil, err
 	}
 	ev := &sshEval{s: s, t: t, off: t.SSH != nil && !t.SSH.Enabled, keys: map[string]*model.SSHKey{}, want: want, users: map[string]*sshUser{},
-		signIns: map[string]bool{}}
+		sources: map[string]*model.User{}, signIns: map[string]bool{}}
 	if t.SSH != nil {
 		ev.ext = sshExtensions(t.SSH)
 	}
@@ -177,6 +180,15 @@ func (ev *sshEval) user(ctx context.Context, id string) (*sshUser, error) {
 // loads what a certificate needs that is not read yet (after a load that failed).
 func (ev *sshEval) load(ctx context.Context, certs []*model.SSHCert) error {
 	if err := ev.loadUsers(ctx, sshCertUsers(certs)); err != nil {
+		return err
+	}
+	var sources []string
+	for _, c := range certs {
+		for _, src := range c.Sources {
+			sources = append(sources, src.UserID)
+		}
+	}
+	if err := ev.loadSources(ctx, sources); err != nil {
 		return err
 	}
 	var ids []string
@@ -242,6 +254,39 @@ func (ev *sshEval) loadUsers(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// loadSources reads the users ids name that the evaluation has not read yet as sources (sshEval.sources), together.
+func (ev *sshEval) loadSources(ctx context.Context, ids []string) error {
+	ids = slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(ids))), func(id string) bool {
+		_, read := ev.sources[id]
+		return read
+	})
+	if len(ids) == 0 {
+		return nil
+	}
+	found, err := ev.s.Users.GetMany(ctx, ids)
+	if err != nil {
+		return mapStore(err)
+	}
+	for _, id := range ids {
+		ev.sources[id] = nil
+	}
+	for _, u := range found {
+		ev.sources[u.ID] = u
+	}
+	return nil
+}
+
+// sourceUser is a UserGetter of the users certificates stand on (SourcesHold), read once per evaluation.
+func (ev *sshEval) sourceUser(ctx context.Context, id string) (*model.User, error) {
+	if err := ev.loadSources(ctx, []string{id}); err != nil {
+		return nil, err
+	}
+	if u := ev.sources[id]; u != nil {
+		return u, nil
+	}
+	return nil, store.ErrNotFound
+}
+
 // sshCertUsers returns the ids of the users of certs (none for a host certificate).
 func sshCertUsers(certs []*model.SSHCert) []string {
 	ids := make([]string, 0, len(certs))
@@ -273,6 +318,10 @@ func (ev *sshEval) reason(ctx context.Context, c *model.SSHCert) (string, error)
 		return "", err
 	}
 	x, err := ev.user(ctx, c.UserID)
+	if err != nil {
+		return "", err
+	}
+	sourced, err := ev.s.SourcesHold(ctx, c.Sources, ev.sourceUser) // a guest's: the accounts its sign-in came from
 	switch {
 	case err != nil:
 		return "", err
@@ -280,7 +329,7 @@ func (ev *sshEval) reason(ctx context.Context, c *model.SSHCert) (string, error)
 		return SSHReasonUserDeleted, nil
 	case !x.usable:
 		return SSHReasonUserDisabled, nil
-	case !x.u.SessionHolds(c.SessionEpoch):
+	case !x.u.SessionHolds(c.SessionEpoch) || !sourced:
 		return SSHReasonSessionsEnded, nil
 	case ev.signIns[c.SignIn]:
 		return SSHReasonSignInEnded, nil

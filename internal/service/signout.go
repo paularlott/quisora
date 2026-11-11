@@ -58,8 +58,15 @@ func (s *Service) apiTokenStamp(ctx context.Context, orgID string) (model.SignOu
 // user's and still able to sign in (model.Passkey.Usable: not disabled by a detected clone): a session stands on the
 // passkey it was signed in with, so removing or disabling it ends the session wherever and whenever it was made (a
 // sign-in verified before the removal and finished after it, a session the removal's listing did not see yet). u must be the session's user, as recently read. An error is a read that failed (the sign-out counters, the
-// passkey): no verdict (the caller answers 503), never "ended".
+// passkey): no verdict (the caller answers 503), never "ended". A guest's session stands on the accounts it came from
+// too (model.Session.Sources, SourcesHold), read from the store here: SessionUsableWith reads them through the
+// caller's cache.
 func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *model.User) (bool, error) {
+	return s.SessionUsableWith(ctx, sess, u, s.storeUser)
+}
+
+// SessionUsableWith is SessionUsable reading the users a guest's session stands on with users.
+func (s *Service) SessionUsableWith(ctx context.Context, sess *model.Session, u *model.User, users UserGetter) (bool, error) {
 	if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
 		return false, err
 	}
@@ -69,6 +76,9 @@ func (s *Service) SessionUsable(ctx context.Context, sess *model.Session, u *mod
 	}
 	if !SessionUsableAt(sess, u, want) {
 		return false, nil
+	}
+	if ok, err := s.SourcesHold(ctx, sess.Sources, users); err != nil || !ok {
+		return false, err
 	}
 	if sess.Passkey != "" {
 		pk, err := s.Passkeys.Get(ctx, sess.Passkey)

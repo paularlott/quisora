@@ -977,6 +977,23 @@ type UpstreamAccount struct {
 	Login string `msgpack:"l,omitempty" json:"l,omitempty"`
 }
 
+// GuestSource is an account a guest's sign-in stands on: a guest signs in to one organization through an organization
+// provider (Provider.SourceOrg) with their session at the source organization, and their session, refresh grants and
+// SSH certificates there count only while that account would still keep the session it signed in with: the user is
+// there and usable, and still in the session epoch the source session was made in (User.SessionHolds). Whatever ends
+// the source account's sessions - signed out everywhere or its other sessions, disabled, locked out, past its end
+// date, a password or credential reset, a promotion, deleted - so ends the guest's sign-ins with them, at the check of
+// each use, whether or not the guest's own records are reached and removed. A source session that is a guest's too
+// passes its own sources on after it, so a guest of a guest stands on the whole chain (at most MaxGuestDepth).
+type GuestSource struct {
+	UserID string `msgpack:"u"`
+	Epoch  uint64 `msgpack:"ep,omitempty"` // the source session's epoch (Session.Epoch)
+}
+
+// MaxGuestDepth bounds the chain of accounts a guest's sign-in stands on (Session.Sources): a guest can be the source of
+// a guest of its own in a third organization, and so on, this many organizations away at most.
+const MaxGuestDepth = 4
+
 // ProviderTypes lists the provider types in the order the admin console offers them.
 var ProviderTypes = []string{ProviderOIDC, ProviderGoogle, ProviderMicrosoft, ProviderGitHub, ProviderGitLab, ProviderAuth0,
 	ProviderOrganization}
@@ -1159,15 +1176,18 @@ type Session struct {
 	// or the provider's say-so when it is trusted for the second factor (Provider.TrustMFA: "mfa" in AMR).
 	UpstreamAMR []string `msgpack:"uamr,omitempty" json:"upstream_amr,omitempty"`
 	// Upstream is the account at that provider the person signed in with (the idp scope's claims).
-	Upstream  *UpstreamAccount `msgpack:"upa,omitempty" json:"-"`
-	Passkey   string           `msgpack:"pk" json:"-"` // passkey used to sign in, if any (deleting it ends the session)
-	AuthTime  time.Time        `msgpack:"at" json:"auth_time"`
-	Expires   time.Time        `msgpack:"ex" json:"expires"`
-	IdleTTL   int              `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
-	LastSeen  time.Time        `msgpack:"ls" json:"last_seen"`
-	IP        string           `msgpack:"ip" json:"ip"`
-	UserAgent string           `msgpack:"ua" json:"user_agent"`
-	CSRF      string           `msgpack:"cs" json:"-"`
+	Upstream *UpstreamAccount `msgpack:"upa,omitempty" json:"-"`
+	// Sources are the accounts a guest's sign-in through an organization provider stands on (GuestSource): the session
+	// works only while they do.
+	Sources   []GuestSource `msgpack:"src,omitempty" json:"-"`
+	Passkey   string        `msgpack:"pk" json:"-"` // passkey used to sign in, if any (deleting it ends the session)
+	AuthTime  time.Time     `msgpack:"at" json:"auth_time"`
+	Expires   time.Time     `msgpack:"ex" json:"expires"`
+	IdleTTL   int           `msgpack:"it" json:"-"` // seconds; 0 = no idle timeout
+	LastSeen  time.Time     `msgpack:"ls" json:"last_seen"`
+	IP        string        `msgpack:"ip" json:"ip"`
+	UserAgent string        `msgpack:"ua" json:"user_agent"`
+	CSRF      string        `msgpack:"cs" json:"-"`
 	// CookieHash is set once the session was re-authenticated (web.Sessions.Upgrade): the browser's cookie is then
 	// "<id>.<secret>" and this is the hash of the secret, so the cookie value from before the upgrade no longer works
 	// (no session fixation) while the id, which grants and tokens name as "sid", stays the same.
@@ -1225,8 +1245,11 @@ type Grant struct {
 	// Upstream is the account at that provider the person signed in with (Session.Upstream): the idp_sub, idp_tenant
 	// and idp_login claims of the idp scope.
 	Upstream *UpstreamAccount `msgpack:"upa,omitempty" json:"-"`
-	AuthTime time.Time        `msgpack:"at" json:"auth_time"`
-	Counter  uint64           `msgpack:"n" json:"-"`
+	// Sources are those of the session it was granted in (Session.Sources), when it was made: the grant works only
+	// while they stand, offline access or not.
+	Sources  []GuestSource `msgpack:"src,omitempty" json:"-"`
+	AuthTime time.Time     `msgpack:"at" json:"auth_time"`
+	Counter  uint64        `msgpack:"n" json:"-"`
 	// Rotated is when Counter last moved: the retry grace of the token before the current one runs from it, never
 	// from Updated, which other changes (a re-seal of Key) move too.
 	Rotated time.Time `msgpack:"rt,omitempty" json:"-"`
@@ -1426,6 +1449,9 @@ type SSHCert struct {
 	// certificate counts only while they would (user certificates).
 	SessionEpoch uint64       `msgpack:"se,omitempty" json:"-"`
 	Stamp        SignOutStamp `msgpack:"st" json:"-"`
+	// Sources are those of the sign-in it was asked for under (Session.Sources, Grant.Sources): a guest's certificate
+	// counts only while the accounts its sign-in came from stand.
+	Sources []GuestSource `msgpack:"src,omitempty" json:"-"`
 	// SignIn is the session (the account page) or grant (the sign endpoint) the certificate was issued under: ending
 	// that sign-in revokes it (service.RevokeSSHCertsFrom). "" for a host certificate.
 	SignIn    string    `msgpack:"sg,omitempty" json:"-"`

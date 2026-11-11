@@ -373,7 +373,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		}
 		usable := false
 		if err == nil {
-			if usable, err = p.svc.SessionUsable(ctx, sess, u); err != nil {
+			if usable, err = p.svc.SessionUsableWith(ctx, sess, u, p.user); err != nil {
 				return nil, serverError(unavailable(err)) // not known to have ended: the client retries
 			}
 		}
@@ -405,7 +405,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", "the application changed since the user authorized it: sign in again")
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Sources: sess.Sources, Resources: cd.Resources,
 		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -446,7 +446,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		if sess, oe = session(); oe != nil {
 			return nil, "", oe
 		}
-		g.Epoch, g.Stamp = sess.Epoch, sess.Stamp
+		g.Epoch, g.Stamp, g.Sources = sess.Epoch, sess.Stamp, sess.Sources
 	}
 	p.noteGrant(ctx, g.OrgID, g.UserID, g.ID)
 	detail := map[string]string{"grant": g.ID, "user_id": u.ID, "scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID}
@@ -476,7 +476,8 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 // granted in the user's current session epoch (model.User.SessionEpoch: not ended by a password reset or a reset of
 // the account's sign-in), it is not ended by an emergency sign-out (its stamp), and one made without the
 // offline_access scope lasts only as long as the browser session it was granted in (OIDC Core §11: refreshing while
-// the user is away needs offline_access), which must still sign the user in (service.SessionUsable). Ending the
+// the user is away needs offline_access), which must still sign the user in (service.SessionUsable). A guest's grant
+// stands on the accounts its sign-in came from too, offline access or not (service.SourcesHold). Ending the
 // session (sign-out, revocation) deletes the grant too. An error means the answer could not be read (the user, the
 // sign-out counters or the session): the caller answers 503, not "ended".
 func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, bool, error) {
@@ -491,6 +492,12 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 		return u, false, nil
 	}
 	if ok, err := p.svc.UserUsable(ctx, u); err != nil {
+		return nil, false, unavailable(err)
+	} else if !ok {
+		return u, false, nil
+	}
+	// a guest's grant stands on the accounts its sign-in came from, offline access or not (model.Grant.Sources)
+	if ok, err := p.svc.SourcesHold(ctx, g.Sources, p.user); err != nil {
 		return nil, false, unavailable(err)
 	} else if !ok {
 		return u, false, nil

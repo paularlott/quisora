@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip"
 	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/gossip/partition"
 	"github.com/paularlott/logger"
@@ -208,6 +209,18 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 			return g.ID + "." + c + "." + base64.RawURLEncoding.EncodeToString(secure.MAC(key, g.ID, c))
 		}
 	}
+	// lagging makes node i miss the partitions' writes (lagBehind), and the owners' heartbeats too: a heartbeat reports
+	// what the owner has committed, and a node that hears it is ahead makes its reads wait for it (up to StaleAfter, the
+	// staleness gate) instead of serving the copy a message behind that this test is about. Without them it learns it
+	// was behind only from the owner's refusal of its rotation, as a node does whose heartbeat has not come yet.
+	lagging := func(i int, on bool) {
+		c.lagBehind(i, on)
+		for j := range c.addrs {
+			if j != i {
+				c.drop(j, i, on, gossip.PartHeartbeatMsg)
+			}
+		}
+	}
 	// presentLagging presents token at node i while node i is a message behind: it misses the grant's latest writes until
 	// the owner refuses its own rotation as stale, and catches up from then on.
 	presentLagging := func(i int, token string) (int, string) {
@@ -224,7 +237,7 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 				case <-time.After(time.Millisecond):
 				}
 			}
-			c.lagBehind(i, false)
+			lagging(i, false)
 		}()
 		return sites[i].refresh(t, cl, secret, token)
 	}
@@ -239,14 +252,16 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 
 	// reuse: the grant rotates twice on node 0 while the lagging node misses it; the first token, presented there, ends it
 	g, token := newGrant()
-	c.lagBehind(lag, true)
+	lagging(lag, true)
 	for n := uint64(1); n <= 2; n++ {
 		if code, next := sites[0].refresh(t, cl, secret, token(n)); code != http.StatusOK || next != token(n+1) {
 			t.Fatalf("rotation %d on node 0: %d %q", n, code, next)
 		}
 	}
-	if x, err := sites[lag].svc.Grants.Get(ctx, g.ID); err != nil || x.Counter != 1 {
-		t.Fatalf("test set-up: node %d must still hold the first counter: %v", lag, err)
+	// (its own copy, past the staleness gate: a heartbeat telling it the owner is ahead would make a gated read wait out
+	// StaleAfter and refuse, and this checks the test's precondition, not a read a client makes)
+	if x, err := store.NewTable[model.Grant](c.nodes[lag].st().inner).Get(ctx, g.ID); err != nil || x.Counter != 1 {
+		t.Fatalf("test set-up: node %d must still hold the first counter: %+v %v", lag, x, err)
 	}
 	if code, next := presentLagging(lag, token(1)); code != http.StatusBadRequest || next != "" {
 		t.Fatalf("a reused token on a node a message behind: %d %q", code, next)
@@ -268,7 +283,7 @@ func TestRefreshReuseOnALaggingNode(t *testing.T) {
 	// a retry: the client rotated on node 0, lost the answer, and presents the same token again at the other node, a
 	// message behind
 	g, token = newGrant()
-	c.lagBehind(lag, true)
+	lagging(lag, true)
 	if code, next := sites[0].refresh(t, cl, secret, token(1)); code != http.StatusOK || next != token(2) {
 		t.Fatalf("rotation on node 0: %d %q", code, next)
 	}

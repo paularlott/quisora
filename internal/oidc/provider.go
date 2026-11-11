@@ -322,6 +322,10 @@ func (p *Provider) grantAlive(ctx context.Context, id string, u *model.User) (bo
 	if !st.alive || !u.SessionHolds(st.epoch) { // (a grant of an ended session epoch: model.User.SessionEpoch)
 		return false, nil
 	}
+	// a guest's grant stands on the accounts its sign-in came from (model.Grant.Sources), read through the user cache
+	if ok, err := p.svc.SourcesHold(ctx, st.sources, p.user); err != nil || !ok {
+		return false, unavailable(err)
+	}
 	// The stamp is compared on every use, cached or not: an emergency sign-out ends the grant's tokens at once.
 	want, err := p.svc.SessionStamp(ctx, st.org)
 	if err != nil {
@@ -340,7 +344,8 @@ func (p *Provider) grantStateOf(ctx context.Context, id string, u *model.User) (
 			return grantState{}, unavailable(err)
 		}
 		if err == nil {
-			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch, amr: g.AMR, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream, idp: g.IdP}
+			st = grantState{alive: true, org: g.OrgID, stamp: g.Stamp, epoch: g.Epoch, amr: g.AMR, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream, idp: g.IdP,
+				sources: g.Sources}
 		}
 		p.grants.PutIf(id, st, tok)
 	}
@@ -359,6 +364,7 @@ type grantState struct {
 	amr, upstreamAMR []string
 	upstream         *model.UpstreamAccount // the account at the upstream provider (Grant.Upstream)
 	idp              string                 // that provider's type (Grant.IdP)
+	sources          []model.GuestSource    // the accounts a guest's grant stands on (Grant.Sources)
 }
 
 // ---------------------------------------------------------------------------------------------------------------

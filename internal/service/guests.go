@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -10,22 +11,57 @@ import (
 // Guest accounts: a user's accounts in other organizations reached through an organization provider
 // (model.ProviderOrganization) whose source is the user's organization. Each signed in, and signs in again, as that
 // user. So when the user's sessions end - signed out everywhere, disabled, locked out, past their end date, deleted,
-// or signing out their other sessions - their guest accounts' sessions and refresh grants end too, here, and those
-// organizations' applications are told (back-channel logout). Leaver detection cannot do it: an organization provider
-// asks for no refresh token, as both organizations are on this server.
+// or signing out their other sessions - their guest accounts' sessions and refresh grants end too. Leaver detection
+// cannot do it: an organization provider asks for no refresh token, as both organizations are on this server.
+//
+// The binding does it: a guest's session records the accounts its sign-in stands on (model.GuestSource: the source
+// user and the epoch of the session it signed in with, Session.Sources), its refresh grants and SSH certificates take
+// them from it, and every check of their use refuses them once a source no longer stands (SourcesHold), as it refuses
+// the session's own user's. That is a check of the user records alone, which every write of them settles at once, so
+// nothing has to reach the guest's records in time: a failed lookup below, a sign-in racing the change, a node that
+// has not heard of it, all end where the check finds the source's epoch moved. What follows here is only tidying:
+// the guests' records are removed and those organizations' applications told (back-channel logout), best effort.
 
-// maxGuestDepth bounds how far guest accounts are followed: a guest can be the source of a guest of its own in a third
-// organization.
-const maxGuestDepth = 4
+// UserGetter reads a user by id, as the caller reads users (through its cache): a user that is not there is
+// store.ErrNotFound or ErrNotFound, any other error a read that failed.
+type UserGetter func(ctx context.Context, id string) (*model.User, error)
 
-// endGuestSessions ends the sessions of u's guest accounts (and of theirs, in turn), recording each in the guest
-// organization's audit log. Best effort: a failure is logged and the rest go on.
+// SourcesHold reports whether the accounts a guest's sign-in stands on (a session's, grant's or SSH certificate's
+// Sources) still stand: each user there, usable (UserUsable) and in the session epoch recorded (model.GuestSource).
+// users reads them: the caller's cache, as the check runs with every use. An error is a read that failed: no verdict.
+func (s *Service) SourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter) (bool, error) {
+	for _, src := range sources {
+		u, err := users(ctx, src.UserID)
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, mapStore(err)
+		}
+		if u.ID != src.UserID || !u.SessionHolds(src.Epoch) {
+			return false, nil
+		}
+		if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// storeUser reads a user from the store (a UserGetter for the checks that run once a sign-in, not with every request).
+func (s *Service) storeUser(ctx context.Context, id string) (*model.User, error) {
+	return s.Users.Get(ctx, id)
+}
+
+// endGuestSessions removes the sessions of u's guest accounts (and of theirs, in turn), recording each in the guest
+// organization's audit log. Best effort: a failure is logged and the rest go on; the sessions it misses stopped
+// counting already, as they stand on u (SourcesHold).
 func (s *Service) endGuestSessions(ctx context.Context, u *model.User) {
 	s.endGuestSessionsFrom(ctx, u.OrgID, u.ID, map[string]bool{u.ID: true}, 0)
 }
 
 func (s *Service) endGuestSessionsFrom(ctx context.Context, orgID, userID string, seen map[string]bool, depth int) {
-	if depth >= maxGuestDepth {
+	if depth >= model.MaxGuestDepth {
 		return
 	}
 	for _, guest := range s.guestsOf(ctx, orgID, userID) {

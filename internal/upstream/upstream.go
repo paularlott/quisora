@@ -84,6 +84,9 @@ type Claims struct {
 	// AMR is how the provider says the person signed in to it (its ID token's amr, model.CleanAMR): passed on in
 	// Quisora's tokens, never read for Quisora's own decisions. Empty for providers that send none (GitHub).
 	AMR []string
+	// SID is the provider's session the sign-in came from (the ID token's sid), when it names one: for an organization
+	// provider, the session at the source organization (guestSources).
+	SID string
 }
 
 // upstreamValueMax bounds each value of an UpstreamAccount (carried in the session, grants and tokens).
@@ -143,6 +146,9 @@ type Result struct {
 	// ConnectGen is the connecting user's security generation when connecting began (BeginConnect): the caller
 	// attaches the identity only while it is still the account's, as for any change confirmed against the account.
 	ConnectGen uint64
+	// Sources are the accounts a guest's sign-in through an organization provider stands on (model.Session.Sources):
+	// the session it makes records them.
+	Sources []model.GuestSource
 	// grant is the provider's refresh token and its scopes, for a connection to keep (KeepConnected).
 	grant grant
 }
@@ -363,6 +369,10 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 		}
 		return &Result{Org: org, Provider: p, Next: st.Next, Claims: claims, Connect: st.Connect, ConnectGen: st.ConnectGen, grant: g}, nil
 	}
+	sources, err := s.guestSources(ctx, p, claims)
+	if err != nil {
+		return fail, err
+	}
 	u, provisioned, err := s.resolve(ctx, org, p, claims)
 	if err != nil {
 		return fail, err
@@ -370,7 +380,34 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 	if g.refresh != "" {
 		s.keepRefresh(ctx, p, claims.Subject, g)
 	}
-	return &Result{User: u, Org: org, Provider: p, Next: st.Next, Tenant: st.Tenant, Provisioned: provisioned, Claims: claims}, nil
+	return &Result{User: u, Org: org, Provider: p, Next: st.Next, Tenant: st.Tenant, Provisioned: provisioned, Claims: claims,
+		Sources: sources}, nil
+}
+
+// guestSources are the accounts a sign-in through organization provider p stands on (model.GuestSource): the user
+// of the source organization's session it came from (the ID token's sid), in that session's epoch, and after it the
+// accounts that session stands on in turn when it is a guest's too. Read before the guest is resolved, so a sign-in
+// that races a change ending the source's sessions records the epoch the change replaced, and is refused at its first
+// use. None for any other provider. A session not found, of another user or organization, or a chain longer than
+// model.MaxGuestDepth is refused (ErrDisabled); a read that fails is that error.
+func (s *Service) guestSources(ctx context.Context, p *model.Provider, c Claims) ([]model.GuestSource, error) {
+	if p.Type != model.ProviderOrganization {
+		return nil, nil
+	}
+	if c.SID == "" {
+		return nil, fmt.Errorf("%w: the ID token names no session", ErrUpstream)
+	}
+	sess, err := s.Svc.Sessions.GetIn(ctx, p.SourceOrg, c.SID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, ErrDisabled
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sess.UserID != c.Subject || sess.OrgID != p.SourceOrg || len(sess.Sources) >= model.MaxGuestDepth {
+		return nil, ErrDisabled
+	}
+	return append([]model.GuestSource{{UserID: sess.UserID, Epoch: sess.Epoch}}, sess.Sources...), nil
 }
 
 // CancelTenant consumes the state of a sign-in the provider reported as denied or failed (error= on the callback)

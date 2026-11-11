@@ -509,6 +509,9 @@ type ticket struct {
 	Provider    string                 `json:"pv,omitempty"`
 	UpstreamAMR []string               `json:"ua,omitempty"`
 	Upstream    *model.UpstreamAccount `json:"up,omitempty"`
+	// Sources are the accounts a guest's sign-in through an organization provider stands on (recorded on the session
+	// it ends in: model.Session.Sources).
+	Sources []model.GuestSource `json:"src,omitempty"`
 	// Gen is the account's security generation (model.User.SecurityGen) when the first factor was verified, and Stamp
 	// the sign-out counters then (model.SignOutStamp). Every later step checks both against the account as it is now
 	// (ticketCurrent): a ticket whose password has since been changed, whose account set up a second factor
