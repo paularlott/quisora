@@ -45,7 +45,7 @@ test('account: upload a picture, replace it, remove it after confirming', async 
     await expect(page.locator('.user-chip .avatar')).toHaveText('KJ')
     await expect(card.getByRole('button', { name: 'Remove picture' })).toBeHidden()
 
-    await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#be123c'))
+    await card.locator('#f-image-file').setInputFiles(await png(page, '#be123c'))
     await expect(page.getByText('Picture saved.')).toBeVisible()
     const img = card.locator('.avatar-img')
     await expect(img).toBeVisible()
@@ -60,7 +60,7 @@ test('account: upload a picture, replace it, remove it after confirming', async 
     await expect(card.getByRole('button', { name: 'Remove picture' })).toBeVisible()
 
     // replace: a new picture has a new address
-    await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#1d4ed8'))
+    await card.locator('#f-image-file').setInputFiles(await png(page, '#1d4ed8'))
     await expect(img).not.toHaveAttribute('src', first)
     const second = await img.getAttribute('src')
     expect(await imageType(page, second)).toMatch(/^image\//)
@@ -82,9 +82,39 @@ test('account: upload a picture, replace it, remove it after confirming', async 
     await expect(page.getByText('Picture removed.')).toBeVisible()
     await expect(card.locator('.avatar')).toHaveText('KJ')
     await expect(page.locator('.user-chip .avatar')).toHaveText('KJ')
-    await expect(card.getByLabel('Upload a picture')).toBeFocused()
+    await expect(card.locator('#f-image')).toBeFocused() // back to the picture
     expect(await imageType(page, second)).toBe('404')
   } finally { await clearOwn(page) }
+})
+
+// Clicking the picture opens the same file chooser as the input (a shortcut for the mouse); the input stays the one
+// control, so the picture is neither focusable nor announced.
+test('account: clicking the picture opens the file chooser, and the chosen file is saved', async ({ page }) => {
+  await signIn(page, 'otp')
+  await page.goto(ACCOUNT, { waitUntil: 'load' })
+  await clearOwn(page)
+  await page.reload({ waitUntil: 'load' })
+  const card = page.locator('#picture')
+  try {
+    const pick = card.getByRole('button', { name: 'Upload a picture' })
+    await expect(pick).toHaveAttribute('id', 'f-image')
+    await expect(card.locator('.picture-pick-hint')).toHaveAttribute('aria-hidden', 'true')
+    await expect(card.locator('#f-image-file')).toBeHidden() // no bar: the picture is the control
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), pick.click()])
+    expect(await chooser.element().getAttribute('id')).toBe('f-image-file')
+    await chooser.setFiles(await png(page, '#0f766e'))
+    await expect(page.getByText('Picture saved.')).toBeVisible()
+    await expect(card.locator('.avatar-img')).toBeVisible()
+    // once there is one, the picture's button says so; the card's controls are it and Remove picture
+    await expect(card.getByRole('button', { name: 'Change picture' })).toBeVisible()
+    await expect(card.getByRole('button')).toHaveCount(2)
+    // the keyboard reaches it and opens the chooser with Enter
+    await card.getByRole('button', { name: 'Change picture' }).focus()
+    const [again] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')])
+    expect(await again.element().getAttribute('id')).toBe('f-image-file')
+  } finally {
+    await clearOwn(page)
+  }
 })
 
 test('account: a picture changed elsewhere shows when the page comes back', async ({ page, context }) => {
@@ -98,7 +128,7 @@ test('account: a picture changed elsewhere shows when the page comes back', asyn
     // another tab of the same person sets it
     const other = await context.newPage()
     await other.goto(ACCOUNT, { waitUntil: 'load' })
-    await other.locator('#picture').getByLabel('Upload a picture').setInputFiles(await png(other, '#15803d'))
+    await other.locator('#picture').locator('#f-image-file').setInputFiles(await png(other, '#15803d'))
     await expect(other.locator('#picture .avatar-img')).toBeVisible()
     await other.close()
     // this tab comes back to the foreground (more than 5 s after it loaded, as the page waits)
@@ -115,13 +145,13 @@ test('account: a wrong type or a file over 5 MB is refused before it is sent', a
   await expect(card.locator('.avatar')).toBeVisible()
   const puts = []
   page.on('request', (r) => { if (r.method() === 'PUT' && r.url().endsWith('/picture')) puts.push(r.url()) })
-  const input = card.getByLabel('Upload a picture')
+  const input = card.locator('#f-image-file')
 
   await input.setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') })
   await expect(card.locator('#e-image')).toHaveText('Use a JPEG, PNG or WebP image.')
   await expect(card.locator('#f-image')).toHaveAttribute('aria-invalid', 'true')
   await expect(card.locator('#f-image')).toBeFocused()
-  await expect(card.locator('#f-image')).toHaveValue('') // the refused file is not kept
+  await expect(card.locator('#f-image-file')).toHaveValue('') // the refused file is not kept
 
   await input.setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024 + 1) })
   await expect(card.locator('#e-image')).toHaveText('The image is larger than 5 MB.')
@@ -135,7 +165,7 @@ test('account: the server\'s refusal of an image is shown at the field and annou
   await page.goto(ACCOUNT, { waitUntil: 'load' })
   const card = page.locator('#picture')
   await expect(card.locator('.avatar')).toBeVisible()
-  await card.getByLabel('Upload a picture').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not really an image') })
+  await card.locator('#f-image-file').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not really an image') })
   await expect(card.locator('#e-image')).toHaveText(/\S/)
   await expect(card.locator('#f-image')).toHaveAttribute('aria-invalid', 'true')
   await expect(card.locator('#f-image')).toBeFocused()
@@ -144,67 +174,14 @@ test('account: the server\'s refusal of an image is shown at the field and annou
   // a stubbed 422 with its own message
   await page.route('**/api-internal/account/picture', (route) => route.request().method() === 'PUT'
     ? route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'The image could not be read.', field: 'image' }) }) : route.fallback())
-  await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#7e22ce'))
+  await card.locator('#f-image-file').setInputFiles(await png(page, '#7e22ce'))
   await expect(card.locator('#e-image')).toHaveText('The image could not be read.')
   // a limit reached is not about the field: an error toast
   await page.unroute('**/api-internal/account/picture')
   await page.route('**/api-internal/account/picture', (route) => route.request().method() === 'PUT'
     ? route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'The picture was changed too often; try again in an hour.' }) }) : route.fallback())
-  await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#7e22ce'))
+  await card.locator('#f-image-file').setInputFiles(await png(page, '#7e22ce'))
   await expect(page.locator('.toast-error')).toContainText('changed too often')
-})
-
-test('an organization that leaves pictures to its administrators: the account page shows the picture read-only', async ({ page }) => {
-  await signIn(page, 'super')
-  await page.goto('/admin/orgs', { waitUntil: 'load' })
-  const set = async (on) => {
-    const o = await apiCall(page, 'GET', API)
-    await apiCall(page, 'PATCH', API, { settings: { ...o.settings, pictures_by_admins: on } })
-  }
-  try {
-    await set(true)
-    await signIn(page, 'manager') // Grace has a picture
-    await page.goto(ACCOUNT, { waitUntil: 'load' })
-    const card = page.locator('#picture')
-    await expect(card.locator('.avatar-img')).toBeVisible()
-    await expect(card.getByText('administrators set pictures')).toBeVisible()
-    await expect(card.getByLabel('Upload a picture')).toBeHidden()
-    await expect(card.getByRole('button', { name: 'Remove picture' })).toBeHidden()
-    const r = await axe(page, { include: '#picture' })
-    expect(r.violations.length, fmt(r.violations)).toBe(0)
-  } finally {
-    await signIn(page, 'super')
-    await page.goto('/admin/orgs', { waitUntil: 'load' })
-    await set(false)
-  }
-  await signIn(page, 'manager')
-  await page.goto(ACCOUNT, { waitUntil: 'load' })
-  await expect(page.locator('#picture').getByLabel('Upload a picture')).toBeVisible()
-})
-
-test('the organization editor saves "Only administrators set pictures"', async ({ page }) => {
-  await signIn(page, 'super')
-  await page.goto('/admin/orgs', { waitUntil: 'load' })
-  const reset = async () => { const o = await apiCall(page, 'GET', API); await apiCall(page, 'PATCH', API, { settings: { ...o.settings, pictures_by_admins: false } }) }
-  try {
-    await reset()
-    await page.getByRole('button', { name: 'Edit Acme Corporation' }).click()
-    const dlg = page.getByRole('dialog', { name: 'Edit organization' })
-    const sw = dlg.getByLabel('Only administrators set pictures')
-    await expect(sw).not.toBeChecked()
-    await expect(dlg.getByText('People cannot change their own picture; administrators, the directory (SCIM) and sign-in providers still can.')).toBeVisible()
-    await sw.check()
-    await dlg.getByRole('button', { name: 'Save changes' }).click()
-    await expect(dlg).toBeHidden()
-    expect((await apiCall(page, 'GET', API)).settings.pictures_by_admins).toBe(true)
-    await page.reload({ waitUntil: 'load' })
-    await page.getByRole('button', { name: 'Edit Acme Corporation' }).click()
-    await expect(dlg.getByLabel('Only administrators set pictures')).toBeChecked()
-    await dlg.getByLabel('Only administrators set pictures').uncheck()
-    await dlg.getByRole('button', { name: 'Save changes' }).click()
-    await expect(dlg).toBeHidden()
-    expect((await apiCall(page, 'GET', API)).settings.pictures_by_admins).toBe(false)
-  } finally { await reset() }
 })
 
 test('user page: an administrator sets, replaces and removes another user\'s picture', async ({ page }) => {
@@ -218,7 +195,7 @@ test('user page: an administrator sets, replaces and removes another user\'s pic
     const head = page.locator('.page-head .avatar')
     await expect(head).toHaveText('PP')
     await expect(card.locator('.avatar')).toHaveText('PP')
-    await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#0f766e'))
+    await card.locator('#f-image-file').setInputFiles(await png(page, '#0f766e'))
     await expect(page.getByText('Picture saved.')).toBeVisible()
     await expect(head.locator('.avatar-img')).toBeVisible()
     const url = await head.locator('.avatar-img').getAttribute('src')
@@ -234,7 +211,7 @@ test('user page: an administrator sets, replaces and removes another user\'s pic
 
     // replace, then remove after confirming
     await page.goto(`/admin/orgs/acme/users/${u.id}`, { waitUntil: 'load' })
-    await card.getByLabel('Upload a picture').setInputFiles(await png(page, '#b45309'))
+    await card.locator('#f-image-file').setInputFiles(await png(page, '#b45309'))
     await expect(head.locator('.avatar-img')).not.toHaveAttribute('src', url)
     const r = await axe(page, { include: '#main' })
     expect(r.violations.length, fmt(r.violations)).toBe(0)
@@ -248,7 +225,7 @@ test('user page: an administrator sets, replaces and removes another user\'s pic
     await expect(card.getByRole('button', { name: 'Remove picture' })).toBeHidden()
 
     // a wrong file is refused here too
-    await card.getByLabel('Upload a picture').setInputFiles({ name: 'a.gif', mimeType: 'image/gif', buffer: Buffer.from('GIF89a') })
+    await card.locator('#f-image-file').setInputFiles({ name: 'a.gif', mimeType: 'image/gif', buffer: Buffer.from('GIF89a') })
     await expect(card.locator('#e-image')).toHaveText('Use a JPEG, PNG or WebP image.')
   } finally { await apiCall(page, 'DELETE', `${API}/users/${u.id}`).catch(() => {}) }
 })

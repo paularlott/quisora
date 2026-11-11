@@ -422,9 +422,20 @@
   .avatar[data-tone="7"] { --tone: #475569; }
   .avatar { overflow: hidden; }
   .avatar-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; background: var(--ctl-bg); }
+  /* The picture card's avatar opens the file chooser when the person may change it (lib/picture.js choosePicture). */
+  .picture-pick, .picture-still { position: relative; flex: none; align-self: flex-start; border-radius: 50%; }
+  .picture-pick { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  .picture-pick:disabled { cursor: progress; }
+  .picture-pick:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .picture-pick-hint {
+    position: absolute; right: 0; bottom: 0; display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%;
+    color: var(--fg); background: var(--ctl-bg); border: 1px solid var(--edge); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+  .picture-pick-hint .icon { width: 1rem; height: 1rem; }
+  .picture-pick:not(:disabled):hover .avatar { box-shadow: 0 0 0 3px var(--accent); }
   /* The picture card: the picture beside its controls (below it on a narrow screen). */
   .picture-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 1.5rem; }
-  .picture-main { flex: 1 1 18rem; min-width: 0; max-width: 34rem; }
+  .picture-main { flex: 1 1 18rem; min-width: 0; }
   /* An organization's logo as its branding card previews it, on the background of the theme it is for in both themes. */
   .logo-preview { display: flex; align-items: center; min-height: 5rem; padding: 0.75rem 1rem; border-radius: var(--radius-inner); border: 1px solid var(--edge); }
   .logo-preview img { max-width: 100%; max-height: 3.5rem; width: auto; }

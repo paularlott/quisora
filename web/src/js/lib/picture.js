@@ -1,5 +1,5 @@
 // Choosing, replacing and removing a profile picture: shared by the account page and the user page of the console.
-// Compose into a component that has formMixin() (the error shows at the field #f-image, see lib/form.js):
+// Compose into a component that has formMixin() (the error shows at #f-image, the picture's button, see lib/form.js):
 //   pictureMixin(Alpine, { path: (vm) => the picture's endpoint, who: (vm) => { self, title }, apply: (vm, user) => ... })
 // The file is read in the browser into a data: URI and sent as JSON; the server crops it to a square. The same limits
 // the server has are checked first, with its messages, so a wrong file is refused without sending it.
@@ -37,6 +37,16 @@ export function pictureMixin(Alpine, { path, who, apply }) {
     get picNone() { return !this.picHas },
     get picReadOnly() { return !this.canChange },
 
+    // picAction is the name of the picture's button: what choosing it does.
+    get picAction() { return this.picHas ? 'Change picture' : 'Upload a picture' },
+    // choosePicture: the picture's button opens the file chooser of the hidden input #f-image-file. Nothing while the
+    // picture cannot be changed or a change runs.
+    choosePicture() {
+      if (!this.canChange || this.busy) return
+      const input = this.$root.querySelector('#f-image-file')
+      if (input) input.click()
+    },
+
     async pickPicture(ev) {
       const input = ev.target
       const file = input.files[0]
@@ -61,7 +71,7 @@ export function pictureMixin(Alpine, { path, who, apply }) {
       const res = await this.run(() => del(path(this)))
       if (!res) return
       this.picturePlaced(res, 'Picture removed.')
-      focusWhenShown('f-image') // the Remove button has gone
+      focusWhenShown('f-image') // the Remove button has gone: back to the picture
     },
 
     picturePlaced(res, text) {

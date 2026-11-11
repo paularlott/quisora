@@ -13,13 +13,16 @@ export default defineConfig({
   workers: 2,
   reporter: [['list']],
   use: { baseURL: BASE, ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 } },
-  // The skins tests change the primary organization's skin for a while, and every page that follows it (the console,
-  // organizations without their own) wears that skin meanwhile: a page another test audits then would be measured
-  // against the default skin's backdrops in another skin. So they run on their own, after every other test. (Running
-  // skins.spec.mjs alone runs the others first: add --no-deps to skip them.)
+  // Some tests change settings every page of an organization follows for a while: the skins tests the primary
+  // organization's skin (a page audited meanwhile would wear another skin than its backdrops are for), the picture
+  // setting tests whether people may change their own picture (a test of that page meanwhile would find no controls).
+  // So they run on their own, after every other test. (Running one of those files alone runs the others first: add
+  // --no-deps to skip them.)
   projects: [
-    { name: 'pages', testIgnore: '**/skins.spec.mjs' },
-    { name: 'skins', testMatch: '**/skins.spec.mjs', dependencies: ['pages'] },
+    { name: 'pages', testIgnore: ['**/skins.spec.mjs', '**/pictures-org.spec.mjs'] },
+    // one after the other, so neither sees the other's setting either
+    { name: 'pictures-org', testMatch: '**/pictures-org.spec.mjs', dependencies: ['pages'] },
+    { name: 'skins', testMatch: '**/skins.spec.mjs', dependencies: ['pictures-org'] },
   ],
   webServer: {
     command: `go run ./tools/uidemo -addr 127.0.0.1:${PORT}${SKIN}`,

@@ -350,7 +350,7 @@ PAGES.push(
       await p.locator('#picture').getByRole('button', { name: 'Remove picture' }).click(); await p.getByRole('dialog', { name: 'Remove picture' }).waitFor(); await p.waitForTimeout(450)
     }] },
   { name: 'account-picture-error', path: '/o/acme/account', as: 'user', steps: [pictureCardStep, async (p) => {
-      await p.locator('#f-image').setInputFiles({ name: 'bad.png', mimeType: 'image/png', buffer: Buffer.from('this is not an image') })
+      await p.locator('#f-image-file').setInputFiles({ name: 'bad.png', mimeType: 'image/png', buffer: Buffer.from('this is not an image') })
       await p.locator('#e-image').filter({ hasText: /./ }).waitFor(); await p.waitForTimeout(300)
     }] },
   { name: 'account-picture-readonly', path: '/o/acme/account', as: 'user', steps: [accountStubTop({ can_change_picture: false }), pictureCardStep] },
