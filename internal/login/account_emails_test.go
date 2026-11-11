@@ -106,10 +106,14 @@ func TestAccountLinkedEmailsPageAndMailOff(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("account page %d", res.StatusCode)
 	}
-	for _, want := range []string{`id="emails"`, `x-data="accountEmails"`, "Sign-ins from GitHub, Google and other providers that use one of your verified addresses find your account.", `id="f-email-ro"`} {
+	for _, want := range []string{`id="emails"`, `x-data="accountEmails"`, "Sign-ins from GitHub, Google and other providers that use one of your verified addresses find your account.", `x-data="accountHeader"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("account page lacks %q", want)
 		}
+	}
+	// the address is shown in the page's header, not as a read-only field of the profile
+	if strings.Contains(body, `id="f-email-ro"`) {
+		t.Error("account page still has the read-only address field")
 	}
 }
 

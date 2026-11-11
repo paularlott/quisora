@@ -3,6 +3,7 @@ package login
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
@@ -14,6 +15,9 @@ import (
 // Connecting sign-in providers to one's own account (account page, "Sign-in providers"). This is how a manager or
 // administrator links a provider (they are never linked by email), and how anyone links one deliberately. Both
 // directions need a recent re-authentication.
+
+// errSecurityChanged refuses a connection whose account's security generation moved on after it began.
+var errSecurityChanged = errors.New("the account's security changed since connecting began")
 
 type providerItem struct {
 	ID        string `json:"id"`
@@ -86,9 +90,18 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		return
 	}
 	// The account must still be as it was when connecting began (re-authenticated for): a second factor added from
-	// another browser meanwhile, or a password changed, ends what was confirmed without it.
-	if cur, err := m.s.Svc.Users.Get(ctx, u.ID); err != nil || cur.SecurityGen != res.ConnectGen {
+	// another browser meanwhile, or a password changed, ends what was confirmed without it. Checked here, before the
+	// provider is asked anything, and again by the write that makes the link (below), which holds only while it does.
+	changed := func() {
+		m.audit(r, "account.provider.connect_refused", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name,
+			"reason": "account security changed"})
 		back("failed")
+	}
+	if cur, err := m.s.Svc.Users.Get(ctx, u.ID); err != nil {
+		back("failed")
+		return
+	} else if cur.SecurityGen != res.ConnectGen {
+		changed()
 		return
 	}
 	keep := m.holdReauth(ctx, acct{u: u, sess: sess})
@@ -110,6 +123,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		return
 	}
 	key := model.IdentityKey(res.Provider.ID, res.Claims.Subject)
+	var replace []string // the links the new one replaces, deleted in the write that makes it
 	if id, err := m.s.Svc.Identities.GetByUnique(ctx, key); err == nil && id.Authority == model.ProviderAuthority(res.Provider) {
 		switch {
 		case id.UserID == u.ID && u.Counts(id):
@@ -132,32 +146,44 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		m.internalError(w, r, "identity", err)
 		return
 	} else if err == nil {
-		_ = m.s.Svc.Identities.Delete(ctx, id.ID) // a stale link from before the provider changed
+		replace = append(replace, id.ID) // a stale link from before the provider changed
 	}
 	// one identity per provider and user: a new one replaces the old
 	if ids, err := m.s.Svc.Identities.All(ctx, u.ID); err == nil {
 		for _, id := range ids {
-			if id.ProviderID == res.Provider.ID {
-				_ = m.s.Svc.Identities.Delete(ctx, id.ID)
+			if id.ProviderID == res.Provider.ID && !slices.Contains(replace, id.ID) {
+				replace = append(replace, id.ID)
 			}
 		}
 	}
-	id := model.NewIdentity(u, res.Provider, res.Claims.Subject, res.Claims.Email, "connect")
-	if err := m.s.Svc.Identities.Create(ctx, id); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			back("taken")
-			return
+	// A connected provider is a new way in: the link is made in the write that moves the account's security generation
+	// on (ending what was in flight for it), and only while that write finds the generation this connection began at:
+	// a credential changed at any point since, even between the check above and this write, refuses it, and nothing is
+	// linked or replaced. A change of the account that leaves the generation alone (its profile, say) makes the write
+	// stale, and it is tried again on the newer copy (service.LinkExisting), so such an edit does not fail the link.
+	fresh, err := m.s.Svc.LinkExisting(ctx, u.ID, func(cur *model.User) error {
+		if cur.SecurityGen != res.ConnectGen {
+			return errSecurityChanged
 		}
+		return nil
+	}, func(cur *model.User) *model.Identity {
+		return model.NewIdentity(cur, res.Provider, res.Claims.Subject, res.Claims.Email, "connect")
+	}, replace...)
+	switch {
+	case errors.Is(err, errSecurityChanged):
+		changed()
+		return
+	case errors.Is(err, service.ErrConflict):
+		back("taken")
+		return
+	case err != nil:
 		m.internalError(w, r, "identity", err)
 		return
 	}
 	m.Upstream.KeepConnected(ctx, res)
 	m.s.Svc.CopyPicture(ctx, u.ID, res.Claims.Picture, "provider:"+res.Provider.Name) // only when the account has none
-	// A connected provider is a new way in: the account's security generation moves on (ending what was in flight
-	// for it), and the re-authentication this session gave to connect it carries over to the new generation.
-	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, u.ID); err == nil {
-		keep(fresh.SecurityGen)
-	}
+	// the re-authentication this session gave to connect it carries over to the new generation
+	keep(fresh.SecurityGen)
 	m.changed(acct{u: u})
 	m.audit(r, "account.provider.connect", res.Org, u, u.Username, map[string]string{"provider": res.Provider.Name})
 	back("connected")

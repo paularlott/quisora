@@ -590,9 +590,12 @@ func (s *Service) createUser(ctx context.Context, u *model.User, links []*model.
 // address): link makes the identity, and it is created in the one write that moves the account's security generation
 // on (what is in flight for the account ends), only while allow passes on the account as that write finds it. A change
 // of the account committed meanwhile (a promotion, say) makes the write stale, and allow is asked again on the newer
-// copy, so the account is never linked on a judgement of a copy it has moved past.
+// copy, so the account is never linked on a judgement of a copy it has moved past. replace names identities the new
+// one replaces (an earlier link of the account to the provider, one of the provider's former authority holding the
+// subject): they are deleted in the same write, so nothing is removed unless the link is made, and the new identity
+// may take a subject one of them held.
 func (s *Service) LinkExisting(ctx context.Context, userID string, allow func(u *model.User) error,
-	link func(u *model.User) *model.Identity) (*model.User, error) {
+	link func(u *model.User) *model.Identity, replace ...string) (*model.User, error) {
 	return s.modifyUserWith(ctx, userID, func(u *model.User) ([]store.Op, error) {
 		if err := allow(u); err != nil {
 			return nil, err
@@ -602,7 +605,11 @@ func (s *Service) LinkExisting(ctx context.Context, userID string, allow func(u 
 		if err != nil {
 			return nil, err
 		}
-		return []store.Op{{Rec: rec, Match: true}}, nil
+		var ops []store.Op
+		for _, id := range replace {
+			ops = append(ops, store.Op{Rec: store.Tombstone(model.KindIdentity, id)})
+		}
+		return append(ops, store.Op{Rec: rec, Match: true}), nil
 	})
 }
 
