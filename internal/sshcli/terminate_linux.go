@@ -36,3 +36,12 @@ func timeAsleep() time.Duration {
 	}
 	return max(time.Duration(boot.Nano()-mono.Nano()), 0)
 }
+
+// monotonicNow is the monotonic clock (CLOCK_MONOTONIC, journald's __MONOTONIC_TIMESTAMP), or zero if it cannot be read.
+func monotonicNow() time.Duration {
+	var mono unix.Timespec
+	if unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono) != nil {
+		return 0
+	}
+	return time.Duration(mono.Nano())
+}

@@ -363,7 +363,8 @@ what it revokes changed ([Monitoring](#monitoring)). Add `--known-hosts-file <pa
 
 **Ending connections already open (`--end-revoked`).** sshd checks a certificate only when it is presented, so a
 revocation stops new logins but leaves open sessions open. With `--end-revoked` (Linux, sshd logging to journald, run as
-root, as the timer above does), each `fetch` also ends the connections whose certificate the list in place revokes: it
+root, as the timer above does), each `fetch` also ends the connections whose certificate the list in place revokes,
+and those open longer than the tenant's certificate lifetime (`cert_ttl`): it
 reads the certificate logins sshd logged in the last 25 hours (`Accepted publickey for … ssh2: …-CERT … ID … (serial …)
 CA …`), and sends `SIGTERM` to the process of each connection whose certificate is revoked and that is still the one
 that logged it. Only lines journald received from root are read (`_UID=0`, which journald takes from the sending
@@ -375,8 +376,15 @@ sshd, and those of a socket-activated sshd (`sshd -i`), are ended too. The times
 (journald's monotonic timestamp, allowing for time spent suspended), not the wall clock, so a clock stepped forward after
 a login (a resumed VM, a first NTP sync) does not hide its connection; lines from an earlier boot are not read. That process is the connection's
 privileged one, which the logged-in user cannot touch, so a session cannot hide which certificate it came in with.
-Ending it closes the connection and ends the session. Each one is
-printed (`ended the SSH connection of … (serial …, process …): its certificate is revoked`), and a log that cannot be read
+Ending it closes the connection and ends the session. A certificate is signed before the login it is used for and
+lasts at most `cert_ttl`, so a connection open longer than that has a certificate that has expired. Its access may
+have been removed since, and an expired certificate is never put on the list, so without this its connection would stay
+open for good; with it, no connection outlives `cert_ttl` (8 hours by default), revoked or not. The age is counted on
+journald's monotonic clock, which stops while the machine is suspended, so a connection is never ended before its
+certificate expires (later by the time spent suspended). Shortening `cert_ttl` ends the connections already open
+longer than the new value at the next fetch. Each one is printed (`ended the SSH connection of … (serial …, process
+…): its certificate is revoked`, or `…: open longer than the certificate lifetime (8h0m0s), its certificate has
+expired`), and a log that cannot be read
 makes `fetch` exit 1 after the files are written. Processes a session left running on their own (under `tmux`, `screen`
 or `nohup`) are not ended: in an incident, end those by hand. Add it to the service's `ExecStart`:
 
@@ -908,7 +916,8 @@ list, `ca.pub` and `known_hosts` are answered with `Cache-Control: no-cache` and
 them (a cache cannot hand out an old `ca.pub` beside a new list after a rotation), and servers fetch every minute if you
 use the timer above (plus up to 15 seconds of `RandomizedDelaySec=`). So expect a revocation, or the end of someone's
 access, to reach sshd within about two minutes. The discovery document may be cached for 60 seconds. It applies to new logins. A session someone already
-has open stays open unless the server runs `fetch --end-revoked`, which ends it at the same fetch
+has open stays open unless the server runs `fetch --end-revoked`, which ends it at the same fetch (and ends any
+connection once it has been open longer than `cert_ttl`)
 ([Setting up an Ubuntu server](#setting-up-an-ubuntu-server), step 7); otherwise end it on the server (`loginctl
 terminate-user`, or kill the sshd process) when that matters.
 
@@ -922,8 +931,9 @@ their certificates go on the list as `user_disabled`.
   `quisora ssh` sign-in's token or the app's access revoked; besides signing the person out everywhere, a credential reset, a lock-out, an emergency sign-out, or
   revoking the certificate itself. Signing out of the browser does not revoke it: it lasts to its expiry. Certificates
   issued before the sign-in was recorded follow only the latter.
-- Sessions already open on a server stay open, unless it runs `fetch --end-revoked`; and processes a session left running
-  on their own (`tmux`, `nohup`) are not ended even then.
+- Sessions already open on a server stay open, unless it runs `fetch --end-revoked` (which also ends every connection
+  open longer than `cert_ttl`, so one whose certificate expired before its access was removed does not stay open); and
+  processes a session left running on their own (`tmux`, `nohup`) are not ended even then.
 - A host certificate revocation reaches only clients that use `RevokedHostKeys`
   ([Clients and host certificate revocation](#clients-and-host-certificate-revocation)).
 - A server that has stopped fetching keeps its old list.

@@ -25,8 +25,9 @@ type FetchOptions struct {
 	CAFile         string // the user CA keys, for sshd's TrustedUserCAKeys
 	KRLFile        string // the revocation list, for sshd's RevokedKeys
 	KnownHostsFile string // the host CA lines, for clients' known_hosts
-	// EndRevoked ends the SSH connections of certificates the revocation list in place revokes (Linux: sshd's log in
-	// journald): sshd checks a certificate only when it is presented, so a revocation alone leaves open sessions open.
+	// EndRevoked ends the SSH connections of certificates the revocation list in place revokes, and those open longer
+	// than the tenant's certificate lifetime (Linux: sshd's log in journald): sshd checks a certificate only when it
+	// is presented, so a revocation alone leaves open sessions open.
 	EndRevoked bool
 }
 
@@ -164,7 +165,7 @@ func (e *Env) Fetch(ctx context.Context, o FetchOptions) error {
 		}
 	}
 	if o.EndRevoked && inEffect != nil {
-		if _, err := e.endRevoked(ctx, inEffect, caKeys); err != nil {
+		if _, err := e.endRevoked(ctx, inEffect, caKeys, time.Duration(d.CertTTL)*time.Second); err != nil {
 			return fmt.Errorf("ending connections of revoked certificates: %w", err)
 		}
 	}

@@ -43,6 +43,8 @@ func TestFetchEndsRevokedConnections(t *testing.T) {
 	f.Body["krl"] = krlOf(uint64(time.Now().Unix()), []uint64{7}, ca)
 	te := newTestEnv(t)
 	te.GOOS = "linux"
+	defer func(was func() time.Duration) { monoNow = was }(monoNow)
+	monoNow = func() time.Duration { return time.Hour } // every login an hour old, within the lifetime (8 hours)
 	fp := sshca.Fingerprint(ca)
 	te.SSHDLogins = func(context.Context) ([]SSHDLogin, error) {
 		return []SSHDLogin{
@@ -83,6 +85,43 @@ func TestFetchEndsRevokedConnections(t *testing.T) {
 	if err := te.Fetch(context.Background(), o); err == nil {
 		t.Fatal("--end-revoked off Linux was not refused")
 	}
+}
+
+// fetch --end-revoked also ends the connections logged in longer ago than the tenant's certificate lifetime (8 hours
+// here): their certificate has expired, and one that expired before its access was removed is never on the list.
+// The age is counted on journald's monotonic clock; another CA's connections and those gone are left alone.
+func TestFetchEndsConnectionsPastTheLifetime(t *testing.T) {
+	f := sshclitest.New()
+	defer f.Close()
+	ca := f.UserCA.PublicKey()
+	f.Body["krl"] = krlOf(uint64(time.Now().Unix()), nil, ca)
+	te := newTestEnv(t)
+	te.GOOS = "linux"
+	defer func(was func() time.Duration) { monoNow = was }(monoNow)
+	now := 30 * time.Hour
+	monoNow = func() time.Duration { return now }
+	life := 8 * time.Hour
+	fp := sshca.Fingerprint(ca)
+	te.SSHDLogins = func(context.Context) ([]SSHDLogin, error) {
+		return []SSHDLogin{
+			{PID: 200, KeyID: "alice", Serial: 1, CA: fp, Logged: now - life - time.Second},    // past it: ended
+			{PID: 201, KeyID: "bob", Serial: 2, CA: fp, Logged: now - life},                    // just within it
+			{PID: 202, KeyID: "carol", Serial: 3, CA: "SHA256:xx", Logged: now - 20*time.Hour}, // another CA's
+			{PID: 203, KeyID: "dave", Serial: 4, CA: fp, Logged: now - 20*time.Hour},           // gone
+		}, nil
+	}
+	te.IsSSHD = func(l SSHDLogin) bool { return l.PID != 203 }
+	var ended []int
+	te.Terminate = func(l SSHDLogin) error { ended = append(ended, l.PID); return nil }
+	o := newTrustFiles(t).opts(f.URL)
+	o.EndRevoked = true
+	if err := te.Fetch(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ended, []int{200}) {
+		t.Fatalf("ended %v, want [200]", ended)
+	}
+	mustContain(t, "output", te.out.String(), "ended the SSH connection of alice (serial 1, process 200): open longer than the certificate lifetime (8h0m0s)")
 }
 
 // sshd's log is read from root's lines only: anyone can log a line that reads like sshd's from a program named sshd,

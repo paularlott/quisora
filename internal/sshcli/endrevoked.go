@@ -166,11 +166,19 @@ func procStart(pid string) (time.Duration, bool) {
 	return time.Duration(ticks) * time.Second / userHZ, true
 }
 
-// endRevoked ends the SSH connections whose certificate krl revokes: those sshd logged as accepted (SSHDLogins), whose
-// process is still the one that logged it (IsSSHD), signed by a CA key in cas or in the list. Ending the connection's privileged process closes
-// it and ends its session. Processes the session left running on their own (under tmux, screen or nohup) are not
-// ended. It reports how many connections it ended.
-func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKey) (int, error) {
+// monoNow is the monotonic clock now, the one journald stamps lines with (tests set their own).
+var monoNow = monotonicNow
+
+// endRevoked ends the SSH connections whose certificate krl revokes, and, with maxAge set (the tenant's certificate
+// lifetime), those whose login was logged longer ago than that: those sshd logged as accepted (SSHDLogins), whose
+// process is still the one that logged it (IsSSHD), signed by a CA key in cas or in the list. A certificate is signed
+// before the login it is used for and lasts at most maxAge, so a connection logged in longer ago than maxAge has a
+// certificate that has expired: one that expired before its access was removed is never on the list, and would
+// otherwise stay open. Its age is counted on the monotonic clock, which stops while the machine is suspended, so it
+// is never ended before its certificate expires (later by the time spent suspended). Ending the connection's privileged
+// process closes it and ends its session. Processes the session left running on their own (under tmux, screen or
+// nohup) are not ended. It reports how many connections it ended.
+func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKey, maxAge time.Duration) (int, error) {
 	if e.goos() != "linux" {
 		return 0, errors.New("--end-revoked works on Linux only: it reads sshd's log from journald")
 	}
@@ -204,12 +212,23 @@ func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKe
 	if err != nil {
 		return 0, err
 	}
+	now := monoNow()
 	ended := map[int]bool{}
 	var errs []error
 	for _, l := range list {
 		ca := byFP[l.CA]
-		if ca == nil || ended[l.PID] || !krl.Revoked(ca, l.Serial, l.KeyID) || !alive(l) {
-			continue // another CA's, ended already, not revoked, or the connection is gone
+		if ca == nil || ended[l.PID] {
+			continue // another CA's, or ended already
+		}
+		why := "its certificate is revoked"
+		if !krl.Revoked(ca, l.Serial, l.KeyID) {
+			if maxAge <= 0 || now-l.Logged <= maxAge {
+				continue
+			}
+			why = fmt.Sprintf("open longer than the certificate lifetime (%s), its certificate has expired", maxAge)
+		}
+		if !alive(l) {
+			continue // the connection is gone
 		}
 		if err := end(l); err != nil {
 			if !errors.Is(err, syscall.ESRCH) {
@@ -218,7 +237,7 @@ func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKe
 			continue
 		}
 		ended[l.PID] = true
-		fmt.Fprintf(e.out(), "ended the SSH connection of %s (serial %d, process %d): its certificate is revoked\n", l.KeyID, l.Serial, l.PID)
+		fmt.Fprintf(e.out(), "ended the SSH connection of %s (serial %d, process %d): %s\n", l.KeyID, l.Serial, l.PID, why)
 	}
 	return len(ended), errors.Join(errs...)
 }

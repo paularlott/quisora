@@ -43,8 +43,9 @@ are judged, so a super admin named only in an event's detail (a group membership
 
 **SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
 
-- Open sessions on a server stay open unless it runs `quisora ssh fetch --end-revoked` (Linux with journald; processes
-  a session left running under `tmux` or `nohup` are not ended), and sshd's `RevokedKeys` covers user logins only: a host certificate that is
+- Open sessions on a server stay open unless it runs `quisora ssh fetch --end-revoked` (Linux with journald; it ends
+  connections of revoked certificates and any open longer than `cert_ttl`; processes a session left running under
+  `tmux` or `nohup` are not ended), and sshd's `RevokedKeys` covers user logins only: a host certificate that is
   revoked, or whose CA key is removed or SSH is turned off, is refused only by clients that fetch the revocation list and set
   `RevokedHostKeys`. Keep host certificates short.
 - The SSH application uses bearer access tokens, not DPoP-bound ones: a token that leaks in the minutes it lives

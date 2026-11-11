@@ -12,3 +12,6 @@ func terminate(SSHDLogin) error { return errors.ErrUnsupported }
 
 // timeAsleep is Linux only too.
 func timeAsleep() time.Duration { return 0 }
+
+// monotonicNow is Linux only too.
+func monotonicNow() time.Duration { return 0 }

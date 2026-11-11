@@ -204,7 +204,7 @@ func sshFetchCmd() *cli.Command {
 			&cli.StringFlag{Name: "ca-file", DefaultValue: "/etc/ssh/quisora_user_ca.pub", Usage: "Where to write the user CA keys"},
 			&cli.StringFlag{Name: "krl-file", DefaultValue: "/etc/ssh/quisora.krl", Usage: "Where to write the revocation list"},
 			&cli.StringFlag{Name: "known-hosts-file", Usage: "Where to write the host CA lines (default: not fetched)"},
-			&cli.BoolFlag{Name: "end-revoked", Usage: "Also end open SSH connections whose certificate the revocation list revokes (Linux, sshd logging to journald; run as root)"},
+			&cli.BoolFlag{Name: "end-revoked", Usage: "Also end open SSH connections whose certificate the revocation list revokes or that are open longer than the certificate lifetime (Linux, sshd logging to journald; run as root)"},
 		}, sshTLSFlags()...),
 		Arguments: []cli.Argument{sshURLArg()},
 		Run: func(ctx context.Context, c *cli.Command) error {

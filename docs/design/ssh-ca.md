@@ -522,7 +522,10 @@ worked out from what is left). Open connections are ended by `fetch --end-revoke
 logins from journald (root's lines only, `_UID=0`, so neither a session nor another local user can forge one) and
 signals the connection's privileged process, only while it is still the one that logged it (root's sshd, whatever
 its parent, so connections that outlived an sshd restart or came through socket activation are included; started before
-the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). The SSH application uses bearer tokens, not
+the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). It also ends every connection logged in longer ago than the tenant's
+`cert_ttl` (from the discovery document, on journald's monotonic clock, which stops in a suspend and so never ends one
+early): its certificate has expired, and one that expired before its access was removed is never on the list, so no
+connection outlives `cert_ttl`. The SSH application uses bearer tokens, not
 DPoP. CA key rotation and first enabling are guarded by a lock per node, so two nodes acting in the same instant can each
 make a key (both are published; the newer signs; the extra is removed by hand). An emailed one-time code counts as a
 second factor (`model.MFA`). Restoring an older backup can republish a removed CA key (its tombstone is gone), undo manual
