@@ -276,6 +276,11 @@ missed has stopped working already. The guest account itself stays: the person c
 lets them. A guest of B that is itself the source of guests in a third organization stands on the whole chain, back to
 S (four organizations deep at most: a sign-in further away is refused).
 
+A guest can make personal API tokens in B like any user of B (as B's settings allow). Such a token stands on the
+person at S the way that person's own tokens at S do: it stops working when they are disabled, locked out, past their
+end date, deleted, or their password or sign-in is reset at S, and works on (to its own expiry) when they only sign out
+there. It is checked at each use, so it needs no clean-up to reach it.
+
 Someone only taken out of the provider's groups keeps the B session they have until it ends (its idle and absolute
 limits), and an [emergency sign-out](../emergency-sign-out.md) of S does not reach B: disable or remove their guest
 account in B too, or pull B's emergency sign-out.

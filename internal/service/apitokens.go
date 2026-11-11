@@ -180,8 +180,12 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if err != nil {
 		return nil, "", err
 	}
+	sources, err := s.tokenSources(ctx, a)
+	if err != nil {
+		return nil, "", err
+	}
 	t := &model.APIToken{Meta: model.Meta{ID: model.NewID()}, UserID: a.UserID, OrgID: a.OrgID, Name: name,
-		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes, Epoch: owner.CredEpoch}
+		Scopes: slices.Clone(in.Scopes), Audience: aud, AppScopes: appScopes, Epoch: owner.CredEpoch, Sources: sources}
 	if days > 0 {
 		t.Expires = time.Now().Add(time.Duration(days) * 24 * time.Hour)
 	}
@@ -502,6 +506,12 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	}
 	if !u.Holds(t.Epoch) {
 		return refuse("the owner's sign-in was reset since the token was made")
+	}
+	// A guest's token stands on the accounts it came from (model.APIToken.Sources), as the person's own tokens there do.
+	if ok, err := s.sourcesHold(ctx, t.Sources, s.storeUser, true); err != nil {
+		return nil, nil, fmt.Errorf("%w: the accounts the token's owner signs in from could not be read: %v", ErrUnavailable, err)
+	} else if !ok {
+		return refuse("the owner's account in the organization they sign in from is disabled, gone or reset")
 	}
 	if !u.Role.Privileged() && (slices.Contains(t.Scopes, ScopeSCIM) || slices.Contains(t.Scopes, ScopeAdmin)) ||
 		u.Role != model.RoleSuperAdmin && slices.ContainsFunc(t.Scopes, SuperOnlyScope) {

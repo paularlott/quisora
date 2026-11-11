@@ -1352,6 +1352,11 @@ type APIToken struct {
 	LastUsed  time.Time `msgpack:"lu" json:"last_used"`
 	// Stamp is the API token sign-out counters it was made under (signout.go).
 	Stamp SignOutStamp `msgpack:"st" json:"-"`
+	// Sources are the accounts a guest's token stands on: those of the sign-in it was made in (Session.Sources), each
+	// with the account's credential epoch as it was then (User.CredEpoch: here GuestSource.Epoch is that, not a session
+	// epoch). A guest's token works only while each account is there, usable and in that credential epoch, as the
+	// person's own tokens there do: deleted, disabled, or their password or sign-in reset ends it; signing out does not.
+	Sources []GuestSource `msgpack:"src,omitempty" json:"-"`
 }
 
 func (t *APIToken) Kind() Kind { return KindAPIToken }

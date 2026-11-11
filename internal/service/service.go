@@ -113,6 +113,9 @@ type Actor struct {
 	// recorded with every audit event, so what was done through it can be told apart and its access revoked.
 	App string
 	IP  string
+	// Sources are the accounts the interactive session of a guest stands on (model.Session.Sources): what a personal
+	// API token the actor makes stands on (model.APIToken.Sources).
+	Sources []model.GuestSource
 }
 
 // CommandOrigin describes the command this process runs (quisora invite, restore, …) for the audit log: the

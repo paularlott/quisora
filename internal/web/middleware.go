@@ -301,6 +301,7 @@ func (s *Server) WithSession(next http.Handler) http.Handler {
 				ri.SessionID = sess.ID
 			}
 			actor = service.ActorForUser(u, ClientIP(r))
+			actor.Sources = sess.Sources
 		}
 		ctx := context.WithValue(r.Context(), ctxUnchecked, err != nil)
 		ctx = context.WithValue(ctx, ctxSession, sess)

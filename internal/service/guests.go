@@ -30,6 +30,12 @@ type UserGetter func(ctx context.Context, id string) (*model.User, error)
 // Sources) still stand: each user there, usable (UserUsable) and in the session epoch recorded (model.GuestSource).
 // users reads them: the caller's cache, as the check runs with every use. An error is a read that failed: no verdict.
 func (s *Service) SourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter) (bool, error) {
+	return s.sourcesHold(ctx, sources, users, false)
+}
+
+// sourcesHold is SourcesHold holding each source to its session epoch or, cred, to its credential epoch (a guest's
+// personal API token, model.APIToken.Sources).
+func (s *Service) sourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter, cred bool) (bool, error) {
 	for _, src := range sources {
 		u, err := users(ctx, src.UserID)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, ErrNotFound) {
@@ -38,7 +44,7 @@ func (s *Service) SourcesHold(ctx context.Context, sources []model.GuestSource, 
 		if err != nil {
 			return false, mapStore(err)
 		}
-		if u.ID != src.UserID || !u.SessionHolds(src.Epoch) {
+		if u.ID != src.UserID || cred && !u.Holds(src.Epoch) || !cred && !u.SessionHolds(src.Epoch) {
 			return false, nil
 		}
 		if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
@@ -46,6 +52,31 @@ func (s *Service) SourcesHold(ctx context.Context, sources []model.GuestSource, 
 		}
 	}
 	return true, nil
+}
+
+// tokenSources are what a personal API token that a made now stands on (model.APIToken.Sources): the accounts a's
+// session stands on (Actor.Sources), each held to its credential epoch as read now. That read checks the session's
+// hold too (SourcesHold), so a reset that ended the session finds no token made with the new epoch: a reset moves
+// both epochs in one write. A source that no longer holds is a sign-in that has ended (ErrForbidden).
+func (s *Service) tokenSources(ctx context.Context, a *Actor) ([]model.GuestSource, error) {
+	var out []model.GuestSource
+	for _, src := range a.Sources {
+		var cred uint64
+		users := func(ctx context.Context, id string) (*model.User, error) {
+			u, err := s.storeUser(ctx, id)
+			if err == nil {
+				cred = u.CredEpoch
+			}
+			return u, err
+		}
+		if ok, err := s.SourcesHold(ctx, []model.GuestSource{src}, users); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, ErrForbidden
+		}
+		out = append(out, model.GuestSource{UserID: src.UserID, Epoch: cred})
+	}
+	return out, nil
 }
 
 // storeUser reads a user from the store (a UserGetter for the checks that run once a sign-in, not with every request).

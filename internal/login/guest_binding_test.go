@@ -2,6 +2,7 @@ package login_test
 
 import (
 	"context"
+	"errors"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -383,5 +384,48 @@ func TestGuestSessionCheckReadsItsSourceOnce(t *testing.T) {
 	}
 	if n := reads.count() - before; n != 0 {
 		t.Fatalf("the OAuth endpoints read the source user %d times for 3 cached checks", n)
+	}
+}
+
+// A personal API token a guest makes through the account page stands on the account the guest's sign-in came from, as
+// that person's own tokens do: it outlives their signing out there and ends when they are disabled there.
+func TestGuestAPITokenStandsOnItsSource(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	g.person(t, g.acme, "pat-guest", "pat@example.com")
+	g.setSettings(t, g.acme, allowAPITokens)
+	pb, _ := g.continueAs(t, pat)
+	_, page := pb.get("/account")
+	m := metaRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("the guest's account page: %.300s", page)
+	}
+	pb.csrf = m[1]
+	res, out := pb.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("a guest making a token: %d %v", res.StatusCode, out["_raw"])
+	}
+	plain, _ := out["token"].(string)
+	valid := func() bool {
+		_, _, err := g.Svc.ValidateAPIToken(context.Background(), plain)
+		if err != nil && !errors.Is(err, service.ErrBadToken) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+	if plain == "" || !valid() {
+		t.Fatalf("the guest's token: %v", out)
+	}
+	if err := g.Svc.RevokeSessions(context.Background(), service.System, pat.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !valid() {
+		t.Error("pat signing out at home ended the guest's token")
+	}
+	if _, err := g.Svc.UpdateUser(context.Background(), service.System, pat.ID, service.UserInput{Active: ptr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if valid() {
+		t.Error("pat disabled at home, the guest's token still works")
 	}
 }
