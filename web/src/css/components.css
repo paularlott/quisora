@@ -479,11 +479,14 @@
   .account-chip .btn { flex: none; }
   .clients-link { display: inline-flex; align-items: center; gap: 0.25rem; min-height: 1.75rem; font-weight: 600; white-space: nowrap; }
   .clients-link .icon { width: 1rem; height: 1rem; }
-  /* Always-present live-region wrappers: when their alert is hidden they take no space (cancels the flex gap). */
-  .status-slot { --slot-gap: 1.5rem; }
+  /* Always-present live-region wrappers: when their alert is hidden they take no space. The slot always cancels the
+     flex gap around it, and a shown alert gives it back: a hidden alert has no margins, so nothing depends on noticing
+     that it was hidden (a :has() on the alert's style attribute was not re-checked by WebKit for many seconds). The
+     slots sit in flex columns, whose items do not collapse margins with their children, so the two always add up. */
+  .status-slot { --slot-gap: 1.5rem; margin-block: calc(var(--slot-gap) / -2); }
   .dialog-body > .status-slot { --slot-gap: 1.1rem; }
   .stack > .status-slot { --slot-gap: 1rem; }
-  .status-slot:not(:has(> .alert:not([style*="display: none"]))) { margin-block: calc(var(--slot-gap) / -2); }
+  .status-slot > .alert { margin-block: calc(var(--slot-gap) / 2); }
   /* Rows that a live update just changed: one soft fade (no flashing); a plain tint, no motion, when motion is reduced. */
   .table tbody tr.row-live > * { animation: row-live 2.4s ease-out 1 both; }
   @keyframes row-live { from { background-color: color-mix(in srgb, var(--accent-solid) 16%, transparent); } to { background-color: transparent; } }
