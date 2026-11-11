@@ -107,7 +107,7 @@ test('account: clicking the picture opens the file chooser, and the chosen file 
     await expect(card.locator('.avatar-img')).toBeVisible()
     // once there is one, the picture's button says so; the card's controls are it and Remove picture
     await expect(card.getByRole('button', { name: 'Change picture' })).toBeVisible()
-    await expect(card.getByRole('button')).toHaveCount(2)
+    await expect(card.getByRole('button', { name: /picture/i })).toHaveCount(2) // Change picture and Remove picture
     // the keyboard reaches it and opens the chooser with Enter
     await card.getByRole('button', { name: 'Change picture' }).focus()
     const [again] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')])

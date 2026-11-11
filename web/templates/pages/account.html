@@ -8,8 +8,13 @@
       <div class="identity-main">
         <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
         <h1 class="page-title" x-text="fullName">{{.User.FullName}}</h1>
-        <p class="identity-line"><span x-text="u.username"></span><span aria-hidden="true">·</span><span :class="roleClass" x-text="roleText"></span></p>
-        <p class="identity-line" x-show="hasEmail" x-cloak><span x-text="u.email"></span><span :class="emailBadgeClass" x-text="emailBadge"></span></p>
+        {{/* Each once: the username only where it is not the email address (a first super admin's often is) */}}
+        <p class="identity-line"><span x-show="showUsername" x-cloak x-text="u.username"></span><span aria-hidden="true" x-show="showUsername" x-cloak>·</span><span :class="roleClass" x-text="roleText"></span></p>
+        <p class="identity-line" x-show="hasEmail" x-cloak>
+          <span x-show="showEmailText" x-text="u.email"></span><span :class="emailBadgeClass" x-text="emailBadge"></span>
+          <button type="button" class="btn-link" x-show="showVerify" x-cloak :disabled="verifyBusy" @click="sendVerification" x-text="verifyLabel"></button>
+          <span class="help" x-show="noMailToVerify" x-cloak>This server sends no email, so the address cannot be verified yet.</span>
+        </p>
         {{template "picture-notes"}}
       </div>
     </div>
@@ -28,19 +33,11 @@
       <div class="field-row sm:grid-cols-2">
         {{template "field" (dict "name" "given_name" "label" "First name" "required" true "autocomplete" "given-name")}}
         {{template "field" (dict "name" "family_name" "label" "Last name" "autocomplete" "family-name")}}
-        <div class="field">
-          <label class="label" for="f-email-ro">Email address</label>
-          <input class="input input-static" id="f-email-ro" type="email" readonly :value="info.email" aria-describedby="h-email-ro">
-          <p class="help" id="h-email-ro">Set by your administrator. Ask them if it needs to change.</p>
-        </div>
         {{template "combo-field" (dict "name" "locale" "label" "Language" "placeholder" "Type to search, such as English" "help" "Applications may use it to choose their language. Leave empty for none.")}}
         {{template "combo-field" (dict "name" "zoneinfo" "label" "Time zone" "placeholder" "Type to search, such as London" "help" "Applications may use it to show dates and times.")}}
         {{template "field" (dict "name" "phone_number" "label" "Phone number" "type" "tel" "autocomplete" "tel" "placeholder" "+44 20 7946 0958" "help" "Optional. A contact number for applications, with + and the country code. Never used to sign in.")}}
       </div>
-      <div class="toolbar">
-        <div class="toolbar-group">
-          <button type="button" class="btn btn-secondary btn-sm" x-show="showVerify" x-cloak :disabled="verifyBusy" @click="sendVerification"><span x-text="verifyLabel">Send verification email</span></button>
-        </div>
+      <div class="toolbar justify-end">
         <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save profile</span></button>
       </div>
     </form>

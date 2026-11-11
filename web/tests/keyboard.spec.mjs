@@ -883,8 +883,10 @@ test('account: below manager, addresses are set by a manager: read-only, verify,
   await page.goto('/o/acme/account', { waitUntil: 'load' })
   const list = page.getByRole('list', { name: 'Email addresses' })
   await list.waitFor()
-  await expect(page.locator('#f-email-ro')).toHaveAttribute('readonly', '')
+  // the address is shown in the header, not as a field: nothing to edit it with
+  await expect(page.locator('.page-head').getByText('alan@acme.example', { exact: true })).toBeVisible()
   await expect(page.locator('#f-email')).toBeHidden()
+  await expect(page.locator('#profile input[type=email]')).toHaveCount(0)
   await expect(page.getByText('Your administrator adds and removes these.', { exact: false })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Add email' })).toBeHidden()
   await expect(list.getByRole('button', { name: /^Remove / })).toHaveCount(0)
@@ -897,8 +899,8 @@ test('account: below manager, addresses are set by a manager: read-only, verify,
 test('account: managers too: the address is read-only and there is no Add email', async ({ page }) => {
   await signIn(page, 'manager')
   await page.goto('/o/acme/account', { waitUntil: 'load' })
-  await page.locator('#f-email-ro').waitFor()
-  await expect(page.locator('#f-email-ro')).toHaveAttribute('readonly', '')
+  await page.locator('.page-head').getByText('grace@acme.example', { exact: true }).waitFor()
+  await expect(page.locator('#profile input[type=email]')).toHaveCount(0)
   await expect(page.locator('#f-email')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Add email' })).toBeHidden()
   const r = await axe(page)

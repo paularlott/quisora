@@ -192,7 +192,7 @@ export default function (Alpine) {
   const WORK_LABELS = [['title', 'Job title'], ['department', 'Department'], ['organization', 'Company'], ['division', 'Division'],
     ['cost_center', 'Cost center'], ['employee_number', 'Employee number']]
   Alpine.data('accountProfile', () => mix(formMixin(), scoped(), comboMixin({ locale: localeSource, zoneinfo: zoneSource }), {
-    loading: true, loadError: '', info: {}, canVerify: false, verifyBusy: false, emailNotice: '',
+    loading: true, loadError: '', emailNotice: '',
     async init() {
       const q = new URLSearchParams(location.search).get('email')
       if (q === 'verified') this.emailNotice = 'Your email address is verified.'
@@ -207,9 +207,6 @@ export default function (Alpine) {
     },
     fill(r) {
       const u = r.user
-      this.info = { username: u.username, role: u.role, org: r.org.display_name, verified: u.email_verified, hasEmail: !!u.email,
-        email: u.email || '', lastLogin: fmtDateTime(u.last_login, 'Not yet') }
-      this.canVerify = r.security.mail_available
       this.resetForm({ given_name: u.given_name, family_name: u.family_name, email: u.email, locale: u.locale || '', zoneinfo: u.zoneinfo || '', phone_number: u.phone_number || '' })
       this.comboSet('locale', u.locale || '')
       this.comboSet('zoneinfo', u.zoneinfo || '')
@@ -223,12 +220,7 @@ export default function (Alpine) {
     get hasWork() { return this.workRows.length > 0 },
     get hasLoadError() { return this.loadError !== '' },
     get hasNotice() { return this.emailNotice !== '' },
-    get showVerify() { return this.canVerify && this.info.hasEmail && !this.info.verified },
-    get emailBadge() { return !this.info.hasEmail ? '' : this.info.verified ? 'Verified' : 'Not verified' },
-    get emailBadgeClass() { return this.info.verified ? 'badge badge-success' : 'badge badge-warning' },
-    get hasEmailBadge() { return this.info.hasEmail },
     get saveLabel() { return this.busy ? 'Saving…' : 'Save profile' },
-    get verifyLabel() { return this.verifyBusy ? 'Sending…' : 'Send verification email' },
     async save() {
       const opener = document.activeElement
       const body = { ...this.form }
@@ -239,15 +231,11 @@ export default function (Alpine) {
       const r = await Alpine.store('account').reload()
       this.fill(r)
     },
-    async sendVerification() {
-      if (this.verifyBusy) return
-      this.verifyBusy = true
-      try { await post(accountApi('/email/verify')); toast('Verification email sent.') } catch (e) { toast(e.message, 'error') } finally { this.verifyBusy = false }
-    },
   }))
 
   // ---- Identity header --------------------------------------------------------------------------------------------
-  // The page's header: your picture (the control that changes it), name, username, role and email address, all read from
+  // The page's header: your picture (the control that changes it), name, username, role and email address with its
+  // verification (sending the link, or saying why it cannot be sent: a server without email), all read from
   // the account store (so a change made elsewhere shows when the page reloads it, see accountProfile). An organization
   // may leave pictures to its administrators (can_change_picture: the picture is shown, not a control) or have them off
   // (pictures_enabled false: initials only).
@@ -255,7 +243,7 @@ export default function (Alpine) {
     path: () => accountApi('/picture'), who: () => ({ self: true, title: '' }),
     apply: () => Alpine.store('account').reload(),
   }), {
-    u: {},
+    u: {}, canVerify: false, verifyBusy: false,
     async init() {
       window.addEventListener('account-reloaded', () => this.refresh())
       await this.refresh()
@@ -264,6 +252,7 @@ export default function (Alpine) {
       try {
         const r = await Alpine.store('account').load()
         this.u = r.user
+        this.canVerify = !!(r.security && r.security.mail_available)
         this.setPictureUser(r.user)
         this.picEnabled = r.pictures_enabled !== false
         this.canChange = this.picEnabled && r.can_change_picture !== false
@@ -273,6 +262,18 @@ export default function (Alpine) {
     get roleText() { return ROLE_LABEL[this.u.role] || this.u.role },
     get roleClass() { return 'badge ' + (ROLE_BADGE[this.u.role] || 'badge-plain') },
     get hasEmail() { return !!this.u.email },
+    // each once: the username unless it is the email address or the heading (a name-less account's heading is its
+    // username), and the address unless it is the heading
+    get showUsername() { const n = (this.u.username || '').toLowerCase(); return !!n && n !== (this.u.email || '').toLowerCase() && n !== this.fullName.toLowerCase() },
+    get showEmailText() { return this.hasEmail && this.u.email.toLowerCase() !== this.fullName.toLowerCase() },
+    get showVerify() { return this.canVerify && this.hasEmail && !this.u.email_verified },
+    get noMailToVerify() { return !this.canVerify && this.hasEmail && !this.u.email_verified },
+    get verifyLabel() { return this.verifyBusy ? 'Sending…' : 'Send verification email' },
+    async sendVerification() {
+      if (this.verifyBusy) return
+      this.verifyBusy = true
+      try { await post(accountApi('/email/verify')); toast('Verification email sent.') } catch (e) { toast(e.message, 'error') } finally { this.verifyBusy = false }
+    },
     get emailBadge() { return this.u.email_verified ? 'Verified' : 'Not verified' },
     get emailBadgeClass() { return 'badge ' + (this.u.email_verified ? 'badge-success' : 'badge-warning') },
     get picReadOnlyText() { return 'Your organization’s administrators set pictures. Ask one of them to change yours.' },
