@@ -249,11 +249,12 @@ export default function (Alpine) {
   // ---- Picture ---------------------------------------------------------------------------------------------------
   // Your picture is shown from the account store (so a change made elsewhere shows when the page reloads it, see
   // accountProfile). An organization may leave pictures to its administrators (can_change_picture): then it is read-only.
+  // One with pictures off (pictures_enabled false) has none: the card is not shown.
   Alpine.data('accountPicture', () => mix(formMixin(), pictureMixin(Alpine, {
     path: () => accountApi('/picture'), who: () => ({ self: true, title: '' }),
     apply: () => Alpine.store('account').reload(),
   }), {
-    loading: true,
+    loading: true, enabled: false,
     async init() {
       window.addEventListener('account-reloaded', () => this.refresh())
       await this.refresh()
@@ -263,6 +264,7 @@ export default function (Alpine) {
         const r = await Alpine.store('account').load()
         this.setPictureUser(r.user)
         this.canChange = r.can_change_picture !== false
+        this.enabled = r.pictures_enabled !== false
       } catch { /* the profile card shows the error */ } finally { this.loading = false }
     },
     get picDescription() { return this.picHas ? 'Applications you sign in to can show this picture next to your name.' : 'You have no picture: your initials are shown instead.' },

@@ -11,13 +11,15 @@ import (
 
 // A user's photos (RFC 7643 §4.1.2) are their profile picture: rendered as the URL the server serves it at, and set
 // from a value that is an https URL (fetched once, through the guarded outbound client) or a data: URI of a JPEG, PNG
-// or WebP image, which the server makes into its own picture (service.SetPicture). The picture's own URL sent back
-// changes nothing, nor does the URL or image it was made from; photos left out of a PUT leave the picture as it is,
-// and photos present without a value (null, [], or removed by a PATCH) remove it.
+// or WebP image, which the server makes into its own picture before the user is changed, and writes with the rest of
+// the change (service.UserInput.Picture): a refused image changes nothing. The picture's own URL sent back changes
+// nothing, nor does the URL or image it was made from; photos left out of a PUT leave the picture as it is, and photos
+// present without a value (null, [], or removed by a PATCH) remove it. In an organization whose pictures are off
+// (model.OrgSettings.Pictures) photos are left out of every user, and ignored when written: a directory's sync goes on.
 
 // photosValue renders u's picture as the photos attribute; nil when u has none.
 func (rq *request) photosValue(u *model.User) []any {
-	url := rq.m.srv.Svc.PictureURL(u)
+	url := rq.m.srv.Svc.PictureURL(rq.ctx, u)
 	if url == "" {
 		return nil
 	}
@@ -32,20 +34,16 @@ func keepPhotos(res map[string]any) {
 	}
 }
 
-// photoChange is a change of a user's picture asked for by photos: remove it (make nil), or set the one make makes.
-type photoChange struct {
-	make func() (*service.PictureImage, error)
-}
-
-// photoChange works out what res's photos ask of u's picture (u nil: a user being created); nil asks nothing. The
-// value is the primary (else first) one other than the picture's own URL; an image given in it is decoded here, and
-// fetched or made only when the change is made. A value that is neither an https URL nor a data: URI is refused.
-func (rq *request) photoChange(res map[string]any, u *model.User) (*photoChange, *Error) {
+// photoChange works out what res's photos ask of u's picture (u nil: a user being created), and makes the picture
+// they set (fetched and made once a request: a retry of the change finds it made); nil asks nothing, as do photos
+// in an organization whose pictures are off. The value is the primary (else first) one other than the picture's own
+// URL. A value that is neither an https URL nor a data: URI, or an image that cannot be made, is refused.
+func (rq *request) photoChange(res map[string]any, u *model.User) (*service.PictureChange, error) {
 	k, present := keyOf(res, "photos")
-	if !present {
+	if !present || !rq.org.Settings.PicturesOn() {
 		return nil, nil
 	}
-	cur := rq.m.srv.Svc.PictureURL(u)
+	cur := rq.m.srv.Svc.PictureURL(rq.ctx, u)
 	var first, primary string
 	for _, e := range asSlice(res[k]) {
 		var val string
@@ -80,35 +78,40 @@ func (rq *request) photoChange(res map[string]any, u *model.User) (*photoChange,
 	val := cmp.Or(primary, first)
 	if val == "" {
 		if cur != "" && !photosHave(res[k], cur) {
-			return &photoChange{}, nil // removed
+			return &service.PictureChange{}, nil // removed
 		}
 		return nil, nil
 	}
-	var pc photoChange
+	var raw []byte
 	source := val
 	switch {
 	case strings.HasPrefix(val, "data:"):
-		raw, err := service.DataURIImage(val)
-		if err != nil {
-			return nil, photoError(err).(*Error)
+		var err error
+		if raw, err = service.DataURIImage(val); err != nil {
+			return nil, photoError(err)
 		}
 		source = service.HashSource(raw)
-		pc.make = func() (*service.PictureImage, error) {
-			img, err := service.MakePicture(raw, source)
-			return img, photoError(err)
-		}
 	case strings.HasPrefix(strings.ToLower(val), "https://"):
-		pc.make = func() (*service.PictureImage, error) {
-			img, err := rq.m.srv.Svc.FetchPicture(rq.ctx, val)
-			return img, photoError(err)
-		}
 	default:
 		return nil, badValue("photos: give the picture as an https URL or a data: URI of a JPEG, PNG or WebP image")
 	}
 	if u != nil && rq.m.srv.Svc.SamePicture(rq.ctx, u, source) {
 		return nil, nil // made from this already
 	}
-	return &pc, nil
+	if rq.made.img == nil || rq.made.source != source {
+		var img *service.PictureImage
+		var err error
+		if raw != nil {
+			img, err = service.MakePicture(rq.ctx, raw, source)
+		} else {
+			img, err = rq.m.srv.Svc.FetchPicture(rq.ctx, val)
+		}
+		if err != nil {
+			return nil, photoError(err)
+		}
+		rq.made.source, rq.made.img = source, img
+	}
+	return &service.PictureChange{Image: rq.made.img}, nil
 }
 
 // photosHave reports whether photos v hold value url.

@@ -43,6 +43,9 @@ var (
 	// ErrUnavailable: this server cannot make the change now (its store refused: store.ErrUnavailable). Nothing
 	// changed (unless it is also an ErrOutcomeUnknown); try again shortly or through another server.
 	ErrUnavailable = errors.New("this server cannot make changes now")
+	// ErrBusy: this server is busy with work of the kind asked for (making pictures: ErrPictureBusy) and refused it at
+	// once. Nothing changed; try again in a few seconds.
+	ErrBusy = errors.New("this server is busy")
 )
 
 // Invalid returns an ErrInvalid with a field-specific message.

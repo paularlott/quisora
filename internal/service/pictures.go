@@ -37,6 +37,18 @@ var pictureTypes = []string{"image/jpeg", "image/png", "image/webp"}
 // ErrPictureRate refuses a picture change past PictureChangesPerHour.
 var ErrPictureRate = fmt.Errorf("%w: the picture was changed too often; try again in an hour", ErrLimit)
 
+// ErrPictureBusy refuses a picture this server has no turn for now (picture.ErrBusy): try again in a few seconds.
+var ErrPictureBusy = fmt.Errorf("%w: it is making other pictures; try again in a few seconds", ErrBusy)
+
+// ErrPicturesOff refuses a picture change in an organization whose profile pictures are off (OrgSettings.Pictures).
+var ErrPicturesOff = fmt.Errorf("%w: profile pictures are turned off in this organization", ErrForbidden)
+
+// PictureChange changes a user's picture with the rest of a change of the user (UserInput.Picture): to the picture
+// Image (made beforehand: MakePicture), or to none (Image nil).
+type PictureChange struct {
+	Image *PictureImage
+}
+
 // PictureImage is a picture made (package picture) and ready to store.
 type PictureImage struct {
 	Data []byte
@@ -46,10 +58,16 @@ type PictureImage struct {
 }
 
 // MakePicture makes a picture of raw, an image as it was given, made from source (PictureImage.Source); a refusal is
-// Invalid("image", ...).
-func MakePicture(raw []byte, source string) (*PictureImage, error) {
-	data, typ, err := picture.Process(raw)
-	if err != nil {
+// Invalid("image", ...). Waiting for its turn (picture.Process) is refused at once with ErrPictureBusy when too many
+// wait, and ends with ctx: ErrPictureBusy too when its deadline passed (a fetch's), else ctx.Err() (the caller left).
+func MakePicture(ctx context.Context, raw []byte, source string) (*PictureImage, error) {
+	data, typ, err := picture.Process(ctx, raw)
+	switch {
+	case errors.Is(err, picture.ErrBusy), errors.Is(err, context.DeadlineExceeded):
+		return nil, ErrPictureBusy
+	case errors.Is(err, context.Canceled):
+		return nil, err
+	case err != nil:
 		return nil, Invalid("image", err.Error())
 	}
 	return &PictureImage{Data: data, Type: typ, Source: source}, nil
@@ -83,12 +101,12 @@ func DataURIImage(uri string) ([]byte, error) {
 }
 
 // PictureFromDataURI makes a picture of an image given as a data: URI (DataURIImage).
-func PictureFromDataURI(uri string) (*PictureImage, error) {
+func PictureFromDataURI(ctx context.Context, uri string) (*PictureImage, error) {
 	raw, err := DataURIImage(uri)
 	if err != nil {
 		return nil, err
 	}
-	return MakePicture(raw, HashSource(raw))
+	return MakePicture(ctx, raw, HashSource(raw))
 }
 
 // pictureFetchTimeout bounds the fetch of a picture from a URL.
@@ -125,12 +143,16 @@ func (s *Service) FetchPicture(ctx context.Context, rawURL string) (*PictureImag
 	if err != nil {
 		return nil, Invalid("image", "the picture could not be fetched: "+err.Error())
 	}
-	return MakePicture(raw, rawURL)
+	return MakePicture(ctx, raw, rawURL)
 }
 
-// PictureURL is the absolute URL of u's picture, "" when u has none.
-func (s *Service) PictureURL(u *model.User) string {
+// PictureURL is the absolute URL of u's picture, "" when u has none or their organization's pictures are off (as
+// read within orgTTL: Org) or cannot be read.
+func (s *Service) PictureURL(ctx context.Context, u *model.User) string {
 	if u == nil || u.Picture == "" {
+		return ""
+	}
+	if o, err := s.Org(ctx, u.OrgID); err != nil || !o.Settings.PicturesOn() {
 		return ""
 	}
 	return strings.TrimSuffix(s.Cfg.Server.PublicURL, "/") + model.OrgPath(u.OrgID, "/pictures/"+u.Picture)
@@ -174,20 +196,22 @@ func (s *Service) MaySetPicture(ctx context.Context, a *Actor, u *model.User) bo
 	return s.maySetPicture(ctx, a, u) == nil
 }
 
-// maySetPicture is who may set or remove u's picture: whoever may manage u (managers and above, service accounts,
-// the directory), and u themselves unless their organization has its administrators set pictures.
+// maySetPicture is who may set or remove u's picture (OrgSettings.Pictures, as stored now): nobody when the
+// organization's pictures are off (ErrPicturesOff); else whoever may manage u (managers and above, service accounts,
+// the directory, the system), and u themselves unless the organization has its administrators set pictures.
 func (s *Service) maySetPicture(ctx context.Context, a *Actor, u *model.User) error {
-	if s.canManageUser(a, u) {
-		return nil
-	}
-	if a.UserID != u.ID {
-		return s.denied(a, u)
-	}
 	o, err := s.Orgs.Get(ctx, u.OrgID)
 	if err != nil {
 		return mapStore(err)
 	}
-	if o.Settings.PicturesByAdmins {
+	switch {
+	case !o.Settings.PicturesOn():
+		return ErrPicturesOff
+	case s.canManageUser(a, u):
+		return nil
+	case a.UserID != u.ID:
+		return s.denied(a, u)
+	case o.Settings.Pictures == model.PicturesAdmins:
 		return ErrForbidden
 	}
 	return nil
@@ -217,16 +241,19 @@ func (s *Service) SetPicture(ctx context.Context, a *Actor, userID string, newPi
 }
 
 // setPicture is SetPicture; keep (a copy made by the system: CopyPicture) changes nothing when the user has a picture
-// as the write finds them, and is neither checked nor counted.
+// as the write finds them, and is checked as the system's (only that the organization's pictures are on) and not
+// counted.
 func (s *Service) setPicture(ctx context.Context, a *Actor, userID string, newPicture func() (*PictureImage, error), keep bool) (*model.User, error) {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if !keep {
-		if err := s.maySetPicture(ctx, a, u); err != nil {
-			return nil, err
-		}
+	who := a
+	if keep {
+		who = System
+	}
+	if err := s.maySetPicture(ctx, who, u); err != nil {
+		return nil, err
 	}
 	var rec *model.UserPicture
 	action := "user.picture.remove"
@@ -240,10 +267,8 @@ func (s *Service) setPicture(ctx context.Context, a *Actor, userID string, newPi
 		if err != nil {
 			return nil, err
 		}
-		rec = &model.UserPicture{Meta: model.Meta{ID: model.NewRandomID()}, OrgID: u.OrgID, UserID: u.ID, Type: img.Type,
-			Data: img.Data, Source: img.Source}
-		if err := s.Pictures.Create(ctx, rec); err != nil {
-			return nil, mapStore(err)
+		if rec, err = s.storePicture(ctx, u, img); err != nil {
+			return nil, err
 		}
 		action = "user.picture.set"
 	} else if u.Picture == "" {
@@ -272,16 +297,54 @@ func (s *Service) setPicture(ctx context.Context, a *Actor, userID string, newPi
 		if u, err = s.Users.Get(ctx, userID); err != nil {
 			break
 		}
-		if !keep {
-			if err = s.maySetPicture(ctx, a, u); err != nil {
-				break
-			}
+		if err = s.maySetPicture(ctx, who, u); err != nil {
+			break
 		}
 	}
 	if rec != nil && !outcomeUnknown(err) { // a write that may have landed may name it
 		s.dropPicture(ctx, rec.ID)
 	}
 	return nil, mapStore(err)
+}
+
+// storePicture stores img as a new picture of u, which no user names yet: the user's write that names it comes next,
+// and one that fails leaves it to dropPicture (or to the orphan sweep).
+func (s *Service) storePicture(ctx context.Context, u *model.User, img *PictureImage) (*model.UserPicture, error) {
+	rec := &model.UserPicture{Meta: model.Meta{ID: model.NewRandomID()}, OrgID: u.OrgID, UserID: u.ID, Type: img.Type,
+		Data: img.Data, Source: img.Source}
+	if err := s.Pictures.Create(ctx, rec); err != nil {
+		return nil, mapStore(err)
+	}
+	return rec, nil
+}
+
+// pictureInput checks in.Picture, the change of u's picture that comes with a change of u (as a), and stores the
+// picture it sets (storePicture), pointing u at it, or points u at none: the caller's one write of u then makes the
+// change with the rest. It returns the picture u named before (the caller removes it once the write is done: dropPicture)
+// and the one stored (removed when the write fails), and the change for the audit detail; nothing when in.Picture is nil
+// or changes nothing.
+func (s *Service) pictureInput(ctx context.Context, a *Actor, u *model.User, in UserInput) (old, made, change string, err error) {
+	pc := in.Picture
+	if pc == nil || pc.Image == nil && u.Picture == "" {
+		return "", "", "", nil
+	}
+	if err := s.maySetPicture(ctx, a, u); err != nil {
+		return "", "", "", err
+	}
+	if err := s.pictureRate(ctx, u.ID); err != nil {
+		return "", "", "", err
+	}
+	old, change = u.Picture, "removed"
+	u.Picture = ""
+	if pc.Image != nil {
+		rec, err := s.storePicture(ctx, u, pc.Image)
+		if err != nil {
+			u.Picture = old
+			return "", "", "", err
+		}
+		u.Picture, made, change = rec.ID, rec.ID, "set"
+	}
+	return old, made, change, nil
 }
 
 // dropPicture removes picture id ("": none), which no user names: tidying, which the orphan sweep does when it fails.
@@ -306,6 +369,9 @@ func (s *Service) CopyPicture(ctx context.Context, userID, rawURL, by string) {
 		u, err := s.Users.Get(ctx, userID)
 		if err != nil || u.Picture != "" {
 			return
+		}
+		if o, err := s.Orgs.Get(ctx, u.OrgID); err != nil || !o.Settings.PicturesOn() {
+			return // the organization's pictures are off: none is fetched
 		}
 		a := &Actor{OrgID: u.OrgID, Role: model.RoleManager, Name: by}
 		_, err = s.setPicture(ctx, a, userID, func() (*PictureImage, error) { return s.FetchPicture(ctx, rawURL) }, true)

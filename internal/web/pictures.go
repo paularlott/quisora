@@ -12,9 +12,15 @@ import (
 // orgPicture serves a user's profile picture, GET (and HEAD) /o/{org}/pictures/{id}, to anyone: applications show it in
 // an <img> on their own pages, so it carries no session and is read from any origin. Its random id is what keeps it
 // from those who were not given it; a picture that is not a user's current one, or not of the organization the path
-// names (by id or by name), is not found. A new picture is a new id, so each is cached for good.
+// names (by id or by name), is not found, nor is any while the organization's pictures are off. A new picture is a new
+// id, so each is cached for good.
 func (s *Server) orgPicture(w http.ResponseWriter, r *http.Request) {
-	p, err := s.Svc.ServedPicture(r.Context(), Org(r).ID, r.PathValue("id"))
+	o := Org(r)
+	if !o.Settings.PicturesOn() {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.Svc.ServedPicture(r.Context(), o.ID, r.PathValue("id"))
 	if errors.Is(err, service.ErrNotFound) {
 		http.NotFound(w, r)
 		return

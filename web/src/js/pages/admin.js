@@ -1236,7 +1236,7 @@ export default function (Alpine) {
         lockout_minutes: s.lockout_minutes ? String(s.lockout_minutes) : '', api_token_max_days: s.api_token_max_days > 0 ? String(s.api_token_max_days) : '',
         api_token_no_limit: s.api_token_max_days === -1,
         privileged_ttl: s.privileged_ttl ? String(Math.round(s.privileged_ttl / 3600)) : '', privileged_idle: s.privileged_idle ? String(Math.round(s.privileged_idle / 60)) : '',
-        grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '', pictures_by_admins: !!s.pictures_by_admins,
+        grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '', pictures: s.pictures || 'everyone',
         primary_color: (o.branding && o.branding.primary_color) || '', footer: (o.branding && o.branding.footer) || '',
         skin: (o.branding && o.branding.skin) || '' }
     },
@@ -1275,7 +1275,7 @@ export default function (Alpine) {
           password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
           lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
           privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle'),
-          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user'), pictures_by_admins: f.pictures_by_admins }
+          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user'), pictures: f.pictures }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
         // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
@@ -1421,6 +1421,8 @@ export default function (Alpine) {
     // Another user of a higher role is shown read-only (the server refuses any change to them anyway); your own page
     // keeps its self-service rules.
     get manageable() { return !!this.user && (this.isSelf || this.user.can_manage !== false) },
+    // the picture card: not while the organization's pictures are off
+    get pictureCard() { return this.manageable && this.user.pictures_enabled !== false },
     get readOnly() { return !!this.user && !this.manageable },
     get readOnlyFull() { return this.readOnly && !this.user.directory },
     get readOnlyText() {

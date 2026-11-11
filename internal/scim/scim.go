@@ -135,6 +135,8 @@ func (m *Module) fromService(err error) *Error {
 		// Sent, but the node that decides it was lost before it answered: a retry of a create would find the resource
 		// (409), so the client is told to read it back rather than to treat this as a failure of its own.
 		return errf(503, "", "The change may or may not have been made (the cluster lost the node that decides it); read the resource back before retrying")
+	case errors.Is(err, service.ErrBusy):
+		return errf(503, "", "%s", web.Capitalise(err.Error()))
 	case service.IsUnavailable(err):
 		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):
@@ -159,8 +161,11 @@ func writeError(w http.ResponseWriter, e *Error) {
 	if e.Status == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="scim"`)
 	}
-	if e.Status == http.StatusTooManyRequests {
+	switch e.Status {
+	case http.StatusTooManyRequests:
 		w.Header().Set("Retry-After", "60")
+	case http.StatusServiceUnavailable: // nothing was done (or it may have been: read it back), and may be soon
+		w.Header().Set("Retry-After", "5")
 	}
 	write(w, e.Status, errorBody{Schemas: []string{schemaError}, Status: strconv.Itoa(e.Status), ScimType: e.Type, Detail: e.Detail})
 }
@@ -193,6 +198,11 @@ type request struct {
 	// them out of every member list and membership filter, as it leaves them out of the users.
 	unseen map[string]bool
 	loaded bool
+	// made is the picture made for this request's photos, kept for a retry of the change (photoChange): from source.
+	made struct {
+		source string
+		img    *service.PictureImage
+	}
 }
 
 func (rq *request) fail(err error) {

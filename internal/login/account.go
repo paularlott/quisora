@@ -135,10 +135,10 @@ type profile struct {
 
 func (m *Module) profileOf(ctx context.Context, u *model.User) profile {
 	m.s.Svc.WithSignIn(ctx, u)
-	return m.toProfile(u)
+	return m.toProfile(ctx, u)
 }
 
-func (m *Module) toProfile(u *model.User) profile {
+func (m *Module) toProfile(ctx context.Context, u *model.User) profile {
 	le := u.LinkedEmails
 	if le == nil {
 		le = []model.LinkedEmail{}
@@ -146,13 +146,15 @@ func (m *Module) toProfile(u *model.User) profile {
 	return profile{ID: u.ID, Username: u.Username, Email: u.Email, EmailVerified: u.EmailVerified, Name: u.FullName(),
 		GivenName: u.GivenName, FamilyName: u.FamilyName, LinkedEmails: le, Locale: u.Locale, ZoneInfo: u.ZoneInfo,
 		PhoneNumber: u.PhoneNumber, PhoneVerified: u.PhoneVerified, Role: string(u.Role), LastLogin: u.LastLogin, UserType: u.UserType, ValidUntil: u.ValidUntil, Work: u.Work,
-		Picture: m.s.Svc.PictureURL(u)}
+		Picture: m.s.Svc.PictureURL(ctx, u)}
 }
 
 type accountResp struct {
 	User profile `json:"user"`
-	// CanChangePicture says the user may set and remove their own picture (not when their organization has its
-	// administrators set pictures: settings.pictures_by_admins).
+	// PicturesEnabled says the organization has profile pictures at all (settings.pictures is not off): the page
+	// shows the picture card only then. CanChangePicture says the user may set and remove their own (not when the
+	// organization has its administrators set pictures, settings.pictures "admins", nor when they are off).
+	PicturesEnabled  bool `json:"pictures_enabled"`
 	CanChangePicture bool `json:"can_change_picture"`
 	Org              struct {
 		Name       string `json:"name"`
@@ -181,6 +183,7 @@ func (m *Module) summary(ctx context.Context, a acct, u *model.User) (accountRes
 	out.CanChangePicture = m.s.Svc.MaySetPicture(ctx, a.actor, u)
 	if org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
 		out.Org.Name, out.Org.Display, out.Org.RequireMFA = org.Name, org.DisplayName, org.Settings.RequireMFA
+		out.PicturesEnabled = org.Settings.PicturesOn()
 	}
 	n, err := m.s.Svc.UsablePasskeys(ctx, u, "")
 	if err != nil {
@@ -251,7 +254,7 @@ func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	m.changed(a)
-	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(u)})
+	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(ctx, u)})
 }
 
 // pictureReq sets a profile picture: Image is a JPEG, PNG or WebP image as a data: URI, at most 5 MB.
@@ -260,31 +263,32 @@ type pictureReq struct {
 }
 
 // putPicture handles PUT /o/{org}/api-internal/account/picture {"image": "data:image/...;base64,..."}: sets the user's
-// own picture, unless their organization has its administrators set pictures. Answers {"user": profile}.
+// own picture, unless their organization has its administrators set pictures or has none (settings.pictures).
+// Answers {"user": profile}.
 func (m *Module) putPicture(w http.ResponseWriter, r *http.Request, a acct) {
 	var in pictureReq
 	if !decode(w, r, &in) {
 		return
 	}
 	u, err := m.s.Svc.SetPicture(r.Context(), a.actor, a.u.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI(in.Image)
+		return service.PictureFromDataURI(r.Context(), in.Image)
 	})
-	m.pictureDone(w, a, u, err)
+	m.pictureDone(w, r, a, u, err)
 }
 
 // deletePicture handles DELETE /o/{org}/api-internal/account/picture: removes the user's own picture (as putPicture).
 func (m *Module) deletePicture(w http.ResponseWriter, r *http.Request, a acct) {
 	u, err := m.s.Svc.SetPicture(r.Context(), a.actor, a.u.ID, nil)
-	m.pictureDone(w, a, u, err)
+	m.pictureDone(w, r, a, u, err)
 }
 
-func (m *Module) pictureDone(w http.ResponseWriter, a acct, u *model.User, err error) {
+func (m *Module) pictureDone(w http.ResponseWriter, r *http.Request, a acct, u *model.User, err error) {
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
 	m.changed(a)
-	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(u)})
+	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(r.Context(), u)})
 }
 
 // sendVerify handles POST /o/{org}/api-internal/account/email/verify: mails a confirmation link for the address on file.
@@ -374,7 +378,7 @@ func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request, a acct) {
 		return
 	}
 	m.changed(a)
-	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(u)})
+	web.WriteJSON(w, http.StatusOK, map[string]any{"user": m.toProfile(r.Context(), u)})
 }
 
 // resendEmail handles POST /o/{org}/api-internal/account/emails/{address}/verify: mails the verification link again.

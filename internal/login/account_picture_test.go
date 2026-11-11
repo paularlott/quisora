@@ -165,12 +165,37 @@ func TestAccountPicture(t *testing.T) {
 	}
 
 	// The organization has its administrators set pictures: refused, and the page is told.
-	e.setSettings(t, org, func(s *model.OrgSettings) { s.PicturesByAdmins = true })
+	e.setSettings(t, org, func(s *model.OrgSettings) { s.Pictures = model.PicturesAdmins })
 	res, out = b.api("PUT", "/api-internal/account/picture", map[string]any{"image": smallPNG(t, color.NRGBA{1, 1, 1, 255})})
 	wantStatus(t, res, out, 403)
 	res, out = b.api("GET", "/api-internal/account", nil)
 	wantStatus(t, res, out, 200)
-	if out["can_change_picture"] != false {
-		t.Fatalf("can_change_picture with pictures_by_admins: %v", out["can_change_picture"])
+	if out["can_change_picture"] != false || out["pictures_enabled"] != true {
+		t.Fatalf("with pictures admins: can_change_picture %v, pictures_enabled %v", out["can_change_picture"], out["pictures_enabled"])
+	}
+
+	// Pictures off: refused with the reason, the page is told to show none, and the one held is served no more.
+	e.setSettings(t, org, func(s *model.OrgSettings) { s.Pictures = model.PicturesEveryone })
+	res, out = b.api("PUT", "/api-internal/account/picture", map[string]any{"image": smallPNG(t, color.NRGBA{3, 3, 3, 255})})
+	wantStatus(t, res, out, 200)
+	held, _ := out["user"].(map[string]any)["picture"].(string)
+	if res = anon.pictureGet("GET", held, nil); res.StatusCode != 200 {
+		t.Fatalf("the picture held: %d", res.StatusCode)
+	}
+	e.setSettings(t, org, func(s *model.OrgSettings) { s.Pictures = model.PicturesOff })
+	res, out = b.api("PUT", "/api-internal/account/picture", map[string]any{"image": smallPNG(t, color.NRGBA{1, 1, 1, 255})})
+	wantStatus(t, res, out, 403)
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "turned off") {
+		t.Fatalf("refusal: %v", out)
+	}
+	res, out = b.api("DELETE", "/api-internal/account/picture", nil)
+	wantStatus(t, res, out, 403)
+	res, out = b.api("GET", "/api-internal/account", nil)
+	wantStatus(t, res, out, 200)
+	if out["can_change_picture"] != false || out["pictures_enabled"] != false || out["user"].(map[string]any)["picture"] != nil {
+		t.Fatalf("with pictures off: %v", out["_raw"])
+	}
+	if res = anon.pictureGet("GET", held, nil); res.StatusCode != 404 {
+		t.Fatalf("a picture served with pictures off: %d", res.StatusCode)
 	}
 }

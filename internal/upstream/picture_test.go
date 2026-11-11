@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	ut "github.com/paularlott/quisora/internal/upstream/upstreamtest"
 )
@@ -91,6 +92,22 @@ func TestProvisionCopiesPicture(t *testing.T) {
 	if e.pictureOf(t, res.User.ID) != "" {
 		t.Fatal("a failed copy set a picture")
 	}
+
+	// With the organization's pictures off, nothing is fetched or copied.
+	st := e.org.Settings
+	st.Pictures = model.PicturesOff
+	if _, err := e.svc.UpdateOrg(e.ctx, service.System, e.org.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	before := n.Load()
+	claims = std("sub-off", "off@example.com")
+	claims["picture"] = srv.URL + "/a.png"
+	if res, err = e.signIn(p, claims); err != nil || !res.Provisioned {
+		t.Fatal(err)
+	}
+	if e.pictureOf(t, res.User.ID) != "" || n.Load() != before {
+		t.Fatal("a provider's picture was copied with pictures off")
+	}
 }
 
 // Linking an existing account copies the provider's picture only when the account has none.
@@ -113,7 +130,7 @@ func TestLinkCopiesPictureOnlyWhenNone(t *testing.T) {
 	own, err := e.svc.SetPicture(e.ctx, service.System, has.ID, func() (*service.PictureImage, error) {
 		var b bytes.Buffer
 		_ = png.Encode(&b, image.NewGray(image.Rect(0, 0, 3, 3)))
-		return service.MakePicture(b.Bytes(), "own")
+		return service.MakePicture(e.ctx, b.Bytes(), "own")
 	})
 	if err != nil {
 		t.Fatal(err)

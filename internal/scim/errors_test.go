@@ -2,6 +2,7 @@ package scim
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/service"
@@ -17,5 +18,18 @@ func TestStoreUnavailableIsRetryable(t *testing.T) {
 		if got := m.fromService(err); got.Status != 503 {
 			t.Errorf("%v: %d, want 503", err, got.Status)
 		}
+	}
+}
+
+// A picture this server has no turn for now is a 503 the client retries in a few seconds.
+func TestPictureBusyIsRetryable(t *testing.T) {
+	got := (&Module{}).fromService(service.ErrPictureBusy)
+	if got.Status != 503 || got.Detail != "This server is busy: it is making other pictures; try again in a few seconds" {
+		t.Fatalf("%d %q", got.Status, got.Detail)
+	}
+	rec := httptest.NewRecorder()
+	writeError(rec, got)
+	if rec.Code != 503 || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("%d %v", rec.Code, rec.Header())
 	}
 }

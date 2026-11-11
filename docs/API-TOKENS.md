@@ -152,6 +152,12 @@ sync, does not make a new picture each time. A PUT without `photos` leaves the p
 `null`, or removed by a PATCH (`"remove"` of `photos` or `photos[type eq "photo"]`), removes it. One user's picture
 changes at most 20 times an hour, from wherever the changes come (`429` past that).
 
+The picture is made before the user is changed, and is written together with the rest of the request: a refused image
+(or a failure to store it) leaves the user exactly as it was, whatever else the request changed. A server busy making
+other pictures answers `503` with `Retry-After`; nothing was changed, so send the request again. In an organization
+whose pictures are off (`settings.pictures` is `off`), `photos` are left out of every user and ignored when written,
+so a directory's sync carries on unchanged.
+
 ## Backups (`backup`)
 
 ```bash

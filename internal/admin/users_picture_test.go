@@ -103,21 +103,57 @@ func TestUserPictureRateLimit(t *testing.T) {
 	}
 }
 
-func TestPicturesByAdminsSetting(t *testing.T) {
+// settings.pictures is who sets pictures: everyone (the default), admins (managers and above still set users'), or
+// off (nobody, and no user shows one). Anything else is refused.
+func TestPicturesSetting(t *testing.T) {
 	w := newWorld(t)
 	adm := w.as("super") // organization settings are the super admins'
+	mgr := w.as("manager")
+	userPath := "/api/orgs/acme/users/" + w.users["user"].ID
 	org := adm.get("/api/orgs/acme")
 	want(t, org, 200)
 	st := org.JSON["settings"].(map[string]any)
-	if st["pictures_by_admins"] != false {
-		t.Fatalf("default pictures_by_admins: %v", st["pictures_by_admins"])
+	if st["pictures"] != model.PicturesEveryone {
+		t.Fatalf("default pictures: %v", st["pictures"])
 	}
-	st["pictures_by_admins"] = true
-	r := adm.patch("/api/orgs/acme", map[string]any{"settings": st})
-	want(t, r, 200)
-	if r.JSON["settings"].(map[string]any)["pictures_by_admins"] != true {
-		t.Fatalf("after patch: %v", r.JSON["settings"])
+	want(t, mgr.put(userPath+"/picture", map[string]any{"image": pictureURI(t, 6)}), 200)
+	set := func(v string) {
+		t.Helper()
+		st["pictures"] = v
+		r := adm.patch("/api/orgs/acme", map[string]any{"settings": st})
+		want(t, r, 200)
+		if r.JSON["settings"].(map[string]any)["pictures"] != v {
+			t.Fatalf("after patch: %v", r.JSON["settings"])
+		}
+		w.env.Svc.InvalidateOrgs()
 	}
+	st["pictures"] = "sometimes"
+	wantField(t, adm.patch("/api/orgs/acme", map[string]any{"settings": st}), 422, "pictures")
+
 	// Managers still set the pictures of the users they manage.
-	want(t, w.as("manager").put("/api/orgs/acme/users/"+w.users["user"].ID+"/picture", map[string]any{"image": pictureURI(t, 7)}), 200)
+	set(model.PicturesAdmins)
+	want(t, mgr.put(userPath+"/picture", map[string]any{"image": pictureURI(t, 7)}), 200)
+	if got := mgr.get(userPath); got.str("picture") == "" || got.JSON["pictures_enabled"] != true {
+		t.Fatalf("with pictures admins: %v", got.JSON)
+	}
+
+	// Off: nobody sets or removes one, and no user shows one.
+	set(model.PicturesOff)
+	for _, who := range []string{"manager", "admin", "super"} {
+		r := w.as(who).put(userPath+"/picture", map[string]any{"image": pictureURI(t, 8)})
+		want(t, r, 403)
+		if !strings.Contains(r.str("error"), "turned off") {
+			t.Fatalf("%s: %v", who, r.JSON)
+		}
+		want(t, w.as(who).delete(userPath+"/picture"), 403)
+	}
+	if got := mgr.get(userPath).JSON; got["picture"] != nil || got["pictures_enabled"] != false {
+		t.Fatalf("a user with pictures off: picture %v, pictures_enabled %v", got["picture"], got["pictures_enabled"])
+	}
+	for _, it := range mgr.get("/api/orgs/acme/users").items() {
+		if _, has := it.(map[string]any)["picture"]; has {
+			t.Fatal("the list shows a picture with pictures off")
+		}
+	}
+	set(model.PicturesEveryone)
 }

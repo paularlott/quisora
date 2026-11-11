@@ -18,7 +18,7 @@ info:
 
     Not described here: the OAuth 2 / OpenID Connect endpoints (see /.well-known/openid-configuration), the account page's own API under /o/{org}/api-internal/account (the signed-in user of that organization, session only) and the live-update stream at /api/events (server-sent events: a browser session, or a token with the admin scope).
 
-    Profile pictures: a user's picture is served to anyone, without authentication, at the absolute URL in the user's picture field, GET (or HEAD) /o/{org id}/pictures/{random id}: a 256 × 256 image/jpeg or image/png, cached for good (a new picture has a new URL), any other id is 404. A user sets their own on the account page through PUT /o/{org}/api-internal/account/picture with {"image": "data:image/...;base64,..."} (as PUT /api/orgs/{org}/users/{id}/picture; DELETE removes it), unless the organization has settings.pictures_by_admins on.
+    Profile pictures: a user's picture is served to anyone, without authentication, at the absolute URL in the user's picture field, GET (or HEAD) /o/{org id}/pictures/{random id}: a 256 × 256 image/jpeg or image/png, cached for good (a new picture has a new URL), any other id is 404. A user sets their own on the account page through PUT /o/{org}/api-internal/account/picture with {"image": "data:image/...;base64,..."} (as PUT /api/orgs/{org}/users/{id}/picture; DELETE removes it), unless the organization's settings.pictures is admins (administrators set them) or off (no pictures: none is set, served, shown in user JSON or sent in claims, and those held are deleted).
 servers:
   - url: /
     description: this server
@@ -653,8 +653,9 @@ paths:
         anyone at the absolute URL the user's picture field then holds (/o/{org id}/pictures/{random id}), which the
         picture claim of the profile scope and SCIM's photos carry; each picture has a new URL. Whoever may change the
         user may set it (a manager or administrator; never a user above the caller), and a user their own unless the
-        organization has settings.pictures_by_admins on. At most 20 changes of one user's picture an hour (429 past
-        that). Returns the user. Audited as user.picture.set"
+        organization's settings.pictures is admins; nobody while it is off (403). At most 20 changes of one user's
+        picture an hour (429 past that). The server makes one picture at a time and lets a few more wait; past that it
+        answers 503 at once, with Retry-After. Returns the user. Audited as user.picture.set"
       operationId: put_orgs_org_users_id_picture
       security:
         - session: []
@@ -5367,10 +5368,15 @@ components:
           type: boolean
           description: users without an authenticator app or passkey may give the second factor as a one-time code emailed to
             their verified address (never managers and above); needs the server to send email; off by default
-        pictures_by_admins:
-          type: boolean
-          description: users do not set their own profile picture; only those who manage users (managers and above, and
-            service accounts with the users scope) and the directory (SCIM, sign-in providers) set pictures; off by default
+        pictures:
+          type: string
+          enum: [everyone, admins, off]
+          description: who sets users' profile pictures. everyone (the default; also when empty) lets users set their own,
+            as well as those who manage users (managers and above, and service accounts with the users scope) and the
+            directory (SCIM, sign-in providers); admins leaves them to those who manage users and the directory; off has
+            none at all (uploads refused, SCIM photos ignored, nothing copied from sign-in providers, no picture claim,
+            no picture in user JSON, picture URLs 404) and deletes the pictures held, so turning it on again starts
+            with none
         mcp_server:
           type: boolean
           description: serve the organization's own MCP server at /o/{organization id}/mcp, through which AI clients manage
@@ -6268,7 +6274,12 @@ components:
           type: string
           format: uri
           description: "absolute URL of the user's profile picture, a 256 × 256 JPEG or PNG anyone may read
-            (/o/{org id}/pictures/{random id}); absent when the user has none, and in a directory entry"
+            (/o/{org id}/pictures/{random id}); absent when the user has none, in a directory entry, and while the
+            organization's pictures are off"
+        pictures_enabled:
+          type: boolean
+          description: whether the organization has profile pictures at all (settings.pictures is not off); present on
+            GET of one user
         last_login:
           type: string
           format: date-time

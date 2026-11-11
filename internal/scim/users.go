@@ -483,7 +483,7 @@ func emptyInput(in service.UserInput) bool {
 	return in.Username == nil && in.Email == nil && in.LinkedEmails == nil && in.GivenName == nil && in.FamilyName == nil &&
 		in.Role == nil && in.Active == nil && in.ExternalID == nil && in.Locale == nil && in.ZoneInfo == nil &&
 		in.UserType == nil && in.ValidUntil == nil && in.Work == nil && in.Phone == nil &&
-		in.Password == nil && in.Verified == nil && in.Tags == nil
+		in.Password == nil && in.Verified == nil && in.Tags == nil && in.Picture == nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -572,34 +572,19 @@ func (rq *request) createUser() {
 		writeError(rq.w, errNeedsSession("granting an administrator role"))
 		return
 	}
-	// The picture is made before the user is created, so a refused one creates nobody.
-	pc, e := rq.photoChange(body, nil)
-	if e != nil {
-		writeError(rq.w, e)
+	// The picture is made before the user is created, so a refused one creates nobody, and is written with it.
+	pc, err := rq.photoChange(body, nil)
+	if err != nil {
+		rq.fail(err)
 		return
 	}
-	var img *service.PictureImage
-	if pc != nil && pc.make != nil {
-		var err error
-		if img, err = pc.make(); err != nil {
-			rq.fail(err)
-			return
-		}
+	if pc != nil && pc.Image != nil {
+		in.Picture = pc
 	}
 	u, err := rq.m.srv.Svc.CreateUser(rq.ctx, rq.actor, rq.org.ID, in)
 	if err != nil {
 		rq.fail(err)
 		return
-	}
-	if img != nil {
-		// The user exists: a picture that cannot be stored now is left out (the resource returned has no photos)
-		// rather than failing a creation a retry would find done.
-		withPic, err := rq.m.srv.Svc.SetPicture(rq.ctx, rq.actor, u.ID, func() (*service.PictureImage, error) { return img, nil })
-		if err != nil {
-			rq.m.srv.Log.Warn("scim: the new user's picture was not stored", "user", u.ID, "error", err)
-		} else {
-			u = withPic
-		}
 	}
 	attrs, excl := rq.getParams()
 	res, err := rq.userResource(u, nil, true)
@@ -635,9 +620,9 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 			return e
 		}
 		in = diffUser(u, in)
-		pc, e := rq.photoChange(next, u)
-		if e != nil {
-			return e
+		// The picture is made before the user is changed, and written with the rest: a refused one changes nothing.
+		if in.Picture, err = rq.photoChange(next, u); err != nil {
+			return err
 		}
 		result = u
 		if !emptyInput(in) {
@@ -651,10 +636,7 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 				return err
 			}
 		}
-		if pc != nil { // after the rest: a retry finds the rest done, and works the picture out again
-			result, err = rq.m.srv.Svc.SetPicture(rq.ctx, rq.actor, id, pc.make)
-		}
-		return err
+		return nil
 	})
 	if err != nil {
 		rq.fail(err)

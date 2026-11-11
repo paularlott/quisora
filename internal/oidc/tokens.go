@@ -315,7 +315,7 @@ func (p *Provider) profileClaims(ctx context.Context, o *obj, is *issue, u *mode
 		o.strIf("zoneinfo", u.ZoneInfo)
 	}
 	if want("picture") {
-		o.strIf("picture", p.svc.PictureURL(u)) // an image's absolute URL (Core §5.1), of a picture the user has
+		o.strIf("picture", p.svc.PictureURL(ctx, u)) // an image's absolute URL (Core §5.1), of a picture the user has
 	}
 	if want("updated_at") && !u.Updated.IsZero() {
 		o.num("updated_at", u.Updated.Unix())

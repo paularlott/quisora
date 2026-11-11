@@ -146,11 +146,21 @@ private to those given it; a new picture always has a new URL (each is cached fo
 an old URL answers 404 once the picture is replaced or removed or the user is deleted. Compare `picture`, not the
 image, to see whether it changed.
 
-People set their own picture on their account page, unless their organization has its administrators set pictures
-(`settings.pictures_by_admins`); managers and administrators set them in the console or through the management API
-(`PUT /api/orgs/{org}/users/{id}/picture`), provisioning systems through SCIM's `photos`, and an account a sign-in
-provider creates or links takes the provider's picture (GitHub's avatar, an OpenID provider's `picture`) once, when it
-has none. Each is a JPEG, PNG or WebP image of at most 5 MB and 8192 pixels a side, cropped to its centre square.
+Who sets pictures is the organization's choice, `settings.pictures` (the organization editor's "Profile pictures"):
+
+- `everyone` (the default): people set their own on their account page; managers and administrators set them in the
+  console or through the management API (`PUT /api/orgs/{org}/users/{id}/picture`), provisioning systems through
+  SCIM's `photos`, and an account a sign-in provider creates or links takes the provider's picture (GitHub's avatar, an
+  OpenID provider's `picture`) once, when it has none;
+- `admins`: the same, except that people cannot change their own;
+- `off`: no pictures at all. Nobody can upload one (`403`), SCIM's `photos` are ignored when written and left out when
+  read, nothing is copied from sign-in providers, no `picture` claim is sent, the user JSON of the APIs has none, and
+  every picture URL of the organization answers 404 at once. **Turning pictures off deletes those held**: housekeeping
+  removes them, and turning pictures on again starts with none.
+
+Each is a JPEG, PNG or WebP image of at most 5 MB and 8192 pixels a side, cropped to its centre square. A server
+makes one picture at a time and lets a few more wait their turn; past that an upload is refused at once with `503` and
+`Retry-After` (try again in a few seconds).
 
 ### Which upstream account: the idp scope
 

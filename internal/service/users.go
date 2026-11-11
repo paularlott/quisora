@@ -70,6 +70,11 @@ type UserInput struct {
 	// never by users themselves: see setLinked); the user's own unverified addresses are kept as they are. Nil leaves
 	// them unchanged.
 	LinkedEmails *[]string `json:"-"`
+	// Picture changes the user's profile picture in the same write as the rest (SCIM, whose photos come with the other
+	// attributes): the picture is made beforehand, so a refused one changes nothing, and stored as its own record just
+	// before the user's write names it. Who may is maySetPicture's rule, and it counts against PictureChangesPerHour.
+	// Nil leaves the picture unchanged.
+	Picture *PictureChange `json:"-"`
 	// IfVersion, when set, applies the update only to the user as read at that version (a read-modify-write, a SCIM
 	// If-Match): a user changed since is ErrStale, and nothing is written.
 	IfVersion hlc.Timestamp `json:"-"`
@@ -523,12 +528,22 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	if link != nil {
 		links = append(links, link(u))
 	}
+	_, madePic, picChange, err := s.pictureInput(ctx, a, u, in)
+	if err != nil {
+		return nil, err
+	}
+	if picChange != "" {
+		detail["picture"] = picChange
+	}
 	events := []change{userChange(u, "user.create", detail)}
 	if u.HasTOTP() {
 		events = append(events, userChange(u, "mfa.import", map[string]string{"method": "totp"})) // never the secret
 	}
 	err = s.createUser(ctx, u, links)
 	s.auditOutcome(ctx, a, err, events...)
+	if err != nil && !outcomeUnknown(err) { // a write that may have landed may name it
+		s.dropPicture(ctx, madePic)
+	}
 	if err != nil {
 		if lerr := s.linkConflict(ctx, err, u, imports); lerr != nil {
 			return nil, lerr
@@ -780,6 +795,14 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if endsSessions {
 		u.SessionEpoch = NewCredEpoch()
 	}
+	// Last before the write, so nothing refuses the change once the new picture is stored.
+	oldPic, madePic, picChange, err := s.pictureInput(ctx, a, u, in)
+	if err != nil {
+		return nil, err
+	}
+	if picChange != "" {
+		detail["picture"] = picChange
+	}
 	err = s.AuditedUser(ctx, a, u, action, detail, func() error {
 		err := s.writeUser(ctx, u, also)
 		roleDone(ctx, a, err)
@@ -797,8 +820,12 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		return err
 	})
 	if err != nil {
+		if !outcomeUnknown(err) { // a write that may have landed may name it
+			s.dropPicture(ctx, madePic)
+		}
 		return nil, s.userConflict(ctx, err, u)
 	}
+	s.dropPicture(ctx, oldPic)
 	return u, nil
 }
 

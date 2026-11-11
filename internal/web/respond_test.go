@@ -54,6 +54,8 @@ func TestWriteErrorMapsServiceErrors(t *testing.T) {
 		"primary org":      {service.ErrPrimaryOrg, 409, "The primary organization cannot be deleted.", ""},
 		"tenant in use":    {service.ErrTenantInUse, 409, "The tenant still has clients.", ""},
 		"wrapped not-null": {wrap(wrap(service.ErrNotFound)), 404, "Not found.", ""},
+		"pictures busy":    {service.ErrPictureBusy, 503, "This server is busy: it is making other pictures; try again in a few seconds.", ""},
+		"forbidden, why":   {service.ErrPicturesOff, 403, "Profile pictures are turned off in this organization.", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

@@ -49,9 +49,12 @@ one, or a deleted user's, answers 404 at once and is removed from the store. Eac
 (JPEG, PNG and WebP in; nothing else, no SVG, no GIF), so no metadata (a phone photo's location), no script and no
 second file format hidden in it reaches what is stored, and it is served as an image that cannot be anything else
 (`Content-Security-Policy: default-src 'none'; sandbox`, `nosniff`). An upload is at most 5 MB and 8192 pixels a side
-(the size it decodes to, not its bytes, is what it costs: two are decoded at a time per node), and one user's picture
+(the size it decodes to, not its bytes, is what it costs: one is decoded at a time per node, at most four more wait
+their turn, as long as their requests do, and any more are refused at once with `503`), and one user's picture
 changes at most 20 times an hour. A picture given by URL (SCIM, a sign-in provider) is fetched once through the
-outbound guard and never linked to: applications never reach another site through Quisora's pictures.
+outbound guard and never linked to: applications never reach another site through Quisora's pictures. An
+organization that wants none sets `settings.pictures` to `off`: nothing is uploaded, copied, served or sent, and the
+pictures it held are deleted.
 
 **SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
 

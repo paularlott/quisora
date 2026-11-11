@@ -564,6 +564,11 @@ func (s *Service) validOrgSettings(ctx context.Context, orgID string, st model.O
 	default:
 		return Invalid("api_tokens", "must be "+model.APITokensOff+", "+model.APITokensGroups+" or "+model.APITokensEveryone)
 	}
+	switch st.Pictures {
+	case "", model.PicturesEveryone, model.PicturesAdmins, model.PicturesOff:
+	default:
+		return Invalid("pictures", "must be "+model.PicturesEveryone+", "+model.PicturesAdmins+" or "+model.PicturesOff)
+	}
 	// Only a lifetime being changed is held to the server's: one saved before the limit (or before the server's
 	// was lowered) does not block saving other settings; sessions are capped at the server's anyway.
 	if st.SessionTTL > s.Cfg.Session.TTL && (old == nil || st.SessionTTL != old.SessionTTL) {

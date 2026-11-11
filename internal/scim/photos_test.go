@@ -2,13 +2,22 @@ package scim_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
 func photoURI(t *testing.T, shade uint8) string {
@@ -142,5 +151,144 @@ func TestPhotosInSchema(t *testing.T) {
 	wantStatus(t, "schema", r, 200)
 	if !strings.Contains(string(r.Raw), `"name":"photos"`) || !strings.Contains(string(r.Raw), `"thumbnail"`) {
 		t.Fatalf("the User schema lacks photos: %s", r.Raw)
+	}
+}
+
+// A change that comes with a photo takes effect with it or not at all: a refused image, or a failure to write the
+// user, leaves the resource exactly as it was (here: a disabled account a PATCH would enable).
+func TestPhotoRefusedChangesNothing(t *testing.T) {
+	fs := &failingWrites{Store: memstore.New()}
+	e := newEnvStore(t, fs)
+	id := e.mk("off", map[string]any{"active": false, "photos": []any{map[string]any{"value": photoURI(t, 40)}}})
+	before, err := e.Svc.Users.Get(e.ctx, id)
+	if err != nil || before.Active || before.Picture == "" {
+		t.Fatalf("set up: %+v %v", before, err)
+	}
+	unchanged := func(what string) {
+		t.Helper()
+		u, err := e.Svc.Users.Get(e.ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Active || u.Picture != before.Picture || u.Version != before.Version {
+			t.Fatalf("%s changed the user: active %v, picture %q (was %q)", what, u.Active, u.Picture, before.Picture)
+		}
+		if _, err := e.Svc.Pictures.Get(e.ctx, before.Picture); err != nil {
+			t.Fatalf("%s: the picture is gone: %v", what, err)
+		}
+	}
+	enable := op("replace", "active", true)
+
+	// A refused image: PATCH and PUT.
+	r := e.patch(id, enable, op("replace", "photos", []any{map[string]any{"value": "data:image/png;base64,bm90IGFuIGltYWdl"}}))
+	wantStatus(t, "patch with a bad image", r, 400)
+	unchanged("a PATCH with a bad image")
+	put := map[string]any{"userName": "off", "active": true, "emails": mail("off@acme.test"),
+		"photos": []any{map[string]any{"value": "data:image/png;base64,bm90IGFuIGltYWdl"}}}
+	wantStatus(t, "put with a bad image", e.do("PUT", "/scim/v2/acme/Users/"+id, e.admA, put), 400)
+	unchanged("a PUT with a bad image")
+
+	// A good image whose picture, or whose user, cannot be written: the user is as it was, and the new picture (when it
+	// was stored) is named by nobody.
+	for _, kind := range []model.Kind{model.KindUserPicture, model.KindUser} {
+		fs.fail.Store(kind)
+		r = e.patch(id, enable, op("replace", "photos", []any{map[string]any{"value": photoURI(t, 41)}}))
+		fs.fail.Store(model.Kind(""))
+		if r.Status != 503 || r.Header.Get("Retry-After") == "" {
+			t.Fatalf("a failed %s write answered %d %s", kind, r.Status, r.Raw)
+		}
+		unchanged("a PATCH whose " + string(kind) + " write failed")
+	}
+
+	// A refused create creates nobody, and a create's picture comes in the one write.
+	r = e.createUser("acme", e.admA, map[string]any{"userName": "badpic", "photos": []any{map[string]any{"value": "data:image/png;base64,bm90IGFuIGltYWdl"}}})
+	wantStatus(t, "create with a bad image", r, 400)
+	if l := e.do("GET", "/scim/v2/acme/Users?filter="+qs(`userName eq "badpic"`), e.admA, nil); l.total() != 0 {
+		t.Fatal("a refused create created the user")
+	}
+
+	// And the same change with a good image works, in one write.
+	r = e.patch(id, enable, op("replace", "photos", []any{map[string]any{"value": photoURI(t, 42)}}))
+	wantStatus(t, "patch", r, 200)
+	u, _ := e.Svc.Users.Get(e.ctx, id)
+	if !u.Active || u.Picture == "" || u.Picture == before.Picture {
+		t.Fatalf("after the patch: active %v picture %q", u.Active, u.Picture)
+	}
+	if _, err := e.Svc.Pictures.Get(e.ctx, before.Picture); err == nil {
+		t.Fatal("the replaced picture is still stored")
+	}
+}
+
+// failingWrites fails every write of the kind it is armed with (the store refuses: nothing is written).
+type failingWrites struct {
+	store.Store
+	fail atomic.Value // model.Kind
+}
+
+func (f *failingWrites) refuse(kind model.Kind) error {
+	if k, _ := f.fail.Load().(model.Kind); k != "" && kind == k {
+		return fmt.Errorf("write: %w", store.ErrUnavailable)
+	}
+	return nil
+}
+
+func (f *failingWrites) Put(ctx context.Context, rec *store.Record) error {
+	if err := f.refuse(rec.Kind); err != nil {
+		return err
+	}
+	return f.Store.Put(ctx, rec)
+}
+
+func (f *failingWrites) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if err := f.refuse(rec.Kind); err != nil {
+		return err
+	}
+	return f.Store.CompareAndPut(ctx, rec, expect)
+}
+
+func (f *failingWrites) Tx(ctx context.Context, ops []store.Op) error {
+	for _, o := range ops {
+		if err := f.refuse(o.Rec.Kind); err != nil {
+			return err
+		}
+	}
+	return f.Store.Tx(ctx, ops)
+}
+
+// With the organization's pictures off, photos are left out of every user and ignored when written: a directory's
+// sync goes on, and nothing is stored.
+func TestPhotosOff(t *testing.T) {
+	e := newEnv(t)
+	id := e.mk("pic", map[string]any{"photos": []any{map[string]any{"value": photoURI(t, 50)}}})
+	st := e.orgA.Settings
+	st.Pictures = model.PicturesOff
+	if _, err := e.Svc.UpdateOrg(e.ctx, service.System, e.orgA.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	e.Svc.InvalidateOrgs()
+	stored := func() int {
+		l, _, err := e.Svc.Pictures.List(e.ctx, store.ListQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(l)
+	}
+	before := stored()
+
+	r := e.do("GET", "/scim/v2/acme/Users/"+id, e.admA, nil)
+	if wantStatus(t, "get", r, 200); r.list("photos") != nil {
+		t.Fatalf("photos with pictures off: %s", r.Raw)
+	}
+	r = e.patch(id, op("replace", "photos", []any{map[string]any{"value": photoURI(t, 51)}}), op("replace", "displayName", "Pat"))
+	if wantStatus(t, "patch", r, 200); r.list("photos") != nil {
+		t.Fatalf("patch: %s", r.Raw)
+	}
+	wantStatus(t, "remove", e.patch(id, op("remove", "photos", nil)), 200)
+	r = e.createUser("acme", e.admA, map[string]any{"userName": "new", "photos": []any{map[string]any{"value": "not even a URL"}}})
+	if wantStatus(t, "create", r, 201); r.list("photos") != nil {
+		t.Fatalf("create: %s", r.Raw)
+	}
+	if n := stored(); n != before {
+		t.Fatalf("pictures stored with pictures off: %d, was %d", n, before)
 	}
 }

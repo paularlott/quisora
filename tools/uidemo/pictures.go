@@ -21,7 +21,7 @@ func seedPictures(ctx context.Context, svc *service.Service, users ...*model.Use
 			raw = circlePNG()
 		}
 		_, err := svc.SetPicture(ctx, service.System, u.ID, func() (*service.PictureImage, error) {
-			return service.MakePicture(raw, service.HashSource(raw))
+			return service.MakePicture(ctx, raw, service.HashSource(raw))
 		})
 		must(err)
 	}

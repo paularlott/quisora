@@ -21,6 +21,10 @@ import (
 // batch at a time, and removes those whose owner is gone, and the credentials, sessions and refresh grants of an
 // epoch their account has moved past (model.User.Counts). Kinds that expire soon on their own (links, keys, audit
 // entries, replay records, removed memberships) need nothing more.
+//
+// The sweep also deletes the pictures of an organization whose profile pictures are off (OrgSettings.Pictures), and
+// clears its users' pointers to them (users come first in a pass, pictures last): one pass, a batch at a time, leaves
+// it none, so turning pictures on again starts with none. Nothing serves or sends them meanwhile.
 
 // sweepKinds are the kinds the sweep reads, in turn.
 var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
@@ -130,10 +134,17 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	}
 	now := time.Now()
 	removed := 0
-	var ents []model.Entity // decoded once, those old enough to judge
+	var ents []model.Entity          // decoded once, those old enough to judge
+	picturesOff := map[string]bool{} // the organizations read for offPicture
 	for _, r := range res.Records {
 		e := model.NewEntity(kind)
 		if store.Decode(r, e) != nil {
+			continue
+		}
+		if gone, err := s.offPicture(ctx, e, picturesOff); err != nil {
+			return removed, err
+		} else if gone {
+			removed++
 			continue
 		}
 		// A lock is judged by its lease, except an organization's open deletion guard (no holder: see orgDeleting),
@@ -191,6 +202,45 @@ func (s *Service) SweepOrphans(ctx context.Context, sw *Sweep, batch int) (int, 
 	}
 	sw.kind, sw.after = nextKind, nextAfter
 	return removed, nil
+}
+
+// offPicture removes e, whatever its age, when it is a picture of an organization whose pictures are off, and clears
+// the pointer of a user of one to their picture (a user changed meanwhile is looked at again by the next pass). It
+// reports whether it removed e. off holds the organizations read so far (whether their pictures are off).
+func (s *Service) offPicture(ctx context.Context, e model.Entity, off map[string]bool) (bool, error) {
+	var orgID string
+	switch v := e.(type) {
+	case *model.UserPicture:
+		orgID = v.OrgID
+	case *model.User:
+		if v.Picture == "" {
+			return false, nil
+		}
+		orgID = v.OrgID
+	default:
+		return false, nil
+	}
+	isOff, read := off[orgID]
+	if !read {
+		o, err := s.Orgs.Get(ctx, orgID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) { // an organization gone is the owner check's
+			return false, mapStore(err)
+		}
+		isOff = err == nil && !o.Settings.PicturesOn()
+		off[orgID] = isOff
+	}
+	if !isOff {
+		return false, nil
+	}
+	if u, ok := e.(*model.User); ok {
+		u.Picture = ""
+		err := s.Users.Update(ctx, u)
+		if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, mapStore(err)
+	}
+	return true, s.removeOrphan(ctx, e)
 }
 
 // clearDanglingManager gives u no manager when the manager is gone: the deletion of a user clears the manager of their

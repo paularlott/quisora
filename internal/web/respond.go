@@ -49,7 +49,11 @@ func WriteError(w http.ResponseWriter, err error) {
 		WriteJSON(w, status, ErrorBody{Error: fe.Msg, Field: fe.Field})
 	case errors.Is(err, service.ErrForbidden):
 		noteDenied(w) // audited by RequireManagement
-		WriteJSON(w, http.StatusForbidden, ErrorBody{Error: "You do not have permission to do that."})
+		msg := "You do not have permission to do that."
+		if why, ok := strings.CutPrefix(err.Error(), service.ErrForbidden.Error()+": "); ok { // a refusal that says why
+			msg = Capitalise(why) + "."
+		}
+		WriteJSON(w, http.StatusForbidden, ErrorBody{Error: msg})
 	case errors.Is(err, service.ErrNotFound):
 		WriteJSON(w, http.StatusNotFound, ErrorBody{Error: "Not found."})
 	case errors.Is(err, service.ErrConflict):
@@ -64,6 +68,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrOutcomeUnknown), errors.Is(err, store.ErrUnconfirmed): // (a raw store error too)
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server lost contact with the part of the cluster that decides this change before it answered, so the change may or may not have been made. Check, then try again."})
+	case errors.Is(err, service.ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: Capitalise(err.Error()) + "."})
 	case service.IsUnavailable(err):
 		w.Header().Set("Retry-After", "5")
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot make changes right now (it cannot reach enough of its cluster). Nothing was changed; please try again shortly."})

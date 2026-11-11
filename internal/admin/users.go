@@ -46,17 +46,21 @@ type userView struct {
 	// CanVerifyEmail says the caller may mark the user's unverified addresses verified (never their own); present
 	// on GET of one user.
 	CanVerifyEmail *bool `json:"can_verify_email,omitempty"`
-	// Picture is the absolute URL of the user's profile picture (not of a directory entry); left out when none.
+	// Picture is the absolute URL of the user's profile picture (not of a directory entry); left out when none, and
+	// whenever the organization's pictures are off.
 	Picture string `json:"picture,omitempty"`
+	// PicturesEnabled says the organization has profile pictures at all (settings.pictures is not off): the console
+	// shows the picture card only then. Present on GET of one user.
+	PicturesEnabled *bool `json:"pictures_enabled,omitempty"`
 }
 
-func (m *Module) userView(u *model.User) userView {
+func (m *Module) userView(ctx context.Context, u *model.User) userView {
 	le := u.LinkedEmails
 	if le == nil {
 		le = []model.LinkedEmail{}
 	}
 	return userView{User: u, HasPassword: u.PasswordHash != "", Tags: nonNilTags(u.Tags), Name: u.FullName(), LinkedEmails: le,
-		Picture: m.s.Svc.PictureURL(u)}
+		Picture: m.s.Svc.PictureURL(ctx, u)}
 }
 
 func nonNilTags(t []string) []string {
@@ -133,7 +137,7 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 			web.WriteError(w, err)
 			return
 		}
-		view := m.userView(u)
+		view := m.userView(r.Context(), u)
 		can := m.s.Svc.CanManageUser(a, u)
 		view.CanManage = &can
 		view.Directory = m.s.Svc.Visibility(a, u) == service.Directory
@@ -177,7 +181,7 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]userView, len(items))
 	for i, u := range items {
-		views[i] = m.userView(u)
+		views[i] = m.userView(r.Context(), u)
 		can := m.s.Svc.CanManageUser(a, u)
 		views[i].CanManage = &can
 		views[i].Directory = m.s.Svc.Visibility(a, u) == service.Directory
@@ -194,7 +198,7 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	view := m.userView(u)
+	view := m.userView(r.Context(), u)
 	if m.s.Svc.Visibility(a, u) == service.Directory {
 		// someone above the caller: who they are, nothing else (u is already the directory entry)
 		no := false
@@ -222,6 +226,8 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 	view.CanResetSignIn = &can
 	canVerify := m.s.Svc.CanMarkEmailVerified(r.Context(), a, u)
 	view.CanVerifyEmail = &canVerify
+	pics := org.Settings.PicturesOn()
+	view.PicturesEnabled = &pics
 	web.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -273,7 +279,7 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		userView
 		Invite *inviteResult `json:"invite,omitempty"`
-	}{userView: m.userView(u)}
+	}{userView: m.userView(r.Context(), u)}
 	if in.Invite != nil {
 		res, err := m.issueInvite(r, org, a, u, in.Invite.Email)
 		if err != nil {
@@ -321,7 +327,7 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 			m.mailSent(r, org, a, upd.ID)
 		}
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 func (m *Module) deleteUser(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +356,7 @@ type pictureBody struct {
 
 // setUserPicture handles PUT /users/{id}/picture {"image": "data:image/...;base64,..."}: sets the user's profile
 // picture (whoever may change the user; the user themselves unless the organization has its administrators set
-// pictures). Answers the user.
+// pictures; nobody while its pictures are off). Answers the user.
 func (m *Module) setUserPicture(w http.ResponseWriter, r *http.Request) {
 	org, a, found := m.orgFor(w, r)
 	if !found {
@@ -365,13 +371,13 @@ func (m *Module) setUserPicture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upd, err := m.s.Svc.SetPicture(r.Context(), a, u.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI(in.Image)
+		return service.PictureFromDataURI(r.Context(), in.Image)
 	})
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 // removeUserPicture handles DELETE /users/{id}/picture: removes the user's profile picture (as setUserPicture).
@@ -389,7 +395,7 @@ func (m *Module) removeUserPicture(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 // removePassword deletes the user's password; they sign in again only through a new invitation.
@@ -460,7 +466,7 @@ func (m *Module) lockOutUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 type inviteResult struct {
@@ -686,7 +692,7 @@ func (m *Module) addEmail(w http.ResponseWriter, r *http.Request) {
 			m.mailSent(r, org, a, upd.ID)
 		}
 	}
-	web.WriteJSON(w, http.StatusCreated, m.userView(upd))
+	web.WriteJSON(w, http.StatusCreated, m.userView(r.Context(), upd))
 }
 
 // resendEmail handles POST /users/{id}/emails/{address}/verify: mails the user a new verification link for one of
@@ -735,7 +741,7 @@ func (m *Module) markEmailVerified(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 // removeEmail handles DELETE /users/{id}/emails/{address}.
@@ -757,7 +763,7 @@ func (m *Module) removeEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 // primaryEmail handles POST /users/{id}/emails/{address}/primary.
@@ -779,7 +785,7 @@ func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
 // connectionsUser resolves the user of a connections route: one the actor may manage, or the actor themselves. It

@@ -2,6 +2,7 @@ package picture
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"image"
@@ -9,9 +10,11 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math/rand/v2"
 	"os"
 	"testing"
+	"time"
 )
 
 // photo is an opaque w×h image of noise over a gradient, as a photograph is: JPEG encodes it far smaller than PNG.
@@ -48,7 +51,7 @@ func encJPEG(t *testing.T, m image.Image) []byte {
 // check processes in and decodes the result, which must be a Size × Size image of type want.
 func check(t *testing.T, in []byte, want string) image.Image {
 	t.Helper()
-	out, typ, err := Process(in)
+	out, typ, err := Process(context.Background(), in)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestWebP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out, typ, err := Process(b)
+		out, typ, err := Process(context.Background(), b)
 		if err != nil || len(out) == 0 {
 			t.Fatalf("%s: %v", file, err)
 		}
@@ -212,7 +215,7 @@ func TestRefused(t *testing.T) {
 		"broken jpeg":    {append([]byte{0xff, 0xd8, 0xff, 0xe0}, bytes.Repeat([]byte{1}, 40)...), ErrDecode},
 		"too wide":       {wide, ErrDimensions},
 	} {
-		if _, _, err := Process(tc.in); !errors.Is(err, tc.want) {
+		if _, _, err := Process(context.Background(), tc.in); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
@@ -220,11 +223,82 @@ func TestRefused(t *testing.T) {
 
 func TestOutputCarriesNoMetadata(t *testing.T) {
 	j := withOrientation(encJPEG(t, photo(100, 100)), 1, binary.BigEndian)
-	out, _, err := Process(j)
+	out, _, err := Process(context.Background(), j)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(out, []byte("Exif")) {
 		t.Fatal("the EXIF block was kept")
+	}
+}
+
+// holdSlot takes the decoding slot, as an image being decoded does, until the returned func gives it back.
+func holdSlot(t *testing.T) func() {
+	t.Helper()
+	if err := acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return func() { <-slots }
+}
+
+// A caller waiting for its turn stops waiting when its context ends; MaxWaiting wait at most, and one more is refused
+// at once; and the slot comes back however a decoding ends (an error, a decoder that panics).
+func TestTurns(t *testing.T) {
+	img := encPNG(t, photo(20, 20))
+	release := holdSlot(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, _, err := Process(ctx, img); done <- err }()
+	waitFor(t, func() bool { return waiting.Load() == 1 })
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled caller kept waiting")
+	}
+
+	// MaxWaiting wait; one more is busy at once.
+	results := make(chan error, MaxWaiting)
+	for range MaxWaiting {
+		go func() { _, _, err := Process(context.Background(), img); results <- err }()
+	}
+	waitFor(t, func() bool { return waiting.Load() == MaxWaiting })
+	if _, _, err := Process(context.Background(), img); !errors.Is(err, ErrBusy) {
+		t.Fatalf("past MaxWaiting: %v", err)
+	}
+	release()
+	for range MaxWaiting {
+		if err := <-results; err != nil {
+			t.Fatalf("a waiting caller: %v", err)
+		}
+	}
+	if waiting.Load() != 0 || len(slots) != 0 {
+		t.Fatalf("after: %d waiting, %d slots held", waiting.Load(), len(slots))
+	}
+
+	// A decoder's error, and its panic, give the slot back.
+	failing := format{decode: func(io.Reader) (image.Image, error) { return nil, errors.New("bad") }}
+	panicking := format{decode: func(io.Reader) (image.Image, error) { panic("bad") }}
+	for _, f := range []format{failing, panicking} {
+		if _, err := decodeSquare(context.Background(), f, img); !errors.Is(err, ErrDecode) {
+			t.Fatalf("decoder failure: %v", err)
+		}
+		if len(slots) != 0 {
+			t.Fatal("a failed decoding kept the slot")
+		}
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

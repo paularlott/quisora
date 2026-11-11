@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -32,13 +33,13 @@ func TestPictureClaim(t *testing.T) {
 	var b bytes.Buffer
 	_ = png.Encode(&b, m)
 	u, err := h.env.Svc.SetPicture(context.Background(), service.System, h.user.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI("data:image/png;base64," + base64.StdEncoding.EncodeToString(b.Bytes()))
+		return service.PictureFromDataURI(context.Background(), "data:image/png;base64,"+base64.StdEncoding.EncodeToString(b.Bytes()))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.p.InvalidateUser(u.ID) // as the change feed does
-	want := h.env.Svc.PictureURL(u)
+	want := h.env.Svc.PictureURL(context.Background(), u)
 	if !strings.HasPrefix(want, "https://") || !strings.Contains(want, "/pictures/") {
 		t.Fatalf("picture URL %q", want)
 	}
@@ -61,5 +62,24 @@ func TestPictureClaim(t *testing.T) {
 	}
 	if ui := h.userinfo(r.str("access_token")); ui["picture"] != want {
 		t.Fatalf("userinfo picture through the claims parameter: %v", ui["picture"])
+	}
+
+	// With the organization's pictures off there is no picture claim at all.
+	o, err := h.env.Svc.Orgs.Get(context.Background(), u.OrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := o.Settings
+	st.Pictures = model.PicturesOff
+	if _, err := h.env.Svc.UpdateOrg(context.Background(), service.System, o.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	h.env.Svc.InvalidateOrgs()
+	r, _ = h.login(cl, secret, url.Values{"scope": {"openid profile"}})
+	if id := claimsOf(t, r.str("id_token")); id["picture"] != nil {
+		t.Fatalf("picture claim with pictures off: %v", id["picture"])
+	}
+	if ui := h.userinfo(r.str("access_token")); ui["picture"] != nil {
+		t.Fatalf("userinfo picture with pictures off: %v", ui["picture"])
 	}
 }

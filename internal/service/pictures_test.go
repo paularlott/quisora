@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"image"
@@ -38,17 +39,18 @@ func dataURI(b []byte) string { return "data:image/png;base64," + base64.StdEnco
 
 // fromURI is the picture maker of a data: URI, as the account page and the management API give it.
 func fromURI(uri string) func() (*service.PictureImage, error) {
-	return func() (*service.PictureImage, error) { return service.PictureFromDataURI(uri) }
+	return func() (*service.PictureImage, error) { return service.PictureFromDataURI(context.Background(), uri) }
 }
 
-func (e *env) setPicturesByAdmins(orgID string, on bool) {
+// setPictures sets the organization's pictures setting (model.OrgSettings.Pictures).
+func (e *env) setPictures(orgID string, v string) {
 	e.t.Helper()
 	o, err := e.svc.GetOrg(e.ctx, nil, orgID)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	st := o.Settings
-	st.PicturesByAdmins = on
+	st.Pictures = v
 	if _, err := e.svc.UpdateOrg(e.ctx, service.System, orgID, service.OrgInput{Settings: &st}); err != nil {
 		e.t.Fatal(err)
 	}
@@ -81,8 +83,8 @@ func TestPictureSetReplaceRemove(t *testing.T) {
 	if !model.IsID(first) || e.fresh(u).Picture != first {
 		t.Fatalf("picture id %q", first)
 	}
-	if want := e.svc.Cfg.Server.PublicURL + "/o/" + o.ID + "/pictures/" + first; e.svc.PictureURL(got) != want {
-		t.Fatalf("URL %q, want %q", e.svc.PictureURL(got), want)
+	if want := e.svc.Cfg.Server.PublicURL + "/o/" + o.ID + "/pictures/" + first; e.svc.PictureURL(e.ctx, got) != want {
+		t.Fatalf("URL %q, want %q", e.svc.PictureURL(e.ctx, got), want)
 	}
 	p, err := e.svc.ServedPicture(e.ctx, o.ID, first)
 	if err != nil || p.Type != "image/png" && p.Type != "image/jpeg" || len(p.Data) == 0 || p.UserID != u.ID {
@@ -105,7 +107,7 @@ func TestPictureSetReplaceRemove(t *testing.T) {
 	}
 
 	second := got.Picture
-	if got, err = e.svc.SetPicture(e.ctx, actor(u), u.ID, nil); err != nil || got.Picture != "" || e.svc.PictureURL(got) != "" {
+	if got, err = e.svc.SetPicture(e.ctx, actor(u), u.ID, nil); err != nil || got.Picture != "" || e.svc.PictureURL(e.ctx, got) != "" {
 		t.Fatalf("remove: %v %q", err, got.Picture)
 	}
 	if e.pictureStored(second) || e.served(o.ID, second) || len(e.audited(o.ID, "user.picture.remove")) != 1 {
@@ -156,28 +158,28 @@ func TestPicturePermissions(t *testing.T) {
 
 	// Self-service off: users and managers no longer set their own; administrators (who manage themselves), those
 	// above them and the directory still do.
-	e.setPicturesByAdmins(o.ID, true)
+	e.setPictures(o.ID, model.PicturesAdmins)
 	for _, u := range []*model.User{user, mgr} {
 		if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, img); !errors.Is(err, service.ErrForbidden) {
-			t.Fatalf("%s set their own picture with pictures_by_admins: %v", u.Username, err)
+			t.Fatalf("%s set their own picture with pictures admins: %v", u.Username, err)
 		}
 		if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, nil); u.Picture == "" && err != nil && !errors.Is(err, service.ErrForbidden) {
 			t.Fatal(err)
 		}
 		if e.svc.MaySetPicture(e.ctx, actor(u), e.fresh(u)) {
-			t.Fatalf("%s: MaySetPicture with pictures_by_admins", u.Username)
+			t.Fatalf("%s: MaySetPicture with pictures admins", u.Username)
 		}
 	}
 	if _, err := e.svc.SetPicture(e.ctx, actor(user), user.ID, nil); !errors.Is(err, service.ErrForbidden) {
-		t.Fatalf("a user removed their own picture with pictures_by_admins: %v", err)
+		t.Fatalf("a user removed their own picture with pictures admins: %v", err)
 	}
 	if _, err := e.svc.SetPicture(e.ctx, actor(adm), adm.ID, img); err != nil {
 		t.Fatalf("an administrator's own: %v", err)
 	}
 	if _, err := e.svc.SetPicture(e.ctx, actor(mgr), other.ID, img); err != nil {
-		t.Fatalf("a manager sets a user's with pictures_by_admins: %v", err)
+		t.Fatalf("a manager sets a user's with pictures admins: %v", err)
 	}
-	e.setPicturesByAdmins(o.ID, false)
+	e.setPictures(o.ID, model.PicturesEveryone)
 	if !e.svc.MaySetPicture(e.ctx, actor(user), e.fresh(user)) {
 		t.Fatal("MaySetPicture: the default lets users set their own")
 	}
@@ -338,11 +340,11 @@ func TestCopyPicture(t *testing.T) {
 		t.Fatal("a failed copy set a picture")
 	}
 	// The copy is the directory's: self-service off does not stop it.
-	e.setPicturesByAdmins(o.ID, true)
+	e.setPictures(o.ID, model.PicturesAdmins)
 	e.svc.CopyPicture(e.ctx, v.ID, srv.URL+"/a.png", "provider:test")
 	e.svc.WaitBackground()
 	if e.fresh(v).Picture == "" {
-		t.Fatal("pictures_by_admins stopped the provider's copy")
+		t.Fatal("pictures \"admins\" stopped the provider's copy")
 	}
 }
 
@@ -357,5 +359,110 @@ func TestSamePicture(t *testing.T) {
 	}
 	if !e.svc.SamePicture(e.ctx, got, service.HashSource(raw)) || e.svc.SamePicture(e.ctx, got, "https://example.com/x") {
 		t.Fatal("SamePicture")
+	}
+}
+
+// With an organization's pictures off nobody sets one (not even the system), none is shown or copied, and the sweep
+// deletes those held, however new, and clears the users' pointers: turned on again, there are none.
+func TestPicturesOff(t *testing.T) {
+	e := newEnv(t)
+	srv := pictureServer(t, testPNG(t, color.NRGBA{0, 120, 200, 255}))
+	e.svc.PictureClient = srv.Client()
+	o := e.org("nopics")
+	other := e.org("pics")
+	u := e.user(o.ID, "u", model.RoleUser)
+	adm := e.user(o.ID, "adm", model.RoleAdmin)
+	w := e.user(other.ID, "w", model.RoleUser)
+	img := fromURI(dataURI(testPNG(t, color.NRGBA{1, 2, 3, 255})))
+	for _, x := range []*model.User{u, adm, w} {
+		if _, err := e.svc.SetPicture(e.ctx, service.System, x.ID, img); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held := e.fresh(u).Picture
+	if _, err := e.svc.UpdateOrg(e.ctx, service.System, o.ID, service.OrgInput{Settings: &model.OrgSettings{Pictures: "sometimes"}}); fieldOf(err) != "pictures" {
+		t.Fatalf("an unknown value: %v", err)
+	}
+	e.setPictures(o.ID, model.PicturesOff)
+	e.svc.InvalidateOrgs()
+
+	for _, a := range []*service.Actor{actor(u), actor(adm), actor(e.super), service.System} {
+		if _, err := e.svc.SetPicture(e.ctx, a, u.ID, img); !errors.Is(err, service.ErrPicturesOff) || !errors.Is(err, service.ErrForbidden) {
+			t.Fatalf("%s set a picture with pictures off: %v", a.Name, err)
+		}
+		if _, err := e.svc.SetPicture(e.ctx, a, u.ID, nil); !errors.Is(err, service.ErrPicturesOff) {
+			t.Fatalf("%s removed a picture with pictures off: %v", a.Name, err)
+		}
+	}
+	if e.svc.MaySetPicture(e.ctx, actor(adm), e.fresh(u)) {
+		t.Fatal("MaySetPicture with pictures off")
+	}
+	pic, err := service.PictureFromDataURI(e.ctx, dataURI(testPNG(t, color.NRGBA{4, 5, 6, 255})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Picture: &service.PictureChange{Image: pic}}); !errors.Is(err, service.ErrPicturesOff) {
+		t.Fatalf("an update with a picture: %v", err)
+	}
+	if e.svc.PictureURL(e.ctx, e.fresh(u)) != "" || e.svc.PictureURL(e.ctx, e.fresh(w)) == "" {
+		t.Fatal("PictureURL: none with pictures off, and another organization's as it was")
+	}
+	fresh := e.user(o.ID, "new", model.RoleUser)
+	e.svc.CopyPicture(e.ctx, fresh.ID, srv.URL+"/a.png", "provider:test")
+	e.svc.WaitBackground()
+	if e.fresh(fresh).Picture != "" {
+		t.Fatal("a provider's picture was copied with pictures off")
+	}
+
+	// One pass of the sweep (pictures made a moment ago included) deletes them all and clears the pointers.
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []*model.User{u, adm} {
+		if e.fresh(x).Picture != "" {
+			t.Fatalf("%s still names a picture", x.Username)
+		}
+	}
+	if e.pictureStored(held) {
+		t.Fatal("a picture of an organization with pictures off is still stored")
+	}
+	if p := e.fresh(w).Picture; p == "" || !e.pictureStored(p) {
+		t.Fatal("the sweep took another organization's picture")
+	}
+
+	// On again: none held, and they can be set.
+	e.setPictures(o.ID, model.PicturesEveryone)
+	if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, img); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A picture that comes with a change of the user (UserInput.Picture) is written with it: the user names it, the old
+// one goes, and the audit entry says so.
+func TestPictureWithUpdate(t *testing.T) {
+	e := newEnv(t)
+	o := e.org("upd")
+	u := e.user(o.ID, "u", model.RoleUser)
+	first, err := e.svc.SetPicture(e.ctx, service.System, u.ID, fromURI(dataURI(testPNG(t, color.NRGBA{7, 7, 7, 255}))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pic, err := service.PictureFromDataURI(e.ctx, dataURI(testPNG(t, color.NRGBA{8, 8, 8, 255})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{GivenName: ptr("Pat"), Picture: &service.PictureChange{Image: pic}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GivenName != "Pat" || got.Picture == "" || got.Picture == first.Picture || e.pictureStored(first.Picture) || !e.served(o.ID, got.Picture) {
+		t.Fatalf("after: %q (old stored %v)", got.Picture, e.pictureStored(first.Picture))
+	}
+	if ev := e.audited(o.ID, "user.update"); len(ev) == 0 || ev[len(ev)-1].Detail["picture"] != "set" {
+		t.Fatalf("audit: %+v", ev)
+	}
+	got, err = e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Picture: &service.PictureChange{}})
+	if err != nil || got.Picture != "" {
+		t.Fatalf("remove: %q %v", got.Picture, err)
 	}
 }

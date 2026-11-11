@@ -104,7 +104,15 @@
 
       <fieldset class="fieldset">
         <legend>Profile pictures</legend>
-        {{template "check-field" (dict "name" "pictures_by_admins" "label" "Only administrators set pictures" "switch" true "help" "People cannot change their own picture; administrators, the directory (SCIM) and sign-in providers still can.")}}
+        <div class="field">
+          <label class="label sr-only" for="f-pictures">Profile pictures</label>
+          <select class="select" id="f-pictures" name="pictures" x-model="form.pictures" aria-describedby="h-pictures">
+            <option value="everyone">Everyone sets their own</option>
+            <option value="admins">Only administrators</option>
+            <option value="off">Off</option>
+          </select>
+          <p class="help" id="h-pictures">With only administrators, people cannot change their own picture; administrators, the directory (SCIM) and sign-in providers still can. Off deletes the pictures held and stops sending them to applications.</p>
+        </div>
       </fieldset>
 
       <fieldset class="fieldset">

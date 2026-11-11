@@ -6,12 +6,14 @@ package picture
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"sync/atomic"
 
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
@@ -35,11 +37,21 @@ var (
 	ErrFormat     = errors.New("use a JPEG, PNG or WebP image")
 	ErrDimensions = errors.New("the image is too large: at most 8192 pixels wide and tall")
 	ErrDecode     = errors.New("the image could not be read")
+	// ErrBusy refuses an image at once when MaxWaiting others are already waiting their turn: try again shortly.
+	ErrBusy = errors.New("the server is busy making other pictures")
 )
 
+// MaxWaiting bounds the images waiting for their turn to be decoded on this node (each holds its caller's upload while
+// it waits); one more is refused at once (ErrBusy).
+const MaxWaiting = 4
+
 // slots bounds the images decoded at once on this node to one: the largest accepted (8192×8192, 16 bits a channel)
-// takes about 512 MB while it is, and pictures change rarely enough that the next one waits its turn.
-var slots = make(chan struct{}, 1)
+// takes about 512 MB while it is, and pictures change rarely enough that the next one waits its turn (as long as its
+// caller does, and only MaxWaiting of them: waiting counts them).
+var (
+	slots   = make(chan struct{}, 1)
+	waiting atomic.Int32
+)
 
 // format is an image format Process reads.
 type format struct {
@@ -69,8 +81,9 @@ func sniff(b []byte) (format, bool) {
 }
 
 // Process makes a picture of b: it returns the picture's bytes and their content type, image/png when any pixel is
-// not fully opaque, else whichever of JPEG (quality 80) and PNG is the smaller.
-func Process(b []byte) ([]byte, string, error) {
+// not fully opaque, else whichever of JPEG (quality 80) and PNG is the smaller. Waiting for its turn ends with ctx
+// (ctx.Err()), or at once with ErrBusy when too many are waiting.
+func Process(ctx context.Context, b []byte) ([]byte, string, error) {
 	if len(b) > MaxBytes {
 		return nil, "", ErrTooLarge
 	}
@@ -85,20 +98,54 @@ func Process(b []byte) ([]byte, string, error) {
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > MaxSide || cfg.Height > MaxSide {
 		return nil, "", ErrDimensions
 	}
-	slots <- struct{}{}
-	src, err := f.decode(bytes.NewReader(b))
-	var pic *image.RGBA
-	if err == nil {
-		pic = square(src)
-	}
-	<-slots
+	pic, err := decodeSquare(ctx, f, b)
 	if err != nil {
-		return nil, "", ErrDecode
+		return nil, "", err
 	}
 	if f.exif {
 		pic = orient(pic, exifOrientation(b))
 	}
 	return encode(pic)
+}
+
+// decodeSquare decodes b, of format f, and makes its square (square) in its turn (slots): the slot is given back
+// however the decoding ends, and a decoder that panics on what it is given has not read the image (ErrDecode).
+func decodeSquare(ctx context.Context, f format, b []byte) (pic *image.RGBA, err error) {
+	if err := acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if recover() != nil {
+			pic, err = nil, ErrDecode
+		}
+		<-slots
+	}()
+	src, err := f.decode(bytes.NewReader(b))
+	if err != nil {
+		return nil, ErrDecode
+	}
+	return square(src), nil
+}
+
+// acquire takes a slot: at once when one is free, else waiting with the others (at most MaxWaiting: ErrBusy) until one
+// is, or until ctx ends.
+func acquire(ctx context.Context) error {
+	select {
+	case slots <- struct{}{}:
+		return nil
+	default:
+	}
+	if waiting.Add(1) > MaxWaiting {
+		waiting.Add(-1)
+		return ErrBusy
+	}
+	defer waiting.Add(-1)
+	select {
+	case slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // square scales the centre square of src to Size × Size.

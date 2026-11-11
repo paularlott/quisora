@@ -51,11 +51,22 @@ type OrgSettings struct {
 	// and groups for its managers and administrators. Off by default (and for an organization saved before the setting
 	// existed): while off, its address and metadata answer 404 and the console does not show it.
 	MCPServer bool `msgpack:"mcp,omitempty" json:"mcp_server"`
-	// PicturesByAdmins stops users setting their own profile picture: only those who manage users (managers and above)
-	// and the directory (SCIM, sign-in providers) set pictures. Off by default (and for an organization saved before
-	// the setting existed): users choose their own.
-	PicturesByAdmins bool `msgpack:"pba,omitempty" json:"pictures_by_admins"`
+	// Pictures is who sets users' profile pictures: PicturesEveryone (or empty: an organization saved before the
+	// setting existed; users choose their own, and those who manage users, the directory (SCIM) and sign-in providers
+	// set them too), PicturesAdmins (users cannot change their own: only those who manage users, the directory and
+	// sign-in providers) or PicturesOff (none at all: none is stored, served or sent, and those held are deleted).
+	Pictures string `msgpack:"pic,omitempty" json:"pictures"`
 }
+
+// Who sets users' profile pictures (OrgSettings.Pictures).
+const (
+	PicturesEveryone = "everyone"
+	PicturesAdmins   = "admins"
+	PicturesOff      = "off"
+)
+
+// PicturesOn reports whether the organization has users' profile pictures at all (OrgSettings.Pictures not off).
+func (s OrgSettings) PicturesOn() bool { return s.Pictures != PicturesOff }
 
 // Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
 func (s OrgSettings) Equal(o OrgSettings) bool {
@@ -76,7 +87,7 @@ const (
 
 // DefaultOrgSettings is applied to new organizations.
 func DefaultOrgSettings() OrgSettings {
-	return OrgSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true}
+	return OrgSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, Pictures: PicturesEveryone}
 }
 
 type Org struct {
